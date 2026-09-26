@@ -206,7 +206,9 @@ in {
     };
   };
 
-  config = {
+  config = lib.mkMerge [
+    {system.checks = config.aos.abilities.runtimeChecks;}
+    {
     system.checks.boot-basics = {
       description = "Core boot verification";
       checks = [
@@ -227,51 +229,13 @@ in {
           '';
         }
         {
-          name = "systemd-running";
-          description = "systemd reached multi-user.target";
-          script = ''
-            vm.succeed("systemctl is-active multi-user.target")
-          '';
-        }
-        {
           name = "kernel-version";
-          description = "Kernel version is 6.18.x";
+          description = "Kernel version matches the selected kernel";
           script = ''
-            assert "6.18" in vm.succeed("uname -r")
-          '';
-        }
-      ];
-    };
-
-    system.checks.systemd-basics = {
-      description = "systemd service infrastructure checks";
-      checks = [
-        {
-          name = "runtime-dir";
-          description = "systemd runtime directory exists";
-          script = ''
-            vm.succeed("test -d /run/systemd/system")
-          '';
-        }
-        {
-          name = "timers";
-          description = "systemd timers are functional";
-          script = ''
-            vm.succeed("systemctl list-timers --no-pager")
-          '';
-        }
-        {
-          name = "list-services";
-          description = "systemctl can list services";
-          script = ''
-            vm.succeed("systemctl list-units --type=service --no-pager")
-          '';
-        }
-        {
-          name = "journal";
-          description = "journalctl can read system journal";
-          script = ''
-            vm.succeed("journalctl --no-pager -n 5")
+            actual_kernel = vm.succeed("uname -r").strip()
+            expected_kernel = "${config.system.build.kernel.version}"
+            assert actual_kernel == expected_kernel, \
+                f"expected kernel {expected_kernel}, got {actual_kernel}"
           '';
         }
         {
@@ -298,7 +262,7 @@ in {
         AOS_STATE_VERSION=${cfg.stateVersion}
         AOS_MODULE_ABI=${toString cfg.moduleAbi}
         AOS_CONFIG_INPUT_ABI=${toString cfg.configInputAbi}
-        AOS_BASELIB_DIGEST=sha256:${builtins.hashString "sha256" (toString config.aos.config.evalAtBoot.baseLib)}
+        AOS_BASELIB_ABI_HASH=${config.aos.config.evalAtBoot.baseLibAbiHash}
         ${releaseOsMetadata}
       '';
     };
@@ -331,5 +295,6 @@ in {
     environment.etc."timezone" = {
       text = cfg.timezone + "\n";
     };
-  };
+    }
+  ];
 }

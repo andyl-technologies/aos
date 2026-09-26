@@ -1,5 +1,6 @@
 ##! Chrony — NTP client and server
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -12,7 +13,57 @@
   isDarwin = stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "chrony";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Chronyd accepts and normalizes all directives.";
+        "files" = {
+          "chrony.conf" = "server 192.0.2.1 iburst offline\nmakestep 1.0 3\ndriftfile @work@/primary/chrony.drift\n";
+        };
+        "input" = "An offline chronyd configuration with a server and step threshold.";
+        "operation" = "Parse and print the configuration without starting chronyd.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/sbin/chronyd"
+              "-p"
+              "-f"
+              "chrony.conf"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Chronyd rejects the unknown directive with status 1.";
+        "files" = {
+          "invalid.conf" = "aos_unknown_directive 42\n";
+        };
+        "input" = "A chronyd configuration containing an unknown directive.";
+        "operation" = "Parse the malformed configuration without starting chronyd.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/sbin/chronyd"
+              "-p"
+              "-f"
+              "invalid.conf"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -42,6 +93,8 @@ in
         gnutls
       ];
     propagatedDeps = [];
+
+    abilities = ./_chrony-abilities;
 
     phases = [
       {

@@ -61,6 +61,10 @@ uuid = { workspace = true }
 # surface reader already shared with the Worker.
 aos-registry-surface = { workspace = true }
 aos-oci-types = { workspace = true }
+aos-ability-model = { workspace = true }
+aos-ability-inspect = { workspace = true }
+aos-ability-validate = { workspace = true }
+aos-contract = { workspace = true }
 aos-doc-model = { workspace = true }
 aos-hub-console-contract = { workspace = true }
 # The wasm-clean Connect-JSON message structs (prost-build + serde) for the
@@ -109,6 +113,7 @@ sqlx = { workspace = true, features = ["sqlite"] }
 tokio = { workspace = true }
 
 [dev-dependencies]
+aos-ability-inspect = { workspace = true, features = ["test-support"] }
 # The native SqlxBackend batch tests are async; drive them on a tokio runtime.
 tokio = { workspace = true }
 # The Database migration tests stage old-schema sqlite files with raw rusqlite,

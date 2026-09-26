@@ -1,5 +1,6 @@
 ##! libevent — Event notification library
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -12,7 +13,95 @@
   version = "2.1.13";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "libevent";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The parsed port is 42 and the rendered address is 127.0.0.1.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libevent primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libevent rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <arpa/inet.h>\n#include <string.h>\n#include <event2/util.h>\nint main(void) {\n    struct sockaddr_storage address; int length = sizeof(address); char host[32];\n    if (evutil_parse_sockaddr_port(\"127.0.0.1:42\", (struct sockaddr *)&address, &length) != 0) return 2;\n    struct sockaddr_in *ipv4 = (struct sockaddr_in *)&address;\n    if (ntohs(ipv4->sin_port) != 42 || evutil_inet_ntop(AF_INET, &ipv4->sin_addr, host, sizeof(host)) == NULL) return 3;\n    return strcmp(host, \"127.0.0.1\") == 0 ? pass() : 4;\n}\n\n";
+        };
+        "input" = "The numeric socket address 127.0.0.1:42.";
+        "operation" = "Parse the address and render its IPv4 host through libevent utilities.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-levent"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libevent primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "libevent rejects the address with a negative status.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libevent primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libevent rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <event2/util.h>\nint main(void) {\n    struct sockaddr_storage address; int length = sizeof(address);\n    if (evutil_parse_sockaddr_port(\"127.0.0.1:70000\", (struct sockaddr *)&address, &length) == 0) return 2;\n    return reject();\n}\n\n";
+        };
+        "input" = "An IPv4 socket address whose port is above 65535.";
+        "operation" = "Parse the out-of-range address with evutil_parse_sockaddr_port.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-levent"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libevent rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -14,6 +14,7 @@
 //! Command *implementations* live in the `commands` module, keyed by the
 //! same names.
 
+mod ability;
 mod build;
 mod cache;
 mod container;
@@ -31,6 +32,7 @@ mod server;
 mod test;
 mod vm;
 
+pub use ability::*;
 pub use cache::*;
 pub use container::*;
 pub use hub::*;
@@ -43,8 +45,6 @@ pub use release::*;
 pub use server::*;
 pub use test::*;
 pub use vm::*;
-
-use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
@@ -181,6 +181,11 @@ pub struct AprCli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Inspect checked ability plans from portable bundles
+    Ability {
+        #[command(subcommand)]
+        command: AbilityCommand,
+    },
     /// Build a package from source
     Build {
         /// Package name
@@ -322,11 +327,6 @@ pub enum Commands {
         #[command(subcommand)]
         command: TokenCmd,
     },
-    /// Cross-cloud metadata agent (initrd user-data fetch)
-    Metadata {
-        #[command(subcommand)]
-        command: MetadataCmd,
-    },
     /// Binary cache client (push, pull, prefetch, list)
     Cache {
         #[command(subcommand)]
@@ -435,67 +435,6 @@ pub enum ProfileCmd {
         package: String,
         /// Referenced dependency to justify
         dependency: String,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum MetadataCmd {
-    /// Detect the platform and probe offline config-drives
-    Detect,
-    /// Fetch and stash exact user-data + instance facts
-    Fetch,
-    /// Authorize user-data as exact literal host.nix
-    Authorize {
-        /// Measured provisioning trust policy: platform or signed
-        #[arg(long)]
-        trust: String,
-        /// Public configuration-key directory; repeatable
-        #[arg(long = "trusted-config-keys-dir")]
-        trusted_config_keys_dir: Vec<PathBuf>,
-    },
-    /// Evaluate the closed aos.provisioning projection and render storage
-    EvalProvisioning {
-        /// ABI-pinned base module library embedded in the image
-        #[arg(long)]
-        base_lib: PathBuf,
-        /// Scratch directory admitted to restricted evaluation
-        #[arg(long, default_value = "/run/aos-provisioning-eval")]
-        eval_root: PathBuf,
-        /// Keep `/var` raw for measured-boot LUKS enrollment
-        #[arg(long)]
-        measured_boot: bool,
-        /// Existing committed arm for advisory post-provision drift evaluation
-        #[arg(long)]
-        committed_source: Option<String>,
-        /// Existing GPT marker UUID for stable generated partition UUIDs
-        #[arg(long)]
-        marker_uuid: Option<String>,
-    },
-    /// Verify that stage 2 sees the exact host input accepted in initrd
-    VerifyBinding,
-    /// Persist validated provisioning evidence and manual repart definitions
-    PersistProvisioning {
-        /// Durable state directory on `/var`
-        #[arg(long, default_value = "/var/lib/aos-provisioning")]
-        state_dir: PathBuf,
-        /// ABI of the base module library that evaluated the storage plan
-        #[arg(long)]
-        module_abi: u32,
-        /// Version of the image whose initrd evaluated the storage plan
-        #[arg(long)]
-        image_version: String,
-    },
-    /// Cache an authorized host input after full stage-2 evaluation succeeds
-    CacheRuntime {
-        /// Durable state directory on `/var`
-        #[arg(long, default_value = "/var/lib/aos-provisioning")]
-        state_dir: PathBuf,
-    },
-    /// Restore the last fully evaluated host input when metadata is unavailable
-    RestoreRuntime {
-        /// Durable state directory on `/var`
-        #[arg(long, default_value = "/var/lib/aos-provisioning")]
-        state_dir: PathBuf,
     },
 }
 

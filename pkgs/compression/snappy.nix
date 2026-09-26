@@ -1,5 +1,6 @@
 ##! Snappy — Fast compression and decompression library
 {
+  lib,
   mkDerivation,
   fetchurl,
   cmake,
@@ -23,7 +24,101 @@
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "snappy";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The public API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <string.h>\n#include <snappy-c.h>\n\nint main(void) {\n    const char input[] = \"answer=42\";\n    char compressed[64];\n    char output[64];\n    size_t compressed_size = sizeof(compressed);\n    size_t output_size = sizeof(output);\n\n    if (snappy_compress(input, strlen(input), compressed, &compressed_size) != SNAPPY_OK ||\n        snappy_uncompress(compressed, compressed_size, output, &output_size) != SNAPPY_OK ||\n        output_size != strlen(input) || memcmp(input, output, output_size) != 0) {\n        return 2;\n    }\n    return puts(\"snappy api passed\") == EOF;\n}\n";
+        };
+        "input" = "A fixed byte string passed through Snappy compression and decompression.";
+        "operation" = "Compress the bytes with snappy_compress and recover them with snappy_uncompress.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lsnappy"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "snappy api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The public API reports rejection and the consumer exits with the fixed rejection status and diagnostic.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n#include <string.h>\n#include <snappy-c.h>\n\nint main(void) {\n    const char invalid[] = \"not a snappy stream\";\n    if (snappy_validate_compressed_buffer(invalid, strlen(invalid)) != SNAPPY_INVALID_INPUT) {\n        return 2;\n    }\n    fputs(\"snappy rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "A byte sequence that is not a valid Snappy stream.";
+        "operation" = "Validate the malformed bytes through snappy_validate_compressed_buffer.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lsnappy"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "snappy rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

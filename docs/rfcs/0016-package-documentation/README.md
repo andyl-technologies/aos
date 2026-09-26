@@ -12,9 +12,9 @@
 
 ## Summary
 
-AOS package documentation becomes a versioned, canonical, structured document
-produced from package and Nix module declarations. The trusted publisher stores
-that document as an independent content-addressed Nix store object, signs its
+AOS package documentation becomes part of a versioned, canonical package
+reference produced from package metadata and the checked package fixed point.
+The trusted publisher stores that reference as a content-addressed Nix store object, signs its
 identity alongside the package's other platform artifacts, and uploads its NAR
 and narinfo through the ordinary registry/cache publication path.
 
@@ -43,7 +43,7 @@ identity.
 ## Load-bearing decisions
 
 1. **Structured canonical JSON is the source format.** Its initial media/schema
-   identifier is `aos.package-documentation/v1+json`.
+   identifier is `aos.package-reference/v1+json`.
 2. **Every documentation document is a separate Nix store object.** The signed
    package platform entry associates that object with the exact package version
    and platform.
@@ -57,20 +57,21 @@ identity.
 5. **Installed-package docs are offline and generation-correct.** APM profiles
    retain the exact documentation store object selected with the package, so
    upgrade and rollback switch code and documentation together.
-6. **All user interfaces share one semantic model.** Web, API, CLI, man-page
-   rendering, completion, and LSP behavior may format differently but must not
-   invent different option types, defaults, visibility, or ownership rules.
-7. **Handwritten per-service option references are transitional.** They are
-   removed only after generated documentation reaches acceptance parity. Unique
-   conceptual and operational prose is migrated into structured package
-   sections or retained cross-package guides first.
+6. **All schema-aware interfaces share one signed package reference.** Hub,
+   `apm schema`, and LSP consume its checked ability reference directly and
+   derive option and method views without serialized duplicate rows.
+   The standalone registry Web surface remains a narrower distribution listing.
+7. **Handwritten package references are transitional.** They are removed only
+   after the checked package projection reaches acceptance parity. Unique
+   conceptual and operational prose remains in ordinary package declarations
+   or deliberate cross-package guides.
 
 ## Topic files
 
 | File | Contents |
 | --- | --- |
 | [`00-goals-and-invariants.md`](00-goals-and-invariants.md) | Goals, non-goals, terminology, and invariants |
-| [`01-document-object.md`](01-document-object.md) | Canonical schema, option type algebra, runtime surface, and authoring rules |
+| [`01-document-object.md`](01-document-object.md) | Canonical schema, option type algebra, ability declarations, deployment observations, and authoring rules |
 | [`02-generation-and-publication.md`](02-generation-and-publication.md) | Restricted Nix extraction, store-object materialization, signed metadata, and atomic publication |
 | [`03-indexing-search-and-retention.md`](03-indexing-search-and-retention.md) | Native/Worker verification, SQL search projections, release retention, profile retention, and GC |
 | [`04-web-experience.md`](04-web-experience.md) | World-class public and authenticated Web information architecture and interaction design |
@@ -84,11 +85,11 @@ identity.
 
 The completed implementation uses these repository seams:
 
-- `PlatformEntry` authenticates payload, expose, configuration-module, and
-  documentation companion artifacts, including packages without configuration
-  modules.
-- `ConfigModuleMeta.declaration_schema` carries sorted option paths and stable
-  type signatures. It is the compatibility index, but not rich enough to be the
+- `PlatformEntry` authenticates payload, package-contract, expose, and package
+  reference artifacts. The publisher emits the reference only after checking
+  the package module fixed point.
+- `PackageDocument.option_declarations` carries sorted option paths and stable
+  type signatures. It is the checked machine-readable source used to derive the
   human and tooling document proposed here.
 - `SurfaceFetch::fetch_bounded` and the WASM-safe documentation model provide a
   size-checked, streaming, single-file NAR verifier shared by native and Worker
@@ -110,4 +111,4 @@ The completed implementation uses these repository seams:
 This RFC does not make generated prose canonical for AOS concepts that span
 packages. Architecture, security model, tutorials, incident procedures, and
 multi-package workflows remain authored documents. It removes duplicated
-package option/service reference pages, not deliberate human explanation.
+package option and ability reference pages, not deliberate human explanation.

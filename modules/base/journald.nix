@@ -1,133 +1,62 @@
-##! modules/base/journald.nix — Journald configuration module
-##!
-##! Configures systemd-journald logging behavior: storage backend (persistent
-##! to disk vs volatile in memory), retention policy, size limits, and rate
-##! limiting. Generates /etc/systemd/journald.conf with a [Journal] section
-##! containing all configured options.
-##!
-##! Persistent storage (the default) writes journal files to /var/log/journal,
-##! which survives reboots. Volatile storage uses tmpfs at /run/log/journal and
-##! is lost on reboot but avoids disk I/O.
-{
-  config,
-  pkgs,
-  lib,
-  ...
-}: let
-  cfg = config.aos.journald;
-in {
+##! Provider-neutral event-log policy selection.
+{lib, ...}: {
+  imports = [./_journald-abilities.nix];
+
   options.aos.journald = {
-    ## Journal storage mode (persistent, volatile, auto).
     storage = lib.mkOption {
-      type = lib.types.enum [
-        "persistent"
-        "volatile"
-        "auto"
-      ];
+      type = lib.abilities.types.enum ["persistent" "volatile" "automatic"];
       default = "persistent";
-      description = ''
-        Journal storage mode:
-        - persistent: write to /var/log/journal (survives reboot)
-        - volatile: write to /run/log/journal (lost on reboot)
-        - auto: use persistent if /var/log/journal exists, else volatile
-      '';
+      description = "Event-log storage lifetime policy.";
     };
-
-    ## Maximum time to keep journal entries.
-    maxRetentionSec = lib.mkOption {
-      type = lib.types.str;
-      default = "1month";
-      description = ''
-        Maximum time to keep journal entries. Entries older than this are
-        removed during journal rotation. Accepts systemd time span syntax
-        (e.g. "1month", "2weeks", "7d").
-      '';
+    maxRetentionSeconds = lib.mkOption {
+      type = lib.abilities.types.integer {
+        minimum = 1;
+        maximum = 315576000;
+      };
+      default = 2592000;
+      description = "Maximum event retention in seconds.";
     };
-
-    ## Maximum disk space the journal may use.
-    maxUse = lib.mkOption {
-      type = lib.types.str;
-      default = "500M";
-      description = ''
-        Maximum disk space the journal may use. When this limit is reached,
-        the oldest entries are pruned. Accepts size suffixes (K, M, G).
-      '';
+    maxUseBytes = lib.mkOption {
+      type = lib.abilities.types.integer {
+        minimum = 1048576;
+        maximum = 1125899906842624;
+      };
+      default = 524288000;
+      description = "Maximum total persistent event-log storage in bytes.";
     };
-
-    ## Maximum size of individual journal files.
-    systemMaxFileSize = lib.mkOption {
-      type = lib.types.str;
-      default = "50M";
-      description = ''
-        Maximum size of individual journal files. When a file reaches this
-        size, journald rotates to a new file. Accepts size suffixes (K, M, G).
-      '';
+    maxFileSizeBytes = lib.mkOption {
+      type = lib.abilities.types.integer {
+        minimum = 1048576;
+        maximum = 1125899906842624;
+      };
+      default = 52428800;
+      description = "Maximum size of one event-log segment in bytes.";
     };
-
-    ## Time interval for rate limiting.
-    rateLimitInterval = lib.mkOption {
-      type = lib.types.str;
-      default = "30s";
-      description = ''
-        Time interval for rate limiting. If more than rateLimitBurst messages
-        are received from a service within this interval, further messages
-        are dropped until the interval resets.
-      '';
+    rateLimitIntervalMillis = lib.mkOption {
+      type = lib.abilities.types.integer {
+        minimum = 1;
+        maximum = 86400000;
+      };
+      default = 30000;
+      description = "Per-source event rate-limit interval in milliseconds.";
     };
-
-    ## Maximum messages per service within rateLimitInterval.
     rateLimitBurst = lib.mkOption {
-      type = lib.types.int;
+      type = lib.abilities.types.integer {
+        minimum = 1;
+        maximum = 4294967295;
+      };
       default = 10000;
-      description = ''
-        Maximum number of messages a service may log within rateLimitInterval
-        before rate limiting kicks in. The default of 10000 is generous enough
-        for most server workloads while still protecting against log floods.
-      '';
+      description = "Maximum events accepted from one source during the rate-limit interval.";
     };
-
-    ## Forward journal messages to a traditional syslog daemon.
     forwardToSyslog = lib.mkOption {
-      type = lib.types.bool;
+      type = lib.abilities.types.boolean;
       default = false;
-      description = ''
-        Forward journal messages to a traditional syslog daemon. Disabled by
-        default because AOS uses journald as the sole logging system. Enable
-        this if a syslog-based log aggregator is in use.
-      '';
+      description = "Forward accepted events to the selected syslog transport when available.";
     };
-  };
-
-  config = {
-    # /etc/systemd/journald.conf — systemd-journald configuration.
-    # Applied when systemd-journald.service starts or receives SIGUSR2.
-    environment.etc."systemd/journald.conf" = {
-      text = ''
-        # /etc/systemd/journald.conf
-        # Generated by modules/base/journald.nix — do not edit manually.
-
-        [Journal]
-        Storage=${cfg.storage}
-        MaxRetentionSec=${cfg.maxRetentionSec}
-        SystemMaxUse=${cfg.maxUse}
-        SystemMaxFileSize=${cfg.systemMaxFileSize}
-        RateLimitIntervalSec=${cfg.rateLimitInterval}
-        RateLimitBurst=${toString cfg.rateLimitBurst}
-        ForwardToSyslog=${
-          if cfg.forwardToSyslog
-          then "yes"
-          else "no"
-        }
-        Compress=yes
-      '';
-    };
-
-    # Ensure the persistent journal directory exists when using persistent storage.
-    environment.etc."tmpfiles.d/aos-journald.conf" = {
-      text = ''
-        # Journald state directories — generated by modules/base/journald.nix
-        d /var/log/journal 2755 root systemd-journal -
-      '';
+    compress = lib.mkOption {
+      type = lib.abilities.types.boolean;
+      default = true;
+      description = "Compress retained event-log segments.";
     };
   };
 }

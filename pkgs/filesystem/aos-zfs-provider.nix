@@ -1,0 +1,117 @@
+##! aos-zfs-provider - checked OpenZFS pool and dataset provider
+{
+  lib,
+  stdenv,
+  mkAosCargoPackage,
+  mkCargoArtifacts,
+  mkCargoDummySource,
+  aosWorkspaceVendor,
+  patchelf,
+  zfs,
+}: let
+  version = "0.1.0";
+  cargoDeps = aosWorkspaceVendor;
+  targetTriple =
+    {
+      "x86_64-linux" = "x86_64-unknown-linux-gnu";
+      "aarch64-linux" = "aarch64-unknown-linux-gnu";
+    }
+    .${
+      stdenv.hostPlatform.system
+    };
+  staticBuildSetup = ''
+    export AOS_ZFS_VERSION=${zfs.version}
+    target_triple="$(rustc -vV | sed -n 's/^host: //p')"
+    test "$target_triple" = "${targetTriple}"
+    rustflags_var="CARGO_TARGET_$(printf '%s' "$target_triple" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
+    mkdir -p "$TMPDIR/static-shim"
+    ln -s "$(dirname "$(cc -print-libgcc-file-name)")/libgcc_s.a" \
+      "$TMPDIR/static-shim/libgcc_eh.a"
+    export "$rustflags_var=-C target-feature=+crt-static -C relocation-model=static -L $TMPDIR/static-shim"
+    export CARGO_BUILD_TARGET="$target_triple"
+  '';
+  cargoArtifactContract = {
+    family = "aos-zfs-provider-static-release-and-test";
+    target = targetTriple;
+    rustflags = "-C target-feature=+crt-static -C relocation-model=static";
+    nativeInputs = map toString [patchelf];
+    licenseScope = "Apache-2.0";
+  };
+  cargoArtifacts = mkCargoArtifacts {
+    pname = "aos-zfs-provider-static-artifacts";
+    inherit version cargoDeps cargoArtifactContract;
+    src = mkCargoDummySource {
+      srcRoot = ../../crates;
+      name = "aos-zfs-provider-dummy-source";
+      cargoRoot = "crates";
+    };
+    cargoRoot = "crates";
+    cargoBuildCommands = [
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider --bin aos-zfs-pool-provider --bin aos-zfs-dataset-provider --bin aos-zfs-memory-policy --bin aos-zfs-maintenance"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider"
+    ];
+    preBuild = staticBuildSetup;
+    buildDeps = [patchelf];
+  };
+in
+  mkAosCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+    pname = "aos-zfs-provider";
+    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+      name = "aos-zfs-pool-provider";
+      entryPoint = "bin/aos-zfs-pool-provider";
+    };
+
+    inherit version cargoDeps cargoArtifacts cargoArtifactContract;
+    cargoRoot = "crates";
+    cargoNextest = true;
+    cargoFlags = "-p aos-block-storage-provider --bin aos-zfs-pool-provider --bin aos-zfs-dataset-provider --bin aos-zfs-memory-policy --bin aos-zfs-maintenance";
+    cargoTestFlags = "-p aos-block-storage-provider";
+    doCheck = true;
+    buildDeps = [patchelf];
+    runtimeDeps = [zfs];
+
+    abilities = ./_aos-zfs-provider;
+    preBuild = staticBuildSetup;
+
+    preInstall = ''
+      cp "target/$CARGO_BUILD_TARGET/release/aos-zfs-pool-provider" target/release/
+      cp "target/$CARGO_BUILD_TARGET/release/aos-zfs-dataset-provider" target/release/
+      cp "target/$CARGO_BUILD_TARGET/release/aos-zfs-memory-policy" target/release/
+      cp "target/$CARGO_BUILD_TARGET/release/aos-zfs-maintenance" target/release/
+    '';
+
+    postInstall = ''
+      for provider in aos-zfs-pool-provider aos-zfs-dataset-provider aos-zfs-memory-policy aos-zfs-maintenance; do
+        test -x "$out/bin/$provider"
+        if patchelf --print-interpreter "$out/bin/$provider" \
+            > "$TMPDIR/$provider.interpreter" 2>/dev/null; then
+          printf '%s unexpectedly has ELF interpreter: ' "$provider"
+          cat "$TMPDIR/$provider.interpreter"
+          exit 1
+        fi
+      done
+    '';
+
+    meta = {
+      description = "Checked OpenZFS pool and dataset provider";
+      homepage = "https://github.com/andyl/andyl-os";
+      license = "Apache-2.0";
+    };
+  }

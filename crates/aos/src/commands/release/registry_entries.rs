@@ -1,191 +1,118 @@
-//! Maps built package outputs and configuration companions to registry entries.
-//!
-//! Configuration inputs remain separate Nix artifacts in the build report.
-//! Registry authoring attaches their authenticated interfaces to the runtime
-//! entry instead of publishing them as interchangeable package outputs.
+//! Maps native package artifacts and selector bindings to registry entries.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{Context as _, Result};
-use aos_package::registry::release::{RegistryReleaseConfiguration, RegistryReleaseEntry};
-use aos_release::build::BuildOutputEvidence;
+use anyhow::{Context as _, Result, bail};
+use aos_package::registry::release::RegistryReleaseEntry;
+use aos_release::build::{BuildOutputEvidence, BuildSourceEvidence};
 use aos_release::plan::PackagePlan;
 use aos_release::platform::MatrixCell;
 
-/// Maps a previously validated plan and build report to exact catalog entries.
+/// Maps a validated plan and build report to exact catalog entries.
+///
+/// Derivation-backed artifacts take their realized paths from build evidence.
+/// Content-addressed selector inputs, such as package modules, take their paths
+/// from the frozen plan and must also appear in retained source evidence.
 ///
 /// # Errors
 ///
-/// Returns an error when a runtime output or configuration companion from the
-/// planned package cells is absent from the build evidence.
+/// Returns an error when build evidence omits a planned artifact, a selector
+/// names an unpublished package, or a content-addressed selector was not
+/// retained by the build report.
 pub(super) fn from_build(
     packages: &[PackagePlan],
     outputs: &[BuildOutputEvidence],
+    sources: &[BuildSourceEvidence],
 ) -> Result<Vec<RegistryReleaseEntry>> {
     let built = outputs
         .iter()
         .map(|output| (output.id.as_str(), output))
         .collect::<BTreeMap<_, _>>();
-    let mut entries = Vec::new();
+    let retained_sources = sources
+        .iter()
+        .map(|source| source.store_path.as_str())
+        .collect::<BTreeSet<_>>();
+    let package_index = packages
+        .iter()
+        .map(|package| (package.name.as_str(), package))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut entries = BTreeMap::new();
     for package in packages {
+        let Some(publication) = package.publication.as_ref() else {
+            continue;
+        };
         for cell in &package.platforms {
             let MatrixCell::Artifact { artifact: set } = &cell.decision else {
                 continue;
             };
-            let configuration = set
-                .configuration
-                .as_ref()
-                .map(|binding| {
-                    let module = built
-                        .get(binding.module_artifact.as_str())
-                        .context("build report lacks the planned configuration module")?;
-                    let base = built
-                        .get(binding.evaluation_base_artifact.as_str())
-                        .context("build report lacks the planned configuration evaluation base")?;
-                    Ok::<_, anyhow::Error>(RegistryReleaseConfiguration {
-                        module_store_path: module.store_path.clone(),
-                        evaluation_base_store_path: base.store_path.clone(),
-                        dependency_outputs: binding.dependency_outputs.clone(),
-                    })
-                })
-                .transpose()?;
-
             for artifact in &set.artifacts {
-                if set
-                    .configuration
-                    .as_ref()
-                    .is_some_and(|binding| binding.is_companion(&artifact.id))
-                {
+                let output = built.get(artifact.id.as_str()).with_context(|| {
+                    format!("build report lacks planned artifact {}", artifact.id)
+                })?;
+                let logical_output = logical_output(&artifact.id)?;
+                entries.insert(
+                    artifact.id.clone(),
+                    RegistryReleaseEntry {
+                        id: artifact.id.clone(),
+                        name: package.name.clone(),
+                        version: publication.version.clone(),
+                        platform: cell.platform.to_string(),
+                        output: logical_output.to_owned(),
+                        store_path: output.store_path.clone(),
+                    },
+                );
+            }
+
+            let Some(contract) = &set.package_contract else {
+                continue;
+            };
+            for selector in &contract.selectors {
+                let selected_name = if selector.package == "self" {
+                    package.name.as_str()
+                } else {
+                    selector.package.as_str()
+                };
+                let selected_package = package_index.get(selected_name).with_context(|| {
+                    format!("package contract selects unpublished package {selected_name}")
+                })?;
+                let selected_publication = selected_package.publication.as_ref().with_context(|| {
+                    format!("package contract selects package {selected_name} without publication metadata")
+                })?;
+                let id = format!(
+                    "package/{}/{}/{}",
+                    selected_name, cell.platform, selector.output
+                );
+                if let Some(existing) = entries.get(&id) {
+                    if existing.store_path != selector.store_path {
+                        bail!("package contract selector differs from planned artifact {id}");
+                    }
                     continue;
                 }
-                let output = built
-                    .get(artifact.id.as_str())
-                    .context("build report lacks a planned runtime output")?;
-                entries.push(RegistryReleaseEntry {
-                    id: output.id.clone(),
-                    name: output.package.clone(),
-                    version: output.version.clone(),
-                    platform: output.platform.to_string(),
-                    output: output.output.clone(),
-                    store_path: output.store_path.clone(),
-                    configuration: (output.output == "out")
-                        .then(|| configuration.clone())
-                        .flatten(),
-                });
+                if !retained_sources.contains(selector.store_path.as_str()) {
+                    bail!("content-addressed package selector {id} lacks retained source evidence");
+                }
+                entries.insert(
+                    id.clone(),
+                    RegistryReleaseEntry {
+                        id,
+                        name: selected_name.to_owned(),
+                        version: selected_publication.version.clone(),
+                        platform: cell.platform.to_string(),
+                        output: selector.output.clone(),
+                        store_path: selector.store_path.clone(),
+                    },
+                );
             }
         }
     }
-    entries.sort_by(|left, right| left.id.cmp(&right.id));
-    Ok(entries)
+
+    Ok(entries.into_values().collect())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use aos_release::build::ReproducibilityResult;
-    use aos_release::inventory::PackagePublicationMetadata;
-    use aos_release::plan::{
-        PackageConfigurationBinding, PlannedArtifact, PlannedArtifactSet, PlatformCell,
-    };
-    use aos_release::platform::Platform;
-
-    fn fixture() -> (Vec<PackagePlan>, Vec<BuildOutputEvidence>) {
-        let outputs = [
-            ("out", "out"),
-            ("dev", "dev"),
-            ("config", "config"),
-            ("configuration-base", "out"),
-        ]
-        .into_iter()
-        .map(|(logical, output)| BuildOutputEvidence {
-            id: format!("package/example/x86_64-linux/{logical}"),
-            package: "example".into(),
-            version: "1.0.0".into(),
-            license_expression: "Apache-2.0".into(),
-            source_store_paths: vec!["/nix/store/11111111111111111111111111111111-source".into()],
-            platform: Platform::X86_64Linux,
-            derivation: format!("/nix/store/00000000000000000000000000000000-{logical}.drv"),
-            output: output.into(),
-            store_path: format!("/nix/store/00000000000000000000000000000000-{logical}"),
-            nar_hash: format!("sha256:{}", "0".repeat(52)),
-            nar_size: 1,
-            closure_size: 1,
-            references: vec![],
-            reproducibility: ReproducibilityResult::Reproduced,
-        })
-        .collect::<Vec<_>>();
-        let package = PackagePlan {
-            name: "example".into(),
-            publication: Some(PackagePublicationMetadata {
-                version: "1.0.0".into(),
-                description: "Configuration fixture".into(),
-                homepage: None,
-                license_expression: "Apache-2.0".into(),
-                maintainers: vec!["AOS test".into()],
-            }),
-            platforms: vec![PlatformCell {
-                platform: Platform::X86_64Linux,
-                decision: MatrixCell::Artifact {
-                    artifact: PlannedArtifactSet {
-                        artifacts: outputs
-                            .iter()
-                            .map(|output| PlannedArtifact {
-                                id: output.id.clone(),
-                                derivation: Some(output.derivation.clone()),
-                                output: Some(output.output.clone()),
-                                store_path: Some(output.store_path.clone()),
-                                source_store_paths: output.source_store_paths.clone(),
-                            })
-                            .collect(),
-                        configuration: Some(PackageConfigurationBinding {
-                            module_artifact: outputs[2].id.clone(),
-                            evaluation_base_artifact: outputs[3].id.clone(),
-                            dependency_outputs: BTreeMap::from([(
-                                "dependency".into(),
-                                outputs[1].store_path.clone(),
-                            )]),
-                        }),
-                    },
-                },
-            }],
-        };
-        (vec![package], outputs)
-    }
-
-    #[test]
-    fn companions_attach_to_runtime_without_becoming_named_outputs() -> Result<()> {
-        let (packages, outputs) = fixture();
-        let entries = from_build(&packages, &outputs)?;
-
-        assert_eq!(
-            entries
-                .iter()
-                .map(|entry| entry.output.as_str())
-                .collect::<Vec<_>>(),
-            ["dev", "out"]
-        );
-        assert!(entries[0].configuration.is_none());
-        let configuration = entries[1].configuration.as_ref().unwrap();
-        assert_eq!(entries[1].store_path, outputs[0].store_path);
-        assert_eq!(configuration.module_store_path, outputs[2].store_path);
-        assert_eq!(
-            configuration.evaluation_base_store_path,
-            outputs[3].store_path
-        );
-        assert_eq!(
-            configuration.dependency_outputs["dependency"],
-            outputs[1].store_path
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn missing_companions_cannot_be_replaced_by_the_runtime_output() {
-        let (packages, outputs) = fixture();
-        for missing in [2, 3] {
-            let mut changed = outputs.clone();
-            changed.remove(missing);
-            assert!(from_build(&packages, &changed).is_err());
-        }
-    }
+fn logical_output(id: &str) -> Result<&str> {
+    id.rsplit('/')
+        .next()
+        .filter(|output| !output.is_empty())
+        .context("planned package artifact id has no logical output")
 }

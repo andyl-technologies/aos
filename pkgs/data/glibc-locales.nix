@@ -1,12 +1,103 @@
 ##! glibc-locales — locale data for AOS programs and package tests
 {
+  lib,
   mkDerivation,
   buildPackages,
 }: let
   version = buildPackages.glibc.version;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "glibc-locales";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The locale is available and decodes U+00E9 from exactly two bytes.";
+        "files" = {
+          "primary.c" = "#include <locale.h>\n#include <stdio.h>\n#include <wchar.h>\n\nint main(void) {\n    wchar_t value = 0;\n    mbstate_t state = {0};\n    if (setlocale(LC_ALL, \"C.UTF-8\") == NULL) {\n        return 2;\n    }\n    size_t consumed = mbrtowc(&value, \"\\xC3\\xA9\", 2, &state);\n    if (consumed != 2 || value != 0x00e9) {\n        return 3;\n    }\n    return puts(\"glibc-locales data passed\") == EOF;\n}\n";
+        };
+        "input" = "The packaged C.UTF-8 locale and a two-byte UTF-8 character.";
+        "operation" = "Select the locale and convert the character with mbrtowc.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-o"
+              "primary"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import os, subprocess\nenvironment = os.environ.copy()\nenvironment[\"LOCPATH\"] = \"@out@/lib/locale\"\nresult = subprocess.run([\"@work@/primary/primary\"], env=environment, capture_output=True, text=True)\nassert result.returncode == 0 and result.stderr == \"\"\nprint(result.stdout, end=\"\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "glibc-locales data passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The C library rejects the unknown locale name.";
+        "files" = {
+          "bad-input.c" = "#include <locale.h>\n#include <stdio.h>\n\nint main(void) {\n    if (setlocale(LC_ALL, \"aos_NONEXISTENT.UTF-8\") != NULL) {\n        return 2;\n    }\n    fputs(\"glibc-locales rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "A locale name absent from the packaged locale tree.";
+        "operation" = "Select the nonexistent locale with setlocale.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-o"
+              "bad-input"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import os, subprocess, sys\nenvironment = os.environ.copy()\nenvironment[\"LOCPATH\"] = \"@out@/lib/locale\"\nresult = subprocess.run([\"@work@/bad-input/bad-input\"], env=environment, capture_output=True)\nif result.returncode != 7 or result.stderr != b\"glibc-locales rejected invalid input\\n\":\n    raise SystemExit(2)\nsys.stderr.write(\"glibc-locales rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "glibc-locales rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     # localedef is a build-time generator; the emitted unarchived locale tree

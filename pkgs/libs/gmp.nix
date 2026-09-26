@@ -1,5 +1,6 @@
 ##! GMP — GNU Multiple Precision Arithmetic Library
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -9,7 +10,101 @@
   version = "6.3.0";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "gmp";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The public API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <gmp.h>\n\nint main(void) {\n    mpz_t left, right, sum;\n    mpz_inits(left, right, sum, NULL);\n    if (mpz_set_str(left, \"100000000000000000000\", 10) != 0\n        || mpz_set_str(right, \"23\", 10) != 0) {\n        return 2;\n    }\n    mpz_add(sum, left, right);\n    char *text = mpz_get_str(NULL, 10, sum);\n    int failed = text == NULL || strcmp(text, \"100000000000000000023\") != 0;\n    free(text);\n    mpz_clears(left, right, sum, NULL);\n    if (failed) {\n        return 3;\n    }\n    return puts(\"gmp api passed\") == EOF;\n}\n";
+        };
+        "input" = "Two integers larger than a native 64-bit value.";
+        "operation" = "Parse and add the integers with GMP, then compare their decimal sum.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lgmp"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "gmp api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The public API reports rejection and the consumer exits with the fixed rejection status and diagnostic.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n#include <gmp.h>\n\nint main(void) {\n    mpz_t value;\n    mpz_init(value);\n    int status = mpz_set_str(value, \"42x\", 10);\n    mpz_clear(value);\n    if (status == 0) {\n        return 2;\n    }\n    fputs(\"gmp rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "A supposed decimal integer containing an alphabetic character.";
+        "operation" = "Parse the malformed integer with mpz_set_str.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lgmp"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "gmp rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -19,79 +19,12 @@
 
   packageNameRegex = "[A-Za-z0-9][A-Za-z0-9+._=-]*";
   packageNameType = lib.types.strMatching packageNameRegex;
-  credentialNameRegex = lib.serviceTypes.credentialNameRegex;
-  credentialNameType = lib.serviceTypes.credentialName;
   desiredConfigType = lib.types.attrsOf (lib.types.attrsOf (lib.types.attrsOf toml.type));
-  secretRefType = lib.types.submodule ({name, ...}: {
-    config._module.strict = true;
-    options = {
-      name = lib.mkOption {
-        type = credentialNameType;
-        default = name;
-        readOnly = true;
-        description = "The systemd credential handle.";
-      };
-      source = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "The credstore destination path; never credential bytes.";
-      };
-      encrypted = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = "Whether the material at the destination is systemd-encrypted.";
-      };
-      units = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [];
-        description = "Service units that consume the credential.";
-      };
-      ref = lib.mkOption {
-        type = lib.serviceTypes.secretReference;
-        description = "The opaque credential resolver reference.";
-      };
-    };
-  });
-  desiredCredentialsType = lib.types.attrsOf (lib.types.attrsOf secretRefType);
-  desiredSystemCredentialsType = lib.types.attrsOf (lib.types.attrsOf credentialNameType);
-
-  desiredSystemCredentialValues =
-    lib.mapAttrs
-    (_package: credentials:
-      lib.mapAttrs
-      (_name: systemCredential: {
-        system-credential = systemCredential;
-      })
-      credentials)
-    cfg.systemCredentials;
-  credentialPackages =
-    lib.unique ((builtins.attrNames cfg.credentials) ++ (builtins.attrNames cfg.systemCredentials));
-  credentialConflicts =
-    lib.concatMap (
-      package: let
-        referenceNames = builtins.attrNames (cfg.credentials.${package} or {});
-        systemNames = builtins.attrNames (cfg.systemCredentials.${package} or {});
-        overlaps = builtins.filter (name: builtins.elem name systemNames) referenceNames;
-      in
-        builtins.map (name: "${package}.${name}") overlaps
-    )
-    credentialPackages;
-  exposedBundledPackages =
-    lib.filterAttrs
-    (_: package: package.bundle && (package.package ? expose))
-    config.aos.packages;
-  packageAttestationReadinessUnits =
-    lib.optionals (exposedBundledPackages != {}) ["aos-seed-baked-packages.service"]
-    ++ lib.optionals cfg.enable ["aos-install-baked-packages.service"];
-
   desiredToml = toml.toTOML ({
       packages = cfg.packages;
     }
     // lib.optionalAttrs (cfg.config != {}) {
       config = cfg.config;
-    }
-    // lib.optionalAttrs (desiredSystemCredentialValues != {}) {
-      credentials = desiredSystemCredentialValues;
     });
 
   registries = config.aos.apm.registries;
@@ -150,6 +83,16 @@ in {
     '';
   };
 
+  options.aos.apm.healthScript = lib.mkOption {
+    type = lib.types.nullOr lib.types.path;
+    default = null;
+    description = ''
+      Executable hook used by an ability-qualified A/B rollout after the
+      candidate configuration activates. Exit status zero admits the candidate,
+      status one requests fallback, and any other status is indeterminate.
+    '';
+  };
+
   options.aos.apm.installAtBoot = {
     enable = lib.mkEnableOption "apm desired-package reconciliation at first boot";
 
@@ -168,28 +111,6 @@ in {
       description = ''
         Package-scoped non-secret config to render under
         `config.<package>.<artifact>` in `desired.toml`.
-      '';
-    };
-
-    credentials = lib.mkOption {
-      type = desiredCredentialsType;
-      default = {};
-      description = ''
-        Package-scoped opaque credential references. Each reference contains
-        only a handle, credstore destination, encryption policy, consuming
-        units, and resolver discriminator. There is deliberately no plaintext
-        `value` or `text` constructor.
-      '';
-    };
-
-    systemCredentials = lib.mkOption {
-      type = desiredSystemCredentialsType;
-      default = {};
-      description = ''
-        Convenience mapping for platform system credentials. It projects to
-        the same opaque reference schema as `credentials`, while the baked
-        first-boot desired file tells `apm` to read bytes from
-        `/run/credentials/@system/<name>` instead of embedding them.
       '';
     };
 
@@ -222,210 +143,24 @@ in {
           be valid APM package names (${packageNameRegex}).
         '';
       })
-      (builtins.attrNames cfg.config)
-      ++ builtins.map (name: {
-        assertion = builtins.match packageNameRegex name != null;
-        message = ''
-          aos.apm.installAtBoot.credentials.${name}: package credential keys
-          must be valid APM package names (${packageNameRegex}).
-        '';
-      })
-      (builtins.attrNames cfg.credentials)
-      ++ builtins.map (name: {
-        assertion = builtins.match packageNameRegex name != null;
-        message = ''
-          aos.apm.installAtBoot.systemCredentials.${name}: package credential
-          keys must be valid APM package names (${packageNameRegex}).
-        '';
-      })
-      (builtins.attrNames cfg.systemCredentials)
-      ++ lib.concatLists (lib.mapAttrsToList (
-          package: credentials:
-            builtins.map (name: {
-              assertion = builtins.match credentialNameRegex name != null;
-              message = ''
-                aos.apm.installAtBoot.credentials.${package}.${name}:
-                credential names must match ${credentialNameRegex}.
-              '';
-            })
-            (builtins.attrNames credentials)
-        )
-        cfg.credentials)
-      ++ lib.concatLists (lib.mapAttrsToList (
-          package: credentials:
-            builtins.map (name: {
-              assertion = builtins.match credentialNameRegex name != null;
-              message = ''
-                aos.apm.installAtBoot.systemCredentials.${package}.${name}:
-                credential names must match ${credentialNameRegex}.
-              '';
-            })
-            (builtins.attrNames credentials)
-        )
-        cfg.systemCredentials)
-      ++ lib.concatLists (lib.mapAttrsToList (
-          package: credentials:
-            lib.mapAttrsToList (name: systemCredential: {
-              assertion = builtins.match credentialNameRegex systemCredential != null;
-              message = ''
-                aos.apm.installAtBoot.systemCredentials.${package}.${name}:
-                system credential names must match ${credentialNameRegex}.
-              '';
-            })
-            credentials
-        )
-        cfg.systemCredentials)
-      ++ [
-        {
-          # Force each strict secretRef submodule even when install-at-boot is
-          # disabled. Otherwise an undeclared plaintext field can remain in an
-          # unforced option thunk and escape the normal toplevel assertion
-          # gate.
-          assertion = builtins.deepSeq cfg.credentials true;
-          message = "aos.apm.installAtBoot.credentials contains an invalid secretRef";
-        }
-        {
-          assertion = credentialConflicts == [];
-          message = ''
-            aos.apm.installAtBoot credentials and systemCredentials must not
-            both define the same package credential(s):
-            ${builtins.concatStringsSep ", " credentialConflicts}.
-          '';
-        }
-      ];
+      (builtins.attrNames cfg.config);
 
     aos.apm.installAtBoot.etc = installAtBootEtc;
-
+    aos.packageRuntime.packageProfile = {
+      enable = cfg.enable;
+      desiredText = desiredToml;
+    };
+    aos.packageRuntime.packageAttestationQuote.packageProfileEnabled = cfg.enable;
     # The consumer CLI is the only AOS command surface on the system PATH.
     # Repository construction (`aos`) and registry authoring (`apr`) remain
-    # host tools; private activation helpers are referenced by absolute path.
+    # host tools. Rollout hooks are addressed by checked immutable-image
+    # realizations rather than ambient profile commands.
     environment.systemPackages = [pkgs.aos.apm];
 
-    # install-at-boot's baked /etc (desired.toml + registry config) plus the
-    # tmpfiles config. `apm registry add` writes
+    # `apm registry add` writes
     # `~/.config/apm/registries.d/<name>.toml`; the root-owned tree is baked by
-    # lib/build/rootfs.nix because /root lives on the read-only rootfs, so
-    # tmpfiles only manages writable runtime paths.
-    environment.etc =
-      installAtBootEtc
-      // {
-        "tmpfiles.d/aos-apm.conf".text = ''
-          # /etc/tmpfiles.d/aos-apm.conf
-          # Generated by modules/base/apm.nix — do not edit manually.
-          d  /etc/aos/packages.d                 0755 root root - -
-          d  /run/aos-attest                     0700 root root - -
-          d  /var/lib/apm                        0755 root root - -
-          d  /var/lib/apm/credential-transactions 0700 root root - -
-          d  /var/lib/apm/config                 0755 root root - -
-          d  /var/lib/apm/config/registries.d    0755 root root - -
-        '';
-      };
-
-    systemd.services.aos-credential-recovery = {
-      description = "Recover interrupted AOS credential publication";
-      requiredBy = ["sysinit.target"];
-      before = [
-        "sysinit.target"
-        "aos-eval.service"
-        "multi-user.target"
-      ];
-      requires = ["local-fs.target"];
-      after = ["local-fs.target"];
-      unitConfig.DefaultDependencies = "no";
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-      };
-      script = ''
-        ${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped recover-credential-transactions
-      '';
-    };
-
-    systemd.services.aos-attest = {
-      description = "Produce AOS package attestation quote";
-      requires = packageAttestationReadinessUnits;
-      after = [
-        "aos-seed-baked-packages.service"
-        "aos-install-baked-packages.service"
-      ];
-      serviceConfig = {
-        Type = "oneshot";
-        RuntimeDirectory = "aos-attest";
-        RuntimeDirectoryMode = "0700";
-        RuntimeDirectoryPreserve = "yes";
-        StateDirectory = "aos-attest";
-        StateDirectoryMode = "0700";
-      };
-      script = ''
-        nonce_file=/run/aos-attest/nonce
-        event_log=/run/log/aos-packages.cel
-        output_dir=/var/lib/aos-attest/quote
-        quote_json=/var/lib/aos-attest/quote.json
-        quote_json_tmp=/var/lib/aos-attest/quote.json.tmp
-        cleanup() {
-          status=$?
-          if ! ${pkgs.coreutils}/bin/rm -f -- "$nonce_file" "$quote_json_tmp"; then
-            if [ "$status" -eq 0 ]; then
-              status=1
-            fi
-          fi
-          exit "$status"
-        }
-        trap cleanup EXIT
-        # Package attestation produces a TPM quote over PCR 15. On TPM-less
-        # machines the PCR measurement is skipped entirely (see
-        # `measure_activated_packages` in crates/aos-package), so there is
-        # nothing to quote — skip cleanly instead of failing. This keeps the
-        # `apm upgrade --system` reconcile from failing on TPM-less hosts that
-        # bundle an exposed package (the same "degrade gracefully" intent as the
-        # measurement gate). `tpm2_tcti` probes these same device nodes.
-        if [ ! -e /dev/tpmrm0 ] && [ ! -e /dev/tpm0 ]; then
-          echo "no TPM device; skipping package attestation quote" >&2
-          exit 0
-        fi
-        if [ ! -s "$nonce_file" ]; then
-          echo "write verifier nonce hex to $nonce_file before starting aos-attest.service" >&2
-          exit 2
-        fi
-        if [ ! -s "$event_log" ]; then
-          echo "package attestation event log $event_log is not ready" >&2
-          exit 3
-        fi
-        ${pkgs.coreutils}/bin/rm -rf -- "$output_dir"
-        ${pkgs.coreutils}/bin/rm -f -- "$quote_json" "$quote_json_tmp"
-        ${pkgs.aos.apm}/bin/apm --json attest quote --nonce-file "$nonce_file" --output-dir "$output_dir" > "$quote_json_tmp"
-        ${pkgs.coreutils}/bin/mv -f -- "$quote_json_tmp" "$quote_json"
-      '';
-    };
-
-    systemd.services.aos-install-baked-packages = {
-      description = "Reconcile image-baked AOS desired packages";
-      wantedBy = ["multi-user.target"];
-      before = [
-        "aos-preset.service"
-        "multi-user.target"
-      ];
-      after = [
-        "aos-eval.service"
-        "aos-config-seed.service"
-        "aos-seed-profiles.service"
-        "nix-overlay-setup.service"
-      ];
-      unitConfig.ConditionPathExists = "/etc/aos/packages.d/desired.toml";
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        TimeoutStartSec = "2min";
-      };
-      script = ''
-        # A host-eval manifest belongs to the unit graph. Never run a
-        # second, monolithic reconciler over the same desired state.
-        if [ -e /run/aos/manifest.json ]; then
-          exit 0
-        fi
-        AOS_EXPOSE_START_NO_WAIT=1 ${pkgs.aos.apm}/bin/apm install --system --from /etc/aos/packages.d/desired.toml --yes
-      '';
-    };
+    # lib/build/rootfs.nix because /root lives on the read-only rootfs.
+    environment.etc = installAtBootEtc;
 
     system.checks.apm = {
       description = "apm base-image smoke checks";

@@ -1,5 +1,6 @@
 ##! OpenSSH — Secure shell client and server
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -14,7 +15,76 @@
   version = "10.5p1";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "openssh";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Both key generation and private-key parsing succeed.";
+        "files" = {};
+        "input" = "A request for a passphrase-protected Ed25519 private key in the probe workspace.";
+        "operation" = "Generate the key and derive its public key through ssh-keygen.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/ssh-keygen"
+              "-q"
+              "-t"
+              "ed25519"
+              "-N"
+              "qualification-passphrase"
+              "-f"
+              "qualification-key"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/ssh-keygen"
+              "-y"
+              "-P"
+              "qualification-passphrase"
+              "-f"
+              "qualification-key"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "ssh-keygen rejects the file with its key-load failure status.";
+        "files" = {
+          "invalid" = "not an OpenSSH private key\n";
+        };
+        "input" = "A text file that is not an OpenSSH private key.";
+        "operation" = "Attempt to derive a public key from the malformed file.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/ssh-keygen"
+              "-y"
+              "-f"
+              "invalid"
+            ];
+            "exit_code" = 255;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -43,6 +113,8 @@ in
         else [libxcrypt]
       );
     propagatedDeps = [];
+
+    abilities = ./_openssh;
 
     phases = [
       {
@@ -125,6 +197,19 @@ in
             rm -rf $out/nix
           '';
       }
+      {
+        name = "install-service-helpers";
+        script = ''
+          mkdir -p "$out/libexec"
+          $CC -O2 -Wall -Wextra -Werror \
+            "-DSSH_KEYGEN_PATH=\"$out/bin/ssh-keygen\"" \
+            -o "$out/libexec/aos-openssh-host-key" \
+            ${./_openssh/host-key-helper.c}
+          $CC -O2 -Wall -Wextra -Werror \
+            -o "$out/libexec/aos-openssh-host-policy-wait" \
+            ${./_openssh/host-policy-wait.c}
+        '';
+      }
     ];
 
     meta = {
@@ -154,6 +239,24 @@ in
           test -f /tmp/testkey
           test -f /tmp/testkey.pub
           echo "==> ssh-keygen test passed"
+        '';
+      };
+
+      service-helpers = testing.mkVMTest {
+        name = "tool-openssh-service-helpers";
+        rootfsDeps = [self pkgs.coreutils];
+        testScript = ''
+          mkdir -p /var/etc/ssh /run/aos
+
+          ${self}/libexec/aos-openssh-host-key
+          test -s /var/etc/ssh/ssh_host_ed25519_key
+          test -s /var/etc/ssh/ssh_host_ed25519_key.pub
+          first_hash=$(sha256sum /var/etc/ssh/ssh_host_ed25519_key)
+          ${self}/libexec/aos-openssh-host-key
+          test "$first_hash" = "$(sha256sum /var/etc/ssh/ssh_host_ed25519_key)"
+
+          touch /run/aos/host-policy-live
+          ${self}/libexec/aos-openssh-host-policy-wait
         '';
       };
 

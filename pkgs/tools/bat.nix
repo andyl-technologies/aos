@@ -1,5 +1,6 @@
 ##! bat — cat clone with syntax highlighting
 {
+  lib,
   mkCargoPackage,
   fetchCargoDeps,
   fetchurl,
@@ -17,7 +18,66 @@
   };
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "bat";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Bat preserves the exact file bytes.";
+        "files" = {
+          "sample.txt" = "alpha\nbeta\n";
+        };
+        "input" = "A two-line text file.";
+        "operation" = "Render the file with decorations, paging, and color disabled.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/bat"
+              "--plain"
+              "--color=never"
+              "--paging=never"
+              "@work@/primary/sample.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "alpha\nbeta\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Bat rejects the missing input with status 1.";
+        "files" = {};
+        "input" = "A path that does not exist.";
+        "operation" = "Ask bat to render the missing file.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/bat"
+              "--plain"
+              "--color=never"
+              "--paging=never"
+              "@work@/bad-input/missing.txt"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src cargoDeps;
 
     runtimeDeps = [zlib less];

@@ -3,7 +3,7 @@
 //! A plan closes package eligibility across all four targets and closes image
 //! intent across both Linux targets. There is no implicit missing cell.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use anyhow::{Context as _, Result, bail};
 use semver::Version;
@@ -77,33 +77,33 @@ pub struct PlatformCell<T> {
 pub struct PlannedArtifactSet {
     /// Exact planned artifacts the final manifest must resolve.
     pub artifacts: Vec<PlannedArtifact>,
-    /// Package configuration companions and their runtime dependency bindings.
+    /// Resolved package contract inputs, when this package exposes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub configuration: Option<PackageConfigurationBinding>,
+    pub package_contract: Option<PlannedPackageContract>,
 }
 
-/// Associates a package's configuration source with its publication evaluator.
-///
-/// Both artifact ids refer to independently built outputs in the same package
-/// platform cell. Dependency paths name exact members of the runtime closure;
-/// registry authoring checks that closure before evaluating the module.
+/// Resolved publication inputs for one native package contract.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct PackageConfigurationBinding {
-    /// Artifact containing the package-owned configuration module source.
-    pub module_artifact: String,
-    /// Artifact containing the immutable base library used for publication.
-    pub evaluation_base_artifact: String,
-    /// Named runtime outputs supplied to the configuration evaluator.
-    pub dependency_outputs: BTreeMap<String, String>,
+pub struct PlannedPackageContract {
+    /// Planned artifact containing the context-free contract document.
+    pub document_artifact: String,
+    /// Exact native package module binding declared by the document, when any.
+    pub package_module: Option<PackageOutputBinding>,
+    /// Exact evaluated package-output bindings used to resolve the document.
+    pub selectors: Vec<PackageOutputBinding>,
 }
 
-impl PackageConfigurationBinding {
-    /// Returns whether an artifact supplies configuration publication inputs.
-    #[must_use]
-    pub fn is_companion(&self, id: &str) -> bool {
-        self.module_artifact == id || self.evaluation_base_artifact == id
-    }
+/// One symbolic package output and its evaluated immutable store path.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageOutputBinding {
+    /// Package name, or `self` for the package owning the contract.
+    pub package: String,
+    /// Logical package output selected by the contract.
+    pub output: String,
+    /// Exact evaluated store path for that output.
+    pub store_path: String,
 }
 
 /// Frozen Nix identity for one planned output or non-Nix final artifact.
@@ -123,34 +123,23 @@ pub struct PlannedArtifact {
 }
 
 impl PlannedArtifactSet {
-    /// Validates artifact identities and configuration companion relationships.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for missing, duplicate, or malformed Nix identities,
-    /// invalid source paths, or configuration bindings that omit a distinct
-    /// module, evaluation base, or primary runtime output.
-    pub(crate) fn validate(&self) -> Result<()> {
+    fn validate(&self) -> Result<()> {
         if self.artifacts.is_empty() {
             bail!("planned artifact set cannot be empty");
         }
         for artifact in &self.artifacts {
             require_identifier(&artifact.id, "planned artifact id")?;
-            let nix_fields = [
-                artifact.derivation.is_some(),
-                artifact.output.is_some(),
-                artifact.store_path.is_some(),
-            ];
-            if nix_fields.iter().any(|present| *present)
-                && !nix_fields.iter().all(|present| *present)
-            {
-                bail!("planned Nix artifact identity must be all present or all absent");
+            if artifact.derivation.is_some() != artifact.output.is_some() {
+                bail!("planned derivation and output identities must be present together");
             }
-            if let (Some(derivation), Some(output), Some(store_path)) =
-                (&artifact.derivation, &artifact.output, &artifact.store_path)
-            {
+            if artifact.derivation.is_some() && artifact.store_path.is_none() {
+                bail!("planned derivation artifacts must have an evaluated store path");
+            }
+            if let (Some(derivation), Some(output)) = (&artifact.derivation, &artifact.output) {
                 require_store_path(derivation, true)?;
                 require_identifier(output, "planned output name")?;
+            }
+            if let Some(store_path) = &artifact.store_path {
                 require_store_path(store_path, false)?;
             }
             if artifact
@@ -165,45 +154,37 @@ impl PlannedArtifactSet {
             }
         }
 
-        if let Some(configuration) = &self.configuration {
-            let module = self
+        if let Some(contract) = &self.package_contract {
+            let document = self
                 .artifacts
                 .iter()
-                .find(|artifact| artifact.id == configuration.module_artifact)
-                .context("package configuration module artifact is absent")?;
-            let base = self
-                .artifacts
-                .iter()
-                .find(|artifact| artifact.id == configuration.evaluation_base_artifact)
-                .context("package configuration evaluation base artifact is absent")?;
-            if module.id == base.id
-                || module.output.as_deref() != Some("config")
-                || base.output.as_deref() != Some("out")
-                || module.derivation.is_none()
-                || base.derivation.is_none()
-                || module.source_store_paths.is_empty()
-                || base.source_store_paths.is_empty()
-            {
-                bail!("package configuration companions lack distinct complete Nix identities");
+                .find(|artifact| artifact.id == contract.document_artifact)
+                .context("package contract document artifact is absent")?;
+            if document.derivation.is_none() || document.output.is_none() {
+                bail!("package contract document must be an independently built artifact");
             }
-            if self
-                .artifacts
-                .iter()
-                .filter(|artifact| {
-                    !configuration.is_companion(&artifact.id)
-                        && artifact.output.as_deref() == Some("out")
-                })
-                .count()
-                != 1
-            {
-                bail!("configured package must retain exactly one primary runtime output");
+            if contract.selectors.windows(2).any(|pair| pair[0] >= pair[1]) {
+                bail!("package contract selectors must be unique and sorted");
             }
-            for (name, path) in &configuration.dependency_outputs {
-                require_identifier(name, "configuration dependency name")?;
-                require_store_path(path, false)?;
+            for selector in &contract.selectors {
+                if selector.package != "self" {
+                    require_identifier(&selector.package, "contract selector package")?;
+                }
+                require_identifier(&selector.output, "contract selector output")?;
+                if selector.output == "contract" {
+                    bail!("package contracts cannot select another package contract");
+                }
+                require_store_path(&selector.store_path, false)?;
+            }
+            if let Some(package_module) = &contract.package_module {
+                if package_module.output != "module" {
+                    bail!("package contract native module must select the module output");
+                }
+                if !contract.selectors.contains(package_module) {
+                    bail!("package contract native module is absent from its selectors");
+                }
             }
         }
-
         require_unique_by(
             &self.artifacts,
             |artifact| &artifact.id,
@@ -660,9 +641,6 @@ fn validate_cells(
         cell.decision.validate()?;
         if let MatrixCell::Artifact { artifact } = &cell.decision {
             artifact.validate()?;
-            if image && artifact.configuration.is_some() {
-                bail!("image artifacts cannot declare package configuration companions");
-            }
         }
         if release_class.requires_complete_matrix() && cell.decision.is_blocked() {
             bail!("stable or emergency release contains a blocked matrix cell");

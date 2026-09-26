@@ -1,0 +1,293 @@
+##! Fixed-point realization of mount, swap, and device resources through systemd.
+{
+  lib,
+  pkgs,
+}: let
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
+  interfaces = serviceManagement.interfaces;
+  requirement = selected: {
+    interface = selected.identity.name;
+    inherit (selected.identity) abi descriptor;
+    methods = selected.methods;
+    guarantees = [];
+    strength = "required";
+    fallback = null;
+  };
+  effectsKey = implementation: key:
+    lib.abilities.compositionRequestKey {
+      inherit implementation key;
+      providerInstance = "systemd:manager";
+    };
+  mountEffectsKey = effectsKey "systemd:mount-resource" "esp";
+  swapEffectsKey = effectsKey "systemd:swap-resource" "main";
+  selectedSystemdProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.systemd;
+    implementation = "mount-resource";
+  };
+  activationGroupEffectsKey = effectsKey "systemd:activation-group" "ready";
+  dependentGroupEffectsKey = effectsKey "systemd:activation-group" "dependent";
+  evaluate = {
+    includeEffects,
+    abilityResolution,
+  }:
+    lib.evalModules {
+      inherit lib;
+      modules = [
+        ../../modules/abilities/default.nix
+        {
+          config.aos.abilities = {
+            environment = {
+              authority = "test";
+              key = "systemd-native-resources";
+              stage = "host";
+            };
+            bindings =
+              {
+                "test:mount" = {
+                  request = "consumer:mount";
+                  implementation = "systemd:mount-resource";
+                  providerInstance = "systemd:manager";
+                  slot = "esp";
+                };
+                "test:swap" = {
+                  request = "consumer:swap";
+                  implementation = "systemd:swap-resource";
+                  providerInstance = "systemd:manager";
+                  slot = "main";
+                };
+                "test:activation-group" = {
+                  request = "consumer:activation-group";
+                  implementation = "systemd:activation-group";
+                  providerInstance = "systemd:manager";
+                  slot = "ready";
+                };
+                "test:dependent-group" = {
+                  request = "consumer:dependent-group";
+                  implementation = "systemd:activation-group";
+                  providerInstance = "systemd:manager";
+                  slot = "dependent";
+                };
+                "test:device" = {
+                  request = "consumer:device";
+                  implementation = "systemd:device-presence";
+                  providerInstance = "systemd:manager";
+                  slot = "tunnel";
+                };
+              }
+              // lib.optionalAttrs includeEffects {
+                "test:mount-effects" = {
+                  request = mountEffectsKey;
+                  implementation = "systemd:systemd-mount-effects";
+                  providerInstance = "systemd:manager";
+                  slot = "esp";
+                };
+                "test:swap-effects" = {
+                  request = swapEffectsKey;
+                  implementation = "systemd:systemd-swap-effects";
+                  providerInstance = "systemd:manager";
+                  slot = "main";
+                };
+                "test:activation-group-effects" = {
+                  request = activationGroupEffectsKey;
+                  implementation = "systemd:systemd-activation-group-effects";
+                  providerInstance = "systemd:manager";
+                  slot = "ready";
+                };
+                "test:dependent-group-effects" = {
+                  request = dependentGroupEffectsKey;
+                  implementation = "systemd:systemd-activation-group-effects";
+                  providerInstance = "systemd:manager";
+                  slot = "dependent";
+                };
+              };
+            instances."systemd:manager" = {};
+          };
+        }
+      ];
+      packageModules = [
+        (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
+        {
+          name = "consumer";
+          module.config.aos.abilities = {
+            instances.client = {};
+            requirementTemplates = {
+              mount = requirement interfaces.mountResource;
+              swap = requirement interfaces.swapResource;
+              device = requirement interfaces.devicePresence;
+              activation-group = requirement interfaces.activationGroup;
+            };
+            requests = {
+              mount = {
+                requirement = "mount";
+                consumer = "client";
+                scope = ["esp"];
+                parameters = {
+                  name = "esp";
+                  enabled = true;
+                  source = "/dev/disk/by-partlabel/ESP";
+                  destination = "/boot";
+                  filesystem = "vfat";
+                  options = ["umask=0077"];
+                  timeout_millis = 30000;
+                };
+              };
+              swap = {
+                requirement = "swap";
+                consumer = "client";
+                scope = ["main"];
+                parameters = {
+                  name = "main";
+                  enabled = true;
+                  source = "/dev/zram0";
+                  priority = 100;
+                };
+              };
+              device = {
+                requirement = "device";
+                consumer = "client";
+                scope = ["tunnel"];
+                parameters = {
+                  name = "tunnel";
+                  device = "/dev/net/tun";
+                };
+              };
+              activation-group = {
+                requirement = "activation-group";
+                consumer = "client";
+                scope = ["ready"];
+                parameters = {
+                  name = "ready";
+                  enabled = true;
+                  description = "Ready native resources";
+                  after = [];
+                  members = [];
+                  required_members = [];
+                };
+              };
+              dependent-group = {
+                requirement = "activation-group";
+                consumer = "client";
+                scope = ["dependent"];
+                parameters = {
+                  name = "dependent";
+                  enabled = false;
+                  description = "Resources ordered after readiness";
+                  after = [(lib.abilities.resultOf "activation-group" "resource")];
+                  members = [];
+                  required_members = [];
+                };
+              };
+            };
+          };
+        }
+      ];
+      selectedProviderModules = [selectedSystemdProvider];
+      specialArgs = {
+        inherit pkgs abilityResolution;
+        provenance = {
+          dependencyOwnersOfAttr = _: _: [];
+          ownerOfListAttr = _: _: _: "@test";
+        };
+      };
+    };
+  initial = evaluate {
+    includeEffects = false;
+    abilityResolution = {
+      requests = {};
+      requirements = {};
+    };
+  };
+  evaluation = evaluate {
+    includeEffects = true;
+    abilityResolution = import ./_composition-resolution.nix {
+      abilities = initial.config.aos.abilities;
+      requestKeys = [
+        activationGroupEffectsKey
+        dependentGroupEffectsKey
+        mountEffectsKey
+        swapEffectsKey
+      ];
+    };
+  };
+  abilities = evaluation.config.aos.abilities;
+  resources = builtins.attrValues abilities.desiredResources;
+  resourceByKind = kind:
+    builtins.head (builtins.filter (resource: resource.kind == kind) resources);
+  mount = resourceByKind "aos.filesystem.mount";
+  swap = resourceByKind "aos.memory.swap";
+  activationGroups = builtins.filter (resource: resource.kind == "aos.activation.group") resources;
+  activationGroupByName = name:
+    builtins.head (builtins.filter (resource: resource.value.name == name) activationGroups);
+  activationGroup = activationGroupByName "ready";
+  dependentGroup = activationGroupByName "dependent";
+  declaredHandlerEntryPoints = builtins.sort builtins.lessThan (lib.unique (lib.concatMap (
+      implementation: let
+        handler = implementation.handlerDescriptor;
+      in
+        lib.optional (handler != null) handler.entryPoint
+    )
+    (builtins.attrValues abilities.implementations)));
+in
+  assert builtins.length resources == 4;
+  assert mount.realization
+  == {
+    schema = "aos.systemd.native-resource-realization/v1";
+    backend = "mount-unit";
+  };
+  assert swap.realization
+  == {
+    schema = "aos.systemd.native-resource-realization/v1";
+    backend = "swap-unit";
+  };
+  assert activationGroup.realization
+  == {
+    schema = "aos.systemd.native-resource-realization/v1";
+    backend = "activation-group-target";
+    systemd_unit = {
+      kind = "unit";
+      unit_name = "ready.target";
+    };
+    after_units = [];
+    member_units = [];
+    required_member_units = [];
+  };
+  assert dependentGroup.realization
+  == {
+    schema = "aos.systemd.native-resource-realization/v1";
+    backend = "activation-group-target";
+    systemd_unit = {
+      kind = "unit";
+      unit_name = "dependent.target";
+    };
+    after_units = [
+      {
+        kind = "unit";
+        unit_name = "ready.target";
+      }
+    ];
+    member_units = [];
+    required_member_units = [];
+  };
+  assert abilities.compositionRequests.${mountEffectsKey}.parameters.desired == mount.value;
+  assert abilities.compositionRequests.${swapEffectsKey}.parameters.desired == swap.value;
+  assert abilities.compositionRequests.${activationGroupEffectsKey}.parameters.desired == activationGroup.value;
+  assert abilities.compositionRequests.${dependentGroupEffectsKey}.parameters.desired == dependentGroup.value;
+  assert abilities.compositionOutputs."consumer:activation-group" ? resource;
+  assert abilities.compositionOutputs."consumer:dependent-group" ? resource;
+  assert abilities.implementations."systemd:mount-resource".handlerDescriptor == null;
+  assert builtins.isFunction abilities.implementations."systemd:mount-resource".transition;
+  assert abilities.implementations."systemd:systemd-mount-effects".providerModule == null;
+  assert abilities.implementations."systemd:systemd-mount-effects".handlerDescriptor.entryPoint == "libexec/aos-systemd-provider";
+  assert abilities.implementations."systemd:device-presence".providerModule == null;
+  assert abilities.implementations."systemd:device-presence".handlerDescriptor.entryPoint == "libexec/aos-systemd-provider";
+  assert abilities.implementations."systemd:systemd-named-credential-resolution".providerModule != null;
+  assert abilities.implementations."systemd:systemd-named-credential-resolution".handlerDescriptor == null;
+  assert abilities.implementations."systemd:systemd-credential-delivery".providerModule != null;
+  assert abilities.implementations."systemd:systemd-credential-delivery".handlerDescriptor == null;
+  assert abilities.implementations."systemd:systemd-named-credential-resolution-effects".providerModule == null;
+  assert abilities.implementations."systemd:systemd-named-credential-resolution-effects".handlerDescriptor.entryPoint == "libexec/aos-systemd-provider";
+  assert abilities.implementations."systemd:systemd-credential-delivery-effects".providerModule == null;
+  assert abilities.implementations."systemd:systemd-credential-delivery-effects".handlerDescriptor.entryPoint == "libexec/aos-systemd-provider";
+  assert declaredHandlerEntryPoints == ["libexec/aos-systemd-provider"];
+  assert builtins.length evaluation.config.systemd.providerUnitPlans == 4; true

@@ -1,5 +1,6 @@
 ##! Perl — Practical Extraction and Reporting Language
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -61,7 +62,58 @@
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "perl";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Perl prints the exact integer result 42.";
+        "files" = {};
+        "input" = "A Perl expression that adds 19 and 23.";
+        "operation" = "Evaluate the expression with the packaged Perl interpreter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/perl"
+              "-e"
+              "print 19 + 23, qq{\\n}"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Perl exits with its syntax-error status.";
+        "files" = {};
+        "input" = "A Perl expression with an unclosed parenthesis.";
+        "operation" = "Compile the malformed expression without executing it.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/perl"
+              "-c"
+              "-e"
+              "print ("
+            ];
+            "exit_code" = 255;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     # Two outputs: $out is the scrubbed, ship-ready interpreter; $dev

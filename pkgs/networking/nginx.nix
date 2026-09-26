@@ -1,12 +1,8 @@
 ##! nginx — High-performance HTTP and reverse proxy server
 {
   mkDerivation,
-  writeShellScriptBin,
   fetchurl,
   gnumake,
-  bash,
-  coreutils,
-  jq,
   lib,
   openssl,
   pcre2,
@@ -18,53 +14,79 @@
     if stdenv.hostPlatform.isDarwin
     then "-L${openssl}/lib -L${pcre2}/lib -L${zlib}/lib -Wl,-rpath,${openssl}/lib -Wl,-rpath,${pcre2}/lib -Wl,-rpath,${zlib}/lib"
     else "-L${openssl}/lib -L${pcre2}/lib -L${zlib}/lib -Wl,-rpath,${openssl}/lib:${pcre2}/lib:${zlib}/lib";
-  control = writeShellScriptBin "nginx-control" ''
-    set -euo pipefail
-
-    runtime_config=/etc/aos/packages/nginx/runtime.json
-    nginx=/bin/nginx
-    nginx_config=/etc/nginx/nginx.conf
-
-    enabled() {
-      ${jq}/bin/jq -e '.enabled == true' "$runtime_config" >/dev/null
-    }
-
-    case "''${1:-}" in
-      enabled)
-        enabled
-        ;;
-      prepare)
-        ${coreutils}/bin/mkdir -p \
-          /var/lib/aos-pkg-nginx/client_body \
-          /var/lib/aos-pkg-nginx/proxy \
-          /var/lib/aos-pkg-nginx/fastcgi \
-          /var/lib/aos-pkg-nginx/uwsgi \
-          /var/lib/aos-pkg-nginx/scgi \
-          /var/lib/aos-pkg-nginx/www
-        "$nginx" -t -c "$nginx_config"
-        ;;
-      reload)
-        if enabled; then
-          "$nginx" -t -c "$nginx_config"
-          "$nginx" -c "$nginx_config" -s reload
-        elif [[ -s /run/nginx/nginx.pid ]]; then
-          "$nginx" -c "$nginx_config" -s quit
-        fi
-        ;;
-      quit)
-        if [[ -s /run/nginx/nginx.pid ]]; then
-          "$nginx" -c "$nginx_config" -s quit
-        fi
-        ;;
-      *)
-        echo "usage: nginx-control {enabled|prepare|reload|quit}" >&2
-        exit 64
-        ;;
-    esac
-  '';
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "nginx";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Nginx reports successful configuration validation.";
+        "files" = {
+          "nginx.conf" = "daemon off;\nmaster_process off;\nerror_log stderr;\npid @work@/primary/nginx.pid;\nevents {}\nhttp {}\n";
+        };
+        "input" = "A minimal Nginx configuration with empty events and HTTP blocks.";
+        "operation" = "Parse and validate the configuration through nginx -t.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/nginx"
+              "-t"
+              "-p"
+              "@work@/primary/"
+              "-c"
+              "nginx.conf"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Nginx rejects the unknown directive with status 1.";
+        "files" = {
+          "nginx.conf" = "qualification_directive_does_not_exist on;\n";
+        };
+        "input" = "An Nginx configuration containing an unknown top-level directive.";
+        "operation" = "Parse and validate the malformed configuration through nginx -t.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/nginx"
+              "-t"
+              "-p"
+              "@work@/bad-input/"
+              "-c"
+              "nginx.conf"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -75,15 +97,7 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [
-      bash
-      control
-      coreutils
-      jq
-      openssl
-      pcre2
-      zlib
-    ];
+    runtimeDeps = [openssl pcre2 zlib];
     propagatedDeps = [];
 
     phases = [
@@ -201,136 +215,13 @@ in
           cp -a "$installRoot$out/." "$out/"
           mkdir -p "$out/share/nginx"
           cp conf/mime.types "$out/share/nginx/mime.types"
-          ln -s ${control}/bin/nginx-control "$out/bin/nginx-control"
           test -x $out/bin/nginx
-          test -x $out/bin/nginx-control
           test -s $out/share/nginx/mime.types
         '';
       }
     ];
 
-    expose = {
-      units."nginx.service" = {
-        description = "nginx HTTP and reverse proxy server";
-        restartIfChanged = true;
-        stopOnRemoval = true;
-        serviceConfig = {
-          Type = "simple";
-          DynamicUser = true;
-          RuntimeDirectory = "nginx";
-          RuntimeDirectoryMode = "0750";
-          StateDirectory = "aos-pkg-nginx";
-          StateDirectoryMode = "0750";
-          LogsDirectory = "nginx";
-          LogsDirectoryMode = "0750";
-          UMask = "0027";
-          ExecCondition = "/bin/nginx-control enabled";
-          ExecStartPre = "/bin/nginx-control prepare";
-          ExecStart = "/bin/nginx -c /etc/nginx/nginx.conf -g 'daemon off;'";
-          ExecReload = "/bin/nginx-control reload";
-          ExecStop = "/bin/nginx-control quit";
-          Restart = "on-failure";
-          RestartSec = "2s";
-        };
-      };
-
-      config = {
-        artifacts = [
-          {
-            name = "runtime";
-            path = "/etc/aos/packages/nginx/runtime.json";
-            format = "json";
-            required = ["enabled" "generation"];
-            units = ["nginx.service"];
-            reload = "reload";
-          }
-        ];
-        credentials =
-          builtins.map (name: {
-            inherit name;
-            source = "/run/credstore/nginx/${name}";
-            units = ["nginx.service"];
-            encrypted = false;
-            optional = true;
-          }) [
-            "tls-certificate"
-            "tls-private-key"
-          ];
-      };
-
-      permissions = {
-        network = "host";
-        capabilities = ["CAP_NET_BIND_SERVICE"];
-        devices = [];
-        host-paths = [
-          {
-            path = "/etc/nginx/nginx.conf";
-            mode = "read-only";
-          }
-        ];
-        syscalls = "system-service";
-      };
-    };
-
-    configModule = {
-      src = ./_nginx-config;
-      moduleAbiCompat = {
-        min = 1;
-        max = 2;
-      };
-      declares = [
-        "nginx.accessLog"
-        "nginx.clientMaxBodySize"
-        "nginx.enable"
-        "nginx.extraHttpConfig"
-        "nginx.gzip"
-        "nginx.tlsCredentials.certificate"
-        "nginx.tlsCredentials.privateKey"
-        "nginx.upstreams"
-        "nginx.virtualHosts"
-        "nginx.workerConnections"
-        "nginx.workerProcesses"
-      ];
-      ownsRoots = [
-        {
-          root = "nginx";
-          interfaceAbi = 1;
-          contributable = [
-            "upstreams"
-            "virtualHosts"
-          ];
-        }
-      ];
-      # This is the scoped-artifact contract consumed by the evaluator. It
-      # grants exact names, never authority over a structural-core root.
-      artifacts = {
-        etc = ["nginx/nginx.conf"];
-        units = [];
-        users = [];
-        groups = [];
-      };
-      documentation = {
-        summary = "nginx — high-performance HTTP and reverse proxy server";
-        sections = {
-          quickstart = lib.aosDoc.section "Quick start" [
-            (lib.aosDoc.paragraph "Install nginx, set nginx.enable, and declare at least one virtual host. AOS validates each candidate with nginx -t before activation and reloads a running master in place.")
-            (lib.aosDoc.code "nix" ''
-              {
-                aos.apm.desiredPackages = ["nginx"];
-                nginx.enable = true;
-                nginx.virtualHosts.default.listen = [8080];
-              }
-            '')
-          ];
-          composition = lib.aosDoc.section "Package composition" [
-            (lib.aosDoc.paragraph "Authenticated meta-packages may contribute only named nginx.virtualHosts and nginx.upstreams entries. They cannot enable nginx or replace global policy.")
-          ];
-          credentials = lib.aosDoc.section "TLS credentials" [
-            (lib.aosDoc.paragraph "Certificate and private-key values are opaque references resolved into optional volatile systemd credentials. Secret bytes never enter Nix evaluation, the store, or generated configuration.")
-          ];
-        };
-      };
-    };
+    abilities = ./_nginx;
 
     meta = {
       description = "nginx — high-performance HTTP and reverse proxy server";
@@ -342,12 +233,174 @@ in
     checks = {
       testing,
       self,
+      pkgs,
+      mkSystem,
       ...
-    }: {
-      version = testing.mkToolCheck {
-        pname = "tool-nginx";
-        tool = self;
-        command = "nginx -V 2>&1";
+    }: let
+      serviceManagement = lib.abilities.interfaces.serviceManagement;
+      environmentId = lib.abilities.environmentId {
+        authority = "system-image";
+        key = "nginx-package-check";
+        stage = "host";
       };
-    };
+      credentialProvider = lib.abilities.instanceId {
+        environment = environmentId;
+        key = "credential-provider";
+      };
+      credential = name:
+        lib.abilities.resourceReference {
+          interface = serviceManagement.interfaces.credentialDelivery.identity;
+          resource = {
+            provider = credentialProvider;
+            key = name;
+          };
+          operations = ["observe"];
+          lifetime = "persistent";
+        };
+      evaluate = nginxConfig:
+        mkSystem {
+          systemName = "nginx-package-check";
+          modules = [
+            {
+              environment.systemPackages = [self];
+              aos.services.nginx = nginxConfig;
+            }
+          ];
+        };
+      disabled = evaluate {};
+      cleartext = evaluate {
+        enable = true;
+        workerProcesses = 2;
+        upstreams.application.servers = [{address = "127.0.0.1:3000";}];
+        virtualHosts.default = {
+          listen = [8080];
+          serverNames = ["example.test"];
+          locations."/".proxyPass = "http://application";
+        };
+      };
+      tls = evaluate {
+        enable = true;
+        virtualHosts.default = {
+          listen = [8443];
+          tls.enable = true;
+        };
+        tlsCredentials = {
+          certificate.resource = credential "tls-certificate";
+          privateKey.resource = credential "tls-private-key";
+        };
+      };
+      assertionsHold = evaluation:
+        builtins.all (assertion: assertion.assertion) evaluation.config.assertions;
+      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
+      disabledAbilities = disabled.config.aos.abilities;
+      cleartextAbilities = cleartext.config.aos.abilities;
+      tlsAbilities = tls.config.aos.abilities;
+      cleartextRequests = builtins.attrNames cleartextAbilities.requests;
+      tlsRequests = builtins.attrNames tlsAbilities.requests;
+      source = cleartextAbilities.requests."nginx:server-configuration".parameters.source;
+      mainStorage = cleartextAbilities.requests."nginx:main-storage".parameters.mounts;
+      nginxOptions = lib.submoduleOptions cleartext.options.aos.services.type._elementType ["aos" "services" "nginx"];
+      publicOptionSchemas =
+        builtins.map
+        (option: option.type._abilitySchema)
+        [
+          nginxOptions.upstreams
+          nginxOptions.virtualHosts
+          nginxOptions.tlsCredentials.certificate
+          nginxOptions.tlsCredentials.privateKey
+        ];
+      expectedRequestOutput = localKey: output: {
+        authority = {
+          kind = "package";
+          package = self.pname;
+        };
+        inherit localKey output;
+      };
+      contractHolds =
+        builtins.deepSeq publicOptionSchemas true
+        && assertionsHold cleartext
+        && assertionsHold tls
+        && ownedValues disabledAbilities.instances == {}
+        && ownedValues disabledAbilities.requests == {}
+        && builtins.elem "nginx:configuration-materialization" (builtins.attrNames disabledAbilities.requirementTemplates)
+        && builtins.elem "nginx:main-service-lifecycle" (builtins.attrNames disabledAbilities.requirementTemplates)
+        && builtins.elem "nginx:main-lifecycle" cleartextRequests
+        && !(builtins.elem "nginx:main-credentials" cleartextRequests)
+        && builtins.elem "nginx:main-credentials" tlsRequests
+        && builtins.elem "nginx:credential-tls-certificate" tlsRequests
+        && builtins.elem "nginx:credential-tls-private-key" tlsRequests
+        && source.kind == "interpolated-text"
+        && builtins.any (fragment: fragment.kind == "artifact-file-path") source.fragments
+        && builtins.any (fragment: fragment.kind == "execution-path") source.fragments
+        && builtins.map
+        (mount:
+          lib.abilities.requestOutputIdentity {
+            requests = cleartextAbilities.requests;
+            reference = mount.source;
+          })
+        mainStorage
+        == [
+          (expectedRequestOutput "runtime-storage" "planned-path")
+          (expectedRequestOutput "state-storage" "planned-path")
+          (expectedRequestOutput "log-storage" "planned-path")
+        ]
+        && !(lib.hasInfix "/etc/nginx" (builtins.toJSON cleartextAbilities.requests))
+        && !(lib.hasInfix "/run/credentials" (builtins.toJSON tlsAbilities.requests));
+    in
+      {
+        version = testing.mkToolCheck {
+          pname = "tool-nginx";
+          tool = self;
+          command = "nginx -V 2>&1";
+        };
+
+        ability-contract =
+          if contractHolds
+          then
+            pkgs.runCommand "nginx-production-ability-contract" {} ''
+              mkdir -p "$out"
+              printf '%s\n' PASS >"$out/result"
+            ''
+          else throw "the nginx ability module contract checks failed";
+      }
+      // lib.optionalAttrs (
+        pkgs.stdenv.hostPlatform.isLinux
+        && builtins.elem pkgs.stdenv.hostPlatform.constraints.cpu ["aarch64" "x86_64"]
+      ) {
+        openssl-consumption = lib.mkArtifactConsumptionAudit {
+          inherit pkgs;
+          name = "nginx-openssl-linkage";
+          consumer = self;
+          consumerPath = "/bin/nginx";
+          provider = openssl;
+          providerPath = "/lib/libssl.so.4";
+          targetPlatform = {
+            system = pkgs.stdenv.hostPlatform.constraints.os;
+            architecture = pkgs.stdenv.hostPlatform.constraints.cpu;
+          };
+          soname = "libssl.so.4";
+          needed = [
+            "libc.so.6"
+            "libcrypto.so.4"
+            "libpcre2-8.so.0"
+            "libssl.so.4"
+            "libz.so.1"
+          ];
+          searchPath = [
+            "${pkgs.stdenv.glibc}/lib"
+            "${openssl}/lib"
+            "${pcre2}/lib"
+            "${zlib}/lib"
+          ];
+          searchPathKind = "runpath";
+          symbols = [
+            {
+              name = "SSL_read";
+              version = "OPENSSL_4.0.0";
+            }
+          ];
+          loader = "${pkgs.stdenv.glibc}/lib/${pkgs.stdenv.hostPlatform.dynamicLinker}";
+          inspector = pkgs.buildPackages.aos;
+        };
+      };
   }

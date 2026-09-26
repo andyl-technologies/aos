@@ -4,11 +4,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context as _, Result};
-use aos_core::nar::cache::{canonical_sha256_hex, NarInfoSigner};
+use anyhow::{Context as _, Result, bail};
+use aos_core::nar::cache::{NarInfoSigner, canonical_sha256_hex};
 use aos_core::nar::info::{self, NarInfo};
 use aos_release::artifact::{
-    require_store_path, ArtifactKind, ArtifactRelation, ArtifactRelationship, Compression,
+    ArtifactKind, ArtifactRelation, ArtifactRelationship, Compression, require_store_path,
 };
 use aos_release::build::BuildReportV1;
 use aos_release::digest::Sha256Digest;
@@ -128,6 +128,7 @@ pub(super) fn assemble(
         let attributes = ArtifactAttributes {
             platform: Some(output.platform),
             system_variant: None,
+            image: None,
             media_type: "application/x-nix-nar".to_owned(),
             compression: compression(&entry.info.compression)?,
             derivation: Some(output.derivation.clone()),
@@ -158,7 +159,8 @@ pub(super) fn assemble(
         let attributes = ArtifactAttributes {
             media_type: "application/x-nix-nar".to_owned(),
             compression: compression(&entry.info.compression)?,
-            nar_hash: None,
+            store_path: Some(source.store_path.clone()),
+            nar_hash: Some(nar_hash(&entry.info.nar_hash)?),
             relationships: cache_relationships(entry, &entries, &canonical_ids)?,
             expected: Some(nar_identity(entry)?),
             ..ArtifactAttributes::plain("application/x-nix-nar")
@@ -507,9 +509,11 @@ mod tests {
         let Err(error) = assemble(invalid_cache.path(), &empty_report(), &key, &mut payload) else {
             panic!("cache assembly should reject a false compressed identity");
         };
-        assert!(error
-            .to_string()
-            .contains("differs from its finalized identity"));
+        assert!(
+            error
+                .to_string()
+                .contains("differs from its finalized identity")
+        );
         Ok(())
     }
 

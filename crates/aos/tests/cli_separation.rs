@@ -67,6 +67,19 @@ fn commands_do_not_cross_public_cli_boundaries() -> Result<()> {
             .success()
     );
     assert!(
+        !run(env!("CARGO_BIN_EXE_apm"), &["--json", "__eval", "--help"])?
+            .status
+            .success()
+    );
+    assert!(
+        !run(
+            env!("CARGO_BIN_EXE_apm"),
+            &["__ability-materialize-source-stage", "--help"]
+        )?
+        .status
+        .success()
+    );
+    assert!(
         !run(
             env!("CARGO_BIN_EXE_aos-package-runtime"),
             &["install", "--help"]

@@ -15,9 +15,6 @@
 //!     ~ aos/packages/web/config.env   (changed)
 //!     + nftables/forward.conf         (new; provider: firewall)
 //!     - aos/packages/legacy/config.toml (package 'legacy' removed)
-//!   systemd units
-//!     ~ web.service        reload
-//!     + tracing.service    start
 //!   packages to fetch (closure delta)
 //!     + /nix/store/...-otel-collector-0.9
 //! ```
@@ -39,17 +36,6 @@ pub struct EtcChange {
     /// The `/etc`-relative key.
     pub path: String,
     /// What happened to it.
-    pub kind: ChangeKind,
-}
-
-/// A single unit action in the diff.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnitChange {
-    /// The unit name.
-    pub unit: String,
-    /// The reconcile action (`restart`, `reload`, `none`, `start`, or `stop`).
-    pub action: String,
-    /// Whether the unit was added, removed, or changed.
     pub kind: ChangeKind,
 }
 
@@ -80,8 +66,6 @@ impl ChangeKind {
 pub struct ManifestDiff {
     /// `/etc` entry changes, sorted by path.
     pub etc: Vec<EtcChange>,
-    /// Per-unit reconcile actions, sorted by unit.
-    pub units: Vec<UnitChange>,
     /// Store paths the candidate pins that the base did not (closure delta).
     pub fetch_plan: Vec<String>,
 }
@@ -89,7 +73,7 @@ pub struct ManifestDiff {
 impl ManifestDiff {
     /// Whether the diff is empty (the candidate is structurally identical).
     pub fn is_empty(&self) -> bool {
-        self.etc.is_empty() && self.units.is_empty() && self.fetch_plan.is_empty()
+        self.etc.is_empty() && self.fetch_plan.is_empty()
     }
 
     /// Render the human-readable diff (operability.md format).
@@ -103,19 +87,6 @@ impl ManifestDiff {
                 out.push_str(&format!("    {} {}\n", change.kind.sigil(), change.path));
             }
         }
-        out.push_str("\n  systemd units\n");
-        if self.units.is_empty() {
-            out.push_str("    (no changes)\n");
-        } else {
-            for change in &self.units {
-                out.push_str(&format!(
-                    "    {} {:<24} {}\n",
-                    change.kind.sigil(),
-                    change.unit,
-                    change.action
-                ));
-            }
-        }
         out.push_str("\n  packages to fetch (closure delta)\n");
         if self.fetch_plan.is_empty() {
             out.push_str("    (none)\n");
@@ -125,31 +96,21 @@ impl ManifestDiff {
             }
         }
         out.push_str(&format!(
-            "\n{} etc change(s), {} unit action(s), {} path(s) to fetch.\n",
+            "\n{} etc change(s), {} path(s) to fetch.\n",
             self.etc.len(),
-            self.units.len(),
             self.fetch_plan.len()
         ));
         out
     }
 
-    /// Render the `--json` envelope (operability.md `etc_diff`, `unit_actions`,
-    /// `fetch_plan`, `resolution_trace`). `resolution_trace` is supplied by the
+    /// Render the `--json` envelope (`etc_diff`, `fetch_plan`, and
+    /// `resolution_trace`). `resolution_trace` is supplied by the
     /// caller (it comes from the fixpoint outcome, not the diff).
     pub fn to_json(&self, resolution_trace: &[String]) -> Value {
         json!({
             "etc_diff": self.etc.iter().map(|c| json!({
                 "path": c.path,
                 "kind": match c.kind {
-                    ChangeKind::Added => "added",
-                    ChangeKind::Removed => "removed",
-                    ChangeKind::Changed => "changed",
-                },
-            })).collect::<Vec<_>>(),
-            "unit_actions": self.units.iter().map(|u| json!({
-                "unit": u.unit,
-                "action": u.action,
-                "kind": match u.kind {
                     ChangeKind::Added => "added",
                     ChangeKind::Removed => "removed",
                     ChangeKind::Changed => "changed",
@@ -164,16 +125,12 @@ impl ManifestDiff {
 /// Compute the structural diff between a base and a candidate manifest
 /// (operability.md §Dry-run). Pure over the two `Value`s.
 ///
-/// `etc` is keyed by `/etc`-relative path; a value difference (including a
-/// `kind`/`text`/`target`/`mode` change) is [`ChangeKind::Changed`]. `units`
-/// reports each candidate unit's reconcile action when either its unit data or
-/// one of its generated job scripts changes, marking units absent from the base
-/// as new (`start`). `fetch_plan` is the candidate `storePaths` set minus the
-/// base's — the closure delta the switch would have to materialize.
+/// `etc` is keyed by `/etc`-relative path; a value difference is
+/// [`ChangeKind::Changed`]. `fetch_plan` is the candidate `storePaths` set
+/// minus the base's closure.
 pub fn diff_manifests(base: &Value, candidate: &Value) -> ManifestDiff {
     ManifestDiff {
         etc: diff_etc(base, candidate),
-        units: diff_units(base, candidate),
         fetch_plan: fetch_delta(base, candidate),
     }
 }
@@ -206,69 +163,6 @@ fn diff_etc(base: &Value, candidate: &Value) -> Vec<EtcChange> {
     }
     changes.sort_by(|a, b| a.path.cmp(&b.path));
     changes
-}
-
-/// Diff the `units` maps of two manifests, including removed units that the
-/// pre-swap reconciler stops while their old definitions are still loaded.
-fn diff_units(base: &Value, candidate: &Value) -> Vec<UnitChange> {
-    let base_units = object_or_empty(base.get("units"));
-    let cand_units = object_or_empty(candidate.get("units"));
-    let base_job_scripts = object_or_empty(base.get("jobScripts"));
-    let cand_job_scripts = object_or_empty(candidate.get("jobScripts"));
-    let mut changes = Vec::new();
-    for (unit, cand_val) in &cand_units {
-        let base_val = base_units.get(unit);
-        // The rendered unit keeps a stable generation-local script path, so a
-        // script-body change must still expose the unit's reconcile action.
-        let added = base_val.is_none();
-        let changed = base_val.map(|b| *b != *cand_val).unwrap_or(true)
-            || unit_job_scripts(&base_job_scripts, unit)
-                != unit_job_scripts(&cand_job_scripts, unit);
-        if !changed {
-            continue;
-        }
-        let action = if added {
-            "start".to_string()
-        } else {
-            cand_val
-                .get("action")
-                .and_then(Value::as_str)
-                .unwrap_or("restart")
-                .to_string()
-        };
-        changes.push(UnitChange {
-            unit: unit.clone(),
-            action,
-            kind: if added {
-                ChangeKind::Added
-            } else {
-                ChangeKind::Changed
-            },
-        });
-    }
-    for unit in base_units.keys() {
-        if !cand_units.contains_key(unit) {
-            changes.push(UnitChange {
-                unit: unit.clone(),
-                action: "stop".to_string(),
-                kind: ChangeKind::Removed,
-            });
-        }
-    }
-    changes.sort_by(|a, b| a.unit.cmp(&b.unit));
-    changes
-}
-
-/// Returns the generated scripts belonging to one unit, keyed by slot.
-fn unit_job_scripts<'map, 'value>(
-    scripts: &'map BTreeMap<String, &'value Value>,
-    unit: &str,
-) -> BTreeMap<&'map str, &'value Value> {
-    let prefix = format!("{unit}:");
-    scripts
-        .iter()
-        .filter_map(|(key, value)| key.strip_prefix(&prefix).map(|slot| (slot, *value)))
-        .collect()
 }
 
 /// The candidate `storePaths` set minus the base's (the closure delta).
@@ -357,8 +251,7 @@ pub struct SwitchParams {
     pub base_label: String,
     /// When `true`, stop after the diff (no manifest is committed live).
     pub dry_run: bool,
-    /// Where a **real** switch publishes the committed manifest for the
-    /// downstream fetch/render/activate pipeline to consume.
+    /// Where a real switch publishes the checked manifest before activation.
     pub live_manifest: std::path::PathBuf,
     /// Render the `--json` diff envelope instead of the human form.
     pub json_out: bool,
@@ -369,8 +262,9 @@ pub struct SwitchParams {
 /// Drives the (builder-gated) evaluator to a candidate manifest via
 /// [`super::run_eval_command`], diffs it against the loaded base, and prints the
 /// result. For `--dry-run` it stops there — a clean no-op on the live system.
-/// For a real switch it atomically publishes the candidate and its exact graph,
-/// compiles the transaction, and waits for the fetch/render/activate target.
+/// For a real switch it atomically publishes the candidate, then enters the
+/// checked native activation boundary. That boundary executes the selected
+/// binding and effect plan through authenticated provider handlers.
 /// The active generation's retained source manifest is never overwritten.
 ///
 /// Returns the computed [`ManifestDiff`] so a fleet test can assert the realized
@@ -398,19 +292,14 @@ pub async fn run_switch(params: &SwitchParams) -> Result<ManifestDiff> {
         return Ok(diff);
     }
 
-    // 3. Publish graph first and manifest second. A crash between the two is
-    // fail-closed: strict graph compilation rejects the mismatched pair. The
-    // next switch replaces both before starting any transaction.
-    let candidate_graph = params.eval.out.with_file_name("graph.json");
-    let live_graph = params.live_manifest.with_file_name("graph.json");
-    publish_file_atomic(&candidate_graph, &live_graph)?;
+    // Publish the exact checked manifest before invoking native activation.
     publish_file_atomic(&params.eval.out, &params.live_manifest)?;
 
-    // 4. Compile and synchronously await the systemd transaction. The compiler
-    // resets stale RemainAfterExit state, starts the package wings, and waits
-    // for aos-activate.service, so success here means activation committed.
-    crate::graph_compile::run_graph_compile_command(&params.live_manifest, &live_graph, None)
-        .await?;
+    super::activation::activate_config(&super::activation::ActivateConfigParams {
+        manifest: params.live_manifest.clone(),
+        module_abi: params.eval.module_abi,
+        ..Default::default()
+    })?;
     Ok(diff)
 }
 
@@ -460,12 +349,6 @@ mod tests {
                 "aos/packages/web/config.env": {"kind": "text", "text": "PORT=8080\n", "mode": "0644"},
                 "aos/packages/legacy/config.toml": {"kind": "text", "text": "x=1\n", "mode": "0644"},
             },
-            "units": {
-                "web.service": {"action": "reload"},
-            },
-            "jobScripts": {
-                "web.service:ExecStart.0": {"text": "serve 8080\n", "mode": "0755"},
-            },
             "storePaths": [
                 "/nix/store/aaa-web-1.0",
                 "/nix/store/bbb-curl-8.12",
@@ -479,14 +362,6 @@ mod tests {
             "etc": {
                 "aos/packages/web/config.env": {"kind": "text", "text": "PORT=9090\n", "mode": "0644"},
                 "nftables/forward.conf": {"kind": "text", "text": "policy accept\n", "mode": "0644"},
-            },
-            "units": {
-                "web.service": {"action": "reload"},
-                "firewall.service": {"action": "restart"},
-                "tracing.service": {"action": "restart"},
-            },
-            "jobScripts": {
-                "web.service:ExecStart.0": {"text": "serve 9090\n", "mode": "0755"},
             },
             "storePaths": [
                 "/nix/store/aaa-web-1.0",
@@ -507,34 +382,6 @@ mod tests {
             by_path["aos/packages/legacy/config.toml"],
             ChangeKind::Removed
         );
-    }
-
-    #[test]
-    fn unit_actions_mark_new_and_changed() {
-        let diff = diff_manifests(&base(), &candidate());
-        let by_unit: BTreeMap<&str, &UnitChange> =
-            diff.units.iter().map(|u| (u.unit.as_str(), u)).collect();
-        // The unit data is unchanged, but its generated script changed.
-        assert_eq!(by_unit["web.service"].kind, ChangeKind::Changed);
-        assert_eq!(by_unit["web.service"].action, "reload");
-        // firewall and tracing are new -> "start".
-        assert_eq!(by_unit["firewall.service"].kind, ChangeKind::Added);
-        assert_eq!(by_unit["firewall.service"].action, "start");
-        assert_eq!(by_unit["tracing.service"].kind, ChangeKind::Added);
-        // A base-only unit is an observable pre-swap stop action.
-        let mut without_web = candidate();
-        without_web["units"]
-            .as_object_mut()
-            .unwrap()
-            .remove("web.service");
-        let removed = diff_manifests(&base(), &without_web);
-        let web = removed
-            .units
-            .iter()
-            .find(|change| change.unit == "web.service")
-            .unwrap();
-        assert_eq!(web.kind, ChangeKind::Removed);
-        assert_eq!(web.action, "stop");
     }
 
     #[test]
@@ -559,7 +406,6 @@ mod tests {
         let trace = vec!["firewall.forwardPolicy = accept (web -> firewall)".to_string()];
         let v = diff.to_json(&trace);
         assert!(v.get("etc_diff").is_some());
-        assert!(v.get("unit_actions").is_some());
         assert!(v.get("fetch_plan").is_some());
         assert_eq!(v["resolution_trace"][0], trace[0]);
     }

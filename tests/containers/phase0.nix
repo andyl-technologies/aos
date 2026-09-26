@@ -1,22 +1,22 @@
 ##! tests/containers/phase0.nix — Executable RFC-0019 contract spikes.
 ##!
-##! Freezes the first layer byte vector, proves the production golden package
+##! Freezes the first layer byte vector, proves the selected container package
 ##! roots are independently available, and exercises the daemonless Nix-store
 ##! initialization and baked-root retention contract used by the `aos` image.
 {
   pkgs,
   lib,
-  goldenRoots,
+  bakedRoots,
 }: let
-  archive = import ../../lib/build/oci/common.nix {inherit lib;};
-  expectedRootCount = builtins.length goldenRoots;
-  goldenRootList = builtins.concatStringsSep "\n" (map builtins.toString goldenRoots);
-  closureInfo = import ../../lib/build/closure-info.nix {inherit pkgs lib;} {
-    rootPaths = goldenRoots;
+  archive = pkgs.ociTools.common;
+  expectedRootCount = builtins.length bakedRoots;
+  bakedRootList = builtins.concatStringsSep "\n" (map builtins.toString bakedRoots);
+  closureInfo = lib.build.closureInfo {inherit pkgs;} {
+    rootPaths = bakedRoots;
     pname = "aos-container-phase0-closure-info";
   };
 in
-  assert builtins.elem pkgs.aos goldenRoots;
+  assert builtins.elem pkgs.aos bakedRoots;
     pkgs.mkDerivation {
       pname = "aos-container-phase0-contract";
       version = "1";
@@ -34,7 +34,7 @@ in
         closureInfo
       ];
 
-      GOLDEN_ROOTS = goldenRootList;
+      BAKED_ROOTS = bakedRootList;
       EXPECTED_ROOT_COUNT = toString expectedRootCount;
 
       dontStrip = true;
@@ -103,12 +103,12 @@ in
             test "$gzip_sha" = 1ec9791d8b0b3458830e5156881293d288941e793bb73790f85ad35f168a51d0 \
               || fail "layer ABI blob vector changed: $gzip_sha"
 
-            printf '%s\n' "$GOLDEN_ROOTS" > golden-roots
-            root_count=$(wc -l < golden-roots)
+            printf '%s\n' "$BAKED_ROOTS" > baked-roots
+            root_count=$(wc -l < baked-roots)
             test "$root_count" -eq "$EXPECTED_ROOT_COUNT" \
-              || fail "golden root serialization lost entries"
-            grep -Fx ${lib.escapeShellArg (builtins.toString pkgs.aos)} golden-roots >/dev/null \
-              || fail "production golden roots do not contain pkgs.aos"
+              || fail "baked root serialization lost entries"
+            grep -Fx ${lib.escapeShellArg (builtins.toString pkgs.aos)} baked-roots >/dev/null \
+              || fail "production baked roots do not contain pkgs.aos"
 
             isolated_root="$TMPDIR/isolated-root"
             store_uri="local?root=$isolated_root"
@@ -137,7 +137,7 @@ in
               root_name=''${root##*/}
               ln -s "$root" \
                 "$isolated_root/nix/var/nix/gcroots/aos-container-baked/$root_name"
-            done < golden-roots
+            done < baked-roots
 
             NIX_CONF_DIR="$nix_conf" nix-store --store "$store_uri" --gc
             while IFS= read -r root; do
@@ -146,7 +146,7 @@ in
                 || fail "baked root was collected: $root"
               test -e "$isolated_root$root" \
                 || fail "baked root bytes were collected: $root"
-            done < golden-roots
+            done < baked-roots
 
             export HOME="$isolated_root/root"
             export NIX_CONF_DIR="$nix_conf"
@@ -160,7 +160,7 @@ in
               --arg schema "aos.container.phase0-evidence/v1" \
               --arg tarSha256 "$tar_sha" \
               --arg gzipSha256 "$gzip_sha" \
-              --argjson goldenRootCount "$root_count" \
+              --argjson bakedRootCount "$root_count" \
               --argjson closurePathCount "$(wc -l < ${closureInfo}/store-paths)" \
               '{
                 schema: $schema,
@@ -169,7 +169,7 @@ in
                   tarSha256: $tarSha256,
                   gzipSha256: $gzipSha256
                 },
-                goldenRootCount: $goldenRootCount,
+                bakedRootCount: $bakedRootCount,
                 closurePathCount: $closurePathCount,
                 daemonlessCommands: ["aos --version", "apm --help", "apr --help"],
                 bakedRootsSurviveGc: true

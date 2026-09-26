@@ -4,7 +4,7 @@ use std::process;
 use std::{ffi::OsStr, ffi::OsString, io::Write};
 
 use anyhow::{Result, bail};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 use crate::cli::{ApmCli, AprCli, Cli, ColorChoice, Commands, ProgressChoice};
 use crate::commands;
@@ -65,10 +65,14 @@ fn maintenance_output_policy(cli: &Cli) -> (ProgressChoice, ColorChoice) {
 pub async fn apm_main() {
     install_panic_hook("apm");
     let args = std::env::args_os().collect::<Vec<_>>();
-    if internal_package_command(&args).is_some() {
+    if matches!(selected_package_surface(&args), Some(true)) {
         exit_surface_error("apm", "internal package runtime command");
     }
+
     let cli = ApmCli::parse_from(args);
+    if cli.command.is_runtime_internal() {
+        exit_surface_error("apm", "internal package runtime command");
+    }
     let printer = printer(cli.verbose, cli.quiet, cli.json, cli.progress, cli.color);
     exit_with_result(
         aos_package::run(&cli.command, cli.dry_run, cli.yes, &printer).await,
@@ -80,11 +84,11 @@ pub async fn apm_main() {
 pub async fn package_runtime_main() {
     install_panic_hook("aos-package-runtime");
     let mut args = std::env::args_os().collect::<Vec<_>>();
-    if internal_package_command(&args).is_none() {
-        exit_surface_error("aos-package-runtime", "public package-consumer command");
-    }
     if let Some(program) = args.first_mut() {
         *program = OsString::from("apm");
+    }
+    if matches!(selected_package_surface(&args), Some(false)) {
+        exit_surface_error("aos-package-runtime", "public package-consumer command");
     }
 
     let cli = ApmCli::parse_from(args);
@@ -96,6 +100,24 @@ pub async fn package_runtime_main() {
         aos_package::run(&cli.command, cli.dry_run, cli.yes, &printer).await,
         &printer,
     );
+}
+
+// Clap handles --help before it constructs a typed command. Inspect the same
+// command metadata first so help cannot cross the public/runtime boundary.
+fn selected_package_surface(args: &[OsString]) -> Option<bool> {
+    let mut command = ApmCli::command()
+        .ignore_errors(true)
+        .disable_help_flag(true)
+        .disable_version_flag(true);
+    let matches = command
+        .try_get_matches_from_mut(args.iter().cloned())
+        .ok()?;
+    let selected = matches.subcommand_name()?;
+
+    command
+        .get_subcommands()
+        .find(|subcommand| subcommand.get_name() == selected)
+        .map(clap::Command::is_hide_set)
 }
 
 /// Parses and runs the `apr` registry-authoring CLI.
@@ -130,34 +152,6 @@ fn install_panic_hook(program: &'static str) {
         eprintln!("{program}: internal error: {message}{location}");
         eprintln!("This is a bug. Please report it.");
     }));
-}
-
-/// Returns the private runtime command name present in an argument vector.
-fn internal_package_command(arguments: &[OsString]) -> Option<&str> {
-    const COMMANDS: &[&str] = &[
-        "activate-pre-etc-swap",
-        "activate-post-etc-swap",
-        "activate-restore-routed-sources",
-        "recover-credential-transactions",
-        "_test-systemd-client",
-        "_test-reconcile-exposed-units",
-        "_test-verify-package-attestation",
-        "_test-produce-package-attestation-quote",
-        "__verify-boot-commit",
-        "_load-ebpf-lsm-policies",
-        "__eval",
-        "__eval-retained",
-        "__materialize",
-        "__activate-config",
-        "fetch",
-        "render-one",
-        "__graph-compile",
-    ];
-
-    arguments.iter().find_map(|argument| {
-        let argument = argument.to_str()?;
-        COMMANDS.contains(&argument).then_some(argument)
-    })
 }
 
 /// Reports a command-surface violation with clap's user-error exit status.
@@ -220,6 +214,12 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         return Ok(());
     }
 
+    // Portable inspection revalidates captured pure inputs without Nix or a
+    // live provider connection.
+    if let Commands::Ability { command } = &cli.command {
+        return commands::ability::run(command, printer).await;
+    }
+
     // The server command doesn't need NixRunner, handle it before construction.
     if let Commands::Serve { config } = &cli.command {
         return commands::serve::run(printer, config).await;
@@ -259,11 +259,6 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
     // Cache commands use NixCli (classic nix commands), not NixRunner.
     if let Commands::Cache { command } = &cli.command {
         return commands::cache::run(printer, command).await;
-    }
-
-    // The metadata agent does not need a repository or NixRunner.
-    if let Commands::Metadata { command } = &cli.command {
-        return commands::metadata::run(command).await;
     }
 
     // Hub commands talk to the public API and do not need NixRunner.
@@ -500,12 +495,12 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         Commands::Serve { .. } => unreachable!(),
         Commands::Token { .. } => unreachable!(),
         Commands::Cache { .. } => unreachable!(),
-        Commands::Metadata { .. } => unreachable!(),
         Commands::Hub { .. } => unreachable!(),
         Commands::Image { .. } => unreachable!(),
         Commands::Container { .. } => unreachable!(),
         Commands::Vm { .. } => unreachable!(),
         Commands::LanguageServer { .. } => unreachable!(),
+        Commands::Ability { .. } => unreachable!(),
     }
 }
 
@@ -533,9 +528,7 @@ fn validate_container_runtime(command: &Commands) -> Result<()> {
 /// Applies the runtime boundary using an explicit value so tests do not mutate
 /// the process environment.
 fn validate_runtime(command: &Commands, runtime: Option<&OsStr>) -> Result<()> {
-    if runtime == Some(OsStr::new("container"))
-        && matches!(command, Commands::Vm { .. } | Commands::Metadata { .. })
-    {
+    if runtime == Some(OsStr::new("container")) && matches!(command, Commands::Vm { .. }) {
         bail!(
             "this command requires host boot, virtualization, or device access unavailable in an AOS container; run it on an AOS machine or VM"
         );
@@ -569,20 +562,80 @@ mod tests {
     }
 
     #[test]
-    fn container_rejects_vm_and_boot_metadata_entrypoints() {
-        for args in [
-            ["aos", "vm", "run", "aos.qcow2"].as_slice(),
-            ["aos", "metadata", "detect"].as_slice(),
-        ] {
-            let cli = parse(args);
-            let error = validate_runtime(&cli.command, Some(OsStr::new("container")))
-                .expect_err("host command should be rejected");
+    fn source_stage_materialization_uses_the_typed_runtime_command_surface() {
+        let cli = ApmCli::try_parse_from([
+            "apm",
+            "__ability-materialize-source-stage",
+            "--spec",
+            "/tmp/specification.json",
+            "--exported-graph",
+            "/tmp/exported-graph.json",
+            "--out",
+            "/tmp/source-stage.json",
+        ])
+        .expect("source-stage command should parse");
 
-            assert_eq!(
-                error.to_string(),
-                "this command requires host boot, virtualization, or device access unavailable in an AOS container; run it on an AOS machine or VM"
-            );
+        assert!(cli.command.is_runtime_internal());
+    }
+
+    #[test]
+    fn stage_handoff_commands_accept_the_embedded_contract_inputs() {
+        let initrd_inputs = [
+            "--source-stage-bundle",
+            "/lib/aos/initrd/source-stage-bundle.json",
+            "--static-contract-identity-file",
+            "/lib/aos/initrd/static-ability-contract-identity",
+            "--static-contract",
+            "/lib/aos/initrd/static-ability-contract.json",
+        ];
+        let host_inputs = [
+            "--source-stage-bundle",
+            "/usr/lib/aos/initrd/source-stage-bundle.json",
+            "--static-contract-identity-file",
+            "/usr/lib/aos/initrd/static-ability-contract-identity",
+            "--static-contract",
+            "/usr/lib/aos/initrd/static-ability-contract.json",
+        ];
+
+        for (command, stage_arguments, inputs) in [
+            (
+                "__ability-stage-run",
+                vec!["--stage", "initrd", "--root", "/sysroot"],
+                initrd_inputs,
+            ),
+            (
+                "__ability-stage-validate",
+                vec!["--from-stage", "initrd", "--root", "/sysroot"],
+                initrd_inputs,
+            ),
+            (
+                "__ability-stage-receive",
+                vec![
+                    "--from-stage",
+                    "initrd",
+                    "--image-profile",
+                    "/var/lib/profiles/image",
+                ],
+                host_inputs,
+            ),
+        ] {
+            let arguments = [vec!["apm", command], stage_arguments, inputs.to_vec()].concat();
+            let cli = ApmCli::try_parse_from(arguments).expect("stage command should parse");
+
+            assert!(cli.command.is_runtime_internal());
         }
+    }
+
+    #[test]
+    fn container_rejects_vm_entrypoints() {
+        let cli = parse(&["aos", "vm", "run", "aos.qcow2"]);
+        let error = validate_runtime(&cli.command, Some(OsStr::new("container")))
+            .expect_err("host command should be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "this command requires host boot, virtualization, or device access unavailable in an AOS container; run it on an AOS machine or VM"
+        );
     }
 
     #[test]

@@ -35,15 +35,30 @@
       };
     }
   ];
-  rootVerify = failClosedSystem.config.boot.initrd.systemd.services."aos-verity-root-verify";
+  initrdRequests = failClosedSystem.config.system.build.initrdAbilityGraph.requests;
+  request = name: initrdRequests."aos-verity-root-guard:${name}".parameters;
+  output = name: {
+    _type = "aos-request-output-reference";
+    request = "aos-verity-root-guard:${name}";
+    output = "resource";
+  };
+  rootVerifyLifecycle = request "aos-verity-root-verify-lifecycle";
+  rootVerifyDependencies = request "aos-verity-root-verify-dependencies";
+  rootVerifyFailure = request "aos-verity-root-verify-failure_policy";
+  mountVarDependencies = initrdRequests."aos-boot-preparations:mount-var-dependencies".parameters;
 in
-  assert builtins.elem "aos-boot-identity-guard.service" failClosedSystem.config.boot.initrd.systemd.services."mount-var".requires;
-  assert builtins.elem "aos-verity-root-verify.service" failClosedSystem.config.boot.initrd.systemd.services."mount-var".requires;
-  assert builtins.elem "aos-boot-identity-guard.service" failClosedSystem.config.boot.initrd.systemd.services."systemd-veritysetup@root".requires;
-  assert builtins.elem "aos-boot-identity-guard.service" rootVerify.requires;
-  assert lib.hasInfix "systemctl start systemd-veritysetup@root.service" rootVerify.script;
-  assert builtins.elem "initrd-fs.target" rootVerify.requiredBy;
-  assert rootVerify.unitConfig.OnFailure == "aos-boot-identity-failure.target"; {
+  assert builtins.elem {
+    _type = "aos-request-output-reference";
+    request = "aos-boot-preparations:boot-identity";
+    output = "resource";
+  }
+  mountVarDependencies.requires;
+  assert (builtins.head rootVerifyLifecycle.start).executable.entry_point == "bin/aos-verity-root-verify";
+  assert builtins.elem (output "boot-identity") rootVerifyDependencies.requires;
+  assert builtins.elem (output "persistent-state") rootVerifyDependencies.required_by;
+  assert builtins.elem (output "initrd-filesystems") rootVerifyDependencies.required_by;
+  assert rootVerifyFailure.handlers == [(output "integrity-failure")];
+  assert rootVerifyFailure.dispatch == "isolate-active-goal"; {
     name = "boot-identity-fail-closed";
     timeout = 600;
     bootTimeout = 120;

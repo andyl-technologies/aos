@@ -1,8 +1,8 @@
 {
   lib,
-  callPackage,
   mkDerivation,
   k3s,
+  aos-kubernetes-provider,
   containerd,
   runc,
   cni-plugins,
@@ -15,15 +15,15 @@
   util-linux,
   kmod,
   coreutils,
-  jq,
   writeShellScriptBin,
-}: let
-  mkK3sExposePackage = import ./_k3s-expose-package.nix {
-    pause = callPackage ./_k3s-pause-image.nix {};
+}:
+let
+  mkK3sRolePackage = import ./_k3s-role-package.nix {
     inherit
       lib
       mkDerivation
       k3s
+      aos-kubernetes-provider
       containerd
       runc
       cni-plugins
@@ -36,21 +36,17 @@
       util-linux
       kmod
       coreutils
-      jq
       writeShellScriptBin
       ;
   };
 in
-  mkK3sExposePackage {
-    pname = "k3s-combined";
-    role = "combined";
-    description = "Lightweight Kubernetes (combined: server + agent)";
-    command = "server";
-    requiredEnv = [];
-    evidenceSources = [./k3s-combined.nix];
-    firewall = {
-      allowedTCP = [6443 10250];
-      allowedUDP = [8472];
-      forwardPolicy = "accept";
-    };
-  }
+mkK3sRolePackage {
+  platformSupport = {
+    build = [{abi = ["gnu"]; os = ["linux"];}];
+    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+    target = [];
+    role = "public-package";
+  };
+  pname = "k3s-combined";
+  evidenceSources = [ ./k3s-combined.nix ];
+}

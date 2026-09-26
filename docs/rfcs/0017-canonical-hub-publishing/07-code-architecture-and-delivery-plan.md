@@ -41,9 +41,9 @@ authority.
 | Hub publication admission | [`crates/aos-hub-core/src/service/publication_manifest.rs`](../../../crates/aos-hub-core/src/service/publication_manifest.rs) | Reuse its bounded resumable object admission underneath release-aware staging and promotion. |
 | Hub publication client | Publication handlers in [`crates/aos/src/commands/hub/publication/mod.rs`](../../../crates/aos/src/commands/hub/publication/mod.rs) | Reuse the exact-file uploader; have the release coordinator supply a reviewed bundle instead of rediscovering a directory. |
 | Hub protocol | `PublishService` in [`crates/aos-proto/src/proto/aos/hub/v1/hub.proto`](../../../crates/aos-proto/src/proto/aos/hub/v1/hub.proto) | Add release-bundle admission, qualification, promotion, and receipt messages without weakening generic publication. |
-| Image construction | [`modules/image/_builder.nix`](../../../modules/image/_builder.nix) and [`pkgs/boot/aos-uki.nix`](../../../pkgs/boot/aos-uki.nix) | Split deterministic unsigned inputs from external signing and final assembly. |
+| Image construction | [`pkgs/system/_systemd-abilities/platform/_image-builder.nix`](../../../pkgs/system/_systemd-abilities/platform/_image-builder.nix) and [`pkgs/system/_systemd-abilities/platform/_uki-builder.nix`](../../../pkgs/system/_systemd-abilities/platform/_uki-builder.nix) | Split deterministic unsigned inputs from external signing and final assembly. |
 | Secure Boot options | [`modules/base/secure-boot.nix`](../../../modules/base/secure-boot.nix) | Production configuration contains public authorities and signer role references, never private-key paths. |
-| Platform inventory | [`pkgs/_platform-support.nix`](../../../pkgs/_platform-support.nix) | Generalize the Darwin-oriented inventory into a closed four-target publication inventory. |
+| Package platform declarations | Package recipes, [`lib/package-platform.nix`](../../../lib/package-platform.nix), and [`pkgs/_target-policy.nix`](../../../pkgs/_target-policy.nix) | Derive the release-selected target matrix from native declarations while keeping generic constraints open. |
 | Flake outputs | [`flake.nix`](../../../flake.nix) | Expose deterministic release inventory and publication roots for all four targets; expose images only for Linux. |
 
 The existing `apr publish`, `apr channel`, cache, origin, and verification
@@ -408,13 +408,17 @@ environment. Service logic performs the same semantic and signature checks in
 native and Worker runtimes. The Hub uses public verification keys only and does
 not expose an endpoint that requests content signatures.
 
-## Platform inventory and build outputs
+## Platform declarations and build outputs
 
-Generalize `_platform-support.nix` so `publicationMatrix` covers all four exact
-targets. Evaluation emits a versioned JSON release inventory rather than
-requiring Rust to parse Nix source. The inventory includes every discovered
-package, eligibility rule, output, version, source identity, target, build-only
-classification, blocker, system variant, image format, and required gate.
+Evaluate each recipe's native `platformSupport` projection through
+`_target-policy.nix` for the four exact targets selected by the release policy.
+Evaluation emits a versioned JSON release plan input rather than requiring Rust
+to parse Nix source. It includes every discovered package, derived eligibility
+decision, output, version, source identity, target, artifact role, system
+variant, image format, and required gate. Evaluation fails closed when a
+selected package lacks a normalized package-owned declaration. Derivation
+sources, authenticated module and contract locators, and release provenance
+provide source identity and retention without a parallel source-file catalog.
 
 The flake or default package set exposes deterministic publication roots for:
 
@@ -459,7 +463,7 @@ Four workstreams can proceed independently until their integration milestones:
 | Release core | Schemas, planner, journal, verifier, atomic APR authoring | First staging package bundle |
 | Signing and images | Signer protocol, role adapters, unsigned image split, finalizer, production image | First image-bearing candidate |
 | Hub | Release admission, receipts, promotion, read-back, channel CAS | First no-channel production import |
-| Platforms and evidence | Four-target inventory, AArch64 images, Darwin packages/receipts, SBOM/advisories | First stable-eligible candidate |
+| Platforms and evidence | Selected-target package projection, AArch64 images, Darwin packages/receipts, SBOM/advisories | First stable-eligible candidate |
 
 No workstream may create a compatibility path that silently omits another
 workstream's missing evidence. Until convergence, missing required cells or
@@ -468,8 +472,9 @@ receipts remain explicit blockers.
 ## Pull request sequence
 
 Each item is intended to be independently reviewable, tested, and mergeable.
-Large Darwin package waves and production image work may require several PRs
-under the named item; their public contract does not change between those PRs.
+Large Darwin package porting batches and production image work may require
+several PRs under the named item; their public contract does not change between
+those PRs.
 
 ### PR 1: Release contract and offline verifier
 
@@ -484,10 +489,10 @@ under the named item; their public contract does not change between those PRs.
 Exit criterion: an offline verifier can validate or reject a synthetic complete
 bundle without Git, Nix, network, Hub, or private keys.
 
-### PR 2: Four-target release inventory and planner
+### PR 2: Four-target release projection and planner
 
-- Generalize `_platform-support.nix` and make unclassified packages fail
-  evaluation.
+- Project package-owned `platformSupport` declarations over the four targets
+  selected by release policy and make unclassified packages fail evaluation.
 - Emit versioned release-inventory JSON from Nix.
 - Add `aos release plan` with protected-source, registry-base, version, matrix,
   gate, deployment, signer-role, and retention checks.
@@ -577,7 +582,8 @@ wrong-deployment variants.
 ### PR 9: Full platform qualification
 
 - Complete AArch64 target execution and UEFI image gates.
-- Complete Darwin package waves and static Mach-O gates.
+- Complete Darwin package dependency and build-stage work plus static Mach-O
+  gates.
 - Integrate nonce-bound native Intel and Apple Silicon macOS receipts.
 - Exercise package, documentation, cache, source, SBOM, and retention paths for
   all four target identities.

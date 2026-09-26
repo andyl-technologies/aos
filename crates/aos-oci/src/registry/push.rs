@@ -227,9 +227,10 @@ impl ReleaseGraph {
             layout_index.manifests == vec![release.oci.index.clone()],
             "release layout index does not contain the exact signed root descriptor"
         );
-        let roots = [
+        let roots = vec![
             &release.oci.index,
             &release.nix.closure,
+            &release.evidence.abilities,
             &release.evidence.sbom,
             &release.evidence.source,
             &release.evidence.license,

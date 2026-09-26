@@ -1,9 +1,9 @@
 ##! zram-generator — systemd generator for compressed swap and filesystems
 {
+  lib,
   mkDerivation,
   fetchCargoDeps,
   fetchurl,
-  lib,
   stdenv,
   buildPackages,
   rust,
@@ -59,7 +59,63 @@
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "zram-generator";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The generator emits the zram setup drop-in, swap unit, and swap target link.";
+        "files" = {};
+        "input" = "A synthetic host root with one 64 MB zram swap definition.";
+        "operation" = "Run the systemd generator against the synthetic configuration and memory inventory.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import os, pathlib, subprocess\nroot = pathlib.Path(\"root\").resolve()\n(root / \"etc/systemd\").mkdir(parents=True)\n(root / \"proc\").mkdir()\n(root / \"output\").mkdir()\n(root / \"etc/systemd/zram-generator.conf\").write_text(\"[zram0]\\nzram-size = 64M\\nswap-priority = 100\\n\")\n(root / \"proc/cmdline\").write_text(\"\\n\")\n(root / \"proc/meminfo\").write_text(\"MemTotal:       1048576 kB\\n\")\nenvironment = os.environ.copy()\nenvironment[\"ZRAM_GENERATOR_ROOT\"] = str(root)\nresult = subprocess.run([\"@out@/bin/zram-generator\", str(root / \"output\")], env=environment, capture_output=True)\nassert result.returncode == 0, result.stderr\noutput = root / \"output\"\nassert (output / \"dev-zram0.swap\").is_file()\nassert (output / \"systemd-zram-setup@zram0.service.d/bindings.conf\").is_file()\nassert (output / \"swap.target.wants/dev-zram0.swap\").is_symlink()\nprint(\"zram-generator operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "zram-generator operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The generator rejects the undefined expression and emits no swap unit.";
+        "files" = {};
+        "input" = "A synthetic host root whose zram-size expression is undefined.";
+        "operation" = "Run the generator against the malformed size expression.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport os, pathlib, subprocess\nroot = pathlib.Path(\"root\").resolve()\n(root / \"etc/systemd\").mkdir(parents=True)\n(root / \"proc\").mkdir()\n(root / \"output\").mkdir()\n(root / \"etc/systemd/zram-generator.conf\").write_text(\"[zram0]\\nzram-size = qualification-invalid\\n\")\n(root / \"proc/cmdline\").write_text(\"\\n\")\n(root / \"proc/meminfo\").write_text(\"MemTotal:       1048576 kB\\n\")\nenvironment = os.environ.copy()\nenvironment[\"ZRAM_GENERATOR_ROOT\"] = str(root)\nresult = subprocess.run([\"@out@/bin/zram-generator\", str(root / \"output\")], env=environment, capture_output=True, text=True)\nassert result.returncode != 0 and \"Undefined\" in result.stderr\nassert not (root / \"output/dev-zram0.swap\").exists()\n\nsys.stderr.write(\"zram-generator rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "zram-generator rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     buildDeps = [rustForBuild jq pkg-config lowdown];
@@ -67,10 +123,7 @@ in
     propagatedDeps = [];
     disallowedReferences = [cargoDeps rust];
 
-    passthru.systemdUnitInventory = {
-      system = ["lib/systemd/system/systemd-zram-setup@.service"];
-      user = [];
-    };
+    abilities = ./_zram-generator;
 
     phases = [
       {
@@ -187,8 +240,28 @@ in
     checks = {
       testing,
       self,
-      ...
+      pkgs,
     }: {
+      lowdown-consumption = lib.mkArtifactConsumptionAudit {
+        inherit pkgs;
+        name = "zram-generator-lowdown-build-tool";
+        consumer = self;
+        consumerPath = "/share/man/man8/zram-generator.8";
+        provider = pkgs.buildPackages.lowdown;
+        providerPath = "/bin/lowdown";
+        targetPlatform = {
+          system = pkgs.stdenv.hostPlatform.constraints.os;
+          architecture = pkgs.stdenv.hostPlatform.constraints.cpu;
+        };
+        mechanism = "build-tool-execution";
+        arguments = [
+          "-Tman"
+          "${src}/man/zram-generator.md"
+        ];
+        expectedOutputSha256 = "sha256:48c86a9737fbac21786d0c60ba1d63651a09713a6001e36b84ee7ebd2d5c3e97";
+        inspector = pkgs.buildPackages.aos;
+      };
+
       tool = testing.mkToolCheck {
         pname = "tool-zram-generator";
         tool = self;

@@ -4,6 +4,7 @@
 ##! provisioning disk-layout code. Built from the Makefile-only upstream
 ##! release; no autoconf.
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -15,7 +16,89 @@
   version = "1.0.10";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "gptfdisk";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Sgdisk writes and validates the primary and backup GPT metadata.";
+        "files" = {};
+        "input" = "A sparse 8 MiB disk image.";
+        "operation" = "Create a GPT with one Linux partition and verify both tables.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "with open('disk.img', 'wb') as disk: disk.truncate(8 * 1024 * 1024)"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/sgdisk"
+              "--clear"
+              "--new=1:2048:-2048"
+              "--typecode=1:8300"
+              "disk.img"
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@out@/bin/sgdisk"
+              "--verify"
+              "disk.img"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Sgdisk rejects the geometry with status 4.";
+        "files" = {};
+        "input" = "A one-sector disk image, too small to hold GPT headers and entries.";
+        "operation" = "Create a new GPT on the undersized image.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "with open('tiny.img', 'wb') as disk: disk.truncate(512)"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/sgdisk"
+              "--clear"
+              "tiny.img"
+            ];
+            "exit_code" = 4;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

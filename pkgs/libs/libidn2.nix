@@ -1,5 +1,6 @@
 ##! libidn2 — IDNA2008 and Unicode TR46 implementation
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -10,7 +11,95 @@
   version = "2.3.8";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "libidn2";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "libidn2 returns xn--bcher-kva.example.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libidn2 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libidn2 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <idn2.h>\nint main(void) {\n    char *ascii = NULL;\n    int status = idn2_to_ascii_8z(\"b\\xc3\\xbc\" \"cher.example\", &ascii, 0);\n    int ok = status == IDN2_OK && ascii != NULL && strcmp(ascii, \"xn--bcher-kva.example\") == 0;\n    idn2_free(ascii);\n    return ok ? pass() : 2;\n}\n\n";
+        };
+        "input" = "The Unicode domain name bucher.example with an umlaut.";
+        "operation" = "Convert the domain to its IDNA ASCII representation.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lidn2"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libidn2 primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "libidn2 returns a non-success status and no accepted domain.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libidn2 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libidn2 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <idn2.h>\nint main(void) {\n    char *ascii = NULL;\n    int status = idn2_to_ascii_8z(\"bad\\xff.example\", &ascii, 0); idn2_free(ascii);\n    if (status == IDN2_OK) return 2;\n    return reject();\n}\n\n";
+        };
+        "input" = "A domain containing an invalid UTF-8 byte sequence.";
+        "operation" = "Pass the malformed name to the IDNA converter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lidn2"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libidn2 rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

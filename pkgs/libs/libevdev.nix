@@ -1,5 +1,6 @@
 ##! Linux input event device library and inspection tools.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -7,9 +8,75 @@
   check,
 }: let
   version = "1.13.7";
+  probeSource = builtins.readFile ./_libevdev-probe.c;
+  compileProbe = {
+    argv = [
+      "@cc@"
+      "-I@out@/include/libevdev-1.0"
+      "-L@out@/lib"
+      "-Wl,-rpath,@out@/lib"
+      "@work@/probe.c"
+      "-levdev"
+      "-o"
+      "@work@/probe"
+    ];
+    exit_code = 0;
+  };
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "libevdev";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "An in-memory Linux input device descriptor with one key event.";
+        operation = "Compile against the installed libevdev and configure the event descriptor.";
+        expected = "The library retains the device name and enabled key event.";
+        files."probe.c" = probeSource;
+        artifacts = [];
+        steps = [
+          compileProbe
+          {
+            argv = ["@work@/probe"];
+            exit_code = 0;
+            stdout.exact = "libevdev event descriptor passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "An invalid input-device file descriptor.";
+        operation = "Ask the installed libevdev to bind the invalid descriptor.";
+        expected = "The library rejects it with EBADF and no device object.";
+        files."probe.c" = probeSource;
+        artifacts = [];
+        steps = [
+          compileProbe
+          {
+            argv = ["@work@/probe" "invalid"];
+            exit_code = 0;
+            observes_rejection = true;
+            stdout.exact = "libevdev rejected invalid file descriptor\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://www.freedesktop.org/software/libevdev/libevdev-${version}.tar.xz"];

@@ -7,6 +7,7 @@
 ##! `pkgs.erofs-utils`, whose snapshot tarball ships only
 ##! `configure.ac` and needs the full autotools bootstrap.
 {
+  lib,
   mkDerivation,
   fetchurl,
   m4,
@@ -24,7 +25,76 @@
   version = "2.6.2";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "libtool";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Libtool invokes the harness compiler and creates answer.lo.";
+        "files" = {
+          "answer.c" = "int answer(void) { return 42; }\n";
+        };
+        "input" = "A C translation unit defining one function.";
+        "operation" = "Compile the source into a libtool object through --mode=compile.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/libtool"
+              "--tag=CC"
+              "--mode=compile"
+              "@cc@"
+              "-c"
+              "answer.c"
+              "-o"
+              "answer.lo"
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "assert open('answer.lo').read().startswith('# answer.lo - a libtool object file')"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Libtool rejects the mode with status 1.";
+        "files" = {
+          "answer.c" = "int answer(void) { return 42; }\n";
+        };
+        "input" = "A libtool invocation naming an unsupported operation mode.";
+        "operation" = "Parse the invalid mode through libtool's command dispatcher.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/libtool"
+              "--tag=CC"
+              "--mode=qualification-invalid"
+              "@cc@"
+              "answer.c"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

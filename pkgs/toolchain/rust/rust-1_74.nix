@@ -3,6 +3,7 @@
 ##! source to C, then compiles with GCC. This builds rustc 1.74.0 + cargo
 ##! entirely from C++ source with no pre-existing Rust compiler.
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -45,6 +46,12 @@ in
         openssl
         zlib
         ;
+      platformSupport = {
+        build = [{abi = ["gnu"]; os = ["linux"];}];
+        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        role = "public-package";
+      };
       pname = "rust-1_74";
       src = rustcSrc;
       changeId = 0;
@@ -64,6 +71,12 @@ in
   then
     import ./_rust-linux-hosted.nix {
       inherit mkDerivation version buildPackages stdenv curl openssl zlib;
+      platformSupport = {
+        build = [{abi = ["gnu"]; os = ["linux"];}];
+        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        role = "public-package";
+      };
       pname = "rust-1_74";
       src = rustcSrc;
       changeId = 0;
@@ -77,7 +90,78 @@ in
     }
   else
     mkDerivation {
+      platformSupport = {
+        build = [{abi = ["gnu"]; os = ["linux"];}];
+        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        role = "public-package";
+      };
       pname = "rust-1_74";
+      qualification.packageProbe = lib.qualification.commandProbe {
+        "primary" = {
+          "artifacts" = [];
+          "expected" = "The compiler produces a runnable binary that prints the fixed result 42.";
+          "files" = {
+            "answer.rs" = "fn main() {\n    let mut values = [23, 19];\n    values.sort();\n    println!(\"{}\", values.iter().sum::<i32>());\n}\n";
+          };
+          "input" = "A Rust program that sorts integers and prints their sum.";
+          "operation" = "Compile the program with rustc, then execute the generated binary.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/rustc"
+                "answer.rs"
+                "-o"
+                "answer"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "";
+              };
+            }
+            {
+              "argv" = [
+                "@work@/primary/answer"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "42\n";
+              };
+            }
+          ];
+        };
+        "badInput" = {
+          "artifacts" = [];
+          "expected" = "rustc rejects the syntax error with its compilation-failure status.";
+          "files" = {
+            "invalid.rs" = "fn main() { let answer = 19 + ; println!(\"{}\", answer); }\n";
+          };
+          "input" = "A Rust function with a missing expression after an addition operator.";
+          "operation" = "Compile the malformed source with rustc.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/rustc"
+                "invalid.rs"
+                "-o"
+                "invalid"
+              ];
+              "exit_code" = 1;
+              "observes_rejection" = true;
+              "stdout" = {
+                "exact" = "";
+              };
+            }
+          ];
+        };
+      };
+
       inherit version;
 
       src = fetchurl {

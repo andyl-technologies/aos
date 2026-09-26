@@ -1,10 +1,7 @@
 ##! modules/base/kernel.nix — Kernel configuration module
 ##!
-##! Configures kernel tunables via sysctl, kernel module loading, and optional
-##! TCP BBR congestion control. Generates /etc/sysctl.d/10-aos-kernel.conf for
-##! performance-oriented sysctl settings and /etc/modules-load.d/aos-kernel.conf
-##! for modules to load at boot. When BBR is enabled, the necessary kernel
-##! parameters are appended to the boot command line.
+##! Configures kernel tunables, kernel module loading, and optional TCP BBR
+##! congestion control through the native kernel providers.
 ##!
 ##! These are performance/functionality sysctls — security-focused sysctls
 ##! belong in modules/security/hardening.nix.
@@ -12,15 +9,37 @@
   config,
   pkgs,
   lib,
+  packageArtifactForOwner,
   ...
 }: let
-  cfg = config.aos.kernel;
-
-  # Format sysctl settings as a sysctl.d(5) drop-in file.
-  sysctlText = builtins.concatStringsSep "\n" (
-    lib.mapAttrsToList (key: value: "${key} = ${value}") cfg.sysctl
+  selectedPackage = owner: selector: let
+    package = pkgs.${selector.package} or (throw "unknown external kernel package '${selector.package}'");
+    defaultOutput = package.outputName or "out";
+    authenticatedArtifact = packageArtifactForOwner owner selector;
+  in
+    if selector.output != defaultOutput
+    then throw "external kernel package '${selector.package}' must select its default output"
+    else if builtins.toString package != builtins.toString authenticatedArtifact
+    then throw "external kernel package '${selector.package}' is outside package '${owner}'s authenticated dependency view"
+    else package;
+  contributedPackages =
+    lib.concatMap
+    (owner:
+      builtins.map
+      (selector: {inherit owner selector;})
+      config.aos.kernel.externalPackages.${owner})
+    (builtins.attrNames config.aos.kernel.externalPackages);
+  kernelPackages = lib.uniqueBy builtins.toString (
+    builtins.map
+    (entry: (selectedPackage entry.owner entry.selector).override {kernel = config.system.build.kernel;})
+    contributedPackages
   );
 in {
+  imports = [
+    ./_kernel-abilities.nix
+    ./_kernel-package-options.nix
+  ];
+
   options.aos.kernel = {
     ## Enable TCP BBR congestion control.
     bbr = lib.mkOption {
@@ -30,7 +49,8 @@ in {
         Enable TCP BBR congestion control. BBR achieves higher throughput and
         lower latency than CUBIC on lossy or high-BDP paths. When enabled,
         the tcp_bbr module is loaded and the default congestion control
-        algorithm and queue discipline are set via kernel boot parameters.
+        algorithm and queue discipline are converged through the native
+        kernel providers.
       '';
     };
 
@@ -40,22 +60,13 @@ in {
     ## - `aos.security.hardening.sysctl` (security sysctls)
     sysctl = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
-      # The base set is contributed as a `config` def (`baseSysctl` below)
-      # rather than as this option's `default`. A `default` is used only when
-      # nothing defines the option at all, so a single key set by any other
-      # module would otherwise drop the entire base set — silently losing
-      # swappiness, the mmap ceiling, the inotify limits, and the network
-      # tuning on exactly the hosts that tune something.
+      # Keep the base map in a normal definition below. An option default is
+      # discarded wholesale as soon as any module contributes one key.
       default = {};
       description = ''
-        Kernel sysctl parameters for system performance tuning. Written to
-        /etc/sysctl.d/10-aos-kernel.conf and applied at boot by
-        systemd-sysctl.service. These are functional/performance settings;
-        security hardening sysctls are in modules/security/hardening.nix.
-
-        Modules add keys here and the definitions merge. The base set is
-        contributed at default priority, so naming one of its keys overrides
-        just that key.
+        Kernel parameters converged through the native kernel-tunable
+        provider. Modules merge definitions per key; normal priority can
+        replace one base key without discarding unrelated performance policy.
       '';
     };
 
@@ -64,9 +75,8 @@ in {
       type = lib.types.listOf lib.types.str;
       default = [];
       description = ''
-        Kernel modules to load at boot. Written to
-        /etc/modules-load.d/aos-kernel.conf and loaded by
-        systemd-modules-load.service. Example: ["br_netfilter" "overlay"].
+        Kernel modules loaded and observed through the native kmod provider.
+        Example: ["br_netfilter" "overlay"].
       '';
     };
 
@@ -104,146 +114,35 @@ in {
   };
 
   config = {
-    # Base performance tunables, contributed at default priority so any other
-    # module can override an individual key while the rest survive.
-    aos.kernel.sysctl = lib.mkDefault {
-      # -- Network performance --
-      "net.core.somaxconn" = "32768";
-      "net.core.netdev_max_backlog" = "16384";
-      # Socket buffer ceilings for high-throughput network services.
-      "net.core.rmem_max" = "7500000";
-      "net.core.wmem_max" = "7500000";
+    aos.kernel = {
+      modulePackages = kernelPackages;
+      sysctl = lib.mkDefault {
+        # This must be a mergeable definition rather than the option default so a
+        # package policy adding one tunable retains every unrelated base key.
+        # -- Network performance --
+        "net.core.somaxconn" = "32768";
+        "net.core.netdev_max_backlog" = "16384";
+        # Socket buffer ceilings for high-throughput network services.
+        "net.core.rmem_max" = "7500000";
+        "net.core.wmem_max" = "7500000";
 
-      # -- Virtual memory --
-      "vm.swappiness" = "10";
-      # Raise the mmap region ceiling so apps that map many regions
-      # (modern games, large JVMs, container runtimes) don't hit
-      # ENOMEM from the default 65530 limit.
-      "vm.max_map_count" = "1048576";
+        # -- Virtual memory --
+        "vm.swappiness" = "10";
+        # Raise the mmap region ceiling so apps that map many regions
+        # (modern games, large JVMs, container runtimes) don't hit
+        # ENOMEM from the default 65530 limit.
+        "vm.max_map_count" = "1048576";
 
-      # -- Filesystem watches (IDEs, file sync, container runtimes) --
-      "fs.inotify.max_user_instances" = "8192";
-      "fs.inotify.max_user_watches" = "524288";
+        # -- Filesystem watches (IDEs, file sync, container runtimes) --
+        "fs.inotify.max_user_instances" = "8192";
+        "fs.inotify.max_user_watches" = "524288";
 
-      # -- Process limits --
-      "kernel.pid_max" = "4194304";
-    };
-
-    # /etc/sysctl.d/10-aos-kernel.conf — performance sysctl settings.
-    # Priority 10 so security settings in 80-aos-hardening.conf take precedence.
-    environment.etc."sysctl.d/10-aos-kernel.conf" = {
-      text = ''
-        # /etc/sysctl.d/10-aos-kernel.conf
-        # Generated by modules/base/kernel.nix — do not edit manually.
-        # Performance and functionality kernel tunables.
-
-        ${sysctlText}
-      '';
-    };
-
-    # /etc/modules-load.d/aos-kernel.conf — modules to load at boot.
-    # `lib.unique` collapses duplicates from modules that add the same kernel
-    # module through `aos.kernel.modules`.
-    environment.etc."modules-load.d/aos-kernel.conf" = {
-      text = ''
-        # /etc/modules-load.d/aos-kernel.conf
-        # Generated by modules/base/kernel.nix — do not edit manually.
-
-        ${lib.concatStringsSep "\n" (lib.unique (lib.optional cfg.bbr "tcp_bbr" ++ cfg.modules))}
-      '';
-    };
-
-    # systemd-modules-load already ignores a missing module (-ENOENT) and a
-    # hardware-absent one (-ENODEV); it only exits non-zero (1) when a listed
-    # module is present but genuinely fails to insert (unresolved symbols,
-    # bad params, init error). Treat that exit 1 as success too, so an
-    # optional module can't mark the unit failed (mirrors NixOS). The initrd
-    # carries its own copy of this — see modules/systemd/initrd.nix.
-    systemd.services."systemd-modules-load" = {
-      overrideStrategy = "asDropin";
-      serviceConfig.SuccessExitStatus = "0 1";
-      # Live in-place upgrades (`apm upgrade --system`): when a role bundle
-      # changes the set of kernel modules, the drop-in under
-      # /etc/modules-load.d/ changes; restart this oneshot to load the new
-      # modules without a reboot. systemd-modules-load has no ExecReload=,
-      # so the reconciler falls back to a restart (re-running ExecStart
-      # re-applies the module list).
-      reloadTriggers = ["/etc/modules-load.d"];
-    };
-
-    # Live in-place upgrades: re-apply sysctl drop-ins when a role bundle
-    # changes /etc/sysctl.d. This drop-in (asDropin → overrides.conf) only
-    # adds the reload trigger to the upstream systemd-sysctl.service; like
-    # systemd-modules-load it has no ExecReload=, so the reconciler
-    # restarts it, which re-runs `systemd-sysctl` and re-applies the
-    # on-disk config. This is the boot-path-independent complement to
-    # aos-sysctl-late-apply below (which only re-applies once, at boot).
-    systemd.services."systemd-sysctl" = {
-      overrideStrategy = "asDropin";
-      reloadTriggers = ["/etc/sysctl.d"];
-    };
-
-    # Late re-apply of sysctl drop-ins. Belt-and-suspenders for the
-    # 2026-05-19 microvm-races briefing's Shape 2: under host I/O load
-    # the stage-2 systemd-sysctl.service runs `Before=sysinit.target`
-    # — very early — and can race the etc-overlay's settle on switch-
-    # root. We saw the service report success while
-    # `/etc/sysctl.d/80-aos-hardening.conf` was effectively invisible
-    # to it, leaving e.g. `kernel.dmesg_restrict = 0` against the
-    # asserted `= 1`. Manual `sysctl -p` and `systemctl restart
-    # systemd-sysctl` both immediately set the right value, confirming
-    # the file is correct and the kernel accepts it; only the early-
-    # boot pass missed.
-    #
-    # b0f3fe1 (initrd → stage-2 oneshot re-run) closed one window but
-    # not all of them. Running `systemd-sysctl` again later in stage-2
-    # boot — after every overlay / mount unit has settled and before
-    # multi-user.target — guarantees the on-disk config wins regardless
-    # of how the early pass landed. The unit is `Type=oneshot` and the
-    # binary is idempotent; the cost is one short fork+read.
-    systemd.services."aos-sysctl-late-apply" = {
-      description = "Re-apply /etc/sysctl.d after the /etc overlay has settled";
-      wantedBy = ["multi-user.target"];
-      after = [
-        "local-fs.target"
-        "systemd-tmpfiles-setup.service"
-        "systemd-sysctl.service"
-      ];
-      before = ["multi-user.target"];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = "${pkgs.systemd}/lib/systemd/systemd-sysctl";
+        # -- Process limits --
+        "kernel.pid_max" = "4194304";
       };
     };
 
-    # When BBR is enabled, select it (and the fq qdisc) via sysctl.
-    # Both keys are address-family-agnostic, so the two lines are complete
-    # as written: net.ipv4.tcp_congestion_control governs the shared TCP
-    # stack for v4 and v6 alike (there is no net.ipv6 counterpart — it is
-    # registered once in net/ipv4/sysctl_net_ipv4.c), and net.core.* sits
-    # below L3. Do not add an ipv6 variant — the node does not exist and
-    # the write would just fail. fq-vs-fq_codel rationale: networking.config.
-    #
-    # This must NOT go on the kernel command line: the kernel only honours
-    # bare `net.*=` tokens via the `sysctl.` prefix, and even then applies
-    # them before modules load — when `tcp_bbr` (a module, see
-    # modules-load.d above) is not yet registered, so the value is rejected
-    # and silently falls back to cubic. systemd-sysctl.service runs
-    # After=systemd-modules-load.service, so by the time this drop-in is
-    # applied tcp_bbr is loaded and `bbr` is a valid choice.
-    #
-    # Priority 60: systemd ships /usr/lib/sysctl.d/50-default.conf with
-    # `net.core.default_qdisc = fq_codel`; a lower-numbered drop-in would
-    # be overridden by it. 60 sorts after 50 (wins) and before AOS's
-    # 80-aos-hardening.conf (which can still override if it ever needs to).
-    environment.etc."sysctl.d/60-aos-bbr.conf" = lib.mkIf cfg.bbr {
-      text = ''
-        # /etc/sysctl.d/60-aos-bbr.conf
-        # Generated by modules/base/kernel.nix — do not edit manually.
-        net.core.default_qdisc = fq
-        net.ipv4.tcp_congestion_control = bbr
-      '';
-    };
+    aos.boot.recovery.extraPackages = kernelPackages;
+    environment.systemPackages = kernelPackages;
   };
 }

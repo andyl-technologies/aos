@@ -1,72 +1,401 @@
-##! Typed, package-owned Garage runtime configuration.
+##! Typed, package-owned Garage service declaration.
 {
   config,
   lib,
   ...
 }: let
-  inherit (lib) mkIf mkMerge mkOption types;
   cfg = config.garage;
+  serviceEnabled = config.aos.services."garage.main".enable;
+  inherit (lib) mkOption;
+  inherit (lib.abilities) resultOf;
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
+  serviceTypes = serviceManagement.types;
+  abilityTypes = lib.abilities.types;
 
-  positiveInt = types.addCheck types.int (value: value > 0);
-  socketAddress = types.strMatching "[^[:space:]]+";
-  nonempty = types.addCheck types.str (value: value != "");
-  secretRef = types.submodule ({...}: {
-    config._module.strict = true;
-    options.ref = mkOption {
-      type = types.strMatching "(tpm2-credstore|desired-toml|system-credential)(:[A-Za-z0-9_.-]+)?";
-      description = "Opaque AOS credential reference; secret bytes never enter Nix evaluation.";
-    };
-  });
-  optionalSecretRef = types.nullOr secretRef;
-  toml = lib.formats.toml {
-    inherit lib;
-    pkgs = null;
+  positiveInt = abilityTypes.integer {
+    minimum = 1;
+    maximum = 9007199254740991;
   };
-
-  renderedConfig = toml.toTOML {
-    metadata_dir = "/var/lib/aos-pkg-garage/meta";
-    data_dir = "/var/lib/aos-pkg-garage/data";
-    db_engine = cfg.dbEngine;
-    replication_factor = cfg.replicationFactor;
-    rpc_bind_addr = cfg.rpc.bindAddress;
-    rpc_public_addr = cfg.rpc.publicAddress;
-    bootstrap_peers = cfg.rpc.bootstrapPeers;
-    s3_api = {
-      api_bind_addr = cfg.s3.bindAddress;
-      s3_region = cfg.s3.region;
-      root_domain = cfg.s3.rootDomain;
+  socketAddress = abilityTypes.refined {
+    name = "Garage socket address";
+    description = "a non-empty Garage socket address without whitespace";
+    type = abilityTypes.runtimeString;
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[^[:space:]]+";
+      }
+    ];
+  };
+  nonEmpty = abilityTypes.refined {
+    name = "non-empty Garage value";
+    description = "a non-empty Garage configuration value";
+    type = abilityTypes.runtimeString;
+    constraints = [
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+    ];
+  };
+  dbEngineType = abilityTypes.enum ["lmdb" "sqlite"];
+  credentialReference = serviceTypes.credentialReference;
+  rpcSecret = cfg.rpc.secret;
+  adminToken = cfg.admin.token;
+  metricsToken = cfg.admin.metrics.token;
+  runtimeString = abilityTypes.runtimeString;
+  optionalRuntimeString = {
+    type = abilityTypes.optional runtimeString;
+    optional = true;
+  };
+  serverConfigType = abilityTypes.record {
+    fields = {
+      metadata_dir = abilityTypes.deferredResult runtimeString;
+      data_dir = abilityTypes.deferredResult runtimeString;
+      db_engine = dbEngineType;
+      replication_factor = positiveInt;
+      rpc_bind_addr = socketAddress;
+      rpc_public_addr = optionalRuntimeString;
+      bootstrap_peers = abilityTypes.list {
+        element = nonEmpty;
+        maxItems = 2000000;
+      };
+      s3_api = abilityTypes.record {
+        fields = {
+          api_bind_addr = socketAddress;
+          s3_region = nonEmpty;
+          root_domain = optionalRuntimeString;
+        };
+      };
+      s3_web = {
+        type = abilityTypes.optional (abilityTypes.record {
+          fields = {
+            bind_addr = socketAddress;
+            root_domain = nonEmpty;
+          };
+        });
+        optional = true;
+      };
+      admin = {
+        type = abilityTypes.optional (abilityTypes.record {
+          fields = {
+            api_bind_addr = socketAddress;
+            metrics_require_token = abilityTypes.boolean;
+          };
+        });
+        optional = true;
+      };
     };
-    s3_web =
-      if cfg.web.enable
-      then {
+  };
+  serverConfig =
+    {
+      metadata_dir = resultOf "metadata-storage" "planned-path";
+      data_dir = resultOf "data-storage" "planned-path";
+      db_engine = cfg.dbEngine;
+      replication_factor = cfg.replicationFactor;
+      rpc_bind_addr = cfg.rpc.bindAddress;
+      bootstrap_peers = cfg.rpc.bootstrapPeers;
+      s3_api =
+        {
+          api_bind_addr = cfg.s3.bindAddress;
+          s3_region = cfg.s3.region;
+        }
+        // lib.optionalAttrs (cfg.s3.rootDomain != null) {
+          root_domain = cfg.s3.rootDomain;
+        };
+    }
+    // lib.optionalAttrs (cfg.rpc.publicAddress != null) {
+      rpc_public_addr = cfg.rpc.publicAddress;
+    }
+    // lib.optionalAttrs cfg.web.enable {
+      s3_web = {
         bind_addr = cfg.web.bindAddress;
         root_domain = cfg.web.rootDomain;
-      }
-      else null;
-    admin =
-      if cfg.admin.enable
-      then {
+      };
+    }
+    // lib.optionalAttrs cfg.admin.enable {
+      admin = {
         api_bind_addr = cfg.admin.bindAddress;
         metrics_require_token = cfg.admin.metrics.requireToken;
+      };
+    };
+  credentialsFor = variant:
+    [
+      {
+        name = "rpc-secret";
+        reference = rpcSecret;
+        environment_variable = "GARAGE_RPC_SECRET_FILE";
       }
-      else null;
+    ]
+    ++ lib.optionals variant.admin [
+      {
+        name = "admin-token";
+        reference = adminToken;
+        environment_variable = "GARAGE_ADMIN_TOKEN_FILE";
+      }
+    ]
+    ++ lib.optionals (variant.admin && variant.metrics) [
+      {
+        name = "metrics-token";
+        reference = metricsToken;
+        environment_variable = "GARAGE_METRICS_TOKEN_FILE";
+      }
+    ];
+  command = arguments: {
+    executable = {
+      artifact = lib.abilities.packageOutput {};
+      entry_point = "bin/garage";
+      inherit arguments;
+    };
+    ignore_failure = false;
   };
+  abilityFragmentsFor = variant: let
+    producer = key: interface: parameters:
+      serviceManagement.forProducer {
+        consumerInstance = "garage";
+        inherit key interface parameters;
+      };
+    credentials = credentialsFor variant;
+    credentialRequests = serviceManagement.forCredentialReferences {
+      consumerInstance = "garage";
+      references =
+        builtins.map (credential: {
+          key = "credential-${credential.name}";
+          inherit (credential) name reference;
+        })
+        credentials;
+    };
+    persistentStorage = serviceManagement.forProducers {
+      consumerInstance = "garage";
+      interface = serviceManagement.interfaces.persistentStorageAllocation;
+      producers = [
+        {
+          key = "metadata-storage";
+          parameters = {
+            name = "metadata";
+            purpose = "state";
+            mode = "0750";
+          };
+        }
+        {
+          key = "data-storage";
+          parameters = {
+            name = "data";
+            purpose = "state";
+            mode = "0750";
+          };
+        }
+        {
+          key = "home-storage";
+          parameters = {
+            name = "home";
+            purpose = "state";
+            mode = "0750";
+          };
+        }
+      ];
+    };
+    runtimeStorage = producer "runtime-storage" serviceManagement.interfaces.storageAllocation {
+      name = "runtime";
+      purpose = "runtime";
+      mode = "0750";
+    };
+    group = producer "service-group" serviceManagement.interfaces.groupResolution {
+      name = "garage";
+      allocation = "managed";
+    };
+    principal = producer "service-principal" serviceManagement.interfaces.principalResolution {
+      name = "garage";
+      allocation = "managed";
+      description = "Garage object-storage service";
+      home_directory = resultOf "home-storage" "planned-path";
+      login_access = "disabled";
+      primary_group = resultOf "service-group" "group-name";
+      supplementary_groups = [];
+    };
+    networkReadiness = producer "network-readiness" serviceManagement.interfaces.networkReadiness {
+      scope = "configured-connectivity";
+      address_families = ["ipv4" "ipv6"];
+    };
+    configurationRequest = serviceManagement.forConfiguration {
+      inherit serviceTypes;
+      consumerInstance = "garage";
+      declaration = {
+        name = "server-configuration";
+        source = serviceManagement.structuredSource {
+          format = "toml";
+          valueType = serverConfigType;
+          value = serverConfig;
+        };
+        mode = "0640";
+      };
+    };
+    serviceRequest = {
+      policy.hardening = {
+        allow_privilege_escalation = false;
+        ambient_privileges = [];
+        privilege_bounds = {
+          kind = "restricted";
+          privileges = [];
+        };
+        resource_control_delegation = false;
+        resource_control_access = "read-only";
+        device_access_scope = "shared";
+        host_clock_mutation = false;
+        host_name_mutation = false;
+        operating_system_log_access = false;
+        operating_system_extension_access = false;
+        operating_system_tunable_access = false;
+        lock_execution_personality = true;
+        writable_executable_memory = false;
+        isolation_domains = [];
+        network_families = ["ipv4" "ipv6" "local"];
+        memory_pressure_adjustment = 0;
+        permit_realtime = false;
+        permit_elevated_file_identity = false;
+        process_visibility = "all";
+        security_label = "aos-pkg-garage";
+        operation_architectures = [];
+        operation_allow = [];
+        operation_deny = [];
+        operation_profile = "system-service";
+        isolated_identity_mapping = "none";
+      };
+      consumerInstance = "garage";
+      service = "main";
+      lifecycle = {
+        description = "Garage object-storage server";
+        execution_model = "foreground";
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        start = [(command ["-c" (resultOf "server-configuration" "planned-path") "server"])];
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart = "on-failure";
+        restart_token = cfg.restartToken;
+        restart_delay_millis = 5000;
+        remain_after_exit = false;
+        start_timeout_millis = 90000;
+        stop_timeout_millis = 60000;
+      };
+      dependencies = {
+        after = [(resultOf "network-readiness" "resource")];
+        before = [];
+        requires = [];
+        wants = [(resultOf "network-readiness" "resource")];
+      };
+      readiness = {
+        mechanism = "process-running";
+        signal_scope = "none";
+        timeout_millis = 90000;
+      };
+      credentials.views =
+        builtins.map (credential: {
+          inherit (credential) name environment_variable;
+          inherit (credential.reference) encrypted;
+          reference = resultOf "credential-${credential.name}" "credential-path";
+          optional = false;
+        })
+        credentials;
+      configuration.views = [
+        {
+          name = "server";
+          source = resultOf "server-configuration" "planned-path";
+          optional = false;
+        }
+      ];
+      storage.mounts = [
+        {
+          name = "metadata";
+          source = resultOf "metadata-storage" "planned-path";
+          access = "read-write";
+        }
+        {
+          name = "data";
+          source = resultOf "data-storage" "planned-path";
+          access = "read-write";
+        }
+        {
+          name = "runtime";
+          source = resultOf "runtime-storage" "planned-path";
+          access = "read-write";
+        }
+      ];
+      logging = {
+        standard_output = "structured";
+        standard_error = "structured";
+        directories = ["garage"];
+        directory_mode = "0750";
+      };
+      identity = {
+        principal = resultOf "service-principal" "principal-name";
+        primary_group = resultOf "service-group" "group-name";
+        supplementary_groups = [];
+        ephemeral = false;
+        file_creation_mask = "0027";
+      };
+      isolation = {
+        privilege = "unprivileged";
+        filesystem = "read-only-system";
+        network = "host";
+        process_visibility = "host";
+        termination_scope = "all-processes";
+        temporary_directory = "private";
+        devices = [];
+        host_paths = [];
+        permit_core_dumps = false;
+      };
+      resources.open_files = {
+        kind = "maximum";
+        value = 65536;
+      };
+    };
+  in {
+    service = serviceRequest;
+    inherit credentialRequests;
+    producers = [
+      persistentStorage
+      runtimeStorage
+      group
+      principal
+      networkReadiness
+      configurationRequest
+      credentialRequests
+    ];
+  };
+  configured = abilityFragmentsFor {
+    admin = cfg.admin.enable;
+    metrics = cfg.admin.enable && cfg.admin.metrics.requireToken;
+  };
+  allCredentials =
+    (abilityFragmentsFor {
+      admin = true;
+      metrics = true;
+    }).credentialRequests;
 in {
   options.garage = {
-    enable = lib.mkEnableOption "the Garage object-storage service";
-
+    enable = mkOption {
+      type = abilityTypes.boolean;
+      default = false;
+      description = "Enable the Garage object-storage service.";
+    };
+    restartToken = mkOption {
+      type = abilityTypes.optional serviceTypes.restartToken;
+      default = null;
+      description = "Operator-controlled token whose change requests a service restart.";
+    };
     dbEngine = mkOption {
-      type = types.enum ["lmdb" "sqlite"];
+      type = dbEngineType;
       default = "lmdb";
       description = "Embedded metadata database engine.";
     };
-
     replicationFactor = mkOption {
       type = positiveInt;
       default = 1;
       description = "Number of copies Garage maintains for each object.";
     };
-
     rpc = {
       bindAddress = mkOption {
         type = socketAddress;
@@ -74,22 +403,24 @@ in {
         description = "Socket address used for Garage cluster RPC.";
       };
       publicAddress = mkOption {
-        type = types.nullOr socketAddress;
+        type = abilityTypes.optional socketAddress;
         default = null;
         description = "Externally reachable cluster RPC address advertised to peers.";
       };
       bootstrapPeers = mkOption {
-        type = types.listOf nonempty;
+        type = abilityTypes.list {
+          element = nonEmpty;
+          maxItems = abilityTypes.limits.maxCollectionItems;
+        };
         default = [];
         description = "Garage node-ID and RPC-address peers used for cluster discovery.";
       };
       secret = mkOption {
-        type = optionalSecretRef;
-        default = null;
-        description = "Opaque reference for the shared 32-byte hexadecimal RPC secret.";
+        type = credentialReference;
+        default = {};
+        description = "Opaque resource reference for the shared 32-byte hexadecimal RPC secret.";
       };
     };
-
     s3 = {
       bindAddress = mkOption {
         type = socketAddress;
@@ -97,20 +428,19 @@ in {
         description = "Socket address used by the S3 API.";
       };
       region = mkOption {
-        type = nonempty;
+        type = nonEmpty;
         default = "garage";
         description = "S3 region returned to clients and used for request signing.";
       };
       rootDomain = mkOption {
-        type = types.nullOr nonempty;
+        type = abilityTypes.optional nonEmpty;
         default = null;
         description = "Optional DNS suffix for virtual-host-style S3 requests.";
       };
     };
-
     web = {
       enable = mkOption {
-        type = types.bool;
+        type = abilityTypes.boolean;
         default = false;
         description = "Enable Garage's public bucket website endpoint.";
       };
@@ -120,15 +450,14 @@ in {
         description = "Socket address used by the bucket website endpoint.";
       };
       rootDomain = mkOption {
-        type = nonempty;
+        type = nonEmpty;
         default = ".web.garage.localhost";
         description = "DNS suffix used to select website buckets.";
       };
     };
-
     admin = {
       enable = mkOption {
-        type = types.bool;
+        type = abilityTypes.boolean;
         default = false;
         description = "Enable Garage's authenticated administration and metrics API.";
       };
@@ -138,75 +467,58 @@ in {
         description = "Socket address used by the administration API.";
       };
       token = mkOption {
-        type = optionalSecretRef;
-        default = null;
-        description = "Opaque reference for the administration bearer token.";
+        type = credentialReference;
+        default = {};
+        description = "Opaque resource reference for the administration bearer token.";
       };
       metrics = {
         requireToken = mkOption {
-          type = types.bool;
+          type = abilityTypes.boolean;
           default = true;
           description = "Require a bearer token when scraping metrics.";
         };
         token = mkOption {
-          type = optionalSecretRef;
-          default = null;
-          description = "Opaque reference for the metrics bearer token.";
+          type = credentialReference;
+          default = {};
+          description = "Opaque resource reference for the metrics bearer token.";
         };
       };
     };
   };
 
-  config = {
-    garage.config.runtime = {
-      GARAGE_ENABLED =
-        if cfg.enable
-        then "1"
-        else "0";
-      GARAGE_CONFIG_GENERATION = builtins.hashString "sha256" renderedConfig;
-    };
-
-    garage.credentials = mkMerge [
-      (mkIf (cfg.rpc.secret != null) {"rpc-secret" = cfg.rpc.secret;})
-      (mkIf (cfg.admin.token != null) {"admin-token" = cfg.admin.token;})
-      (mkIf (cfg.admin.metrics.token != null) {"metrics-token" = cfg.admin.metrics.token;})
-    ];
-
-    environment.etc."aos/packages/garage/garage.toml" = {
-      mode = "0640";
-      text = renderedConfig;
-    };
-
-    aos.users.users.garage = {
-      uid = 804;
-      group = "garage";
-      home = "/var/lib/aos-pkg-garage";
-      shell = "/sbin/nologin";
-      description = "Garage object-storage service";
-      extraGroups = [];
-    };
-    aos.users.groups.garage = {
-      gid = 804;
-      members = [];
-    };
-
-    assertions = [
-      {
-        assertion = !cfg.enable || cfg.rpc.secret != null;
-        message = "garage.enable requires an opaque garage.rpc.secret reference";
-      }
-      {
-        assertion = !cfg.admin.enable || cfg.admin.token != null;
-        message = "garage.admin.enable requires an opaque garage.admin.token reference";
-      }
-      {
-        assertion = !cfg.admin.metrics.requireToken || !cfg.admin.enable || cfg.admin.metrics.token != null;
-        message = "garage admin metrics token enforcement requires garage.admin.metrics.token";
-      }
-      {
-        assertion = builtins.length cfg.rpc.bootstrapPeers == builtins.length (lib.unique cfg.rpc.bootstrapPeers);
-        message = "garage.rpc.bootstrapPeers must not contain duplicates";
-      }
-    ];
-  };
+  config = lib.mkMerge [
+    {
+      assertions = [
+        {
+          assertion = !serviceEnabled || serviceManagement.credentialReferenceConfigured rpcSecret;
+          message = "garage.rpc.secret requires a credential reference when Garage is enabled";
+        }
+        {
+          assertion = !serviceEnabled || !cfg.admin.enable || serviceManagement.credentialReferenceConfigured adminToken;
+          message = "garage.admin.token requires a credential reference when the administration API is enabled";
+        }
+        {
+          assertion = !serviceEnabled || !cfg.admin.enable || !cfg.admin.metrics.requireToken || serviceManagement.credentialReferenceConfigured metricsToken;
+          message = "garage.admin.metrics.token requires a credential reference when authenticated metrics are enabled";
+        }
+        {
+          assertion = builtins.length cfg.rpc.bootstrapPeers == builtins.length (lib.unique cfg.rpc.bootstrapPeers);
+          message = "garage.rpc.bootstrapPeers must not contain duplicates";
+        }
+      ];
+    }
+    {
+      aos.services."garage.main" = configured.service // {enable = cfg.enable;};
+    }
+    (serviceManagement.producerModule {
+      inherit config lib;
+      inherit (configured) producers;
+      enabled = serviceEnabled;
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [allCredentials];
+      enabled = false;
+    })
+  ];
 }

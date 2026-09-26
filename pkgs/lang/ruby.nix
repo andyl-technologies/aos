@@ -1,8 +1,8 @@
 ##! ruby — Ruby programming language
 {
+  lib,
   mkDerivation,
   fetchurl,
-  lib,
   stdenv,
   buildPackages,
   gnumake,
@@ -30,7 +30,87 @@
   );
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      role = "public-package";
+    };
     pname = "ruby";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Ruby prints the exact integer result 42.";
+        "files" = {
+          "answer.rb" = "puts [19, 23].map { |value| value }.sum\n";
+        };
+        "input" = "A Ruby program that maps and sums two integers.";
+        "operation" = "Execute the program with the packaged Ruby interpreter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/ruby"
+              "answer.rb"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Ruby rejects the program with its syntax-error status.";
+        "files" = {
+          "invalid.rb" = "def answer(\n  42\nend\n";
+        };
+        "input" = "A Ruby method definition with an unclosed parameter list.";
+        "operation" = "Ask Ruby to check the malformed program's syntax.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/ruby"
+              "-c"
+              "invalid.rb"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -113,17 +193,23 @@ in
       }
       {
         name = "install";
-        script =
-          ''
-            make install
-            "$out/bin/ruby" -ropenssl -rzlib -rpsych -e \
-              'abort unless RUBY_VERSION == "${version}"'
-          ''
-          + lib.optionalString isLinuxCross ''
-            # Bundled gems retain object files and mkmf probe logs with
-            # paths to the build compiler, which is not a runtime dependency.
-            find "$out/lib/ruby/gems" -type f \( -name '*.o' -o -name 'mkmf.log' \) -delete
-          '';
+        script = ''
+          make install
+          "$out/bin/ruby" -ropenssl -rzlib -rpsych -e \
+            'abort unless RUBY_VERSION == "${version}"'
+          # Bundled gems leave build logs and objects that retain compiler
+          # paths even though Ruby never needs them at runtime.
+          find "$out/lib/ruby/gems" -type f \
+            \( -name '*.o' -o -name 'mkmf.log' \) -delete
+
+          # RbConfig describes the compiler for future gem builds. Resolve it
+          # from the caller's PATH instead of pinning this build's toolchain.
+          compiler_bin_dir=''${CC%/*}
+          if [ "$compiler_bin_dir" != "$CC" ]; then
+            find "$out/lib/ruby" -type f -name rbconfig.rb \
+              -exec sed -i "s|$compiler_bin_dir/||g" {} +
+          fi
+        '';
       }
     ];
 

@@ -5,6 +5,13 @@ edition = "2021"
 license.workspace = true
 description = "Wasm-clean route advertisement contract for the AOS Hub console"
 
+# Contract tests inspect the implementation and stylesheet they constrain.
+[package.metadata.aos]
+source_inputs = [
+    "crates/aos-hub-console/src",
+    "crates/aos-hub-core/src/web/static_assets/style.css",
+]
+
 [lints]
 workspace = true
 

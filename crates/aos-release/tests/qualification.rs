@@ -8,12 +8,12 @@ use aos_release::{
     },
 };
 
+#[path = "../src/test_support/qualification/mod.rs"]
+#[allow(dead_code)]
+mod qualification_fixture;
+
 fn contract() -> QualificationContract {
-    canonical::from_slice(
-        include_bytes!("fixtures/qualification-contract.json"),
-        "qualification fixture",
-    )
-    .unwrap()
+    qualification_fixture::contract().unwrap()
 }
 
 #[test]

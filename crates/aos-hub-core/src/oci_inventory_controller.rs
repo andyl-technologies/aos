@@ -1275,7 +1275,7 @@ mod tests {
 
     use aos_oci_types::RepositoryName;
     use async_trait::async_trait;
-    use sha2::{Digest as _, Sha256};
+    use sha2::Sha256;
 
     use super::*;
     use crate::db::{

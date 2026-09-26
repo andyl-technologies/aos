@@ -12,6 +12,7 @@
   jq,
   iptables,
   ca-certificates,
+  ociTools,
 }: let
   programs = callPackage ./_k3s-addon-programs.nix {};
   traefik = callPackage ./_k3s-traefik.nix {};
@@ -21,10 +22,6 @@
     pkgs = {
       inherit mkDerivation fetchurl bash coreutils grep jq iptables;
     };
-  };
-  oci = import ../../lib/build/oci {
-    inherit lib;
-    inherit (buildPackages) mkDerivation coreutils findutils gzip jq tar;
   };
   architecture =
     if stdenv.hostPlatform.isAarch64
@@ -44,11 +41,11 @@
   }: let
     reference = "aos.invalid/k3s/${name}";
     imageRoots = lib.unique (roots ++ [ca-certificates]);
-    payload = oci.mkClosureLayer {
+    payload = ociTools.mkClosureLayer {
       roots = imageRoots;
       pname = "k3s-${name}-payload";
     };
-    metadata = oci.mkRootMetadataLayer {
+    metadata = ociTools.mkRootMetadataLayer {
       pname = "k3s-${name}-metadata";
       storeLayers = [payload];
       directories =
@@ -76,11 +73,30 @@
         }
       ];
     };
-    runtimeAudit = import ../../lib/build/runtime-closure-audit.nix {
-      inherit lib name maxClosureMiB;
+    runtimeAudit = lib.build.runtimeClosureAudit {
+      inherit name maxClosureMiB;
       pkgs = buildPackages;
       roots = imageRoots;
       maxDevelopmentPayloadMiB = 1;
+    };
+    packageProjections = builtins.map
+      lib.abilities.authenticatedPackageProjectionFor
+      (builtins.filter
+        (package:
+          builtins.isAttrs package
+          && package ? abilities
+          && package ? contract
+          && package ? module
+          && package.contract.value.package_module != null)
+        imageRoots);
+    abilityContract = ociTools.mkStaticAbilityContract {
+      pname = "k3s-${name}-static-abilities";
+      platform = {
+        os = "linux";
+        inherit architecture;
+      };
+      inherit packageProjections;
+      runtimeRoots = imageRoots;
     };
   in {
     inherit reference;
@@ -93,14 +109,10 @@
       then root.src
       else [root.src])
     imageRoots);
-    image = oci.mkImageLayout {
+    image = ociTools.mkImageLayout {
       pname = "k3s-${name}-image";
       layers = [payload metadata];
-      inherit runtimeAudit;
-      platform = {
-        os = "linux";
-        inherit architecture;
-      };
+      inherit runtimeAudit abilityContract;
       referenceName = "${reference}:${version}";
       config = {
         inherit entrypoint user;

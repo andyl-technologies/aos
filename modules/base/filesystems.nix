@@ -1,31 +1,19 @@
 ##! modules/base/filesystems.nix — Immutable filesystem layout module
 ##!
-##! Defines the AOS filesystem hierarchy: read-only root (ext4 or EROFS),
-##! FAT32 ESP, overlay /etc, encrypted swap, and tmpfs for /tmp and /run.
-##! This is the core of the immutable OS design — the root filesystem is
-##! mounted read-only and all mutable state lives elsewhere.
-##!
-##! This module owns the pool's existence: whether the host uses ZFS, which
-##! pool carries its state, and importing that pool at boot. The datasets in
-##! it and the memory ZFS may hold are owned by modules/base/zfs-datasets.nix
-##! and modules/base/zfs-memory.nix.
+##! Defines the AOS filesystem hierarchy: read-only root, FAT32 ESP,
+##! provider-managed persistent state, overlay /etc, and tmpfs for /tmp and
+##! /run.
 ##!
 ##! Absorbed TOML config values:
 ##!   [filesystems] root_read_only, root_device, root_fstype, esp_device
-##!   [filesystems.zfs] enable, pool_name
 ##!   [filesystems.overlay] etc_overlay
 {
   config,
-  pkgs,
   lib,
   ...
 }: let
   cfg = config.aos.filesystems;
-
-  # OpenZFS is an out-of-tree module, so its build is bound to one exact
-  # kernel. `aos.boot.storage` overrides this when the immutable image slots
-  # live on zvols and the same build has to be in the initrd.
-  zfsForRunningKernel = config.aos.config.artifacts.zfs-for-running-kernel;
+  varManaged = builtins.elem "/var" config.aos.storage.managedMountPoints;
 
   # Build fstab entries from the filesystem configuration.
   #
@@ -61,10 +49,9 @@
     "${cfg.espDevice}  /boot  vfat  noauto,nofail,ro,noatime,fmask=0077,dmask=0077  0  0"
     ""
     (
-      if cfg.zfs.enable && cfg.zfs.systemState
+      if varManaged
       then ''
-        # /var is a declared ZFS dataset; modules/base/zfs-datasets.nix
-        # generates the systemd mount unit that mounts it.
+        # /var is a native storage dataset mounted by the selected provider.
       ''
       else ''
         # /var — persistent mutable state (partition created by systemd-repart)
@@ -80,8 +67,6 @@ in {
   options.aos.filesystems = {
     ## Mount the root filesystem read-only (immutable OS foundation).
     ##
-    ## # See Also
-    ## - `aos.filesystems.zfs.enable`
     rootReadOnly = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -119,60 +104,6 @@ in {
       description = "Stable block-device path for the EFI System Partition.";
     };
 
-    zfs = {
-      ## Use ZFS for persistent mutable state under /var.
-      enable = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = ''
-          Use ZFS for persistent mutable state under /var, providing
-          snapshots, compression, checksumming, and per-dataset quotas. When
-          disabled, `/var` is an ext4 partition that systemd-repart creates at
-          first boot.
-
-          Enabling this also enables the bounded memory policy in
-          `modules/base/zfs-memory.nix`, which is what keeps OpenZFS's
-          RAM-scaled defaults from growing without regard to pool size.
-        '';
-      };
-
-      ## Place the system's mutable state (/var) on the pool.
-      systemState = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = ''
-          Put `/var` and its children on the pool. When false the pool carries
-          only the datasets a configuration declares explicitly, and `/var`
-          stays on the partition the image provides. That suits a host with a
-          pool for bulk data whose system state should keep the image's own
-          provisioning and recovery path.
-        '';
-      };
-
-      ## Name of the ZFS pool for persistent data.
-      poolName = lib.mkOption {
-        type = lib.types.strMatching "[A-Za-z][A-Za-z0-9_.:-]*";
-        default = "rpool";
-        description = ''
-          Name of the ZFS pool holding persistent data. Matches the default of
-          `aos.boot.storage.zfs.poolName`, which sets this option when the
-          immutable image slots live on zvols in the same pool.
-        '';
-      };
-
-      package = lib.mkOption {
-        type = lib.types.package;
-        default = pkgs.zfs;
-        internal = true;
-        description = ''
-          OpenZFS userland and kernel module. Defaults to the userland-only
-          build so systems with ZFS disabled never build the module; the
-          configuration below binds it to the running kernel whenever ZFS is
-          actually enabled.
-        '';
-      };
-    };
-
     # `aos.filesystems.overlayEtc` was removed in spec v12: the
     # composefs-backed /etc overlay is now unconditional. See
     # `modules/services/boot-substrate.nix:etc-overlay-setup.service` for the
@@ -181,30 +112,6 @@ in {
   };
 
   config = {
-    # OpenZFS is tied to the image kernel. Freeze that exact package for the
-    # stage-2 evaluator, whose package set deliberately exposes no builders.
-    aos.config._artifactSources.zfs-for-running-kernel =
-      if config.aos.config.frozenArtifacts ? "zfs-for-running-kernel"
-      then null
-      else pkgs.zfsForKernel config.system.build.kernel;
-
-    assertions = [
-      {
-        # /var on the pool is mounted in the initrd, which needs the pool
-        # imported and its key loaded before switch-root. Only the zvol boot
-        # backend provides that unlock unit, so any other backend leaves the
-        # initrd unable to assemble /etc and the guest fails to switch root
-        # with nothing pointing at the cause.
-        assertion =
-          !(cfg.zfs.enable && cfg.zfs.systemState)
-          || config.aos.boot.storage.backend == "zfs-zvol";
-        message =
-          "aos.filesystems.zfs.systemState puts /var on the pool, which the initrd must unlock"
-          + " before switch-root; that requires aos.boot.storage.backend = \"zfs-zvol\"."
-          + " Set systemState = false for a pool that carries data only.";
-      }
-    ];
-
     system.checks.filesystem = {
       description = "Filesystem layout checks";
       checks = [
@@ -264,101 +171,5 @@ in {
     environment.etc."fstab" = {
       text = fstabEntries + "\n";
     };
-
-    # tmpfiles rules to create standard volatile directories.
-    # etc-overlay-setup.service creates `/run/etc/upper-<gen>/{dir,work}`
-    # at boot time directly (spec v12 §6.1.4).
-    environment.etc."tmpfiles.d/aos-filesystems.conf" = {
-      text = ''
-        # tmpfiles.d rules — generated by modules/base/filesystems.nix
-        d /run 0755 root root -
-      '';
-    };
-
-    # A host whose state lives on ZFS needs the module loadable in stage 2 and
-    # the userland present in recovery. Recovery without pool access cannot
-    # repair the one thing it exists to repair.
-    aos.filesystems.zfs.package = lib.mkIf cfg.zfs.enable (lib.mkDefault zfsForRunningKernel);
-    aos.kernel.modulePackages = lib.mkIf cfg.zfs.enable [cfg.zfs.package];
-    aos.kernel.modules = lib.mkIf cfg.zfs.enable ["zfs"];
-    aos.boot.recovery.extraPackages = lib.mkIf cfg.zfs.enable [cfg.zfs.package];
-
-    systemd.services = lib.mkMerge [
-      # Pool import. Declared datasets are created and mounted by
-      # modules/base/zfs-datasets.nix, which orders itself after this.
-      (lib.mkIf cfg.zfs.enable {
-        "zfs-import" = {
-          description = "Import ZFS pool ${cfg.zfs.poolName}";
-          wantedBy = ["local-fs.target"];
-          before = ["local-fs.target"];
-          # Importing a pool needs /dev/zfs, which appears only once the
-          # module is inserted. Without this the import can run first and
-          # fail on a host that is otherwise configured correctly.
-          after = ["systemd-udev-settle.service" "systemd-modules-load.service"];
-          wants = ["systemd-modules-load.service"];
-          serviceConfig = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-            ExecStart = "${pkgs.bash}/bin/bash -c '${cfg.zfs.package}/sbin/zpool list -H ${cfg.zfs.poolName} >/dev/null 2>&1 || ${cfg.zfs.package}/sbin/zpool import -N -f ${cfg.zfs.poolName}'";
-            ExecStop = "${cfg.zfs.package}/sbin/zpool export ${cfg.zfs.poolName}";
-          };
-        };
-      })
-
-      # Encrypted swap — plain dm-crypt keyed from /dev/urandom. The key
-      # is discarded on reboot so swap contents are not recoverable.
-      # The swap partition itself is created by systemd-repart on first boot.
-      {
-        "cryptswap" = {
-          description = "Set Up Encrypted Swap";
-          wantedBy = ["swap.target"];
-          before = ["swap.target"];
-          requires = ["dev-disk-by\\x2dpartlabel-swap.device"];
-          after = [
-            "local-fs.target"
-            "dev-disk-by\\x2dpartlabel-swap.device"
-          ];
-          unitConfig = {
-            # The partition only exists after systemd-repart's first-boot run.
-            # ConditionPathExists makes the first pre-repart boot a
-            # no-op instead of a fatal service failure.
-            ConditionPathExists = "/dev/disk/by-partlabel/swap";
-            DefaultDependencies = "no";
-          };
-          serviceConfig = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-          };
-          script = ''
-            set -euo pipefail
-            swap_dev=/dev/disk/by-partlabel/swap
-            dm_name=cryptswap
-
-            if [ -e /dev/mapper/$dm_name ]; then
-              exit 0
-            fi
-
-            ${pkgs.cryptsetup}/sbin/cryptsetup open --type=plain \
-              --cipher=aes-xts-plain64 \
-              --key-size=256 \
-              --key-file=/dev/urandom \
-              "$swap_dev" "$dm_name"
-
-            ${pkgs.util-linux}/sbin/mkswap /dev/mapper/$dm_name
-            ${pkgs.util-linux}/sbin/swapon /dev/mapper/$dm_name
-          '';
-          preStop = ''
-            set -eu
-            if ${pkgs.util-linux}/sbin/swapon --show=NAME --noheadings \
-                | grep -qx /dev/mapper/cryptswap; then
-              ${pkgs.util-linux}/sbin/swapoff /dev/mapper/cryptswap
-            fi
-            if [ -e /dev/mapper/cryptswap ]; then
-              ${pkgs.cryptsetup}/sbin/cryptsetup close cryptswap
-            fi
-          '';
-        };
-      }
-    ];
   };
 }

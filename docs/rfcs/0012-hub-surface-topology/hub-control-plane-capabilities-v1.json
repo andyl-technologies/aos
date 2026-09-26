@@ -242,11 +242,19 @@
       "audience": "public",
       "cli_families": ["registry docs", "package docs"],
       "web_workflows": ["public-package-documentation"],
-      "methods": ["GetPackageDocumentation", "SearchPackageDocumentation", "ListPackageOptions", "GetPackageOption", "ComparePackageDocumentation", "GetDocumentationArtifact", "GetPackageDocumentationSchema"],
+      "methods": ["GetPackageDocumentation", "GetPackageAbilityReference", "GetReleaseAbilityGraph", "SearchPackageDocumentation", "ListPackageOptions", "GetPackageOption", "ComparePackageDocumentation", "GetDocumentationArtifact", "GetPackageDocumentationSchema"],
       "web_method_exceptions": [
         {
           "method": "GetPackageDocumentation",
           "reason": "The public version/platform documentation page and /-/api/v1/packages/{package}/docs provide the canonical reference."
+        },
+        {
+          "method": "GetPackageAbilityReference",
+          "reason": "The public /-/api/v1/packages/{package}/abilities endpoint provides the signed release-derived ability reference."
+        },
+        {
+          "method": "GetReleaseAbilityGraph",
+          "reason": "The public release-pinned Abilities page and /-/api/v1/abilities endpoint expose provider and consumer relationships derived from signed package references."
         },
         {
           "method": "SearchPackageDocumentation",
@@ -273,6 +281,14 @@
           "reason": "The public documentation schema endpoint provides the canonical schema."
         }
       ]
+    },
+    {
+      "service": "AbilityDeploymentService",
+      "audience": "operator",
+      "cli_families": [],
+      "web_workflows": [],
+      "exclusion": "Private reviewed reporter enrollment, bounded authenticated reports, and audit reads remain explicit typed API operations; authorized package pages render a bounded read projection.",
+      "methods": ["PlanConfigureReporter", "ConfigureReporter", "ReportPackageOverlay", "GetPackageOverlay"]
     },
     {
       "service": "ChannelService",

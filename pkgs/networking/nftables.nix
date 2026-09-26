@@ -1,5 +1,6 @@
 ##! nftables — Netfilter tables userspace tools
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -12,8 +13,70 @@
   version = "1.1.7";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "nftables";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Nft accepts the offline definition without modifying a ruleset.";
+        "files" = {
+          "definition.nft" = "define qualification = 42\n";
+        };
+        "input" = "An nftables source file defining the integer symbol qualification.";
+        "operation" = "Parse the definition in check-only mode.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/sbin/nft\", \"--check\", \"--file\", \"definition.nft\"], capture_output=True, text=True)\nassert result.returncode == 0, (result.returncode, result.stdout, result.stderr)\nprint(\"nftables operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "nftables operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Nft rejects the incomplete definition.";
+        "files" = {
+          "invalid.nft" = "define qualification =\n";
+        };
+        "input" = "An nftables definition with no expression after the equals sign.";
+        "operation" = "Parse the malformed definition in check-only mode.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/sbin/nft\", \"--check\", \"--file\", \"invalid.nft\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"syntax error\" in result.stderr.lower(), (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"nftables rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "nftables rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
+
+    abilities = ./_nftables;
 
     src = fetchurl {
       urls = [

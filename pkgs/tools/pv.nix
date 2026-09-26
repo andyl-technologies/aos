@@ -1,5 +1,6 @@
 ##! pv — Pipeline progress monitor
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -7,7 +8,57 @@
   version = "1.11.0";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "pv";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "pv preserves every input byte on standard output.";
+        "files" = {};
+        "input" = "A fixed byte stream and a disabled progress display.";
+        "operation" = "Copy the stream through pv's data path.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/pv"
+              "--quiet"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "answer=42\n";
+            "stdout" = {
+              "exact" = "answer=42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "pv rejects the malformed numeric value with a non-success status.";
+        "files" = {};
+        "input" = "A numeric rate limit containing non-numeric text.";
+        "operation" = "Parse the invalid rate-limit argument.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/pv"
+              "--rate-limit"
+              "not-a-number"
+            ];
+            "exit_code" = 64;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

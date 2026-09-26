@@ -5,8 +5,6 @@
   buildPackages,
   gnumake,
   runc,
-  kmod,
-  bash,
   lib,
 }: let
   version = "2.3.5";
@@ -61,184 +59,95 @@
       {
         name = "install";
         script = ''
-          mkdir -p $out/bin $out/lib/systemd/system
+          mkdir -p $out/bin
           install -m 755 bin/* $out/bin/
-          sed \
-            -e 's|/usr/local/bin/containerd|'"$out/bin/containerd"'|g' \
-            -e 's|/sbin/modprobe|${kmod}/sbin/modprobe|g' \
-            containerd.service > $out/lib/systemd/system/containerd.service
         '';
       }
     ];
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "containerd";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Containerd returns success and reports its packaged version.";
+        "files" = {};
+        "input" = "The packaged containerd daemon's release identity.";
+        "operation" = "Request its version without starting the daemon.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/containerd\", \"--version\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"containerd\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nprint(\"containerd operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "containerd operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Containerd rejects the unsupported option.";
+        "files" = {};
+        "input" = "A containerd invocation containing an unknown global option.";
+        "operation" = "Parse the invalid option before daemon initialization.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/containerd\", \"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"containerd rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "containerd rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = null;
-    runtimeDeps = [payload runc kmod bash];
+    runtimeDeps = [payload runc];
     propagatedDeps = [];
+
+    abilities = ./_containerd-config;
 
     passthru.evidenceSources = [
       ./containerd.nix
       payload.src
     ];
 
-    # Pure stage-2 inventory: generateUnits can reproduce the historical
-    # systemd.packages symlink farm without inspecting this output at eval
-    # time (and therefore without import-from-derivation).
-    passthru.systemdUnitInventory.system = [
-      "lib/systemd/system/containerd.service"
-    ];
-
-    expose = {
-      units."containerd.service" = {
-        description = "containerd standalone container runtime";
-        after = ["network.target"];
-        serviceConfig = {
-          Type = "notify";
-          EnvironmentFile = "/etc/aos/packages/containerd/runtime.env";
-          ExecCondition = "${bash}/bin/bash -c 'test \"$CONTAINERD_ENABLED\" = true'";
-          ExecStart = "${payload}/bin/containerd --config /etc/aos/packages/containerd/config.toml";
-          Restart = "always";
-          RestartSec = "5s";
-          Delegate = true;
-          KillMode = "process";
-          OOMScoreAdjust = -999;
-          LimitNOFILE = 1048576;
-          LimitNPROC = "infinity";
-          LimitCORE = "infinity";
-          TasksMax = "infinity";
-          StateDirectory = "containerd";
-          RuntimeDirectory = "containerd";
-        };
-      };
-
-      config.artifacts = [
-        {
-          name = "runtime";
-          path = "/etc/aos/packages/containerd/runtime.env";
-          format = "env";
-          required = ["CONTAINERD_ENABLED"];
-          units = ["containerd.service"];
-          reload = "restart";
-        }
-        {
-          name = "config";
-          path = "/etc/aos/packages/containerd/config.toml";
-          format = "toml";
-          required = ["version" "root" "state" "grpc" "plugins"];
-          optional = ["metrics" "disabled_plugins" "required_plugins"];
-          units = ["containerd.service"];
-          reload = "restart";
-        }
-      ];
-
-      prepareHostPathDirectories = [
-        "/var/lib/containerd"
-        "/run/containerd"
-      ];
-      permissions = {
-        network = "host";
-        privileged-users = true;
-        cgroup-delegate = true;
-        capabilities = [
-          "CAP_SYS_ADMIN"
-          "CAP_SYS_CHROOT"
-          "CAP_NET_ADMIN"
-          "CAP_NET_RAW"
-          "CAP_MKNOD"
-          "CAP_SETUID"
-          "CAP_SETGID"
-          "CAP_CHOWN"
-        ];
-        devices = ["/dev/null" "/dev/random" "/dev/urandom"];
-        host-paths = [
-          {
-            path = "/var/lib/containerd";
-            mode = "rw";
-          }
-          {
-            path = "/run/containerd";
-            mode = "rw";
-          }
-          {
-            path = "/etc/containerd";
-            mode = "read-only";
-          }
-          {
-            path = "/sys/fs/cgroup";
-            mode = "rw";
-          }
-          {
-            path = "/lib/modules";
-            mode = "read-only";
-          }
-        ];
-        kernel-modules = ["overlay"];
-        syscalls = "privileged";
-        security-label = "aos-pkg-containerd";
-      };
-      kernel.modules = ["overlay"];
-    };
-
-    configModule = {
-      src = ./_containerd-config;
-      moduleAbiCompat = {
-        min = 1;
-        max = 2;
-      };
-      declares = [
-        "containerd.defaultRuntime"
-        "containerd.disabledPlugins"
-        "containerd.enable"
-        "containerd.grpcAddress"
-        "containerd.metricsAddress"
-        "containerd.registryConfigPath"
-        "containerd.requiredPlugins"
-        "containerd.root"
-        "containerd.sandboxImage"
-        "containerd.snapshotter"
-        "containerd.state"
-        "containerd.systemdCgroup"
-      ];
-      ownsRoots = [
-        {
-          root = "containerd";
-          interfaceAbi = 1;
-          contributable = [];
-        }
-      ];
-      documentation = {
-        summary = "containerd — industry-standard container runtime";
-        sections = {
-          enablement = lib.aosDoc.section "Standalone runtime" [
-            (lib.aosDoc.paragraph "Installing containerd is inert. Enable this package only for a standalone host runtime; k3s consumes containerd binaries as subordinate payloads and does not enable this service.")
-          ];
-          isolation = lib.aosDoc.section "Privilege and state" [
-            (lib.aosDoc.paragraph "This is an explicit root-equivalent workload with kernel, cgroup, state, runtime, and socket access. Durable state uses /var/lib/containerd and volatile state uses /run/containerd.")
-          ];
-          registries = lib.aosDoc.section "Registry configuration" [
-            (lib.aosDoc.paragraph "Provision hosts.toml beneath registryConfigPath using host policy. Registry passwords must use an external credential helper or platform-managed file, never runtime Nix values.")
-          ];
-        };
-      };
-    };
-
     phases = [
       {
         name = "install";
         script = ''
-          mkdir -p $out/bin $out/lib/systemd/system
+          mkdir -p $out/bin
           for program in ${payload}/bin/*; do
             ln -s "$program" "$out/bin/$(basename "$program")"
           done
           # containerd resolves its default OCI runtime by executable name.
           # Retain that declared runtime inside the standalone package closure.
           ln -s ${runc}/sbin/runc $out/bin/runc
-          ln -s ${payload}/lib/systemd/system/containerd.service \
-            $out/lib/systemd/system/containerd.service
         '';
       }
     ];
@@ -247,6 +156,7 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
     }: {
       version = testing.mkToolCheck {
         pname = "tool-containerd";
@@ -254,7 +164,7 @@ in
         command = "containerd --version";
       };
       config-module-contract = import ./_containerd-tests/contract.nix {
-        inherit pkgs lib self;
+        inherit pkgs lib self mkSystem;
       };
       runtime-contract = import ./_containerd-tests/lifecycle.nix {
         inherit testing self;

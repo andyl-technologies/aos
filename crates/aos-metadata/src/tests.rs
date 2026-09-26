@@ -1,0 +1,798 @@
+//! Off-box unit tests for the `aos metadata` agent.
+//!
+//! Every test runs without root, network, `blkid`/`mount`, or a real `/sys`:
+//! the DMI table is pure, fetchers read fixture directories, the config-drive
+//! probe is faked, and the AWS IMDSv2 dance is replayed from
+//! [`RecordedHttp`](super::http::RecordedHttp).
+
+use std::path::Path;
+
+use tempfile::tempdir;
+
+use super::detect::{
+    AcquisitionContext, PlatformCapability, PlatformId, classify_dmi, detect, needs_network,
+    platform_capability,
+};
+use super::facts_render::{canonicalize_host_facts, render_host_facts_nix};
+use super::fetcher::{Facts, MacIface, PlatformFetcher, StaticNetwork, UserData};
+use super::http::{RecordedHttp, RecordedMethod};
+use super::mount::{CONFIG_DRIVE_LABELS, FakeProbe};
+use super::offline::{AosMetadataFetcher, ConfigDriveFetcher, NoCloudFetcher, QemuFwCfgFetcher};
+use super::staticnet::{parse_netplan_network_config, parse_openstack_network_data};
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest as _, Sha256};
+
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(f)
+}
+
+// ---------------------------------------------------------------------------
+// detect — the DMI decision table (table-driven, verbatim port)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dmi_table_matches_nix_decision_order() {
+    // (sys_vendor, bios_vendor, product, asset_tag) -> platform
+    let cases: &[(&str, &str, &str, &str, &str)] = &[
+        // Asset tag wins over everything.
+        ("", "", "", "7783-7084-3265-9085-8269-3286-77", "azure"),
+        ("Amazon EC2", "", "", "OracleCloud.com", "aws"),
+        // sys_vendor.
+        ("Amazon EC2", "", "", "", "aws"),
+        ("Google", "", "", "", "gcp"),
+        ("Microsoft Corporation", "", "Virtual Machine", "", "hyperv"),
+        ("Microsoft Corporation", "", "Other", "", "metal"),
+        ("DigitalOcean", "", "", "", "digitalocean"),
+        ("OpenStack Foundation", "", "", "", "openstack"),
+        // Vendors without a native, recorded contract are not advertised.
+        ("Hetzner", "", "", "", "metal"),
+        ("Vultr", "", "", "", "metal"),
+        ("Scaleway", "", "", "", "metal"),
+        ("VMware, Inc.", "", "", "", "vmware"),
+        ("innotek GmbH", "", "", "", "virtualbox"),
+        ("QEMU", "", "", "", "qemu"),
+        // bios_vendor (Nitro bare-metal).
+        ("Dell Inc.", "Amazon EC2", "", "", "aws"),
+        // product_name.
+        ("", "", "Google Compute Engine", "", "gcp"),
+        ("", "", "Standard PC (Q35 + ICH9, 2009)", "", "qemu"),
+        // Fallback.
+        ("", "", "", "", "metal"),
+    ];
+    for (sv, bv, prod, tag, want) in cases {
+        let got = classify_dmi(sv, bv, prod, tag);
+        assert_eq!(&got, want, "DMI({sv:?},{bv:?},{prod:?},{tag:?})");
+    }
+}
+
+#[test]
+fn network_platforms_gated() {
+    assert!(needs_network("aws"));
+    assert!(needs_network("azure"));
+    assert!(!needs_network("qemu"));
+    assert!(!needs_network("metal"));
+    assert!(!needs_network("aos-metadata"));
+    assert_eq!(
+        platform_capability("config-drive"),
+        Some(PlatformCapability::LocalMetadata)
+    );
+    assert_eq!(
+        platform_capability("openstack"),
+        Some(PlatformCapability::NetworkMetadata)
+    );
+    assert_eq!(platform_capability("hetzner"), None);
+    assert!(PlatformId::parse("hetzner").is_err());
+}
+
+#[test]
+fn detect_reads_fake_sysfs() {
+    let dir = tempdir().unwrap();
+    let dmi = dir.path().join("sys/class/dmi/id");
+    std::fs::create_dir_all(&dmi).unwrap();
+    std::fs::write(dmi.join("sys_vendor"), "Amazon EC2\n").unwrap();
+
+    let probe = FakeProbe::new(); // no config-drive present
+    let env = detect(dir.path(), &probe, &dir.path().join("media")).unwrap();
+    assert_eq!(env.platform, PlatformId::Aws);
+    assert!(env.needs_network());
+    assert!(env.metadata_dir.is_none());
+}
+
+#[test]
+fn detect_config_drive_short_circuits_cloud() {
+    let dir = tempdir().unwrap();
+    // Even with cloud DMI present, an offline drive wins.
+    let dmi = dir.path().join("sys/class/dmi/id");
+    std::fs::create_dir_all(&dmi).unwrap();
+    std::fs::write(dmi.join("sys_vendor"), "Amazon EC2").unwrap();
+
+    let media = tempdir().unwrap();
+    let probe = FakeProbe::new().with("cidata", media.path());
+    let env = detect(dir.path(), &probe, Path::new("/unused")).unwrap();
+    assert_eq!(env.platform, PlatformId::Nocloud);
+    assert!(!env.needs_network());
+    assert_eq!(env.metadata_dir.as_deref(), Some(media.path()));
+}
+
+#[test]
+fn config_drive_labels_priority() {
+    assert_eq!(CONFIG_DRIVE_LABELS, &["aos-metadata", "cidata", "config-2"]);
+}
+
+// ---------------------------------------------------------------------------
+// offline fetchers over fixtures
+// ---------------------------------------------------------------------------
+
+#[test]
+fn aos_metadata_fetcher_reads_host_nix_and_sig() {
+    let dir = tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("host.nix"),
+        b"{ services.x.enable = true; }",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("host.nix.sig"),
+        "-----BEGIN SSH SIGNATURE-----\n",
+    )
+    .unwrap();
+
+    let f = AosMetadataFetcher::new(dir.path());
+    let http = RecordedHttp::new();
+    let ud = block_on(f.fetch_user_data(&http)).unwrap().unwrap();
+    match ud {
+        UserData::Inline { payload, sig } => {
+            assert_eq!(payload, b"{ services.x.enable = true; }");
+            assert!(sig.unwrap().starts_with("-----BEGIN SSH SIGNATURE"));
+        }
+        _ => panic!("expected inline"),
+    }
+}
+
+#[test]
+fn aos_metadata_fetcher_absent_user_data_is_none() {
+    let dir = tempdir().unwrap();
+    let f = AosMetadataFetcher::new(dir.path());
+    let http = RecordedHttp::new();
+    assert!(block_on(f.fetch_user_data(&http)).unwrap().is_none());
+    assert_eq!(block_on(f.fetch_facts(&http)).unwrap(), Facts::default());
+}
+
+#[test]
+fn nocloud_fetcher_user_data_is_literal_host_nix() {
+    let dir = tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("user-data"),
+        b"#cloud-config-not-interpreted\n{ }",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("meta-data"),
+        "local-hostname: web-1\ninstance-id: i-123\n",
+    )
+    .unwrap();
+
+    let f = NoCloudFetcher::new(dir.path());
+    let http = RecordedHttp::new();
+    let ud = block_on(f.fetch_user_data(&http)).unwrap().unwrap();
+    match ud {
+        UserData::Inline { payload, .. } => {
+            assert!(payload.starts_with(b"#cloud-config-not-interpreted"));
+        }
+        _ => panic!("expected inline"),
+    }
+    let facts = block_on(f.fetch_facts(&http)).unwrap();
+    assert_eq!(facts.hostname.as_deref(), Some("web-1"));
+    assert_eq!(facts.instance_id.as_deref(), Some("i-123"));
+}
+
+#[test]
+fn nocloud_fetcher_parses_netplan_network_config() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("user-data"), b"{ }").unwrap();
+    std::fs::write(
+        dir.path().join("network-config"),
+        "network:\n  version: 2\n  ethernets:\n    eth0:\n      addresses: [10.0.0.5/24]\n      gateway4: 10.0.0.1\n      nameservers:\n        addresses: [1.1.1.1]\n      match:\n        macaddress: 0A:1B:2C:3D:4E:5F\n",
+    )
+    .unwrap();
+
+    let f = NoCloudFetcher::new(dir.path());
+    let http = RecordedHttp::new();
+    let facts = block_on(f.fetch_facts(&http)).unwrap();
+    let net = facts.network.expect("network seeded");
+    assert_eq!(net.addresses, vec!["10.0.0.5/24"]);
+    assert_eq!(net.gateway.as_deref(), Some("10.0.0.1"));
+    assert_eq!(net.dns, vec!["1.1.1.1"]);
+    assert_eq!(net.mac.as_deref(), Some("0a:1b:2c:3d:4e:5f"));
+    assert_eq!(net.interface_name.as_deref(), Some("eth0"));
+}
+
+#[test]
+fn nocloud_fixtures_support_common_flow_mappings_and_fail_closed() {
+    let dir = tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("meta-data"),
+        include_bytes!("../tests/fixtures/metadata/nocloud/meta-data.yaml"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("network-config"),
+        include_bytes!("../tests/fixtures/metadata/nocloud/network-config-flow.yaml"),
+    )
+    .unwrap();
+    let fetcher = NoCloudFetcher::new(dir.path());
+    let facts = block_on(fetcher.fetch_facts(&RecordedHttp::new())).unwrap();
+    assert_eq!(facts.hostname.as_deref(), Some("flow-node"));
+    assert_eq!(facts.instance_id.as_deref(), Some("iid-flow-001"));
+    let network = facts.network.expect("flow fixture must be seedable");
+    assert_eq!(network.interface_name.as_deref(), Some("ens3"));
+    assert_eq!(network.mac.as_deref(), Some("52:54:00:12:34:56"));
+    assert_eq!(network.addresses, ["192.0.2.22/24", "2001:db8::22/64"]);
+    assert_eq!(network.gateway.as_deref(), Some("192.0.2.1"));
+    assert_eq!(network.dns, ["1.1.1.1", "2606:4700:4700::1111"]);
+
+    std::fs::write(
+        dir.path().join("network-config"),
+        include_bytes!("../tests/fixtures/metadata/nocloud/network-config-malformed-flow.yaml"),
+    )
+    .unwrap();
+    let error = block_on(fetcher.fetch_facts(&RecordedHttp::new()))
+        .expect_err("malformed flow mapping must fail closed");
+    assert!(error.to_string().contains("NoCloud network-config"));
+}
+
+#[test]
+fn config_drive_fetcher_parses_openstack_metadata() {
+    let dir = tempdir().unwrap();
+    let os = dir.path().join("openstack/latest");
+    std::fs::create_dir_all(&os).unwrap();
+    std::fs::write(os.join("user_data"), b"{ services.y.enable = true; }").unwrap();
+    std::fs::write(
+        os.join("meta_data.json"),
+        r#"{"hostname":"os-1","uuid":"u-9","public_keys":{"default":"ssh-ed25519 AAAA op@h"},"devices":[{"serial":"vol-abc"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        os.join("network_data.json"),
+        r#"{"links":[{"id":"eth0","ethernet_mac_address":"0A:bb:cc:dd:ee:ff"}],"networks":[{"link":"eth0","ip_address":"203.0.113.10","netmask":"255.255.255.0","gateway":"203.0.113.1"}],"services":[{"type":"dns","address":"67.207.67.2"}]}"#,
+    )
+    .unwrap();
+
+    let f = ConfigDriveFetcher::new(dir.path());
+    let http = RecordedHttp::new();
+    let facts = block_on(f.fetch_facts(&http)).unwrap();
+    assert_eq!(facts.hostname.as_deref(), Some("os-1"));
+    assert_eq!(facts.instance_id.as_deref(), Some("u-9"));
+    assert_eq!(facts.ssh_authorized_keys, vec!["ssh-ed25519 AAAA op@h"]);
+    assert_eq!(facts.disk_ids, vec!["vol-abc"]);
+    let net = facts.network.unwrap();
+    assert_eq!(net.addresses, vec!["203.0.113.10/24"]);
+    assert_eq!(net.gateway.as_deref(), Some("203.0.113.1"));
+    assert_eq!(net.dns, vec!["67.207.67.2"]);
+    assert_eq!(net.mac.as_deref(), Some("0a:bb:cc:dd:ee:ff"));
+}
+
+#[test]
+fn qemu_fwcfg_reads_blob() {
+    let root = tempdir().unwrap();
+    let blob = root.path().join("opt/org.andyl/host-nix");
+    std::fs::create_dir_all(&blob).unwrap();
+    std::fs::write(blob.join("raw"), b"{ qemu = true; }").unwrap();
+
+    let f = QemuFwCfgFetcher::new(root.path());
+    let http = RecordedHttp::new();
+    let ud = block_on(f.fetch_user_data(&http)).unwrap().unwrap();
+    match ud {
+        UserData::Inline { payload, .. } => assert_eq!(payload, b"{ qemu = true; }"),
+        _ => panic!("expected inline"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AWS IMDSv2 over a recorded fixture (the token dance)
+// ---------------------------------------------------------------------------
+
+fn aws_recorded() -> RecordedHttp {
+    RecordedHttp::new()
+        .on(RecordedMethod::Put, "http://169.254.169.254/latest/api/token", 200, b"TOKEN123")
+        .on(
+            RecordedMethod::Get,
+            "http://169.254.169.254/latest/user-data",
+            200,
+            b"{ services.web.enable = true; }",
+        )
+        .on(
+            RecordedMethod::Get,
+            "http://169.254.169.254/latest/meta-data/instance-id",
+            200,
+            b"i-0abc",
+        )
+        .on(
+            RecordedMethod::Get,
+            "http://169.254.169.254/latest/meta-data/placement/region",
+            200,
+            b"us-east-1",
+        )
+        .on(
+            RecordedMethod::Get,
+            "http://169.254.169.254/latest/meta-data/placement/availability-zone",
+            200,
+            b"us-east-1a",
+        )
+        .on(
+            RecordedMethod::Get,
+            "http://169.254.169.254/latest/meta-data/local-hostname",
+            200,
+            b"ip-10-0-1-22",
+        )
+        .on(
+            RecordedMethod::Get,
+            "http://169.254.169.254/latest/meta-data/public-keys/",
+            200,
+            b"0=my-key",
+        )
+        .on(
+            RecordedMethod::Get,
+            "http://169.254.169.254/latest/meta-data/public-keys/0/openssh-key",
+            200,
+            b"ssh-ed25519 AAAA op@host",
+        )
+        .on(
+            RecordedMethod::Get,
+            "http://169.254.169.254/latest/meta-data/network/interfaces/macs/",
+            200,
+            b"0a:1b:2c:3d:4e:5f/",
+        )
+        .on(
+            RecordedMethod::Get,
+            "http://169.254.169.254/latest/meta-data/network/interfaces/macs/0a:1b:2c:3d:4e:5f/device-number",
+            200,
+            b"0",
+        )
+}
+
+#[test]
+fn aws_imdsv2_token_dance_and_facts() {
+    let f = super::aws::AwsImdsFetcher::default();
+    let http = aws_recorded();
+
+    let ud = block_on(f.fetch_user_data(&http)).unwrap().unwrap();
+    match ud {
+        UserData::Inline { payload, .. } => {
+            assert_eq!(payload, b"{ services.web.enable = true; }");
+        }
+        _ => panic!("expected inline host.nix"),
+    }
+
+    let facts = block_on(f.fetch_facts(&http)).unwrap();
+    assert_eq!(facts.instance_id.as_deref(), Some("i-0abc"));
+    assert_eq!(facts.region.as_deref(), Some("us-east-1"));
+    assert_eq!(facts.availability_zone.as_deref(), Some("us-east-1a"));
+    assert_eq!(facts.hostname.as_deref(), Some("ip-10-0-1-22"));
+    assert_eq!(facts.ssh_authorized_keys, vec!["ssh-ed25519 AAAA op@host"]);
+    assert_eq!(
+        facts.mac_to_iface,
+        vec![MacIface {
+            mac: "0a:1b:2c:3d:4e:5f".into(),
+            iface: "eth0".into()
+        }]
+    );
+}
+
+#[test]
+fn aws_imdsv2_404_user_data_is_none() {
+    let http = RecordedHttp::new()
+        .on(
+            RecordedMethod::Put,
+            "http://169.254.169.254/latest/api/token",
+            200,
+            b"T",
+        )
+        .on(
+            RecordedMethod::Get,
+            "http://169.254.169.254/latest/user-data",
+            404,
+            b"",
+        );
+    let f = super::aws::AwsImdsFetcher::default();
+    assert!(block_on(f.fetch_user_data(&http)).unwrap().is_none());
+}
+
+#[test]
+fn aws_imdsv2_host_pointer_resolved_with_pin() {
+    let pin = sha256_hex(b"{ big = true; }");
+    let pointer = format!(
+        r#"{{"host_nix_url":"https://cfg.example/host.nix","sha256":"{pin}","sig_url":"https://cfg.example/host.nix.sig"}}"#
+    );
+    let http = RecordedHttp::new()
+        .on(
+            RecordedMethod::Put,
+            "http://169.254.169.254/latest/api/token",
+            200,
+            b"T",
+        )
+        .on(
+            RecordedMethod::Get,
+            "http://169.254.169.254/latest/user-data",
+            200,
+            pointer.as_bytes(),
+        )
+        .on(
+            RecordedMethod::Get,
+            "https://cfg.example/host.nix",
+            200,
+            b"{ big = true; }",
+        )
+        .on(
+            RecordedMethod::Get,
+            "https://cfg.example/host.nix.sig",
+            200,
+            b"SIG",
+        );
+
+    let f = super::aws::AwsImdsFetcher::default();
+    let ud = block_on(f.fetch_user_data(&http)).unwrap().unwrap();
+    let resolved = block_on(ud.resolve(&http)).unwrap();
+    assert_eq!(resolved.payload, b"{ big = true; }");
+    assert_eq!(resolved.sig.as_deref(), Some("SIG"));
+}
+
+#[test]
+fn native_cloud_fetchers_acquire_provider_user_data() {
+    let cases: Vec<(Box<dyn PlatformFetcher>, &str, &[u8])> = vec![
+        (
+            Box::new(super::cloud::GcpFetcher),
+            "http://metadata.google.internal/computeMetadata/v1/instance/attributes/user-data",
+            b"{ gcp = true; }",
+        ),
+        (
+            Box::new(super::cloud::AzureFetcher),
+            "http://169.254.169.254/metadata/instance/compute/userData?api-version=2021-02-01&format=text",
+            b"eyBhenVyZSA9IHRydWU7IH0=",
+        ),
+        (
+            Box::new(super::cloud::DigitalOceanFetcher),
+            "http://169.254.169.254/metadata/v1/user-data",
+            b"{ digitalocean = true; }",
+        ),
+        (
+            Box::new(super::cloud::OpenStackImdsFetcher),
+            "http://169.254.169.254/openstack/latest/user_data",
+            b"{ openstack = true; }",
+        ),
+    ];
+
+    for (fetcher, url, body) in cases {
+        let http = RecordedHttp::new().on(RecordedMethod::Get, url, 200, body);
+        let user_data = block_on(fetcher.fetch_user_data(&http)).unwrap().unwrap();
+        let UserData::Inline { payload, .. } = user_data else {
+            panic!("{} returned a pointer unexpectedly", fetcher.platform_id());
+        };
+        assert!(
+            payload.starts_with(b"{ "),
+            "{} did not return decoded literal input: {:?}",
+            fetcher.platform_id(),
+            payload
+        );
+    }
+}
+
+#[test]
+fn digitalocean_facts_include_static_and_anchor_networks() {
+    let base = "http://169.254.169.254/metadata/v1";
+    let interface = format!("{base}/interfaces/public/0");
+    let http = RecordedHttp::new()
+        .on(
+            RecordedMethod::Get,
+            &format!("{interface}/ipv4/address"),
+            200,
+            b"203.0.113.10",
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{interface}/ipv4/netmask"),
+            200,
+            b"255.255.255.0",
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{interface}/ipv4/gateway"),
+            200,
+            b"203.0.113.1",
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{interface}/anchor_ipv4/address"),
+            200,
+            b"10.10.0.2",
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{interface}/anchor_ipv4/netmask"),
+            200,
+            b"255.255.0.0",
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{interface}/mac"),
+            200,
+            b"0A:1B:2C:3D:4E:5F",
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{base}/dns/nameservers"),
+            200,
+            b"67.207.67.2\n67.207.67.3\n",
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{base}/hostname"),
+            200,
+            b"do-1",
+        )
+        .on(RecordedMethod::Get, &format!("{base}/id"), 200, b"1001")
+        .on(RecordedMethod::Get, &format!("{base}/region"), 200, b"nyc3");
+    let facts = block_on(super::cloud::DigitalOceanFetcher.fetch_facts(&http)).unwrap();
+    let network = facts.network.expect("DigitalOcean static network");
+    assert_eq!(network.addresses, ["203.0.113.10/24", "10.10.0.2/16"]);
+    assert_eq!(network.gateway.as_deref(), Some("203.0.113.1"));
+    assert_eq!(network.dns, ["67.207.67.2", "67.207.67.3"]);
+    assert_eq!(network.mac.as_deref(), Some("0a:1b:2c:3d:4e:5f"));
+}
+
+#[test]
+fn openstack_imds_facts_include_network_data() {
+    let base = "http://169.254.169.254/openstack/latest";
+    let http = RecordedHttp::new()
+        .on(
+            RecordedMethod::Get,
+            &format!("{base}/meta_data.json"),
+            200,
+            br#"{"hostname":"os-1","uuid":"u-1"}"#,
+        )
+        .on(
+            RecordedMethod::Get,
+            &format!("{base}/network_data.json"),
+            200,
+            br#"{"links":[{"id":"e0","ethernet_mac_address":"0A:00:00:00:00:01"}],"networks":[{"link":"e0","ip_address":"10.1.1.5","netmask":"255.255.255.0","gateway":"10.1.1.1"}]}"#,
+        );
+    let facts = block_on(super::cloud::OpenStackImdsFetcher.fetch_facts(&http)).unwrap();
+    let network = facts.network.expect("OpenStack static network");
+    assert_eq!(network.addresses, ["10.1.1.5/24"]);
+    assert_eq!(network.gateway.as_deref(), Some("10.1.1.1"));
+}
+
+#[test]
+fn production_http_timeout_bounds_a_nonresponding_endpoint() {
+    use std::time::{Duration, Instant};
+
+    use aos_net::transfer::{TransferEngine, TransferEngineConfig};
+
+    use super::http::{EngineHttp, MetadataHttp};
+
+    block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _connection = listener.accept().await;
+            std::future::pending::<()>().await;
+        });
+        let http = EngineHttp::new(TransferEngine::new(TransferEngineConfig::default()))
+            .with_timeout(Duration::from_millis(25));
+        let started = Instant::now();
+        let error = http
+            .get(&format!("http://{address}/black-hole"), &[])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        server.abort();
+    });
+}
+
+// ---------------------------------------------------------------------------
+// static-network metadata parsing
+// ---------------------------------------------------------------------------
+
+#[test]
+fn openstack_network_data_is_normalized() {
+    let json = br#"{"links":[{"id":"tap0","ethernet_mac_address":"0a:1b:2c:3d:4e:5f"}],"networks":[{"link":"tap0","ip_address":"203.0.113.10","netmask":"255.255.255.0","gateway":"203.0.113.1"}],"services":[{"type":"dns","address":"67.207.67.2"}]}"#;
+    let net = parse_openstack_network_data(json).unwrap();
+    assert_eq!(net.mac.as_deref(), Some("0a:1b:2c:3d:4e:5f"));
+    assert_eq!(net.addresses, ["203.0.113.10/24"]);
+    assert_eq!(net.gateway.as_deref(), Some("203.0.113.1"));
+    assert_eq!(net.dns, ["67.207.67.2"]);
+}
+
+#[test]
+fn netplan_v2_cidr_addresses() {
+    let yaml = b"network:\n  version: 2\n  ethernets:\n    en0:\n      addresses:\n        - 192.0.2.5/25\n      gateway4: 192.0.2.1\n";
+    let net = parse_netplan_network_config(yaml).unwrap();
+    assert_eq!(net.addresses, vec!["192.0.2.5/25"]);
+    assert_eq!(net.gateway.as_deref(), Some("192.0.2.1"));
+}
+
+// ---------------------------------------------------------------------------
+// facts.json -> host-facts.nix render
+// ---------------------------------------------------------------------------
+
+#[test]
+fn facts_render_is_deterministic_and_typed() {
+    let facts = Facts {
+        hostname: Some("ip-10-0-1-22".into()),
+        instance_id: Some("i-0abc".into()),
+        region: Some("us-east-1".into()),
+        availability_zone: Some("us-east-1a".into()),
+        ssh_authorized_keys: vec!["ssh-ed25519 AAAA op@host".into()],
+        mac_to_iface: vec![MacIface {
+            mac: "0a:1b:2c:3d:4e:5f".into(),
+            iface: "ens5".into(),
+        }],
+        disk_ids: vec!["nvme-Amazon_EBS_vol0abc".into()],
+        network: Some(StaticNetwork {
+            mac: Some("0A:1B:2C:3D:4E:5F".into()),
+            interface_name: Some("ens5".into()),
+            addresses: vec!["10.0.1.22/24".into()],
+            gateway: Some("10.0.1.1".into()),
+            dns: vec!["1.1.1.1".into()],
+        }),
+    };
+    let a = render_host_facts_nix(&facts);
+    let b = render_host_facts_nix(&facts);
+    assert_eq!(a, b, "render must be deterministic");
+    assert!(a.contains("hostname = \"ip-10-0-1-22\";"));
+    assert!(a.contains("instance_id = \"i-0abc\";"));
+    assert!(a.contains("ssh_authorized_keys = [ \"ssh-ed25519 AAAA op@host\" ];"));
+    assert!(a.contains(
+        "\"0a:1b:2c:3d:4e:5f\" = { names = [ \"ens5\" ]; addresses = [ \"10.0.1.22/24\" ]; };"
+    ));
+    assert!(a.contains("static_network = {"));
+    assert!(a.contains("gateway = \"10.0.1.1\";"));
+    assert!(a.contains("\"nvme-Amazon_EBS_vol0abc\" = { };"));
+}
+
+#[test]
+fn facts_identity_is_canonical_and_includes_static_network() {
+    let first = Facts {
+        mac_to_iface: vec![
+            MacIface {
+                mac: "AA:BB:CC:DD:EE:FF".into(),
+                iface: "ens5".into(),
+            },
+            MacIface {
+                mac: "aa:bb:cc:dd:ee:ff".into(),
+                iface: "eth0".into(),
+            },
+        ],
+        network: Some(StaticNetwork {
+            mac: Some("AA:BB:CC:DD:EE:FF".into()),
+            interface_name: Some("ens5".into()),
+            addresses: vec!["2001:db8::2/64".into(), "192.0.2.2/24".into()],
+            gateway: Some("192.0.2.1".into()),
+            dns: vec!["9.9.9.9".into(), "1.1.1.1".into()],
+        }),
+        ..Facts::default()
+    };
+    let mut reordered = first.clone();
+    reordered.mac_to_iface.reverse();
+    let network = reordered.network.as_mut().unwrap();
+    network.addresses.reverse();
+    network.dns.reverse();
+
+    assert_eq!(
+        canonicalize_host_facts(&first).expect("canonical first facts"),
+        canonicalize_host_facts(&reordered).expect("canonical reordered facts"),
+        "protected fact transport is independent of collection order"
+    );
+
+    let first_canonical = canonicalize_host_facts(&first).unwrap();
+    let reordered_canonical = canonicalize_host_facts(&reordered).unwrap();
+    let first_hash = sha256_hex(&serde_json::to_vec(&first_canonical).unwrap());
+    let second_hash = sha256_hex(&serde_json::to_vec(&reordered_canonical).unwrap());
+    assert_eq!(
+        first_hash, second_hash,
+        "fact collection order is not identity"
+    );
+
+    let mut changed = first;
+    changed.network.as_mut().unwrap().gateway = Some("192.0.2.254".into());
+    let changed = canonicalize_host_facts(&changed).unwrap();
+    let changed_hash = sha256_hex(&serde_json::to_vec(&changed).unwrap());
+    assert_ne!(
+        first_hash, changed_hash,
+        "static network facts affect facts_hash"
+    );
+}
+
+#[test]
+fn facts_render_escapes_hostile_input() {
+    // A hostile hostname must not break out of the Nix string literal: every
+    // embedded quote is backslash-escaped, so the payload stays inert data.
+    let facts = Facts {
+        hostname: Some("\"; system.evil = true; x = \"".into()),
+        ..Facts::default()
+    };
+    let rendered = render_host_facts_nix(&facts);
+    // The full line carries the value with both quotes escaped.
+    assert!(
+        rendered.contains("hostname = \"\\\"; system.evil = true; x = \\\"\";"),
+        "hostile value must be fully escaped; got:\n{rendered}"
+    );
+}
+
+#[test]
+fn facts_render_antiquotation_neutralized() {
+    let facts = Facts {
+        hostname: Some("${builtins.exec [\"/bin/sh\"]}".into()),
+        ..Facts::default()
+    };
+    let rendered = render_host_facts_nix(&facts);
+    assert!(
+        rendered.contains("\\$"),
+        "dollar must be escaped to neutralize ${{}}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// typed acquisition end-to-end (offline)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn acquisition_context_carries_network_requirement_as_typed_data() {
+    let context = AcquisitionContext {
+        platform: PlatformId::Aws,
+        metadata_dir: None,
+    };
+    assert!(context.needs_network());
+}
+
+#[test]
+fn fetch_metadata_offline_returns_exact_typed_result() {
+    let media = tempdir().unwrap();
+    let os = media.path().join("openstack/latest");
+    std::fs::create_dir_all(&os).unwrap();
+    std::fs::write(os.join("user_data"), b"{ ok = true; }").unwrap();
+    std::fs::write(os.join("user_data.sig"), "-----BEGIN SSH SIGNATURE-----\n").unwrap();
+    std::fs::write(
+        os.join("meta_data.json"),
+        r#"{"hostname":"os-1","uuid":"u-1"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        os.join("network_data.json"),
+        r#"{"links":[{"id":"e0","ethernet_mac_address":"0a:00:00:00:00:01"}],"networks":[{"link":"e0","ip_address":"10.1.1.5","netmask":"255.255.255.0","gateway":"10.1.1.1"}]}"#,
+    )
+    .unwrap();
+
+    let fetcher = ConfigDriveFetcher::new(media.path());
+    let http = RecordedHttp::new();
+    let acquired = block_on(super::fetch_metadata_with(&fetcher, &http)).unwrap();
+
+    assert_eq!(acquired.host_module.as_deref(), Some("{ ok = true; }"));
+    assert_eq!(
+        acquired.host_module_signature.as_deref(),
+        Some("-----BEGIN SSH SIGNATURE-----")
+    );
+    assert_eq!(acquired.facts.hostname.as_deref(), Some("os-1"));
+    assert_eq!(acquired.facts.instance_id.as_deref(), Some("u-1"));
+}
+
+#[test]
+fn fetch_metadata_without_user_data_returns_facts_only() {
+    let media = tempdir().unwrap(); // empty: no host.nix
+    let fetcher = AosMetadataFetcher::new(media.path());
+    let http = RecordedHttp::new();
+    let acquired = block_on(super::fetch_metadata_with(&fetcher, &http)).unwrap();
+
+    assert_eq!(acquired.host_module, None);
+    assert_eq!(acquired.host_module_signature, None);
+    assert_eq!(acquired.facts, Facts::default());
+}

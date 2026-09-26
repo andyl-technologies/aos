@@ -1,0 +1,197 @@
+##! Package-owned initrd security lifecycle declarations.
+{
+  lib,
+  pkgs,
+}: let
+  milestones = lib.abilities.interfaces.serviceManagement.milestones;
+  environment = stage: {
+    authority = "test";
+    key = "initrd-security-services";
+    inherit stage;
+  };
+  packageModule = lib.abilities.authenticatedPackageModuleRecordFor;
+  evaluate = stage: modules: packageModules:
+    lib.evalModules {
+      inherit lib packageModules;
+      modules =
+        [
+          ../../modules/abilities/default.nix
+          ../../modules/base/_kernel-command-line-options.nix
+          {aos.abilities.environment = environment stage;}
+        ]
+        ++ modules;
+    };
+  disabled = evaluate "host" [] [
+    (packageModule pkgs.aos-boot-identity)
+    (packageModule pkgs.aos-verity-root-guard)
+    (packageModule pkgs.aos-systemd-var-policy)
+    (packageModule pkgs.systemd)
+  ];
+  configured =
+    evaluate "initrd" [
+      {
+        aos.security = {
+          bootIdentityServices.enable = true;
+          verityRootVerification.enable = true;
+          measuredVar = {
+            enable = true;
+            pcrPublicKey = "/nix/store/public/pcr.pem";
+            signedPcrs = "11";
+            pinnedPcrs = "7+12";
+            recoveryKeyPath = "/run/aos-var-recovery.key";
+            requireVerity = true;
+          };
+        };
+      }
+    ] [
+      (packageModule pkgs.aos-boot-identity)
+      (packageModule pkgs.aos-verity-root-guard)
+      (packageModule pkgs.aos-systemd-var-policy)
+      (packageModule pkgs.systemd)
+    ];
+  requests = configured.config.aos.abilities.requests;
+  request = package: name: requests."${package}:${name}".parameters;
+  output = requestName: outputName: {
+    _type = "aos-request-output-reference";
+    request = requestName;
+    output = outputName;
+  };
+  guardDependencies = request "aos-verity-root-guard" "aos-verity-root-verify-dependencies";
+  guardFailure = request "aos-verity-root-guard" "aos-verity-root-verify-failure_policy";
+  measuredVarLifecycle = request "aos-systemd-var-policy" "aos-var-crypt-lifecycle";
+  measuredVarDependencies = request "aos-systemd-var-policy" "aos-var-crypt-dependencies";
+  measuredVarCondition = request "aos-systemd-var-policy" "aos-var-crypt-conditions";
+  identityGuardDependencies = request "aos-boot-identity" "aos-boot-identity-guard-dependencies";
+  identityGuardFailure = request "aos-boot-identity" "aos-boot-identity-guard-failure_policy";
+  systemdVerityDependencies = request "systemd" "aos-systemd-verity-root-setup-dependencies";
+  systemdVerityLifecycle = request "systemd" "aos-systemd-verity-root-setup-lifecycle";
+  bootIdentityScript = builtins.readFile ../../pkgs/security/_aos-boot-identity/aos-boot-identity-success.sh;
+  bootIdentityModule = builtins.readFile ../../pkgs/security/_aos-boot-identity/module.nix;
+  verityVerificationScript = builtins.readFile ../../pkgs/security/_aos-verity-root-guard/aos-verity-root-verify.sh;
+  seedProfilesScript = builtins.readFile ../../pkgs/boot/_aos-boot-preparations/aos-seed-profiles.sh;
+  managerCommands = ["systemctl" "bootctl" "aos-systemd-veritysetup-generator" "/run/systemd"];
+  measuredBootSelection = lib.evalModules {
+    inherit lib pkgs;
+    modules = [
+      ../../modules/abilities/default.nix
+      ../../systems/_system-manager.nix
+      {
+        options.environment.systemPackages = lib.mkOption {
+          type = lib.types.listOf lib.types.package;
+          default = [];
+        };
+        options.aos.boot.initrd.packageRoots = lib.mkOption {
+          type = lib.types.listOf lib.types.package;
+          default = [];
+        };
+        options.aos.boot.secureBoot.measuredBoot.enable = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+        };
+        options.aos.boot.storage.backend = lib.mkOption {
+          type = lib.types.str;
+          default = "gpt-partitions";
+        };
+        aos.boot.secureBoot.measuredBoot.enable = true;
+      }
+    ];
+  };
+  measuredBootPackageNames =
+    builtins.map
+    (package: package.pname or (builtins.parseDrvName package.name).name)
+    measuredBootSelection.config.aos.boot.initrd.packageRoots;
+  secureBootModule = builtins.readFile ../../modules/base/secure-boot.nix;
+in
+  assert builtins.all
+  (requestName: !(lib.hasPrefix "aos-systemd-var-policy:" requestName))
+  (builtins.attrNames disabled.config.aos.abilities.requests);
+  assert builtins.attrNames configured.config.aos.abilities.instances
+  == [
+    "aos-boot-identity:boot-identity"
+    "aos-systemd-var-policy:measured-var"
+    "aos-verity-root-guard:verity-root-verification"
+    "systemd:systemd-verity-root"
+  ];
+  assert (builtins.head systemdVerityLifecycle.start).executable.entry_point
+  == "libexec/aos-systemd-verity-root-setup";
+  assert systemdVerityDependencies.requires
+  == [
+    (output "systemd:boot-identity" "resource")
+    (output "systemd:device-manager" "resource")
+    (output "systemd:device-events" "resource")
+  ];
+  assert (builtins.head measuredVarLifecycle.start).executable.entry_point == "bin/aos-var-crypt";
+  assert (builtins.head measuredVarLifecycle.start).executable.arguments
+  == [
+    "/nix/store/public/pcr.pem"
+    "11"
+    "7+12"
+    "/run/aos-var-recovery.key"
+  ];
+  assert measuredVarDependencies.after
+  == [
+    (output "aos-systemd-var-policy:boot-identity" "resource")
+    (output "aos-systemd-var-policy:initrd-stage" "resource")
+    (output "aos-systemd-var-policy:device-events" "resource")
+    (output "aos-systemd-var-policy:verity-root" "resource")
+  ];
+  assert measuredVarDependencies.requires
+  == [
+    (output "aos-systemd-var-policy:boot-identity" "resource")
+    (output "aos-systemd-var-policy:verity-root" "resource")
+  ];
+  assert measuredVarDependencies.implicit_dependencies;
+  assert measuredVarCondition.all
+  == [
+    {
+      kind = "kernel-argument";
+      argument = "aos.recovery=1";
+      negated = true;
+    }
+  ];
+  assert (request "aos-systemd-var-policy" "boot-identity").milestone
+  == milestones.bootIdentityValidated;
+  assert (request "aos-systemd-var-policy" "initrd-stage").milestone
+  == milestones.initrdStageExecuted;
+  assert (request "aos-systemd-var-policy" "device-events").milestone == milestones.deviceSettle;
+  assert (request "aos-systemd-var-policy" "initrd-filesystems").milestone
+  == milestones.initrdFilesystems;
+  assert (request "aos-systemd-var-policy" "persistent-state").milestone == milestones.var;
+  assert (request "aos-systemd-var-policy" "verity-root").milestone
+  == milestones.verityRootVerified;
+  assert (request "aos-verity-root-guard" "verity-root-mapping").milestone
+  == milestones.verityRootMappingReady;
+  assert !(requests ? "aos-boot-identity:boot-identity-failure-target");
+  assert !(lib.hasInfix "aos.systemd.packaged-unit" bootIdentityModule);
+  assert !(lib.hasInfix ''{package = "systemd";}'' bootIdentityModule);
+  assert identityGuardDependencies.required_by
+  == [(output "aos-boot-identity:initrd-filesystems" "resource")];
+  assert identityGuardFailure.dispatch == "isolate-active-goal";
+  assert identityGuardFailure.handlers
+  == [(output "aos-boot-identity:integrity-failure" "resource")];
+  assert builtins.elem "systemd" measuredBootPackageNames;
+  assert builtins.elem "aos-systemd-var-policy" measuredBootPackageNames;
+  assert !(lib.hasInfix "pkgs.systemd" secureBootModule);
+  assert !(lib.hasInfix "pkgs.aos-systemd-var-policy" secureBootModule);
+  assert guardDependencies.required_by
+  == [
+    (output "aos-verity-root-guard:persistent-state" "resource")
+    (output "aos-verity-root-guard:initrd-filesystems" "resource")
+  ];
+  assert guardDependencies.after
+  == [
+    (output "aos-verity-root-guard:boot-identity" "resource")
+    (output "aos-verity-root-guard:verity-root-mapping" "resource")
+    (output "aos-verity-root-guard:initrd-stage" "resource")
+    (output "aos-verity-root-guard:device-events" "resource")
+  ];
+  assert guardFailure
+  == {
+    service = "aos-verity-root-verify";
+    enabled = true;
+    handlers = [(output "aos-verity-root-guard:integrity-failure" "resource")];
+    dispatch = "isolate-active-goal";
+  };
+  assert builtins.all (command: !(lib.hasInfix command bootIdentityScript)) managerCommands;
+  assert builtins.all (command: !(lib.hasInfix command verityVerificationScript)) managerCommands;
+  assert builtins.all (command: !(lib.hasInfix command seedProfilesScript)) ["systemctl" "bootctl"]; true

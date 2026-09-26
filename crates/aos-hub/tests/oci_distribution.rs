@@ -2183,7 +2183,7 @@ async fn real_client_mounts_cancels_and_roundtrips_a_complete_multi_platform_gra
         source: cancel_source.path().to_path_buf(),
         platform: PlatformSelector::parse("linux/amd64").unwrap(),
         state_directory: cancel_state.path().join("uploads"),
-        chunk_bytes: 4096,
+        chunk_bytes: 64 * 1024,
         cancellation,
         events: Some(events),
     };

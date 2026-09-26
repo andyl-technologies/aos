@@ -1,5 +1,6 @@
 ##! lua — Embeddable scripting language
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -11,7 +12,57 @@
   abiVersion = "5.5";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "lua";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Lua prints the exact integer result 42.";
+        "files" = {};
+        "input" = "A Lua expression that adds 19 and 23.";
+        "operation" = "Evaluate the expression with the packaged Lua interpreter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/lua"
+              "-e"
+              "print(19 + 23)"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Lua exits with its syntax-error status.";
+        "files" = {};
+        "input" = "A Lua function declaration with an unclosed parameter list.";
+        "operation" = "Parse the malformed expression with the packaged interpreter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/lua"
+              "-e"
+              "function broken("
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

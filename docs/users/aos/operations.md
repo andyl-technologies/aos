@@ -50,10 +50,9 @@ systemctl list-dependencies --reverse acme-agent.service
 systemctl list-jobs
 ```
 
-An APM-managed package is grouped under an
-`aos-pkg-<package>.target`. Prefer package operations over manually enabling
-or deleting its generated units. A manual restart is useful for diagnosis; it
-does not change the package generation or desired state.
+Prefer package operations over changing the selected package generation by
+hand. A manual unit restart is useful for diagnosis; it does not change the
+package generation or desired state.
 
 ## Read and retain logs
 
@@ -66,10 +65,10 @@ budget:
 {
   aos.journald = {
     storage = "persistent";
-    maxRetentionSec = "14d";
-    maxUse = "1G";
-    systemMaxFileSize = "100M";
-    rateLimitInterval = "30s";
+    maxRetentionSeconds = 1209600;
+    maxUseBytes = 1073741824;
+    maxFileSizeBytes = 104857600;
+    rateLimitIntervalMillis = 30000;
     rateLimitBurst = 20000;
   };
 }

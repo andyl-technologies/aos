@@ -1,15 +1,71 @@
 ##! Cilium — eBPF-based networking, security, and observability for Kubernetes
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
   gnumake,
-  lib,
 }: let
   version = "1.17.3";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "cilium";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The client returns success and identifies Cilium.";
+        "files" = {};
+        "input" = "The packaged Cilium debugging client's version command.";
+        "operation" = "Print local version information without contacting an agent.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/cilium-dbg\", \"version\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"cilium\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nprint(\"cilium operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "cilium operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The client rejects the unsupported operation.";
+        "files" = {};
+        "input" = "A cilium-dbg invocation naming an unknown operation.";
+        "operation" = "Parse the unsupported operation without contacting an agent.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/cilium-dbg\", \"aos-invalid-operation\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"cilium rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "cilium rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -25,6 +81,10 @@ in
       buildPackages.llvm
     ];
     runtimeDeps = [];
+
+    # One module owns Cilium's configuration and provider-neutral ability
+    # requirements. Its typed requests are the desired-state source.
+    abilities = ./_cilium-abilities;
 
     phases = [
       {
@@ -75,50 +135,14 @@ in
       {
         name = "install";
         script = ''
-          mkdir -p $out/bin $out/lib/bpf $out/share
+          mkdir -p $out/bin $out/lib/bpf
           install -m 755 _bin/cilium-agent _bin/cilium-dbg $out/bin/
 
           # Install compiled BPF programs
           cp -r bpf/out/* $out/lib/bpf/ 2>/dev/null || true
-          printf '%s\n' '${builtins.toJSON {inherit version;}}' > $out/share/cilium-package.json
         '';
       }
     ];
-
-    configModule = {
-      src = ./_cilium-config;
-      moduleAbiCompat = {
-        min = 1;
-        max = 2;
-      };
-      declares = [
-        "cilium.enable"
-        "cilium.kubeProxyReplacement"
-        "cilium.operatorReplicas"
-      ];
-      ownsRoots = [
-        {
-          root = "cilium";
-          interfaceAbi = 1;
-        }
-      ];
-      contributes = [
-        {
-          root = "k3s";
-          interfaceAbi = 2;
-          paths = [
-            "integrations.cni.cilium"
-            "integrations.resources.cilium"
-          ];
-        }
-      ];
-      documentation = {
-        summary = "Cilium — eBPF-based networking, security, and observability";
-        sections.integration = lib.aosDoc.section "k3s integration" [
-          (lib.aosDoc.paragraph "Cilium contributes only its signed CNI settings and resource bundle. It cannot enable k3s or change unrelated cluster policy; the k3s owner must be installed with interface ABI 2.")
-        ];
-      };
-    };
 
     checks = {
       testing,

@@ -14,8 +14,8 @@
 ##!
 ##! This root is a **base-lib-owned shared root**: the base lib declares the
 ##! schema and merge semantics; the platform fact-gatherer / operator writes
-##! the values. All fields are owner-only (no `contributable` marker) — facts
-##! are not a foreign-package contribution surface.
+##! the values. All fields are owner-only (no `extensible` marker) — facts
+##! are not an extension point for unrelated packages.
 ##!
 ##! Pure declaration. Every option carries an inert default, so a system that
 ##! does not supply facts evaluates unchanged and nothing here is forced

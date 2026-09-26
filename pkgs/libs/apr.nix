@@ -5,12 +5,103 @@
   buildPackages,
   stdenv,
   bash,
+  lib,
 }: let
   version = "1.7.0";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "apr";
     inherit version;
+
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "The installed APR configuration helper.";
+        operation = "Request the installed APR release version.";
+        expected = "The helper reports the packaged release version.";
+        artifacts = [];
+        files = {};
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import subprocess
+
+                result = subprocess.run(
+                    ["@out@/bin/apr-1-config", "--version"],
+                    capture_output=True,
+                    text=True,
+                )
+                assert result.returncode == 0, result
+                assert result.stdout.strip() == "${version}", result
+
+                print("APR version passed")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "APR version passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "An unsupported configuration-helper option.";
+        operation = "Pass the unsupported option to APR's configuration helper.";
+        expected = "The helper rejects the option and prints usage information.";
+        artifacts = [];
+        files = {};
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import subprocess
+                import sys
+
+                result = subprocess.run(
+                    ["@out@/bin/apr-1-config", "--aos-invalid-option"],
+                    capture_output=True,
+                    text=True,
+                )
+                assert result.returncode != 0, result
+                assert "Usage: apr-1-config" in result.stdout, result
+
+                sys.stderr.write("APR rejected invalid input\n")
+                raise SystemExit(7)
+              ''
+            ];
+            exit_code = 7;
+            observes_rejection = true;
+            stdout.exact = "";
+            stderr.exact = "APR rejected invalid input\n";
+          }
+        ];
+      };
+    };
 
     src = fetchurl {
       urls = ["https://archive.apache.org/dist/apr/apr-${version}.tar.gz"];

@@ -1,5 +1,6 @@
 ##! BibTeX — Bibliography processor used by documentation generators.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -8,9 +9,96 @@
   zlib,
 }: let
   sourceVersion = "20260301";
+  referenceDatabase = ''
+    @article{demo,
+      author = {Ada Lovelace},
+      title = {AOS bibliography}
+    }
+  '';
+  bibliographyStyle = ''
+    ENTRY { author title } {} {}
+    FUNCTION {article} { author write$ newline$ title write$ newline$ }
+    READ
+    ITERATE {call.type$}
+  '';
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "bibtex";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "An auxiliary file, bibliography entry, and minimal BibTeX style.";
+        operation = "Generate a bibliography using the installed BibTeX executable.";
+        expected = "The bibliography contains the selected author's name and title.";
+        files = {
+          "references.aux" = ''
+            \relax
+            \citation{demo}
+            \bibdata{references}
+            \bibstyle{minimal}
+          '';
+          "references.bib" = referenceDatabase;
+          "minimal.bst" = bibliographyStyle;
+        };
+        artifacts = [
+          {
+            path = "references.bbl";
+            text = "Ada Lovelace\nAOS bibliography\n";
+          }
+        ];
+        steps = [
+          {
+            argv = ["@out@/bin/bibtex" "references"];
+            exit_code = 0;
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "An auxiliary file naming a bibliography style that does not exist.";
+        operation = "Run the installed BibTeX executable with the unavailable style.";
+        expected = "BibTeX reports the missing style and fails.";
+        files = {
+          "invalid.aux" = ''
+            \relax
+            \citation{demo}
+            \bibdata{references}
+            \bibstyle{aos-missing-style}
+          '';
+          "references.bib" = referenceDatabase;
+        };
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/bibtex" "invalid"];
+            exit_code = 2;
+            observes_rejection = true;
+            stderr.exact = "";
+          }
+        ];
+      };
+    };
     version = "0.99e-texlive-${sourceVersion}";
     outputs = ["out" "tools"];
     src = fetchurl {

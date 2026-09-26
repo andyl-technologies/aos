@@ -7,9 +7,9 @@
 ##! support and ship only the build-time tools (`mkcomposefs`,
 ##! `composefs-info`, `composefs-dump`).
 {
+  lib,
   mkDerivation,
   fetchurl,
-  lib,
   stdenv,
   meson,
   ninja,
@@ -19,7 +19,65 @@
   version = "1.0.8";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "composefs";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Mkcomposefs creates a nonempty image that composefs-info accepts.";
+        "files" = {
+          "source/answer.txt" = "qualified\n";
+        };
+        "input" = "A source directory containing one fixed regular file.";
+        "operation" = "Build a composefs image and inspect its metadata with composefs-info.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, subprocess\nbuild = subprocess.run([\"@out@/bin/mkcomposefs\", \"source\", \"image.cfs\"], capture_output=True)\nassert build.returncode == 0, build.stderr\nassert pathlib.Path(\"image.cfs\").stat().st_size > 0\ninspect = subprocess.run([\"@out@/bin/composefs-info\", \"image.cfs\"], capture_output=True)\nassert inspect.returncode == 0, inspect.stderr\nprint(\"composefs operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "composefs operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Mkcomposefs rejects the missing source path.";
+        "files" = {};
+        "input" = "A source-directory path that does not exist.";
+        "operation" = "Attempt to build a composefs image from the missing tree.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/mkcomposefs\", \"absent\", \"invalid.cfs\"], capture_output=True)\nif result.returncode == 0:\n    raise SystemExit(2)\nsys.stderr.write(\"composefs rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "composefs rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

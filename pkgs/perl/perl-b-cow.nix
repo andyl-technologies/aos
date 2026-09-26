@@ -1,5 +1,6 @@
 ##! perl-b-cow — Copy-on-write inspection helpers for Perl
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -9,7 +10,81 @@
   runtimeClosureManifest = builtins.toString perl;
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "perl-b-cow";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "B::COW reports support and a positive reference-count limit.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use B::COW qw(can_cow cowrefcnt_max);\ndie \"copy-on-write unavailable\" unless can_cow();\ndie \"invalid reference limit\" unless cowrefcnt_max() > 0;\n";
+        };
+        "input" = "A Perl string eligible for copy-on-write storage.";
+        "operation" = "Inspect copy-on-write capability and its maximum reference count.";
+        "steps" = [
+          {
+            "argv" = [
+              "@perl@"
+              "probe.pl"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The module's Exporter contract rejects the unknown symbol.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings;\neval q{ use B::COW qw(qualification_invalid); 1 };\ndie \"invalid export accepted\" unless $@ =~ /not exported/;\n";
+        };
+        "input" = "An export name outside B::COW's documented API.";
+        "operation" = "Import the unsupported symbol from B::COW.";
+        "steps" = [
+          {
+            "argv" = [
+              "@perl@"
+              "probe.pl"
+            ];
+            "exit_code" = 0;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

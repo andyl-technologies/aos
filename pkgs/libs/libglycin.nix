@@ -20,9 +20,85 @@
     then rust.passthru.buildTool
     else buildPackages.rust;
   buildCargoPrefix = lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config);
+  probeScript = ''
+    import ctypes
+    import sys
+
+    library = ctypes.CDLL("@out@/lib/libglycin-2.so.0")
+    has_alpha = library.gly_memory_format_has_alpha
+    has_alpha.argtypes = [ctypes.c_int]
+    has_alpha.restype = ctypes.c_int
+
+    is_premultiplied = library.gly_memory_format_is_premultiplied
+    is_premultiplied.argtypes = [ctypes.c_int]
+    is_premultiplied.restype = ctypes.c_int
+
+    if sys.argv[1] == "primary":
+        assert has_alpha(5) == 1
+        assert has_alpha(7) == 0
+        assert is_premultiplied(2) == 1
+        assert is_premultiplied(5) == 0
+        print("classified image memory formats")
+    elif sys.argv[1] == "bad-input":
+        assert has_alpha(999) == 0
+        assert is_premultiplied(999) == 0
+        print("rejected unknown memory format")
+    else:
+        raise ValueError("unknown qualification operation")
+  '';
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "libglycin";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "RGBA, premultiplied RGBA, and RGB memory-format values.";
+        operation = "Classify alpha and premultiplication through the public C ABI.";
+        expected = "The formats report their documented channel properties.";
+        artifacts = [];
+        files."probe.py" = probeScript;
+        steps = [
+          {
+            argv = ["@python@" "probe.py" "primary"];
+            exit_code = 0;
+            stdout.exact = "classified image memory formats\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "An undefined memory-format value.";
+        operation = "Classify the unsupported value through both C ABI functions.";
+        expected = "Both functions return false without aborting the calling process.";
+        artifacts = [];
+        files."probe.py" = probeScript;
+        steps = [
+          {
+            argv = ["@python@" "probe.py" "bad-input"];
+            exit_code = 0;
+            observes_rejection = true;
+            stdout.exact = "rejected unknown memory format\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+    };
     inherit (sources) version src;
     passthru.evidenceSources = [sources.src sources.cargoDeps];
 
@@ -37,6 +113,8 @@ in
         script = ''
           tar xf "$src"
           cd glycin-${sources.version}
+          # Unknown C enum values must not abort across the Rust FFI boundary.
+          patch --fuzz=0 -p1 < ${./libglycin-invalid-memory-format.patch}
           cp -R ${sources.cargoDeps} vendor
           chmod -R u+w vendor
           mkdir -p .cargo

@@ -49,33 +49,25 @@
   control = writeShellScriptBin "postgresql-control" ''
     set -euo pipefail
 
-    service_env=/etc/aos/packages/postgresql/service.env
-    data_directory=/var/lib/aos-pkg-postgresql/data
-    staging_directory=/var/lib/aos-pkg-postgresql/.data-initializing
-    server_config=/etc/postgresql/postgresql.conf
-    credential_directory="''${CREDENTIALS_DIRECTORY:-/run/credentials/postgresql.service}"
-
-    load_environment() {
-      # The env artifact is authenticated and rendered by AOS. Do not accept
-      # process-environment overrides for lifecycle policy.
-      unset \
-        POSTGRESQL_ENABLED POSTGRESQL_STANDBY POSTGRESQL_SUPERUSER \
-        POSTGRESQL_PRIMARY_HOST POSTGRESQL_PRIMARY_PORT \
-        POSTGRESQL_REPLICATION_USER POSTGRESQL_REPLICATION_SLOT
-      source "$service_env"
-    }
+    program_dir="''${0%/*}"
 
     running() {
-      /bin/pg_ctl status -D "$data_directory" >/dev/null 2>&1
+      "$program_dir/pg_ctl" status -D "$data_directory" >/dev/null 2>&1
     }
 
     case "''${1:-}" in
-      enabled)
-        load_environment
-        [[ "$POSTGRESQL_ENABLED" == true ]]
-        ;;
       prepare)
-        load_environment
+        state_directory=$2
+        server_config=$3
+        topology=$4
+        superuser=$5
+        initialization_credential=$6
+        primary_host=$7
+        primary_port=$8
+        replication_user=$9
+        replication_slot=''${10}
+        data_directory="$state_directory/data"
+        staging_directory="$state_directory/.data-initializing"
 
         if [[ -L "$data_directory" ]]; then
           echo "PostgreSQL data directory must not be a symbolic link" >&2
@@ -85,8 +77,8 @@
         if [[ ! -s "$data_directory/PG_VERSION" ]]; then
           if [[ -e "$data_directory" || -L "$data_directory" ]]; then
             if [[ -d "$data_directory" && ! -L "$data_directory" ]] \
-              && [[ -z "$(${coreutils}/bin/ls -A "$data_directory")" ]]; then
-              ${coreutils}/bin/rmdir "$data_directory"
+              && [[ -z "$(ls -A "$data_directory")" ]]; then
+              rmdir "$data_directory"
             else
               echo "PostgreSQL data directory exists without PG_VERSION; refusing to overwrite it" >&2
               exit 78
@@ -96,37 +88,37 @@
           # This exact service-owned sibling contains no accepted database
           # state. A prior interrupted attempt can be retried safely, while
           # the final data directory is never recursively removed.
-          ${coreutils}/bin/rm -rf "$staging_directory"
-          ${coreutils}/bin/mkdir -m 0700 "$staging_directory"
+          rm -rf "$staging_directory"
+          mkdir -m 0700 "$staging_directory"
 
-          if [[ "$POSTGRESQL_STANDBY" == true ]]; then
-            passfile="$credential_directory/replication-passfile"
+          if [[ "$topology" == standby ]]; then
+            passfile=$initialization_credential
             if [[ ! -r "$passfile" ]]; then
               echo "PostgreSQL standby initialization requires replication-passfile" >&2
               exit 78
             fi
             slot_args=()
-            if [[ -n "''${POSTGRESQL_REPLICATION_SLOT:-}" ]]; then
-              slot_args+=(--slot="$POSTGRESQL_REPLICATION_SLOT")
+            if [[ -n "$replication_slot" ]]; then
+              slot_args+=(--slot="$replication_slot")
             fi
-            PGPASSFILE="$passfile" /bin/pg_basebackup \
+            PGPASSFILE="$passfile" "$program_dir/pg_basebackup" \
               --pgdata="$staging_directory" \
-              --host="$POSTGRESQL_PRIMARY_HOST" \
-              --port="$POSTGRESQL_PRIMARY_PORT" \
-              --username="$POSTGRESQL_REPLICATION_USER" \
+              --host="$primary_host" \
+              --port="$primary_port" \
+              --username="$replication_user" \
               --wal-method=stream \
               --checkpoint=fast \
               --no-password \
               "''${slot_args[@]}"
           else
-            password_file="$credential_directory/bootstrap-superuser-password"
+            password_file=$initialization_credential
             if [[ ! -r "$password_file" ]]; then
               echo "PostgreSQL initialization requires bootstrap-superuser-password" >&2
               exit 78
             fi
-            /bin/initdb \
+            "$program_dir/initdb" \
               --pgdata="$staging_directory" \
-              --username="$POSTGRESQL_SUPERUSER" \
+              --username="$superuser" \
               --pwfile="$password_file" \
               --auth-local=peer \
               --auth-host=scram-sha-256 \
@@ -138,35 +130,43 @@
             echo "PostgreSQL initialization completed without PG_VERSION" >&2
             exit 78
           fi
-          ${coreutils}/bin/mv "$staging_directory" "$data_directory"
+          mv "$staging_directory" "$data_directory"
         fi
 
-        if [[ "$POSTGRESQL_STANDBY" == true ]]; then
-          ${coreutils}/bin/touch "$data_directory/standby.signal"
+        if [[ "$topology" == standby ]]; then
+          touch "$data_directory/standby.signal"
         else
-          ${coreutils}/bin/rm -f "$data_directory/standby.signal"
+          rm -f "$data_directory/standby.signal"
         fi
 
         # -C processes the complete postgresql.conf and rejects malformed or
         # unknown parameters without starting a second postmaster.
-        /bin/postgres -D "$data_directory" -C port -c config_file="$server_config" >/dev/null
+        "$program_dir/postgres" -D "$data_directory" -C port \
+          -c config_file="$server_config" >/dev/null
+        ;;
+      run)
+        state_directory=$2
+        server_config=$3
+        exec "$program_dir/postgres" -D "$state_directory/data" \
+          -c config_file="$server_config"
         ;;
       reload)
-        load_environment
-        if [[ "$POSTGRESQL_ENABLED" == true ]]; then
-          /bin/postgres -D "$data_directory" -C port -c config_file="$server_config" >/dev/null
-          /bin/pg_ctl reload -D "$data_directory"
-        elif running; then
-          /bin/pg_ctl stop -D "$data_directory" -m fast -w
-        fi
+        state_directory=$2
+        server_config=$3
+        data_directory="$state_directory/data"
+        "$program_dir/postgres" -D "$data_directory" -C port \
+          -c config_file="$server_config" >/dev/null
+        "$program_dir/pg_ctl" reload -D "$data_directory"
         ;;
       stop)
+        state_directory=$2
+        data_directory="$state_directory/data"
         if running; then
-          /bin/pg_ctl stop -D "$data_directory" -m fast -w
+          "$program_dir/pg_ctl" stop -D "$data_directory" -m fast -w
         fi
         ;;
       *)
-        echo "usage: postgresql-control {enabled|prepare|reload|stop}" >&2
+        echo "usage: postgresql-control {prepare|run|reload|stop} ..." >&2
         exit 64
         ;;
     esac
@@ -184,7 +184,64 @@
   '';
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "postgresql";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [
+          {
+            "path" = "database/PG_VERSION";
+            "text" = "18\n";
+          }
+        ];
+        "expected" = "PostgreSQL creates a version 18 data directory.";
+        "files" = {};
+        "input" = "An empty directory for a UTF-8 PostgreSQL cluster using trust authentication.";
+        "operation" = "Initialize the cluster locally through initdb without locale discovery.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/initdb"
+              "--no-locale"
+              "--encoding=UTF8"
+              "--auth=trust"
+              "-D"
+              "@work@/primary/database"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "PostgreSQL rejects the authentication method with status 1.";
+        "files" = {};
+        "input" = "A cluster request naming an unsupported local authentication method.";
+        "operation" = "Initialize the cluster through initdb with the invalid authentication method.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/initdb"
+              "--no-locale"
+              "--auth=qualification-invalid"
+              "-D"
+              "@work@/bad-input/database"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -271,6 +328,8 @@ in
         ]
         ++ [bash coreutils control];
     propagatedDeps = [];
+
+    abilities = ./_postgresql;
 
     phases = [
       {
@@ -582,202 +641,6 @@ in
       }
     ];
 
-    expose = {
-      units."postgresql-init.service" = {
-        description = "Initialize PostgreSQL database state";
-        after = ["network-online.target"];
-        wants = ["network-online.target"];
-        before = ["postgresql.service"];
-        restartIfChanged = true;
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          DynamicUser = true;
-          StateDirectory = "aos-pkg-postgresql";
-          StateDirectoryMode = "0700";
-          # The package-wide Landlock policy includes the server socket path;
-          # create it for the init unit as well so policy setup is fail-closed
-          # rather than depending on the later server unit to create it.
-          RuntimeDirectory = "postgresql";
-          RuntimeDirectoryMode = "0755";
-          UMask = "0077";
-          EnvironmentFile = "/etc/aos/packages/postgresql/service.env";
-          ExecCondition = "/bin/postgresql-control enabled";
-          ExecStart = "/bin/postgresql-control prepare";
-        };
-      };
-
-      units."postgresql.service" = {
-        description = "PostgreSQL database server";
-        after = ["network-online.target" "postgresql-init.service"];
-        wants = ["network-online.target"];
-        requires = ["postgresql-init.service"];
-        restartIfChanged = true;
-        stopOnRemoval = true;
-        serviceConfig = {
-          Type = "notify";
-          DynamicUser = true;
-          RuntimeDirectory = "postgresql";
-          # The socket itself is authenticated by pg_hba.conf; traverse access
-          # lets non-service users reach the default local Unix socket.
-          RuntimeDirectoryMode = "0755";
-          StateDirectory = "aos-pkg-postgresql";
-          StateDirectoryMode = "0700";
-          UMask = "0077";
-          EnvironmentFile = "/etc/aos/packages/postgresql/service.env";
-          ExecCondition = "/bin/postgresql-control enabled";
-          ExecStart = "/bin/postgres -D /var/lib/aos-pkg-postgresql/data -c config_file=/etc/postgresql/postgresql.conf";
-          ExecReload = "/bin/postgresql-control reload";
-          ExecStop = "/bin/postgresql-control stop";
-          KillSignal = "SIGINT";
-          TimeoutStopSec = "90s";
-          Restart = "on-failure";
-          RestartSec = "2s";
-          LimitNOFILE = "1048576";
-        };
-      };
-
-      config = {
-        artifacts = [
-          {
-            name = "service";
-            path = "/etc/aos/packages/postgresql/service.env";
-            format = "env";
-            required = [
-              "POSTGRESQL_CONFIG_GENERATION"
-              "POSTGRESQL_ENABLED"
-              "POSTGRESQL_STANDBY"
-              "POSTGRESQL_SUPERUSER"
-            ];
-            optional = [
-              "POSTGRESQL_PRIMARY_HOST"
-              "POSTGRESQL_PRIMARY_PORT"
-              "POSTGRESQL_REPLICATION_SLOT"
-              "POSTGRESQL_REPLICATION_USER"
-            ];
-            units = ["postgresql-init.service" "postgresql.service"];
-            # PostgreSQL accepts reload for only a subset of settings. Treat
-            # an arbitrary typed generation change conservatively as restart.
-            reload = "restart";
-          }
-        ];
-        credentials =
-          builtins.map (credential: {
-            inherit (credential) name units;
-            source = "/run/credstore/postgresql/${credential.name}";
-            encrypted = false;
-            optional = true;
-          }) [
-            {
-              name = "bootstrap-superuser-password";
-              units = ["postgresql-init.service"];
-            }
-            {
-              name = "replication-passfile";
-              units = ["postgresql-init.service" "postgresql.service"];
-            }
-            {
-              name = "tls-ca";
-              units = ["postgresql.service"];
-            }
-            {
-              name = "tls-certificate";
-              units = ["postgresql.service"];
-            }
-            {
-              name = "tls-private-key";
-              units = ["postgresql.service"];
-            }
-          ];
-      };
-
-      permissions = {
-        network = "host";
-        capabilities = [];
-        devices = [];
-        host-paths = [
-          {
-            path = "/etc/postgresql/postgresql.conf";
-            mode = "read-only";
-          }
-          {
-            path = "/etc/postgresql/pg_hba.conf";
-            mode = "read-only";
-          }
-        ];
-        syscalls = "system-service";
-        security-label = "aos-pkg-postgresql";
-      };
-    };
-
-    configModule = {
-      src = ./_postgresql-config;
-      moduleAbiCompat = {
-        min = 1;
-        max = 2;
-      };
-      declares = [
-        "postgresql.authentication.rules"
-        "postgresql.bootstrap.password"
-        "postgresql.bootstrap.superuser"
-        "postgresql.clusterName"
-        "postgresql.enable"
-        "postgresql.listen.addresses"
-        "postgresql.listen.port"
-        "postgresql.renderedConfig"
-        "postgresql.replication.applicationName"
-        "postgresql.replication.hotStandby"
-        "postgresql.replication.maxReplicationSlots"
-        "postgresql.replication.maxWalSenders"
-        "postgresql.replication.passfile"
-        "postgresql.replication.primary"
-        "postgresql.replication.slot"
-        "postgresql.replication.user"
-        "postgresql.replication.walLevel"
-        "postgresql.resources.maintenanceWorkMem"
-        "postgresql.resources.maxConnections"
-        "postgresql.resources.sharedBuffers"
-        "postgresql.resources.workMem"
-        "postgresql.settings"
-        "postgresql.tls.ca"
-        "postgresql.tls.certificate"
-        "postgresql.tls.enable"
-        "postgresql.tls.minimumProtocol"
-        "postgresql.tls.privateKey"
-        "postgresql.topology"
-      ];
-      ownsRoots = [
-        {
-          root = "postgresql";
-          interfaceAbi = 1;
-          contributable = [];
-        }
-      ];
-      artifacts = {
-        etc = [
-          "postgresql/pg_hba.conf"
-          "postgresql/postgresql.conf"
-        ];
-        units = [];
-        users = [];
-        groups = [];
-      };
-      documentation = {
-        summary = "PostgreSQL object-relational database server";
-        sections = {
-          lifecycle = lib.aosDoc.section "Initialization and lifecycle" [
-            (lib.aosDoc.paragraph "The database cluster is initialized once in durable package state. Desired changes conservatively restart the server because not every PostgreSQL parameter is safely reloadable.")
-          ];
-          authentication = lib.aosDoc.section "Authentication and TLS" [
-            (lib.aosDoc.paragraph "Host authentication rules are ordered and typed. Bootstrap, replication, certificate, private-key, and CA values use opaque credential references and never enter generated files.")
-          ];
-          settings = lib.aosDoc.section "Additional settings" [
-            (lib.aosDoc.paragraph "postgresql.settings is reserved for non-secret parameters without a dedicated option. Dedicated or credential-bearing settings cannot be overridden through that map.")
-          ];
-        };
-      };
-    };
-
     meta = {
       description = "PostgreSQL object-relational database server";
       homepage = "https://www.postgresql.org/";
@@ -822,13 +685,67 @@ in
         inherit (pkgs) coreutils grep sed;
       };
 
-      module-contract = import ./_postgresql-tests/module.nix {
-        inherit lib pkgs;
-        module = ./_postgresql-config/module.nix;
-      };
-
-      expose-contract = import ./_postgresql-tests/expose.nix {
-        inherit pkgs self;
-      };
+      artifact-consumption = let
+        architecture = stdenv.hostPlatform.constraints.cpu;
+        loaderName =
+          if architecture == "x86_64"
+          then "ld-linux-x86-64.so.2"
+          else "ld-linux-aarch64.so.1";
+      in
+        lib.mkArtifactConsumptionAudit {
+          inherit pkgs;
+          name = "postgresql-openssl-linkage";
+          consumer = self;
+          consumerPath = "/bin/postgres";
+          provider = openssl;
+          providerPath = "/lib/libssl.so.4";
+          targetPlatform = {
+            system = stdenv.hostPlatform.constraints.os;
+            inherit architecture;
+          };
+          soname = "libssl.so.4";
+          needed = [
+            "libc.so.6"
+            "libcrypto.so.4"
+            "libgssapi_krb5.so.2"
+            "libicui18n.so.78"
+            "libicuuc.so.78"
+            "libldap.so.2"
+            "liblz4.so.1"
+            "libm.so.6"
+            "libnuma.so.1"
+            "libpam.so.0"
+            "libssl.so.4"
+            "libsystemd.so.0"
+            "liburing.so.2"
+            "libxml2.so.16"
+            "libz.so.1"
+            "libzstd.so.1"
+          ];
+          searchPath = map (dependency: "${dependency}/lib") [
+            glibc
+            icu
+            krb5
+            liburing
+            libxml2
+            linux-pam
+            lz4
+            numactl
+            openldap
+            openssl
+            systemd
+            zlib
+            zstd
+          ];
+          searchPathKind = "runpath";
+          symbols = [
+            {
+              name = "SSL_CTX_new";
+              version = "OPENSSL_4.0.0";
+            }
+          ];
+          loader = "${glibc}/lib/${loaderName}";
+          inspector = pkgs.buildPackages.aos;
+        };
     };
   }

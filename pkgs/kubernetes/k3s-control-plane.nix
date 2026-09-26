@@ -1,8 +1,8 @@
 {
   lib,
-  callPackage,
   mkDerivation,
   k3s,
+  aos-kubernetes-provider,
   containerd,
   runc,
   cni-plugins,
@@ -15,15 +15,15 @@
   util-linux,
   kmod,
   coreutils,
-  jq,
   writeShellScriptBin,
-}: let
-  mkK3sExposePackage = import ./_k3s-expose-package.nix {
-    pause = callPackage ./_k3s-pause-image.nix {};
+}:
+let
+  mkK3sRolePackage = import ./_k3s-role-package.nix {
     inherit
       lib
       mkDerivation
       k3s
+      aos-kubernetes-provider
       containerd
       runc
       cni-plugins
@@ -36,40 +36,17 @@
       util-linux
       kmod
       coreutils
-      jq
       writeShellScriptBin
       ;
   };
 in
-  mkK3sExposePackage {
-    pname = "k3s-control-plane";
-    role = "control-plane";
-    description = "Lightweight Kubernetes (control plane, no agent)";
-    # Agentless servers need the worker tunnels to reach aggregated APIs and
-    # admission webhooks; they have no local flannel or kube-proxy routes.
-    command = "server --disable-agent --egress-selector-mode=cluster";
-    requiredEnv = [];
-    evidenceSources = [./k3s-control-plane.nix];
-    stateDirectories = ["rancher/k3s"];
-    hostPaths = [
-      {
-        path = "/var/lib/rancher";
-        mode = "rw";
-      }
-      {
-        path = "/etc/rancher/k3s";
-        mode = "rw";
-      }
-      {
-        path = "/etc/rancher/node";
-        mode = "rw";
-      }
-      {
-        path = "/lib/modules";
-        mode = "read-only";
-      }
-    ];
-    firewall = {
-      allowedTCP = [6443];
-    };
-  }
+mkK3sRolePackage {
+  platformSupport = {
+    build = [{abi = ["gnu"]; os = ["linux"];}];
+    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+    target = [];
+    role = "public-package";
+  };
+  pname = "k3s-control-plane";
+  evidenceSources = [ ./k3s-control-plane.nix ];
+}

@@ -1,5 +1,6 @@
 ##! libapparmor — AppArmor policy interaction library
 {
+  lib,
   mkDerivation,
   fetchurl,
   patch,
@@ -22,8 +23,108 @@
   version = "4.1.7";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "libapparmor";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The parser returns the qualification label and enforce mode.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libapparmor primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libapparmor rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <sys/apparmor.h>\nint main(void) {\n    char confinement[] = \"qualification (enforce)\"; char *mode = NULL;\n    char *label = aa_splitcon(confinement, &mode);\n    return label != NULL && mode != NULL\n        && strcmp(label, \"qualification\") == 0 && strcmp(mode, \"enforce\") == 0 ? pass() : 2;\n}\n\n";
+        };
+        "input" = "An AppArmor confinement string containing an enforce mode suffix.";
+        "operation" = "Split the label and mode through aa_splitcon.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lapparmor"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libapparmor primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Libapparmor rejects the pathname with a nonzero filesystem error.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libapparmor primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libapparmor rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <fcntl.h>\n#include <sys/apparmor.h>\nint main(void) {\n    aa_features *features = NULL;\n    int status = aa_features_new(&features, AT_FDCWD, \"missing-qualification-features\");\n    if (features != NULL) aa_features_unref(features);\n    if (status == 0) return 2;\n    return reject();\n}\n\n";
+        };
+        "input" = "A feature-directory pathname that does not exist.";
+        "operation" = "Open the missing feature description through aa_features_new.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lapparmor"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libapparmor rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
+    outputs = ["out" "python" "perl"];
     src = fetchurl {
       urls = ["https://gitlab.com/apparmor/apparmor/-/archive/v${version}/apparmor-v${version}.tar.gz"];
       hash = "sha256-3tTNQZuKBQAqEIoJEiCOIJhpV1JmTGpZRk0t2kGOBFI=";
@@ -44,8 +145,9 @@ in
       setuptools
       ncurses
     ];
-    runtimeDeps = [perl python3 libxcrypt];
+    runtimeDeps = [libxcrypt];
     propagatedDeps = [libxcrypt];
+    outputChecks.out.disallowedReferences = [python3 perl];
     phases = [
       {
         name = "unpack";
@@ -104,14 +206,19 @@ in
           ''
             make install
             test -f "$out/lib/libapparmor.so"
-            python_path=$(find "$out" -type d -name site-packages -print -quit)
+
+            mkdir -p "$python/lib" "$perl/lib"
+            mv "$out/lib/python3.14" "$python/lib/"
+            mv "$out/lib/perl5" "$out/lib/site_perl" "$perl/lib/"
+
+            python_path=$(find "$python" -type d -name site-packages -print -quit)
             test -n "$python_path"
             PYTHONPATH="$python_path" ${python3}/bin/python3 -c 'import LibAppArmor'
           ''
           + (
             if stdenv.isCross
             then ''
-              perl_path=$(find "$out" -type f -name LibAppArmor.pm -print -quit)
+              perl_path=$(find "$perl" -type f -name LibAppArmor.pm -print -quit)
               test -n "$perl_path"
               PERL5LIB="''${perl_path%/*}" ${perl}/bin/perl -MLibAppArmor -e 1
             ''

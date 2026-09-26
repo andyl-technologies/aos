@@ -1,19 +1,92 @@
 {
+  lib,
   mkDerivation,
   writeTextFile,
   bash,
   coreutils,
+  socat,
   systemd,
 }: let
   agentBin = writeTextFile {
     name = "aos-test-agent";
     executable = true;
     destination = "/bin/aos-test-agent";
-    text = builtins.readFile ../../lib/testing/agent/aos-test-agent.sh;
+    text =
+      builtins.replaceStrings
+      ["exec socat VSOCK-LISTEN"]
+      ["exec ${socat}/bin/socat VSOCK-LISTEN"]
+      (builtins.readFile ./_aos-test-agent/agent.sh);
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "build-input";
+    };
     pname = "aos-test-agent";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The link resolves to a nonempty Bash program with valid syntax.";
+        "files" = {};
+        "input" = "The installed VM guest-agent script.";
+        "operation" = "Resolve its package link and parse the complete shell program.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, subprocess\nscript = pathlib.Path(\"@out@/share/aos-test-agent/aos-test-agent\")\nassert script.is_symlink() and script.resolve().stat().st_size > 0\nresult = subprocess.run([\"@bash@\", \"-n\", script.resolve()], capture_output=True)\nassert result.returncode == 0, result.stderr\nprint(\"aos-test-agent data passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "aos-test-agent data passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The package rejects the absent host-generated configuration.";
+        "files" = {};
+        "input" = "A request for a host-side agent configuration in the guest package.";
+        "operation" = "Resolve the undeclared mutable configuration.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, sys\nif pathlib.Path(\"@out@/etc/aos-test-agent/config.json\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"aos-test-agent rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "aos-test-agent rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     version = "0";
     src = null;
 
@@ -21,6 +94,7 @@ in
       agentBin
       bash
       coreutils
+      socat
       systemd
     ];
 
@@ -34,51 +108,10 @@ in
       }
     ];
 
-    expose = {
-      units = {
-        "aos-test-agent.service" = {
-          description = "AOS VM test guest agent";
-          # Activation must not interrupt the control channel carrying the
-          # command that initiated it. A later boot naturally starts the unit
-          # using the newly selected definition.
-          restartIfChanged = false;
-          stopOnRemoval = false;
-          unitConfig.RefuseManualStop = true;
-          serviceConfig = {
-            Type = "simple";
-            ExecStart = "${agentBin}/bin/aos-test-agent";
-            Restart = "on-failure";
-            RestartSec = "1";
-            Environment = "PATH=${coreutils}/bin:${bash}/bin:${systemd}/bin:${systemd}/sbin";
-          };
-        };
-      };
-
-      permissions = {
-        # The agent is test infrastructure: it opens the QEMU virtio-serial
-        # device, runs arbitrary test commands as root, and can power off the
-        # VM. Keep that escape hatch explicit in the signed manifest.
-        network = "host";
-        privileged-users = true;
-        syscalls = "privileged";
-      };
-    };
-
-    # The fleet control plane is test infrastructure rather than image policy.
-    # Keep its generated expose module usable on both sides of the module ABI
-    # transition acceptance test; config-module-smoke remains the
-    # deliberately ABI-1-only negative fixture.
-    configModule = {
-      src = ./_aos-test-agent-config;
-      moduleAbiCompat = {
-        min = 1;
-        max = 2;
-      };
-      declares = [];
-    };
+    abilities = ./_aos-test-agent;
 
     meta = {
-      description = "AOS exposed package for the VM test guest agent";
+      description = "AOS package for the VM test guest agent";
       license = "Apache-2.0";
     };
   }

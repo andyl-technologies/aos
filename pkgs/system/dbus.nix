@@ -1,8 +1,8 @@
 ##! D-Bus — Message bus system
 {
+  lib,
   mkDerivation,
   fetchurl,
-  lib,
   patchelf,
   meson,
   ninja,
@@ -20,7 +20,113 @@
   linuxRuntimeLibraryPath = builtins.concatStringsSep ":" (map (dependency: "${dependency}/lib") [expat libselinux audit libcap-ng systemd]);
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "dbus";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The public API returns the expected result and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\n#include <string.h>\n#include <dbus/dbus.h>\n\nint main(void) {\n    DBusMessage *message = dbus_message_new_method_call(\n        \"org.aos.Qualification\", \"/org/aos/Qualification\",\n        \"org.aos.Qualification\", \"Probe\");\n    if (message == NULL\n        || strcmp(dbus_message_get_path(message), \"/org/aos/Qualification\") != 0\n        || strcmp(dbus_message_get_member(message), \"Probe\") != 0) {\n        if (message != NULL) dbus_message_unref(message);\n        return 2;\n    }\n    dbus_message_unref(message);\n    return puts(\"dbus api passed\") == EOF;\n}\n";
+        };
+        "input" = "A valid bus name, object path, interface, and method name.";
+        "operation" = "Construct a method-call message and read its routing metadata back.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include/dbus-1.0"
+              "-I@out@/lib/dbus-1.0/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-ldbus-1"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "dbus api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The public API reports rejection and the consumer returns the fixed rejection status.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\n#include <dbus/dbus.h>\n\nint main(void) {\n    DBusError error;\n    dbus_error_init(&error);\n    dbus_bool_t valid = dbus_validate_path(\"org/aos/invalid\", &error);\n    if (valid || !dbus_error_is_set(&error)) {\n        dbus_error_free(&error);\n        return 2;\n    }\n    dbus_error_free(&error);\n    fputs(\"dbus rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+        };
+        "input" = "An object path without the required leading slash.";
+        "operation" = "Validate the malformed path with dbus_validate_path.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include/dbus-1.0"
+              "-I@out@/lib/dbus-1.0/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-ldbus-1"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -55,16 +161,7 @@ in
       then []
       else [systemd];
 
-    # Pure stage-2 inventory for consumers that opt into
-    # `systemd.packages = [ pkgs.dbus ]`.
-    passthru.systemdUnitInventory = {
-      system = [];
-      user = [
-        "lib/systemd/user/dbus.service"
-        "lib/systemd/user/dbus.socket"
-        "lib/systemd/user/sockets.target.wants/dbus.socket"
-      ];
-    };
+    abilities = ./_dbus;
 
     # dbus-daemon crash-loops on activation under -fstrict-flex-arrays=3
     # (its trailing-array message structs trip _FORTIFY_SOURCE at runtime).
@@ -94,7 +191,7 @@ in
       {
         name = "configure";
         # Enable systemd so dbus installs its user service/socket units and
-        # sockets.target.wants link for systemd.packages consumers.
+        # sockets.target.wants link for the packaged unit tree.
         # --sysconfdir=/etc so
         # baked-in config lookups go to /etc/dbus-1 on the running system,
         # not a read-only store path.
@@ -151,6 +248,14 @@ in
             cp -a $out$out/. $out/
             rm -rf $out/nix
           fi
+          # The registration controller owns the deployment-specific search
+          # order. Keep the stock policy and omit the mutable directory hooks
+          # that the controller appends after authenticated package entries.
+          sed -i \
+            -e '/<includedir>system\.d<\/includedir>/d' \
+            -e '/<include.*system-local\.conf<\/include>/d' \
+            "$out/share/dbus-1/system.conf"
+
           ${lib.optionalString isLinuxCross ''
             # Meson's install step drops some cross-wrapper runtime paths.
             # Restore declared libraries before the normal unused-path shrink.
@@ -161,6 +266,53 @@ in
           ''}'';
       }
     ];
+
+    checks = {
+      self,
+      pkgs,
+      mkSystem,
+      ...
+    }: let
+      evaluated = mkSystem {
+        systemName = "dbus-package-check";
+        modules = [
+          {
+            environment.systemPackages = [self];
+            aos.services.dbus.enable = true;
+          }
+        ];
+      };
+      requests = evaluated.config.aos.abilities.requests;
+      lifecycle = requests."dbus:dbus-lifecycle".parameters;
+      managerIdentity = requests."dbus:dbus-manager_identity".parameters;
+      sockets = requests."dbus:dbus-socket_activation".parameters.sockets;
+      socketModes = builtins.listToAttrs (
+        builtins.map (socket: lib.nameValuePair socket.manager_name socket.mode) sockets
+      );
+      principal = requests."dbus:service-principal".parameters;
+      contractHolds =
+        self.abilities ? requirementTemplates
+        && builtins.hasAttr "dbus-service-manager-identity" self.abilities.requirementTemplates
+        && lifecycle.configuration_change_action == "reload"
+        && managerIdentity
+        == {
+          service = "dbus";
+          enabled = true;
+          name = "dbus";
+          aliases = ["messagebus"];
+        }
+        && socketModes == {dbus = "0666";}
+        && !(principal ? requested_id);
+    in {
+      ability-module-contract =
+        if contractHolds
+        then
+          pkgs.runCommand "dbus-ability-module-contract" {} ''
+            mkdir -p "$out"
+            printf '%s\n' PASS > "$out/result"
+          ''
+        else throw "the D-Bus native ability contract check failed";
+    };
 
     meta = {
       description = "D-Bus — freedesktop.org message bus system";

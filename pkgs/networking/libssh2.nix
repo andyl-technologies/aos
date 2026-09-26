@@ -1,5 +1,6 @@
 ##! libssh2 — Client-side C library implementing the SSH2 protocol
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -10,7 +11,95 @@
   version = "1.11.1";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "libssh2";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The known-host collection reports an exact match.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libssh2 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libssh2 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <libssh2.h>\nint main(void) {\n    const char *key = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\";\n    const char *line = \"example.test ssh-ed25519 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\\n\";\n    LIBSSH2_SESSION *session = libssh2_session_init();\n    LIBSSH2_KNOWNHOSTS *hosts = session == NULL ? NULL : libssh2_knownhost_init(session);\n    if (hosts == NULL) return 2;\n    int loaded = libssh2_knownhost_readline(hosts, line, strlen(line), LIBSSH2_KNOWNHOST_FILE_OPENSSH);\n    int matched = libssh2_knownhost_check(\n        hosts, \"example.test\", key, 0,\n        LIBSSH2_KNOWNHOST_TYPE_PLAIN | LIBSSH2_KNOWNHOST_KEYENC_BASE64 | LIBSSH2_KNOWNHOST_KEY_ED25519,\n        NULL);\n    libssh2_knownhost_free(hosts);\n    libssh2_session_free(session);\n    return loaded == 0 && matched == LIBSSH2_KNOWNHOST_CHECK_MATCH ? pass() : 3;\n}\n\n";
+        };
+        "input" = "An OpenSSH known-host line for an Ed25519 key.";
+        "operation" = "Load the line and match its host and key through the known-host API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lssh2"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libssh2 primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Libssh2 returns a negative parse error.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libssh2 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libssh2 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <libssh2.h>\nint main(void) {\n    const char *line = \"invalid line\\n\";\n    LIBSSH2_SESSION *session = libssh2_session_init();\n    LIBSSH2_KNOWNHOSTS *hosts = session == NULL ? NULL : libssh2_knownhost_init(session);\n    if (hosts == NULL) return 2;\n    int status = libssh2_knownhost_readline(hosts, line, strlen(line), LIBSSH2_KNOWNHOST_FILE_OPENSSH);\n    libssh2_knownhost_free(hosts);\n    libssh2_session_free(session);\n    return status < 0 ? reject() : 3;\n}\n\n";
+        };
+        "input" = "A known-host line without a key type or encoded key.";
+        "operation" = "Load the malformed line through libssh2_knownhost_readline.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lssh2"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libssh2 rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

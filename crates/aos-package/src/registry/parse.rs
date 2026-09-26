@@ -24,7 +24,7 @@
 //! [versions.platforms.x86_64-linux.references]
 //! hashes = ["r4q1m2kp8v3x"]
 //! min-format = 1
-//! requires-features = ["expose-v1", "permissions-v1"]
+//! requires-features = ["abilities-v1", "attestation-v1"]
 //! # nar_hash/nar_size may appear in pre-RFC-0005 registries; newer ones
 //! # publish the output's content binding in the store/ graph instead.
 //! ```
@@ -44,6 +44,8 @@ use crate::types::{
     PackageMeta, SysrootImageEntry, package_name_bucket, validate_supported_package_meta,
 };
 
+type PackageMetaValidator = fn(&PackageMeta) -> Result<()>;
+
 // ---------------------------------------------------------------------------
 // Package TOML schema (registry format)
 // ---------------------------------------------------------------------------
@@ -55,15 +57,15 @@ use crate::types::{
 // …}` paths are unchanged. The canonical structs carry the RFC-0005 `store/`
 // graph fields (`source_drv`/`source_nar_hash`, legacy `nar_hash`/`nar_size`),
 // the RFC-0006 Secure Boot image facts (`sb_signer_cert_sha256`/`sbat`/
-// `expected_pcr11`), and the RFC-0001 package-sandboxing metadata (the
-// structural `references` gate plus the `expose`/`permissions`/`bpf_lsm`/
-// attestation fields and their helper impls such as `PlatformEntry::attestation`
-// and the `ReferenceField` accessors).
+// `expected_pcr11`), and authenticated package metadata (the structural
+// `references` gate plus BPF-LSM, attestation, documentation, and package
+// contract fields and helpers such as `PlatformEntry::attestation` and the
+// `ReferenceField` accessors).
 pub use aos_registry_surface::manifest::{
-    ImageCompression, ImageDelivery, ImageEntry, ImageInfoReference, ImageStoreReference,
-    ImageTarget, ImageUkiIdentity, ImageVerificationState, PackageHeader, PackageToml,
-    PlatformEntry, ReferenceField, ReferenceGate, VersionEntry, immutable_image_info_object_key,
-    immutable_image_object_key,
+    ImageArtifactContractDocumentReference, ImageArtifactContractReference, ImageCompression,
+    ImageDelivery, ImageEntry, ImageStoreReference, ImageTarget, PackageHeader, PackageToml,
+    PlatformEntry, ReferenceField, ReferenceGate, VersionEntry,
+    immutable_image_contract_object_key, immutable_image_object_key,
 };
 
 // ---------------------------------------------------------------------------
@@ -112,7 +114,12 @@ pub(crate) fn parse_registry_matching(
     HashMap<String, PackageMeta>,
     Vec<PackageMeta>,
 )> {
-    parse_registry_selection(dir, Some(platform), version_req)
+    parse_registry_selection(
+        dir,
+        Some(platform),
+        version_req,
+        validate_supported_package_meta,
+    )
 }
 
 /// Reads every validated package version and platform in an extracted registry.
@@ -122,7 +129,8 @@ pub(crate) fn parse_registry_matching(
 /// Returns an error for malformed package files, invalid image contracts, or
 /// unreadable registry directories.
 pub fn parse_registry_all_platforms(dir: &Path) -> Result<Vec<PackageMeta>> {
-    let (_, _, versions) = parse_registry_selection(dir, None, None)?;
+    let (_, _, versions) =
+        parse_registry_selection(dir, None, None, validate_supported_package_meta)?;
     Ok(versions)
 }
 
@@ -130,6 +138,7 @@ fn parse_registry_selection(
     dir: &Path,
     platform: Option<&str>,
     version_req: Option<&semver::VersionReq>,
+    validate_meta: PackageMetaValidator,
 ) -> Result<(
     HashMap<String, PackageMeta>,
     HashMap<String, PackageMeta>,
@@ -175,7 +184,7 @@ fn parse_registry_selection(
                 let mut metas = Vec::new();
                 for platform in platforms {
                     metas.extend(
-                        package_metas_for_platform(&toml, platform, version_req)
+                        package_metas_for_platform(&toml, platform, version_req, validate_meta)
                             .with_context(|| format!("validating {}", toml_path.display()))?,
                     );
                 }
@@ -267,13 +276,14 @@ fn validate_package_layout(path: &Path, package_name: &str) -> Result<()> {
 /// entry for `platform`.
 fn parse_package_toml_versions(content: &str, platform: &str) -> Result<Vec<PackageMeta>> {
     let toml = parse_package_toml_document(content)?;
-    package_metas_for_platform(&toml, platform, None)
+    package_metas_for_platform(&toml, platform, None, validate_supported_package_meta)
 }
 
 fn package_metas_for_platform(
     toml: &PackageToml,
     platform: &str,
     version_req: Option<&semver::VersionReq>,
+    validate_meta: PackageMetaValidator,
 ) -> Result<Vec<PackageMeta>> {
     let mut metas = Vec::new();
 
@@ -291,16 +301,6 @@ fn package_metas_for_platform(
                     nar_hash: img.nar_hash.clone(),
                     nar_size: img.nar_size,
                     delivery: img.delivery.clone(),
-                    sb_signer_cert_sha256: img.sb_signer_cert_sha256.clone(),
-                    sbat: img.sbat.clone(),
-                    expected_pcr11: img.expected_pcr11.clone(),
-                    ukis: img.ukis.clone(),
-                    recovery_ukis: img.recovery_ukis.clone(),
-                    recovery_bundle: img.recovery_bundle.clone(),
-                    root_image: img.root_image.clone(),
-                    root_verity: img.root_verity.clone(),
-                    root_hash: img.root_hash.clone(),
-                    root_hash_sig: img.root_hash_sig.clone(),
                 })
                 .collect();
 
@@ -328,30 +328,19 @@ fn package_metas_for_platform(
                 images,
                 min_format,
                 requires_features,
-                expose: plat.expose.clone(),
-                expose_artifact: plat.expose_artifact.clone(),
-                config_module: plat.config_module.clone(),
                 documentation: plat.documentation.clone(),
-                permissions: plat.permissions.clone(),
-                bpf_lsm: plat.bpf_lsm.clone(),
+                contract: plat.contract.clone(),
                 attestation,
             };
-            if (meta.expose.is_some()
-                || meta.expose_artifact.is_some()
-                || !meta.permissions.is_empty()
-                || meta
-                    .bpf_lsm
-                    .as_ref()
-                    .is_some_and(|bpf_lsm| !bpf_lsm.is_empty())
-                || !meta.attestation.is_empty())
+            if (meta.contract.is_some() || !meta.attestation.is_empty())
                 && !plat.references.is_gate()
             {
                 bail!(
-                    "package '{}' uses RFC-0001 metadata without the structural references gate",
+                    "package '{}' uses authenticated metadata without the structural references gate",
                     meta.name
                 );
             }
-            validate_supported_package_meta(&meta)?;
+            validate_meta(&meta)?;
             metas.push(meta);
         }
     }
@@ -482,94 +471,6 @@ references = []
 "#;
 
 #[cfg(test)]
-const EXPOSED_TOML: &str = r#"
-[package]
-name = "webapp"
-description = "Exposed web app"
-license = "MIT"
-maintainer = "aos-team"
-
-[[versions]]
-version = "1.0.0"
-
-[versions.platforms.x86_64-linux]
-store_path = "/var/lib/store/webapphash11-webapp-1.0.0"
-nar_hash = "sha256:abc123"
-nar_size = 1024
-closure_size = 1024
-source_drv = ""
-source_nar_hash = ""
-root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-provenance = "attestation/webapp.provenance.jsonl"
-measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-
-[versions.platforms.x86_64-linux.references]
-hashes = []
-min-format = 1
-requires-features = ["attestation-v1", "expose-v1", "permissions-v1", "requires-v1", "network-policy-v1"]
-
-[versions.platforms.x86_64-linux.expose]
-target = "aos-pkg-webapp.target"
-units = ["webapp.service"]
-requires = ["zlib"]
-
-[[versions.platforms.x86_64-linux.expose.images]]
-format = "dir"
-store_path = "/var/lib/store/webapproot-webapp-root"
-nar_hash = "sha256:root"
-nar_size = 2048
-
-[versions.platforms.x86_64-linux.permissions]
-network = "private-outbound"
-tcp-bind = [8080]
-tcp-connect = [443]
-capabilities = ["CAP_NET_BIND_SERVICE"]
-host-paths = [{ path = "/srv/webapp", mode = "read-only" }]
-syscalls = "system-service"
-
-[versions.platforms.x86_64-linux.permissions.confinement]
-class = "sandboxed-with-holes"
-label = "sandboxed-with-holes (network:private-outbound, tcp-bind:8080, tcp-connect:443, capability:CAP_NET_BIND_SERVICE, host-path:read-only:/srv/webapp, syscalls:system-service)"
-holes = ["network:private-outbound", "tcp-bind:8080", "tcp-connect:443", "capability:CAP_NET_BIND_SERVICE", "host-path:read-only:/srv/webapp", "syscalls:system-service"]
-"#;
-
-#[cfg(test)]
-const BPF_LSM_TOML: &str = r#"
-[package]
-name = "aos-ebpf-lsm-policy"
-description = "Fleet BPF-LSM policy"
-license = "MIT"
-maintainer = "aos-team"
-
-[[versions]]
-version = "0"
-
-[versions.platforms.x86_64-linux]
-store_path = "/var/lib/store/bpflsmhash12-aos-ebpf-lsm-policy-0"
-nar_hash = "sha256:abc123"
-nar_size = 1024
-closure_size = 1024
-source_drv = ""
-source_nar_hash = ""
-root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-provenance = "attestation/aos-ebpf-lsm-policy.provenance.jsonl"
-measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-
-[versions.platforms.x86_64-linux.references]
-hashes = []
-min-format = 1
-requires-features = ["attestation-v1", "bpf-lsm-policy-v1"]
-
-[versions.platforms.x86_64-linux.bpf_lsm]
-
-[[versions.platforms.x86_64-linux.bpf_lsm.policies]]
-name = "aos-lsm-task-audit"
-policy = "share/aos/ebpf-lsm/aos-task-audit.json"
-object = "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o"
-programs = ["aos_lsm_file_mprotect"]
-"#;
-
-#[cfg(test)]
 const ATTESTATION_TOML: &str = r#"
 [package]
 name = "verity-app"
@@ -670,31 +571,6 @@ references = []
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ConfinementClass, HostPathMode, NetworkPermission, SyscallProfile};
-
-    const MISSING_DELIVERY_IMAGE_TOML: &str = r#"
-[package]
-name = "server"
-description = "AOS server"
-license = "MIT"
-maintainer = "aos-team"
-sysroot = true
-
-[[versions]]
-version = "2026.08"
-
-[versions.platforms.x86_64-linux]
-store_path = "/aos/store/serverhash-server-2026.08"
-closure_size = 1
-source_drv = ""
-source_nar_hash = ""
-
-[[versions.platforms.x86_64-linux.images]]
-format = "raw"
-store_path = "/aos/store/imagehash-server-raw"
-nar_hash = "sha256:missing-delivery"
-nar_size = 10
-"#;
 
     fn direct_image_toml(format: &str) -> String {
         let image_sha256 = "a".repeat(64);
@@ -716,7 +592,8 @@ nar_size = 10
         };
         let filename = format!("aos-server.{extension}");
         let object_key = immutable_image_object_key(&image_sha256, &filename);
-        let info_key = immutable_image_info_object_key(&image_sha256, &info_sha256);
+        let info_key =
+            immutable_image_contract_object_key(&image_sha256, &info_sha256, "image-info.json");
         let compression = if format == "raw" { "zstd" } else { "none" };
         format!(
             r#"
@@ -736,6 +613,11 @@ closure_size = 1
 source_drv = ""
 source_nar_hash = ""
 
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["image-artifact-contract-v1"]
+
 [[versions.platforms.x86_64-linux.images]]
 format = "{format}"
 store_path = "/aos/store/00000000000000000000000000000000-server-{format}"
@@ -749,7 +631,6 @@ platform = "x86_64-linux"
 architecture = "x86_64"
 logical_image_id = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 logical_disk_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-rootfs_sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 filename = "{filename}"
 object_key = "{object_key}"
 media_type = "{media_type}"
@@ -758,14 +639,10 @@ byte_size = 10
 sha256 = "{image_sha256}"
 compatible_targets = [{targets}]
 
-[versions.platforms.x86_64-linux.images.delivery.uki]
-filename = "aos-server.efi"
-esp_path = "EFI/Linux/aos-server.efi"
-byte_size = 1024
-sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-verification = "unsigned"
+[versions.platforms.x86_64-linux.images.delivery.artifact_contract]
+schema = "aos.test.boot-artifacts/v1"
 
-[versions.platforms.x86_64-linux.images.delivery.image_info]
+[versions.platforms.x86_64-linux.images.delivery.artifact_contract.document]
 filename = "image-info.json"
 object_key = "{info_key}"
 media_type = "application/vnd.aos.image-info+json"
@@ -773,16 +650,6 @@ byte_size = 20
 sha256 = "{info_sha256}"
 "#
         )
-    }
-
-    #[test]
-    fn old_signed_image_catalog_remains_store_install_compatible() {
-        let meta = parse_package_toml(MISSING_DELIVERY_IMAGE_TOML, "x86_64-linux")
-            .unwrap()
-            .unwrap();
-        assert_eq!(meta.images.len(), 1);
-        assert!(meta.images[0].delivery.is_store_only());
-        assert_eq!(meta.images[0].store_path, "/aos/store/imagehash-server-raw");
     }
 
     #[test]
@@ -872,160 +739,6 @@ sha256 = "{info_sha256}"
         assert_eq!(meta.name, "zlib");
         assert!(meta.references.is_empty());
     }
-
-    #[test]
-    fn parse_expose_and_permissions_metadata() {
-        let meta = parse_package_toml(EXPOSED_TOML, "x86_64-linux")
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(meta.min_format, Some(1));
-        assert_eq!(
-            meta.requires_features,
-            vec![
-                "attestation-v1",
-                "expose-v1",
-                "network-policy-v1",
-                "permissions-v1",
-                "requires-v1",
-            ]
-        );
-        let expose = meta.expose.as_ref().unwrap();
-        assert_eq!(expose.target, "aos-pkg-webapp.target");
-        assert_eq!(expose.units, vec!["webapp.service"]);
-        assert_eq!(expose.requires, vec!["zlib"]);
-        assert_eq!(expose.images.len(), 1);
-        assert_eq!(expose.images[0].format, "dir");
-        assert_eq!(
-            meta.permissions.network,
-            Some(NetworkPermission::PrivateOutbound)
-        );
-        assert_eq!(meta.permissions.tcp_bind, vec![8080]);
-        assert_eq!(meta.permissions.tcp_connect, vec![443]);
-        assert_eq!(meta.permissions.capabilities, vec!["CAP_NET_BIND_SERVICE"]);
-        assert_eq!(meta.permissions.host_paths.len(), 1);
-        assert_eq!(meta.permissions.host_paths[0].mode, HostPathMode::ReadOnly);
-        assert_eq!(
-            meta.permissions.syscalls,
-            Some(SyscallProfile::SystemService)
-        );
-        let confinement = meta.permissions.confinement.as_ref().unwrap();
-        assert_eq!(confinement.class, ConfinementClass::SandboxedWithHoles);
-        assert_eq!(
-            confinement.label,
-            "sandboxed-with-holes (network:private-outbound, tcp-bind:8080, tcp-connect:443, capability:CAP_NET_BIND_SERVICE, host-path:read-only:/srv/webapp, syscalls:system-service)"
-        );
-        assert_eq!(
-            confinement.holes,
-            vec![
-                "network:private-outbound".to_string(),
-                "tcp-bind:8080".to_string(),
-                "tcp-connect:443".to_string(),
-                "capability:CAP_NET_BIND_SERVICE".to_string(),
-                "host-path:read-only:/srv/webapp".to_string(),
-                "syscalls:system-service".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_expose_rejects_target_bound_to_other_package() {
-        let content = EXPOSED_TOML.replace(
-            r#"target = "aos-pkg-webapp.target""#,
-            r#"target = "aos-pkg-other.target""#,
-        );
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-
-        assert!(
-            format!("{err:#}").contains("must equal aos-pkg-webapp.target"),
-            "{err:#}"
-        );
-    }
-
-    #[test]
-    fn parse_expose_verity_image_metadata() {
-        let content = EXPOSED_TOML.replace(
-            r#"[[versions.platforms.x86_64-linux.expose.images]]
-format = "dir"
-store_path = "/var/lib/store/webapproot-webapp-root"
-nar_hash = "sha256:root"
-nar_size = 2048
-"#,
-            r#"[[versions.platforms.x86_64-linux.expose.images]]
-format = "ext4-verity"
-store_path = "/var/lib/store/webapproot-webapp-root"
-nar_hash = "sha256:root"
-nar_size = 2048
-root_image = "root.img"
-root_verity = "root.verity"
-root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-root_hash_sig = "root.roothash.p7s"
-"#,
-        );
-
-        let meta = parse_package_toml(&content, "x86_64-linux")
-            .unwrap()
-            .unwrap();
-        let image = &meta.expose.as_ref().unwrap().images[0];
-
-        assert_eq!(image.format, "ext4-verity");
-        assert_eq!(image.root_image.as_deref(), Some("root.img"));
-        assert_eq!(image.root_verity.as_deref(), Some("root.verity"));
-        assert_eq!(
-            image.root_hash.as_deref(),
-            Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-        );
-        assert_eq!(image.root_hash_sig.as_deref(), Some("root.roothash.p7s"));
-    }
-
-    #[test]
-    fn parse_bpf_lsm_policy_metadata() {
-        let meta = parse_package_toml(BPF_LSM_TOML, "x86_64-linux")
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(meta.min_format, Some(1));
-        assert_eq!(
-            meta.requires_features,
-            vec!["attestation-v1", "bpf-lsm-policy-v1"]
-        );
-        let bpf_lsm = meta.bpf_lsm.as_ref().unwrap();
-        assert_eq!(bpf_lsm.policies.len(), 1);
-        assert_eq!(bpf_lsm.policies[0].name, "aos-lsm-task-audit");
-        assert_eq!(
-            bpf_lsm.policies[0].object,
-            "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o"
-        );
-        assert_eq!(bpf_lsm.policies[0].programs, vec!["aos_lsm_file_mprotect"]);
-    }
-
-    #[test]
-    fn parse_bpf_lsm_metadata_requires_structural_gate() {
-        let content = BPF_LSM_TOML.replace(
-            r#"[versions.platforms.x86_64-linux.references]
-hashes = []
-min-format = 1
-requires-features = ["attestation-v1", "bpf-lsm-policy-v1"]
-"#,
-            r#"references = []
-min-format = 1
-requires-features = ["attestation-v1", "bpf-lsm-policy-v1"]
-"#,
-        );
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-        assert!(format!("{err:#}").contains("structural references gate"));
-    }
-
-    #[test]
-    fn parse_bpf_lsm_metadata_requires_own_feature_gate() {
-        let content = BPF_LSM_TOML.replace("bpf-lsm-policy-v1", "ebpf-net-policy-v1");
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-        assert!(format!("{err:#}").contains("bpf-lsm-policy-v1"));
-    }
-
     #[test]
     fn parse_attestation_metadata() {
         let meta = parse_package_toml(ATTESTATION_TOML, "x86_64-linux")
@@ -1072,163 +785,14 @@ requires-features = ["attestation-v1"]
 
     #[test]
     fn parse_attestation_metadata_requires_own_feature_gate() {
-        let content = ATTESTATION_TOML.replace("attestation-v1", "permissions-v1");
+        let content = ATTESTATION_TOML.replace(
+            "requires-features = [\"attestation-v1\"]",
+            "requires-features = []",
+        );
 
         let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
         assert!(format!("{err:#}").contains("attestation-v1"));
     }
-
-    #[test]
-    fn rfc0001_structural_gate_fails_old_reference_parser() {
-        #[derive(Debug, serde::Deserialize)]
-        #[allow(dead_code)]
-        struct LegacyPackageToml {
-            versions: Vec<LegacyVersionEntry>,
-        }
-
-        #[derive(Debug, serde::Deserialize)]
-        #[allow(dead_code)]
-        struct LegacyVersionEntry {
-            platforms: HashMap<String, LegacyPlatformEntry>,
-        }
-
-        #[derive(Debug, serde::Deserialize)]
-        #[allow(dead_code)]
-        struct LegacyPlatformEntry {
-            references: Vec<String>,
-        }
-
-        let err = toml::from_str::<LegacyPackageToml>(EXPOSED_TOML).unwrap_err();
-        assert!(err.to_string().contains("references"));
-    }
-
-    #[test]
-    fn parse_rfc0001_metadata_requires_structural_gate() {
-        let content = EXPOSED_TOML.replace(
-            r#"[versions.platforms.x86_64-linux.references]
-hashes = []
-min-format = 1
-requires-features = ["attestation-v1", "expose-v1", "permissions-v1", "requires-v1", "network-policy-v1"]
-"#,
-            r#"references = []
-min-format = 1
-requires-features = ["attestation-v1", "expose-v1", "permissions-v1", "requires-v1", "network-policy-v1"]
-"#,
-        );
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-        assert!(format!("{err:#}").contains("structural references gate"));
-    }
-
-    #[test]
-    fn parse_permissions_rejects_unknown_fields() {
-        let content = EXPOSED_TOML.replace(
-            "[versions.platforms.x86_64-linux.permissions]\n",
-            "[versions.platforms.x86_64-linux.permissions]\nfilesystem = \"host\"\n",
-        );
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-        assert!(format!("{err:#}").contains("unknown field"));
-    }
-
-    #[test]
-    fn parse_permissions_rejects_invalid_capability() {
-        let content = EXPOSED_TOML.replace("CAP_NET_BIND_SERVICE", "NET_BIND_SERVICE");
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-        assert!(format!("{err:#}").contains("invalid capability"));
-    }
-
-    #[test]
-    fn parse_expose_requires_feature_gate() {
-        let content = EXPOSED_TOML.replace(
-            "requires-features = [\"attestation-v1\", \"expose-v1\", \"permissions-v1\", \"requires-v1\", \"network-policy-v1\"]",
-            "requires-features = [\"attestation-v1\", \"permissions-v1\", \"requires-v1\", \"network-policy-v1\"]",
-        );
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-        assert!(format!("{err:#}").contains("expose-v1"));
-    }
-
-    #[test]
-    fn parse_permissions_requires_feature_gate() {
-        let content = EXPOSED_TOML.replace(
-            "requires-features = [\"attestation-v1\", \"expose-v1\", \"permissions-v1\", \"requires-v1\", \"network-policy-v1\"]",
-            "requires-features = [\"attestation-v1\", \"expose-v1\", \"requires-v1\", \"network-policy-v1\"]",
-        );
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-        assert!(format!("{err:#}").contains("permissions-v1"));
-    }
-
-    #[test]
-    fn parse_requires_rejects_unsupported_min_format() {
-        let content = EXPOSED_TOML.replace("min-format = 1", "min-format = 2");
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-        assert!(format!("{err:#}").contains("metadata format 2"));
-    }
-
-    #[test]
-    fn parse_rejects_unknown_platform_fields() {
-        let content = EXPOSED_TOML.replace(
-            "source_nar_hash = \"\"\n",
-            "source_nar_hash = \"\"\npermission = \"host\"\n",
-        );
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-        assert!(format!("{err:#}").contains("unknown field"));
-    }
-
-    #[test]
-    fn parse_rejects_misplaced_package_permissions() {
-        let content = EXPOSED_TOML.replace(
-            "maintainer = \"aos-team\"\n",
-            "maintainer = \"aos-team\"\n\n[package.permissions]\nnetwork = \"host\"\n",
-        );
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-        assert!(format!("{err:#}").contains("unknown field"));
-    }
-
-    #[test]
-    fn parse_rejects_misplaced_version_expose() {
-        let content = EXPOSED_TOML.replace(
-            "version = \"1.0.0\"\n",
-            "version = \"1.0.0\"\nexpose = { target = \"aos-pkg-webapp.target\" }\n",
-        );
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-        assert!(format!("{err:#}").contains("unknown field"));
-    }
-
-    #[test]
-    fn parse_rejects_unknown_image_fields() {
-        let content = EXPOSED_TOML.replace(
-            "nar_size = 2048\n",
-            "nar_size = 2048\npermission = \"host\"\n",
-        );
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-        assert!(format!("{err:#}").contains("unknown field"));
-    }
-
-    #[test]
-    fn parse_structural_min_format_cannot_be_overridden_downward() {
-        let content = EXPOSED_TOML
-            .replace(
-                "hashes = []\nmin-format = 1",
-                "hashes = []\nmin-format = 99",
-            )
-            .replace(
-                "source_nar_hash = \"\"\n",
-                "source_nar_hash = \"\"\nmin-format = 1\n",
-            );
-
-        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
-        assert!(format!("{err:#}").contains("metadata format 99"));
-    }
-
     #[test]
     fn parse_package_toml_rejects_path_like_package_name() {
         let content = CURL_TOML.replace("name = \"curl\"", "name = \"../curl\"");

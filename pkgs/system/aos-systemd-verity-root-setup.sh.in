@@ -1,0 +1,24 @@
+#!@bash@/bin/bash
+set -euo pipefail
+
+staging=/run/aos/systemd-verity-generator.$$
+trap 'rm -rf "$staging"' EXIT
+mkdir -p "$staging/normal" "$staging/early" "$staging/late"
+
+/lib/systemd/aos-systemd-veritysetup-generator \
+  "$staging/normal" "$staging/early" "$staging/late"
+generated_unit="$staging/normal/systemd-veritysetup@root.service"
+if [[ ! -s "$generated_unit" ]]; then
+  echo "AOS systemd verity setup: generator produced no root unit" >&2
+  exit 1
+fi
+
+mkdir -p /run/systemd/system
+cp "$generated_unit" /run/systemd/system/systemd-veritysetup@root.service
+systemctl daemon-reload
+systemctl start systemd-veritysetup@root.service
+
+# libdevmapper is built without libudev synchronization. Republish the active
+# mapper and wait for the selected manager's device pipeline to settle.
+udevadm trigger --action=change --subsystem-match=block --sysname-match='dm-*'
+udevadm settle

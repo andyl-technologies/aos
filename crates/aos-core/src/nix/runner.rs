@@ -17,9 +17,14 @@
 //! can map them to the standard exit codes.
 
 use std::env;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -32,6 +37,7 @@ pub struct NixRunner {
     root: PathBuf,
     verbose: u8,
     quiet: bool,
+    command_environment: Vec<(OsString, OsString)>,
 }
 
 impl NixRunner {
@@ -53,6 +59,7 @@ impl NixRunner {
             root,
             verbose,
             quiet,
+            command_environment: Vec::new(),
         })
     }
 
@@ -76,7 +83,20 @@ impl NixRunner {
             root,
             verbose,
             quiet,
+            command_environment: Vec::new(),
         })
+    }
+
+    /// Applies explicit environment variables to every Nix child process.
+    ///
+    /// This lets callers isolate Nix state without mutating process-global
+    /// environment variables shared with concurrent work.
+    pub fn with_command_environment(
+        mut self,
+        environment: impl IntoIterator<Item = (OsString, OsString)>,
+    ) -> Self {
+        self.command_environment.extend(environment);
+        self
     }
 
     /// Returns the project root path (the directory containing
@@ -101,7 +121,7 @@ impl NixRunner {
     /// Returns [`AosError::NixBuild`] if `nix-build` exits non-zero, or
     /// another error if it cannot be spawned or prints no output.
     pub fn build(&self, attr: &str, out_link: Option<&str>) -> Result<PathBuf> {
-        self.build_inner(attr, out_link, None, None)
+        self.build_inner(attr, out_link, None, None, None)
     }
 
     /// Runs `nix-build` for a cross-compilation target.
@@ -120,7 +140,7 @@ impl NixRunner {
         out_link: Option<&str>,
         target: &str,
     ) -> Result<PathBuf> {
-        self.build_inner(attr, out_link, None, Some(target))
+        self.build_inner(attr, out_link, None, Some(target), None)
     }
 
     /// Like [`build`](Self::build) but also passes `--max-jobs <n>` to
@@ -137,7 +157,26 @@ impl NixRunner {
         out_link: Option<&str>,
         max_jobs: usize,
     ) -> Result<PathBuf> {
-        self.build_inner(attr, out_link, Some(max_jobs), None)
+        self.build_inner(attr, out_link, Some(max_jobs), None, None)
+    }
+
+    /// Builds one attribute with a wall-clock limit on the Nix process.
+    ///
+    /// This is intended for pure evaluation suites, where a stalled evaluator
+    /// must fail promptly rather than occupying a test worker indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when evaluation exceeds `limit`, the build fails, or
+    /// the subprocess cannot be started.
+    pub fn build_with_max_jobs_timeout(
+        &self,
+        attr: &str,
+        out_link: Option<&str>,
+        max_jobs: usize,
+        limit: Duration,
+    ) -> Result<PathBuf> {
+        self.build_inner(attr, out_link, Some(max_jobs), None, Some(limit))
     }
 
     fn build_inner(
@@ -146,6 +185,7 @@ impl NixRunner {
         out_link: Option<&str>,
         max_jobs: Option<usize>,
         cross_system: Option<&str>,
+        limit: Option<Duration>,
     ) -> Result<PathBuf> {
         let mut args: Vec<String> = vec![
             self.default_nix().to_string_lossy().to_string(),
@@ -166,7 +206,10 @@ impl NixRunner {
             args.push(jobs.to_string());
         }
 
-        let output = self.run_nix("nix-build", &args)?;
+        let output = match limit {
+            Some(limit) => self.run_nix_with_timeout("nix-build", &args, limit)?,
+            None => self.run_nix("nix-build", &args)?,
+        };
         let stdout = String::from_utf8_lossy(&output.stdout);
         let path = stdout
             .lines()
@@ -290,6 +333,68 @@ impl NixRunner {
         attr: &str,
         target: Option<&str>,
     ) -> Result<serde_json::Value> {
+        self.eval_json_with_platform_args(attr, target, None)
+    }
+
+    /// Evaluates a release attribute with its complete caller-selected target set.
+    ///
+    /// The selected targets are passed as the top-level `releasePlatforms` list.
+    /// This keeps release policy outside the generic package evaluator and binds
+    /// package eligibility and target derivations to the same explicit set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty, duplicate, or unsafe platform name, when
+    /// Nix evaluation fails, or when the result is not valid JSON.
+    pub fn eval_release_json(
+        &self,
+        attr: &str,
+        target: Option<&str>,
+        release_platforms: &[&str],
+    ) -> Result<serde_json::Value> {
+        let bytes = self.eval_release_json_bytes(attr, target, release_platforms)?;
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("failed to parse JSON from nix-instantiate for attr '{attr}'"))
+    }
+
+    /// Evaluates a release attribute and returns the exact JSON bytes emitted by Nix.
+    ///
+    /// The selected targets are passed as the top-level `releasePlatforms` list.
+    /// Callers that own a typed wire contract can decode these bytes directly,
+    /// avoiding a second generic JSON projection at the Nix/Rust boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty, duplicate, or unsafe platform name, or
+    /// when Nix evaluation fails.
+    pub fn eval_release_json_bytes(
+        &self,
+        attr: &str,
+        target: Option<&str>,
+        release_platforms: &[&str],
+    ) -> Result<Vec<u8>> {
+        let expression = release_platforms_expression(release_platforms)?;
+        self.eval_json_bytes_with_platform_args(attr, target, Some(&expression))
+    }
+
+    fn eval_json_with_platform_args(
+        &self,
+        attr: &str,
+        target: Option<&str>,
+        release_platforms_expression: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let bytes =
+            self.eval_json_bytes_with_platform_args(attr, target, release_platforms_expression)?;
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("failed to parse JSON from nix-instantiate for attr '{attr}'"))
+    }
+
+    fn eval_json_bytes_with_platform_args(
+        &self,
+        attr: &str,
+        target: Option<&str>,
+        release_platforms_expression: Option<&str>,
+    ) -> Result<Vec<u8>> {
         if target.is_some_and(|target| !target_platform_name_is_safe(target)) {
             anyhow::bail!("invalid target platform");
         }
@@ -307,14 +412,16 @@ impl NixRunner {
 
         let mut args = args;
         add_cross_system_arg(&mut args, target);
+        if let Some(expression) = release_platforms_expression {
+            args.extend([
+                "--arg".to_string(),
+                "releasePlatforms".to_string(),
+                expression.to_string(),
+            ]);
+        }
 
         let output = self.run_nix("nix-instantiate", &args)?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let value: serde_json::Value = serde_json::from_str(stdout.trim()).with_context(|| {
-            format!("failed to parse JSON from nix-instantiate for attr '{attr}'")
-        })?;
-
-        Ok(value)
+        Ok(output.stdout)
     }
 
     /// Evaluates an arbitrary Nix expression to JSON via
@@ -326,6 +433,41 @@ impl NixRunner {
     /// error if `nix-instantiate` cannot be spawned or its output is
     /// not valid JSON.
     pub fn eval_expr_json(&self, expr: &str) -> Result<serde_json::Value> {
+        let bytes = self.eval_expr_json_bytes(expr)?;
+        serde_json::from_slice(&bytes)
+            .context("failed to parse JSON from nix-instantiate expression")
+    }
+
+    /// Evaluates an expression to JSON with a wall-clock limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when evaluation exceeds `limit`, Nix fails, or its
+    /// output is not valid JSON.
+    pub fn eval_expr_json_with_timeout(
+        &self,
+        expr: &str,
+        limit: Duration,
+    ) -> Result<serde_json::Value> {
+        let args = vec![
+            "--eval".to_string(),
+            "--strict".to_string(),
+            "--json".to_string(),
+            "-E".to_string(),
+            expr.to_string(),
+        ];
+        let output = self.run_nix_with_timeout("nix-instantiate", &args, limit)?;
+        serde_json::from_slice(&output.stdout)
+            .context("failed to parse JSON from nix-instantiate expression")
+    }
+
+    /// Evaluates an arbitrary Nix expression and returns its exact JSON bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] if evaluation fails, or another error if
+    /// `nix-instantiate` cannot be spawned.
+    pub fn eval_expr_json_bytes(&self, expr: &str) -> Result<Vec<u8>> {
         let args: Vec<String> = vec![
             "--eval".to_string(),
             "--strict".to_string(),
@@ -335,11 +477,7 @@ impl NixRunner {
         ];
 
         let output = self.run_nix("nix-instantiate", &args)?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let value: serde_json::Value = serde_json::from_str(stdout.trim())
-            .context("failed to parse JSON from nix-instantiate expression")?;
-
-        Ok(value)
+        Ok(output.stdout)
     }
 
     /// Evaluates an attribute of `default.nix` to a string, stripping the
@@ -474,7 +612,7 @@ impl NixRunner {
         self.instantiate_inner(attr, Some(target))
     }
 
-    /// Instantiates every derivation returned by a target-specific list.
+    /// Instantiates every derivation returned by a release-scoped target list.
     ///
     /// This registers the derivations in the local Nix store without realizing
     /// their outputs. An empty list is valid and returns no paths.
@@ -483,10 +621,16 @@ impl NixRunner {
     ///
     /// Returns [`AosError::NixBuild`] if instantiation fails, or another error
     /// if `nix-instantiate` cannot be spawned.
-    pub fn instantiate_all_for_target(&self, attr: &str, target: &str) -> Result<Vec<PathBuf>> {
+    pub fn instantiate_all_for_target(
+        &self,
+        attr: &str,
+        target: &str,
+        release_platforms: &[&str],
+    ) -> Result<Vec<PathBuf>> {
         if !target_platform_name_is_safe(target) {
             anyhow::bail!("invalid target platform '{target}'");
         }
+        let release_platforms = release_platforms_expression(release_platforms)?;
 
         let mut args = vec![
             self.default_nix().to_string_lossy().to_string(),
@@ -494,6 +638,11 @@ impl NixRunner {
             attr.to_string(),
         ];
         add_cross_system_arg(&mut args, Some(target));
+        args.extend([
+            "--arg".to_string(),
+            "releasePlatforms".to_string(),
+            release_platforms,
+        ]);
 
         let output = self.run_nix("nix-instantiate", &args)?;
         Ok(String::from_utf8_lossy(&output.stdout)
@@ -645,6 +794,14 @@ impl NixRunner {
     /// `verbose >= 2` the child's stderr is streamed to the terminal in
     /// real-time; otherwise it is captured and only shown on failure.
     fn run_nix(&self, cmd: &str, args: &[String]) -> Result<Output> {
+        self.run_nix_inner(cmd, args, None)
+    }
+
+    fn run_nix_with_timeout(&self, cmd: &str, args: &[String], limit: Duration) -> Result<Output> {
+        self.run_nix_inner(cmd, args, Some(limit))
+    }
+
+    fn run_nix_inner(&self, cmd: &str, args: &[String], limit: Option<Duration>) -> Result<Output> {
         if self.verbose >= 3 {
             eprintln!("+ {} {}", cmd, args.join(" "));
         }
@@ -655,55 +812,77 @@ impl NixRunner {
             Stdio::piped()
         };
 
-        let child = Command::new(cmd)
+        let mut command = Command::new(cmd);
+        command
             .args(args)
             .current_dir(&self.root)
+            .envs(
+                self.command_environment
+                    .iter()
+                    .map(|(key, value)| (key, value)),
+            )
             .stdout(Stdio::piped())
-            .stderr(stderr_behavior)
+            .stderr(stderr_behavior);
+        if limit.is_some() {
+            // A Nix evaluator may spawn children. Give this invocation its own
+            // process group so the deadline stops the whole evaluation.
+            command.process_group(0);
+        }
+        let child = command
             .spawn()
             .with_context(|| format!("failed to spawn {cmd}"))?;
 
-        // When verbose >= 2, stderr goes directly to the terminal (Inherit),
-        // so we only need to read stdout.  Otherwise we capture both.
-        if self.verbose >= 2 {
-            let output = child
-                .wait_with_output()
-                .with_context(|| format!("{cmd} failed"))?;
-
-            if !output.status.success() {
-                let code = output.status.code().unwrap_or(-1);
-                return Err(AosError::NixBuild {
-                    exit_code: code,
-                    stderr: String::new(), // already displayed
+        let deadline = if let Some(limit) = limit {
+            let group = i32::try_from(child.id())
+                .ok()
+                .and_then(rustix::process::Pid::from_raw)
+                .context("Nix evaluator has no process group")?;
+            let (completed, receiver) = mpsc::channel();
+            let watcher = thread::spawn(move || {
+                if receiver.recv_timeout(limit).is_ok() {
+                    return false;
                 }
-                .into());
-            }
-
-            Ok(output)
+                let _ = rustix::process::kill_process_group(group, rustix::process::Signal::TERM);
+                if receiver.recv_timeout(Duration::from_secs(5)).is_err() {
+                    let _ =
+                        rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+                }
+                true
+            });
+            Some((completed, watcher, limit))
         } else {
-            let output = child
-                .wait_with_output()
-                .with_context(|| format!("{cmd} failed"))?;
+            None
+        };
 
-            if !output.status.success() {
-                let code = output.status.code().unwrap_or(-1);
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-                // In non-quiet mode, print the captured stderr so the user
-                // can see what went wrong.
-                if !self.quiet {
-                    eprint!("{stderr}");
-                }
-
-                return Err(AosError::NixBuild {
-                    exit_code: code,
-                    stderr,
-                }
-                .into());
+        let output = child.wait_with_output();
+        if let Some((completed, watcher, limit)) = deadline {
+            let _ = completed.send(());
+            let expired = watcher
+                .join()
+                .map_err(|_| anyhow::anyhow!("Nix evaluation deadline watcher panicked"))?;
+            if expired {
+                anyhow::bail!("{cmd} exceeded the {limit:?} evaluation limit");
             }
-
-            Ok(output)
         }
+
+        let output = output.with_context(|| format!("{cmd} failed"))?;
+        if !output.status.success() {
+            let stderr = if self.verbose >= 2 {
+                String::new()
+            } else {
+                String::from_utf8_lossy(&output.stderr).to_string()
+            };
+            if !self.quiet && self.verbose < 2 {
+                eprint!("{stderr}");
+            }
+            return Err(AosError::NixBuild {
+                exit_code: output.status.code().unwrap_or(-1),
+                stderr,
+            }
+            .into());
+        }
+
+        Ok(output)
     }
 
     /// Stream a child process's stdout and stderr line-by-line to the
@@ -773,6 +952,27 @@ fn target_platform_name_is_safe(target: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
+fn release_platforms_expression(platforms: &[&str]) -> Result<String> {
+    if platforms.is_empty() {
+        anyhow::bail!("release platform selection must not be empty");
+    }
+    for (index, platform) in platforms.iter().enumerate() {
+        if !target_platform_name_is_safe(platform) {
+            anyhow::bail!("invalid release platform");
+        }
+        if platforms[..index].contains(platform) {
+            anyhow::bail!("release platform selection contains a duplicate");
+        }
+    }
+    let quoted = platforms
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("encoding release platform selection")?;
+
+    Ok(format!("[{}]", quoted.join(" ")))
+}
+
 /// Removes the output selector that `nix-instantiate` prints for a non-default output.
 fn strip_nix_output_selector(path: &str) -> &str {
     path.split_once('!')
@@ -786,7 +986,48 @@ fn target_packages_expression() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{add_cross_system_arg, strip_nix_output_selector, target_packages_expression};
+    use std::ffi::OsString;
+    use std::time::Duration;
+
+    use super::{
+        NixRunner, add_cross_system_arg, release_platforms_expression, strip_nix_output_selector,
+        target_packages_expression,
+    };
+
+    #[test]
+    fn deadline_child() {
+        if std::env::var_os("AOS_NIX_DEADLINE_TEST_CHILD").is_some() {
+            std::thread::sleep(Duration::from_secs(10));
+        }
+    }
+
+    #[test]
+    fn bounded_invocation_stops_a_stalled_process() {
+        let executable = std::env::current_exe().expect("test executable should have a path");
+        let runner = NixRunner {
+            root: std::env::current_dir().expect("test should have a working directory"),
+            verbose: 0,
+            quiet: true,
+            command_environment: vec![(
+                OsString::from("AOS_NIX_DEADLINE_TEST_CHILD"),
+                OsString::from("1"),
+            )],
+        };
+        let result = runner.run_nix_with_timeout(
+            executable
+                .to_str()
+                .expect("test executable path should be UTF-8"),
+            &["deadline_child".to_string()],
+            Duration::from_millis(500),
+        );
+
+        assert!(
+            result
+                .expect_err("stalled test child should exceed its deadline")
+                .to_string()
+                .contains("exceeded the 500ms evaluation limit")
+        );
+    }
 
     #[test]
     fn cross_system_argument_uses_canonical_nix_spelling() {
@@ -807,6 +1048,25 @@ mod tests {
         add_cross_system_arg(&mut arguments, None);
 
         assert_eq!(arguments, ["default.nix"]);
+    }
+
+    #[test]
+    fn release_platform_argument_is_an_explicit_nix_list() {
+        let expression = release_platforms_expression(&[
+            "x86_64-linux",
+            "aarch64-linux",
+            "x86_64-darwin",
+            "aarch64-darwin",
+        ])
+        .expect("release platform list should be valid");
+
+        assert_eq!(
+            expression,
+            "[\"x86_64-linux\" \"aarch64-linux\" \"x86_64-darwin\" \"aarch64-darwin\"]"
+        );
+        assert!(release_platforms_expression(&[]).is_err());
+        assert!(release_platforms_expression(&["x86_64-linux", "x86_64-linux"]).is_err());
+        assert!(release_platforms_expression(&["x86_64-linux; abort"]).is_err());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 ##! iproute2 — Linux networking utilities
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -11,7 +12,63 @@
   version = "7.2.0";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "iproute2";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Ss accepts the compound port filter and completes the local socket query.";
+        "files" = {};
+        "input" = "A socket query filtered by both source port 1 and destination port 2.";
+        "operation" = "Parse and execute the filter through ss without printing headers.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/sbin/ss\", \"-H\", \"sport = :1 and dport = :2\"], capture_output=True, text=True)\nassert result.returncode == 0, (result.returncode, result.stdout, result.stderr)\nprint(\"iproute2 operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "iproute2 operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Ss rejects the malformed address predicate.";
+        "files" = {};
+        "input" = "A socket filter containing an invalid address prefix.";
+        "operation" = "Parse the malformed destination predicate.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/sbin/ss\", \"-H\", \"dst\", \"qualification\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"cannot parse\" in result.stderr.lower(), (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"iproute2 rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "iproute2 rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

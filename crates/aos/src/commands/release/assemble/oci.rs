@@ -4,10 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_oci_types::{
-    ContainerRelease, ContainerSignatureInput, Descriptor, ImageIndex, ImageManifest, MediaType,
-    CONTAINER_RELEASE_SIDECAR_PATH,
+    CONTAINER_RELEASE_SIDECAR_PATH, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, ContainerRelease,
+    ContainerSignatureInput, Descriptor, ImageIndex, ImageManifest, MediaType,
 };
 use aos_release::artifact::{ArtifactKind, ArtifactRelation, ArtifactRelationship, Compression};
 use aos_release::digest::Sha256Digest;
@@ -53,9 +53,10 @@ pub(super) fn assemble(
     }
 
     let layout = root.join("layout");
-    let roots = [
+    let roots = vec![
         &release.oci.index,
         &release.nix.closure,
+        &release.evidence.abilities,
         &release.evidence.sbom,
         &release.evidence.source,
         &release.evidence.license,
@@ -142,7 +143,7 @@ pub(super) fn assemble(
             relation: ArtifactRelation::Contains,
             target: ids[&index_digest].clone(),
         }],
-        ..ArtifactAttributes::plain("application/vnd.aos.container-release.v1+json")
+        ..ArtifactAttributes::plain(release.media_type.as_str())
     };
     payload.copy(
         &release_path,
@@ -162,10 +163,7 @@ pub(super) fn assemble(
         "provenance/container-signature-input".to_owned(),
         ArtifactKind::Provenance,
         "oci/signature-input.json".to_owned(),
-        ArtifactAttributes::exact(
-            "application/vnd.aos.container.signature-input.v1+json",
-            &input_bytes,
-        )?,
+        ArtifactAttributes::exact(CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, &input_bytes)?,
     )?;
     Ok(())
 }

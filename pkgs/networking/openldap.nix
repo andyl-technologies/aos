@@ -14,32 +14,103 @@
   stdenv,
   bash,
   coreutils,
-  writeShellScriptBin,
 }: let
   version = "2.7.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
-  control = writeShellScriptBin "openldap-control" ''
-    set -euo pipefail
-    case "''${1:-}" in
-      enabled) test "''${OPENLDAP_ENABLED:-false}" = true ;;
-      prepare)
-        install -d -m 0700 /var/lib/aos-pkg-openldap/data /run/aos-pkg-openldap
-        base=/etc/aos/packages/openldap/slapd.conf
-        runtime=/run/aos-pkg-openldap/slapd.conf
-        password="''${CREDENTIALS_DIRECTORY:?}/root-password"
-        test -s "$password"
-        cat "$base" > "$runtime"
-        printf 'rootpw {CLEARTEXT}%s\n' "$(cat "$password")" >> "$runtime"
-        chmod 0600 "$runtime"
-        /sbin/slaptest -u -f "$runtime"
-        ;;
-      *) echo "usage: openldap-control {enabled|prepare}" >&2; exit 64 ;;
-    esac
-  '';
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "openldap";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The parsed descriptor preserves the host, DN, scope, and filter.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"openldap primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"openldap rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <ldap.h>\nint main(void) {\n    LDAPURLDesc *description = NULL;\n    int status = ldap_url_parse(\"ldap://example.test/dc=aos,dc=test??sub?(uid=42)\", &description);\n    int ok = status == LDAP_SUCCESS && description != NULL\n        && strcmp(description->lud_host, \"example.test\") == 0\n        && strcmp(description->lud_dn, \"dc=aos,dc=test\") == 0\n        && description->lud_scope == LDAP_SCOPE_SUBTREE\n        && strcmp(description->lud_filter, \"(uid=42)\") == 0;\n    if (description != NULL) ldap_free_urldesc(description);\n    return ok ? pass() : 2;\n}\n\n";
+        };
+        "input" = "An LDAP URL containing a base DN, subtree scope, and equality filter.";
+        "operation" = "Parse the URL through ldap_url_parse.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lldap"
+              "-llber"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "openldap primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "OpenLDAP returns LDAP_URL_ERR_BADSCOPE.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"openldap primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"openldap rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <ldap.h>\nint main(void) {\n    LDAPURLDesc *description = NULL;\n    int status = ldap_url_parse(\"ldap://example.test/dc=aos??qualification-scope\", &description);\n    if (description != NULL) ldap_free_urldesc(description);\n    if (status != LDAP_URL_ERR_BADSCOPE) return 2;\n    return reject();\n}\n\n";
+        };
+        "input" = "An LDAP URL containing an invalid scope token.";
+        "operation" = "Parse the malformed URL through ldap_url_parse.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lldap"
+              "-llber"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "openldap rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -50,110 +121,10 @@ in
     };
 
     buildDeps = [gnumake pkg-config file libtool];
-    runtimeDeps = [cyrus-sasl krb5 openssl libtool bash coreutils control];
+    runtimeDeps = [cyrus-sasl krb5 openssl libtool bash coreutils];
     propagatedDeps = [];
 
-    expose = {
-      units."openldap.service" = {
-        description = "OpenLDAP directory server";
-        after = ["network-online.target"];
-        wants = ["network-online.target"];
-        restartIfChanged = true;
-        stopOnRemoval = true;
-        serviceConfig = {
-          Type = "simple";
-          User = "openldap";
-          Group = "openldap";
-          EnvironmentFile = "/etc/aos/packages/openldap/runtime.env";
-          ExecCondition = "/bin/openldap-control enabled";
-          ExecStartPre = "/bin/openldap-control prepare";
-          ExecStart = "/libexec/slapd -d 0 -f /run/aos-pkg-openldap/slapd.conf -h $OPENLDAP_LISTEN_URLS";
-          StateDirectory = "aos-pkg-openldap";
-          StateDirectoryMode = "0700";
-          RuntimeDirectory = "aos-pkg-openldap";
-          RuntimeDirectoryMode = "0700";
-          Restart = "on-failure";
-          UMask = "0077";
-        };
-      };
-      config = {
-        artifacts = [
-          {
-            name = "runtime";
-            path = "/etc/aos/packages/openldap/runtime.env";
-            format = "env";
-            required = ["OPENLDAP_CONFIG_GENERATION" "OPENLDAP_ENABLED" "OPENLDAP_LISTEN_URLS"];
-            units = ["openldap.service"];
-            reload = "restart";
-          }
-        ];
-        credentials = builtins.map (name: {
-          inherit name;
-          source = "/run/credstore/openldap/${name}";
-          units = ["openldap.service"];
-          encrypted = false;
-          optional = name != "root-password";
-        }) ["root-password" "tls-certificate" "tls-private-key" "tls-ca"];
-      };
-      permissions = {
-        network = "host";
-        capabilities = [];
-        devices = [];
-        host-paths = [
-          {
-            path = "/etc/aos/packages/openldap/slapd.conf";
-            mode = "read-only";
-          }
-        ];
-        syscalls = "system-service";
-        security-label = "aos-pkg-openldap";
-      };
-    };
-
-    configModule = {
-      src = ./_openldap-config;
-      moduleAbiCompat = {
-        min = 1;
-        max = 2;
-      };
-      declares = [
-        "openldap.database.maxBytes"
-        "openldap.enable"
-        "openldap.listenUrls"
-        "openldap.rootDn"
-        "openldap.rootPassword"
-        "openldap.suffix"
-        "openldap.tls.certificate"
-        "openldap.tls.enable"
-        "openldap.tls.privateKey"
-        "openldap.tls.trustedCa"
-        "openldap.tls.verifyClient"
-      ];
-      ownsRoots = [
-        {
-          root = "openldap";
-          interfaceAbi = 1;
-          contributable = [];
-        }
-      ];
-      artifacts = {
-        etc = ["aos/packages/openldap/slapd.conf"];
-        units = [];
-        users = ["openldap"];
-        groups = ["openldap"];
-      };
-      documentation = {
-        summary = "OpenLDAP client libraries, tools, and directory server";
-        sections = {
-          directory = lib.aosDoc.section "Directory state" [
-            (lib.aosDoc.paragraph "The suffix and root DN define a durable package-owned database. Changing identity fields does not migrate existing directory data automatically.")
-          ];
-          credentials = lib.aosDoc.section "Credentials and TLS" [
-            (lib.aosDoc.paragraph "Root password and TLS key material use opaque references delivered through service credentials; plaintext values are not accepted by the module.")
-          ];
-        };
-      };
-    };
+    abilities = ./_openldap;
 
     phases = [
       {
@@ -272,54 +243,94 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
       ...
     }: let
+      serviceManagement = lib.abilities.interfaces.serviceManagement;
+      environmentId = lib.abilities.environmentId {
+        authority = "system-image";
+        key = "openldap-package-check";
+        stage = "host";
+      };
+      credentialProvider = lib.abilities.instanceId {
+        environment = environmentId;
+        key = "credential-provider";
+      };
+      credential = key:
+        lib.abilities.resourceReference {
+          interface = serviceManagement.interfaces.credentialDelivery.identity;
+          resource = {
+            provider = credentialProvider;
+            inherit key;
+          };
+          operations = ["observe"];
+          lifetime = "persistent";
+        };
       evaluate = openldapConfig:
-        lib.evalModules {
-          inherit lib;
+        mkSystem {
+          systemName = "openldap-package-check";
           modules = [
-            ({lib, ...}: {
-              options = {
-                assertions = lib.mkOption {
-                  type = lib.types.listOf lib.types.attrs;
-                  default = [];
-                };
-                openldap.config = lib.mkOption {
-                  type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
-                  default = {};
-                };
-                openldap.credentials = lib.mkOption {
-                  type = lib.types.attrsOf lib.types.attrs;
-                  default = {};
-                };
-                environment.etc = lib.mkOption {
-                  type = lib.types.attrsOf lib.types.attrs;
-                  default = {};
-                };
-                aos.users.users = lib.mkOption {
-                  type = lib.types.attrsOf lib.types.attrs;
-                  default = {};
-                };
-                aos.users.groups = lib.mkOption {
-                  type = lib.types.attrsOf lib.types.attrs;
-                  default = {};
-                };
-              };
-            })
-            ./_openldap-config/module.nix
-            {openldap = openldapConfig;}
+            {
+              environment.systemPackages = [self];
+              openldap = openldapConfig;
+            }
           ];
         };
       valid = evaluate {
         enable = true;
         suffix = "dc=aos,dc=test";
         rootDn = "cn=admin,dc=aos,dc=test";
-        rootPassword.ref = "system-credential:openldap-root-password";
+        rootPassword.resource = credential "root-password";
+      };
+      tls = evaluate {
+        enable = true;
+        rootPassword.resource = credential "root-password";
+        tls = {
+          enable = true;
+          certificate.resource = credential "tls-certificate";
+          privateKey.resource = credential "tls-private-key";
+          trustedCa.resource = credential "tls-ca";
+        };
       };
       missingPassword = evaluate {enable = true;};
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
-      rendered = builtins.toFile "openldap-slapd.conf" valid.config.environment.etc."aos/packages/openldap/slapd.conf".text;
+      requests = valid.config.aos.abilities.requests;
+      tlsRequests = tls.config.aos.abilities.requests;
+      configuration = requests."openldap:server-configuration".parameters;
+      fragmentKinds = builtins.map (fragment: fragment.kind) configuration.source.fragments;
+      modulePathFragments =
+        builtins.filter
+        (fragment: fragment.kind == "artifact-directory-path")
+        configuration.source.fragments;
+      contractHolds =
+        assertionsHold valid
+        && lib.abilities.types.isPortableOptionTree valid.options.openldap
+        && assertionsHold tls
+        && !assertionsHold missingPassword
+        && builtins.hasAttr "openldap:main-lifecycle" requests
+        && !(builtins.hasAttr "openldap:main-credentials" requests)
+        && builtins.hasAttr "openldap:main-credentials" tlsRequests
+        && builtins.elem "artifact-file-path" fragmentKinds
+        && builtins.length modulePathFragments == 1
+        && (builtins.head modulePathFragments).reference.path == "libexec/openldap"
+        && builtins.elem "credential-content" fragmentKinds
+        && configuration.mode == "0600"
+        && !(lib.hasInfix "/nix/store/" (builtins.toJSON configuration));
+      testConfiguration = builtins.toFile "openldap-test.conf" ''
+        include ${self}/etc/openldap/schema/core.schema
+        include ${self}/etc/openldap/schema/cosine.schema
+        include ${self}/etc/openldap/schema/inetorgperson.schema
+        modulepath ${self}/libexec/openldap
+        pidfile /tmp/openldap-test/slapd.pid
+        argsfile /tmp/openldap-test/slapd.args
+        database mdb
+        maxsize 1073741824
+        suffix "dc=aos,dc=test"
+        rootdn "cn=admin,dc=aos,dc=test"
+        directory /tmp/openldap-test/data
+        index objectClass eq
+      '';
     in {
       cli = testing.mkToolCheck {
         pname = "tool-openldap";
@@ -332,35 +343,22 @@ in
         libs = ["libldap.so" "liblber.so"];
       };
 
-      config = assert assertionsHold valid;
-      assert !assertionsHold missingPassword;
-        pkgs.runCommand "openldap-config-module" {} ''
-          cp ${rendered} slapd.conf
-          ${pkgs.sed}/bin/sed -i \
-              -e 's#/etc/openldap#${self}/etc/openldap#g' \
-              -e 's#/libexec/openldap#${self}/libexec/openldap#g' \
-              -e "s#/run/aos-pkg-openldap#$TMPDIR/run#g" \
-              -e "s#/var/lib/aos-pkg-openldap/data#$TMPDIR/data#g" \
-              slapd.conf
-            mkdir -p "$TMPDIR/data" "$TMPDIR/run"
-          ${self}/sbin/slaptest -u -f slapd.conf
-          grep -F 'suffix "dc=aos,dc=test"' slapd.conf
-          test '${valid.config.openldap.credentials."root-password".ref}' = \
-            'system-credential:openldap-root-password'
-          touch "$out"
-        '';
+      ability-module-contract =
+        if contractHolds
+        then
+          pkgs.runCommand "openldap-ability-module-contract" {} ''
+            mkdir -p "$out"
+            printf '%s\n' PASS > "$out/result"
+          ''
+        else throw "the OpenLDAP native ability checks failed";
 
       config-lifecycle = testing.mkVMTest {
         name = "networking-openldap-config-lifecycle";
-        rootfsDeps = [self rendered pkgs.grep pkgs.iproute2 pkgs.sed];
+        rootfsDeps = [self testConfiguration pkgs.grep pkgs.iproute2];
         testScript = ''
           ${pkgs.iproute2}/sbin/ip link set lo up
-          mkdir -p /var/lib/aos-pkg-openldap/data /run/aos-pkg-openldap
-          cp ${rendered} /tmp/slapd.conf
-          ${pkgs.sed}/bin/sed -i \
-            -e 's#/etc/openldap#${self}/etc/openldap#g' \
-            -e 's#/libexec/openldap#${self}/libexec/openldap#g' \
-            /tmp/slapd.conf
+          mkdir -p /tmp/openldap-test/data
+          cp ${testConfiguration} /tmp/slapd.conf
           printf 'rootpw %s\n' "$(${self}/sbin/slappasswd -s aos-test-password)" >> /tmp/slapd.conf
           ${self}/sbin/slaptest -u -f /tmp/slapd.conf
 

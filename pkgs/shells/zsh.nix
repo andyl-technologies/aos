@@ -1,5 +1,6 @@
 ##! zsh — Interactive shell with programmable completion
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -14,7 +15,59 @@
   version = "5.9.2";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "zsh";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Zsh selects the second array value and prints the sum 42.";
+        "files" = {};
+        "input" = "A Zsh program using an array and arithmetic expansion.";
+        "operation" = "Execute the program with the packaged shell.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/zsh"
+              "-c"
+              "values=(19 23); print -- $((values[1] + values[2]))"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Zsh rejects the syntax error with its parse-failure status.";
+        "files" = {
+          "invalid.zsh" = "if [[ -n value ]]; then\n  print broken\n";
+        };
+        "input" = "A Zsh conditional with no closing delimiter.";
+        "operation" = "Ask Zsh to parse the malformed program.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/zsh"
+              "-n"
+              "invalid.zsh"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

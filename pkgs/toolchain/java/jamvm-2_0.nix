@@ -1,5 +1,6 @@
 ##! jamvm-2_0 — JamVM 2.0.0 Java Virtual Machine with Classpath 0.99
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -20,7 +21,67 @@
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "jamvm-2_0";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "JamVM executes the bytecode and returns the fixed answer.";
+        "files" = {
+          "Qualification.class.b64" = "yv66vgAAADEAHQoABgAPCQAQABEIABIKABMAFAcAFQcAFgEABjxpbml0PgEAAygpVgEABENvZGUBAA9MaW5lTnVtYmVyVGFibGUBAARtYWluAQAWKFtMamF2YS9sYW5nL1N0cmluZzspVgEAClNvdXJjZUZpbGUBABJRdWFsaWZpY2F0aW9uLmphdmEMAAcACAcAFwwAGAAZAQAJYW5zd2VyPTQyBwAaDAAbABwBAA1RdWFsaWZpY2F0aW9uAQAQamF2YS9sYW5nL09iamVjdAEAEGphdmEvbGFuZy9TeXN0ZW0BAANvdXQBABVMamF2YS9pby9QcmludFN0cmVhbTsBABNqYXZhL2lvL1ByaW50U3RyZWFtAQAHcHJpbnRsbgEAFShMamF2YS9sYW5nL1N0cmluZzspVgAhAAUABgAAAAAAAgABAAcACAABAAkAAAAdAAEAAQAAAAUqtwABsQAAAAEACgAAAAYAAQAAAAEACQALAAwAAQAJAAAAIQACAAEAAAAJsgACEgO2AASxAAAAAQAKAAAABgABAAAAAQABAA0AAAACAA4=";
+        };
+        "input" = "A Java 5 classfile whose main method prints answer=42.";
+        "operation" = "Load and execute the class through the packaged JamVM runtime.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import base64, pathlib, subprocess\nencoded = pathlib.Path(\"Qualification.class.b64\").read_text()\npathlib.Path(\"Qualification.class\").write_bytes(base64.b64decode(encoded))\nresult = subprocess.run([\"@out@/bin/jamvm\", \"Qualification\"], capture_output=True, text=True)\nassert result.returncode == 0, (result.stdout, result.stderr)\nassert result.stdout == \"answer=42\\n\" and result.stderr == \"\"\nprint(\"jamvm-2_0 operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "jamvm-2_0 operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "JamVM rejects the malformed constant pool before execution.";
+        "files" = {
+          "Broken.class.b64" = "yv66vgAAADEAHQoABgAPCQ==";
+        };
+        "input" = "A classfile truncated inside its constant pool.";
+        "operation" = "Attempt to load the malformed class through JamVM.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport base64, pathlib, subprocess\nencoded = pathlib.Path(\"Broken.class.b64\").read_text()\npathlib.Path(\"Broken.class\").write_bytes(base64.b64decode(encoded))\nresult = subprocess.run([\"@out@/bin/jamvm\", \"Broken\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"ClassFormatError\" in result.stderr\n\nsys.stderr.write(\"jamvm-2_0 rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "jamvm-2_0 rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

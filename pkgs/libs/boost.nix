@@ -1,5 +1,6 @@
 ##! Boost — Free peer-reviewed portable C++ source libraries
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -36,7 +37,95 @@
     else "";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "boost";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The public API returns the expected value and the consumer prints the fixed success line.";
+        "files" = {
+          "primary.cc" = "#include <iostream>\n#include <boost/lexical_cast.hpp>\n\nint main() {\n    if (boost::lexical_cast<int>(\"42\") != 42) {\n        return 2;\n    }\n    std::cout << \"boost api passed\\n\";\n}\n";
+        };
+        "input" = "The decimal string 42.";
+        "operation" = "Convert the string to an integer with boost::lexical_cast.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cxx@"
+              "primary.cc"
+              "-I@out@/include"
+              "-o"
+              "primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "boost api passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The public API reports rejection and the consumer exits with the fixed rejection status and diagnostic.";
+        "files" = {
+          "bad-input.cc" = "#include <iostream>\n#include <boost/lexical_cast.hpp>\n\nint main() {\n    try {\n        static_cast<void>(boost::lexical_cast<int>(\"forty-two\"));\n        return 2;\n    } catch (const boost::bad_lexical_cast &) {\n        std::cerr << \"boost rejected invalid input\\n\";\n        return 7;\n    }\n}\n";
+        };
+        "input" = "A string containing no decimal integer.";
+        "operation" = "Convert the string to an integer with boost::lexical_cast.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cxx@"
+              "bad-input.cc"
+              "-I@out@/include"
+              "-o"
+              "bad-input-consumer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-consumer"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "boost rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     # Split outputs: `out` (default) carries only the shared libraries

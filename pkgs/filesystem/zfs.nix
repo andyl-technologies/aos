@@ -38,7 +38,63 @@
     else zlib;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "zfs";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Zgenhostid writes the identifier as the four native-order bytes 78 56 34 12.";
+        "files" = {};
+        "input" = "The fixed host identifier 0x12345678 and a work-directory output path.";
+        "operation" = "Encode the host identifier with zgenhostid without loading a kernel module.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, subprocess\noutput = pathlib.Path(\"hostid\")\nresult = subprocess.run([\"@out@/sbin/zgenhostid\", \"-f\", \"-o\", str(output), \"12345678\"], capture_output=True)\nassert result.returncode == 0 and output.read_bytes() == bytes.fromhex(\"78563412\")\nprint(\"zfs operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "zfs operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Zgenhostid rejects the malformed identifier and creates no output.";
+        "files" = {};
+        "input" = "A host identifier containing non-hexadecimal characters.";
+        "operation" = "Validate the identifier before writing the hostid file.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport pathlib, subprocess\noutput = pathlib.Path(\"invalid-hostid\")\nresult = subprocess.run([\"@out@/sbin/zgenhostid\", \"-o\", str(output), \"not-hex\"], capture_output=True, text=True)\nassert result.returncode != 0 and not output.exists()\n\nsys.stderr.write(\"zfs rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "zfs rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     outputs = ["out" "dev"];
 
@@ -162,12 +218,10 @@ in
           # host, and its compiled fixtures retain compiler paths.
           rm -rf "$out/share/zfs/zfs-tests"
 
-          # Interactive kstat formatters written in Python. Keeping them would
-          # put a Python interpreter in the runtime closure of every image that
-          # carries ZFS, and their `/usr/bin/env` shebangs do not resolve in an
-          # AOS root. Everything they report is read from
-          # /proc/spl/kstat/zfs/arcstats, which is where the ARC metrics
-          # service takes its figures.
+          # These interactive kstat formatters would retain Python in every
+          # ZFS image and carry /usr/bin/env shebangs that do not resolve in an
+          # AOS root. The package-owned metrics handler reads the same counters
+          # directly from /proc/spl/kstat/zfs/arcstats.
           rm -f "$out/bin/dbufstat" "$out/bin/zarcstat" \
             "$out/bin/zarcsummary" "$out/bin/zilstat"
           rm -f "$out/share/man/man1/dbufstat.1" "$out/share/man/man1/zarcstat.1" \

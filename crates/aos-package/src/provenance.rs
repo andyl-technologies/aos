@@ -41,6 +41,8 @@ pub(crate) struct TrustedProvenanceKey {
     pub key: String,
     /// First transparency sequence that must not trust this key, if retired.
     pub retired_before_sequence: Option<u64>,
+    /// First package-contract publication sequence rejected for this key.
+    pub package_contract_retired_before_sequence: Option<u64>,
 }
 
 /// Returns an in-toto digest map for an AOS/Nix digest string.
@@ -338,23 +340,23 @@ pub(crate) fn verify_package_statement(
         .with_context(|| format!("locating package NAR subject for '{}'", meta.name))?;
     ensure_digest_matches("package NAR", &package_subject.digest, &meta.nar_hash)?;
 
-    let manifest_subject_name = format!(
-        "aos:permissions-manifest:{}:{}:{}",
+    let binding_subject_name = format!(
+        "aos:package-runtime-binding:{}:{}:{}",
         meta.name, meta.version, meta.platform
     );
-    let manifest_subject = subject_named(&statement, &manifest_subject_name)
-        .with_context(|| format!("locating permissions manifest subject for '{}'", meta.name))?;
-    let manifest_digest = sha256_digest_from_map("permissions manifest", &manifest_subject.digest)?;
+    let binding_subject = subject_named(&statement, &binding_subject_name)
+        .with_context(|| format!("locating runtime binding subject for '{}'", meta.name))?;
+    let binding_digest = sha256_digest_from_map("runtime binding", &binding_subject.digest)?;
 
     let expected_measurement = crate::package_attestation::package_measurement_digest(
         &meta.name,
         &meta.version,
         root_digest,
-        &manifest_digest,
+        &binding_digest,
     );
     if expected_measurement != measurement {
         bail!(
-            "package '{}' provenance manifest digest does not match registry measurement",
+            "package '{}' provenance runtime binding digest does not match registry measurement",
             meta.name
         );
     }
@@ -544,6 +546,34 @@ pub(crate) fn verify_key_allowed_for_transparency_sequence(
                 "package provenance key id '{key_id}' was retired before transparency sequence {retired_before_sequence}; entry sequence {sequence} is not trusted"
             );
         }
+    }
+    Ok(())
+}
+
+/// Verifies that a provenance key may sign a package-contract sequence.
+pub(crate) fn verify_key_allowed_for_package_contract_sequence(
+    trusted_keys: &[TrustedProvenanceKey],
+    key_id: &str,
+    sequence: u64,
+) -> Result<()> {
+    let trusted_by_id = trusted_provenance_keys_by_id(trusted_keys)?;
+    let trusted = trusted_by_id
+        .get(key_id)
+        .with_context(|| format!("package contract key id '{key_id}' is not trusted"))?;
+    if trusted.retired_before_sequence.is_none() {
+        return Ok(());
+    }
+    let retired_before_sequence = trusted
+        .package_contract_retired_before_sequence
+        .with_context(|| {
+            format!(
+                "retired package contract key id '{key_id}' has no contract retirement boundary"
+            )
+        })?;
+    if sequence >= retired_before_sequence {
+        bail!(
+            "package contract key id '{key_id}' was retired before contract sequence {retired_before_sequence}; entry sequence {sequence} is not trusted"
+        );
     }
     Ok(())
 }
@@ -953,6 +983,7 @@ mod tests {
                 key_id: KEY_ID.to_string(),
                 key: self.trusted_key.clone(),
                 retired_before_sequence: None,
+                package_contract_retired_before_sequence: None,
             }]
         }
     }
@@ -1054,12 +1085,8 @@ mod tests {
             images: Vec::new(),
             min_format: None,
             requires_features: Vec::new(),
-            expose: None,
-            expose_artifact: None,
-            config_module: None,
             documentation: None,
-            permissions: Default::default(),
-            bpf_lsm: None,
+            contract: None,
             attestation: AttestationMeta {
                 root_digest: Some(ROOT_HASH.to_string()),
                 root_hash: Some(ROOT_HASH.to_string()),
@@ -1089,7 +1116,7 @@ mod tests {
                 },
                 {
                     "name": format!(
-                        "aos:permissions-manifest:{}:{}:{}",
+                        "aos:package-runtime-binding:{}:{}:{}",
                         meta.name, meta.version, meta.platform
                     ),
                     "digest": digest_map(MANIFEST_DIGEST),
@@ -1168,7 +1195,7 @@ mod tests {
                 },
                 {
                     "name": format!(
-                        "aos:permissions-manifest:{}:{}:{}",
+                        "aos:package-runtime-binding:{}:{}:{}",
                         meta.name, meta.version, meta.platform
                     ),
                     "digest": digest_map(MANIFEST_DIGEST),
@@ -1284,6 +1311,7 @@ mod tests {
             key_id: "alias".to_string(),
             key: key.trusted_key.clone(),
             retired_before_sequence: None,
+            package_contract_retired_before_sequence: None,
         });
 
         let err = verify_statement_dsse_jsonl(&statement, &trusted).unwrap_err();
@@ -1298,12 +1326,18 @@ mod tests {
             key_id: KEY_ID.to_string(),
             key: key.trusted_key.clone(),
             retired_before_sequence: Some(3),
+            package_contract_retired_before_sequence: Some(5),
         }];
 
         verify_key_allowed_for_transparency_sequence(&trusted, KEY_ID, 2).unwrap();
         let err = verify_key_allowed_for_transparency_sequence(&trusted, KEY_ID, 3).unwrap_err();
 
         assert!(format!("{err:#}").contains("was retired before transparency sequence 3"));
+
+        verify_key_allowed_for_package_contract_sequence(&trusted, KEY_ID, 4).unwrap();
+        let err =
+            verify_key_allowed_for_package_contract_sequence(&trusted, KEY_ID, 5).unwrap_err();
+        assert!(format!("{err:#}").contains("was retired before contract sequence 5"));
     }
 
     #[test]
@@ -1346,7 +1380,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_package_statement_rejects_manifest_measurement_mismatch() {
+    fn verify_package_statement_rejects_runtime_binding_measurement_mismatch() {
         let key = test_key();
         let meta = sample_meta();
         let mut statement = statement_for(&meta);
@@ -1359,7 +1393,7 @@ mod tests {
 
         assert!(
             err.to_string()
-                .contains("manifest digest does not match registry measurement")
+                .contains("runtime binding digest does not match registry measurement")
         );
     }
 

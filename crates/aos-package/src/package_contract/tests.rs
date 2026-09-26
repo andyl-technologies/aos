@@ -1,0 +1,783 @@
+//! Authentication and retention regression tests.
+
+use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::PathBuf;
+
+use anyhow::Result;
+use aos_ability_model::document::{PackageSubject, PlatformIdentity};
+use aos_ability_model::{
+    ArtifactClosureMemberInput, ArtifactReference, ExportDeclaration, InterfaceDocument,
+    InterfaceKey, InterfaceName, LocalKey, ModuleLocator, PROVIDER_STATE_FORMAT_V1,
+    PackageDocument, PackageImplementation, ProviderImplementation, ProviderStateFormat,
+    RelativePath, RequiredFeature, VersionedDocument, artifact_closure_identity, encode_canonical,
+};
+use aos_contract::Sha256Digest;
+use base64::Engine as _;
+use tempfile::TempDir;
+
+use super::{
+    PackageContractCoordinate, PackageContractRetentionVerifier, VerifiedPackageContract,
+    VerifiedPackageContractRetentionManifest, VerifiedPackageContractSet,
+    ability_provenance_statement, collect_distinct_artifacts, validate_package_contract_meta,
+    validate_store_root, verify_package_contract,
+};
+use crate::provenance::{TrustedProvenanceKey, sign_statement_dsse_jsonl};
+use crate::types::{
+    AttestationMeta, PackageContractArtifactMeta, PackageContractClosureMemberMeta,
+    PackageContractMeta, PackageContractSelectorMeta, PackageMeta,
+};
+
+const STORE_ROOT: &str = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-ability-artifact";
+const COMPANION_ROOT: &str = "/nix/store/123456789abcdfghijklmnpqrsvwxyz0-demo-abilities";
+const REGISTRY: &str = "test-registry";
+const KEY_ID: &str = "ability-builder";
+
+#[test]
+fn production_nix_companion_round_trips_through_native_contracts() {
+    let Ok(companion) = std::env::var("AOS_TEST_ABILITY_PACKAGE_SMOKE") else {
+        return;
+    };
+    let manifest_path = PathBuf::from(&companion).join("package.json");
+    let manifest = fs::read(&manifest_path).unwrap();
+    let package = super::decode_package_manifest(&manifest).unwrap();
+
+    assert_eq!(encode_canonical(&package).unwrap(), manifest);
+    assert_eq!(package.package.name.as_str(), "ability-package-smoke");
+    assert_ne!(package.package.payload.identity(), package.package.source);
+    let source_value = serde_json::to_value(package.package.source).unwrap();
+    assert!(source_value.get("store_path").is_none());
+    assert_eq!(package.exports.len(), 1);
+    assert_eq!(package.implementation.providers.len(), 1);
+    let edge = package
+        .requirements
+        .iter()
+        .find(|requirement| requirement.alias.as_str() == "canonical-edge")
+        .unwrap();
+    assert_eq!(edge.accepted_interfaces[0].abi.get(), u32::MAX);
+    let sample =
+        edge.fallback.as_ref().unwrap().outputs[&LocalKey::new("sample").unwrap()].as_json();
+    assert_eq!(sample["label"], "café 東京 😀");
+    assert_eq!(sample["maximum"], 9_007_199_254_740_991_i64);
+    assert_eq!(sample["minimum"], -9_007_199_254_740_991_i64);
+
+    let declaration = &package.exports[0];
+    let provider = &package.implementation.providers[0];
+    assert_eq!(declaration.interface, provider.interface);
+    assert_eq!(
+        declaration.implementation,
+        provider.descriptor_digest().unwrap()
+    );
+    assert_eq!(
+        provider.provider_module.as_ref().unwrap().artifact,
+        provider.artifact
+    );
+
+    let interface_path = PathBuf::from(&companion)
+        .join("interfaces")
+        .join(format!("{}.json", declaration.interface.descriptor.hex()));
+    let interface_bytes = fs::read(interface_path).unwrap();
+    let interface = aos_ability_model::decode_canonical::<InterfaceDocument>(
+        &interface_bytes,
+        aos_ability_model::ABILITY_LIMITS_V1,
+        &BTreeSet::new(),
+    )
+    .unwrap();
+    assert_eq!(encode_canonical(&interface).unwrap(), interface_bytes);
+    assert_eq!(interface.interface_key().unwrap(), declaration.interface);
+
+    let package_digest = package.content_digest().unwrap();
+    let sealed = VerifiedPackageContract {
+        artifacts: collect_distinct_artifacts(&package, None).unwrap(),
+        package,
+        interfaces: vec![interface],
+        manifest_sha256: Sha256Digest::of_bytes(&manifest),
+        package_digest,
+        package_name: "ability-package-smoke".to_string(),
+        package_version: "1.0.0".to_string(),
+        platform: "x86_64-linux".to_string(),
+        retention: VerifiedPackageContractRetentionManifest {
+            document_store_path: companion,
+            document_nar_hash: digest('8'),
+            document_nar_size: 1,
+            document_references: Vec::new(),
+            artifacts: Vec::new(),
+        },
+    };
+    let set = VerifiedPackageContractSet::from_verified(vec![sealed]).unwrap();
+    let catalog = set.planning_catalog().unwrap();
+    assert_eq!(catalog.packages().len(), 1);
+    let _composer = catalog.composer();
+}
+
+#[test]
+fn package_decoder_accepts_encoded_state_format_semantics() {
+    let manifest = encode_canonical(&stateful_package()).unwrap();
+
+    let package = super::decode_package_manifest(&manifest)
+        .expect("the package reader supports provider state-format semantics");
+
+    assert!(package.implementation.providers[0].state_format.is_some());
+}
+
+#[test]
+fn older_package_reader_rejects_encoded_state_format_semantics() {
+    let manifest = encode_canonical(&stateful_package()).unwrap();
+    let old_features = BTreeSet::from([RequiredFeature::new("abilities-v1").unwrap()]);
+
+    assert!(
+        aos_ability_model::decode_canonical::<PackageDocument>(
+            &manifest,
+            aos_ability_model::ABILITY_LIMITS_V1,
+            &old_features,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn package_decoder_rejects_an_unknown_future_state_format_feature() {
+    let mut package = stateful_package();
+    package.required_features.push(
+        RequiredFeature::new("unsupported-provider-state-format")
+            .expect("valid unsupported feature name"),
+    );
+    let manifest = encode_canonical(&package).unwrap();
+
+    let error = super::decode_package_manifest(&manifest)
+        .expect_err("the package reader must reject unknown future semantics");
+    let detail = format!("{error:#}");
+    assert!(detail.contains("required feature"), "{detail}");
+}
+
+#[test]
+fn artifact_collection_includes_module_and_state_format_semantic_identities() {
+    let mut package = stateful_package();
+    let mut package_module = package.package.payload.clone();
+    package_module.store_path = "/nix/store/package-module".to_string();
+    package_module.nar_hash = digest('6');
+    package_module.closure = digest('7');
+    package
+        .package_module
+        .as_mut()
+        .expect("stateful fixture has a package module")
+        .artifact = package_module.clone();
+
+    let mut state_format = package.package.payload.clone();
+    state_format.store_path = "/nix/store/state-format".to_string();
+    state_format.closure = digest('8');
+    package.implementation.providers[0]
+        .state_format
+        .as_mut()
+        .expect("stateful fixture has a state format")
+        .artifact = state_format.clone();
+
+    let artifacts =
+        collect_distinct_artifacts(&package, None).expect("artifact catalog must collect");
+
+    assert!(artifacts.contains(&package_module));
+    assert!(artifacts.contains(&state_format));
+    assert_eq!(artifacts.len(), 3);
+}
+
+#[test]
+fn stateless_package_omits_state_format_and_round_trips_exactly() {
+    let mut package = stateful_package();
+    package
+        .required_features
+        .retain(|feature| feature.as_str() != PROVIDER_STATE_FORMAT_V1);
+    package.implementation.providers[0].state_format = None;
+    package.exports[0].implementation = package.implementation.providers[0]
+        .descriptor_digest()
+        .unwrap();
+    let manifest = encode_canonical(&package).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
+
+    assert!(
+        value["implementation"]["providers"][0]
+            .get("state_format")
+            .is_none()
+    );
+
+    let decoded = super::decode_package_manifest(&manifest)
+        .expect("the package reader accepts a stateless provider");
+    assert_eq!(decoded.implementation.providers[0].state_format, None);
+    assert_eq!(encode_canonical(&decoded).unwrap(), manifest);
+}
+
+fn stateful_package() -> PackageDocument {
+    let artifact = ArtifactReference {
+        content: digest('1'),
+        store_path: STORE_ROOT.to_string(),
+        nar_hash: digest('2'),
+        closure: digest('3'),
+    };
+    let interface = InterfaceKey {
+        name: InterfaceName::new("test.stateful-resource").unwrap(),
+        abi: std::num::NonZeroU32::new(1).unwrap(),
+        descriptor: digest('4'),
+    };
+    let provider = ProviderImplementation {
+        name: LocalKey::new("stateful").unwrap(),
+        description: "Stateful package test provider.".to_string(),
+        interface: interface.clone(),
+        methods: Vec::new(),
+        guarantees: Vec::new(),
+        artifact: artifact.clone(),
+        requirements: Vec::new(),
+        desired_schema: None,
+        composition_schema: None,
+        provider_module: Some(ModuleLocator {
+            artifact: artifact.clone(),
+            path: RelativePath::new("default.nix").unwrap(),
+        }),
+        handler: None,
+        owns_resource_kinds: vec![interface.name.clone()],
+        state_format: Some(ProviderStateFormat {
+            descriptor: digest('5'),
+            artifact: artifact.clone(),
+        }),
+    };
+    let implementation = provider.descriptor_digest().unwrap();
+    PackageDocument {
+        schema: PackageDocument::SCHEMA.to_string(),
+        required_features: vec![
+            RequiredFeature::new("abilities-v1").unwrap(),
+            RequiredFeature::new(PROVIDER_STATE_FORMAT_V1).unwrap(),
+        ],
+        package: PackageSubject {
+            name: LocalKey::new("stateful-package").unwrap(),
+            version: "1.0.0".to_string(),
+            payload: artifact.clone(),
+            source: artifact.identity(),
+        },
+        artifacts: vec![artifact.clone()],
+        interfaces: Default::default(),
+        guarantees: Default::default(),
+        package_module: Some(aos_ability_model::ModuleLocator {
+            artifact: artifact.clone(),
+            path: aos_ability_model::RelativePath::new("module.nix")
+                .expect("fixture package module path is valid"),
+        }),
+        option_declarations: Vec::new(),
+        exports: vec![ExportDeclaration {
+            name: LocalKey::new("stateful").unwrap(),
+            interface,
+            implementation_name: LocalKey::new("stateful").unwrap(),
+            implementation,
+        }],
+        requirements: Vec::new(),
+        implementation: PackageImplementation {
+            providers: vec![provider],
+            handlers: BTreeMap::new(),
+        },
+        qualification: aos_ability_model::PackageQualification::default(),
+    }
+}
+
+struct TestFixture {
+    _key_dir: TempDir,
+    key_path: PathBuf,
+    trusted_keys: Vec<TrustedProvenanceKey>,
+    package_meta: PackageMeta,
+    manifest_bytes: Vec<u8>,
+    provenance_jsonl: String,
+}
+
+impl TestFixture {
+    fn new() -> Self {
+        let member = PackageContractClosureMemberMeta {
+            store_path: STORE_ROOT.to_string(),
+            nar_hash: digest('2').to_string(),
+            nar_size: 128,
+            references: Vec::new(),
+        };
+        let closure = vec![member];
+        let closure_digest = artifact_closure_identity(
+            "0123456789abcdfghijklmnpqrsvwxyz",
+            &[ArtifactClosureMemberInput {
+                key: "0123456789abcdfghijklmnpqrsvwxyz".to_string(),
+                nar_hash: digest('2'),
+                references: Vec::new(),
+            }],
+        )
+        .unwrap();
+        let artifact = ArtifactReference {
+            content: digest('1'),
+            store_path: STORE_ROOT.to_string(),
+            nar_hash: digest('2'),
+            closure: closure_digest,
+        };
+        let projection = serde_json::json!({
+            "schema": aos_ability_validate::PACKAGE_PROJECTION_SCHEMA,
+            "required_features": ["abilities-v1"],
+            "package": {"name": "demo", "version": "1.0.0"},
+            "artifacts": [],
+            "interfaces": {},
+            "guarantees": {},
+            "package_module": {
+                "artifact": {"package": "self", "output": "out"},
+                "path": "module.nix"
+            },
+            "option_declarations": [],
+            "exports": [],
+            "interface_documents": [],
+            "requirements": [],
+            "implementation": {"providers": [], "handlers": {}},
+            "qualification": {"implementations": {}}
+        });
+        let manifest_bytes = aos_contract::canonical::to_vec(&projection).unwrap();
+        let retained_artifact = PackageContractArtifactMeta {
+            content: artifact.content.to_string(),
+            store_path: artifact.store_path.clone(),
+            nar_hash: artifact.nar_hash.to_string(),
+            nar_size: 128,
+            closure_digest: closure_digest.to_string(),
+            closure,
+        };
+        let ability = PackageContractMeta {
+            document: crate::types::PackageContractDocumentMeta {
+                store_path: COMPANION_ROOT.to_string(),
+                nar_hash: digest('3').to_string(),
+                nar_size: 256,
+                document_sha256: Sha256Digest::of_bytes(&manifest_bytes).to_string(),
+                document_size: manifest_bytes.len() as u64,
+                references: Vec::new(),
+            },
+            payload: retained_artifact.clone(),
+            source: retained_artifact.clone(),
+            selectors: vec![PackageContractSelectorMeta {
+                package: "self".to_string(),
+                output: "out".to_string(),
+                artifact: retained_artifact.clone(),
+            }],
+            provenance: "provenance/demo.contract.intoto.jsonl".to_string(),
+        };
+        let package_meta = PackageMeta {
+            name: "demo".to_string(),
+            version: "1.0.0".to_string(),
+            description: "Demo".to_string(),
+            homepage: None,
+            license: "Apache-2.0".to_string(),
+            maintainer: "Andyl, Inc.".to_string(),
+            platform: "x86_64-linux".to_string(),
+            store_path: STORE_ROOT.to_string(),
+            nar_hash: digest('2').to_string(),
+            nar_size: 128,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 128,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: None,
+            requires_features: Vec::new(),
+            documentation: None,
+            contract: Some(ability),
+            attestation: AttestationMeta::default(),
+        };
+
+        let key_dir = TempDir::new().unwrap();
+        let keypair = crate::sshkey::Ed25519Keypair::from_seed([73_u8; 32]);
+        let key_path = key_dir.path().join("ability-builder");
+        fs::write(&key_path, keypair.to_openssh_private_key(REGISTRY)).unwrap();
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let trusted_keys = vec![TrustedProvenanceKey {
+            key_id: KEY_ID.to_string(),
+            key: keypair.trust_key_line(REGISTRY),
+            retired_before_sequence: None,
+            package_contract_retired_before_sequence: None,
+        }];
+        let mut fixture = Self {
+            _key_dir: key_dir,
+            key_path,
+            trusted_keys,
+            package_meta,
+            manifest_bytes,
+            provenance_jsonl: String::new(),
+        };
+        fixture.resign();
+        fixture
+    }
+
+    fn resign(&mut self) {
+        let ability = self.package_meta.contract.as_ref().unwrap();
+        let coordinate = PackageContractCoordinate {
+            name: &self.package_meta.name,
+            version: &self.package_meta.version,
+            platform: &self.package_meta.platform,
+            store_path: &self.package_meta.store_path,
+            nar_hash: &self.package_meta.nar_hash,
+        };
+        let statement =
+            ability_provenance_statement(&coordinate, ability, REGISTRY, KEY_ID).unwrap();
+        self.provenance_jsonl =
+            sign_statement_dsse_jsonl(&statement, KEY_ID, &self.key_path).unwrap();
+    }
+}
+
+#[derive(Default)]
+struct AcceptRetention {
+    calls: Cell<u32>,
+}
+
+impl PackageContractRetentionVerifier for AcceptRetention {
+    fn verify_retention(
+        &self,
+        _retention: &VerifiedPackageContractRetentionManifest,
+    ) -> Result<()> {
+        self.calls.set(self.calls.get() + 1);
+        Ok(())
+    }
+}
+
+struct RejectRetention(&'static str);
+
+impl PackageContractRetentionVerifier for RejectRetention {
+    fn verify_retention(
+        &self,
+        _retention: &VerifiedPackageContractRetentionManifest,
+    ) -> Result<()> {
+        Err(anyhow::anyhow!(self.0))
+    }
+}
+
+fn digest(character: char) -> Sha256Digest {
+    Sha256Digest::parse(&format!("sha256:{}", character.to_string().repeat(64))).unwrap()
+}
+
+#[test]
+fn signed_package_constructs_opaque_verified_value_after_retention() {
+    let fixture = TestFixture::new();
+    let retention = AcceptRetention::default();
+
+    let verified = verify_package_contract(
+        &fixture.package_meta,
+        &fixture.manifest_bytes,
+        &fixture.provenance_jsonl,
+        REGISTRY,
+        &fixture.trusted_keys,
+        &retention,
+    )
+    .unwrap();
+
+    assert_eq!(verified.package_name(), "demo");
+    assert_eq!(verified.package_version(), "1.0.0");
+    assert_eq!(verified.platform(), "x86_64-linux");
+    assert_eq!(retention.calls.get(), 1);
+}
+
+#[test]
+fn verified_package_set_deduplicates_equal_seals_and_checks_plan_inputs() {
+    let fixture = TestFixture::new();
+    let verified = verify_package_contract(
+        &fixture.package_meta,
+        &fixture.manifest_bytes,
+        &fixture.provenance_jsonl,
+        REGISTRY,
+        &fixture.trusted_keys,
+        &AcceptRetention::default(),
+    )
+    .unwrap();
+    let packages = VerifiedPackageContractSet::from_verified(vec![verified.clone(), verified])
+        .expect("equal seals must coalesce");
+
+    assert_eq!(packages.iter().len(), 1);
+    let package = packages
+        .get("demo", "1.0.0", "x86_64-linux")
+        .expect("verified coordinate");
+    let platform = PlatformIdentity {
+        system: aos_ability_model::LocalKey::new("linux").unwrap(),
+        architecture: aos_ability_model::LocalKey::new("x86_64").unwrap(),
+    };
+    packages
+        .verify_plan_inputs(
+            &platform,
+            std::slice::from_ref(package.package()),
+            package.artifacts(),
+        )
+        .expect("exact package documents and artifacts must be admitted");
+
+    let wrong_platform = PlatformIdentity {
+        system: aos_ability_model::LocalKey::new("linux").unwrap(),
+        architecture: aos_ability_model::LocalKey::new("aarch64").unwrap(),
+    };
+    let error = packages
+        .verify_plan_inputs(
+            &wrong_platform,
+            std::slice::from_ref(package.package()),
+            package.artifacts(),
+        )
+        .expect_err("a plan for another platform must not reuse this package seal");
+    assert!(error.to_string().contains("aarch64-linux"));
+}
+
+#[test]
+fn verified_package_set_rejects_conflicting_coordinate_seals() {
+    let fixture = TestFixture::new();
+    let verified = verify_package_contract(
+        &fixture.package_meta,
+        &fixture.manifest_bytes,
+        &fixture.provenance_jsonl,
+        REGISTRY,
+        &fixture.trusted_keys,
+        &AcceptRetention::default(),
+    )
+    .unwrap();
+    let mut conflicting = verified.clone();
+    conflicting.package_digest = digest('9');
+
+    let error = VerifiedPackageContractSet::from_verified(vec![verified, conflicting])
+        .expect_err("one coordinate must have one authenticated commitment");
+
+    assert!(
+        error
+            .to_string()
+            .contains("conflicting verified ability package")
+    );
+}
+
+#[test]
+fn verified_package_set_rechecks_every_live_retention_catalog() {
+    let fixture = TestFixture::new();
+    let verified = verify_package_contract(
+        &fixture.package_meta,
+        &fixture.manifest_bytes,
+        &fixture.provenance_jsonl,
+        REGISTRY,
+        &fixture.trusted_keys,
+        &AcceptRetention::default(),
+    )
+    .unwrap();
+    let packages = VerifiedPackageContractSet::from_verified(vec![verified]).unwrap();
+    let retention = AcceptRetention::default();
+
+    packages.verify_live_retention(&retention).unwrap();
+
+    assert_eq!(retention.calls.get(), 1);
+}
+
+#[test]
+fn verified_package_set_rejects_path_derived_artifact_claims() {
+    let fixture = TestFixture::new();
+    let verified = verify_package_contract(
+        &fixture.package_meta,
+        &fixture.manifest_bytes,
+        &fixture.provenance_jsonl,
+        REGISTRY,
+        &fixture.trusted_keys,
+        &AcceptRetention::default(),
+    )
+    .expect("fixture package verifies");
+    let mut claimed = verified
+        .artifacts
+        .first()
+        .expect("fixture retains an artifact")
+        .clone();
+    claimed.store_path = format!("{}-untrusted", claimed.store_path);
+    let packages = VerifiedPackageContractSet::from_verified(vec![verified])
+        .expect("verified package set is valid");
+
+    let error = packages
+        .authenticate_artifact(&claimed)
+        .expect_err("path-derived metadata must not authenticate an artifact");
+
+    assert!(error.to_string().contains("exact metadata"));
+}
+
+#[test]
+fn signed_package_accepts_equivalent_primary_sri_nar_identity() {
+    let mut fixture = TestFixture::new();
+    fixture.package_meta.nar_hash = format!(
+        "sha256-{}",
+        base64::engine::general_purpose::STANDARD.encode([0x22_u8; 32])
+    );
+    fixture.resign();
+
+    verify_package_contract(
+        &fixture.package_meta,
+        &fixture.manifest_bytes,
+        &fixture.provenance_jsonl,
+        REGISTRY,
+        &fixture.trusted_keys,
+        &AcceptRetention::default(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn signed_package_accepts_equivalent_primary_nix_base32_nar_identity() {
+    let mut fixture = TestFixture::new();
+    fixture.package_meta.nar_hash =
+        aos_core::nar::cache::normalize_sha256_nix32(&digest('2').to_string());
+    fixture.resign();
+
+    verify_package_contract(
+        &fixture.package_meta,
+        &fixture.manifest_bytes,
+        &fixture.provenance_jsonl,
+        REGISTRY,
+        &fixture.trusted_keys,
+        &AcceptRetention::default(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn signed_package_rejects_untrusted_signer() {
+    let mut fixture = TestFixture::new();
+    let other_dir = TempDir::new().unwrap();
+    let other_keypair = crate::sshkey::Ed25519Keypair::from_seed([91_u8; 32]);
+    let other_path = other_dir.path().join("other-builder");
+    fs::write(&other_path, other_keypair.to_openssh_private_key(REGISTRY)).unwrap();
+    fs::set_permissions(&other_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let ability = fixture.package_meta.contract.as_ref().unwrap();
+    let coordinate = PackageContractCoordinate {
+        name: &fixture.package_meta.name,
+        version: &fixture.package_meta.version,
+        platform: &fixture.package_meta.platform,
+        store_path: &fixture.package_meta.store_path,
+        nar_hash: &fixture.package_meta.nar_hash,
+    };
+    let statement = ability_provenance_statement(&coordinate, ability, REGISTRY, "other").unwrap();
+    fixture.provenance_jsonl = sign_statement_dsse_jsonl(&statement, "other", &other_path).unwrap();
+
+    let error = verify_package_contract(
+        &fixture.package_meta,
+        &fixture.manifest_bytes,
+        &fixture.provenance_jsonl,
+        REGISTRY,
+        &fixture.trusted_keys,
+        &AcceptRetention::default(),
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("no valid signature from a trusted key"));
+}
+
+#[test]
+fn signed_package_rejects_coordinate_and_payload_substitution() {
+    let mut wrong_platform = TestFixture::new();
+    wrong_platform.package_meta.platform = "aarch64-linux".to_string();
+    let error = verify_package_contract(
+        &wrong_platform.package_meta,
+        &wrong_platform.manifest_bytes,
+        &wrong_platform.provenance_jsonl,
+        REGISTRY,
+        &wrong_platform.trusted_keys,
+        &AcceptRetention::default(),
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("does not exactly match"));
+
+    let mut wrong_payload = TestFixture::new();
+    wrong_payload.package_meta.store_path =
+        "/nix/store/23456789abcdfghijklmnpqrsvwxyz01-other-payload".to_string();
+    wrong_payload.package_meta.nar_hash = digest('4').to_string();
+    wrong_payload.resign();
+    let error = verify_package_contract(
+        &wrong_payload.package_meta,
+        &wrong_payload.manifest_bytes,
+        &wrong_payload.provenance_jsonl,
+        REGISTRY,
+        &wrong_payload.trusted_keys,
+        &AcceptRetention::default(),
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("payload does not match primary package"));
+}
+
+#[test]
+fn signed_package_rejects_manifest_and_artifact_tampering() {
+    let mut wrong_digest = TestFixture::new();
+    wrong_digest
+        .package_meta
+        .contract
+        .as_mut()
+        .unwrap()
+        .document
+        .document_sha256 = digest('5').to_string();
+    wrong_digest.resign();
+    let error = verify_package_contract(
+        &wrong_digest.package_meta,
+        &wrong_digest.manifest_bytes,
+        &wrong_digest.provenance_jsonl,
+        REGISTRY,
+        &wrong_digest.trusted_keys,
+        &AcceptRetention::default(),
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("exact-byte digest"));
+
+    let mut wrong_artifact = TestFixture::new();
+    wrong_artifact
+        .package_meta
+        .contract
+        .as_mut()
+        .unwrap()
+        .payload
+        .content = digest('6').to_string();
+    let error = verify_package_contract(
+        &wrong_artifact.package_meta,
+        &wrong_artifact.manifest_bytes,
+        &wrong_artifact.provenance_jsonl,
+        REGISTRY,
+        &wrong_artifact.trusted_keys,
+        &AcceptRetention::default(),
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("provenance"));
+}
+
+#[test]
+fn signed_package_propagates_live_store_failures() {
+    for reason in [
+        "ability closure member NAR mismatch",
+        "ability store path is missing",
+    ] {
+        let fixture = TestFixture::new();
+        let error = verify_package_contract(
+            &fixture.package_meta,
+            &fixture.manifest_bytes,
+            &fixture.provenance_jsonl,
+            REGISTRY,
+            &fixture.trusted_keys,
+            &RejectRetention(reason),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains(reason));
+    }
+}
+
+#[test]
+fn closure_mutation_invalidates_the_semantic_closure_digest() {
+    let mut fixture = TestFixture::new();
+    let contract = fixture.package_meta.contract.as_mut().unwrap();
+    contract.payload.closure[0].references = vec!["0123456789abcdfghijklmnpqrsvwxyz".to_string()];
+
+    let error = validate_package_contract_meta(contract).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("closure digest does not match"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn exact_store_root_rejects_lexical_aliases() {
+    validate_store_root(STORE_ROOT, "test store path").expect("canonical store root");
+
+    for alias in [
+        "/nix//store/0123456789abcdfghijklmnpqrsvwxyz-ability-artifact",
+        "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-ability-artifact/.",
+        "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-ability-artifact/",
+    ] {
+        let error = validate_store_root(alias, "test store path")
+            .expect_err("lexical alias must be refused");
+        assert!(
+            error.to_string().contains("not an exact Nix store root"),
+            "unexpected error for {alias}: {error:#}"
+        );
+    }
+}

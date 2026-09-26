@@ -1,8 +1,8 @@
 ##! libvirt — Virtualization management toolkit and system daemons
 {
+  lib,
   mkDerivation,
   fetchurl,
-  lib,
   stdenv,
   meson,
   ninja,
@@ -82,9 +82,120 @@
     zfs
   ];
   runtimePath = builtins.concatStringsSep ":" (map (package: "${package}/bin") runtimeTools);
+  runtimeLibraries = [
+    acl
+    attr
+    audit
+    bash
+    bash-completion
+    bridge-utils
+    curl
+    cyrus-sasl
+    dbus
+    dnsmasq
+    fuse3
+    glib
+    gnutls
+    iproute2
+    iptables
+    nftables
+    libapparmor
+    libcap-ng
+    libgcrypt
+    libnl
+    libpcap
+    libpciaccess
+    libselinux
+    libssh2
+    libtasn1
+    libtirpc
+    libxml2
+    libxslt
+    lvm2
+    numactl
+    numad
+    parted
+    passt
+    pm-utils
+    polkit
+    qemu
+    readline
+    swtpm
+    systemd
+    util-linux
+    zfs
+    json-c
+  ];
 in
-  mkDerivation rec {
+  mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "libvirt";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The command describes its supported invocation contract.";
+        "files" = {};
+        "input" = "The packaged libvirt command-line interface.";
+        "operation" = "Request its offline command inventory.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/virsh\"] + [\"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"hypervisor connection uri\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nprint(\"libvirt primary passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libvirt primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The command rejects the unsupported operation.";
+        "files" = {};
+        "input" = "A libvirt invocation naming an unsupported command.";
+        "operation" = "Parse the unknown command without starting a service.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/virsh\"] + [\"aos-invalid-command\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"unknown command\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"libvirt rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libvirt rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -110,67 +221,10 @@ in
       docbook-xml
       docbook-xsl
     ];
-    runtimeDeps = [
-      acl
-      attr
-      audit
-      bash
-      bash-completion
-      bridge-utils
-      curl
-      cyrus-sasl
-      dbus
-      dnsmasq
-      fuse3
-      glib
-      gnutls
-      iproute2
-      iptables
-      nftables
-      libapparmor
-      libcap-ng
-      libgcrypt
-      libnl
-      libpcap
-      libpciaccess
-      libselinux
-      libssh2
-      libtasn1
-      libtirpc
-      libxml2
-      libxslt
-      lvm2
-      numactl
-      numad
-      parted
-      passt
-      pm-utils
-      polkit
-      qemu
-      readline
-      swtpm
-      systemd
-      util-linux
-      zfs
-      json-c
-    ];
+    runtimeDeps = runtimeLibraries;
     propagatedDeps = [libxml2];
 
-    passthru.systemdUnitInventory = {
-      system = [
-        "lib/systemd/system/libvirtd.service"
-        "lib/systemd/system/libvirtd.socket"
-        "lib/systemd/system/libvirtd-ro.socket"
-        "lib/systemd/system/libvirtd-admin.socket"
-        "lib/systemd/system/virtlockd.service"
-        "lib/systemd/system/virtlockd.socket"
-        "lib/systemd/system/virtlockd-admin.socket"
-        "lib/systemd/system/virtlogd.service"
-        "lib/systemd/system/virtlogd.socket"
-        "lib/systemd/system/virtlogd-admin.socket"
-      ];
-      user = [];
-    };
+    abilities = ./_libvirt;
 
     phases = [
       {
@@ -391,7 +445,7 @@ in
             # Restore declared dependencies before the normal path shrink.
             find "$out" -type f | while read -r binary; do
               patchelf --print-needed "$binary" >/dev/null 2>&1 || continue
-              patchelf --add-rpath "$out/lib:${lib.concatMapStringsSep ":" (package: "${package}/lib") runtimeDeps}" "$binary"
+              patchelf --add-rpath "$out/lib:${lib.concatMapStringsSep ":" (package: "${package}/lib") runtimeLibraries}" "$binary"
             done
           ''}chmod u-s,g-s "$out/bin/virt-login-shell" 2>/dev/null || true
           "$out/bin/virsh" --version
@@ -403,8 +457,65 @@ in
     checks = {
       testing,
       self,
+      pkgs,
+      mkSystem,
       ...
-    }: {
+    }: let
+      evaluated = mkSystem {
+        systemName = "libvirt-package-check";
+        modules = [
+          ../../systems/_artifact-backend.nix
+          ../../systems/_base-packages.nix
+          ../../systems/_system-manager.nix
+          {
+            aos.kernel.packageRoot = pkgs.linux;
+            aos.virtualization.libvirt = {
+              enable = true;
+              allowedUsers = ["operator"];
+            };
+          }
+        ];
+      };
+      requests = evaluated.config.aos.abilities.requests;
+      bindings = builtins.attrValues evaluated.config.aos.abilities.bindings;
+      libvirtRequests = lib.filterAttrs (name: _: lib.hasPrefix "libvirt:" name) requests;
+      sockets = requests."libvirt:libvirtd-socket_activation".parameters.sockets;
+      socketModes = builtins.listToAttrs (
+        builtins.map (socket: lib.nameValuePair socket.manager_name socket.mode) sockets
+      );
+      socketDependencies =
+        requests."libvirt:libvirtd-socket_activation".parameters.service_dependencies;
+      requestsHaveAutomaticIdentities =
+        builtins.all
+        (request: !(request.parameters ? requested_id))
+        (builtins.attrValues libvirtRequests);
+      contractChecks = {
+        libvirtd = requests ? "libvirt:libvirtd-lifecycle";
+        virtlogd = requests ? "libvirt:virtlogd-lifecycle";
+        virtlockd = requests ? "libvirt:virtlockd-lifecycle";
+        accessMembership = requests ? "libvirt:access-membership";
+        authorizationRequest = requests ? "libvirt:authorization-service-availability";
+        polkitActivated = requests ? "polkit:polkit-lifecycle";
+        authorizationBound =
+          lib.any
+          (binding:
+            binding.request
+            == "libvirt:authorization-service-availability"
+            && binding.implementation == "polkit:authorization-service-availability")
+          bindings;
+        socketModes =
+          socketModes
+          == {
+            libvirtd = "0660";
+            "libvirtd-admin" = "0600";
+            "libvirtd-ro" = "0660";
+          };
+        socketAfter = socketDependencies.after == ["libvirtd" "libvirtd-admin" "libvirtd-ro"];
+        socketWants = socketDependencies.wants == ["libvirtd" "libvirtd-admin" "libvirtd-ro"];
+        automaticIdentities = requestsHaveAutomaticIdentities;
+      };
+      contractHolds = lib.all (value: value) (builtins.attrValues contractChecks);
+    in {
       link = testing.mkLinkCheck {
         pname = "libvirt";
         library = self;
@@ -422,6 +533,14 @@ in
         tool = self;
         command = "virsh --version && virt-xml-validate --help";
       };
+      ability-module-contract =
+        if contractHolds
+        then
+          pkgs.runCommand "libvirt-ability-module-contract" {} ''
+            mkdir -p "$out"
+            printf '%s\n' PASS > "$out/result"
+          ''
+        else throw "the Libvirt native ability contract check failed";
     };
 
     meta = {

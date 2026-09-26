@@ -10,25 +10,70 @@
   lz4,
   bash,
   stdenv,
-  writeShellScriptBin,
 }: let
   version = "3.5.0";
-  control = writeShellScriptBin "rsyncd-control" ''
-    set -eu
-    case "''${1:-}" in
-      enabled) test "''${RSYNCD_ENABLED:-false}" = true ;;
-      prepare)
-        for module in /var/lib/aos-pkg-rsyncd/exports/*; do
-          test -e "$module" || continue
-          test -d "$module" || exit 1
-        done
-        ;;
-      *) echo "usage: rsyncd-control {enabled|prepare}" >&2; exit 64 ;;
-    esac
-  '';
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "rsync";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [
+          {
+            "path" = "destination.txt";
+            "text" = "answer=42\n";
+          }
+        ];
+        "expected" = "The destination contains the source bytes exactly.";
+        "files" = {
+          "source.txt" = "answer=42\n";
+        };
+        "input" = "A source file with a fixed payload.";
+        "operation" = "Copy the file locally through rsync's transfer engine.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/rsync"
+              "--quiet"
+              "source.txt"
+              "destination.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Rsync rejects the missing source with its partial-transfer status.";
+        "files" = {};
+        "input" = "A source path that does not exist.";
+        "operation" = "Attempt a local transfer from the missing source.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/rsync"
+              "--quiet"
+              "missing.txt"
+              "destination.txt"
+            ];
+            "exit_code" = 23;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -41,7 +86,6 @@ in
     buildDeps = [gnumake];
     runtimeDeps =
       [
-        control
         zlib
         openssl
         zstd
@@ -54,98 +98,7 @@ in
       );
     propagatedDeps = [];
 
-    expose = {
-      units."rsyncd.service" = {
-        description = "Rsync file-transfer daemon";
-        after = ["network-online.target"];
-        wants = ["network-online.target"];
-        restartIfChanged = true;
-        stopOnRemoval = true;
-        serviceConfig = {
-          Type = "simple";
-          DynamicUser = true;
-          EnvironmentFile = "/etc/aos/packages/rsyncd/runtime.env";
-          ExecCondition = "/bin/rsyncd-control enabled";
-          ExecStartPre = "/bin/rsyncd-control prepare";
-          ExecStart = "/bin/rsync --daemon --no-detach --config=/etc/aos/packages/rsyncd/rsyncd.conf --address=$RSYNCD_ADDRESS --port=$RSYNCD_PORT";
-          StateDirectory = "aos-pkg-rsyncd";
-          StateDirectoryMode = "0750";
-          RuntimeDirectory = "aos-pkg-rsyncd";
-          RuntimeDirectoryMode = "0750";
-          LogsDirectory = "rsyncd";
-          LogsDirectoryMode = "0750";
-          Restart = "on-failure";
-          UMask = "0027";
-        };
-      };
-      config = {
-        artifacts = [
-          {
-            name = "runtime";
-            path = "/etc/aos/packages/rsyncd/runtime.env";
-            format = "env";
-            required = ["RSYNCD_ADDRESS" "RSYNCD_CONFIG_GENERATION" "RSYNCD_ENABLED" "RSYNCD_PORT"];
-            units = ["rsyncd.service"];
-            reload = "restart";
-          }
-        ];
-        credentials = [
-          {
-            name = "secrets-file";
-            source = "/run/credstore/rsyncd/secrets-file";
-            units = ["rsyncd.service"];
-            encrypted = false;
-            optional = true;
-          }
-        ];
-      };
-      permissions = {
-        network = "host";
-        capabilities = [];
-        devices = [];
-        host-paths = [
-          {
-            path = "/etc/aos/packages/rsyncd/rsyncd.conf";
-            mode = "read-only";
-          }
-        ];
-        syscalls = "system-service";
-        security-label = "aos-pkg-rsyncd";
-      };
-    };
-
-    configModule = {
-      src = ./_rsyncd-config;
-      moduleAbiCompat = {
-        min = 1;
-        max = 2;
-      };
-      declares = ["rsyncd.address" "rsyncd.enable" "rsyncd.modules" "rsyncd.port" "rsyncd.secrets"];
-      ownsRoots = [
-        {
-          root = "rsyncd";
-          interfaceAbi = 1;
-          contributable = [];
-        }
-      ];
-      artifacts = {
-        etc = ["aos/packages/rsyncd/rsyncd.conf"];
-        units = [];
-        users = [];
-        groups = [];
-      };
-      documentation = {
-        summary = "rsync — fast incremental file transfer";
-        sections = {
-          exports = lib.aosDoc.section "Export modules" [
-            (lib.aosDoc.paragraph "Each named module declares an explicit package state export path and read/write policy. Module names, paths, and client restrictions are validated before activation.")
-          ];
-          credentials = lib.aosDoc.section "Authentication" [
-            (lib.aosDoc.paragraph "Daemon secret files are assembled from opaque references in volatile storage and are never represented as Nix strings or published artifacts.")
-          ];
-        };
-      };
-    };
+    abilities = ./_rsyncd;
 
     phases = [
       {
@@ -201,39 +154,65 @@ in
       testing,
       self,
       pkgs,
+      mkSystem,
     }: let
-      evaluated = lib.evalModules {
-        inherit lib;
-        modules = [
-          ({lib, ...}: {
-            options = {
-              assertions = lib.mkOption {
-                type = lib.types.listOf lib.types.attrs;
-                default = [];
-              };
-              rsyncd.config = lib.mkOption {
-                type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
-                default = {};
-              };
-              rsyncd.credentials = lib.mkOption {
-                type = lib.types.attrsOf lib.types.attrs;
-                default = {};
-              };
-              environment.etc = lib.mkOption {
-                type = lib.types.attrsOf lib.types.attrs;
-                default = {};
-              };
-            };
-          })
-          ./_rsyncd-config/module.nix
-          {
-            rsyncd = {
-              enable = true;
-              modules.public = {};
-            };
-          }
-        ];
+      serviceManagement = lib.abilities.interfaces.serviceManagement;
+      environmentId = lib.abilities.environmentId {
+        authority = "system-image";
+        key = "rsync-package-check";
+        stage = "host";
       };
+      credentialProvider = lib.abilities.instanceId {
+        environment = environmentId;
+        key = "credential-provider";
+      };
+      credential = lib.abilities.resourceReference {
+        interface = serviceManagement.interfaces.credentialDelivery.identity;
+        resource = {
+          provider = credentialProvider;
+          key = "rsync-secrets";
+        };
+        operations = ["observe"];
+        lifetime = "persistent";
+      };
+      evaluate = rsyncd:
+        mkSystem {
+          systemName = "rsync-package-check";
+          modules = [
+            {
+              environment.systemPackages = [self];
+              inherit rsyncd;
+            }
+          ];
+        };
+      evaluated = evaluate {
+        enable = true;
+        modules.public = {};
+      };
+      authenticated = evaluate {
+        enable = true;
+        modules.private.authUsers = ["backup"];
+        secrets.resource = credential;
+      };
+      invalid = evaluate {
+        enable = true;
+        modules.private.authUsers = ["backup"];
+      };
+      assertionsHold = result:
+        builtins.all (assertion: assertion.assertion) result.config.assertions;
+      requests = evaluated.config.aos.abilities.requests;
+      authenticatedRequests = authenticated.config.aos.abilities.requests;
+      configuration = requests."rsync:daemon-configuration".parameters;
+      contractHolds =
+        assertionsHold evaluated
+        && lib.abilities.types.isPortableOptionTree evaluated.options.rsyncd
+        && assertionsHold authenticated
+        && !assertionsHold invalid
+        && configuration.source.kind == "interpolated-text"
+        && !(lib.hasInfix "/var/lib/aos-pkg-rsyncd" (builtins.toJSON configuration))
+        && !(lib.hasInfix "RSYNCD_CONFIG_GENERATION" (builtins.toJSON requests))
+        && !(builtins.hasAttr "rsync:secrets-file" requests)
+        && builtins.hasAttr "rsync:secrets-file" authenticatedRequests;
     in {
       version = testing.mkToolCheck {
         pname = "tool-rsync";
@@ -241,24 +220,13 @@ in
         command = "rsync --version";
       };
 
-      config = pkgs.runCommand "rsyncd-config-module" {} ''
-          config=${builtins.toFile "rsyncd.conf" evaluated.config.environment.etc."aos/packages/rsyncd/rsyncd.conf".text}
-          cp "$config" ./rsyncd.conf
-          config=./rsyncd.conf
-          mkdir -p "$TMPDIR/exports/public" "$TMPDIR/log" "$TMPDIR/run"
-          sed -i \
-            -e "s#/run/aos-pkg-rsyncd#$TMPDIR/run#g" \
-            -e "s#/var/log/rsyncd#$TMPDIR/log#g" \
-            -e "s#/var/lib/aos-pkg-rsyncd/exports#$TMPDIR/exports#g" \
-            "$config"
-          grep -F '[public]' "$config"
-          grep -F "path = $TMPDIR/exports/public" "$config"
-        ${self}/bin/rsync --daemon --config="$config" --address=127.0.0.1 --port=18730 --no-detach &
-        pid=$!
-        sleep 1
-        kill "$pid"
-        wait "$pid" || true
-        touch "$out"
-      '';
+      ability-module-contract =
+        if contractHolds
+        then
+          pkgs.runCommand "rsyncd-ability-module-contract" {} ''
+            mkdir -p "$out"
+            printf '%s\n' PASS > "$out/result"
+          ''
+        else throw "the rsyncd native ability checks failed";
     };
   }

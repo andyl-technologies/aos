@@ -32,7 +32,7 @@
   showLoc = loc: builtins.concatStringsSep "." loc;
 
   # Helper: show the source file and value of a definition.
-  showDef = def: "'${builtins.toString def.value}' (defined in ${def.file})";
+  showDef = def: "${builtins.toJSON def.value} (defined in ${def.file})";
 
   # Helper: show all definitions.
   showDefs = defs: builtins.concatStringsSep ", " (builtins.map showDef defs);
@@ -87,7 +87,7 @@
   # only the defs at the winning (lowest) override priority.
   peelProperties = defs: let
     peeled = builtins.concatLists (
-      builtins.map (d: peelDef d true (d._priority or 100) d.value) defs
+      builtins.map (d: peelDef d (d.condition or true) (d._priority or 100) d.value) defs
     );
   in
     builtins.filter (d: d._condition) peeled;
@@ -339,6 +339,32 @@ in rec {
       else last.value;
   };
 
+  ## An opaque function with one authoritative definition whose result is
+  ## checked through the supplied result type.
+  ## # Type
+  ## `type -> type`
+  functionTo = resultType: {
+    name = "functionTo(${resultType.name})";
+    description = "function returning ${resultType.description}";
+    check = builtins.isFunction;
+    merge = loc: defs:
+      if builtins.length defs != 1
+      then throw "The option '${showLoc loc}' must have one authoritative function definition."
+      else let
+        definition = builtins.head defs;
+      in
+        argument: let
+          result = definition.value argument;
+        in
+          if resultType.check result
+          then result
+          else throw "The function at option '${showLoc loc}' returned a value outside ${resultType.description}.";
+    _aosDocType = {
+      kind = "opaque";
+      signature = "function returning ${resultType.description}";
+    };
+  };
+
   ## # Network types
 
   port = {
@@ -375,7 +401,6 @@ in rec {
         values =
           builtins.map (value: {
             inherit value;
-            description = [];
           })
           allowedValues;
       }
@@ -478,30 +503,37 @@ in rec {
 
   ## # Type
   ## `type -> type`
-  attrsOf = elemType: {
-    name = "attrsOf(${elemType.name})";
+  attrsOfWith = lazy: elemType: {
+    name = "${
+      if lazy
+      then "lazyAttrsOf"
+      else "attrsOf"
+    }(${elemType.name})";
     description = "attribute set of ${elemType.description}";
     # Resolver provenance priority is applied independently to each dynamic
     # attribute, matching the ordinary mkOverride discharge performed here.
     # Without this marker a tier-75 host definition of one `/etc` entry would
     # discard every unrelated package/base entry in the attrsOf option.
     mergeProvenanceByKey = true;
+    _elementType = elemType;
+    _lazyAttrsOf = lazy;
     check = v: builtins.isAttrs v && builtins.all elemType.check (builtins.attrValues v);
     merge = loc: defs: let
-      allKeys = builtins.concatLists (builtins.map (d: builtins.attrNames d.value) defs);
-      uniqueKeys = let
-        go = acc: remaining:
-          if remaining == []
-          then acc
-          else let
-            h = builtins.elemAt remaining 0;
-            t = builtins.genList (i: builtins.elemAt remaining (i + 1)) (builtins.length remaining - 1);
-          in
-            if builtins.any (x: x == h) acc
-            then go acc t
-            else go (acc ++ [h]) t;
-      in
-        go [] allKeys;
+      # Index each definition once. Scanning every definition for every key
+      # makes large dynamic option sets quadratic during system evaluation.
+      definitionsByKey = builtins.groupBy (entry: entry.name) (
+        builtins.concatMap (def:
+          map (name: {
+            inherit name;
+            value =
+              def
+              // {
+                value = def.value.${name};
+                _priority = def._priority or 100;
+              };
+          }) (builtins.attrNames def.value))
+        defs
+      );
       # For each key, collect its raw defs, unwrap override / mkIf /
       # mkMerge markers via dischargeProperties, and — critically —
       # drop keys whose def list became empty after filtering. A key
@@ -512,21 +544,7 @@ in rec {
       perKeyEntries = builtins.concatLists (
         builtins.map (
           key: let
-            keyDefs =
-              builtins.filter (d: builtins.hasAttr key d.value)
-              (
-                builtins.map (d:
-                  d
-                  // {_priority = d._priority or 100;})
-                defs
-              );
-            valueDefs = builtins.map (d:
-              d
-              // {
-                value = d.value.${key};
-                _priority = d._priority or 100;
-              })
-            keyDefs;
+            valueDefs = map (entry: entry.value) definitionsByKey.${key};
             # Unwrap override / mkIf / mkMerge markers at the sub-
             # attribute level and keep only defs at the winning
             # priority. This lets
@@ -544,7 +562,7 @@ in rec {
               then peelProperties valueDefs
               else dischargeProperties valueDefs;
           in
-            if filteredDefs == []
+            if !lazy && filteredDefs == []
             then []
             else [
               {
@@ -553,7 +571,7 @@ in rec {
               }
             ]
         )
-        uniqueKeys
+        (builtins.attrNames definitionsByKey)
       );
     in
       builtins.listToAttrs perKeyEntries;
@@ -569,21 +587,49 @@ in rec {
     };
   };
 
+  attrsOf = attrsOfWith false;
+
+  ## Keeps syntactically declared keys while resolving their conditions only
+  ## when an individual value is demanded. This supports sibling submodules
+  ## whose conditional definitions refer to each other's evaluated values.
+  lazyAttrsOf = elemType:
+    if elemType ? _submodule
+    then attrsOfWith true elemType
+    else throw "lazyAttrsOf requires a submodule element type";
+
   ## # Type
   ## `type -> type`
   nullOr = elemType: {
     name = "nullOr(${elemType.name})";
     description = "${elemType.description} or null";
     check = v: v == null || elemType.check v;
+    # A nullable structural value still merges its non-null definitions at
+    # nested option boundaries. Preserve their priorities for the inner type.
+    mergeProvenanceByKey = elemType.mergeProvenanceByKey or false;
     merge = loc: defs: let
-      val = lastValue loc defs;
+      structural = elemType.mergeProvenanceByKey or false;
+      minPriority =
+        builtins.foldl' (
+          priority: def:
+            if (def._priority or 100) < priority
+            then def._priority or 100
+            else priority
+        )
+        9999
+        defs;
+      winningDefs = builtins.filter (def: (def._priority or 100) == minPriority) defs;
+      winningNull = builtins.any (def: def.value == null) winningDefs;
+      winningValue = builtins.any (def: def.value != null) winningDefs;
+      nonNullDefs = builtins.filter (def: def.value != null) defs;
+      selectedDef = builtins.elemAt winningDefs (builtins.length winningDefs - 1);
     in
-      if val == null
+      if winningNull && winningValue
+      then throw "The option '${showLoc loc}' has conflicting null and non-null definitions: ${showDefs winningDefs}"
+      else if winningNull
       then null
-      else
-        elemType.merge loc [
-          ((builtins.elemAt defs (builtins.length defs - 1)) // {value = val;})
-        ];
+      else if structural
+      then elemType.merge loc nonNullDefs
+      else elemType.merge loc [selectedDef];
     _aosDocType = {
       kind = "nullable";
       value =
@@ -687,14 +733,44 @@ in rec {
     mergeProvenanceByKey = true;
     check = builtins.isAttrs;
     merge = loc: defs:
-      if evalSubmodule != null
-      then evalSubmodule moduleArgs loc defs
-      else builtins.foldl' (acc: def: deepMergeSub acc def.value) {} defs;
+      builtins.removeAttrs (
+        if evalSubmodule != null
+        then evalSubmodule moduleArgs loc defs
+        else builtins.foldl' (acc: def: deepMergeSub acc def.value) {} defs
+      ) ["_module"];
     _submodule = moduleArgs;
     _aosDocType = {
       kind = "submodule";
       fields = {};
       open = true;
+    };
+  };
+
+  ## A module held as an option value for a later nested evaluation. It does
+  ## not evaluate the module here; the consumer supplies its fixed-point
+  ## context when it constructs the submodule type.
+  deferredModule = {
+    name = "deferredModule";
+    description = "module evaluated by a later module fixed point";
+    check = value:
+      builtins.isFunction value
+      || builtins.isPath value
+      || (builtins.isAttrs value && !(value ? _type));
+    merge = loc: defs:
+      if
+        builtins.all (definition:
+          builtins.isFunction definition.value
+          || builtins.isPath definition.value
+          || (builtins.isAttrs definition.value && !(definition.value ? _type)))
+        defs
+      then
+        if builtins.length defs == 1
+        then (builtins.head defs).value
+        else {imports = builtins.map (definition: definition.value) defs;}
+      else throw "The option '${showLoc loc}' must contain module values.";
+    _aosDocType = {
+      kind = "opaque";
+      signature = "deferred module";
     };
   };
 

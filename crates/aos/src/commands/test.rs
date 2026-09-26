@@ -4,22 +4,31 @@
 //! five layers of increasing cost: `eval` (pure evaluation checks), `rust`
 //! (parallel nextest checks), `build` (package build checks), `vm` (QEMU VM
 //! integration tests), and `fleet` (multi-VM fleet tests). A subcommand runs one layer
-//! (optionally a single named suite); with no subcommand, all four run
+//! (optionally a single named suite); with no subcommand, all five run
 //! in sequence with a pass/fail summary. Concurrency maps to
-//! `nix-build --max-jobs`, defaulting to the host CPU count.
+//! `nix-build --max-jobs`, defaulting to the host CPU count. The eval layer
+//! runs its independent suites in separate evaluator processes.
 //!
 //! `aos test fleet <suite> --interactive` is special: it builds the
 //! suite's `driverInteractive` launcher and `exec`s it, booting the
 //! fleet outside the Nix sandbox with SSH access for debugging.
 
+use std::collections::VecDeque;
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::thread::available_parallelism;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
 use crate::cli::TestCmd;
 use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
+
+const EVAL_SUITE_LIMIT: Duration = Duration::from_secs(120);
 
 /// Resolve the concurrency cap for `aos test`.
 ///
@@ -113,13 +122,26 @@ pub fn run(
 ) -> Result<()> {
     let jobs = resolve_jobs(jobs);
     match cmd {
-        Some(TestCmd::Eval) => run_layer(nix, printer, "checks.eval", "eval", jobs),
+        Some(TestCmd::Eval { suite }) => match suite {
+            Some(suite) => {
+                validate_suite_name(suite)?;
+                run_layer(
+                    nix,
+                    printer,
+                    &format!("checks.eval-suites.{suite}"),
+                    &format!("eval/{suite}"),
+                    jobs,
+                    Some(EVAL_SUITE_LIMIT),
+                )
+            }
+            None => run_eval_layer(nix, printer, jobs),
+        },
         Some(TestCmd::Rust { suite }) => {
             let attr = suite_attr("checks.rust", suite.as_deref())?;
             let label = suite_label("rust", suite.as_deref());
-            run_layer(nix, printer, &attr, &label, jobs)
+            run_layer(nix, printer, &attr, &label, jobs, None)
         }
-        Some(TestCmd::Build) => run_layer(nix, printer, "checks.build", "build", jobs),
+        Some(TestCmd::Build) => run_layer(nix, printer, "checks.build", "build", jobs, None),
         Some(TestCmd::Vm { suite }) => {
             let attr = match suite {
                 Some(s) => {
@@ -132,7 +154,7 @@ pub fn run(
                 Some(s) => format!("vm/{s}"),
                 None => "vm".to_string(),
             };
-            run_layer(nix, printer, &attr, &label, jobs)
+            run_layer(nix, printer, &attr, &label, jobs, None)
         }
         Some(TestCmd::Fleet {
             suite,
@@ -158,7 +180,7 @@ pub fn run(
                 Some(s) => format!("fleet/{s}"),
                 None => "fleet".to_string(),
             };
-            run_layer(nix, printer, &attr, &label, jobs)
+            run_layer(nix, printer, &attr, &label, jobs, None)
         }
         None => run_all(nix, printer, jobs),
     }
@@ -183,9 +205,12 @@ fn run_all(nix: &NixRunner, printer: &Printer, jobs: usize) -> Result<()> {
         printer.step(i + 1, total, &format!("Running {label} tests..."));
 
         let spinner = printer.activity(&format!("testing {label}"));
-        let result = nix
-            .build_with_max_jobs(attr, None, jobs)
-            .with_context(|| format!("test layer '{label}'"));
+        let result = if *label == "eval" {
+            build_eval_suites(nix, printer, jobs).map(|_| ())
+        } else {
+            nix.build_with_max_jobs(attr, None, jobs).map(|_| ())
+        }
+        .with_context(|| format!("test layer '{label}'"));
         spinner.finish_and_clear();
 
         match result {
@@ -247,6 +272,132 @@ fn suite_attr(root: &str, suite: Option<&str>) -> Result<String> {
 /// Returns the display label for an optional suite.
 fn suite_label(root: &str, suite: Option<&str>) -> String {
     suite.map_or_else(|| root.to_string(), |suite| format!("{root}/{suite}"))
+}
+
+/// Builds every eval suite while bounding evaluator memory use.
+fn build_eval_suites(
+    nix: &NixRunner,
+    printer: &Printer,
+    jobs: usize,
+) -> Result<Vec<(String, PathBuf)>> {
+    let root = nix_string_quote(&nix.root().to_string_lossy());
+    let expression = format!("builtins.attrNames ((import {root} {{}}).checks.eval-suites)");
+    let suites: Vec<String> =
+        serde_json::from_value(nix.eval_expr_json_with_timeout(&expression, EVAL_SUITE_LIMIT)?)
+            .context("decoding eval suite names")?;
+    anyhow::ensure!(!suites.is_empty(), "the eval suite set is empty");
+    for suite in &suites {
+        validate_suite_name(suite)?;
+    }
+
+    // Each evaluator holds a module graph. Four concurrent evaluators slowed
+    // these suites down, so keep the bound below that measured limit.
+    let evaluator_count = jobs.min(2);
+    let build_jobs = jobs.div_ceil(evaluator_count);
+    let queue = Mutex::new(VecDeque::from(suites));
+    let failed = AtomicBool::new(false);
+    let mut results = thread::scope(|scope| {
+        let handles = (0..evaluator_count)
+            .map(|_| {
+                let queue = &queue;
+                let failed = &failed;
+                scope.spawn(move || -> Result<Vec<_>> {
+                    let mut completed = Vec::new();
+
+                    loop {
+                        if failed.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let suite = queue
+                            .lock()
+                            .map_err(|_| anyhow::anyhow!("eval suite queue was poisoned"))?
+                            .pop_front();
+                        let Some(suite) = suite else { break };
+                        let attr = format!("checks.eval-suites.{suite}");
+                        printer.info(&format!("eval/{suite}: starting"));
+                        let started = Instant::now();
+                        let result = nix.build_with_max_jobs_timeout(
+                            &attr,
+                            None,
+                            build_jobs,
+                            EVAL_SUITE_LIMIT,
+                        );
+                        let status = if result.is_ok() { "passed" } else { "failed" };
+                        printer.info(&format!(
+                            "eval/{suite}: {status} in {:.1}s",
+                            started.elapsed().as_secs_f64()
+                        ));
+                        if result.is_err() {
+                            failed.store(true, Ordering::Release);
+                        }
+                        completed.push((suite, result));
+                    }
+
+                    Ok(completed)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("an eval suite worker panicked"))?
+            })
+            .collect::<Result<Vec<_>>>()
+    })?
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    results.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut built = Vec::with_capacity(results.len());
+    for (suite, result) in results {
+        let path = result.with_context(|| format!("eval suite '{suite}'"))?;
+        built.push((suite, path));
+    }
+
+    Ok(built)
+}
+
+/// Runs the complete eval layer through independent Nix evaluators.
+fn run_eval_layer(nix: &NixRunner, printer: &Printer, jobs: usize) -> Result<()> {
+    printer.info("Running eval suites...");
+
+    let spinner = printer.activity("testing eval");
+    let result = build_eval_suites(nix, printer, jobs);
+    spinner.finish_and_clear();
+
+    match result {
+        Ok(suites) => {
+            if printer.json_if_active(&serde_json::json!({
+                "layer": "eval",
+                "status": "pass",
+                "suites": suites.iter().map(|(name, path)| serde_json::json!({
+                    "name": name,
+                    "store_path": path.to_string_lossy(),
+                })).collect::<Vec<_>>(),
+            })) {
+                return Ok(());
+            }
+
+            printer.success(&format!("Eval layer passed ({} suites)", suites.len()));
+            Ok(())
+        }
+        Err(error) => {
+            if printer.json_if_active(&serde_json::json!({
+                "layer": "eval",
+                "status": "fail",
+                "error": format!("{error:#}"),
+            })) {
+                return Err(error);
+            }
+
+            printer.error("Eval layer FAILED");
+            Err(error)
+        }
+    }
 }
 
 /// `aos test fleet <suite> --interactive --ssh-authorized-key <key>`.
@@ -324,13 +475,16 @@ fn run_layer(
     attr: &str,
     label: &str,
     jobs: usize,
+    limit: Option<Duration>,
 ) -> Result<()> {
     printer.info(&format!("Running {label} tests (max-jobs={jobs})..."));
 
     let spinner = printer.activity(&format!("testing {label}"));
-    let result = nix
-        .build_with_max_jobs(attr, None, jobs)
-        .with_context(|| format!("test layer '{label}'"));
+    let result = match limit {
+        Some(limit) => nix.build_with_max_jobs_timeout(attr, None, jobs, limit),
+        None => nix.build_with_max_jobs(attr, None, jobs),
+    }
+    .with_context(|| format!("test layer '{label}'"));
     spinner.finish_and_clear();
 
     match result {

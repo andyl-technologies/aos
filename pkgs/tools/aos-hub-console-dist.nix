@@ -9,15 +9,13 @@
   mkDerivation,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceSliceFor,
+  aosWorkspaceVendor,
   wasm-bindgen-cli,
   stdenv,
   buildPackages,
 }: let
   version = "0.1.0";
-  repoRoot = ../..;
-  repoRootString = toString repoRoot;
-
   # Protobuf and the C toolchain execute on Linux while producing the
   # target-independent WebAssembly distribution.
   buildProtobuf = buildPackages.protobuf;
@@ -74,31 +72,10 @@
     "RANLIB_${nativeRustCcPrefix}" = "${nativeRustToolchain}/bin/ranlib";
   };
   mkHubDerivation = args: mkDerivation (args // nativeRustToolchainEnv // consoleReleaseEnv);
-  src = builtins.path {
-    path = repoRoot;
-    name = "aos-hub-console-workspace-src";
-    filter = path: _type: let
-      pathString = toString path;
-      base = baseNameOf path;
-    in
-      base
-      != "target"
-      && base != ".git"
-      && (
-        pathString
-        == repoRootString
-        || lib.hasPrefix "${repoRootString}/crates" pathString
-        || pathString == "${repoRootString}/docs"
-        || pathString == "${repoRootString}/docs/rfcs"
-        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
-      );
-  };
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = "sha256-6FU3M+iwF2iVd+nl7JvCC6r2oGz4Yq1PWOqBC2nBqDQ=";
-  };
+  cargoSelector = "-p aos-hub-console";
+  workspaceSlice = aosWorkspaceSliceFor {cargoFlags = cargoSelector;};
+  src = workspaceSlice.src;
+  cargoDeps = aosWorkspaceVendor;
   # Optimize the browser download without changing native Hub or CLI profiles.
   # Keep dependency artifacts and the final application on the same profile.
   consoleReleaseEnv = {
@@ -119,7 +96,7 @@
       cargoRoot = "crates";
     };
     cargoRoot = "crates";
-    cargoFlags = "-p aos-hub-console --target wasm32-unknown-unknown";
+    cargoFlags = "${cargoSelector} --target wasm32-unknown-unknown";
     cargoArtifactContract = {
       family = "aos-hub-console-wasm-release";
       releaseProfile = consoleReleaseEnv;
@@ -130,7 +107,79 @@
   };
 in
   mkHubDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "aos-hub-console-dist";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "All three deployable console assets are nonempty and the binary is WebAssembly.";
+        "files" = {};
+        "input" = "The browser JavaScript, WebAssembly, and stylesheet bundle.";
+        "operation" = "Inspect each asset and validate the WebAssembly magic bytes.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib\nroot = pathlib.Path(\"@out@\")\njavascript = (root / \"hub-console.js\").read_text()\nstylesheet = (root / \"hub-console.css\").read_text()\nwasm = (root / \"hub-console_bg.wasm\").read_bytes()\nassert javascript.strip() and stylesheet.strip() and wasm.startswith(b\"\\\\0asm\")\nprint(\"aos-hub-console-dist data passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "aos-hub-console-dist data passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The immutable console bundle rejects the undeclared asset.";
+        "files" = {};
+        "input" = "A request for an undeclared source-map asset.";
+        "operation" = "Resolve the absent source map in the deployment bundle.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, sys\nif pathlib.Path(\"@out@/hub-console.js.map\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"aos-hub-console-dist rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "aos-hub-console-dist rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     buildDeps = [buildRust wasm-bindgen-cli buildProtobuf buildCc buildBash buildCoreutils];
@@ -152,6 +201,7 @@ in
           mkdir -p "$CARGO_HOME" .cargo
           sed "s|@vendor@|$cargoDeps|g" "$cargoDeps/.cargo/config.toml" \
             > .cargo/config.toml
+          ${workspaceSlice.configureWorkspace}
           export PROTOC="${buildProtobuf}/bin/protoc"
           mkdir -p target
           tar xf ${cargoArtifacts}/target.tar -C target
@@ -203,7 +253,7 @@ in
           chmod +x "$TMPDIR/aos-wasm-linker"
           export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER="$TMPDIR/aos-wasm-linker"
 
-          cargo build -p aos-hub-console --target wasm32-unknown-unknown \
+          cargo build ${cargoSelector} --target wasm32-unknown-unknown \
             --release --frozen --offline -j"$NIX_BUILD_CORES"
           mkdir -p generated
           wasm-bindgen --target web --no-typescript --out-dir generated \

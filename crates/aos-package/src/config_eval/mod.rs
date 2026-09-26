@@ -1,12 +1,9 @@
 //! The on-host resolve/evaluate fixpoint driver.
 //!
-//! Stock Nix gives no read-access instrumentation, so the set of config
-//! providers a host needs cannot be statically closed: it is *discovered* by
-//! evaluating the module set, observing what is missing, fetching the named
-//! provider's `config` output, and re-evaluating until the eval succeeds or a
-//! terminal state is reached. [`run_fixpoint`] is that deterministic state
-//! machine; it is the driver *around* the existing closure resolver
-//! ([`crate::resolve`]).
+//! Package selection resolves the complete runtime closure and each selected
+//! package's authenticated contract before Nix evaluates the module fixed
+//! point. [`run_fixpoint`] evaluates that closed set once and preserves typed
+//! Nix failures for the command boundary.
 //!
 //! # Module map
 //!
@@ -16,17 +13,14 @@
 //!   shells out to `nix-instantiate --eval --strict --json --pure-eval
 //!   --option restrict-eval true
 //!   --option allow-import-from-derivation false` with an empty environment,
-//!   and classifies the result, plus the registry-backed
-//!   [`ConfigOutputFetcher`]. Builder-gated:
-//!   it requires a real
-//!   stock-nix and registry, so it is unit-tested only for `entry.nix`
-//!   rendering.
+//!   and classifies the result. Builder-gated: it requires a real stock-nix,
+//!   so it is unit-tested only for `entry.nix` rendering.
 //!
 //! # The seam
 //!
 //! The evaluator boundary is `eval(working_set, host_nix, base_lib) ->
-//! Result<EvalClass>`. The resolver, registry index, fetch order (config output
-//! first), `module_abi` gate, and manifest contract remain outside it.
+//! Result<EvalClass>`. Contract authentication, package resolution, and
+//! manifest construction remain outside it.
 //!
 //! # Failure-safe
 //!
@@ -35,14 +29,43 @@
 //! clean no-op on the live system: no generation exists until a downstream
 //! service consumes a returned manifest.
 
+pub mod ability;
+pub mod ability_activation;
+pub mod ability_policy;
+pub mod ability_policy_authority;
+pub mod bound_handler;
+mod bound_handler_store;
+mod source_root_inventory;
+mod source_stage_admission;
+pub mod source_stage;
+pub(crate) mod transaction_store;
+pub use transaction_store::RetainedAbilityDiagnosticSource;
 pub mod activation;
 pub mod classify;
+mod command_handler;
 pub mod diagnostics;
 pub mod dry_run;
+mod handler_dispatch;
+mod handler_process;
 pub mod materialize;
+mod native_activation;
+mod protected_fs;
+mod transaction_blob;
+mod transaction_verification;
+pub use native_activation::supported_native_ability_features;
+pub(crate) use native_activation::{RetainedNativePreflightError, preflight_retained_manifest};
+mod cancellation;
+mod execution_observer;
+pub(crate) mod provisioning_evaluator;
+pub mod provisioning_evaluator_provider;
+pub mod registry_snapshot_provider;
 pub mod runtime;
 pub mod runtime_modules;
+pub mod service;
+pub mod stage_handoff;
+pub(crate) mod static_packages;
 pub mod stock;
+pub mod store_view;
 pub mod system_roots;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -50,23 +73,17 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
+use aos_ability_model::VersionedDocument;
 use sha2::{Digest, Sha256};
 
 pub use classify::{ConflictDef, EvalClass, KillReason, MissingOption, MissingOptionKind};
-pub use system_roots::{
-    CapabilitySetter, ConfigModuleResolver, ResolvedConfigModule, RootOwner, SystemRoots,
-    SystemRootsError,
-};
+pub use system_roots::{PackageModuleResolver, ResolvedPackageContract, ResolvedPackageModule};
 
-use crate::resolve::{GatedConfigModule, enforce_module_abi_compat};
-use crate::types::{ConfigModuleMeta, ModuleAbiCompat, option_path_root};
+use crate::types::option_path_root;
 
 /// Absolute ceiling on re-evals, so a pathological registry cannot make the
 /// loop unbounded (build-spec §5).
 pub const ITER_CAP_CEILING: u32 = 64;
-
-/// Slack added to the reachable-provider count when deriving the iteration cap.
-const ITER_CAP_SLACK: u32 = 8;
 
 // ---------------------------------------------------------------------------
 // Working set
@@ -75,31 +92,21 @@ const ITER_CAP_SLACK: u32 = 8;
 /// One package in the fixpoint working set.
 ///
 /// The seed set is supplied by the caller from the host's desired packages;
-/// fetched providers are appended as the loop discovers missing options. A
-/// member that carries config-module metadata is gated against the running
-/// image's `module_abi` before it can enter `entry.nix`.
+/// package-contract documents are resolved before the module fixed point runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkingSetMember {
-    /// Registry that authenticated this member's config output.
+    /// Registry that authenticated this member's package module artifact.
     pub registry: Option<String>,
     /// Signed release identity for the extracted registry tree.
     pub release_trust: Option<crate::registry::ReleaseTrustReceipt>,
-    /// Hash of the signed store subgraph rooted at this config output.
+    /// Hash of the signed store subgraph rooted at this package module artifact.
     pub config_realization: Option<String>,
     /// Package name.
     pub package: String,
     /// Package version, when known.
     pub version: Option<String>,
-    /// Store path of the package's `config` output (its config-only module),
-    /// when it ships one. This is the only thing the eval reads.
-    pub config_output: Option<String>,
-    /// Authenticated NAR hash of [`Self::config_output`].
-    pub config_output_nar_hash: Option<String>,
-    /// The member's declared base-lib ABI band, when it ships a config module.
-    pub module_abi_compat: Option<ModuleAbiCompat>,
-    /// Resolver-controlled roots and foreign contribution paths authenticated
-    /// by this package's config-module metadata.
-    pub authorization: PackageAuthorization,
+    /// Resolved package contract, including its retained document source.
+    pub contract: Option<ResolvedPackageContract>,
     /// Resolver-authenticated runtime outputs exposed to this module.
     pub outputs: PackageOutputs,
 }
@@ -117,52 +124,6 @@ pub struct PackageOutputs {
     pub dependencies: BTreeMap<String, String>,
 }
 
-/// Exact write authorization passed beside one authenticated package module.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageAuthorization {
-    /// Shared roots this package owns. Its private package-name root is always
-    /// implicit and need not appear here.
-    pub owns: Vec<String>,
-    /// Allowed foreign writes, keyed by root and expressed as relative paths.
-    pub contributes: BTreeMap<String, Vec<String>>,
-    /// Exact base-owned artifact leaves this package may materialize.
-    #[serde(
-        default,
-        skip_serializing_if = "crate::types::ConfigModuleArtifacts::is_empty"
-    )]
-    pub artifacts: crate::types::ConfigModuleArtifacts,
-}
-
-impl PackageAuthorization {
-    /// Derives authorization solely from authenticated config-module metadata.
-    fn from_module(module: &ConfigModuleMeta) -> Self {
-        let mut owns: Vec<String> = module
-            .owns_roots
-            .iter()
-            .map(|owned| owned.root.clone())
-            .collect();
-        owns.sort();
-        owns.dedup();
-        let mut contributes: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for contribution in &module.contributes {
-            contributes
-                .entry(contribution.root.clone())
-                .or_default()
-                .extend(contribution.paths.iter().cloned());
-        }
-        for paths in contributes.values_mut() {
-            paths.sort();
-            paths.dedup();
-        }
-        Self {
-            owns,
-            contributes,
-            artifacts: module.artifacts.clone(),
-        }
-    }
-}
-
 impl WorkingSetMember {
     /// Builds a bare seed member with no config-module metadata.
     pub fn seed(package: impl Into<String>) -> Self {
@@ -172,10 +133,7 @@ impl WorkingSetMember {
             config_realization: None,
             package: package.into(),
             version: None,
-            config_output: None,
-            config_output_nar_hash: None,
-            module_abi_compat: None,
-            authorization: PackageAuthorization::default(),
+            contract: None,
             outputs: PackageOutputs::default(),
         }
     }
@@ -189,19 +147,41 @@ impl WorkingSetMember {
 #[derive(Debug, Clone)]
 pub struct FixpointInputs {
     /// The delivered leaf `host.nix` path.
-    pub host_nix: PathBuf,
+    pub host_nix: EvaluatorInput,
     /// Ordered, generation-pinned runtime operator module entrypoints.
-    pub runtime_modules: Vec<PathBuf>,
+    pub runtime_modules: Vec<EvaluatorInput>,
     /// The in-image, ABI-pinned module library.
-    pub base_lib: PathBuf,
+    pub base_lib: EvaluatorInput,
     /// Optional normalized metadata facts consumed as a typed Nix module.
     pub facts_json: Option<PathBuf>,
     /// Packages explicitly installed (`desired.toml`): the starting working set.
     pub seed_set: Vec<WorkingSetMember>,
-    /// The running image's base-lib ABI (`K`).
-    pub module_abi: u32,
-    /// Optional override for the iteration cap; otherwise derived from the index.
-    pub iter_cap: Option<u32>,
+}
+
+/// Keeps one canonical store identity separate from its selected readable path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvaluatorInput {
+    /// Canonical package-store identity used by Nix store operations.
+    pub identity: PathBuf,
+    /// Physical immutable path used only for direct byte reads.
+    pub read_path: PathBuf,
+}
+
+impl EvaluatorInput {
+    pub(crate) fn canonical(path: PathBuf) -> Self {
+        Self {
+            read_path: path.clone(),
+            identity: path,
+        }
+    }
+
+    fn in_store_view(identity: PathBuf, store_view: &store_view::StoreViewLocator) -> Result<Self> {
+        let read_path = store_view.read_path(&identity)?;
+        Ok(Self {
+            identity,
+            read_path,
+        })
+    }
 }
 
 /// One step of the causal chain, recorded for the non-convergence dump.
@@ -254,54 +234,6 @@ pub enum FixpointError {
         path: String,
         /// The reader/writer locus, when known.
         read_by: Option<String>,
-    },
-    /// A missing option whose providers all exclude the running `module_abi`.
-    AbiMismatch {
-        /// The unresolved option path or root.
-        path: String,
-        /// The running image ABI the providers failed to admit.
-        want: u32,
-    },
-    /// A seed config module excludes the running `module_abi` (pre-eval gate).
-    SeedAbiMismatch(String),
-    /// Two installed packages own the same shared root (a per-system owned-root
-    /// exclusivity violation, caught while building [`SystemRoots`]).
-    AmbiguousProvider {
-        /// The contested shared root.
-        root: String,
-        /// The first owner, as `package@version`.
-        owner_a: String,
-        /// The second owner, as `package@version`.
-        owner_b: String,
-    },
-    /// An installed package's owned root collides with a *different* installed
-    /// package's name, which would silently shadow that package's private root.
-    ShadowedRoot {
-        /// The owned root that collides with a package name.
-        root: String,
-        /// The package that owns the root, as `package@version`.
-        owner: String,
-    },
-    /// A package's `contributes` declaration is not permitted: the foreign root
-    /// has no owner, or a contributed sub-path is outside the owner's
-    /// contributable set (F3-B, checked at resolve time).
-    Contributable {
-        /// The contributing package, as `package@version`.
-        contributor: String,
-        /// The foreign root being contributed into.
-        root: String,
-        /// The offending sub-path (empty when the root has no owner at all).
-        path: String,
-        /// Whether the root lacked an owner or the sub-path was out of scope.
-        reason: system_roots::ContributableError,
-    },
-    /// A provider is already present yet the same option stays missing —
-    /// fetching cannot help (a read cycle's terminal frame).
-    Unsatisfiable {
-        /// The still-missing option path or root.
-        path: String,
-        /// The provider already in the working set.
-        provider: String,
     },
     /// A *declared* option was left undefined with no default (`:744`).
     UndefinedOption {
@@ -361,54 +293,6 @@ impl std::fmt::Display for FixpointError {
                 }
                 Ok(())
             }
-            FixpointError::AbiMismatch { path, want } => write!(
-                f,
-                "every provider of '{path}' is incompatible with image module_abi {want}"
-            ),
-            FixpointError::SeedAbiMismatch(msg) => f.write_str(msg),
-            FixpointError::AmbiguousProvider {
-                root,
-                owner_a,
-                owner_b,
-            } => write!(
-                f,
-                "root '{root}' is owned by both '{owner_a}' and '{owner_b}'; \
-                 owned roots are exclusive per system"
-            ),
-            FixpointError::ShadowedRoot { root, owner } => write!(
-                f,
-                "owned root '{root}' (owned by '{owner}') collides with a different \
-                 installed package named '{root}'; the package's private root would be shadowed"
-            ),
-            FixpointError::Contributable {
-                contributor,
-                root,
-                path,
-                reason,
-            } => match reason {
-                system_roots::ContributableError::NoOwner => write!(
-                    f,
-                    "package '{contributor}' contributes to root '{root}' but no installed \
-                     package owns it"
-                ),
-                system_roots::ContributableError::NotContributable => write!(
-                    f,
-                    "package '{contributor}' contributes '{root}.{path}' but '{path}' is not in \
-                     the owner's contributable set"
-                ),
-                system_roots::ContributableError::InterfaceAbiMismatch { expected, actual } => {
-                    write!(
-                        f,
-                        "package '{contributor}' contributes to root '{root}' against interface ABI \
-                     {expected}, but the installed owner exports interface ABI {actual}; republish \
-                     the contributor against the installed owner's interface"
-                    )
-                }
-            },
-            FixpointError::Unsatisfiable { path, provider } => write!(
-                f,
-                "'{path}' is still missing after fetching '{provider}'; fetching cannot satisfy it (read cycle)"
-            ),
             FixpointError::UndefinedOption { path, file } => {
                 write!(f, "the option '{path}' is declared but left undefined")?;
                 if let Some(file) = file {
@@ -437,7 +321,7 @@ impl std::fmt::Display for FixpointError {
             FixpointError::Fetch { provider, source } => {
                 write!(
                     f,
-                    "fetching config output for '{provider}' failed: {source}"
+                    "fetching package module artifact for '{provider}' failed: {source}"
                 )
             }
             FixpointError::NonConvergence { trace, iterations } => {
@@ -452,39 +336,6 @@ impl std::error::Error for FixpointError {
         match self {
             FixpointError::Fetch { source, .. } => Some(source.as_ref()),
             _ => None,
-        }
-    }
-}
-
-impl From<SystemRootsError> for FixpointError {
-    /// Maps a [`SystemRoots`] build failure onto its terminal [`FixpointError`],
-    /// so an integrity violation in the installed set aborts the fixpoint before
-    /// any eval runs.
-    fn from(err: SystemRootsError) -> Self {
-        match err {
-            SystemRootsError::OwnedRootConflict {
-                root,
-                owner_a,
-                owner_b,
-            } => FixpointError::AmbiguousProvider {
-                root,
-                owner_a,
-                owner_b,
-            },
-            SystemRootsError::ShadowedRoot { root, owner } => {
-                FixpointError::ShadowedRoot { root, owner }
-            }
-            SystemRootsError::Contributable {
-                contributor,
-                root,
-                path,
-                reason,
-            } => FixpointError::Contributable {
-                contributor,
-                root,
-                path,
-                reason,
-            },
         }
     }
 }
@@ -519,11 +370,11 @@ fn render_trace(trace: &[IterRecord], iterations: u32) -> String {
 #[derive(Debug)]
 pub struct EvalAttempt<'a> {
     /// The trusted leaf `host.nix`, passed as an operator-provenance module.
-    pub host_nix: &'a Path,
+    pub host_nix: &'a EvaluatorInput,
     /// Ordered direct runtime operator module entrypoints.
-    pub runtime_modules: &'a [PathBuf],
+    pub runtime_modules: &'a [EvaluatorInput],
     /// The in-image module library.
-    pub base_lib: &'a Path,
+    pub base_lib: &'a EvaluatorInput,
     /// Optional normalized metadata facts file.
     pub facts_json: Option<&'a Path>,
     /// The current working set rendered into `entry.nix`.
@@ -548,315 +399,101 @@ pub trait NixEvaluator {
     fn evaluate(&self, attempt: &EvalAttempt<'_>) -> Result<EvalClass>;
 }
 
-/// A provider the driver selected from the index and is about to fetch.
-#[derive(Debug, Clone, Copy)]
-pub struct SelectedProvider<'a> {
-    /// Provider package name.
-    pub package: &'a str,
-    /// Provider package version.
-    pub version: &'a str,
-    /// Target platform.
-    pub platform: &'a str,
-    /// Store path of the `config` output to fetch.
-    pub config_output: &'a str,
-    /// Authenticated NAR hash of the config output.
-    pub nar_hash: &'a str,
-    /// Authenticated uncompressed NAR size of the config output.
-    pub nar_size: u64,
-}
-
-/// The fetch seam: download a selected provider's `config` output NAR.
-///
-/// The driver fetches the `config` output **before** any `out` closure
-/// (build-spec §4): the next eval reads only the config-only module, and the
-/// binary closure is needed solely if the provider survives into the converged
-/// set. Tests inject a recording mock.
-pub trait ConfigOutputFetcher {
-    /// Fetch and verify `provider`'s `config` output into the local store.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on a terminal fetch failure (registry unreachable,
-    /// unsigned, hash mismatch); the driver maps it to [`FixpointError::Fetch`].
-    fn fetch_config_output(&self, provider: &SelectedProvider<'_>) -> Result<()>;
-}
-
 // ---------------------------------------------------------------------------
 // The fixpoint
 // ---------------------------------------------------------------------------
 
 /// Drive `evalModules` to a complete configuration (build-spec §1).
 ///
-/// The loop renders the current `working_set` into `entry.nix`, evaluates it,
-/// and on a missing-option signal selects the owning provider — a shared-root
-/// owner from the locally-derived [`SystemRoots`], else the package the root
-/// structurally names, resolved by name through `resolver` (ABI-gated) — fetches
-/// its `config` output, and re-evaluates. `working_set` is append-only over the
-/// finite package universe, so the loop terminates at or before the iteration
-/// cap.
-///
-/// [`SystemRoots`] is built once, up front, from the installed set: every seed
-/// package's config module (resolved by name through `resolver`). A per-system
-/// integrity violation (owned-root exclusivity, a shadowing collision, or an
-/// out-of-scope contribution) is a terminal error before any eval runs.
-///
-/// Before iteration 0 every seed that carries config-module metadata is gated
-/// against `inputs.module_abi`; an incompatible seed is a terminal
-/// [`FixpointError::SeedAbiMismatch`] before any eval runs. Each fetched
-/// provider is likewise gated before it enters `entry.nix`.
+/// Package selection and package-contract resolution complete before this
+/// function runs. The full selected module set is evaluated once; an unresolved
+/// option is therefore a terminal missing-provider error.
 ///
 /// # Errors
 ///
-/// Returns a [`FixpointError`] for every terminal state (no provider, ABI
-/// mismatch, owned-root/ shadowing/ contributable integrity violation, conflict,
-/// assertion, kill, opaque eval error, fetch failure) and
-/// [`FixpointError::NonConvergence`] at the iteration cap. Every terminal state
-/// is a clean no-op: no manifest is emitted, so nothing downstream activates.
-pub fn run_fixpoint<R, E, F>(
+/// Returns a [`FixpointError`] for every terminal evaluator state. Every
+/// terminal state is a clean no-op: no manifest is emitted, so nothing
+/// downstream activates.
+pub fn run_fixpoint<E: NixEvaluator>(
     inputs: &FixpointInputs,
-    resolver: &R,
     evaluator: &E,
-    fetcher: &F,
-) -> std::result::Result<FixpointOutcome, FixpointError>
-where
-    R: ConfigModuleResolver,
-    E: NixEvaluator,
-    F: ConfigOutputFetcher,
-{
-    // Pre-eval gate (build-spec §6): refuse an ABI-incompatible seed before any
-    // eval. Wires CS3's `enforce_module_abi_compat` into the live path.
-    gate_seeds(&inputs.seed_set, inputs.module_abi)?;
+) -> std::result::Result<FixpointOutcome, FixpointError> {
+    let working_set = inputs.seed_set.clone();
+    let attempt = EvalAttempt {
+        host_nix: &inputs.host_nix,
+        runtime_modules: &inputs.runtime_modules,
+        base_lib: &inputs.base_lib,
+        facts_json: inputs.facts_json.as_deref(),
+        working_set: &working_set,
+        iteration: 0,
+    };
+    let class = evaluator
+        .evaluate(&attempt)
+        .map_err(|error| FixpointError::EvalError {
+            stderr: format!("{error:#}"),
+        })?;
 
-    // Build the per-system shared-root map from the installed set's config
-    // modules. This is the authoritative place the owned-root exclusivity,
-    // shadowing, and F3-B contributable invariants are enforced; a violation
-    // aborts before any eval runs.
-    let selected_names = inputs
-        .seed_set
-        .iter()
-        .map(|member| member.package.as_str())
-        .collect::<BTreeSet<_>>();
-    let mut installed = resolver
-        .installed_config_modules()
-        .into_iter()
-        .filter(|module| !selected_names.contains(module.package))
-        .collect::<Vec<_>>();
-    installed.extend(inputs.seed_set.iter().filter_map(|member| {
-        if member.outputs.self_output.is_some() {
-            resolver.config_module_exact(
-                &member.package,
-                member.version.as_deref(),
-                member.outputs.self_output.as_deref(),
-            )
-        } else {
-            resolver.config_module(&member.package)
+    match class {
+        EvalClass::Manifest(manifest) => Ok(FixpointOutcome {
+            manifest,
+            working_set,
+            trace: Vec::new(),
+            iterations: 0,
+        }),
+        EvalClass::Missing(missing) => {
+            let first = missing.first();
+            Err(FixpointError::NoProvider {
+                path: first
+                    .map(|missing| option_path_root(&missing.path).to_string())
+                    .unwrap_or_default(),
+                read_by: first.and_then(|missing| missing.read_by.clone()),
+            })
         }
-    }));
-    let bundled_roots = load_bundled_roots(&inputs.base_lib)?;
-    let system_roots =
-        SystemRoots::build_with_context(installed, bundled_roots, resolver.known_shared_roots())?;
-
-    let mut working_set = inputs.seed_set.clone();
-    // The no-progress guard tracks packages whose CONFIG MODULE is actually
-    // loaded (`config_output` present), NOT every seed name. A bare seed (a
-    // desired package with no config module yet) must remain fetchable — if the
-    // host references its root, the loop fetches its config output. Seeding the
-    // guard with bare names would wedge such a package to `Unsatisfiable`.
-    let mut fetched: BTreeSet<String> = working_set
-        .iter()
-        .filter(|m| m.config_output.is_some())
-        .map(|m| m.package.clone())
-        .collect();
-    let mut trace: Vec<IterRecord> = Vec::new();
-    let cap = inputs
-        .iter_cap
-        .unwrap_or_else(|| derive_iter_cap(inputs.seed_set.len(), &system_roots));
-
-    let mut iter: u32 = 0;
-    loop {
-        if iter >= cap {
-            return Err(FixpointError::NonConvergence {
-                trace,
-                iterations: iter,
-            });
+        EvalClass::UndefinedOption { path, file } => {
+            Err(FixpointError::UndefinedOption { path, file })
         }
-
-        let attempt = EvalAttempt {
-            host_nix: &inputs.host_nix,
-            runtime_modules: &inputs.runtime_modules,
-            base_lib: &inputs.base_lib,
-            facts_json: inputs.facts_json.as_deref(),
-            working_set: &working_set,
-            iteration: iter,
-        };
-        let class = evaluator
-            .evaluate(&attempt)
-            .map_err(|e| FixpointError::EvalError {
-                stderr: format!("{e:#}"),
-            })?;
-
-        match class {
-            EvalClass::Manifest(manifest) => {
-                return Ok(FixpointOutcome {
-                    manifest,
-                    working_set,
-                    trace,
-                    iterations: iter,
-                });
-            }
-            EvalClass::Missing(missing) => {
-                let selection =
-                    select_first_resolvable(&missing, &system_roots, resolver, inputs.module_abi)?;
-
-                // The provider's config module is already loaded yet the same
-                // option is still missing — fetching cannot fix it (build-spec
-                // §5 read cycle / bad config module). This is the real
-                // no-progress condition.
-                if fetched.contains(&selection.package) {
-                    return Err(FixpointError::Unsatisfiable {
-                        path: selection.missing_path.clone(),
-                        provider: selection.package,
-                    });
-                }
-
-                let authenticated_module =
-                    resolver.config_module(&selection.package).ok_or_else(|| {
-                        FixpointError::NoProvider {
-                            path: selection.missing_path.clone(),
-                            read_by: selection.read_by.clone(),
-                        }
-                    })?;
-                system_roots.validate_discovered_module(authenticated_module.clone())?;
-                let authorization = PackageAuthorization::from_module(authenticated_module.module);
-
-                // Gate the newly-selected provider before it enters entry.nix.
-                let gate = GatedConfigModule {
-                    package: &selection.package,
-                    version: &selection.version,
-                    module_abi_compat: selection.module_abi_compat,
-                };
-                enforce_module_abi_compat(&[gate], inputs.module_abi).map_err(|_| {
-                    FixpointError::AbiMismatch {
-                        path: selection.missing_path.clone(),
-                        want: inputs.module_abi,
-                    }
-                })?;
-
-                // Config output FIRST (build-spec §4).
-                let provider = SelectedProvider {
-                    package: &selection.package,
-                    version: &selection.version,
-                    platform: &selection.platform,
-                    config_output: &selection.config_output,
-                    nar_hash: &selection.config_nar_hash,
-                    nar_size: selection.config_nar_size,
-                };
-                fetcher
-                    .fetch_config_output(&provider)
-                    .map_err(|source| FixpointError::Fetch {
-                        provider: selection.package.clone(),
-                        source,
-                    })?;
-
-                fetched.insert(selection.package.clone());
-                working_set.push(WorkingSetMember {
-                    registry: (!authenticated_module.registry.is_empty())
-                        .then(|| authenticated_module.registry.to_string()),
-                    release_trust: authenticated_module.release_trust.cloned(),
-                    config_realization: authenticated_module.config_realization.clone(),
-                    package: selection.package.clone(),
-                    version: Some(selection.version.clone()),
-                    config_output: Some(selection.config_output.clone()),
-                    config_output_nar_hash: Some(selection.config_nar_hash.clone()),
-                    module_abi_compat: Some(selection.module_abi_compat),
-                    authorization,
-                    outputs: PackageOutputs {
-                        self_output: Some(authenticated_module.runtime_output.to_string()),
-                        dependencies: authenticated_module.module.dependency_outputs.clone(),
-                    },
-                });
-                trace.push(IterRecord {
-                    iter,
-                    missing_path: selection.missing_path,
-                    kind: selection.kind,
-                    provider_added: selection.package,
-                    read_by: selection.read_by,
-                });
-                iter += 1;
-            }
-            EvalClass::UndefinedOption { path, file } => {
-                return Err(FixpointError::UndefinedOption { path, file });
-            }
-            EvalClass::Conflict { defs } => return Err(FixpointError::Conflict { defs }),
-            EvalClass::Assertion { msg, file } => {
-                return Err(FixpointError::AssertionFailed { msg, file });
-            }
-            EvalClass::Killed(reason) => return Err(FixpointError::EvalKilled { reason }),
-            EvalClass::Other { stderr } => return Err(FixpointError::EvalError { stderr }),
-        }
+        EvalClass::Conflict { defs } => Err(FixpointError::Conflict { defs }),
+        EvalClass::Assertion { msg, file } => Err(FixpointError::AssertionFailed { msg, file }),
+        EvalClass::Killed(reason) => Err(FixpointError::EvalKilled { reason }),
+        EvalClass::Other { stderr } => Err(FixpointError::EvalError { stderr }),
     }
 }
 
-/// Resolves and fetches every selected seed's config-only module before the
-/// first full evaluation.
+/// Resolves every selected seed's authenticated module before the first full evaluation.
 ///
 /// Seed package modules may define defaults and assertions without first
 /// triggering a missing-option error. Leaving those modules unloaded would
 /// therefore produce a false fixpoint. This preflight pins their registry
-/// identity, ABI-gates them, fetches the config output, and makes iteration
+/// identity, ABI-gates them, fetches the package module artifact, and makes iteration
 /// zero evaluate the complete selected module set.
-fn hydrate_seed_config_modules<R, F>(
+fn hydrate_seed_modules<R>(
     seeds: &mut [WorkingSetMember],
     resolver: &R,
-    fetcher: &F,
-    module_abi: u32,
 ) -> std::result::Result<(), FixpointError>
 where
-    R: ConfigModuleResolver,
-    F: ConfigOutputFetcher,
+    R: PackageModuleResolver,
 {
     for seed in seeds {
-        let Some(resolved) = resolver.config_module(&seed.package) else {
+        let Some(resolved) = resolver
+            .package_module_exact(
+                &seed.package,
+                seed.version.as_deref(),
+                seed.outputs.self_output.as_deref(),
+            )
+            .map_err(|source| FixpointError::Fetch {
+                provider: seed.package.clone(),
+                source,
+            })?
+        else {
             continue;
         };
-        seed.registry = (!resolved.registry.is_empty()).then(|| resolved.registry.to_string());
-        seed.release_trust = resolved.release_trust.cloned();
-        seed.config_realization = resolved.config_realization.clone();
-        seed.authorization = PackageAuthorization::from_module(resolved.module);
-        seed.outputs.self_output = Some(resolved.runtime_output.to_string());
-        seed.outputs.dependencies = resolved.module.dependency_outputs.clone();
-        if seed.config_output_nar_hash.is_none() {
-            seed.config_output_nar_hash = Some(resolved.module.config_output.nar_hash.clone());
-        }
-        if seed.config_output.is_some() {
-            continue;
-        }
-        enforce_module_abi_compat(
-            &[GatedConfigModule {
-                package: resolved.package,
-                version: resolved.version,
-                module_abi_compat: resolved.module.module_abi_compat,
-            }],
-            module_abi,
-        )
-        .map_err(|error| FixpointError::SeedAbiMismatch(format!("{error:#}")))?;
-        fetcher
-            .fetch_config_output(&SelectedProvider {
-                package: resolved.package,
-                version: resolved.version,
-                platform: resolved.platform,
-                config_output: &resolved.module.config_output.store_path,
-                nar_hash: &resolved.module.config_output.nar_hash,
-                nar_size: resolved.module.config_output.nar_size,
-            })
-            .map_err(|source| FixpointError::Fetch {
-                provider: resolved.package.to_string(),
-                source,
-            })?;
-        seed.version = Some(resolved.version.to_string());
-        seed.config_output = Some(resolved.module.config_output.store_path.clone());
-        seed.config_output_nar_hash = Some(resolved.module.config_output.nar_hash.clone());
-        seed.module_abi_compat = Some(resolved.module.module_abi_compat);
+        seed.registry = (!resolved.registry.is_empty()).then_some(resolved.registry);
+        seed.release_trust = resolved.release_trust;
+        seed.config_realization = resolved.realization;
+        seed.version = Some(resolved.version);
+        seed.outputs.self_output = Some(resolved.runtime_output);
+        seed.outputs.dependencies = resolved.selector_outputs;
+        seed.contract = Some(resolved.contract);
     }
     Ok(())
 }
@@ -866,269 +503,22 @@ fn assign_runtime_outputs(members: &mut [WorkingSetMember], runtime: &runtime::R
     for member in members {
         if let Some(package) = runtime.packages.get(&member.package) {
             member.outputs.self_output = Some(package.store_path.clone());
-            member.outputs.dependencies = package.config_dependency_outputs.clone();
-            for dependency in runtime.edges.get(&member.package).into_iter().flatten() {
-                if let Some(pin) = runtime.packages.get(dependency) {
-                    member
-                        .outputs
-                        .dependencies
-                        .entry(dependency.clone())
-                        .or_insert_with(|| pin.store_path.clone());
-                }
-            }
-        } else {
-            member.outputs.dependencies.clear();
         }
     }
 }
 
-/// Adds structurally named providers discovered by the conservative
-/// publish-time option-access scan before the first evaluation.
-fn preclose_config_requires<R>(seeds: &mut Vec<WorkingSetMember>, resolver: &R)
-where
-    R: ConfigModuleResolver,
-{
-    loop {
-        let installed_owners = seeds
-            .iter()
-            .filter_map(|seed| resolver.config_module(&seed.package))
-            .flat_map(|resolved| resolved.module.owns_roots.iter())
-            .map(|owned| owned.root.as_str())
-            .collect::<BTreeSet<_>>();
-        let existing = seeds
-            .iter()
-            .map(|seed| seed.package.as_str())
-            .collect::<BTreeSet<_>>();
-        let additions = seeds
-            .iter()
-            .filter_map(|seed| resolver.config_module(&seed.package))
-            .flat_map(|resolved| resolved.module.requires.iter())
-            .filter_map(|path| path.split('.').next())
-            .filter(|root| {
-                *root != "system"
-                    && !existing.contains(root)
-                    && !installed_owners.contains(root)
-                    && resolver.config_module(root).is_some()
-            })
-            .map(str::to_string)
-            .collect::<BTreeSet<_>>();
-        if additions.is_empty() {
-            return;
-        }
-        seeds.extend(additions.into_iter().map(WorkingSetMember::seed));
-    }
-}
-
-/// Gate every seed that carries config-module metadata (build-spec §6).
-fn gate_seeds(
-    seeds: &[WorkingSetMember],
-    image_abi: u32,
-) -> std::result::Result<(), FixpointError> {
-    let gates: Vec<GatedConfigModule<'_>> = seeds
-        .iter()
-        .filter_map(|m| {
-            m.module_abi_compat.map(|compat| GatedConfigModule {
-                package: m.package.as_str(),
-                version: m.version.as_deref().unwrap_or(""),
-                module_abi_compat: compat,
-            })
-        })
-        .collect();
-    enforce_module_abi_compat(&gates, image_abi)
-        .map_err(|e| FixpointError::SeedAbiMismatch(format!("{e:#}")))
-}
-
-/// Derive the iteration cap from local state, capped at the ceiling.
-///
-/// With the registry-wide index gone there is no closed provider universe to
-/// count, so the cap is derived from what is known locally: the seed set size
-/// plus the number of owned shared roots, plus [`ITER_CAP_SLACK`] headroom for
-/// providers discovered by absent-root reads. Each iteration fetches one new
-/// distinct package, so this bounds the loop in the same spirit as the old
-/// provider count. The result is clamped to [`ITER_CAP_CEILING`] so no local
-/// state can push the loop unbounded.
-fn derive_iter_cap(seed_len: usize, system_roots: &SystemRoots) -> u32 {
-    let base = seed_len.saturating_add(system_roots.len());
-    let count = u32::try_from(base).unwrap_or(ITER_CAP_CEILING);
-    count.saturating_add(ITER_CAP_SLACK).min(ITER_CAP_CEILING)
-}
-
-/// Loads image/base-lib shared-root ownership metadata.
-///
-/// Older base libraries legitimately omit `system-roots.json`; that is the
-/// only compatibility fallback. A present but malformed file is terminal so
-/// ownership cannot silently disappear after image corruption.
-fn load_bundled_roots(
-    base_lib: &Path,
-) -> std::result::Result<Vec<crate::types::OwnedRoot>, FixpointError> {
-    let path = base_lib.join("system-roots.json");
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => {
-            return Err(FixpointError::EvalError {
-                stderr: format!("reading bundled root metadata {}: {error}", path.display()),
-            });
-        }
-    };
-    serde_json::from_slice(&bytes).map_err(|error| FixpointError::EvalError {
-        stderr: format!("parsing bundled root metadata {}: {error}", path.display()),
-    })
-}
-
-/// A concrete provider choice the driver resolved from a missing-option signal.
-struct Selection {
-    package: String,
-    version: String,
-    platform: String,
-    config_output: String,
-    config_nar_hash: String,
-    config_nar_size: u64,
-    module_abi_compat: ModuleAbiCompat,
-    missing_path: String,
-    kind: MissingOptionKind,
-    read_by: Option<String>,
-}
-
-/// Pick the first missing option that resolves to a provider, recording the
-/// terminal error if none do (build-spec §2: "picks the first whose lookup
-/// resolves").
-fn select_first_resolvable<R: ConfigModuleResolver>(
-    missing: &[MissingOption],
-    system_roots: &SystemRoots,
-    resolver: &R,
-    abi: u32,
-) -> std::result::Result<Selection, FixpointError> {
-    let mut deferred: Option<FixpointError> = None;
-    for item in missing {
-        match resolve_one(item, system_roots, resolver, abi) {
-            Ok(selection) => return Ok(selection),
-            Err(err) => {
-                // Keep the most informative terminal error: an ABI mismatch
-                // outranks a plain "no provider", which is the fallback when
-                // nothing resolved.
-                if deferred
-                    .as_ref()
-                    .map(|d| matches!(d, FixpointError::NoProvider { .. }))
-                    .unwrap_or(true)
-                {
-                    deferred = Some(err);
-                }
-            }
-        }
-    }
-    Err(deferred.unwrap_or_else(|| FixpointError::NoProvider {
-        path: missing
-            .first()
-            .map(|m| option_path_root(&m.path).to_string())
-            .unwrap_or_default(),
-        read_by: missing.first().and_then(|m| m.read_by.clone()),
-    }))
-}
-
-/// Resolve a single missing option to a provider by its root (build-spec §4).
-///
-/// Both Case A (an undeclared write, whose `path` is a full leaf) and Case B (an
-/// absent-root read, whose `path` is the bare root) collapse to the same
-/// root-based dispatch; the full Case-A path is retained only for error text.
-/// The root is dispatched in order:
-///
-/// 1. **Shared root** — a [`SystemRoots`] hit selects the single owning package,
-///    ABI-gated by the owner's pinned `module_abi_compat`.
-/// 2. **Private root** — the structural fallback treats the root as a package
-///    name and resolves its config module by name through `resolver`, ABI-gated.
-/// 3. Neither — a terminal [`FixpointError::NoProvider`].
-///
-/// # Errors
-///
-/// Returns [`FixpointError::AbiMismatch`] when the owning/named package exists
-/// but its ABI band excludes `abi`, and [`FixpointError::NoProvider`] when no
-/// installed package owns the root and no package named the root exists in the
-/// registry.
-fn resolve_one<R: ConfigModuleResolver>(
-    item: &MissingOption,
-    system_roots: &SystemRoots,
-    resolver: &R,
-    abi: u32,
-) -> std::result::Result<Selection, FixpointError> {
-    let root = option_path_root(&item.path);
-
-    // 1. Shared root owned by an installed package (per-system ownership).
-    if let Some(owner) = system_roots.owner(root) {
-        if system_roots.is_bundled_root(root) {
-            return Err(FixpointError::NoProvider {
-                path: item.path.clone(),
-                read_by: item.read_by.clone(),
-            });
-        }
-        if !owner.module_abi_compat.admits(abi) {
-            return Err(FixpointError::AbiMismatch {
-                path: item.path.clone(),
-                want: abi,
-            });
-        }
-        return Ok(Selection {
-            package: owner.package.clone(),
-            version: owner.version.clone(),
-            platform: owner.platform.clone(),
-            config_output: owner.config_output.clone(),
-            config_nar_hash: owner.config_nar_hash.clone(),
-            config_nar_size: owner.config_nar_size,
-            module_abi_compat: owner.module_abi_compat,
-            missing_path: item.path.clone(),
-            kind: item.kind,
-            read_by: item.read_by.clone(),
-        });
-    }
-
-    if system_roots.is_known_shared_root(root) {
-        return Err(FixpointError::NoProvider {
-            path: item.path.clone(),
-            read_by: item.read_by.clone(),
-        });
-    }
-
-    // 2. Private root: the root segment IS the package name. Resolve it by name
-    //    from registry metadata and ABI-gate its config module.
-    if let Some(resolved) = resolver.config_module(root) {
-        if !resolved.module.module_abi_compat.admits(abi) {
-            return Err(FixpointError::AbiMismatch {
-                path: item.path.clone(),
-                want: abi,
-            });
-        }
-        return Ok(Selection {
-            package: resolved.package.to_string(),
-            version: resolved.version.to_string(),
-            platform: resolved.platform.to_string(),
-            config_output: resolved.module.config_output.store_path.clone(),
-            config_nar_hash: resolved.module.config_output.nar_hash.clone(),
-            config_nar_size: resolved.module.config_output.nar_size,
-            module_abi_compat: resolved.module.module_abi_compat,
-            missing_path: item.path.clone(),
-            kind: item.kind,
-            read_by: item.read_by.clone(),
-        });
-    }
-
-    // 3. Terminal: no owner and no package named the root.
-    Err(FixpointError::NoProvider {
-        path: root.to_string(),
-        read_by: item.read_by.clone(),
-    })
-}
-
-// ---------------------------------------------------------------------------
 // Private runtime driver (`aos-package-runtime __eval`)
 // ---------------------------------------------------------------------------
 
 /// Parameters for the on-host config-eval command.
 #[derive(Debug, Clone)]
 pub struct EvalCommand {
+    /// Selected immutable view of the running image's package store.
+    pub store_view: store_view::StoreViewLocator,
     /// The delivered leaf `host.nix` path.
     pub host_nix: PathBuf,
     /// Ordered runtime operator module entrypoints from one immutable set.
-    pub runtime_modules: Vec<PathBuf>,
+    pub runtime_modules: Vec<EvaluatorInput>,
     /// Immutable runtime source root, including when the ordered set is empty.
     pub runtime_module_root: Option<PathBuf>,
     /// Active generation sampled before evaluation for activation CAS.
@@ -1163,6 +553,9 @@ pub struct EvalCommand {
     /// platform-authored input.
     pub image_default_host: bool,
 
+    /// Binds provisioning evaluation to one protected synchronized authority.
+    pub(crate) registry_snapshot: Option<registry_snapshot_provider::SynchronizedSnapshot>,
+
     /// Require the delivered `host.nix` to carry a valid detached signature.
     /// The default trusts the deployment platform that supplied instance
     /// metadata. Signed mode is fail-closed when anchors or signatures are
@@ -1177,6 +570,43 @@ pub struct RetainedHostInputs {
     pub host_nix: materialize::HostNixInput,
     /// Exact retained instance-facts identity.
     pub instance_facts: materialize::InstanceFactsInput,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedEvaluatorInputs {
+    host_nix: EvaluatorInput,
+    runtime_modules: Vec<EvaluatorInput>,
+    base_lib: EvaluatorInput,
+    facts_json: Option<PathBuf>,
+}
+
+fn prepare_evaluator_inputs(cmd: &EvalCommand) -> Result<PreparedEvaluatorInputs> {
+    let host_nix = match &cmd.retained_host_inputs {
+        Some(retained) => EvaluatorInput::in_store_view(
+            PathBuf::from(&retained.host_nix.store_path),
+            &cmd.store_view,
+        )?,
+        None => EvaluatorInput::canonical(
+            add_fixed_eval_host_source(&cmd.host_nix, &cmd.eval_root)
+                .context("pinning authorized host.nix before pure evaluation")?,
+        ),
+    };
+    let base_lib = EvaluatorInput::in_store_view(cmd.base_lib.clone(), &cmd.store_view)?;
+    let runtime_modules = cmd.runtime_modules.clone();
+    let facts_json = match (&cmd.retained_host_inputs, &cmd.facts_json) {
+        (Some(retained), Some(_)) => Some(
+            cmd.store_view
+                .read_path(Path::new(&retained.instance_facts.store_path))?,
+        ),
+        (_, path) => path.clone(),
+    };
+
+    Ok(PreparedEvaluatorInputs {
+        host_nix,
+        runtime_modules,
+        base_lib,
+        facts_json,
+    })
 }
 
 fn enforce_host_nix_trust_policy(cmd: &EvalCommand) -> Result<()> {
@@ -1220,7 +650,7 @@ fn enforce_host_nix_trust_policy(cmd: &EvalCommand) -> Result<()> {
 
 /// Runs the on-host fixpoint with the production stock Nix evaluator and fetcher.
 ///
-/// Loads the on-host registries (as the by-name [`ConfigModuleResolver`]) and
+/// Loads the on-host registries (as the by-name [`PackageModuleResolver`]) and
 /// seed set from disk, drives [`run_fixpoint`], and — **only on convergence** —
 /// writes the manifest to [`EvalCommand::out`]. Any terminal failure prints a
 /// legible diagnostic and returns an error *without* writing a manifest, so the
@@ -1253,8 +683,12 @@ pub fn run_eval_command(cmd: &EvalCommand) -> Result<()> {
 /// Returns the same failures as [`run_eval_command`]. No report or manifest is
 /// produced unless the fixpoint converges and the manifest is validated.
 pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalCommandReport> {
+    cmd.store_view
+        .validate()
+        .context("validating the selected package-store read view")?;
+
     // A failed re-evaluation must never leave an older manifest looking like
-    // fresh output to ConditionPathExists or the graph compiler.
+    // fresh output to ConditionPathExists or checked activation preflight.
     remove_if_present(&cmd.out)?;
     let graph_out = cmd.out.with_file_name("graph.json");
     remove_if_present(&graph_out)?;
@@ -1265,47 +699,40 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     // runs before the fixpoint so failures cannot emit a manifest.
     enforce_host_nix_trust_policy(cmd)?;
 
-    // Pure Nix evaluation may import only immutable store inputs. Metadata is
-    // delivered under /run, so pin the already-authorized bytes as a closed
-    // source directory before either the package-selection projection or the
-    // complete option fixpoint sees them. The cloned command also makes every
-    // later manifest identity refer to the exact bytes evaluated, rather than
-    // reopening a mutable path.
-    let mut pinned_cmd = cmd.clone();
-    pinned_cmd.host_nix = add_fixed_eval_host_source(&cmd.host_nix, &cmd.eval_root)
-        .context("pinning authorized host.nix before pure evaluation")?;
-    let cmd = &pinned_cmd;
+    // Direct reads use the selected immutable view while Nix operations retain
+    // canonical store identities. Keeping both paths explicit prevents a
+    // physical boot-store alias from becoming a second package identity.
+    let prepared = prepare_evaluator_inputs(cmd)?;
 
     // The by-name config-module resolver is the on-host registry set: it reads
-    // each package's `config_module` block from `registry.toml`. This replaces
+    // each package's authenticated package module. This replaces
     // the removed registry-wide provides index. When apm config is
     // unavailable or corrupt, fail closed before selecting or fetching any
     // package. Off-host callers inject an explicit resolver instead.
-    let resolver = stock::RegistryConfigModules::load_system()
+    let resolver = stock::RegistryPackageModules::load_system(&cmd.store_view)
         .context("loading authenticated system registry snapshot for config evaluation")?;
+    if let Some(snapshot) = &cmd.registry_snapshot {
+        validate_registry_authority(&resolver, snapshot, &cmd.store_view)?;
+    }
 
-    let mut seed_set = load_host_selection(cmd)?;
-    for legacy_seed in load_seed_set(cmd.desired.as_deref())? {
+    let mut seed_set = load_host_selection(cmd, &prepared)?;
+    for desired_package in load_desired_packages(cmd.desired.as_deref())? {
         if !seed_set
             .iter()
-            .any(|member| member.package == legacy_seed.package)
+            .any(|member| member.package == desired_package.package)
         {
-            seed_set.push(legacy_seed);
+            seed_set.push(desired_package);
         }
     }
 
-    let evaluator = stock::StockNixEvaluator::new(cmd.eval_root.clone(), cmd.verbose);
-    let fetcher = stock::SubstituterFetcher::new(
+    let evaluator = stock::StockNixEvaluator::in_store_view(
+        cmd.eval_root.clone(),
         cmd.verbose,
-        resolver.registries(),
-        crate::types::ProfileScope::System,
-        cmd.eval_root.join("nix-cache"),
+        cmd.store_view.clone(),
     );
-
     // Resolve the selected names before evaluation. This both pins the exact
     // runtime outputs and adds signed package-level dependencies (`requires`
     // and capability providers) to the module working set.
-    preclose_config_requires(&mut seed_set, &resolver);
     let initially_selected: Vec<String> = seed_set
         .iter()
         .map(|member| member.package.clone())
@@ -1314,6 +741,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         resolver.registries(),
         resolver.image_packages(),
         &initially_selected,
+        &cmd.store_view,
     )
     .context("resolving selected runtime package closures")?;
     for package in runtime.packages.keys() {
@@ -1321,9 +749,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             seed_set.push(WorkingSetMember::seed(package.clone()));
         }
     }
-    preclose_config_requires(&mut seed_set, &resolver);
-    hydrate_seed_config_modules(&mut seed_set, &resolver, &fetcher, cmd.module_abi)
-        .map_err(eval_command_failure)?;
+    hydrate_seed_modules(&mut seed_set, &resolver).map_err(eval_command_failure)?;
     assign_runtime_outputs(&mut seed_set, &runtime);
 
     // A config provider discovered by the inner option fixpoint can itself
@@ -1339,16 +765,13 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             }));
         }
         let inputs = FixpointInputs {
-            host_nix: cmd.host_nix.clone(),
-            runtime_modules: cmd.runtime_modules.clone(),
-            base_lib: cmd.base_lib.clone(),
-            facts_json: cmd.facts_json.clone().filter(|path| path.is_file()),
+            host_nix: prepared.host_nix.clone(),
+            runtime_modules: prepared.runtime_modules.clone(),
+            base_lib: prepared.base_lib.clone(),
+            facts_json: prepared.facts_json.clone().filter(|path| path.is_file()),
             seed_set,
-            module_abi: cmd.module_abi,
-            iter_cap: None,
         };
-        let candidate =
-            run_fixpoint(&inputs, &resolver, &evaluator, &fetcher).map_err(eval_command_failure)?;
+        let candidate = run_fixpoint(&inputs, &evaluator).map_err(eval_command_failure)?;
         let selected: Vec<String> = candidate
             .working_set
             .iter()
@@ -1360,6 +783,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             resolver.registries(),
             resolver.image_packages(),
             &selected,
+            &cmd.store_view,
         )
         .context("resolving converged runtime package closures")?;
         let mut next = candidate.working_set.clone();
@@ -1372,14 +796,12 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         if next == candidate.working_set {
             break candidate;
         }
-        preclose_config_requires(&mut next, &resolver);
-        hydrate_seed_config_modules(&mut next, &resolver, &fetcher, cmd.module_abi)
-            .map_err(eval_command_failure)?;
+        hydrate_seed_modules(&mut next, &resolver).map_err(eval_command_failure)?;
         seed_set = next;
         outer_iterations += 1;
     };
 
-    let manifest = enrich_manifest(cmd, &outcome, &runtime)?;
+    let manifest = enrich_manifest(cmd, &prepared, &outcome, &runtime)?;
     if let Some(parent) = cmd.out.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
@@ -1399,6 +821,42 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     Ok(EvalCommandReport {
         resolution_trace: outcome.trace.iter().map(render_iter_record).collect(),
     })
+}
+
+fn validate_registry_authority(
+    resolver: &stock::RegistryPackageModules,
+    snapshot: &registry_snapshot_provider::SynchronizedSnapshot,
+    store_view: &store_view::StoreViewLocator,
+) -> Result<()> {
+    registry_snapshot_provider::validate_synchronized_snapshot(snapshot)?;
+    let releases = resolver
+        .registries()
+        .registries()
+        .iter()
+        .map(|registry| {
+            let receipt = registry
+                .release_trust()
+                .context("configuration registry has no authenticated release receipt")?;
+            Ok(registry_snapshot_provider::ReleaseIdentity {
+                registry: receipt.registry.clone(),
+                release_tag: receipt.release_tag.clone(),
+                commit: receipt.commit.clone(),
+                tag_signer_key: receipt.tag_signer_key.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let releases = registry_snapshot_provider::canonical_releases(releases)?;
+    anyhow::ensure!(
+        releases == snapshot.releases,
+        "configuration registry authority differs from the synchronized snapshot"
+    );
+    let (static_contract, _) = static_packages::checked_host_selection(store_view)
+        .context("revalidating the synchronized immutable package contract")?;
+    anyhow::ensure!(
+        static_contract == snapshot.static_contract,
+        "immutable package authority differs from the synchronized snapshot"
+    );
+    Ok(())
 }
 
 /// Renders one provider-discovery step for the dry-run JSON contract.
@@ -1460,10 +918,10 @@ fn read_base_lib_abi_hash(base_lib: &Path, expected_abi: u32) -> Result<String> 
     if !schema.is_array() {
         anyhow::bail!("base library option-schema.json is not an array");
     }
-    let expected_hash = crate::graph_compile::reproject::hash_cjson(&serde_json::json!({
+    let expected_hash = crate::canonical_json_digest(&serde_json::json!({
         "abi": recorded_abi,
         "schema": schema,
-    }));
+    }))?;
     if abi_hash != expected_hash {
         anyhow::bail!(
             "base library {} ABI hash does not match its module ABI and option schema",
@@ -1510,95 +968,41 @@ fn evaluator_store_root(executable: &Path) -> Result<&Path> {
         })
 }
 
-/// Hashes the authenticated config-output set independently of evaluator order.
-fn config_module_closure_hash(store_paths: &[String], nar_hashes: &[String]) -> Result<String> {
-    if store_paths.len() != nar_hashes.len() {
-        anyhow::bail!("config module store-path and NAR-hash counts differ");
-    }
-    let mut members = store_paths
-        .iter()
-        .zip(nar_hashes)
-        .map(|(path, nar_hash)| serde_json::json!([path, nar_hash]))
-        .collect::<Vec<_>>();
-    members.sort_by(|left, right| {
-        left[0]
-            .as_str()
-            .unwrap_or_default()
-            .cmp(right[0].as_str().unwrap_or_default())
-    });
-    Ok(crate::graph_compile::reproject::hash_cjson(
-        &serde_json::Value::Array(members),
-    ))
-}
-
-fn config_module_inputs(
+/// Hashes the authenticated package-module-artifact set independently of evaluator order.
+fn package_module_inputs(
     working_set: &[WorkingSetMember],
-) -> Result<(
-    Vec<String>,
-    Vec<String>,
-    Vec<String>,
-    Vec<ModuleAbiCompat>,
-    Vec<PackageAuthorization>,
-    Vec<String>,
-)> {
-    let mut seen = BTreeMap::<String, String>::new();
-    let mut paths = Vec::new();
-    let mut nar_hashes = Vec::new();
-    let mut packages = Vec::new();
-    let mut abi_compat = Vec::new();
-    let mut authorizations = Vec::new();
-    let mut origins = Vec::new();
+) -> Result<Vec<crate::types::PackageModule>> {
+    let mut modules = Vec::new();
     for member in working_set {
-        let Some(path) = member.config_output.as_deref() else {
+        let Some(contract) = member.contract.as_ref() else {
             continue;
         };
-        if let Some(existing_package) = seen.get(path) {
-            if existing_package != &member.package {
-                anyhow::bail!(
-                    "config output {path} is authenticated for both package identities {} and {}; shared config-output identity is forbidden",
-                    existing_package,
-                    member.package
-                );
-            }
+        let document = &contract.document;
+        let Some(locator) = document.package_module.as_ref() else {
             continue;
-        }
-        seen.insert(path.to_string(), member.package.clone());
-        let compat = member.module_abi_compat.with_context(|| {
-            format!(
-                "config module {} at {path} has no authenticated module_abi_compat",
-                member.package
-            )
-        })?;
-        let nar_hash = member.config_output_nar_hash.as_deref().with_context(|| {
-            format!(
-                "config module {} at {path} has no authenticated NAR hash",
-                member.package
-            )
-        })?;
-        let canonical_nar_hash =
-            crate::registry::store::NarBytes::from_hash(nar_hash, 0)?.nar_hash();
-        paths.push(path.to_string());
-        nar_hashes.push(canonical_nar_hash);
-        packages.push(member.package.clone());
-        abi_compat.push(compat);
-        authorizations.push(member.authorization.clone());
-        origins.push(if member.registry.is_some() {
-            "registry".to_string()
-        } else {
-            "image".to_string()
+        };
+        anyhow::ensure!(
+            document.package.name.as_str() == member.package,
+            "package document subject disagrees with working-set identity"
+        );
+        modules.push(crate::types::PackageModule {
+            package: member.package.clone(),
+            document_digest: document.content_digest()?.to_string(),
+            store_path: locator.artifact.store_path.clone(),
+            nar_hash: locator.artifact.nar_hash.to_string(),
+            entrypoint: locator.path.as_str().to_string(),
+            origin: if member.registry.is_some() {
+                crate::types::PackageModuleOrigin::Registry
+            } else {
+                crate::types::PackageModuleOrigin::Image
+            },
         });
     }
-    Ok((
-        paths,
-        nar_hashes,
-        packages,
-        abi_compat,
-        authorizations,
-        origins,
-    ))
+    modules.sort_by(|left, right| left.package.cmp(&right.package));
+    Ok(modules)
 }
 
-fn config_module_release_identity(
+fn package_module_release_identity(
     working_set: &[WorkingSetMember],
 ) -> Result<(
     Option<String>,
@@ -1608,7 +1012,13 @@ fn config_module_release_identity(
 )> {
     let modules = working_set
         .iter()
-        .filter(|member| member.config_output.is_some() && member.registry.is_some())
+        .filter(|member| {
+            member
+                .contract
+                .as_ref()
+                .is_some_and(|contract| contract.document.package_module.is_some())
+                && member.registry.is_some()
+        })
         .collect::<Vec<_>>();
     if modules.is_empty() {
         return Ok((None, None, None, None));
@@ -1617,36 +1027,33 @@ fn config_module_release_identity(
     let registry = first
         .registry
         .as_deref()
-        .context("config module has no authenticated source registry")?;
+        .context("package module has no authenticated source registry")?;
     let receipt = first
         .release_trust
         .as_ref()
-        .context("config module registry has no verified signed-release receipt")?;
+        .context("package module registry has no verified signed-release receipt")?;
     if receipt.registry != registry {
-        anyhow::bail!("config module registry disagrees with its signed-release receipt");
+        anyhow::bail!("package module registry disagrees with its signed-release receipt");
     }
     let mut realization_members = Vec::with_capacity(modules.len());
     for member in modules {
         let member_registry = member
             .registry
             .as_deref()
-            .context("config module has no authenticated source registry")?;
+            .context("package module has no authenticated source registry")?;
         let member_receipt = member
             .release_trust
             .as_ref()
-            .context("config module registry has no verified signed-release receipt")?;
+            .context("package module registry has no verified signed-release receipt")?;
         if member_registry != registry || member_receipt != receipt {
             anyhow::bail!("one configuration generation cannot mix signed registry releases");
         }
         realization_members.push(serde_json::json!([
-            member
-                .config_output
-                .as_deref()
-                .context("config module output disappeared")?,
+            member.package,
             member
                 .config_realization
                 .as_deref()
-                .context("config module has no authenticated store realization")?,
+                .context("package module has no authenticated store realization")?,
         ]));
     }
     realization_members.sort_by(|left, right| {
@@ -1655,8 +1062,7 @@ fn config_module_release_identity(
             .unwrap_or_default()
             .cmp(right[0].as_str().unwrap_or_default())
     });
-    let realization =
-        crate::graph_compile::reproject::hash_cjson(&serde_json::Value::Array(realization_members));
+    let realization = crate::canonical_json_digest(&serde_json::Value::Array(realization_members))?;
     Ok((
         Some(registry.to_string()),
         Some(receipt.release_tag.clone()),
@@ -1667,6 +1073,7 @@ fn config_module_release_identity(
 
 fn enrich_manifest(
     cmd: &EvalCommand,
+    prepared: &PreparedEvaluatorInputs,
     outcome: &FixpointOutcome,
     runtime: &runtime::RuntimeResolution,
 ) -> Result<materialize::ConfigManifest> {
@@ -1675,40 +1082,46 @@ fn enrich_manifest(
     let object = raw
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("evaluated config manifest is not an object"))?;
+    let ability_activation = object
+        .get_mut("inputs")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|inputs| inputs.remove("ability_activation"));
 
     enrich_runtime_projection(object, runtime)?;
+    let ability_activation =
+        enrich_ability_activation(ability_activation, runtime, &cmd.store_view)?;
+    if let Some(activation) = &ability_activation {
+        retain_ability_sidecar_roots(object, activation)?;
+    }
 
-    let host_bytes = std::fs::read(&cmd.host_nix)
-        .with_context(|| format!("reading host input {}", cmd.host_nix.display()))?;
+    let host_bytes = std::fs::read(&prepared.host_nix.read_path).with_context(|| {
+        format!(
+            "reading host input {}",
+            prepared.host_nix.read_path.display()
+        )
+    })?;
     let evaluator = std::env::current_exe().context("resolving evaluator executable")?;
     let evaluator_store_path = evaluator_store_root(&evaluator)?;
-    let (
-        config_outputs,
-        config_nar_hashes,
-        config_packages,
-        config_abi_compat,
-        config_authorizations,
-        config_origins,
-    ) = config_module_inputs(&outcome.working_set)?;
+    let package_modules = package_module_inputs(&outcome.working_set)?;
 
     let (facts, retained_facts_bytes, facts_input_path) =
-        match cmd.facts_json.as_deref().filter(|path| path.is_file()) {
+        match prepared.facts_json.as_deref().filter(|path| path.is_file()) {
             Some(path) => {
                 let bytes = std::fs::read(path)
                     .with_context(|| format!("reading facts {}", path.display()))?;
-                let facts = serde_json::from_slice::<crate::metadata::fetcher::Facts>(&bytes)
+                let facts = serde_json::from_slice::<aos_metadata::fetcher::Facts>(&bytes)
                     .with_context(|| format!("parsing facts {}", path.display()))?;
                 (facts, bytes, Some(path))
             }
             None => {
-                let facts = crate::metadata::fetcher::Facts::default();
+                let facts = aos_metadata::fetcher::Facts::default();
                 let bytes =
                     serde_json::to_vec(&facts).context("serializing default instance facts")?;
                 (facts, bytes, None)
             }
         };
 
-    let normalized_facts = crate::metadata::facts_render::normalize_host_facts(&facts);
+    let normalized_facts = aos_metadata::facts_render::normalize_host_facts(&facts);
     let facts_identity = serde_json::to_vec(&normalized_facts)?;
     let retained_facts = cmd.eval_root.join("instance-facts.json");
     std::fs::create_dir_all(&cmd.eval_root)
@@ -1718,52 +1131,43 @@ fn enrich_manifest(
     // Reuse an already immutable facts input instead of asking Nix to import an
     // identical copy. Besides avoiding needless store traffic on-host, this
     // keeps hermetic preflight checks independent of a writable Nix state dir.
-    let facts_store_source = facts_input_path
-        .filter(|path| path.starts_with("/nix/store"))
-        .unwrap_or(&retained_facts);
-    let facts_store_path = add_fixed_input_to_store(facts_store_source)?;
+    let facts_store_path = match &cmd.retained_host_inputs {
+        Some(retained) => PathBuf::from(&retained.instance_facts.store_path),
+        None => {
+            let facts_store_source = facts_input_path
+                .filter(|path| path.starts_with("/nix/store"))
+                .unwrap_or(&retained_facts);
+            add_fixed_input_to_store(facts_store_source)?
+        }
+    };
 
-    let provisioning = cmd
-        .facts_json
-        .as_deref()
-        .and_then(Path::parent)
-        .map(|parent| parent.join(".provisioning-result.json"))
-        .filter(|path| path.is_file())
-        .map(|path| {
-            let bytes = std::fs::read(&path)
-                .with_context(|| format!("reading provisioning result {}", path.display()))?;
-            serde_json::from_slice::<crate::metadata::provisioning::ProvisioningResult>(&bytes)
-                .with_context(|| format!("parsing provisioning result {}", path.display()))
-        })
-        .transpose()?;
     let (platform, trust_mode, signer_key) = if cmd.image_default_host {
         ("image".to_string(), "image".to_string(), None)
     } else {
-        let platform = provisioning.as_ref().map_or_else(
-            || "unknown".to_string(),
-            |record| record.platform_id.clone(),
-        );
-        let trust_mode = provisioning.as_ref().map_or_else(
-            || {
-                if cmd.require_signed_host_nix {
-                    "signed".to_string()
-                } else {
-                    "platform".to_string()
-                }
-            },
-            |record| record.trust_mode.as_str().to_string(),
-        );
-        let signer_key = provisioning.and_then(|record| record.signer);
-        (platform, trust_mode, signer_key)
+        let trust_mode = if cmd.require_signed_host_nix {
+            "signed"
+        } else {
+            "platform"
+        };
+        ("unknown".to_string(), trust_mode.to_string(), None)
     };
-    let base_abi_hash = read_base_lib_abi_hash(&cmd.base_lib, cmd.module_abi)?;
+    let base_abi_hash = read_base_lib_abi_hash(&prepared.base_lib.read_path, cmd.module_abi)?;
     let evaluator_store_hash = evaluator_store_hash(&evaluator)?;
-    let config_closure_hash = config_module_closure_hash(&config_outputs, &config_nar_hashes)?;
     let (config_registry, config_release_tag, config_tag_signer_key, config_realization) =
-        config_module_release_identity(&outcome.working_set)?;
-    let host_store_path = add_fixed_input_to_store(&cmd.host_nix)?;
-    let runtime_modules =
-        runtime_module_manifest_input(&cmd.runtime_modules, cmd.runtime_module_root.as_deref())?;
+        package_module_release_identity(&outcome.working_set)?;
+    let host_store_path = match &cmd.retained_host_inputs {
+        Some(retained) => PathBuf::from(&retained.host_nix.store_path),
+        None => add_fixed_input_to_store(&prepared.host_nix.read_path)?,
+    };
+    let runtime_module_identities = cmd
+        .runtime_modules
+        .iter()
+        .map(|input| input.identity.clone())
+        .collect::<Vec<_>>();
+    let runtime_modules = runtime_module_manifest_input(
+        &runtime_module_identities,
+        cmd.runtime_module_root.as_deref(),
+    )?;
 
     let computed_host_hash = sha256_identity(&host_bytes);
     let computed_facts_hash = sha256_identity(&facts_identity);
@@ -1796,13 +1200,6 @@ fn enrich_manifest(
         )
     };
 
-    if runtime_modules.is_some() {
-        object.insert(
-            "schema".into(),
-            serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V2.to_string()),
-        );
-    }
-
     let mut inputs = serde_json::json!({
         "base_lib": {
             "store_path": cmd.base_lib,
@@ -1813,30 +1210,32 @@ fn enrich_manifest(
             "store_path": evaluator_store_path,
             "store_hash": evaluator_store_hash,
         },
-        "config_modules": {
+        "package_modules": {
             "registry": config_registry,
             "release_tag": config_release_tag,
             "tag_signer_key": config_tag_signer_key,
             "realization": config_realization,
-            "closure_hash": config_closure_hash,
-            "count": config_outputs.len(),
-            "store_paths": config_outputs,
-            "nar_hashes": config_nar_hashes,
-            "package_names": config_packages,
-            "origins": config_origins,
-            "module_abi_compat": config_abi_compat,
-            "authorizations": config_authorizations,
+            "modules": package_modules,
         },
         "host_nix": host_input,
         "instance_facts": facts_input,
+        "store_view": cmd.store_view,
     });
     if let Some(runtime_modules) = runtime_modules {
         inputs
             .as_object_mut()
             .context("manifest inputs did not serialize as an object")?
             .insert("runtime_modules".into(), runtime_modules);
+    }
+    if let Some(ability_activation) = ability_activation {
+        inputs
+            .as_object_mut()
+            .context("manifest inputs did not serialize as an object")?
+            .insert("ability_activation".into(), ability_activation);
+    }
+    if inputs.get("runtime_modules").is_some() || inputs.get("ability_activation").is_some() {
         let expected = cmd.expected_current_generation.context(
-            "runtime-module evaluation requires a caller-supplied active generation snapshot",
+            "transactional evaluation requires a caller-supplied active generation snapshot",
         )?;
         inputs
             .as_object_mut()
@@ -1851,6 +1250,95 @@ fn enrich_manifest(
         serde_json::from_value(raw).context("validating config manifest structure")?;
     manifest.validate()?;
     Ok(manifest)
+}
+
+fn enrich_ability_activation(
+    input: Option<serde_json::Value>,
+    runtime: &runtime::RuntimeResolution,
+    store_view: &store_view::StoreViewLocator,
+) -> Result<Option<serde_json::Value>> {
+    let requires_effect_activation =
+        runtime
+            .packages
+            .iter()
+            .try_fold(false, |required, (name, package)| -> Result<bool> {
+                let Some(contract) = &package.contract else {
+                    return Ok(required);
+                };
+                let resolved = static_packages::resolve(
+                    name,
+                    &package.version,
+                    &package.platform,
+                    &package.store_path,
+                    &package.nar_hash,
+                    contract,
+                    store_view,
+                )?;
+                Ok(required
+                    || resolved.document.required_features.iter().any(|feature| {
+                        feature.as_str() == aos_ability_model::FEATURE_ABILITY_EFFECTS_V1
+                    }))
+            })?;
+    if requires_effect_activation && input.is_none() {
+        anyhow::bail!("effect-bearing package selection requires an ability_activation input");
+    }
+    let Some(mut input) = input else {
+        return Ok(None);
+    };
+    let object = input
+        .as_object_mut()
+        .context("manifest inputs.ability_activation must be an object")?;
+    object.insert(
+        "schema".to_string(),
+        serde_json::Value::String(materialize::AbilityActivationInput::SCHEMA.to_string()),
+    );
+    Ok(Some(input))
+}
+
+fn retain_ability_sidecar_roots(
+    manifest: &mut serde_json::Map<String, serde_json::Value>,
+    activation: &serde_json::Value,
+) -> Result<()> {
+    let sidecar_paths = ["desired_state", "authenticated_policy_set"]
+        .into_iter()
+        .map(|field| {
+            activation
+                .get(field)
+                .and_then(|sidecar| sidecar.get("store_path"))
+                .and_then(serde_json::Value::as_str)
+                .with_context(|| format!("ability_activation.{field}.store_path is missing"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let store_paths = manifest
+        .get_mut("storePaths")
+        .and_then(serde_json::Value::as_array_mut)
+        .context("evaluated manifest storePaths is not an array")?;
+    for path in &sidecar_paths {
+        store_paths.push(serde_json::Value::String((*path).to_string()));
+    }
+    store_paths.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+    store_paths.dedup();
+
+    let owners = manifest
+        .get_mut("ownership")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|ownership| ownership.get_mut("storePaths"))
+        .and_then(serde_json::Value::as_object_mut)
+        .context("evaluated manifest ownership.storePaths is not an object")?;
+    for path in sidecar_paths {
+        match owners.get(path).and_then(serde_json::Value::as_str) {
+            Some("@host") | None => {
+                owners.insert(
+                    path.to_string(),
+                    serde_json::Value::String("@host".to_string()),
+                );
+            }
+            Some(owner) => anyhow::bail!(
+                "ability activation sidecar {path} conflicts with store owner {owner:?}"
+            ),
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn current_config_generation_number(state_path: &Path) -> Result<u32> {
@@ -1938,11 +1426,6 @@ fn enrich_runtime_projection(
     object
         .entry("config")
         .or_insert_with(|| serde_json::json!({}));
-    object
-        .entry("credentials")
-        .or_insert_with(|| serde_json::json!({}));
-    enrich_expose_config_projections(object, runtime)?;
-    enrich_exposed_units(object, runtime)?;
     let packages: Vec<String> = runtime.packages.keys().cloned().collect();
     object.insert("packages".into(), serde_json::to_value(&packages)?);
     object.insert(
@@ -1967,12 +1450,6 @@ fn enrich_runtime_projection(
             .values()
             .map(|package| package.store_path.clone()),
     );
-    store_paths.extend(runtime.packages.values().filter_map(|package| {
-        package
-            .expose_artifact
-            .as_ref()
-            .map(|artifact| artifact.store_path.clone())
-    }));
     let etc_store_owners = {
         let etc = object
             .get("etc")
@@ -2019,13 +1496,7 @@ fn enrich_runtime_projection(
         .context("manifest ownership.storePaths must be an object")?;
 
     for (name, package) in &runtime.packages {
-        let package_paths = std::iter::once(package.store_path.as_str()).chain(
-            package
-                .expose_artifact
-                .as_ref()
-                .map(|artifact| artifact.store_path.as_str()),
-        );
-        for package_path in package_paths {
+        for package_path in [package.store_path.as_str()] {
             if let Some(existing) = owned.get(package_path) {
                 let existing = existing.as_str().with_context(|| {
                     format!("manifest ownership.storePaths.{package_path} must be a string")
@@ -2047,9 +1518,6 @@ fn enrich_runtime_projection(
                     }
                 }
             }
-            // A bundled expose artifact can remain image-owned. Its unit links
-            // are immutable and the package-owned enablement edge below is
-            // what makes selecting or removing the package operational.
             owned
                 .entry(package_path.to_string())
                 .or_insert_with(|| serde_json::Value::String(name.clone()));
@@ -2091,256 +1559,6 @@ fn enrich_runtime_projection(
         }
     }
     Ok(())
-}
-
-/// Projects authenticated package units and their atomic enablement edge.
-fn enrich_exposed_units(
-    object: &mut serde_json::Map<String, serde_json::Value>,
-    runtime: &runtime::RuntimeResolution,
-) -> Result<()> {
-    let existing_store_owners = object
-        .get("ownership")
-        .and_then(serde_json::Value::as_object)
-        .and_then(|ownership| ownership.get("storePaths"))
-        .and_then(serde_json::Value::as_object)
-        .context("manifest ownership.storePaths must be an object")?;
-    let existing_etc_owners = object
-        .get("ownership")
-        .and_then(serde_json::Value::as_object)
-        .and_then(|ownership| ownership.get("etc"))
-        .and_then(serde_json::Value::as_object)
-        .context("manifest ownership.etc must be an object")?
-        .clone();
-    let mut entries = Vec::new();
-    let mut package_presets = Vec::new();
-    for (package, pin) in &runtime.packages {
-        match (&pin.expose, &pin.expose_artifact) {
-            (None, None) => continue,
-            (Some(expose), Some(artifact)) => {
-                crate::types::validate_expose_meta_for_package(package, expose)
-                    .with_context(|| format!("validating runtime expose metadata for {package}"))?;
-                crate::types::validate_expose_artifact_meta(artifact)
-                    .with_context(|| format!("validating runtime expose artifact for {package}"))?;
-                let unit_owner = existing_store_owners
-                    .get(&artifact.store_path)
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|owner| *owner == "@base")
-                    .unwrap_or(package);
-                for unit in &expose.units {
-                    entries.push((
-                        format!("systemd/system/{unit}"),
-                        serde_json::json!({
-                            "kind": "store-symlink",
-                            "target": format!("{}/units/{unit}", artifact.store_path),
-                        }),
-                        unit_owner.to_string(),
-                        package.clone(),
-                    ));
-                }
-                entries.push((
-                    format!("systemd/system/multi-user.target.wants/{}", expose.target),
-                    serde_json::json!({"kind": "symlink", "target": format!("../{}", expose.target)}),
-                    package.clone(),
-                    package.clone(),
-                ));
-                entries.push((
-                    format!("systemd/system-preset/30-aos-config-{package}.preset"),
-                    serde_json::json!({
-                        "kind": "text",
-                        "text": format!("enable {}\n", expose.target),
-                        "mode": "0644",
-                    }),
-                    package.clone(),
-                    package.clone(),
-                ));
-                package_presets.push((expose.target.clone(), package.clone()));
-            }
-            _ => anyhow::bail!(
-                "runtime package {package:?} must carry expose metadata and its artifact together"
-            ),
-        }
-    }
-
-    let etc = object
-        .get_mut("etc")
-        .and_then(serde_json::Value::as_object_mut)
-        .context("manifest etc must be an object")?;
-    let mut newly_owned = Vec::new();
-    for (path, entry, owner, package) in entries {
-        if let Some(existing) = etc.get(&path) {
-            if existing == &entry {
-                continue;
-            }
-            if existing_etc_owners
-                .get(&path)
-                .and_then(serde_json::Value::as_str)
-                == Some("@base")
-            {
-                etc.insert(path.clone(), entry);
-                newly_owned.push((path, owner));
-            } else {
-                anyhow::bail!(
-                    "runtime package {package:?} unit projection conflicts with existing /etc/{path}"
-                );
-            }
-        } else {
-            etc.insert(path.clone(), entry);
-            newly_owned.push((path, owner));
-        }
-    }
-    let owned = object
-        .get_mut("ownership")
-        .and_then(serde_json::Value::as_object_mut)
-        .and_then(|ownership| ownership.get_mut("etc"))
-        .and_then(serde_json::Value::as_object_mut)
-        .context("manifest ownership.etc must be an object")?;
-    for (path, package) in newly_owned {
-        owned.insert(path, serde_json::Value::String(package));
-    }
-
-    let presets = object
-        .get_mut("presets")
-        .and_then(serde_json::Value::as_array_mut)
-        .context("manifest presets must be an array")?;
-    for (target, package) in &package_presets {
-        let record = serde_json::json!({
-            "unit": target,
-            "policy": "enable",
-            "source": package,
-        });
-        if presets.contains(&record) {
-            anyhow::bail!("manifest already contains runtime preset for package {package:?}");
-        }
-        presets.push(record);
-    }
-    let preset_owners = object
-        .get_mut("ownership")
-        .and_then(serde_json::Value::as_object_mut)
-        .and_then(|ownership| ownership.get_mut("presets"))
-        .and_then(serde_json::Value::as_object_mut)
-        .context("manifest ownership.presets must be an object")?;
-    for (target, package) in package_presets {
-        let key = format!("{target}:{package}");
-        if preset_owners
-            .insert(key, serde_json::Value::String(package.clone()))
-            .is_some()
-        {
-            anyhow::bail!("manifest preset ownership collides for package {package:?}");
-        }
-    }
-    Ok(())
-}
-
-fn enrich_expose_config_projections(
-    object: &mut serde_json::Map<String, serde_json::Value>,
-    runtime: &runtime::RuntimeResolution,
-) -> Result<()> {
-    let bindings = object
-        .remove("configProjectionBindings")
-        .unwrap_or_else(|| serde_json::json!({}));
-    let bindings = bindings
-        .as_object()
-        .context("evaluated configProjectionBindings must be an object")?;
-    let expected = runtime
-        .packages
-        .iter()
-        .filter_map(|(package, pin)| pin.config_projection.as_ref().map(|_| package.as_str()))
-        .collect::<BTreeSet<_>>();
-    let actual = bindings.keys().map(String::as_str).collect::<BTreeSet<_>>();
-    if expected != actual {
-        anyhow::bail!(
-            "evaluated expose config bindings do not exactly cover authenticated migrated packages"
-        );
-    }
-
-    let desired = object
-        .get("config")
-        .and_then(serde_json::Value::as_object)
-        .context("evaluated manifest config must be an object")?;
-    let mut projections = BTreeMap::new();
-    for package in expected {
-        let pin = runtime.packages[package]
-            .config_projection
-            .as_ref()
-            .context("migrated package lost projection metadata")?;
-        let expected_schema_hash = materialize::expose_config_schema_hash(&pin.config)?;
-        let binding = bindings[package].as_object().with_context(|| {
-            format!("config projection binding for {package:?} is not an object")
-        })?;
-        let binding_fields = binding.keys().map(String::as_str).collect::<BTreeSet<_>>();
-        if binding_fields != BTreeSet::from(["schema", "schema_hash"]) {
-            anyhow::bail!("config projection binding for {package:?} contains unexpected fields");
-        }
-        if binding.get("schema").and_then(serde_json::Value::as_str)
-            != Some("aos.expose-config-binding/v1")
-            || binding
-                .get("schema_hash")
-                .and_then(serde_json::Value::as_str)
-                != Some(expected_schema_hash.as_str())
-        {
-            anyhow::bail!("config projection binding for {package:?} is missing or tampered");
-        }
-        let desired_package = desired
-            .get(package)
-            .map(json_desired_package)
-            .transpose()?
-            .unwrap_or_default();
-        let rendered =
-            crate::render_package_config(package, &pin.config.artifacts, Some(&desired_package))?;
-        let artifacts = rendered
-            .into_iter()
-            .map(|(artifact, bytes)| {
-                let text = String::from_utf8(bytes).with_context(|| {
-                    format!("rendered config artifact {} is not UTF-8", artifact.path)
-                })?;
-                Ok(materialize::ProjectedConfigArtifact {
-                    path: artifact.path.clone(),
-                    sha256: format!("sha256:{}", hex::encode(Sha256::digest(text.as_bytes()))),
-                    mode: "0644".to_string(),
-                    text,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        projections.insert(
-            package.to_string(),
-            materialize::ProjectedPackageConfig {
-                schema: materialize::ProjectedPackageConfig::SCHEMA.to_string(),
-                schema_hash: expected_schema_hash,
-                artifacts,
-                units: materialize::projected_unit_actions(&pin.config.artifacts),
-            },
-        );
-    }
-    object.insert(
-        "configProjections".into(),
-        serde_json::to_value(projections).context("serializing rendered config projections")?,
-    );
-    Ok(())
-}
-
-fn json_desired_package(
-    value: &serde_json::Value,
-) -> Result<BTreeMap<String, BTreeMap<String, toml::Value>>> {
-    let artifacts = value
-        .as_object()
-        .context("desired package config must be an object")?;
-    artifacts
-        .iter()
-        .map(|(artifact, fields)| {
-            let fields = fields.as_object().with_context(|| {
-                format!("desired config artifact {artifact:?} must be an object")
-            })?;
-            let fields = fields
-                .iter()
-                .map(|(field, value)| {
-                    let value = serde_json::from_value::<toml::Value>(value.clone())
-                        .with_context(|| format!("converting desired config field {field:?}"))?;
-                    Ok((field.clone(), value))
-                })
-                .collect::<Result<BTreeMap<_, _>>>()?;
-            Ok((artifact.clone(), fields))
-        })
-        .collect()
 }
 
 fn add_fixed_input_to_store(path: &Path) -> Result<PathBuf> {
@@ -2460,27 +1678,87 @@ pub fn reeval_cross_abi(
     verbose: u8,
     expected_current_generation: Option<u32>,
 ) -> Result<()> {
-    remove_if_present(&out)?;
-    let graph_out = out.with_file_name("graph.json");
-    remove_if_present(&graph_out)?;
+    let source = load_cross_abi_source(source_manifest)?;
+    let store_view = source.inputs.store_view.clone();
+
+    reeval_cross_abi_with_source(
+        retained,
+        running_base_lib,
+        source,
+        &store_view,
+        eval_root,
+        out,
+        verbose,
+        expected_current_generation,
+    )
+}
+
+pub(crate) fn reeval_cross_abi_in_store_view(
+    retained: &crate::types::CrossAbiReEvalInputs,
+    running_base_lib: &Path,
+    source_manifest: &Path,
+    store_view: &store_view::StoreViewLocator,
+    eval_root: PathBuf,
+    out: PathBuf,
+    verbose: u8,
+    expected_current_generation: Option<u32>,
+) -> Result<()> {
+    let source = load_cross_abi_source(source_manifest)?;
+
+    reeval_cross_abi_with_source(
+        retained,
+        running_base_lib,
+        source,
+        store_view,
+        eval_root,
+        out,
+        verbose,
+        expected_current_generation,
+    )
+}
+
+fn load_cross_abi_source(source_manifest: &Path) -> Result<materialize::ConfigManifest> {
     let source_bytes = std::fs::read(source_manifest)
         .with_context(|| format!("reading retained manifest {}", source_manifest.display()))?;
-    let source: materialize::ConfigManifest = serde_json::from_slice(&source_bytes)
+    let source = serde_json::from_slice::<materialize::ConfigManifest>(&source_bytes)
         .with_context(|| format!("parsing retained manifest {}", source_manifest.display()))?;
     source
         .validate()
         .with_context(|| format!("validating retained manifest {}", source_manifest.display()))?;
-    validate_retained_manifest_inputs(&source, retained)?;
-    validate_cross_abi_inputs(retained, running_base_lib, &source)?;
 
-    let working_set = retained_cross_abi_working_set(&source, retained)?;
-    let runtime_modules = retained_runtime_modules(&source)?;
-    let evaluator = stock::StockNixEvaluator::new(eval_root, verbose);
+    Ok(source)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reeval_cross_abi_with_source(
+    retained: &crate::types::CrossAbiReEvalInputs,
+    running_base_lib: &Path,
+    source: materialize::ConfigManifest,
+    store_view: &store_view::StoreViewLocator,
+    eval_root: PathBuf,
+    out: PathBuf,
+    verbose: u8,
+    expected_current_generation: Option<u32>,
+) -> Result<()> {
+    remove_if_present(&out)?;
+    let graph_out = out.with_file_name("graph.json");
+    remove_if_present(&graph_out)?;
+    validate_retained_manifest_inputs(&source, retained)?;
+    validate_cross_abi_inputs(retained, running_base_lib, &source, store_view)?;
+
+    let working_set = retained_cross_abi_working_set(&source, retained, store_view)?;
+    let runtime_modules = retained_runtime_modules_in_store_view(&source, store_view)?;
+    let host_nix =
+        EvaluatorInput::in_store_view(PathBuf::from(&retained.host_nix_ref), store_view)?;
+    let facts_json = store_view.read_path(Path::new(&retained.facts_ref))?;
+    let running_base_lib =
+        EvaluatorInput::in_store_view(running_base_lib.to_path_buf(), store_view)?;
+    let evaluator = stock::StockNixEvaluator::in_store_view(eval_root, verbose, store_view.clone());
     let attempt = EvalAttempt {
-        host_nix: Path::new(&retained.host_nix_ref),
+        host_nix: &host_nix,
         runtime_modules: &runtime_modules,
-        base_lib: running_base_lib,
-        facts_json: Some(Path::new(&retained.facts_ref)),
+        base_lib: &running_base_lib,
+        facts_json: Some(&facts_json),
         working_set: &working_set,
         iteration: 0,
     };
@@ -2499,8 +1777,8 @@ pub fn reeval_cross_abi(
 
     // Package resolution is an authenticated input of the old intent, not a
     // mutable registry lookup. Re-project those exact pins into the newly
-    // evaluated aggregate artifacts so config, units, presets, and ownership
-    // are rebuilt against the running image's base library.
+    // evaluated aggregate artifacts so configuration and ownership are rebuilt
+    // against the running image's base library.
     let runtime = runtime::RuntimeResolution {
         packages: source.package_outputs.clone(),
         edges: source.graph.edges.clone(),
@@ -2514,21 +1792,17 @@ pub fn reeval_cross_abi(
     let evaluator_path = std::env::current_exe().context("resolving evaluator executable")?;
     let evaluator_store_path = evaluator_store_root(&evaluator_path)?;
     let mut inputs = source.inputs.clone();
-    inputs.base_lib.store_path = running_base_lib.to_string_lossy().into_owned();
+    inputs.store_view = store_view.clone();
+    inputs.base_lib.store_path = running_base_lib.identity.to_string_lossy().into_owned();
     inputs.base_lib.module_abi = retained.to_module_abi;
-    inputs.base_lib.abi_hash = read_base_lib_abi_hash(running_base_lib, retained.to_module_abi)?;
+    inputs.base_lib.abi_hash =
+        read_base_lib_abi_hash(&running_base_lib.read_path, retained.to_module_abi)?;
     inputs.evaluator.store_path = evaluator_store_path.to_string_lossy().into_owned();
     inputs.evaluator.store_hash = evaluator_store_hash(&evaluator_path)?;
-    if inputs.runtime_modules.is_some() {
+    if inputs.runtime_modules.is_some() || inputs.ability_activation.is_some() {
         inputs.expected_current_generation = Some(
             expected_current_generation
-                .context("runtime-module re-evaluation requires the active generation snapshot")?,
-        );
-    }
-    if inputs.runtime_modules.is_some() {
-        object.insert(
-            "schema".into(),
-            serde_json::Value::String(materialize::ConfigManifest::SCHEMA_V2.to_string()),
+                .context("transactional re-evaluation requires the active generation snapshot")?,
         );
     }
     object.insert("inputs".into(), serde_json::to_value(inputs)?);
@@ -2549,12 +1823,50 @@ pub fn reeval_cross_abi(
 
 pub(crate) fn retained_runtime_modules(
     manifest: &materialize::ConfigManifest,
-) -> Result<Vec<PathBuf>> {
-    retained_runtime_modules_with(manifest, retained_store_path_nar_hash)
+) -> Result<Vec<EvaluatorInput>> {
+    let store_view = manifest.inputs.store_view.clone();
+    retained_runtime_modules_in_store_view(manifest, &store_view)
+}
+
+fn retained_runtime_modules_in_store_view(
+    manifest: &materialize::ConfigManifest,
+    store_view: &store_view::StoreViewLocator,
+) -> Result<Vec<EvaluatorInput>> {
+    let Some(runtime) = &manifest.inputs.runtime_modules else {
+        return Ok(Vec::new());
+    };
+    let identity_root = Path::new(&runtime.store_path);
+    let actual = retained_store_path_nar_hash(identity_root).with_context(|| {
+        format!(
+            "hashing retained runtime module set {}",
+            identity_root.display()
+        )
+    })?;
+    anyhow::ensure!(
+        crate::verify::sha256_hashes_equal(&actual, &runtime.nar_hash)?,
+        "retained runtime module set {} does not match manifest NAR hash",
+        identity_root.display()
+    );
+
+    runtime
+        .entrypoints
+        .iter()
+        .map(|entry| {
+            let identity = identity_root.join(entry);
+            let input = EvaluatorInput::in_store_view(identity, store_view)?;
+            anyhow::ensure!(
+                input.read_path.is_file(),
+                "retained runtime module entrypoint is absent: {}",
+                input.read_path.display()
+            );
+            Ok(input)
+        })
+        .collect()
 }
 
 /// Resolves the descriptor's exact entrypoint list with an injectable NAR
 /// hasher so replay invariants remain testable without mutating `/nix/store`.
+#[cfg(test)]
 fn retained_runtime_modules_with<F>(
     manifest: &materialize::ConfigManifest,
     nar_hash: F,
@@ -2591,43 +1903,56 @@ where
 fn retained_cross_abi_working_set(
     source: &materialize::ConfigManifest,
     retained: &crate::types::CrossAbiReEvalInputs,
+    store_view: &store_view::StoreViewLocator,
 ) -> Result<Vec<WorkingSetMember>> {
-    let modules = &source.inputs.config_modules;
-    if modules.authorizations.len() != retained.config_module_paths.len() {
-        anyhow::bail!(
-            "retained generation has no complete authenticated config-module authorization set"
-        );
-    }
-    Ok(retained
-        .config_module_paths
+    retained
+        .package_modules
         .iter()
-        .zip(&modules.nar_hashes)
-        .zip(&retained.config_module_packages)
-        .zip(&modules.module_abi_compat)
-        .zip(&modules.authorizations)
-        .map(
-            |((((path, nar_hash), package), compat), authorization)| WorkingSetMember {
+        .map(|module| {
+            let pin = source
+                .package_outputs
+                .get(&module.package)
+                .with_context(|| {
+                    format!(
+                        "retained package module {} has no runtime pin",
+                        module.package
+                    )
+                })?;
+            let contract = pin.contract.as_ref().with_context(|| {
+                format!(
+                    "retained package module {} has no package contract",
+                    module.package
+                )
+            })?;
+            let resolved = static_packages::resolve(
+                &module.package,
+                &pin.version,
+                &pin.platform,
+                &pin.store_path,
+                &pin.nar_hash,
+                contract,
+                store_view,
+            )?;
+            anyhow::ensure!(
+                resolved.document.content_digest()?.to_string() == module.document_digest,
+                "retained package document digest disagrees with its manifest identity"
+            );
+            Ok(WorkingSetMember {
                 registry: None,
                 release_trust: None,
                 config_realization: None,
-                package: package.clone(),
-                version: source
-                    .package_outputs
-                    .get(package)
-                    .map(|pin| pin.version.clone()),
-                config_output: Some(path.clone()),
-                config_output_nar_hash: Some(nar_hash.clone()),
-                module_abi_compat: Some(*compat),
-                authorization: authorization.clone(),
+                package: module.package.clone(),
+                version: Some(pin.version.clone()),
+                contract: Some(ResolvedPackageContract {
+                    document: resolved.document,
+                    interfaces: resolved.interfaces,
+                }),
                 outputs: PackageOutputs {
-                    self_output: source
-                        .package_outputs
-                        .get(package)
-                        .map(|pin| pin.store_path.clone()),
+                    self_output: Some(pin.store_path.clone()),
                     dependencies: source
                         .graph
                         .edges
-                        .get(package)
+                        .get(&module.package)
                         .into_iter()
                         .flatten()
                         .filter_map(|dependency| {
@@ -2638,40 +1963,22 @@ fn retained_cross_abi_working_set(
                         })
                         .collect(),
                 },
-            },
-        )
-        .collect())
+            })
+        })
+        .collect()
 }
 
 fn validate_retained_manifest_inputs(
     source: &materialize::ConfigManifest,
     retained: &crate::types::CrossAbiReEvalInputs,
 ) -> Result<()> {
-    if source.inputs.config_modules.store_paths != retained.config_module_paths
-        || source.inputs.config_modules.package_names != retained.config_module_packages
+    if source.inputs.package_modules.modules != retained.package_modules
         || source.inputs.host_nix.store_path != retained.host_nix_ref
         || source.inputs.instance_facts.facts_hash != retained.facts_hash
         || source.inputs.instance_facts.store_path != retained.facts_ref
     {
         anyhow::bail!(
             "retained generation inputs disagree with its manifest; cross-ABI rollback refused"
-        );
-    }
-    if let Some((package, compat)) = source
-        .inputs
-        .config_modules
-        .package_names
-        .iter()
-        .zip(&source.inputs.config_modules.module_abi_compat)
-        .find(|(_, compat)| {
-            retained.to_module_abi < compat.min || retained.to_module_abi > compat.max
-        })
-    {
-        anyhow::bail!(
-            "retained config module {package} does not admit running module ABI {}; admitted range is {}..={}; cross-ABI rollback refused",
-            retained.to_module_abi,
-            compat.min,
-            compat.max,
         );
     }
     Ok(())
@@ -2681,8 +1988,9 @@ fn validate_cross_abi_inputs(
     retained: &crate::types::CrossAbiReEvalInputs,
     running_base_lib: &Path,
     source: &materialize::ConfigManifest,
+    store_view: &store_view::StoreViewLocator,
 ) -> Result<()> {
-    for (kind, path) in std::iter::once(("running base library", running_base_lib))
+    for (kind, canonical_path) in std::iter::once(("running base library", running_base_lib))
         .chain(std::iter::once((
             "host.nix",
             Path::new(&retained.host_nix_ref),
@@ -2693,32 +2001,48 @@ fn validate_cross_abi_inputs(
         )))
         .chain(
             retained
-                .config_module_paths
+                .package_modules
                 .iter()
-                .map(|path| ("config module", Path::new(path))),
+                .map(|module| ("package module", Path::new(&module.store_path))),
         )
     {
-        if !path.starts_with("/nix/store/") || !path.exists() {
+        let path = store_view.read_path(canonical_path)?;
+        if !path.exists() {
             anyhow::bail!(
                 "required retained {kind} input is unavailable: {}",
                 path.display()
             );
         }
     }
-    let facts_bytes = std::fs::read(&retained.facts_ref)
-        .with_context(|| format!("reading retained facts {}", retained.facts_ref))?;
-    let facts: crate::metadata::fetcher::Facts = serde_json::from_slice(&facts_bytes)
+    let facts_path = store_view.read_path(Path::new(&retained.facts_ref))?;
+    let facts_bytes = std::fs::read(&facts_path)
+        .with_context(|| format!("reading retained facts {}", facts_path.display()))?;
+    let facts: aos_metadata::fetcher::Facts = serde_json::from_slice(&facts_bytes)
         .with_context(|| format!("parsing retained facts {}", retained.facts_ref))?;
-    let normalized = crate::metadata::facts_render::normalize_host_facts(&facts);
+    let normalized = aos_metadata::facts_render::normalize_host_facts(&facts);
     let normalized_bytes = serde_json::to_vec(&normalized)?;
     if sha256_identity(&normalized_bytes) != retained.facts_hash {
         anyhow::bail!("retained facts bytes do not match the recorded facts_hash");
     }
-    validate_retained_content_identities(source, retained, retained_store_path_nar_hash)?;
+    validate_retained_content_identities_in_store_view(source, retained, store_view)?;
     Ok(())
 }
 
-/// Verifies the exact retained host and config-module bytes before evaluation.
+fn validate_retained_content_identities_in_store_view(
+    source: &materialize::ConfigManifest,
+    retained: &crate::types::CrossAbiReEvalInputs,
+    store_view: &store_view::StoreViewLocator,
+) -> Result<()> {
+    let mut mapped = retained.clone();
+    mapped.host_nix_ref = store_view
+        .read_path(Path::new(&retained.host_nix_ref))?
+        .to_string_lossy()
+        .into_owned();
+
+    validate_retained_content_identities(source, &mapped, retained_store_path_nar_hash)
+}
+
+/// Verifies the exact retained host and package-module bytes before evaluation.
 ///
 /// The source manifest is already authenticated by the generation record. Its
 /// hashes therefore remain the authority; a fresh image must prove that every
@@ -2744,20 +2068,19 @@ where
         );
     }
 
-    if retained.config_module_paths.len() != source.inputs.config_modules.nar_hashes.len() {
-        anyhow::bail!("retained config-module paths and authenticated NAR hashes differ in count");
-    }
-    for ((path, package), expected) in retained
-        .config_module_paths
-        .iter()
-        .zip(&retained.config_module_packages)
-        .zip(&source.inputs.config_modules.nar_hashes)
-    {
-        let actual = nar_hash(Path::new(path))
-            .with_context(|| format!("hashing retained config module {package} at {path}"))?;
-        if !crate::verify::sha256_hashes_equal(&actual, expected)? {
+    for module in &retained.package_modules {
+        let actual = nar_hash(Path::new(&module.store_path)).with_context(|| {
+            format!(
+                "hashing retained package module {} at {}",
+                module.package, module.store_path
+            )
+        })?;
+        if !crate::verify::sha256_hashes_equal(&actual, &module.nar_hash)? {
             anyhow::bail!(
-                "retained config module {package} at {path} does not match authenticated NAR hash: expected {expected}, got {actual}"
+                "retained package module {} at {} does not match authenticated NAR hash: expected {}, got {actual}",
+                module.package,
+                module.store_path,
+                module.nar_hash,
             );
         }
     }
@@ -2766,25 +2089,78 @@ where
 
 /// Recomputes a store path's NAR hash from its current bytes.
 fn retained_store_path_nar_hash(path: &Path) -> Result<String> {
-    let mut child = std::process::Command::new("nix-store")
-        .envs(aos_core::nix::aos_nix_env())
-        .arg("--dump")
+    let eval_store = selected_eval_store_uri()?;
+    retained_store_path_nar_hash_in(path, eval_store.as_deref())
+}
+
+fn selected_eval_store_uri() -> Result<Option<std::ffi::OsString>> {
+    let explicit_store = std::env::var_os("AOS_NIX_EVAL_STORE");
+    let rooted_nix_environment = std::env::var_os("AOS_ROOT").map(|_| aos_core::nix::aos_nix_env());
+    retained_eval_store_uri(explicit_store.as_deref(), rooted_nix_environment.as_deref())
+}
+
+/// Selects an explicit evaluator store or reconstructs the exact rooted store.
+fn retained_eval_store_uri(
+    explicit_store: Option<&std::ffi::OsStr>,
+    rooted_nix_environment: Option<&[(&'static str, String)]>,
+) -> Result<Option<std::ffi::OsString>> {
+    if let Some(explicit_store) = explicit_store {
+        anyhow::ensure!(
+            !explicit_store.is_empty(),
+            "AOS_NIX_EVAL_STORE must not be empty"
+        );
+        return Ok(Some(explicit_store.to_os_string()));
+    }
+    let Some(rooted_nix_environment) = rooted_nix_environment else {
+        return Ok(None);
+    };
+    let setting = |name| {
+        rooted_nix_environment
+            .iter()
+            .find_map(|(candidate, value)| (*candidate == name).then_some(value.as_str()))
+            .with_context(|| format!("AOS_ROOT did not produce the required {name} binding"))
+    };
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("store", setting("NIX_STORE_DIR")?);
+    query.append_pair("state", setting("NIX_STATE_DIR")?);
+    query.append_pair("log", setting("NIX_LOG_DIR")?);
+    Ok(Some(format!("local?{}", query.finish()).into()))
+}
+
+/// Recomputes a store path's NAR hash through one exact evaluator store.
+fn retained_store_path_nar_hash_in(
+    path: &Path,
+    eval_store: Option<&std::ffi::OsStr>,
+) -> Result<String> {
+    let mut command = std::process::Command::new("nix");
+    command
+        .args(["--extra-experimental-features", "nix-command"])
+        .env_remove("LD_LIBRARY_PATH")
+        .env_remove("NIX_REMOTE")
+        .env_remove("NIX_STORE_DIR")
+        .env_remove("NIX_STATE_DIR")
+        .env_remove("NIX_LOG_DIR");
+    if let Some(eval_store) = eval_store {
+        command.arg("--store").arg(eval_store);
+    }
+    let mut child = command
+        .args(["store", "dump-path"])
         .arg(path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("running nix-store --dump {}", path.display()))?;
+        .with_context(|| format!("running nix store dump-path {}", path.display()))?;
     let stdout = child
         .stdout
         .take()
-        .context("nix-store --dump did not provide stdout")?;
+        .context("nix store dump-path did not provide stdout")?;
     let hash = crate::verify::sha256_stream(stdout);
     let output = child
         .wait_with_output()
-        .with_context(|| format!("waiting for nix-store --dump {}", path.display()))?;
+        .with_context(|| format!("waiting for nix store dump-path {}", path.display()))?;
     if !output.status.success() {
         anyhow::bail!(
-            "nix-store --dump failed for {}: {}",
+            "nix store dump-path failed for {}: {}",
             path.display(),
             String::from_utf8_lossy(&output.stderr).trim(),
         );
@@ -2795,10 +2171,22 @@ fn retained_store_path_nar_hash(path: &Path) -> Result<String> {
 /// Evaluates the closed host package-selection projection before resolution.
 ///
 /// This is the bootstrap half of the fixpoint: package names must be known
-/// before their registry config modules can be fetched, while the complete
+/// before their registry package modules can be fetched, while the complete
 /// runtime evaluation needs those modules. Only `aos.apm.desiredPackages` is
 /// declared, so unrelated host definitions remain lazy.
-fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
+fn load_host_selection(
+    cmd: &EvalCommand,
+    prepared: &PreparedEvaluatorInputs,
+) -> Result<Vec<WorkingSetMember>> {
+    let eval_store = selected_eval_store_uri()?;
+    load_host_selection_in(cmd, prepared, eval_store.as_deref())
+}
+
+fn load_host_selection_in(
+    cmd: &EvalCommand,
+    prepared: &PreparedEvaluatorInputs,
+    eval_store: Option<&std::ffi::OsStr>,
+) -> Result<Vec<WorkingSetMember>> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct HostSelection {
@@ -2806,7 +2194,7 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
     }
 
     anyhow::ensure!(
-        cmd.host_nix.starts_with("/nix/store"),
+        prepared.host_nix.identity.starts_with("/nix/store"),
         "host package-selection input must be pinned in /nix/store"
     );
 
@@ -2814,16 +2202,16 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
     std::fs::create_dir_all(&source_root)
         .with_context(|| format!("creating host-selection source {}", source_root.display()))?;
     let staged_entry = source_root.join("entry.nix");
-    let base = stock::locked_store_input(&cmd.base_lib, None)
-        .context("locking the base library for host package selection")?;
-    let host = stock::locked_store_input(&cmd.host_nix, None)
-        .context("locking host.nix for host package selection")?;
-    let runtime_modules = cmd
+    let lock = |input: &EvaluatorInput| -> Result<String> {
+        stock::locked_evaluator_input_in(input, None, eval_store)
+    };
+    let base =
+        lock(&prepared.base_lib).context("locking the base library for host package selection")?;
+    let host = lock(&prepared.host_nix).context("locking host.nix for host package selection")?;
+    let runtime_modules = prepared
         .runtime_modules
         .iter()
-        .map(|path| {
-            stock::locked_store_input(path, None).map(|locked| format!("(import {locked})"))
-        })
+        .map(|input| lock(input).map(|locked| format!("(import {locked})")))
         .collect::<Result<Vec<_>>>()?
         .join(" ");
     let expression = format!(
@@ -2841,8 +2229,12 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
     );
     std::fs::write(&staged_entry, &expression)
         .with_context(|| format!("writing {}", staged_entry.display()))?;
-    let mut evaluator = stock::pure_eval_command(&cmd.eval_root)
-        .context("resolving the AOS stock evaluator for host package selection")?;
+    let mut evaluator = stock::pure_eval_command_in(
+        eval_store,
+        Some(cmd.store_view.read_root.as_path()),
+        &cmd.eval_root,
+    )
+    .context("resolving the AOS stock evaluator for host package selection")?;
     evaluator.arg("-");
     let output = stock::output_with_expression(&mut evaluator, &expression)
         .context("spawning restricted host package-selection evaluation")?;
@@ -2863,12 +2255,12 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
         .collect())
 }
 
-/// Load seed package names from a `desired.toml`, as bare working-set members.
+/// Loads package names from `desired.toml` as working-set members.
 ///
-/// Only the top-level `packages` array is read; seed config-module metadata
-/// (config outputs, ABI bands) is discovered by the loop, so seeds carry no
-/// config output here.
-fn load_seed_set(desired: Option<&Path>) -> Result<Vec<WorkingSetMember>> {
+/// Only the top-level `packages` array is read. The authenticated package
+/// contracts and module artifacts are attached before the fixed-point
+/// evaluation begins.
+fn load_desired_packages(desired: Option<&Path>) -> Result<Vec<WorkingSetMember>> {
     let Some(path) = desired else {
         return Ok(Vec::new());
     };

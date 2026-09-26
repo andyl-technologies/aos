@@ -29,11 +29,13 @@
   build,
   srcHash,
   prevJdk,
+  platformSupport,
   repoSuffix ? "u",
   extraConfigureFlags ? [],
   extraBuildDeps ? [],
   extraDarwinFrameworks ? [],
   extraPatches ? [],
+  qualification ? null,
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
@@ -278,7 +280,8 @@
 in
   mkDerivation {
     pname = "openjdk-${toString major}";
-    inherit version;
+    inherit platformSupport;
+    inherit version qualification;
 
     src = fetchurl {
       urls = [

@@ -54,42 +54,6 @@ OBJCOPY = os.environ["AOS_QUALIFICATION_OBJCOPY"]
 NIX_STORE = os.environ["AOS_QUALIFICATION_NIX_STORE"]
 BOUND_IMAGE_VARIANT = os.environ.get("AOS_QUALIFICATION_BOUND_IMAGE_VARIANT")
 
-EXPECTED_CHECKS = {
-    "anonymous-download-and-resume",
-    "disk-format-equivalence",
-    "uefi-boot",
-    "repeated-warm-and-cold-boot",
-    "provisioning",
-    "host-configuration",
-    "ssh-dns-time-network",
-    "boot-integrity-and-encrypted-state",
-    "no-fixture-authorities",
-    "configuration-activation-and-rollback",
-    "package-install-change-remove-recover",
-    "nginx-http-tls",
-    "persistent-workload",
-    "reboot-persistence",
-    "bounded-generation-retention",
-    "disk-and-memory-pressure",
-    "preceding-image-identity",
-    "upgrade",
-    "configuration-rebind",
-    "boot-blessing",
-    "interrupted-writes-and-reboots",
-    "automatic-fallback",
-    "explicit-rollback",
-    "repeated-update-and-rollback",
-    "committed-data-preserved",
-    "offline-recovery",
-    "update-after-recovery",
-}
-PACKAGE_CHECKS = {
-    "anonymous-download",
-    "closure-verification",
-    "functional-behavior",
-    "dependency-obligations",
-    "permissions-and-confinement",
-}
 MAX_RECOVERY_INITRD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_RECOVERY_EXECUTABLE_BYTES = 128 * 1024 * 1024
 
@@ -629,6 +593,12 @@ class Scenario:
     def __init__(self) -> None:
         self.request = read_json(REQUEST)
         self.case = self.request["qualification_case"]
+        self.expected_checks = set(
+            json.loads(os.environ["AOS_QUALIFICATION_CHECKS"])
+        )
+        self.package_checks = set(
+            json.loads(os.environ["AOS_QUALIFICATION_PACKAGE_CHECKS"])
+        )
         self.package_mode = self.case["id"] == f"package-function/aos-recovery/{PLATFORM}"
         self.image_variant = BOUND_IMAGE_VARIANT if self.package_mode else None
         self.objects: dict[str, str] = read_json(OBJECTS)
@@ -678,7 +648,7 @@ class Scenario:
                 or self.case["platform"] != PLATFORM
                 or self.case.get("target") is not None
                 or self.case.get("claim") is not None
-                or set(self.case["checks"]) != PACKAGE_CHECKS
+                or set(self.case["checks"]) != self.package_checks
                 or self.image_variant is None
                 or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", self.image_variant)
                 is None
@@ -689,7 +659,7 @@ class Scenario:
                 raise RuntimeError("scenario received a non-staging image claim")
             if self.case["claim"]["minimum_assurance"] != "A2":
                 raise RuntimeError("scenario requires the A2 image claim")
-            if set(self.case["checks"]) != EXPECTED_CHECKS:
+            if set(self.case["checks"]) != self.expected_checks:
                 raise RuntimeError("image claim check set differs from the implemented program")
         if self.case.get("predecessor") is None or not self.predecessor_objects:
             raise RuntimeError("image transition lacks its verified retained predecessor")

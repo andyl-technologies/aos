@@ -287,15 +287,6 @@
             printf '%s\n' '${marker}'
             VERSIONEOF
             chmod +x "$out/bin/e2e-system-version"
-            cat > "$out/activate" << 'ACTIVATEEOF'
-            #!${pkgs.bash}/bin/bash
-            set -euo pipefail
-            echo "Activating e2e system ${version}"
-            ${pkgs.coreutils}/bin/mkdir -p /tmp
-            echo "${version}" > /tmp/e2e-system-activated-${version}
-            echo "${version}" > /tmp/e2e-system-activated-current
-            ACTIVATEEOF
-            chmod +x "$out/activate"
           '';
         }
       ];
@@ -708,9 +699,8 @@ in {
       assert_file_contains /tmp/e2e-system-run-v1.out "e2e system 2026.03" \
         "downloaded system v1 closure runs directly"
       if [ -e /var/lib/profiles/system/current ] || \
-        [ -e /var/lib/profiles/system/state.json ] || \
-        [ -e /tmp/e2e-system-activated-current ]; then
-        fail "rejected v1 activation must not create or activate a system generation"
+        [ -e /var/lib/profiles/system/state.json ]; then
+        fail "rejected v1 activation must not create a system generation"
       else
         pass "rejected v1 activation leaves system generation state untouched"
       fi
@@ -753,8 +743,7 @@ in {
         pass "apm rollback --system rejects a host with no image generation"
       fi
       if [ -e /var/lib/profiles/system/current ] || \
-        [ -e /var/lib/profiles/system/state.json ] || \
-        [ -e /tmp/e2e-system-activated-current ]; then
+        [ -e /var/lib/profiles/system/state.json ]; then
         fail "rejected legacy lifecycle commands must not create system state"
       else
         pass "rejected legacy lifecycle commands leave system state untouched"

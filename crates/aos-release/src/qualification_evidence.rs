@@ -13,6 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
+use aos_ability_model::{AccessMode, LifecycleSemantics, ResourceLifetime};
 use serde::{Deserialize, Serialize};
 
 use crate::artifact::{ArtifactKind, ArtifactRecord, ArtifactRelation};
@@ -31,10 +32,6 @@ use crate::qualification::{
     CONTRACT_V2, PackageExecution, QualificationMethod, QualificationPhase,
     QualificationRequirement, QualificationScope, QualificationTarget, TargetKind,
 };
-
-#[cfg(test)]
-#[path = "qualification_k3s_tests.rs"]
-mod k3s_tests;
 
 /// A prior accepted snapshot selected before qualification begins.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -68,6 +65,9 @@ pub struct QualificationCase {
     pub id: String,
     /// Stable shared requirement identity.
     pub requirement_id: String,
+    /// Exact evaluated matrix copied verbatim from the selected requirement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix_spec: Option<NativeAdapterMatrixSpec>,
     /// Exact class-bound requirement policy digest.
     pub policy_digest: Sha256Digest,
     /// Canonical frozen-plan identity, including release and trust domain.
@@ -128,6 +128,407 @@ pub struct CheckObservation {
     pub detail: String,
 }
 
+/// Stable requirement identity for the closed native adapter matrix.
+pub const NATIVE_ADAPTER_MATRIX_REQUIREMENT: &str = "ability-native-adapter-matrix";
+
+/// Canonical schema for an immutable native adapter matrix specification.
+pub const NATIVE_ADAPTER_MATRIX_SPEC_V1: &str = "aos.qualification.native-adapter-matrix-spec/v1";
+
+/// Canonical schema for the exact production applicability partition.
+pub const NATIVE_ADAPTER_MATRIX_APPLICABILITY_V1: &str =
+    "aos.qualification.native-adapter-matrix-applicability/v1";
+
+/// Canonical schema for observed native adapter matrix results.
+pub const NATIVE_ADAPTER_MATRIX_OBSERVATION_V1: &str =
+    "aos.release.native-adapter-matrix-observation/v1";
+
+const NATIVE_ADAPTER_MATRIX_SCHEMA_V1: &str = "aos.qualification.native-adapter-matrix/v1";
+const NATIVE_ADAPTER_SURFACE_V1: &str = "aos.qualification.native-adapter-surface/v1";
+const NATIVE_ADAPTER_POSTCONDITION_PROBE_V1: &str =
+    "aos.release.native-adapter-postcondition-probe/v1";
+const NATIVE_ADAPTER_CELL_COHORT_SUBJECT_V1: &str =
+    "aos.release.native-adapter-cell-cohort-subject/v1";
+/// Canonical schema for a typed native adapter matrix execution environment.
+pub const NATIVE_ADAPTER_MATRIX_ENVIRONMENT_V1: &str =
+    "aos.release.native-adapter-matrix-environment/v1";
+pub const NATIVE_ADAPTER_MATRIX_CHECK: &str = "native-adapter-matrix";
+const NATIVE_ADAPTER_MATRIX_MAX_ADAPTERS: usize = 128;
+const NATIVE_ADAPTER_MATRIX_MAX_SCENARIOS: usize = 256;
+const NATIVE_ADAPTER_MATRIX_MAX_CELLS: usize = 1_048_576;
+const NATIVE_ADAPTER_MAX_PROBE_FACTS: usize = 32;
+const NATIVE_ADAPTER_MAX_PROBE_BYTES: usize = 64 * 1024;
+
+/// One exact interface identity in the native adapter matrix subject.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterInterfaceIdentity {
+    /// Stable public interface name.
+    pub name: String,
+    /// Public interface ABI version.
+    pub abi: u32,
+    /// Canonical interface document digest.
+    pub descriptor: Sha256Digest,
+}
+
+/// One method selected from an implementation's referenced interface.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterSurfaceMethod {
+    /// Exact target access declared by the authenticated interface method.
+    pub required_target_access: AccessMode,
+    /// Stable public method name.
+    pub method: String,
+}
+
+/// Authenticated state-transfer metadata projected from one provider contract.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterProviderContract {
+    /// Exact lifecycle semantics from the authenticated interface document.
+    pub lifecycle: LifecycleSemantics,
+    /// Sorted resource lifetimes declared by the interface's output ports.
+    pub resource_lifetimes: Vec<ResourceLifetime>,
+    /// Provider-implementation state-format descriptor, when one is declared.
+    pub state_format: Option<Sha256Digest>,
+}
+
+/// Candidate handler selected by a package implementation claim.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterClaimHandler {
+    /// Resolved selected package output containing the executable.
+    pub artifact: serde_json::Value,
+    /// Relative executable path within the selected artifact.
+    pub entry_point: String,
+    /// Closed request schema accepted by the executable.
+    pub arguments: serde_json::Value,
+    /// Closed result schema returned by the executable.
+    pub result: serde_json::Value,
+}
+
+/// Package implementation projected into a native adapter surface.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterImplementationClaim {
+    /// Selected package ability contract used to resolve implementation facts.
+    pub contract: String,
+    /// Package-local implementation declaration name in that contract.
+    pub implementation: String,
+    /// Package-owned qualification executable used for independent observations.
+    pub observer: NativeAdapterClaimHandler,
+}
+
+/// One native adapter and its exact public interface surface.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterSurfaceAdapter {
+    /// Stable native adapter identity.
+    pub adapter: String,
+    /// Scenario families this implementation claims and must qualify.
+    pub conformance_families: Vec<String>,
+    /// Public interface ABI version.
+    pub interface_abi: u32,
+    /// Canonical public interface document digest.
+    pub interface_descriptor: Sha256Digest,
+    /// Stable public interface name.
+    pub interface_name: String,
+    /// Sorted exact methods dispatched by this adapter.
+    pub methods: Vec<NativeAdapterSurfaceMethod>,
+    /// Typed observation record emitted by the package-owned observer.
+    pub observation_kind: String,
+    /// State-transfer facts from the authenticated production provider contract.
+    pub provider_contract: NativeAdapterProviderContract,
+    /// Exact selected package implementation and handler route.
+    pub provider_implementation: NativeAdapterImplementationClaim,
+    /// Native execution scope containing the adapter effects.
+    pub scope: String,
+}
+
+/// One failure, recovery, or lifecycle scenario expanded across every method.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterSurfaceScenario {
+    /// Declared provider-contract predicates that select applicable cells.
+    pub applicability: NativeAdapterScenarioApplicability,
+    /// Failure, recovery, or lifecycle boundary exercised by the scenario.
+    pub boundary: String,
+    /// Required candidate state.
+    pub candidate: String,
+    /// Declares how the executor derives the expected terminal disposition.
+    pub disposition: NativeAdapterDispositionPolicy,
+    /// Injected or naturally observed failure classification.
+    pub failure: String,
+    /// Conformance family that selects this scenario for an implementation.
+    pub family: String,
+    /// Stable scenario identity used as the final cell-id component.
+    pub id: String,
+    /// Ordered acceptance conditions and their evidence record kinds.
+    pub postconditions: Vec<NativeAdapterPostconditionPolicy>,
+    /// Required predecessor state.
+    pub predecessor: String,
+}
+
+/// Declares the provider-contract facts required by one scenario.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterScenarioApplicability {
+    /// Resource lifetimes that must occur in the authenticated interface.
+    pub required_resource_lifetimes: Vec<ResourceLifetime>,
+    /// Whether the implementation must authenticate a state-format descriptor.
+    pub requires_state_format: bool,
+}
+
+/// Selects how a scenario's expected terminal disposition is obtained.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum NativeAdapterDispositionPolicy {
+    /// Requires one exact policy-authored disposition.
+    Exact {
+        /// Names the exact terminal disposition.
+        value: String,
+    },
+    /// Selects one of two policy-authored results from the checked cancel route.
+    CancellationRoute {
+        /// Required disposition when the checked operation supports cancellation.
+        supported: String,
+        /// Required disposition when the checked operation has no cancel route.
+        unsupported: String,
+    },
+}
+
+/// One provider-neutral acceptance condition selected by scenario policy.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterPostconditionPolicy {
+    /// Evidence record kind expected from an executable qualification cohort.
+    pub evidence_kind: String,
+    /// Stable acceptance-condition name exposed in matrix observations.
+    pub name: String,
+}
+
+/// Complete typed preimage from which a native adapter matrix is expanded.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterSurfaceSpec {
+    /// Sorted exact adapters covered by the matrix.
+    pub adapters: Vec<NativeAdapterSurfaceAdapter>,
+    /// Closed registry of conformance families used by the scenario policy.
+    pub families: Vec<String>,
+    /// Exact identity dimensions that invalidate retained observations.
+    pub invalidation_dimensions: Vec<String>,
+    /// Matrix semantics used to expand this surface.
+    pub matrix_schema: String,
+    /// Ordered exact scenarios expanded across every method.
+    pub scenarios: Vec<NativeAdapterSurfaceScenario>,
+    /// Exact native adapter surface schema.
+    pub schema: String,
+}
+
+/// Immutable semantics of one native adapter qualification cell.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterCellSpec {
+    /// Globally unique cell identity.
+    pub id: String,
+    /// Matrix semantics used to construct the cell.
+    pub matrix_schema: String,
+    /// Native adapter implementation identity.
+    pub adapter: String,
+    /// Exact public interface identity dispatched by the adapter.
+    pub interface: NativeAdapterInterfaceIdentity,
+    /// Interface method exercised by the cell.
+    pub method: String,
+    /// Exact target access declared by the authenticated interface method.
+    pub required_target_access: AccessMode,
+    /// Native execution scope containing the effect.
+    pub scope: String,
+    /// Failure, recovery, or lifecycle boundary exercised by the cell.
+    pub boundary: String,
+    /// Injected or naturally observed failure classification.
+    pub failure: String,
+    /// Required predecessor state.
+    pub predecessor: String,
+    /// Required candidate state.
+    pub candidate: String,
+    /// Declares how the executor derives the expected terminal disposition.
+    pub disposition: NativeAdapterDispositionPolicy,
+    /// Provider-contract predicates copied from the selected scenario.
+    pub applicability: NativeAdapterScenarioApplicability,
+    /// Ordered acceptance conditions that determine the cell result.
+    pub postconditions: Vec<String>,
+    /// Maps each acceptance condition to its policy-selected evidence kind.
+    pub postcondition_kinds: BTreeMap<String, String>,
+    /// Exact identity changes that invalidate this observation.
+    pub invalidated_by: Vec<String>,
+}
+
+/// One matrix cell excluded by an exact provider contract constraint.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterInapplicableCell {
+    /// Exact cell identity from the complete Cartesian matrix.
+    pub cell_id: String,
+    /// Stable provider contract reason for the exclusion.
+    pub reason: String,
+}
+
+/// Fail-closed partition of complete matrix cells by production applicability.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterMatrixApplicability {
+    /// Exact applicability schema.
+    pub schema: String,
+    /// Ordered exact cells that require production VM evidence.
+    pub applicable_cell_ids: Vec<String>,
+    /// Ordered exact cells whose provider contracts make adoption inapplicable.
+    pub inapplicable_cells: Vec<NativeAdapterInapplicableCell>,
+}
+
+/// Complete immutable native adapter matrix committed by release policy.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterMatrixSpec {
+    /// Exact matrix specification schema.
+    pub schema: String,
+    /// Full closed surface preimage selected by the Nix policy evaluator.
+    pub surface: NativeAdapterSurfaceSpec,
+    /// Ordered complete cell specifications.
+    pub cells: Vec<NativeAdapterCellSpec>,
+    /// Exact partition that identifies production-applicable cells.
+    pub applicability: NativeAdapterMatrixApplicability,
+}
+
+/// Qualification state represented by a native adapter matrix environment.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativeAdapterMatrixEnvironmentStatus {
+    /// The adapter retained explicit failure evidence without a production VM run.
+    Unqualified,
+    /// A production VM cohort supplied complete runtime identities.
+    Production,
+}
+
+/// Immutable identity of one production matrix runtime component.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterMatrixComponentIdentity {
+    /// Stable component name.
+    pub name: String,
+    /// Observed component version or release identity.
+    pub version: String,
+    /// Digest of the exact artifact or closure used by the cohort.
+    pub digest: Sha256Digest,
+}
+
+/// Exact execution environment shared by every observed matrix cell.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterMatrixEnvironment {
+    /// Exact environment schema.
+    pub schema_version: String,
+    /// Whether this is an explicit unqualified result or a production VM run.
+    pub status: NativeAdapterMatrixEnvironmentStatus,
+    /// Platform that ran the matrix scenario.
+    pub platform: Platform,
+    /// Canonical scenario-registry identity that selected the harness closure.
+    pub scenario_registry_digest: Sha256Digest,
+    /// Candidate artifact-set identity copied from the qualification case.
+    pub candidate_subjects_digest: Sha256Digest,
+    /// Frozen predecessor manifest exercised by the scenario.
+    pub predecessor_manifest_digest: Sha256Digest,
+    /// Reason production evidence is unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unqualified_reason: Option<String>,
+    /// Stable production cohort identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cohort: Option<String>,
+    /// Exact QEMU closure used to host the cohort.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qemu: Option<NativeAdapterMatrixComponentIdentity>,
+    /// Exact VM firmware artifact used to boot each guest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware: Option<NativeAdapterMatrixComponentIdentity>,
+    /// Exact guest kernel artifact exercised by the cohort.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_kernel: Option<NativeAdapterMatrixComponentIdentity>,
+    /// Exact fault-injection tool closure used for boundaries and interruptions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault_injection_tool: Option<NativeAdapterMatrixComponentIdentity>,
+    /// Exact scenario harness closure selected by the executor registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<NativeAdapterMatrixComponentIdentity>,
+}
+
+/// Observed postconditions for one exact native adapter matrix cell.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterCellObservation {
+    /// Cell identity copied from the immutable specification.
+    pub id: String,
+    /// Digest of the complete matching cell specification.
+    pub cell_digest: Sha256Digest,
+    /// Digest of the actual production execution environment.
+    pub environment_digest: Sha256Digest,
+    /// Canonical dynamic plan and author identity exercised by this cell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cohort_subject: Option<serde_json::Value>,
+    /// Exact postcondition results; their conjunction determines cell success.
+    pub postconditions: BTreeMap<String, CheckObservation>,
+    /// Exact production probes for every passing postcondition.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub probes: BTreeMap<String, NativeAdapterPostconditionProbe>,
+}
+
+/// Retained production observation supporting one passing matrix postcondition.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterPostconditionProbe {
+    /// Exact postcondition probe schema.
+    pub schema_version: String,
+    /// Probe class required by the named postcondition.
+    pub kind: String,
+    /// Exact matrix cell identity exercised by this probe.
+    pub cell_id: String,
+    /// Digest of the immutable matrix cell exercised by this probe.
+    pub cell_digest: Sha256Digest,
+    /// Scenario-specific terminal or retained-state disposition.
+    pub disposition: String,
+    /// Candidate artifact population exercised by the probe.
+    pub subject_digest: Sha256Digest,
+    /// Canonical identity of the cell's retained dynamic cohort subject.
+    pub cohort_subject_digest: Sha256Digest,
+    /// Canonical identity of the retained observation preimage.
+    pub observation_digest: Sha256Digest,
+    /// Bounded structured facts observed independently of the adapter result.
+    pub observations: BTreeMap<String, serde_json::Value>,
+}
+
+/// Exact cell binding around one cohort's dynamic production subject.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeAdapterCellCohortSubject {
+    schema: String,
+    cell_id: String,
+    cell_digest: Sha256Digest,
+    boundary: String,
+    failure: String,
+    candidate: String,
+    predecessor: String,
+    subject: serde_json::Value,
+}
+
+/// Complete observed results for an immutable native adapter matrix.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterMatrixObservation {
+    /// Exact observation schema.
+    pub schema_version: String,
+    /// Typed execution environment whose digest appears in every cell.
+    pub environment: NativeAdapterMatrixEnvironment,
+    /// Ordered one-to-one observations for every production-applicable cell.
+    pub cells: Vec<NativeAdapterCellObservation>,
+}
+
 /// Structured evidence that accompanies a signed gate record.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -141,9 +542,12 @@ pub struct QualificationObservation {
     /// Reviewed compatibility assessment, permitted only for A1 cases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assessment: Option<CompatibilityAssessment>,
+    /// Exact per-cell native adapter evidence, when this is the matrix case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_adapter_matrix: Option<NativeAdapterMatrixObservation>,
     /// Exact expanded case identity.
     pub case_digest: Sha256Digest,
-    /// Immutable executor closure identity.
+    /// Canonical scenario-registry identity that binds immutable executable selection.
     pub executor_digest: Sha256Digest,
     /// Digest of recorded actual hardware, firmware, runtime, and tool identities.
     pub environment_digest: Sha256Digest,
@@ -224,6 +628,7 @@ pub fn cases(
         requirements.push((
             QualificationRequirement {
                 id: format!("claim-{}", claim.id),
+                matrix_spec: None,
                 phase,
                 scope: match target.kind {
                     TargetKind::Image => QualificationScope::Images,
@@ -280,6 +685,7 @@ pub fn cases(
                 None
             };
             let predecessor = if requirement.id == "image-update-recovery"
+                || requirement.id == NATIVE_ADAPTER_MATRIX_REQUIREMENT
                 || claim.as_ref().is_some_and(|claim| {
                     claim.minimum_assurance >= AssuranceLevel::A2
                         && claim
@@ -287,9 +693,8 @@ pub fn cases(
                             .iter()
                             .any(|id| id == "image-update-recovery")
                 })
-                || package_rule.is_some_and(|rule| {
-                    matches!(rule.execution, Some(PackageExecution::RecoveryImage { .. }))
-                }) {
+                || package_rule.is_some_and(|rule| rule.execution.is_some())
+            {
                 Some(plan.qualification_predecessor.clone().ok_or_else(|| {
                     anyhow::anyhow!("qualification execution requires a frozen predecessor")
                 })?)
@@ -343,6 +748,7 @@ pub fn cases(
                 },
                 id: format!("{}/{suffix}", requirement.id),
                 requirement_id: requirement.id.clone(),
+                matrix_spec: requirement.matrix_spec.clone(),
                 policy_digest: gate.policy_digest,
                 plan_digest: Sha256Digest::of_bytes(crate::canonical::to_vec(plan)?),
                 subjects_digest,
@@ -389,12 +795,13 @@ pub fn cases(
                                     anyhow::anyhow!("package lacks its criticality classification")
                                 })?;
                             let mut subjects = artifact.artifact_ids.clone();
+                            subjects.extend(package_contract_subjects(manifest, artifact)?);
                             if let Some(execution) = &rule.execution {
                                 let system_variant = execution.system_variant();
                                 let image = manifest
                                     .images
                                     .iter()
-                                    .find(|image| image.system_variant == system_variant)
+                                    .find(|image| image.system_variant == *system_variant)
                                     .ok_or_else(|| {
                                         anyhow::anyhow!(
                                             "package {} requires absent execution image variant {}",
@@ -520,7 +927,35 @@ pub fn cases(
     Ok(result)
 }
 
-/// Binds every service package and the published workload used by a K3s fleet.
+/// Returns source artifacts selected by a package's native contract.
+fn package_contract_subjects(
+    manifest: &ReleaseManifestV1,
+    package: &crate::manifest::FinalArtifactSet,
+) -> Result<Vec<String>> {
+    let Some(contract) = &package.package_contract else {
+        return Ok(Vec::new());
+    };
+    let mut subjects = Vec::new();
+    for selector in &contract.selectors {
+        let matches = manifest
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.store_path.as_deref() == Some(selector.store_path.as_str()))
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [artifact] => subjects.push(artifact.id.clone()),
+            [] => bail!(
+                "package contract selector {}:{} lacks retained artifact evidence",
+                selector.package,
+                selector.output
+            ),
+            _ => bail!("package contract selector store path is ambiguous"),
+        }
+    }
+    Ok(subjects)
+}
+
+/// Binds every service package and published workload used by a K3s fleet.
 fn k3s_fleet_subjects(
     manifest: &ReleaseManifestV1,
     platform: Platform,
@@ -545,43 +980,31 @@ fn k3s_fleet_subjects(
         let MatrixCell::Artifact { artifact } = &cell.decision else {
             bail!("K3s fleet package {name}/{platform} is not an artifact");
         };
-        if name != "k3s" {
-            let configuration = artifact.configuration.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("K3s fleet {name} lacks its configuration binding")
-            })?;
-            for (id, output) in [
-                (&configuration.module_artifact, "config"),
-                (&configuration.evaluation_base_artifact, "out"),
-            ] {
-                if !artifact.artifact_ids.contains(id)
-                    || !manifest.artifacts.iter().any(|record| {
-                        record.id == *id
-                            && record.kind == ArtifactKind::PackageNar
-                            && record.platform == Some(platform)
-                            && record.output.as_deref() == Some(output)
-                    })
-                {
-                    bail!("K3s fleet {name} lacks its exact configuration companion {id}");
-                }
+        if let Some(package_module) = artifact
+            .package_contract
+            .as_ref()
+            .and_then(|contract| contract.package_module.as_ref())
+        {
+            if package_module.package != "self" && package_module.package != name {
+                bail!("K3s fleet {name} native package module belongs to another package");
             }
         }
         subjects.extend(artifact.artifact_ids.iter().cloned());
+        subjects.extend(package_contract_subjects(manifest, artifact)?);
     }
 
-    // The release manifest currently carries one published OCI index. Reject
-    // ambiguity instead of selecting a workload by ordering or a mutable tag.
-    let indexes: Vec<_> = manifest
+    let indexes = manifest
         .artifacts
         .iter()
         .filter(|artifact| artifact.kind == ArtifactKind::OciIndex)
-        .collect();
-    let manifests: Vec<_> = manifest
+        .collect::<Vec<_>>();
+    let manifests = manifest
         .artifacts
         .iter()
         .filter(|artifact| {
             artifact.kind == ArtifactKind::OciManifest && artifact.platform == Some(platform)
         })
-        .collect();
+        .collect::<Vec<_>>();
     if indexes.len() != 1 || manifests.len() != 1 {
         bail!("K3s fleet requires one published OCI index and platform manifest");
     }
@@ -624,7 +1047,9 @@ fn inherited_package_roles(
             let MatrixCell::Artifact { artifact } = &cell.decision else {
                 continue;
             };
-            propagate_package_role(&artifacts, &artifact.artifact_ids, role, &mut roles)?;
+            let mut roots = artifact.artifact_ids.clone();
+            roots.extend(package_contract_subjects(manifest, artifact)?);
+            propagate_package_role(&artifacts, &roots, role, &mut roles)?;
         }
     }
 
@@ -755,6 +1180,7 @@ pub fn assess_observations(
                 case.id
             );
         }
+        let matrix_passed = validate_matrix_for_case(case, observation)?;
         let start = humantime::parse_rfc3339(&record.started_at)?;
         let finish = humantime::parse_rfc3339(&record.finished_at)?;
         if start > finish
@@ -771,6 +1197,9 @@ pub fn assess_observations(
         let stale = now.duration_since(finish)?.as_secs() > maximum_age;
         let mut passed = record.result == GateResult::Passed
             && observation.checks.values().all(|check| check.passed);
+        if let Some(matrix_passed) = matrix_passed {
+            passed &= matrix_passed;
+        }
         if case.schema_version.is_some() {
             validate_current_scope(case, observation)?;
             if case
@@ -857,6 +1286,683 @@ pub fn assess_observations(
         bail!("qualification evidence contains unknown or duplicate cases");
     }
     Ok(outcomes)
+}
+
+/// Validates exact per-cell results and derives whether the complete matrix passed.
+///
+/// The release case carries the exact evaluated specification. The observation
+/// binds its digest and retains one result for every applicable cell in the same
+/// order. No aggregate status is trusted.
+///
+/// # Errors
+///
+/// Returns an error when the case is not the native adapter matrix case, the
+/// case specification is absent or malformed, the frozen predecessor is
+/// absent, the typed environment differs from the case or executor, a cell is
+/// missing, duplicated, reordered, or changed, or postconditions are not exact
+/// and documented. Every passing postcondition must retain a distinct,
+/// subject-bound production probe with a valid canonical observation digest.
+pub fn validate_native_adapter_matrix_observation(
+    case: &QualificationCase,
+    environment_digest: Sha256Digest,
+    executor_digest: Sha256Digest,
+    observation: &NativeAdapterMatrixObservation,
+) -> Result<bool> {
+    let spec = native_adapter_matrix_spec_for_case(case)?;
+    validate_native_adapter_matrix_spec(spec)?;
+    if case.predecessor.is_none() {
+        bail!("native adapter matrix case lacks its frozen predecessor");
+    }
+    if observation.schema_version != NATIVE_ADAPTER_MATRIX_OBSERVATION_V1 {
+        bail!("unsupported native adapter matrix observation schema");
+    }
+
+    let actual_environment_digest =
+        Sha256Digest::of_bytes(crate::canonical::to_vec(&observation.environment)?);
+    if actual_environment_digest != environment_digest {
+        bail!("native adapter matrix environment differs from its observation identity");
+    }
+    validate_native_adapter_matrix_environment(case, executor_digest, observation)?;
+    let applicable_cells = native_adapter_applicable_cells(spec);
+    if observation.cells.len() != applicable_cells.len() {
+        bail!("native adapter matrix result count differs from its specification");
+    }
+
+    let mut passed = true;
+    let mut probe_digests = BTreeSet::new();
+    for (spec, result) in applicable_cells.into_iter().zip(&observation.cells) {
+        if result.id != spec.id {
+            bail!("native adapter matrix cells are missing, extra, duplicated, or reordered");
+        }
+        let expected_cell_digest = Sha256Digest::of_bytes(crate::canonical::to_vec(spec)?);
+        if result.cell_digest != expected_cell_digest {
+            bail!("native adapter matrix cell differs from its committed specification");
+        }
+        if result.environment_digest != environment_digest {
+            bail!("native adapter matrix cell differs from its execution environment");
+        }
+        let expected_postconditions = spec
+            .postconditions
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let actual_postconditions = result
+            .postconditions
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        if actual_postconditions != expected_postconditions
+            || result
+                .postconditions
+                .values()
+                .any(|postcondition| postcondition.detail.trim().is_empty())
+        {
+            bail!("native adapter matrix cell postconditions are not exact and documented");
+        }
+        let passing_postconditions = result
+            .postconditions
+            .iter()
+            .filter_map(|(name, result)| result.passed.then_some(name.as_str()))
+            .collect::<BTreeSet<_>>();
+        let probe_names = result
+            .probes
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        if probe_names != passing_postconditions {
+            bail!("native adapter matrix passing postconditions lack exact production probes");
+        }
+        let cohort_subject_digest = match &result.cohort_subject {
+            Some(subject) if !passing_postconditions.is_empty() && subject.is_object() => {
+                let subject_bytes = crate::canonical::to_vec(subject)?;
+                if subject_bytes.len() > NATIVE_ADAPTER_MAX_PROBE_BYTES {
+                    bail!("native adapter matrix cohort subject exceeds its size bound");
+                }
+                validate_native_adapter_cell_cohort_subject(spec, expected_cell_digest, subject)?;
+                Some(Sha256Digest::of_bytes(subject_bytes))
+            }
+            None if passing_postconditions.is_empty() => None,
+            _ => bail!("native adapter matrix cohort subject differs from cell success"),
+        };
+        if observation.environment.status == NativeAdapterMatrixEnvironmentStatus::Unqualified
+            && !passing_postconditions.is_empty()
+        {
+            bail!("unqualified native adapter matrix cells cannot carry passing postconditions");
+        }
+
+        for (postcondition, probe) in &result.probes {
+            let cohort_subject_digest = cohort_subject_digest.ok_or_else(|| {
+                anyhow::anyhow!("native adapter matrix probe lacks its cohort subject")
+            })?;
+            validate_native_adapter_postcondition_probe(
+                case,
+                spec,
+                postcondition,
+                cohort_subject_digest,
+                expected_cell_digest,
+                probe,
+            )?;
+            if !probe_digests.insert(probe.observation_digest) {
+                bail!(
+                    "native adapter matrix replays a production probe across postconditions or cells"
+                );
+            }
+        }
+        passed &= passing_postconditions.len() == result.postconditions.len();
+    }
+
+    if passed && observation.environment.status == NativeAdapterMatrixEnvironmentStatus::Unqualified
+    {
+        bail!("an unqualified native adapter matrix environment cannot pass");
+    }
+
+    Ok(passed)
+}
+
+fn validate_native_adapter_postcondition_probe(
+    case: &QualificationCase,
+    cell: &NativeAdapterCellSpec,
+    postcondition: &str,
+    cohort_subject_digest: Sha256Digest,
+    cell_digest: Sha256Digest,
+    probe: &NativeAdapterPostconditionProbe,
+) -> Result<()> {
+    let expected_kind = cell
+        .postcondition_kinds
+        .get(postcondition)
+        .ok_or_else(|| anyhow::anyhow!("native adapter matrix postcondition has no probe class"))?;
+    let valid_disposition = match &cell.disposition {
+        NativeAdapterDispositionPolicy::Exact { value } => probe.disposition == *value,
+        NativeAdapterDispositionPolicy::CancellationRoute {
+            supported,
+            unsupported,
+        } => probe.disposition == *supported || probe.disposition == *unsupported,
+    };
+    if probe.schema_version != NATIVE_ADAPTER_POSTCONDITION_PROBE_V1
+        || probe.kind != *expected_kind
+        || probe.cell_id != cell.id
+        || probe.cell_digest != cell_digest
+        || !valid_disposition
+        || probe.subject_digest != case.subjects_digest
+        || probe.cohort_subject_digest != cohort_subject_digest
+        || probe.observations.is_empty()
+        || probe.observations.len() > NATIVE_ADAPTER_MAX_PROBE_FACTS
+        || probe
+            .observations
+            .iter()
+            .any(|(name, value)| !matrix_token(name) || value.is_null())
+    {
+        bail!("native adapter matrix postcondition probe is malformed or misbound");
+    }
+
+    let observation_bytes = crate::canonical::to_vec(&probe.observations)?;
+    if observation_bytes.len() > NATIVE_ADAPTER_MAX_PROBE_BYTES
+        || Sha256Digest::of_bytes(observation_bytes) != probe.observation_digest
+    {
+        bail!("native adapter matrix postcondition probe digest is invalid");
+    }
+    Ok(())
+}
+
+fn validate_native_adapter_cell_cohort_subject(
+    cell: &NativeAdapterCellSpec,
+    cell_digest: Sha256Digest,
+    subject: &serde_json::Value,
+) -> Result<()> {
+    let binding: NativeAdapterCellCohortSubject = serde_json::from_value(subject.clone())?;
+    if binding.schema != NATIVE_ADAPTER_CELL_COHORT_SUBJECT_V1
+        || binding.cell_id != cell.id
+        || binding.cell_digest != cell_digest
+        || binding.boundary != cell.boundary
+        || binding.failure != cell.failure
+        || binding.candidate != cell.candidate
+        || binding.predecessor != cell.predecessor
+        || !binding.subject.is_object()
+    {
+        bail!("native adapter matrix cohort subject is bound to another cell");
+    }
+    Ok(())
+}
+
+/// Returns the required scenario disposition for one immutable matrix cell.
+#[must_use]
+pub fn native_adapter_expected_disposition(cell: &NativeAdapterCellSpec) -> Option<&str> {
+    match &cell.disposition {
+        NativeAdapterDispositionPolicy::Exact { value } => Some(value),
+        NativeAdapterDispositionPolicy::CancellationRoute { .. } => None,
+    }
+}
+
+/// Constructs the deterministic aggregate check derived from exact matrix cells.
+///
+/// # Errors
+///
+/// Returns an error if the cell or postcondition count cannot be represented.
+pub fn native_adapter_matrix_check(
+    observation: &NativeAdapterMatrixObservation,
+    passed: bool,
+) -> Result<CheckObservation> {
+    let passed_cells = observation
+        .cells
+        .iter()
+        .filter(|cell| cell.postconditions.values().all(|result| result.passed))
+        .count();
+    let postcondition_count = observation
+        .cells
+        .iter()
+        .try_fold(0_usize, |count, cell| {
+            count.checked_add(cell.postconditions.len())
+        })
+        .ok_or_else(|| anyhow::anyhow!("native adapter matrix postcondition count overflows"))?;
+    Ok(CheckObservation {
+        passed,
+        detail: format!(
+            "derived {passed_cells}/{} native adapter cells and {postcondition_count} exact postconditions",
+            observation.cells.len()
+        ),
+    })
+}
+
+/// Validates the complete matrix-specific portion of one case observation.
+///
+/// Returns the derived matrix result, or `None` for a non-matrix case. Matrix
+/// checks and operation denominators are recomputed from the exact cell results.
+///
+/// # Errors
+///
+/// Returns an error for inapplicable matrix evidence or when any specification,
+/// environment, cell, aggregate check, or operation denominator is inconsistent.
+pub fn validate_matrix_for_case(
+    case: &QualificationCase,
+    observation: &QualificationObservation,
+) -> Result<Option<bool>> {
+    if case.requirement_id != NATIVE_ADAPTER_MATRIX_REQUIREMENT {
+        if observation.native_adapter_matrix.is_some() {
+            bail!("native adapter matrix evidence is inapplicable to this qualification case");
+        }
+        return Ok(None);
+    }
+
+    let matrix = observation.native_adapter_matrix.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("native adapter matrix case lacks exact per-cell evidence")
+    })?;
+    let passed = validate_native_adapter_matrix_observation(
+        case,
+        observation.environment_digest,
+        observation.executor_digest,
+        matrix,
+    )?;
+    let matrix_check = case
+        .checks
+        .iter()
+        .find(|name| name.as_str() == NATIVE_ADAPTER_MATRIX_CHECK)
+        .ok_or_else(|| anyhow::anyhow!("native adapter matrix case lacks its policy check"))?;
+    let check = observation
+        .checks
+        .get(matrix_check)
+        .ok_or_else(|| anyhow::anyhow!("native adapter matrix case lacks its derived check"))?;
+    let expected_check = native_adapter_matrix_check(matrix, passed)?;
+    if check != &expected_check {
+        bail!("native adapter matrix aggregate check differs from its derived result");
+    }
+
+    let cell_count = u64::try_from(matrix.cells.len())?;
+    let postcondition_count = matrix.cells.iter().try_fold(0_u64, |count, cell| {
+        Ok::<_, std::num::TryFromIntError>(count + u64::try_from(cell.postconditions.len())?)
+    })?;
+    let mut expected_operation_names = case
+        .measurements
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    expected_operation_names.insert("matrix_cells_reported");
+    expected_operation_names.insert("matrix_postconditions_reported");
+    let actual_operation_names = observation
+        .operations
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if actual_operation_names != expected_operation_names
+        || observation.operations.get("matrix_cells_reported") != Some(&cell_count)
+        || observation.operations.get("matrix_postconditions_reported")
+            != Some(&postcondition_count)
+    {
+        bail!("native adapter matrix execution denominators differ from its cell results");
+    }
+
+    Ok(Some(passed))
+}
+
+fn native_adapter_matrix_spec_for_case(
+    case: &QualificationCase,
+) -> Result<&NativeAdapterMatrixSpec> {
+    if case.requirement_id != NATIVE_ADAPTER_MATRIX_REQUIREMENT {
+        bail!("native adapter matrix case has the wrong requirement identity");
+    }
+    if case
+        .checks
+        .iter()
+        .filter(|check| check.as_str() == NATIVE_ADAPTER_MATRIX_CHECK)
+        .count()
+        != 1
+    {
+        bail!("native adapter matrix case lacks its stable acceptance check");
+    }
+    case.matrix_spec
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("native adapter matrix case lacks its exact specification"))
+}
+
+fn validate_native_adapter_matrix_environment(
+    case: &QualificationCase,
+    executor_digest: Sha256Digest,
+    observation: &NativeAdapterMatrixObservation,
+) -> Result<()> {
+    let environment = &observation.environment;
+    let predecessor = case.predecessor.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("native adapter matrix case lacks its frozen predecessor")
+    })?;
+    if environment.schema_version != NATIVE_ADAPTER_MATRIX_ENVIRONMENT_V1
+        || environment.platform != Platform::X86_64Linux
+        || environment.scenario_registry_digest != executor_digest
+        || environment.candidate_subjects_digest != case.subjects_digest
+        || environment.predecessor_manifest_digest != predecessor.manifest_digest
+    {
+        bail!("native adapter matrix environment differs from its case identities");
+    }
+
+    let production_components = [
+        environment.qemu.as_ref(),
+        environment.firmware.as_ref(),
+        environment.guest_kernel.as_ref(),
+        environment.fault_injection_tool.as_ref(),
+        environment.harness.as_ref(),
+    ];
+    match environment.status {
+        NativeAdapterMatrixEnvironmentStatus::Unqualified => {
+            if environment
+                .unqualified_reason
+                .as_ref()
+                .is_none_or(|reason| reason.trim().is_empty())
+                || environment.cohort.is_some()
+                || production_components
+                    .iter()
+                    .any(|component| component.is_some())
+            {
+                bail!("unqualified native adapter matrix environment has production identities");
+            }
+        }
+        NativeAdapterMatrixEnvironmentStatus::Production => {
+            if environment.unqualified_reason.is_some()
+                || environment
+                    .cohort
+                    .as_ref()
+                    .is_none_or(|cohort| !matrix_token(cohort))
+                || production_components.iter().any(|component| {
+                    component.is_none_or(|component| {
+                        !matrix_token(&component.name)
+                            || !matrix_component_version(&component.version)
+                    })
+                })
+            {
+                bail!("production native adapter matrix environment is incomplete");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_native_adapter_matrix_spec(spec: &NativeAdapterMatrixSpec) -> Result<()> {
+    if spec.schema != NATIVE_ADAPTER_MATRIX_SPEC_V1 {
+        bail!("native adapter matrix specification has an unsupported schema");
+    }
+
+    let surface = &spec.surface;
+    if surface.schema != NATIVE_ADAPTER_SURFACE_V1
+        || surface.matrix_schema != NATIVE_ADAPTER_MATRIX_SCHEMA_V1
+        || surface.adapters.is_empty()
+        || surface.adapters.len() > NATIVE_ADAPTER_MATRIX_MAX_ADAPTERS
+        || surface.scenarios.is_empty()
+        || surface.scenarios.len() > NATIVE_ADAPTER_MATRIX_MAX_SCENARIOS
+        || !strictly_sorted_by(&surface.adapters, |adapter| adapter.adapter.clone())
+        || !unique_by(&surface.adapters, |adapter| adapter.interface_name.clone())
+        || surface.families.is_empty()
+        || !unique_by(&surface.families, |family| family.clone())
+        || surface.families.iter().any(|family| !matrix_token(family))
+        || surface.invalidation_dimensions.is_empty()
+        || !unique_by(&surface.invalidation_dimensions, |dimension| {
+            dimension.clone()
+        })
+        || surface
+            .invalidation_dimensions
+            .iter()
+            .any(|dimension| !matrix_token(dimension))
+        || !unique_by(&surface.scenarios, |scenario| scenario.id.clone())
+    {
+        bail!("native adapter matrix surface has inconsistent schemas or ordering");
+    }
+
+    for adapter in &surface.adapters {
+        if !valid_native_adapter(adapter)
+            || adapter
+                .conformance_families
+                .iter()
+                .any(|family| !surface.families.contains(family))
+        {
+            bail!("native adapter matrix surface contains an invalid adapter");
+        }
+    }
+    for scenario in &surface.scenarios {
+        if !matrix_token(&scenario.id)
+            || !matrix_token(&scenario.boundary)
+            || !matrix_token(&scenario.failure)
+            || !matrix_token(&scenario.family)
+            || !surface.families.contains(&scenario.family)
+            || !matrix_token(&scenario.predecessor)
+            || !matrix_token(&scenario.candidate)
+            || scenario.postconditions.is_empty()
+            || !unique_by(&scenario.postconditions, |postcondition| {
+                postcondition.name.clone()
+            })
+            || scenario.postconditions.iter().any(|postcondition| {
+                !matrix_token(&postcondition.name) || !matrix_token(&postcondition.evidence_kind)
+            })
+            || scenario
+                .applicability
+                .required_resource_lifetimes
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || match &scenario.disposition {
+                NativeAdapterDispositionPolicy::Exact { value } => !matrix_token(value),
+                NativeAdapterDispositionPolicy::CancellationRoute {
+                    supported,
+                    unsupported,
+                } => {
+                    !matrix_token(supported)
+                        || !matrix_token(unsupported)
+                        || supported == unsupported
+                }
+            }
+        {
+            bail!("native adapter matrix surface contains an invalid scenario");
+        }
+    }
+
+    if spec.cells.is_empty()
+        || spec.cells.len() > NATIVE_ADAPTER_MATRIX_MAX_CELLS
+        || !strictly_sorted_by(&spec.cells, |cell| cell.id.clone())
+    {
+        bail!("native adapter matrix cells are empty, oversized, or unordered");
+    }
+    for cell in &spec.cells {
+        let adapter = surface
+            .adapters
+            .iter()
+            .find(|adapter| adapter.adapter == cell.adapter)
+            .ok_or_else(|| anyhow::anyhow!("native adapter cell references an absent adapter"))?;
+        let method = adapter
+            .methods
+            .iter()
+            .find(|method| method.method == cell.method)
+            .ok_or_else(|| anyhow::anyhow!("native adapter cell references an absent method"))?;
+        let scenario = surface
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == cell.id.rsplit('/').next().unwrap_or_default())
+            .ok_or_else(|| anyhow::anyhow!("native adapter cell references an absent scenario"))?;
+        let expected_id = format!(
+            "{}/{}/abi-{}/{}/{}",
+            adapter.adapter,
+            adapter.interface_name,
+            adapter.interface_abi,
+            method.method,
+            scenario.id
+        );
+        let expected_postconditions = scenario
+            .postconditions
+            .iter()
+            .map(|postcondition| postcondition.name.clone())
+            .collect::<Vec<_>>();
+        let expected_postcondition_kinds = scenario
+            .postconditions
+            .iter()
+            .map(|postcondition| {
+                (
+                    postcondition.name.clone(),
+                    postcondition.evidence_kind.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        if cell.id != expected_id
+            || cell.matrix_schema != surface.matrix_schema
+            || cell.interface.name != adapter.interface_name
+            || cell.interface.abi != adapter.interface_abi
+            || cell.interface.descriptor != adapter.interface_descriptor
+            || cell.required_target_access != method.required_target_access
+            || cell.scope != adapter.scope
+            || cell.boundary != scenario.boundary
+            || cell.failure != scenario.failure
+            || cell.predecessor != scenario.predecessor
+            || cell.candidate != scenario.candidate
+            || cell.disposition != scenario.disposition
+            || cell.applicability != scenario.applicability
+            || cell.postconditions != expected_postconditions
+            || cell.postcondition_kinds != expected_postcondition_kinds
+            || cell.invalidated_by != surface.invalidation_dimensions
+        {
+            bail!("native adapter cell differs from its referenced declarations");
+        }
+    }
+
+    let applicability = &spec.applicability;
+    let applicable_ids = applicability
+        .applicable_cell_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let inapplicable_ids = applicability
+        .inapplicable_cells
+        .iter()
+        .map(|entry| entry.cell_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let cell_ids = spec
+        .cells
+        .iter()
+        .map(|cell| cell.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let partition = applicable_ids
+        .union(&inapplicable_ids)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if applicability.schema != NATIVE_ADAPTER_MATRIX_APPLICABILITY_V1
+        || applicability.applicable_cell_ids.is_empty()
+        || !strictly_sorted_by(&applicability.applicable_cell_ids, Clone::clone)
+        || applicability.applicable_cell_ids.len() != applicable_ids.len()
+        || applicability.inapplicable_cells.len() != inapplicable_ids.len()
+        || applicability
+            .inapplicable_cells
+            .windows(2)
+            .any(|pair| pair[0].cell_id >= pair[1].cell_id)
+        || applicability.inapplicable_cells.iter().any(|entry| {
+            !matches!(
+                entry.reason.as_str(),
+                "required-resource-lifetime-unavailable" | "missing-authenticated-state-format"
+            )
+        })
+        || !applicable_ids.is_disjoint(&inapplicable_ids)
+        || partition != cell_ids
+    {
+        bail!("native adapter applicability is not an exact cell partition");
+    }
+
+    Ok(())
+}
+
+/// Returns the ordered production-applicable cells from a validated matrix spec.
+pub fn native_adapter_applicable_cells(
+    spec: &NativeAdapterMatrixSpec,
+) -> Vec<&NativeAdapterCellSpec> {
+    let applicable = spec
+        .applicability
+        .applicable_cell_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+
+    spec.cells
+        .iter()
+        .filter(|cell| applicable.contains(cell.id.as_str()))
+        .collect()
+}
+
+fn valid_native_adapter(adapter: &NativeAdapterSurfaceAdapter) -> bool {
+    if !matrix_token(&adapter.adapter)
+        || !matrix_token(&adapter.interface_name)
+        || adapter.interface_abi != 1
+        || adapter.conformance_families.is_empty()
+        || !unique_by(&adapter.conformance_families, |family| family.clone())
+        || !matrix_token(&adapter.scope)
+        || !matrix_token(&adapter.observation_kind)
+        || adapter
+            .provider_contract
+            .resource_lifetimes
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        || adapter.methods.is_empty()
+        || !strictly_sorted_by(&adapter.methods, |method| method.method.clone())
+        || !valid_native_adapter_implementation(&adapter.provider_implementation)
+    {
+        return false;
+    }
+
+    adapter
+        .methods
+        .iter()
+        .all(|method| matrix_token(&method.method))
+}
+
+fn valid_native_adapter_implementation(claim: &NativeAdapterImplementationClaim) -> bool {
+    claim.contract.starts_with("/nix/store/")
+        && claim.contract.len() <= 4096
+        && matrix_token(&claim.implementation)
+        && valid_native_adapter_artifact(&claim.observer.artifact)
+        && !claim.observer.entry_point.is_empty()
+        && claim.observer.arguments.is_object()
+        && claim.observer.result.is_object()
+}
+
+fn valid_native_adapter_artifact(value: &serde_json::Value) -> bool {
+    let Some(artifact) = value.as_object() else {
+        return false;
+    };
+    let Some(selector) = artifact
+        .get("selector")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    artifact.len() == 2
+        && artifact
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|path| path.starts_with("/nix/store/"))
+        && selector.len() == 3
+        && selector.get("_type").and_then(serde_json::Value::as_str)
+            == Some("aos-package-output-selector")
+        && selector
+            .get("package")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(matrix_component_version)
+        && selector
+            .get("output")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(matrix_component_version)
+}
+
+fn matrix_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 96
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-".contains(&byte))
+}
+
+fn matrix_component_version(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'+' | b'_' | b'-'))
+}
+
+fn unique_by<T, K: Ord>(values: &[T], key: impl Fn(&T) -> K) -> bool {
+    let mut seen = BTreeSet::new();
+    values.iter().all(|value| seen.insert(key(value)))
+}
+
+fn strictly_sorted_by<T, K: Ord>(values: &[T], key: impl Fn(&T) -> K) -> bool {
+    values.windows(2).all(|pair| key(&pair[0]) < key(&pair[1]))
 }
 
 fn claim_outcome(

@@ -1,5 +1,6 @@
 ##! slirp4netns — User-mode networking for unprivileged namespaces
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -17,7 +18,63 @@
   version = "1.3.5";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "slirp4netns";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Slirp4netns reports its CIDR and port-forwarding controls.";
+        "files" = {};
+        "input" = "The userspace network namespace helper command-line contract.";
+        "operation" = "Render supported namespace and network options without opening a namespace.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/slirp4netns\", \"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"--cidr\" in result.stdout and \"--api-socket\" in result.stdout\nprint(\"slirp4netns operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "slirp4netns operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Slirp4netns rejects the malformed CIDR without opening a tap device.";
+        "files" = {};
+        "input" = "A malformed virtual-network CIDR.";
+        "operation" = "Validate the CIDR before joining the named process namespace.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport subprocess\nresult = subprocess.run([\"@out@/bin/slirp4netns\", \"--cidr\", \"qualification-invalid\", \"999999\", \"tap0\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"invalid CIDR\" in result.stderr\n\nsys.stderr.write(\"slirp4netns rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "slirp4netns rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

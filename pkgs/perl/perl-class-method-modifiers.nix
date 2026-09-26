@@ -1,5 +1,6 @@
 ##! perl-class-method-modifiers — Moose-style method modifiers for Perl
 {
+  lib,
   mkDerivation,
   fetchurl,
   perl,
@@ -7,7 +8,81 @@
   version = "2.15";
 in
   import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "perl-class-method-modifiers";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Class::Method::Modifiers preserves the return value and runs the modifier once.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings;\n{ package Qualified::Class; sub value { \"qualified\" } }\n{ package Qualified::Class; use Class::Method::Modifiers; our $calls = 0; after value => sub { $calls++ }; }\ndie \"method result changed\" unless Qualified::Class->value eq \"qualified\";\ndie \"modifier did not run\" unless $Qualified::Class::calls == 1;\n";
+        };
+        "input" = "A class method with an after modifier that records one invocation.";
+        "operation" = "Install the modifier and call the method.";
+        "steps" = [
+          {
+            "argv" = [
+              "@perl@"
+              "probe.pl"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Class::Method::Modifiers rejects the missing target.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use Class::Method::Modifiers qw(install_modifier);\n{ package Qualified::Empty; }\neval { install_modifier(\"Qualified::Empty\", \"after\", \"qualification_missing\", sub {}) };\ndie \"missing method accepted\" unless $@;\n";
+        };
+        "input" = "A modifier targeting a method absent from the class.";
+        "operation" = "Install an after modifier for the nonexistent method.";
+        "steps" = [
+          {
+            "argv" = [
+              "@perl@"
+              "probe.pl"
+            ];
+            "exit_code" = 0;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     src = fetchurl {
       urls = ["https://cpan.metacpan.org/authors/id/E/ET/ETHER/Class-Method-Modifiers-${version}.tar.gz"];

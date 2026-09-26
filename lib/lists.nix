@@ -15,11 +15,7 @@ rec {
   ## Return all elements except the first. Throws on empty list.
   ## # Type
   ## `[a] -> [a]`
-  tail = list:
-    assert builtins.length list > 0; let
-      len = builtins.length list;
-    in
-      genList (i: builtins.elemAt list (i + 1)) (len - 1);
+  tail = builtins.tail;
 
   ## Return the last element of a list. Throws on empty list.
   ## # Type
@@ -168,6 +164,27 @@ rec {
         else go (acc ++ [h]) t;
   in
     go [] list;
+
+  ## Remove duplicate elements by a derived key, preserving first occurrence order.
+  ## # Type
+  ## `(a -> b) -> [a] -> [a]`
+  uniqueBy = keyFn: list: let
+    step = state: value: let
+      key = keyFn value;
+    in
+      if elem key state.seen
+      then state
+      else {
+        seen = state.seen ++ [key];
+        values = state.values ++ [value];
+      };
+  in
+    (foldl' step {
+        seen = [];
+        values = [];
+      }
+      list)
+    .values;
 
   ## # Partitioning
 

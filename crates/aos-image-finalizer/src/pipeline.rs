@@ -252,6 +252,7 @@ pub async fn finalize_image_set(
         artifacts.push(FinalizedImageArtifactV1 {
             id: id.to_owned(),
             kind,
+            publication: kind.publication(),
             path: relative,
             size_bytes,
             sha256,

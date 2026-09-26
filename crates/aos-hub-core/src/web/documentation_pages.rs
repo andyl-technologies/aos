@@ -8,16 +8,16 @@
 
 use super::browse::BrowseQuery;
 use super::browse_pages::{registry_crumbs, state_line};
-use super::console_render::{page_with_session, urlencode, SessionIndicator};
-use super::documentation_content::{node_href, option, prose};
+use super::console_render::{SessionIndicator, page_with_session, urlencode};
+use super::documentation_content::{node_href, option};
 use super::release_browse::ReleaseContext;
 use super::render::escape;
 use crate::clock::Instant;
 use crate::db::{
-    documentation_node_key, path_segment_label, DocumentationTreeEntry, DocumentationTreeNode,
-    DocumentationTreePage, IndexStatus, RegistryRecord,
+    DocumentationTreeEntry, DocumentationTreeNode, DocumentationTreePage, IndexStatus,
+    RegistryRecord, documentation_node_key, path_segment_label,
 };
-use aos_doc_model::PackageDocumentation;
+use aos_doc_model::PackageDocumentationProjection;
 use std::fmt::Write as _;
 
 fn entry_href(
@@ -59,7 +59,12 @@ fn children_html(
     for node in &children.items {
         let _ = write!(html, "<li data-node=\"{}\">", escape(&node.key));
         if node.child_count > 0 {
-            let _ = write!(html, "<button class=\"doc-expand\" type=\"button\" aria-expanded=\"false\" aria-label=\"Expand {}\" data-doc-expand=\"{}\" hidden>+</button>", escape(&node.label), escape(&node.key));
+            let _ = write!(
+                html,
+                "<button class=\"doc-expand\" type=\"button\" aria-expanded=\"false\" aria-label=\"Expand {}\" data-doc-expand=\"{}\" hidden>+</button>",
+                escape(&node.label),
+                escape(&node.key)
+            );
         } else {
             html.push_str("<span class=\"doc-tree-spacer\"></span>");
         }
@@ -113,10 +118,18 @@ fn folder_html(
         "<section class=\"doc-folder\" data-doc-folder aria-labelledby=\"doc-folder-title\"><div class=\"doc-folder-head\"><h2 id=\"doc-folder-title\">{}</h2><nav class=\"doc-view-toggle\" aria-label=\"Listing\"><a href=\"{}\"{}>Children <span class=\"dim\">{}</span></a><a href=\"{}&amp;view=all\"{}>Options</a></nav></div>",
         escape(&heading),
         escape(&base),
-        if flattened { "" } else { " aria-current=\"true\"" },
+        if flattened {
+            ""
+        } else {
+            " aria-current=\"true\""
+        },
         node.child_count,
         escape(&base),
-        if flattened { " aria-current=\"true\"" } else { "" },
+        if flattened {
+            " aria-current=\"true\""
+        } else {
+            ""
+        },
     );
     if listing.items.is_empty() {
         html.push_str("<p class=\"dim\">No documented options here.</p></section>");
@@ -146,7 +159,11 @@ fn folder_html(
         let _ = write!(
             html,
             "<tr class=\"{}\" data-node=\"{}\"><td><a href=\"{}\">{}</a>{}</td><td>{}</td><td>{}</td></tr>",
-            if is_branch { "doc-folder-branch" } else { "doc-folder-option" },
+            if is_branch {
+                "doc-folder-branch"
+            } else {
+                "doc-folder-option"
+            },
             escape(&child.key),
             escape(&scoped_node_href(slug, release, &child.key, package)),
             escape(&name),
@@ -186,8 +203,8 @@ pub(super) fn page(
     variants: &DocumentationTreePage<DocumentationTreeEntry>,
     results: Option<&DocumentationTreePage<DocumentationTreeEntry>>,
     selected: Option<&DocumentationTreeEntry>,
-    document: Option<&PackageDocumentation>,
-    package_guide: Option<(&DocumentationTreeEntry, &PackageDocumentation)>,
+    document: Option<&PackageDocumentationProjection>,
+    package_guide: Option<(&DocumentationTreeEntry, &PackageDocumentationProjection)>,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -211,13 +228,35 @@ pub(super) fn page(
     } else {
         "Entire release"
     };
-    let _ = write!(html, "<div class=\"doc-browser\" data-doc-browser data-doc-base=\"/{}/-/docs\" data-doc-release=\"{}\" data-doc-root=\"{}\" data-doc-package=\"{}\"><form class=\"doc-search\" action=\"/{}/-/docs\" method=\"get\" role=\"search\"><input type=\"hidden\" name=\"release\" value=\"{}\"><input type=\"hidden\" name=\"root\" value=\"{}\">{}<label for=\"doc-query\">Search documentation</label><input id=\"doc-query\" type=\"search\" name=\"q\" value=\"{}\" placeholder=\"Option path, purpose, or package…\"><label>Within <select name=\"scope\"><option value=\"release\">{}</option><option value=\"subtree\"{}>This subtree</option></select></label><button type=\"submit\">Search</button></form>",
-        escape(slug), escape(release), escape(&node.key), escape(package.unwrap_or_default()), escape(slug), escape(release), escape(&node.key), package_input, escape(query.q.as_deref().unwrap_or_default()), scope_label, if query.scope.as_deref() == Some("subtree") { " selected" } else { "" });
+    let _ = write!(
+        html,
+        "<div class=\"doc-browser\" data-doc-browser data-doc-base=\"/{}/-/docs\" data-doc-release=\"{}\" data-doc-root=\"{}\" data-doc-package=\"{}\"><form class=\"doc-search\" action=\"/{}/-/docs\" method=\"get\" role=\"search\"><input type=\"hidden\" name=\"release\" value=\"{}\"><input type=\"hidden\" name=\"root\" value=\"{}\">{}<label for=\"doc-query\">Search documentation</label><input id=\"doc-query\" type=\"search\" name=\"q\" value=\"{}\" placeholder=\"Option path, purpose, or package…\"><label>Within <select name=\"scope\"><option value=\"release\">{}</option><option value=\"subtree\"{}>This subtree</option></select></label><button type=\"submit\">Search</button></form>",
+        escape(slug),
+        escape(release),
+        escape(&node.key),
+        escape(package.unwrap_or_default()),
+        escape(slug),
+        escape(release),
+        escape(&node.key),
+        package_input,
+        escape(query.q.as_deref().unwrap_or_default()),
+        scope_label,
+        if query.scope.as_deref() == Some("subtree") {
+            " selected"
+        } else {
+            ""
+        }
+    );
     html.push_str("<nav class=\"doc-breadcrumbs\" aria-label=\"Configuration path\">");
     let _ = write!(
         html,
         "<a class=\"doc-root\" href=\"{}\" aria-label=\"Configuration root\" title=\"Configuration root\">/</a>",
-        escape(&scoped_node_href(slug, release, &documentation_node_key(&[]), package))
+        escape(&scoped_node_href(
+            slug,
+            release,
+            &documentation_node_key(&[]),
+            package
+        ))
     );
     for depth in 1..=node.path.len() {
         let _ = write!(
@@ -262,7 +301,7 @@ pub(super) fn page(
     }
     html.push_str("</aside><div class=\"doc-reader\" data-doc-reader>");
     if let Some((entry, document)) = package_guide {
-        html.push_str(&guide_html(entry, document, slug, release));
+        html.push_str(&guide_html(entry, document));
     }
     if let Some(results) = results {
         let _ = write!(
@@ -274,8 +313,16 @@ pub(super) fn page(
             html.push_str("<p>No matching documentation in this scope.</p>");
         }
         for entry in &results.items {
-            let _ = write!(html, "<article class=\"doc-result\"><h3><a href=\"{}\">{}</a></h3><p class=\"dim\">{} · {} · {}</p><p>{}</p></article>",
-                escape(&entry_href(slug, release, entry, package)), escape(&entry.title), escape(&entry.kind), escape(&entry.package_name), escape(&entry.platform), escape(&entry.summary));
+            let _ = write!(
+                html,
+                "<article class=\"doc-result\"><h3><a href=\"{}\">{}</a></h3><p class=\"dim\">{} · {} · {}</p><p>{}</p></article>",
+                escape(&entry_href(slug, release, entry, package)),
+                escape(&entry.title),
+                escape(&entry.kind),
+                escape(&entry.package_name),
+                escape(&entry.platform),
+                escape(&entry.summary)
+            );
         }
         if let Some(cursor) = &results.next_cursor {
             let _ = write!(
@@ -334,14 +381,14 @@ pub(super) fn page(
             html.push_str("</details>");
         }
         if entry.kind == "option" {
-            if let Some(found) = document.options.iter().find(|option| {
+            if let Some(found) = document.options().iter().find(|option| {
                 option.display_path == entry.document_key
                     && documentation_node_key(&option.path) == node.key
             }) {
                 html.push_str(&option(found, slug, release));
             }
         } else if package_guide.is_none() {
-            html.push_str(&guide_html(entry, document, slug, release));
+            html.push_str(&guide_html(entry, document));
         }
     }
     // A branch always lists what lies beneath it, even under a submodule
@@ -377,12 +424,7 @@ pub(super) fn page(
 }
 
 /// Renders the package overview without expanding its option reference.
-fn guide_html(
-    entry: &DocumentationTreeEntry,
-    document: &PackageDocumentation,
-    slug: &str,
-    release: &str,
-) -> String {
+fn guide_html(entry: &DocumentationTreeEntry, document: &PackageDocumentationProjection) -> String {
     let mut html = String::new();
     let _ = write!(
         html,
@@ -390,21 +432,7 @@ fn guide_html(
         escape(&entry.title),
         escape(&entry.summary)
     );
-    // Remove options before using the model's runtime renderer: the focused
-    // browser must never emit the entire release option reference.
-    let mut guide = document.clone();
-    guide.options.clear();
-    guide.sections.clear();
-    html.push_str(&guide.render_html_fragment());
-    for section in &document.sections {
-        let _ = write!(
-            html,
-            "<section id=\"{}\"><h3>{}</h3>{}</section>",
-            escape(&section.id),
-            escape(&section.title),
-            prose(&section.blocks, slug, release)
-        );
-    }
+    html.push_str(&document.render_overview_html_fragment());
     html.push_str("</article>");
     html
 }

@@ -34,7 +34,7 @@
     "x86_64-darwin"
     "aarch64-darwin"
   ];
-  publisherClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
+  publisherClosureInfo = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = matrixPackages ++ [releaseTool];
     pname = "native-hub-release-publisher-closure-info";
   };

@@ -7,6 +7,7 @@
 ##! wasm-bindgen invocation is delegated to wasm-bindgen-cli, which is
 ##! version-locked separately to the `wasm-bindgen` crate.
 {
+  lib,
   mkCargoPackage,
   fetchurl,
   fetchCargoDeps,
@@ -41,7 +42,63 @@
   ];
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "worker-build";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Worker-build documents its build mode, target, output-directory, and TypeScript controls.";
+        "files" = {};
+        "input" = "A request for the worker build command's offline option contract.";
+        "operation" = "Render the command help before inspecting or building a Rust project.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/worker-build\", \"--no-typescript\", \"--help\"], capture_output=True, text=True)\noutput = result.stdout + result.stderr\nassert \"Usage:\" in output and \"--mode\" in output and \"--target\" in output and \"--out-dir\" in output\nprint(\"worker-build operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "worker-build operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Worker-build rejects the unsupported mode value.";
+        "files" = {};
+        "input" = "A build mode outside worker-build's supported no-install, normal, and force values.";
+        "operation" = "Validate the mode selector before resolving project dependencies.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport subprocess\nresult = subprocess.run([\"@out@/bin/worker-build\", \"--mode\", \"qualification-invalid\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"invalid value\" in result.stderr.lower()\n\nsys.stderr.write(\"worker-build rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "worker-build rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     cargoDeps = fetchCargoDeps {

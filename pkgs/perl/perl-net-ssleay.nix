@@ -1,5 +1,6 @@
 ##! perl-net-ssleay — OpenSSL bindings for Perl
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -11,7 +12,81 @@
   runtimeClosureManifest = builtins.concatStringsSep "\n" (map builtins.toString [perl openssl zlib]);
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "perl-net-ssleay";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The binding returns a nonempty OpenSSL version string.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use Net::SSLeay;\nmy $version = Net::SSLeay::SSLeay_version(0);\ndie \"TLS version unavailable\" unless defined($version) && $version =~ /OpenSSL/;\n";
+        };
+        "input" = "A request for the linked TLS library version.";
+        "operation" = "Query OpenSSL through Net::SSLeay's public version API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@perl@"
+              "probe.pl"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The decoder returns no certificate object and records an OpenSSL error.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use Net::SSLeay;\nmy $bio = Net::SSLeay::BIO_new(Net::SSLeay::BIO_s_mem());\nNet::SSLeay::BIO_write($bio, \"not a certificate\");\nmy $certificate = Net::SSLeay::PEM_read_bio_X509($bio);\nNet::SSLeay::BIO_free($bio);\ndie \"malformed certificate accepted\" if $certificate;\ndie \"rejection lacked TLS error\" unless Net::SSLeay::ERR_get_error();\n";
+        };
+        "input" = "Text without a PEM certificate boundary.";
+        "operation" = "Decode the malformed text through Net::SSLeay's X.509 BIO API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@perl@"
+              "probe.pl"
+            ];
+            "exit_code" = 0;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

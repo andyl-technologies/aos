@@ -46,22 +46,22 @@ pub mod load;
 
 use std::collections::BTreeMap;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use aos_oci_types::{
-    limits::MAX_JSON_BYTES as MAX_OCI_JSON_BYTES, ContainerDsseEnvelope, ContainerRelease,
-    Descriptor, ImageConfig, ImageIndex, ImageManifest, ManifestReference, MediaType,
-    RepositoryName, Sha256Digest, CONTAINER_DSSE_SIGNATURE_NAMESPACE,
+    CONTAINER_DSSE_SIGNATURE_NAMESPACE, ContainerDsseEnvelope, ContainerRelease, Descriptor,
+    ImageConfig, ImageIndex, ImageManifest, ManifestReference, MediaType, RepositoryName,
+    Sha256Digest, limits::MAX_JSON_BYTES as MAX_OCI_JSON_BYTES,
 };
-use aos_registry_surface::manifest::{ImageVerificationState, RegistryRootConfig};
+use aos_registry_surface::manifest::RegistryRootConfig;
 use aos_registry_surface::object::{Commit, ObjectKind};
-use aos_registry_surface::refs::{parse_head, parse_info_refs, Refs};
+use aos_registry_surface::refs::{Refs, parse_head, parse_info_refs};
 use aos_registry_surface::sshsig;
-use aos_registry_surface::tag::{parse_signed_tag, verify_signed_tag, SignedTag};
-use aos_registry_surface::tagobject::{verify_name_binding, TagTarget};
+use aos_registry_surface::tag::{SignedTag, parse_signed_tag, verify_signed_tag};
+use aos_registry_surface::tagobject::{TagTarget, verify_name_binding};
 use axum::body::to_bytes;
 use base64::Engine as _;
 use ed25519_dalek::VerifyingKey;
-use futures_util::{future::try_join_all, TryStreamExt as _};
+use futures_util::{TryStreamExt as _, future::try_join_all};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -75,7 +75,7 @@ use crate::db::{
 };
 use crate::fetch::SurfaceFetch;
 
-use self::load::{load_registry_tree_with_reader, load_release_tree_with_reader, ObjectReader};
+use self::load::{ObjectReader, load_registry_tree_with_reader, load_release_tree_with_reader};
 
 /// Maximum branches (channels) processed per index run.
 ///
@@ -697,7 +697,6 @@ async fn index_registry_inner(
                         refs_digest,
                         &source_commit,
                         &release_tree.root.registry.name,
-                        release_tree.root.registry.require_signed_ukis,
                         &release_tree.packages,
                         &tag_name,
                         &mut release_leases,
@@ -716,7 +715,7 @@ async fn index_registry_inner(
                             .flat_map(|image| {
                                 [
                                     image.delivery.object_key.clone(),
-                                    image.delivery.image_info.object_key.clone(),
+                                    image.delivery.artifact_contract.document.object_key.clone(),
                                 ]
                             })
                             .collect::<std::collections::BTreeSet<_>>();
@@ -1571,6 +1570,7 @@ async fn signed_container_admin_projection(
 fn container_evidence_kind(role: ContainerReleaseDescriptorRole) -> &'static str {
     match role {
         ContainerReleaseDescriptorRole::NixClosure => "closure",
+        ContainerReleaseDescriptorRole::Abilities => "abilities",
         ContainerReleaseDescriptorRole::Sbom => "sbom",
         ContainerReleaseDescriptorRole::Source => "source",
         ContainerReleaseDescriptorRole::License => "license",
@@ -1696,8 +1696,13 @@ fn descriptor_identity_matches(left: &Descriptor, right: &Descriptor) -> bool {
 
 fn container_evidence_descriptors(
     release: &ContainerRelease,
-) -> [(&'static str, ContainerReleaseDescriptorRole, &Descriptor); 6] {
-    [
+) -> Vec<(&'static str, ContainerReleaseDescriptorRole, &Descriptor)> {
+    vec![
+        (
+            "abilities",
+            ContainerReleaseDescriptorRole::Abilities,
+            &release.evidence.abilities,
+        ),
         (
             "Nix closure",
             ContainerReleaseDescriptorRole::NixClosure,
@@ -1766,33 +1771,6 @@ fn release_snapshot_artifacts(
                         store_path: entry.source_drv.clone(),
                     });
                 }
-                if let Some(expose) = &entry.expose_artifact {
-                    artifacts.push(ReleaseSnapshotArtifact {
-                        package_name: package.package.name.clone(),
-                        package_version: version.version.clone(),
-                        platform: platform.clone(),
-                        artifact_kind: "expose".to_string(),
-                        store_hash: store_hash_component(&expose.store_path),
-                        store_path: expose.store_path.clone(),
-                    });
-                }
-                if let Some(config) = &entry.config_module {
-                    for (kind, output) in [
-                        ("config", Some(&config.config_output)),
-                        ("evaluation_base_lib", config.evaluation_base_lib.as_ref()),
-                    ] {
-                        if let Some(output) = output {
-                            artifacts.push(ReleaseSnapshotArtifact {
-                                package_name: package.package.name.clone(),
-                                package_version: version.version.clone(),
-                                platform: platform.clone(),
-                                artifact_kind: kind.to_string(),
-                                store_hash: store_hash_component(&output.store_path),
-                                store_path: output.store_path.clone(),
-                            });
-                        }
-                    }
-                }
                 if let Some(documentation) = &entry.documentation {
                     artifacts.push(ReleaseSnapshotArtifact {
                         package_name: package.package.name.clone(),
@@ -1818,10 +1796,17 @@ fn release_snapshot_artifacts(
                             package_version: version.version.clone(),
                             platform: platform.clone(),
                             artifact_kind: "image".to_string(),
-                            store_hash: store_hash_component(&image.delivery.image_info.store_path),
-                            store_path: image.delivery.image_info.store_path.clone(),
+                            store_hash: store_hash_component(
+                                &image.delivery.artifact_contract.document.store_path,
+                            ),
+                            store_path: image
+                                .delivery
+                                .artifact_contract
+                                .document
+                                .store_path
+                                .clone(),
                         });
-                        if let Some(payload) = &image.delivery.update_payload {
+                        if let Some(payload) = &image.delivery.artifact_contract.artifacts {
                             artifacts.push(ReleaseSnapshotArtifact {
                                 package_name: package.package.name.clone(),
                                 package_version: version.version.clone(),
@@ -2146,9 +2131,14 @@ async fn revalidate_reused_release_images(
                 ImageObjectRole::Disk,
             ),
             (
-                image.delivery.image_info.object_key.as_str(),
-                image.delivery.image_info.sha256.as_str(),
-                image.delivery.image_info.byte_size,
+                image
+                    .delivery
+                    .artifact_contract
+                    .document
+                    .object_key
+                    .as_str(),
+                image.delivery.artifact_contract.document.sha256.as_str(),
+                image.delivery.artifact_contract.document.byte_size,
                 ImageObjectRole::ImageInfo,
             ),
         ] {
@@ -2244,7 +2234,6 @@ async fn verify_system_image_objects(
     refs_digest: &str,
     commit: &str,
     registry_identity: &str,
-    require_signed_ukis: bool,
     packages: &[aos_registry_surface::manifest::PackageToml],
     selected_release: &str,
     snapshot_leases: &mut Vec<String>,
@@ -2260,18 +2249,6 @@ async fn verify_system_image_objects(
                         continue;
                     }
                     image.validate_delivery(&version.version, platform)?;
-                    if require_signed_ukis
-                        && image.delivery.uki.verification != ImageVerificationState::PolicyVerified
-                    {
-                        bail!(
-                            "registry '{}' requires signed UKIs, but release '{}' package '{}' platform '{}' format '{}' is not policy-verified",
-                            registry_identity,
-                            version.version,
-                            package.package.name,
-                            platform,
-                            image.format
-                        );
-                    }
                     let indexed_image = crate::db::IndexedSystemImage {
                         package: package.package.name.clone(),
                         release: version.version.clone(),
@@ -2295,13 +2272,18 @@ async fn verify_system_image_objects(
                                 ImageObjectRole::Disk,
                             ),
                             (
-                                image.delivery.image_info.store_path.as_str(),
-                                image.delivery.image_info.nar_hash.as_str(),
-                                image.delivery.image_info.nar_size,
+                                image
+                                    .delivery
+                                    .artifact_contract
+                                    .document
+                                    .store_path
+                                    .as_str(),
+                                image.delivery.artifact_contract.document.nar_hash.as_str(),
+                                image.delivery.artifact_contract.document.nar_size,
                                 ImageObjectRole::ImageInfo,
                             ),
                         ];
-                        if let Some(payload) = &image.delivery.update_payload {
+                        if let Some(payload) = &image.delivery.artifact_contract.artifacts {
                             store_artifacts.push((
                                 payload.store_path.as_str(),
                                 payload.nar_hash.as_str(),
@@ -2331,9 +2313,14 @@ async fn verify_system_image_objects(
                             ImageObjectRole::Disk,
                         ),
                         (
-                            image.delivery.image_info.object_key.as_str(),
-                            image.delivery.image_info.sha256.as_str(),
-                            image.delivery.image_info.byte_size,
+                            image
+                                .delivery
+                                .artifact_contract
+                                .document
+                                .object_key
+                                .as_str(),
+                            image.delivery.artifact_contract.document.sha256.as_str(),
+                            image.delivery.artifact_contract.document.byte_size,
                             ImageObjectRole::ImageInfo,
                         ),
                     ] {
@@ -2509,7 +2496,7 @@ pub async fn fetch_package_documentation(
     package_version: &str,
     platform: &str,
     artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
-) -> Result<aos_doc_model::PackageDocumentation> {
+) -> Result<aos_doc_model::PackageDocumentationProjection> {
     let store_hash = aos_registry_surface::store::store_path_hash(&artifact.store_path)?;
     let narinfo_key = format!("{store_hash}.narinfo");
     let narinfo_bytes = fetch
@@ -2563,15 +2550,16 @@ pub async fn fetch_package_documentation(
                 == aos_registry_surface::store::canonical_digest_hex(&artifact.document_sha256,)?,
         "package documentation JSON identity mismatch"
     );
-    let document = aos_doc_model::PackageDocumentation::from_canonical_json(document_bytes)?;
+    let document =
+        aos_doc_model::PackageDocumentationProjection::from_canonical_json(document_bytes)?;
     anyhow::ensure!(
-        document.package.name == package_name
-            && document.package.version == package_version
-            && document.package.platform == platform
-            && document.identity.semantic_schema_sha256 == artifact.semantic_schema_sha256,
+        document.document.package.name == package_name
+            && document.document.package.version == package_version
+            && document.document.package.platform == platform
+            && document.document.identity.semantic_schema_sha256 == artifact.semantic_schema_sha256,
         "package documentation selection identity mismatch"
     );
-    document.verify_semantic_schema_sha256()?;
+    document.document.verify_semantic_schema_sha256()?;
     Ok(document)
 }
 
@@ -2596,52 +2584,21 @@ async fn verify_package_documentation(
                 .await?;
                 anyhow::ensure!(
                     documentation_digest_matches(
-                        &document.identity.runtime_nar_hash,
+                        &document.document.identity.runtime_nar_hash,
                         &entry.nar_hash,
                     )?,
                     "package documentation runtime identity mismatch"
                 );
-                if let Some(config) = &entry.config_module {
-                    anyhow::ensure!(
-                        document
-                            .identity
-                            .config_module_nar_hash
-                            .as_deref()
-                            .map(|digest| documentation_digest_matches(
-                                digest,
-                                &config.config_output.nar_hash,
-                            ))
-                            .transpose()?
-                            == Some(true),
-                        "package documentation config-module identity mismatch"
-                    );
-                }
-                anyhow::ensure!(
-                    document.identity.system_module_nar_hash.as_deref()
-                        == artifact.system_module_nar_hash.as_deref(),
-                    "package documentation system-module identity mismatch"
-                );
-                if let Some(expose) = &entry.expose_artifact {
-                    anyhow::ensure!(
-                        document
-                            .identity
-                            .expose_artifact_nar_hash
-                            .as_deref()
-                            .map(|digest| documentation_digest_matches(digest, &expose.nar_hash))
-                            .transpose()?
-                            == Some(true),
-                        "package documentation expose-artifact identity mismatch"
-                    );
-                }
                 indexed.push(IndexedPackageDocumentation {
                     package_name: package.package.name.clone(),
                     package_version: version.version.clone(),
                     platform: platform.clone(),
                     artifact: artifact.clone(),
+                    ability_reference: document.ability_reference.clone(),
                     search: document.search_documents(),
                     options: document
-                        .options
-                        .iter()
+                        .options()
+                        .into_iter()
                         .map(|option| crate::db::IndexedDocumentationOption {
                             key: option.display_path.clone(),
                             path: option.path.clone(),
@@ -2728,12 +2685,17 @@ async fn verify_system_image_cache_objects(
         )];
         if image.delivery.is_store_backed() {
             artifacts.push((
-                image.delivery.image_info.store_path.as_str(),
-                image.delivery.image_info.nar_hash.as_str(),
-                image.delivery.image_info.nar_size,
+                image
+                    .delivery
+                    .artifact_contract
+                    .document
+                    .store_path
+                    .as_str(),
+                image.delivery.artifact_contract.document.nar_hash.as_str(),
+                image.delivery.artifact_contract.document.nar_size,
                 "image metadata",
             ));
-            if let Some(payload) = &image.delivery.update_payload {
+            if let Some(payload) = &image.delivery.artifact_contract.artifacts {
                 artifacts.push((
                     payload.store_path.as_str(),
                     payload.nar_hash.as_str(),
@@ -3421,13 +3383,13 @@ mod tests {
     use crate::db::Database;
     use crate::fetch::{StreamedRead, SurfaceFetch};
     use aos_oci_types::{
-        to_canonical_json, Annotations, ContainerDsseSignature,
-        ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
-        ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
-        ContainerReleaseEvidence, ContainerReleaseIdentity, ContainerSignatureInput,
-        ContainerSignatureInputEvidence, NixDefinitionIdentity, NixOutputIdentity, Platform,
-        CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
+        Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
         CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, CONTAINER_SIGNATURE_INPUT_SCHEMA,
+        ContainerDsseSignature, ContainerEvidenceMappingQualification,
+        ContainerEvidenceQualification, ContainerEvidenceQualificationCheck,
+        ContainerNixProvenance, ContainerOciRelease, ContainerReleaseEvidence,
+        ContainerReleaseIdentity, ContainerSignatureInput, ContainerSignatureInputEvidence,
+        NixDefinitionIdentity, NixOutputIdentity, Platform, to_canonical_json,
     };
 
     fn container_descriptor(media_type: MediaType, label: &str) -> Descriptor {
@@ -3490,6 +3452,7 @@ mod tests {
             closure: evidence(MediaType::AosNixClosure, "closure"),
         };
         let release_evidence = ContainerReleaseEvidence {
+            abilities: evidence(MediaType::AosContainerStaticAbilities, "abilities"),
             sbom: evidence(MediaType::SpdxJson, "sbom"),
             source: evidence(MediaType::AosSourceClosure, "source"),
             license: evidence(MediaType::AosLicenseReport, "license"),
@@ -3502,6 +3465,7 @@ mod tests {
             oci: oci.clone(),
             nix: nix.clone(),
             evidence: ContainerSignatureInputEvidence {
+                abilities: release_evidence.abilities.clone(),
                 sbom: release_evidence.sbom.clone(),
                 source: release_evidence.source.clone(),
                 license: release_evidence.license.clone(),
@@ -3566,12 +3530,14 @@ mod tests {
         let mut wrong_signature: ContainerDsseEnvelope =
             serde_json::from_slice(&wrong_signature_bytes).unwrap();
         wrong_signature.signatures[0].keyid = signer_id.clone();
-        assert!(verify_container_dsse(
-            &release,
-            &to_canonical_json(&wrong_signature).unwrap(),
-            &signer_id,
-        )
-        .is_err());
+        assert!(
+            verify_container_dsse(
+                &release,
+                &to_canonical_json(&wrong_signature).unwrap(),
+                &signer_id,
+            )
+            .is_err()
+        );
 
         let mut altered: ContainerDsseEnvelope = serde_json::from_slice(&bytes).unwrap();
         altered.signatures[0].sig = base64::engine::general_purpose::STANDARD.encode(b"malformed");
@@ -3715,7 +3681,11 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
         let artifacts = release_snapshot_artifacts(&[package]);
 
         assert_eq!(artifacts.len(), 3);
-        assert!(artifacts.iter().all(|entry| entry.artifact_kind == "output"));
+        assert!(
+            artifacts
+                .iter()
+                .all(|entry| entry.artifact_kind == "output")
+        );
         assert_eq!(
             artifacts
                 .iter()
@@ -3872,7 +3842,7 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
         output
     }
 
-    fn documentation_fixture() -> aos_doc_model::PackageDocumentation {
+    fn documentation_fixture() -> aos_doc_model::PackageDocumentationProjection {
         let mut document = aos_doc_model::PackageDocumentation {
             schema: aos_doc_model::DOCUMENT_SCHEMA.into(),
             package: aos_doc_model::DocumentedPackage {
@@ -3886,23 +3856,37 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
             identity: aos_doc_model::DocumentationIdentity {
                 semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
                 runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
-                config_module_nar_hash: Some(format!("sha256:{}", "2".repeat(64))),
-                system_module_nar_hash: None,
-                expose_artifact_nar_hash: Some(format!("sha256:{}", "3".repeat(64))),
                 source_nar_hash: format!("sha256:{}", "4".repeat(64)),
             },
-            sections: Vec::new(),
-            options: Vec::new(),
-            runtime: aos_doc_model::RuntimeSurface::default(),
         };
         document.identity.semantic_schema_sha256 = document
             .computed_semantic_schema_sha256()
             .expect("semantic identity");
-        document
+        aos_doc_model::PackageDocumentationProjection::new(
+            document,
+            aos_doc_model::PackageAbilityReference {
+                schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.into(),
+                required_features: vec![
+                    aos_ability_model::RequiredFeature::new("abilities-v1").expect("valid feature"),
+                ],
+                package: aos_ability_model::LocalKey::new("nginx").expect("valid package name"),
+                version: "1.30.4".into(),
+                manifest_sha256: aos_contract::Sha256Digest::of_bytes("manifest"),
+                package_digest: aos_contract::Sha256Digest::of_bytes("package"),
+                interfaces: BTreeMap::new(),
+                guarantees: BTreeMap::new(),
+                option_declarations: Vec::new(),
+                implementations: Vec::new(),
+                exports: Vec::new(),
+                requirements: Vec::new(),
+                handlers: Vec::new(),
+            },
+        )
+        .expect("valid package reference")
     }
 
     fn documentation_surface(
-        document: &aos_doc_model::PackageDocumentation,
+        document: &aos_doc_model::PackageDocumentationProjection,
     ) -> (
         DocumentationFetch,
         aos_registry_surface::manifest::DocumentationArtifactMeta,
@@ -3934,8 +3918,7 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
                 nar_size: u64::try_from(documentation_nar(&contents).len()).expect("NAR size"),
                 document_sha256: format!("sha256:{document_digest}"),
                 document_size: u64::try_from(contents.len()).expect("document size"),
-                semantic_schema_sha256: document.identity.semantic_schema_sha256.clone(),
-                system_module_nar_hash: None,
+                semantic_schema_sha256: document.document.identity.semantic_schema_sha256.clone(),
                 references: Vec::new(),
             },
         )
@@ -3953,24 +3936,28 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
 
         let mut wrong_identity = artifact.clone();
         wrong_identity.document_sha256 = format!("sha256:{}", "f".repeat(64));
-        assert!(fetch_package_documentation(
-            &surface,
-            "nginx",
-            "1.30.4",
-            "x86_64-linux",
-            &wrong_identity,
-        )
-        .await
-        .is_err());
-        assert!(fetch_package_documentation(
-            &surface,
-            "foreign-package",
-            "1.30.4",
-            "x86_64-linux",
-            &artifact,
-        )
-        .await
-        .is_err());
+        assert!(
+            fetch_package_documentation(
+                &surface,
+                "nginx",
+                "1.30.4",
+                "x86_64-linux",
+                &wrong_identity,
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            fetch_package_documentation(
+                &surface,
+                "foreign-package",
+                "1.30.4",
+                "x86_64-linux",
+                &artifact,
+            )
+            .await
+            .is_err()
+        );
     }
 
     #[test]
@@ -3998,9 +3985,11 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
         db.apply_snapshot(registry_id, &snapshot).await.unwrap();
         let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
 
-        assert!(index_registry(&db, &MissingFetch, &registry, Some(999))
-            .await
-            .is_err());
+        assert!(
+            index_registry(&db, &MissingFetch, &registry, Some(999))
+                .await
+                .is_err()
+        );
         assert!(
             reconcile_registry_replica(&db, &MissingFetch, &registry, 999)
                 .await
@@ -4143,13 +4132,15 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
                 "objects": objects,
             }))
             .unwrap();
-            assert!(validate_image_publication_receipt(
-                &bytes,
-                &commit,
-                registry,
-                &expected_receipt_objects()
-            )
-            .is_err());
+            assert!(
+                validate_image_publication_receipt(
+                    &bytes,
+                    &commit,
+                    registry,
+                    &expected_receipt_objects()
+                )
+                .is_err()
+            );
         }
     }
 
@@ -4178,29 +4169,35 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
             ]
         });
         let bytes = serde_json::to_vec(&value).unwrap();
-        assert!(validate_image_publication_receipt(
-            &bytes,
-            &"d".repeat(40),
-            registry,
-            &expected_receipt_objects(),
-        )
-        .is_err());
-        assert!(validate_image_publication_receipt(
-            &bytes,
-            &commit,
-            "different-registry",
-            &expected_receipt_objects(),
-        )
-        .is_err());
+        assert!(
+            validate_image_publication_receipt(
+                &bytes,
+                &"d".repeat(40),
+                registry,
+                &expected_receipt_objects(),
+            )
+            .is_err()
+        );
+        assert!(
+            validate_image_publication_receipt(
+                &bytes,
+                &commit,
+                "different-registry",
+                &expected_receipt_objects(),
+            )
+            .is_err()
+        );
         let mut wrong_digest = value;
         wrong_digest["catalogDigest"] = serde_json::json!("f".repeat(64));
-        assert!(validate_image_publication_receipt(
-            &serde_json::to_vec(&wrong_digest).unwrap(),
-            &commit,
-            registry,
-            &expected_receipt_objects(),
-        )
-        .is_err());
+        assert!(
+            validate_image_publication_receipt(
+                &serde_json::to_vec(&wrong_digest).unwrap(),
+                &commit,
+                registry,
+                &expected_receipt_objects(),
+            )
+            .is_err()
+        );
     }
 
     #[async_trait::async_trait]

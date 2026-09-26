@@ -1,5 +1,6 @@
 ##! GNU Autoconf — generates configure scripts from templates
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -14,7 +15,72 @@
   version = "2.73";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "autoconf";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Autoconf generates a runnable script that accepts the declared option.";
+        "files" = {
+          "configure.ac" = "AC_INIT([aos-probe], [1.0])\nAC_CONFIG_SRCDIR([configure.ac])\nAC_ARG_ENABLE([feature], [AS_HELP_STRING([--enable-feature], [enable probe feature])])\nAS_IF([test \"x$enable_feature\" != xyes], [AC_MSG_ERROR([feature was not enabled])])\nAC_MSG_NOTICE([autoconf feature passed])\nAC_OUTPUT\n";
+        };
+        "input" = "A configure.ac declaring a boolean feature option.";
+        "operation" = "Generate configure, then execute it with the feature enabled.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/autoconf"
+              "--output=configure"
+              "configure.ac"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@bash@"
+              "configure"
+              "--enable-feature"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Autoconf rejects the source with a failure status.";
+        "files" = {
+          "invalid.ac" = "AC_INIT([aos-probe], [1.0])\nAC_MSG_NOTICE([unterminated)\nAC_OUTPUT\n";
+        };
+        "input" = "An Autoconf source with an unterminated M4 quotation.";
+        "operation" = "Generate configure from the malformed macro source.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/autoconf"
+              "--output=configure"
+              "invalid.ac"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -1,8 +1,8 @@
 ##! libarchive — Multi-format archive and compression library
 {
+  lib,
   mkDerivation,
   fetchurl,
-  lib,
   stdenv,
   gnumake,
   pkg-config,
@@ -17,7 +17,95 @@
   version = "3.8.9";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "libarchive";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The recovered entry has the declared pathname and size.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libarchive primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libarchive rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <archive.h>\n#include <archive_entry.h>\n#include <string.h>\nint main(void) {\n    char buffer[4096]; size_t used = 0;\n    struct archive *writer = archive_write_new();\n    struct archive_entry *entry = archive_entry_new();\n    archive_write_set_format_pax_restricted(writer);\n    if (archive_write_open_memory(writer, buffer, sizeof(buffer), &used) != ARCHIVE_OK) return 2;\n    archive_entry_set_pathname(entry, \"answer.txt\"); archive_entry_set_filetype(entry, AE_IFREG);\n    archive_entry_set_perm(entry, 0644); archive_entry_set_size(entry, 2);\n    if (archive_write_header(writer, entry) != ARCHIVE_OK || archive_write_data(writer, \"42\", 2) != 2) return 3;\n    archive_entry_free(entry); archive_write_free(writer);\n    struct archive *reader = archive_read_new(); archive_read_support_format_tar(reader);\n    if (archive_read_open_memory(reader, buffer, used) != ARCHIVE_OK) return 4;\n    if (archive_read_next_header(reader, &entry) != ARCHIVE_OK) return 5;\n    int ok = strcmp(archive_entry_pathname(entry), \"answer.txt\") == 0 && archive_entry_size(entry) == 2;\n    archive_read_free(reader);\n    return ok ? pass() : 6;\n}\n\n";
+        };
+        "input" = "An in-memory tar archive containing one regular file.";
+        "operation" = "Write the archive and read its entry back through libarchive.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-larchive"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "libarchive primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "libarchive returns an error status instead of an entry.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"libarchive primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"libarchive rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <archive.h>\nint main(void) {\n    const char invalid[] = \"not an archive\";\n    struct archive *reader = archive_read_new();\n    archive_read_support_filter_all(reader); archive_read_support_format_all(reader);\n    int opened = archive_read_open_memory(reader, invalid, sizeof(invalid));\n    struct archive_entry *entry = NULL;\n    int status = opened == ARCHIVE_OK ? archive_read_next_header(reader, &entry) : opened;\n    archive_read_free(reader);\n    if (status >= ARCHIVE_OK) return 2;\n    return reject();\n}\n\n";
+        };
+        "input" = "Bytes that do not encode a supported archive.";
+        "operation" = "Open the bytes and request the first archive header.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-larchive"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "libarchive rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -19,7 +19,7 @@ C++ Nix; its closed PR remains available if that work is revisited.
 - [x] Keep the flat renderer as a deterministic migration oracle in
       `crates/aos-package/tests/golden_config_artifact.rs` and
       `checks.config-parity`.
-- [x] Render systemd units and job scripts as pure manifest data; materialize
+- [x] Render manager artifacts and job scripts as pure manifest data; materialize
       builder and runtime outputs from the same `aos.config-manifest/v1`
       contract. Evidence: `checks.systemd-lib`, `checks.systemd-generate`,
       `checks.config-manifest`, and `checks.config-materialize`.
@@ -94,16 +94,16 @@ C++ Nix; its closed PR remains available if that work is revisited.
 
 ## Provisioning and orchestration
 
-- [x] Build and ship `systemd-repart`/fdisk support, convention repart
-      definitions, root-first pending/committed markers, lifecycle guards, and
-      LUKS/swap ordering on `systemd-repart.service`; the retired growfs,
+- [x] Build and ship the package-owned storage-provisioning provider with
+      `systemd-repart`/fdisk effects, root-first pending/committed markers,
+      lifecycle guards, and LUKS/swap ordering; the retired growfs,
       GPT-relocate, Ignition, and Butane paths are absent.
-- [x] Implement native `aos metadata detect`, `fetch`, and exact-byte
-      authorization for offline config drives and AWS, GCP, Azure, OpenStack,
-      and DigitalOcean metadata services.
-- [x] Evaluate only the typed provisioning projection in the initrd, validate
-      and render it in Rust, commit storage once, retain audit/recovery input,
-      and dry-run later boots for drift without reopening mutation.
+- [x] Implement package-owned typed detection, acquisition, and exact-byte
+      authorization providers for offline config drives and AWS, GCP, Azure,
+      OpenStack, and DigitalOcean metadata services.
+- [x] Evaluate the complete initrd fixed point, project its typed provisioning
+      plan, commit storage once, retain audit/recovery input, and dry-run later
+      boots for drift without reopening mutation.
 - [x] Parse the supported NoCloud network subset without a general unsafe YAML
       dependency and seed DHCP-less OpenStack/DigitalOcean networking before
       stage-2 fetch.

@@ -2,6 +2,10 @@
 
 use crate::registry::objectstore;
 use crate::registry_ops::images::receipts::persist_image_publication_receipt;
+use crate::registry_ops::package_contract_transparency::{
+    staged_package_contract_transparency_validation_needed,
+    validate_staged_package_contract_transparency_log,
+};
 use crate::registry_ops::provenance::staged::{
     staged_package_provenance_transparency_validation_needed,
     validate_staged_package_provenance_transparency_log,
@@ -179,6 +183,9 @@ pub(in crate::registry_ops) fn commit_staged_registry(
     if staged_package_provenance_transparency_validation_needed(dir)? {
         validate_staged_package_provenance_transparency_log(dir)?;
     }
+    if staged_package_contract_transparency_validation_needed(dir)? {
+        validate_staged_package_contract_transparency_log(dir)?;
+    }
 
     match signing_key {
         Some(key) => create_signed_commit(dir, message, key)?,
@@ -195,6 +202,9 @@ pub(crate) fn validate_canonical_release_registry_index(dir: &Path) -> Result<()
     validate_staged_package_toml_provenance_requirements(dir)?;
     if staged_package_provenance_transparency_validation_needed(dir)? {
         validate_staged_package_provenance_transparency_log(dir)?;
+    }
+    if staged_package_contract_transparency_validation_needed(dir)? {
+        validate_staged_package_contract_transparency_log(dir)?;
     }
     Ok(())
 }

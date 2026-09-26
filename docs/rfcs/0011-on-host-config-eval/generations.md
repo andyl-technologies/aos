@@ -17,7 +17,7 @@ RFC-0011 splits this into **two axes** — a tree, not a grid:
 - **Image generation (substrate).** The measured, signed UKI = kernel + initrd +
   **base lib + evaluator** + render-core + baked trust anchors. Delivered as an
   A/B partition swap; tracked by the ESP `default aos-*.efi` glob
-  (`modules/image/_builder.nix:176-183`), root-a/root-b, and the TPM PCR-11
+  (`pkgs/system/_systemd-abilities/platform/_image-builder.nix:176-183`), root-a/root-b, and the TPM PCR-11
   policy. Carries `module_abi`.
 - **Config generation (overlay).** Pure data: a manifest → materialized `/etc`
   composefs overlay, produced by on-host eval, committed by the existing
@@ -52,7 +52,7 @@ Split today's `SystemGeneration`:
   evaluator_ref }` — what A/B + UKI + `loader.conf` glob + TPM policy track.
 - **Config-gen** (new, mirroring the existing `Profile`/`Generation` machinery
   in `crates/aos-package/src/profile/mod.rs`) holds `{ number, image_gen_parent,
-  module_abi_pinned, manifest_hash, config_module_closure, host_nix_ref }`. The
+  module_abi_pinned, manifest_hash, package_module_closure, host_nix_ref }`. The
   `current → gen-N` pointer `activate.sh.in` already commits becomes the
   **config-gen** pointer.
 
@@ -120,7 +120,7 @@ schema; replaying it against a different schema is undefined.
   (kernel/package change, no option-schema change — the common case) satisfy the
   pin, so a config-gen **freely re-activates across them**.
 - **Different-ABI:** the old config-gen is **refused for direct activation**;
-  instead the system **re-evals** `(old_base_lib, config_module_closure,
+  instead the system **re-evals** `(old_base_lib, package_module_closure,
   host.nix)` — all three retained — to produce a *fresh* config-gen pinned to
   the rolled-back image-gen. Because eval is pure and content-addressed, this
   recomputation is deterministic and usually cache-hits.
@@ -129,10 +129,10 @@ schema; replaying it against a different schema is undefined.
 
 - **Per image-gen:** the UKI/toplevel (kernel+initrd+**base-lib**+evaluator) for
   as many A/B slots as kept (ESP is sized ×2 today,
-  `modules/image/_builder.nix:192-197` → 2 image-gens). The base lib must be
+  `pkgs/system/_systemd-abilities/platform/_image-builder.nix:192-197` → 2 image-gens). The base lib must be
   retained *with* its image-gen, because it *is* the ABI.
 - **Per config-gen:** the materialized manifest/`/etc` gen dir **and** the eval
-  inputs (`config_module_closure` + `host_nix_ref` + `module_abi_pinned` +
+  inputs (`package_module_closure` + `host_nix_ref` + `module_abi_pinned` +
   `facts_hash`/`facts.json`). **These inputs must be GC-rooted, not just
   recorded (review M-gc-inputs):** the `cfg/` GC root pins manifest *outputs*
   (package runtime closures), which does **not** keep the config-module *source*
@@ -197,9 +197,10 @@ interfaces evolve independently of the base.
    a GC'd image-gen loses the base lib needed to re-eval them across an ABI
    boundary. A dedicated GC root keeps at least one prior base lib on `/var`
    (just the lib, not the whole UKI) independently of the ESP slot count.
-2. **Measured locus of `module_abi`.** The module ABI and base-lib digest are in
-   the PCR-11-measured UKI `.osrel`; the dm-verity root hash in `.cmdline` binds
-   the root bytes (see [`trust-and-secrets.md`](trust-and-secrets.md)).
+2. **Measured locus of `module_abi`.** The module ABI and canonical base-lib ABI
+   hash are in the PCR-11-measured UKI `.osrel`; the dm-verity root hash in
+   `.cmdline` binds the root bytes (see
+   [`trust-and-secrets.md`](trust-and-secrets.md)).
 3. **`stateVersion` vs `module_abi`.** `aos.system.stateVersion`
    (`system.nix:131`, state-migration trigger) and `module_abi` (option schema)
    are adjacent but distinct and remain orthogonal; a breaking option change

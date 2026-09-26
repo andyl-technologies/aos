@@ -1,5 +1,6 @@
 ##! aos-verity-root-guard — Require a service RootImage to mount through dm-verity
 {
+  lib,
   mkDerivation,
   bash,
   coreutils,
@@ -7,7 +8,64 @@
   openssl,
 }:
 mkDerivation {
+  platformSupport = {
+    build = [{abi = ["gnu"]; os = ["linux"];}];
+    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+    target = [];
+    role = "public-package";
+  };
   pname = "aos-verity-root-guard";
+  abilities = ./_aos-verity-root-guard;
+  qualification.packageProbe = lib.qualification.commandProbe {
+    "primary" = {
+      "artifacts" = [];
+      "expected" = "Bash accepts the installed root-verification program's syntax.";
+      "files" = {};
+      "input" = "The installed dm-verity root guard script.";
+      "operation" = "Parse the complete guard with its packaged Bash interpreter.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess\nresult = subprocess.run([\"@bash@\", \"-n\", \"@out@/bin/aos-verity-root-guard\"], capture_output=True)\nassert result.returncode == 0, result.stderr\nprint(\"aos-verity-root-guard operation passed\")\n"
+          ];
+          "exit_code" = 0;
+          "stderr" = {
+            "exact" = "";
+          };
+          "stdout" = {
+            "exact" = "aos-verity-root-guard operation passed\n";
+          };
+        }
+      ];
+    };
+    "badInput" = {
+      "artifacts" = [];
+      "expected" = "The script rejects the request before inspecting the mounted root.";
+      "files" = {};
+      "input" = "A guard invocation without the required root hash and signature.";
+      "operation" = "Validate the incomplete request.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/aos-verity-root-guard\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"missing expected dm-verity root hash\" in result.stderr, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"aos-verity-root-guard rejected invalid input\\n\")\nraise SystemExit(7)\n"
+          ];
+          "exit_code" = 7;
+          "observes_rejection" = true;
+          "stderr" = {
+            "exact" = "aos-verity-root-guard rejected invalid input\n";
+          };
+          "stdout" = {
+            "exact" = "";
+          };
+        }
+      ];
+    };
+  };
+
   version = "0";
   src = null;
 
@@ -178,6 +236,13 @@ mkDerivation {
         exec "''${cmd[@]}"
         EOF
         chmod +x $out/bin/aos-verity-root-guard
+
+        sed \
+          -e 's|@bash@|${bash}|g' \
+          -e 's|@coreutils@|${coreutils}|g' \
+          ${./_aos-verity-root-guard/aos-verity-root-verify.sh} \
+          > $out/bin/aos-verity-root-verify
+        chmod +x $out/bin/aos-verity-root-verify
       '';
     }
   ];
@@ -189,6 +254,7 @@ mkDerivation {
       path = ./aos-verity-root-guard.nix;
       name = "aos-verity-root-guard.nix";
     })
+    ./_aos-verity-root-guard/aos-verity-root-verify.sh
   ];
 
   meta = {

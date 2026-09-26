@@ -4,25 +4,54 @@
   mkSystem,
   serverModule,
 }: let
+  mkCheck = name: valid:
+    if !valid
+    then throw "config-provenance ${name} failed"
+    else
+      pkgs.mkDerivation {
+        pname = "config-provenance-${name}-check";
+        version = "0";
+        src = null;
+        phases = [
+          {
+            name = "check";
+            script = ''
+              mkdir -p $out
+              echo PASS > $out/result
+            '';
+          }
+        ];
+      };
+
+  packageModuleRoot = builtins.path {
+    path = ../../tests/fixtures/config-provenance;
+    name = "aos-config-provenance-package-modules";
+  };
+  packageModule = name: module: {
+    inherit name;
+    version = "1";
+    configRoot = builtins.toString packageModuleRoot;
+    module = "${packageModuleRoot}/${module}";
+    outputs = {
+      self = builtins.toString packageModuleRoot;
+      dependencies = {};
+    };
+  };
   evaluated = mkSystem {
-    modules = [serverModule];
-    packageModules = [
+    modules = [
+      serverModule
       {
-        name = "provenance-demo";
-        authorization = {
-          owns = ["environment" "systemd"];
-          contributes = {};
+        aos.packages.nginx = {
+          package = pkgs.nginx;
+          bundle = true;
         };
-        module = {
-          environment.etc."provenance-demo.conf".text = "package-owned\n";
-          systemd.services.provenance-demo = {
-            description = "configuration provenance fixture";
-            wantedBy = ["multi-user.target"];
-            script = "echo provenance-demo";
-          };
+        aos.services.nginx = {
+          enable = true;
+          virtualHosts.default = {};
         };
       }
     ];
+    packageModules = [(packageModule "provenance-demo" "provenance-demo.nix")];
     operatorModules = [
       {
         _file = "forged-package-name.nix";
@@ -39,7 +68,10 @@
       modules = [serverModule];
       operatorModules = [
         {
-          environment.systemPackages = [pkgs.aos-test-agent];
+          aos.packages.aos-test-agent = {
+            package = pkgs.aos-test-agent;
+            bundle = true;
+          };
         }
       ];
     })
@@ -48,6 +80,7 @@
     .build
     .configManifest;
   testAgentPath = builtins.unsafeDiscardStringContext (builtins.toString pkgs.aos-test-agent);
+  selectedNginxAbilities = evaluated.config.aos.abilities;
   hostSessionManifest =
     (mkSystem {
       modules = [serverModule];
@@ -79,16 +112,7 @@
     .configManifest;
   packagePathContribution = builtins.tryEval (builtins.toJSON ((mkSystem {
       modules = [serverModule];
-      packageModules = [
-        {
-          name = "path-contributor";
-          authorization = {
-            owns = ["environment"];
-            contributes = {};
-          };
-          module.environment.systemPackages = [pkgs.aos-test-agent];
-        }
-      ];
+      packageModules = [(packageModule "path-contributor" "path-contributor.nix")];
     })
     .config
     .system
@@ -98,16 +122,7 @@
     .etc));
   packageSessionContribution = builtins.tryEval (builtins.toJSON ((mkSystem {
       modules = [serverModule];
-      packageModules = [
-        {
-          name = "session-contributor";
-          authorization = {
-            owns = ["environment"];
-            contributes = {};
-          };
-          module.environment.sessionVariables.PROVENANCE_TEST = "package";
-        }
-      ];
+      packageModules = [(packageModule "session-contributor" "session-contributor.nix")];
     })
     .config
     .system
@@ -115,10 +130,6 @@
     .configManifest
     .ownership
     .etc));
-  jobKeys =
-    builtins.filter
-    (key: builtins.match "provenance-demo\\.service:.*" key != null)
-    (builtins.attrNames manifest.jobScripts);
   ancestorEtcCollision = builtins.tryEval (builtins.toJSON ((mkSystem {
       modules = [serverModule];
       operatorModules = [
@@ -138,19 +149,7 @@
     .etc));
   mixedUserGroupOwner = builtins.tryEval (builtins.toJSON ((mkSystem {
       modules = [serverModule];
-      packageModules = [
-        {
-          name = "group-provider";
-          authorization = {
-            owns = ["aos"];
-            contributes = {};
-          };
-          module.aos.users.groups.pkgonly = {
-            gid = 778;
-            members = [];
-          };
-        }
-      ];
+      packageModules = [(packageModule "group-provider" "group-provider.nix")];
       operatorModules = [
         {
           aos.users.users.hostuser = {
@@ -169,39 +168,60 @@
     .configManifest
     .ownership
     .users));
-in
-  assert manifest.ownership.etc."systemd/network/20-host.network" == "@host";
-  assert manifest.ownership.etc.profile == "@base";
-  assert manifest.ownership.etc."pam/environment" == "@base";
-  assert hostComposedManifest.ownership.etc.profile == "@host";
-  assert hostComposedManifest.ownership.etc."pam/environment" == "@host";
-  assert hostComposedManifest.ownership.storePaths.${testAgentPath} == "@host";
-  assert hostSessionManifest.ownership.etc.profile == "@base";
-  assert hostSessionManifest.ownership.etc."pam/environment" == "@host";
-  assert directHostLoginManifest.ownership.etc.profile == "@host";
-  assert directHostLoginManifest.ownership.etc."pam/environment" == "@host";
-  assert !packagePathContribution.success;
-  assert !packageSessionContribution.success;
-  assert manifest.ownership.etc."provenance-demo.conf" == "provenance-demo";
-  assert manifest.ownership.etc."systemd/system/provenance-demo.service" == "provenance-demo";
-  assert manifest.ownership.units."provenance-demo.service" == "provenance-demo";
-  assert manifest.units."provenance-demo.service".action == "restart";
-  assert manifest.units."provenance-demo.service".enable;
-  assert builtins.length jobKeys == 1;
-  assert manifest.ownership.jobScripts.${builtins.head jobKeys} == "provenance-demo";
-  assert !ancestorEtcCollision.success;
-  assert !mixedUserGroupOwner.success;
-    pkgs.mkDerivation {
-      pname = "config-provenance-check";
-      version = "0";
-      src = null;
-      phases = [
-        {
-          name = "check";
-          script = ''
-            mkdir -p $out
-            echo PASS > $out/result
-          '';
-        }
-      ];
-    }
+
+  suites = {
+    config-provenance-base = mkCheck "base" (
+      manifest.ownership.etc."systemd/network/20-host.network"
+      == "@host"
+      && manifest.ownership.etc.profile == "@base"
+      && manifest.ownership.etc."pam/environment" == "@base"
+      && manifest.ownership.etc."provenance-demo.conf" == "provenance-demo"
+      && selectedNginxAbilities.instances ? "nginx:nginx"
+      && selectedNginxAbilities.requests ? "nginx:main-lifecycle"
+      && selectedNginxAbilities.requests ? "nginx:server-configuration"
+    );
+
+    config-provenance-host-package = mkCheck "host-package" (
+      hostComposedManifest.ownership.etc.profile
+      == "@host"
+      && hostComposedManifest.ownership.etc."pam/environment" == "@host"
+      && hostComposedManifest.ownership.storePaths.${testAgentPath} == "@host"
+    );
+
+    config-provenance-host-etc = mkCheck "host-etc" (
+      hostSessionManifest.ownership.etc.profile
+      == "@base"
+      && hostSessionManifest.ownership.etc."pam/environment" == "@host"
+      && directHostLoginManifest.ownership.etc.profile == "@host"
+      && directHostLoginManifest.ownership.etc."pam/environment" == "@host"
+    );
+
+    config-provenance-package-rejections = mkCheck "package-rejections" (
+      !packagePathContribution.success
+      && !packageSessionContribution.success
+    );
+
+    config-provenance-collision-rejections = mkCheck "collision-rejections" (
+      !ancestorEtcCollision.success
+      && !mixedUserGroupOwner.success
+    );
+  };
+in {
+  inherit suites;
+
+  all = pkgs.mkDerivation {
+    pname = "config-provenance-check";
+    version = "0";
+    src = null;
+    buildDeps = builtins.attrValues suites;
+    phases = [
+      {
+        name = "check";
+        script = ''
+          mkdir -p $out
+          echo PASS > $out/result
+        '';
+      }
+    ];
+  };
+}

@@ -1,5 +1,6 @@
 ##! perl-io-tty — Pseudo-terminal support for Perl
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -9,7 +10,81 @@
   runtimeClosureManifest = builtins.toString perl;
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "perl-io-tty";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "IO::Pty returns a master and a slave with a nonempty terminal path.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use IO::Pty;\nmy $master = IO::Pty->new;\nmy $slave = $master->slave;\ndie \"pseudo-terminal unavailable\" unless $master && $slave && $slave->ttyname;\n$slave->close; $master->close;\n";
+        };
+        "input" = "A request for a fresh pseudo-terminal pair.";
+        "operation" = "Allocate the pair with IO::Pty and inspect the slave terminal name.";
+        "steps" = [
+          {
+            "argv" = [
+              "@perl@"
+              "probe.pl"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "IO::Tty declines the invalid descriptor.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use IO::Tty;\nmy $tty = eval { IO::Tty->new_from_fd(-1, \"r\") };\ndie \"invalid descriptor accepted\" if defined $tty;\n";
+        };
+        "input" = "A pseudo-terminal request using invalid file descriptor -1.";
+        "operation" = "Construct IO::Tty from the invalid descriptor.";
+        "steps" = [
+          {
+            "argv" = [
+              "@perl@"
+              "probe.pl"
+            ];
+            "exit_code" = 0;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     src = fetchurl {
       urls = ["https://cpan.metacpan.org/authors/id/T/TO/TODDR/IO-Tty-${version}.tar.gz"];

@@ -1,5 +1,6 @@
 ##! GnuPG — complete OpenPGP / X.509 implementation (the `gpg` tool)
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -23,7 +24,95 @@
   version = "2.5.22";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "gnupg";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [
+          {
+            "path" = "recovered.bin";
+            "text" = "GnuPG qualification payload\n";
+          }
+        ];
+        "expected" = "The decoded artifact exactly reproduces the original bytes.";
+        "files" = {
+          "payload.bin" = "GnuPG qualification payload\n";
+        };
+        "input" = "A fixed binary payload.";
+        "operation" = "ASCII-armor the payload with GnuPG, then decode the armor.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/gpg"
+              "--batch"
+              "--yes"
+              "--enarmor"
+              "--output"
+              "payload.asc"
+              "payload.bin"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/gpg"
+              "--batch"
+              "--yes"
+              "--dearmor"
+              "--output"
+              "recovered.bin"
+              "payload.asc"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "GnuPG rejects the armored data with status 2.";
+        "files" = {
+          "invalid.asc" = "-----BEGIN PGP ARMORED FILE-----\n\n%%%not-base64%%%\n-----END PGP ARMORED FILE-----\n";
+        };
+        "input" = "An ASCII-armored block containing invalid Base64 data.";
+        "operation" = "Decode the malformed armor with GnuPG.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/gpg"
+              "--batch"
+              "--yes"
+              "--dearmor"
+              "--output"
+              "invalid.bin"
+              "invalid.asc"
+            ];
+            "exit_code" = 2;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

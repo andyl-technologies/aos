@@ -1,0 +1,628 @@
+##! Package-owned immutable root filesystem builder.
+##!
+##! This file owns the selected platform's filesystem layout, package links,
+##! filesystem formats, and integrity artifact generation. The generic image
+##! module supplies only authenticated selected-kernel and selected-manager
+##! records plus system policy inputs.
+##!
+##! The layout is merged-usr:
+##!
+##!     /usr/{bin,sbin,lib}   — real directories
+##!     /{bin,sbin,lib}       — symlinks into /usr/
+##!
+##! /etc is an empty mountpoint (the runtime overlay mounts on top in
+##! stage-1); /run/etc is also an empty mountpoint
+##! (run-etc-setup.service mounts a tmpfs there). The seed pointer
+##! at `/aos-toplevel` is what aos-seed-profiles.service reads on
+##! first boot to populate apm's profile state, breaking the
+##! initrd→toplevel→initrd derivation cycle that direct interpolation
+##! of `${config.system.build.toplevel}` in initrd service scripts
+##! would create.
+##!
+##! Every file in the resulting image is owned by uid/gid 0: `mkfs.ext4 -d`
+##! runs under `fakeroot` so the sandbox user's uid doesn't leak into the
+##! image (auditd and several other daemons refuse to start when their
+##! config files are not root-owned).
+##!
+##! Arguments:
+##!   pkgs                 — AOS package set
+##!   lib                  — AOS library
+##!   system               — evaluated AOS system (provides toplevel + kernel)
+##!   pname                — derivation name prefix (default "aos-rootfs")
+##!   label                — filesystem label (default "aos-root")
+##!   shrinkToFit          — resize2fs -M + grow by `headroomMiB` (production
+##!                          image). false leaves the image at an over-
+##!                          provisioned initial size (VM test disk).
+##!   headroomMiB          — extra free space above shrunk fs (default 64).
+##!   minSizeMiB           — floor on the initial mkfs size (default 512).
+##!                          Useful for test images that get written to
+##!                          during VM execution.
+##!   extraClosures        — derivations whose full closures land in
+##!                          /nix/store. toplevel + kernel are always added.
+##!   managerConfiguration — the selected manager's single realized output.
+##!   managerRootfsPlan    — typed package-owned init, closure, and tree plan.
+##!   symlinkFarmPkgs      — derivations whose bin/sbin/libexec entries get
+##!                          symlinked into /usr/bin, /usr/sbin, /usr/libexec.
+##!                          Later entries never overwrite earlier ones.
+##!   postPopulate         — shell fragment spliced after tree population and
+##!                          before mkfs. Runs with `rootfs/` as the tree.
+##!   erofsCompressionLevel — zstd level for EROFS images (default 19).
+##!                           Test variants may select a faster level without
+##!                           weakening production image compression.
+##!
+##! Output: `$out/root.img` (the ext4 image) and `$out/rootfs-size-bytes`
+##! (the final image byte count, so the caller can size the partition).
+{
+  pkgs,
+  lib,
+  closureInfoFor,
+  system,
+  kernel,
+  pname ? "aos-rootfs",
+  label ? "aos-root",
+  shrinkToFit ? true,
+  headroomMiB ? 64,
+  minSizeMiB ? 512,
+  extraClosures ? [],
+  managerConfiguration ? null,
+  managerRootfsPlan ? null,
+  symlinkFarmPkgs ? [],
+  postPopulate ? "",
+  # Root filesystem type for the produced image. "ext4" (default) builds a
+  # writable image via `mkfs.ext4 -d` (used by VM tests that write to root).
+  # "erofs" builds a zstd-compressed, read-only image via `mkfs.erofs` —
+  # roughly a third the size — for the immutable production boot image.
+  fsType ? "ext4",
+  erofsCompressionLevel ? 19,
+  # When true, format a deterministic dm-verity Merkle hash tree
+  # over the finalized root.img and emit `root.verity` + `root.roothash`
+  # (+ `root.roothash.p7s` when an SB db key is supplied) + `root-verity-size-
+  # bytes` alongside `root.img`. Default false leaves the erofs/ext4 path
+  # byte-identical (every addition below is gated on this flag), so existing
+  # ext4/VM-test images are unchanged. Only valid for the read-only `erofs`
+  # path (an ext4 root is mutated at runtime, breaking the root hash).
+  verity ? false,
+  # Optional SB db key/cert (PEM). When supplied alongside `verity`, the
+  # ASCII-hex root hash is PKCS#7-signed (Linux verifies the signature over the
+  # hex string, not decoded bytes) so the in-kernel roothash-signature
+  # enforcement path can validate it. Keys are a deployment overlay — the base
+  # image stays key-free and reproducible (the roothash anchoring itself is
+  # key-independent).
+  secureBootKey ? null,
+  secureBootCert ? null,
+  kernelModulePackages ? [],
+  firmwarePackages ? [],
+  runtimeClosureAudit ? null,
+}: let
+  toplevel = system.config.system.build.toplevel;
+  kernelPackage = kernel.package;
+  kernelModuleTree =
+    if kernel.configuration.moduleTree == null
+    then throw "selected image platform requires a kernel module tree"
+    else kernel.configuration.moduleTree;
+  checkedManagerRootfsPlan =
+    if (managerConfiguration == null) != (managerRootfsPlan == null)
+    then throw "rootfs: managerConfiguration and managerRootfsPlan must be supplied together"
+    else managerRootfsPlan;
+  managerClosureRoots =
+    if checkedManagerRootfsPlan == null
+    then []
+    else checkedManagerRootfsPlan.closureRoots;
+
+  # Deterministic dm-verity salt + superblock UUID, derived from the image
+  # identity so the hash tree — and therefore the root hash baked into the
+  # measured UKI cmdline — is reproducible across builds. The erofs root is
+  # already byte-reproducible (mkfs.erofs --all-root -T0 -U <fixed>), so the
+  # Merkle tree over its bytes is a deterministic function of pinned salt/uuid.
+  mkUuid = seed: let
+    h = builtins.hashString "sha256" seed;
+  in "${builtins.substring 0 8 h}-${builtins.substring 8 4 h}-4${builtins.substring 13 3 h}-8${builtins.substring 17 3 h}-${builtins.substring 20 12 h}";
+  verityUuid = mkUuid "aos-rootfs:verity:${pname}:${label}";
+  veritySalt = builtins.substring 0 64 (builtins.hashString "sha256" "aos-rootfs:salt:${pname}:${label}");
+  signVerity = verity && secureBootKey != null;
+
+  # Full set of closures to merge. The toplevel carries the selected host
+  # configuration; the kernel carries /lib/modules targets. Callers add more when
+  # the running rootfs references store paths the closure reachability
+  # scanner wouldn't otherwise catch (e.g. the VM agent shell script
+  # referencing `/nix/store/...-socat-*` verbatim).
+  # Module and firmware trees are copied into /usr below. Their source package
+  # closures are build inputs, not runtime roots; retaining both forms would
+  # duplicate the payload and can pull kernel SDKs into the immutable image.
+  # Callers compose capability roots with harness roots; both may retain the
+  # same output. Form their union before the strict reference-graph boundary.
+  allClosures = lib.unique (map builtins.toString ([toplevel kernelPackage] ++ managerClosureRoots ++ extraClosures));
+
+  regInfo = closureInfoFor {
+    rootPaths = allClosures;
+  };
+
+  # Identify the active system separately from additional stored closures.
+  # Upgrade candidates and test packages must not install their udev rules.
+  activeSystemInfo = closureInfoFor {
+    rootPaths = [toplevel];
+  };
+
+  # Symlink-farm script fragment — one block per package. Ordering
+  # matters (earlier wins); callers list higher-priority packages first.
+  symlinkFarmScript =
+    lib.concatMapStringsSep "\n" (pkg: ''
+      if [ -d "${pkg}/bin" ]; then
+        for bin in "${pkg}/bin/"*; do
+          n=$(basename "$bin")
+          [ -e "rootfs/usr/bin/$n" ] || ln -sfn "$bin" "rootfs/usr/bin/$n"
+        done
+      fi
+      if [ -d "${pkg}/sbin" ]; then
+        for bin in "${pkg}/sbin/"*; do
+          n=$(basename "$bin")
+          [ -e "rootfs/usr/sbin/$n" ] || ln -sfn "$bin" "rootfs/usr/sbin/$n"
+        done
+      fi
+      if [ -d "${pkg}/libexec" ]; then
+        mkdir -p rootfs/usr/libexec
+        for bin in "${pkg}/libexec/"*; do
+          n=$(basename "$bin")
+          [ -e "rootfs/usr/libexec/$n" ] || ln -sfn "$bin" "rootfs/usr/libexec/$n"
+        done
+      fi
+    '')
+    symlinkFarmPkgs;
+  managerInitScript = lib.optionalString (checkedManagerRootfsPlan != null) ''
+    ln -sfn ${lib.escapeShellArg (builtins.toString checkedManagerRootfsPlan.initExecutable)} rootfs/usr/bin/init
+  '';
+  managerTreeScript =
+    lib.concatMapStringsSep "\n" (tree: let
+      source = lib.escapeShellArg "${builtins.toString managerConfiguration}/${tree.source}";
+      sourceLabel = lib.escapeShellArg tree.source;
+      destination = lib.escapeShellArg "rootfs${tree.destination}";
+      destinationLabel = lib.escapeShellArg tree.destination;
+      prepareDestination =
+        if tree.collision == "replace"
+        then ''
+          rm -rf ${destination}
+          mkdir -p ${destination}
+        ''
+        else ''
+          mkdir -p ${destination}
+          if find ${destination} -mindepth 1 -print -quit | grep -q .; then
+            echo 'rootfs-builder: manager tree destination is not empty:' ${destinationLabel} >&2
+            exit 1
+          fi
+        '';
+    in ''
+      if [ ! -d ${source} ]; then
+        echo 'rootfs-builder: manager tree source is not a directory:' ${sourceLabel} >&2
+        exit 1
+      fi
+      ${prepareDestination}
+      cp -a ${source}/. ${destination}/
+    '') (
+      if checkedManagerRootfsPlan == null
+      then []
+      else checkedManagerRootfsPlan.trees
+    );
+in
+  pkgs.mkDerivation ({
+      inherit pname;
+      version = "0";
+      src = null;
+
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.findutils
+          pkgs.tar
+          pkgs.e2fsprogs
+          pkgs.fakeroot
+          pkgs.util-linux
+          pkgs.erofs-utils
+        ]
+        # Verity sub-step tooling is gated so the non-verity path's
+        # build environment (and thus its derivation hash) is unchanged.
+        ++ lib.optionals verity [
+          pkgs.cryptsetup
+          pkgs.openssl
+          pkgs.gawk
+          pkgs.grep
+        ];
+
+      TOPLEVEL = toString toplevel;
+      KERNEL_MODULE_TREE = kernelModuleTree;
+      REGINFO = toString regInfo;
+      ACTIVE_SYSTEM_INFO = toString activeSystemInfo;
+      # Check the release closure before materializing and compressing it.
+      RUNTIME_CLOSURE_AUDIT =
+        if runtimeClosureAudit == null
+        then ""
+        else toString runtimeClosureAudit;
+      COREUTILS = toString pkgs.coreutils;
+      # `$BASH` is a bash built-in pointing at the bash executable
+      # currently running the script — setting it as a derivation env
+      # var has no effect at runtime. Use a dedicated name (AOS_BASH)
+      # so the ln -sfn targets resolve to the package directory, not
+      # to the already-executable path.
+      AOS_BASH = toString pkgs.bash;
+
+      phases =
+        [
+          {
+            name = "populate";
+            script = ''
+              set -eu
+
+              # ── 0. Copy the selected runtime closure inventory ─────────────
+              cp "$REGINFO/store-paths" store-paths
+              echo "==> Populating rootfs ($(wc -l < store-paths) store paths)"
+
+              # ── 1. Directory skeleton (merged-usr) ──────────────────────────
+              # Full /usr merge, including the conventional /usr/sbin →
+              # /usr/bin compatibility link expected by the selected manager.
+              #
+              # The image's Nix closure lives at /nix.lower/store; /nix is an
+              # empty mountpoint where nix-overlay-setup.service stacks an
+              # overlayfs in the initrd (lowerdir=/nix.lower, upperdir on the
+              # /var partition). At runtime, /nix/store/... and /nix.lower/store/...
+              # both resolve to the closure — the former through the overlay
+              # (matching the path embedded in every binary's RUNPATH and
+              # shebang), the latter directly on disk for inspection.
+              mkdir -p rootfs/nix.lower/store
+              mkdir -p rootfs/nix
+              mkdir -p rootfs/usr/bin rootfs/usr/lib
+              ln -sfn bin rootfs/usr/sbin
+              ln -sfn usr/bin rootfs/bin
+              ln -sfn usr/bin rootfs/sbin
+              ln -sfn usr/lib rootfs/lib
+              # /etc is an empty mountpoint — the runtime overlay (system
+              # EROFS lower + per-gen config lower + /var/etc) mounts
+              # on top in stage-1 (etc-overlay-setup.service).
+              mkdir -p rootfs/etc
+              mkdir -p rootfs/proc rootfs/sys rootfs/dev rootfs/tmp
+              mkdir -p rootfs/run rootfs/var rootfs/sysroot
+              mkdir -p rootfs/var/{log,lib,tmp}
+              # /run/etc is an empty mountpoint — run-etc-setup.service
+              # mounts a tmpfs there early in stage-1 so the metadata/config
+              # pipeline and etc-overlay-setup can stage per-gen state under it.
+              mkdir -p rootfs/run/etc
+              # /boot + /var are mountpoints that modules/base/filesystems.nix
+              # writes into /etc/fstab (ESP → /boot, var partition → /var).
+              # The selected mount realization requires each declared
+              # mountpoint to exist before stage-2 boot. /var was already above;
+              # /boot would otherwise be missing in production.
+              mkdir -p rootfs/boot
+              mkdir -m 0700 rootfs/root
+              # Root-owned APM authoring config lives on the read-only rootfs,
+              # so create it here instead of asking tmpfiles to mutate /root at
+              # boot.
+              mkdir -p rootfs/root/.config/apm/registries.d
+              chmod 0700 rootfs/root/.config
+              chmod 0755 rootfs/root/.config/apm
+              chmod 0755 rootfs/root/.config/apm/registries.d
+
+              # ── 2. Copy the closure into /nix/store ─────────────────────────
+              total=$(wc -l < store-paths)
+              count=0
+              while IFS= read -r p; do
+                count=$((count + 1))
+                if [ $((count % 50)) -eq 0 ] || [ "$count" -eq "$total" ]; then
+                  printf '\r    [%d/%d]' "$count" "$total"
+                fi
+                if [ -e "$p" ]; then
+                  cp -a "$p" rootfs/nix.lower/store/
+                else
+                  echo ""
+                  echo "    WARN: store path does not exist: $p" >&2
+                fi
+              done < store-paths
+              echo ""
+
+              # Merge active-system udev rules into the conventional
+              # vendor directory. The Nix store keeps each package isolated,
+              # but udev does not discover rule directories through PATH.
+              # In particular, device-mapper's rules publish /dev/mapper/*
+              # nodes to systemd after dm-verity and dm-crypt activation.
+              mkdir -p rootfs/usr/lib/udev/rules.d
+              cp "$ACTIVE_SYSTEM_INFO/store-paths" active-system-paths
+              while IFS= read -r rule_root; do
+                rules_dir="$rule_root/lib/udev/rules.d"
+                [ -d "$rules_dir" ] || continue
+                for rule in "$rules_dir"/*.rules; do
+                  [ -e "$rule" ] || continue
+                  name=$(basename "$rule")
+                  if [ -e "rootfs/usr/lib/udev/rules.d/$name" ]; then
+                    echo "rootfs-builder: duplicate udev rule $name" >&2
+                    exit 1
+                  fi
+                  ln -s "$rule" "rootfs/usr/lib/udev/rules.d/$name"
+                done
+              done < active-system-paths
+
+              # ── 3. Selected init and compat symlinks ────────────────────────
+              ${managerInitScript}
+              ln -sfn "$AOS_BASH/bin/bash" rootfs/usr/bin/bash
+              ln -sfn "$AOS_BASH/bin/sh" rootfs/usr/bin/sh
+              ln -sfn "$COREUTILS/bin/env" rootfs/usr/bin/env
+
+              # ── 4. Kernel modules ───────────────────────────────────────────
+              # kmod looks up modules at /lib/modules/$(uname -r); the
+              # /lib → usr/lib symlink makes this resolve to usr/lib/modules.
+              ln -sfn "$KERNEL_MODULE_TREE" rootfs/usr/lib/modules
+              ${lib.optionalString (kernelModulePackages != []) ''
+                rm rootfs/usr/lib/modules
+                mkdir -p rootfs/usr/lib/modules
+                cp -a "$KERNEL_MODULE_TREE/." rootfs/usr/lib/modules/
+                chmod -R u+w rootfs/usr/lib/modules
+                ${lib.concatMapStringsSep "\n" (package: ''
+                    chmod -R u+w rootfs/usr/lib/modules
+                    cp -a ${package}/lib/modules/. rootfs/usr/lib/modules/
+                  '')
+                  kernelModulePackages}
+                for module_dir in rootfs/usr/lib/modules/*; do
+                  # An external package can restore the copied release
+                  # directory's read-only store mode while merging modules.
+                  chmod u+w rootfs/usr/lib/modules "$module_dir"
+                  rm -f "$module_dir/build" "$module_dir/source"
+                  ${pkgs.kmod}/sbin/depmod -b rootfs "$(basename "$module_dir")"
+                done
+              ''}
+
+              mkdir -p rootfs/usr/lib/firmware
+              ${lib.concatMapStringsSep "\n" (package: ''
+                  cp -a ${package}/lib/firmware/. rootfs/usr/lib/firmware/
+                '')
+                firmwarePackages}
+
+              # ── 5. /var/run → /run ──────────────────────────────────────────
+              # Modern-Linux convention: /run is tmpfs, /var/run is a back-
+              # compat symlink. Many daemons still reference /var/run paths.
+              ln -sfn /run rootfs/var/run
+
+              # ── 6. Selected-manager filesystem trees ───────────────────────
+              ${managerTreeScript}
+
+              # ── 7. /run/current-system → toplevel ───────────────────────────
+              # Keep the on-disk tree correct for image inspection and boot
+              # paths that do not preserve the initrd's /run. Normal boots
+              # republish this link in the initrd-owned /run before switch-root.
+              ln -s "$TOPLEVEL" rootfs/run/current-system
+
+              # ── 8. /aos-toplevel seed pointer ──────────────────────────────
+              # First-boot bootstrap: aos-seed-profiles.service reads this
+              # symlink to populate /var/lib/profiles/system/gen-1/toplevel
+              # without referencing config.system.build.toplevel directly
+              # (which would create an initrd→toplevel→initrd cycle). The
+              # rootfs already references the toplevel via /nix.lower/store,
+              # so adding the symlink doesn't introduce a new derivation
+              # edge. See spec v12 §6.1.
+              ln -sfn "$TOPLEVEL" rootfs/aos-toplevel
+
+              # ── 9. /aos-registration Nix DB seed ───────────────────────────
+              # Stage-2 loads this plain text `nix-store --load-db` stream to
+              # register the image closure without canonicalising/chowning store
+              # contents. Copy the bytes instead of symlinking the derivation.
+              cp "$REGINFO/registration" rootfs/aos-registration
+
+              # /etc/machine-id no longer touched here — stage-1's
+              # aos-machine-id.service generates /var/etc/machine-id on
+              # first boot from /proc/sys/kernel/random/uuid, and the
+              # /var/etc lower of the overlay surfaces it at
+              # /etc/machine-id. Doing it in the rootfs would land the
+              # file on the wrong side of the overlay (and on every
+              # rebuild's $TOPLEVEL, defeating per-host persistence).
+
+              # ── 10. Symlink farm for caller-supplied packages ───────────────
+              ${symlinkFarmScript}
+
+              # ── 11. Caller-supplied postPopulate hook ──────────────────────
+              ${postPopulate}
+            '';
+          }
+          {
+            name = "mkfs";
+            script =
+              if fsType == "erofs"
+              then ''
+                set -eu
+
+                # Read-only, zstd-compressed root for the immutable production
+                # image. --all-root forces every file to uid/gid 0 (matching the
+                # ext4 path's fakeroot, so ownership-sensitive daemons start); the
+                # default xattr tolerance preserves SELinux labels; -T0 fixes
+                # timestamps and -U pins the UUID for a reproducible image. EROFS is
+                # content-sized, so there is no over-provisioning, journal, or
+                # shrink step.
+                #
+                # Compression tuning (measured on the server closure):
+                #   * -C1048576 — 1 MiB physical compression cluster. On the
+                #     measured server closure this reduces root.img from
+                #     679661568 to 669159424 bytes, leaving 1929216 bytes below
+                #     the 640 MiB release budget without changing its contents.
+                #     Linux 7.2 accepts encoded EROFS pclusters up to 1 MiB; its
+                #     12 MiB decoded-size limit is unchanged. A cold read can
+                #     consume up to 1 MiB of compressed input, while hot reads
+                #     remain page-cache hits on this RAM-ample, read-mostly root.
+                #   * -Eztailpacking — packs compressed tails into inode metadata
+                #     without sharing a fragment block between unrelated files.
+                #     Do not enable `fragments` with parallel compression here:
+                #     erofs-utils 1.8 can occasionally publish one small file at
+                #     another file's fragment offset. `fsck.erofs` validates that
+                #     structurally sound image, but the extracted bytes are corrupt.
+                # Block dedupe was measured at 0 bytes saved — Nix store paths are
+                # content-addressed.
+                #
+                # --workers parallelizes the otherwise single-threaded zstd-19
+                # compression (hours on one core for the whole server closure).
+                # erofs-utils splits the input into fixed 16 MiB segments and
+                # reaps them in deterministic on-disk order, so the image stays
+                # bit-reproducible regardless of the worker count — verified
+                # identical across worker counts and against the single-threaded
+                # build. $NIX_BUILD_CORES is the sandbox's core allotment.
+                #
+                # libgcc_s.so.1 must be loadable at runtime: glibc lazily
+                # dlopen()s it for worker-thread teardown unwinding, and a
+                # DT_RUNPATH on the binary doesn't satisfy a libc-initiated
+                # dlopen — so point LD_LIBRARY_PATH at gcc-libs (same approach
+                # as the kernel build in pkgs/kernel/linux.nix). Without it
+                # mkfs prints "libgcc_s.so.1 must be installed for pthread_exit
+                # to work" and risks aborting a worker.
+                export LD_LIBRARY_PATH="${pkgs.gcc-libs}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                mkfs.erofs --all-root -T0 \
+                  -U bdfb6fc9-0000-4000-8000-000000000001 \
+                  --workers="$NIX_BUILD_CORES" \
+                  -z zstd,level=${toString erofsCompressionLevel} \
+                  -C1048576 \
+                  -Eztailpacking \
+                  -L ${label} root.img rootfs
+                fsck.erofs root.img >/dev/null
+                final_bytes=$(stat -c %s root.img)
+                echo "==> root.img: $(( final_bytes / 1048576 )) MiB (erofs zstd-${toString erofsCompressionLevel}, 1M cluster, ztailpacking)"
+                echo "$final_bytes" > rootfs-size-bytes
+              ''
+              else ''
+                set -eu
+
+                # Measure the populated tree. `du --apparent-size` is what
+                # matters for mkfs.ext4 -d because it does NOT preserve
+                # hardlinks (each hardlinked file becomes a separate copy).
+                apparent_kb=$(du -sk --apparent-size rootfs | cut -f1)
+                apparent_mib=$(( apparent_kb / 1024 ))
+                echo "==> rootfs apparent size: ''${apparent_mib} MiB"
+
+                # Over-provision during mkfs to allow the ext4 journal, inode
+                # table, and tree metadata to land alongside the data.
+                initial_mib=$(( apparent_mib * 3 / 2 + 256 ))
+                if [ "$initial_mib" -lt ${toString minSizeMiB} ]; then
+                  initial_mib=${toString minSizeMiB}
+                fi
+
+                # fakeroot makes every file in rootfs appear as uid/gid 0
+                # to mkfs.ext4, so the resulting image has root-owned files.
+                # Without this, daemons fail ownership checks (auditd refuses
+                # to start if /etc/audit/auditd.conf isn't owned by root).
+                fakeroot -- mkfs.ext4 -d rootfs -L ${label} -m 1 -q \
+                  root.img "''${initial_mib}M"
+
+                ${lib.optionalString shrinkToFit ''
+                  # Shrink to minimum, then grow by headroom + 1 MiB alignment.
+                  e2fsck -f -y root.img >/dev/null
+                  resize2fs -M root.img >/dev/null 2>&1
+                  blk_size=$(dumpe2fs -h root.img 2>/dev/null \
+                               | awk '/Block size:/{print $3}')
+                  min_blocks=$(dumpe2fs -h root.img 2>/dev/null \
+                                 | awk '/Block count:/{print $3}')
+                  headroom_blocks=$(( ${toString headroomMiB} * 1048576 / blk_size ))
+                  final_blocks=$(( min_blocks + headroom_blocks ))
+                  resize2fs root.img "$final_blocks" >/dev/null 2>&1
+                  final_bytes=$(( final_blocks * blk_size ))
+                  final_bytes=$(( ((final_bytes + 1048575) / 1048576) * 1048576 ))
+                  truncate -s "$final_bytes" root.img
+                  echo "==> root.img: $(( final_bytes / 1048576 )) MiB (shrunk+headroom)"
+                ''}
+                ${lib.optionalString (!shrinkToFit) ''
+                  final_bytes=$(stat -c %s root.img)
+                  echo "==> root.img: $(( final_bytes / 1048576 )) MiB (unshrunk)"
+                ''}
+                echo "$final_bytes" > rootfs-size-bytes
+              '';
+          }
+        ]
+        # Build a deterministic dm-verity hash tree over the finalized
+        # root.img. Gated, so the phase list (and the derivation) is unchanged
+        # when verity = false. Uses `veritysetup format` with pinned salt and
+        # UUID, followed by roothash extraction and the optional
+        # `openssl cms -sign` recipe. erofs needs no
+        # shrink/normalize step — it is content-sized and already -T0 -U fixed,
+        # so the tree is over stable bytes.
+        ++ lib.optional verity {
+          name = "verity";
+          script = ''
+            set -eu
+
+            veritysetup format --salt "$VERITY_SALT" --uuid "$VERITY_UUID" \
+              root.img root.verity > veritysetup.out
+            root_hash=$(
+              gawk -F: '/Root hash:/ {
+                gsub(/^[ \t]+/, "", $2);
+                print $2
+              }' veritysetup.out
+            )
+            if ! printf '%s' "$root_hash" | grep -Eq '^[0-9a-f]{64}$'; then
+              echo "invalid dm-verity root hash: $root_hash" >&2
+              exit 1
+            fi
+
+            # Linux verifies the PKCS#7 over the ASCII-hex root hash string, not the
+            # decoded hash bytes; dm-verity passes argv as the hex string to
+            # verify_pkcs7_signature.
+            printf '%s' "$root_hash" > root.roothash
+            if [ -n "''${SIGN_VERITY:-}" ]; then
+              openssl cms -sign -binary \
+                -in root.roothash \
+                -signer "$ROOT_HASH_CERT" \
+                -inkey "$ROOT_HASH_KEY" \
+                -outform DER \
+                -out root.roothash.p7s \
+                -nosmimecap \
+                -noattr
+              openssl cms -verify -binary \
+                -inform DER \
+                -in root.roothash.p7s \
+                -content root.roothash \
+                -CAfile "$ROOT_HASH_CERT" \
+                -out /dev/null
+            else
+              # Key-free base image: no detached signature. The roothash-on-cmdline
+              # anchoring (PCR 11 + db Authenticode over the whole UKI) is
+              # key-independent and is what binds the root; the .p7s is only for the
+              # optional in-kernel roothash-signature enforcement path.
+              : > root.roothash.p7s
+            fi
+
+            veritysetup verify root.img root.verity "$root_hash"
+            stat -c %s root.verity > root-verity-size-bytes
+            echo "==> dm-verity roothash: $root_hash ($(stat -c %s root.verity) byte hash tree)"
+          '';
+        }
+        ++ [
+          {
+            name = "install";
+            # Concatenate the gated verity moves rather than interpolating inline,
+            # so the non-verity script is byte-identical (empty append) — the
+            # rootfs derivation for ext4/erofs systems is unchanged.
+            script =
+              ''
+                mkdir -p $out
+                mv root.img $out/root.img
+                mv rootfs-size-bytes $out/rootfs-size-bytes
+              ''
+              + lib.optionalString verity ''
+                mv root.verity $out/root.verity
+                mv root.roothash $out/root.roothash
+                mv root.roothash.p7s $out/root.roothash.p7s
+                mv root-verity-size-bytes $out/root-verity-size-bytes
+              '';
+          }
+        ];
+
+      meta = {
+        description = "Selected platform immutable root filesystem";
+      };
+    }
+    // lib.optionalAttrs verity {
+      # Verity env (gated): present only on the verity path so the non-verity
+      # derivation's environment — and hash — is unchanged.
+      VERITY_SALT = veritySalt;
+      VERITY_UUID = verityUuid;
+      SIGN_VERITY =
+        if signVerity
+        then "1"
+        else "";
+      ROOT_HASH_KEY =
+        if signVerity
+        then toString secureBootKey
+        else "";
+      ROOT_HASH_CERT =
+        if signVerity
+        then toString secureBootCert
+        else "";
+    })

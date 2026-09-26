@@ -23,7 +23,7 @@
 //! These types are the crate's stable data contracts: changing a field name
 //! or default changes what is written to (or accepted from) disk.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -32,86 +32,25 @@ use serde::{Deserialize, Serialize};
 /// Current registry package metadata format understood by this crate.
 pub const PACKAGE_META_FORMAT: u32 = 1;
 
-/// Registry feature flag for the RFC-0001 `expose` metadata schema.
-pub const FEATURE_EXPOSE_V1: &str = "expose-v1";
-
-/// Registry feature flag for RFC-0001 rendered expose artifacts.
-pub const FEATURE_EXPOSE_ARTIFACT_V1: &str = "expose-artifact-v1";
-
-/// Registry feature flag for the RFC-0001 permission manifest schema.
-pub const FEATURE_PERMISSIONS_V1: &str = "permissions-v1";
-
-/// Registry feature flag for RFC-0001 name-based package requirements.
-pub const FEATURE_REQUIRES_V1: &str = "requires-v1";
-
-/// Registry feature flag for RFC-0001 package config metadata.
-pub const FEATURE_CONFIG_V1: &str = "config-v1";
-
-/// Registry feature flag for conditionally projected credential bindings.
-pub const FEATURE_OPTIONAL_CREDENTIALS_V1: &str = "optional-credentials-v1";
-
-/// Registry feature flag for RFC-0001 package config reload metadata.
-pub const FEATURE_RELOAD_V1: &str = "reload-v1";
-
-/// Registry feature flag for RFC-0001 typed package capability routing.
-pub const FEATURE_CAPABILITY_ROUTES_V1: &str = "capability-routes-v1";
-
-/// Registry feature flag for RFC-0001 per-package network policy grants.
-pub const FEATURE_NETWORK_POLICY_V1: &str = "network-policy-v1";
-
-/// Registry feature flag for RFC-0001 generated MAC profile artifacts.
-pub const FEATURE_MAC_PROFILE_V1: &str = "mac-profile-v1";
-
-/// Registry feature flag for RFC-0001 generated eBPF network policy loaders.
-pub const FEATURE_EBPF_NET_POLICY_V1: &str = "ebpf-net-policy-v1";
-
-/// Registry feature flag for RFC-0001 fleet-managed BPF-LSM policy packages.
-pub const FEATURE_BPF_LSM_POLICY_V1: &str = "bpf-lsm-policy-v1";
-
 /// Registry feature flag for RFC-0001 package attestation metadata.
 pub const FEATURE_ATTESTATION_V1: &str = "attestation-v1";
-
-/// Registry feature flag for the second `config` package output and
-/// its config-module metadata (`ConfigOutputMeta` + `ConfigModuleMeta`).
-pub const FEATURE_CONFIG_MODULE_V1: &str = "config-module-v1";
 
 /// Registry feature flag for canonical RFC-0016 package documentation.
 pub const FEATURE_PACKAGE_DOCUMENTATION_V1: &str = "package-documentation-v1";
 
-/// Registry feature flag for slot-specific A/B UKI measurement metadata.
-pub const FEATURE_UKI_SLOTS_V1: &str = "uki-slots-v1";
+/// Registry feature flag for opaque provider-owned image artifact contracts.
+pub const FEATURE_IMAGE_ARTIFACT_CONTRACT_V1: &str = "image-artifact-contract-v1";
 
-/// Registry feature flag for signed, slot-paired recovery UKI metadata.
-pub const FEATURE_RECOVERY_UKIS_V1: &str = "recovery-ukis-v1";
+pub use aos_ability_model::{FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1};
 
-const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
-    FEATURE_EXPOSE_V1,
-    FEATURE_EXPOSE_ARTIFACT_V1,
-    FEATURE_PERMISSIONS_V1,
-    FEATURE_REQUIRES_V1,
-    FEATURE_CONFIG_V1,
-    FEATURE_OPTIONAL_CREDENTIALS_V1,
-    FEATURE_RELOAD_V1,
-    FEATURE_CAPABILITY_ROUTES_V1,
-    FEATURE_NETWORK_POLICY_V1,
-    FEATURE_MAC_PROFILE_V1,
-    FEATURE_EBPF_NET_POLICY_V1,
-    FEATURE_BPF_LSM_POLICY_V1,
+/// Names the retained derivation output containing an ability manifest.
+pub const PACKAGE_CONTRACT_OUTPUT: &str = "contract";
+
+const SUPPORTED_NON_CONTRACT_FEATURES: &[&str] = &[
     FEATURE_ATTESTATION_V1,
-    FEATURE_CONFIG_MODULE_V1,
     FEATURE_PACKAGE_DOCUMENTATION_V1,
-    FEATURE_UKI_SLOTS_V1,
-    FEATURE_RECOVERY_UKIS_V1,
+    FEATURE_IMAGE_ARTIFACT_CONTRACT_V1,
 ];
-
-const LANDLOCK_WRITABLE_TEMP_PREFIXES: &[&str] = &["/tmp", "/var/tmp"];
-const ENCRYPTED_CREDENTIAL_SOURCE_PREFIXES: &[&str] = &[
-    "/usr/lib/credstore.encrypted",
-    "/etc/credstore.encrypted",
-    "/run/credstore.encrypted",
-];
-const PLAINTEXT_CREDENTIAL_SOURCE_PREFIXES: &[&str] =
-    &["/usr/lib/credstore", "/etc/credstore", "/run/credstore"];
 
 // ---------------------------------------------------------------------------
 // Well-known paths
@@ -541,50 +480,24 @@ pub struct PackageMeta {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub requires_features: Vec<String>,
-    /// Optional RFC-0001 service exposure metadata.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expose: Option<ExposeMeta>,
-    /// Store artifact carrying rendered RFC-0001 unit files and manifest.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expose_artifact: Option<ExposeArtifactMeta>,
-    /// Configuration-only module output and its declared interface.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config_module: Option<ConfigModuleMeta>,
     /// Canonical package documentation selected for this version/platform.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<DocumentationArtifactMeta>,
-    /// Signed RFC-0001 permission manifest.
-    #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
-    pub permissions: PermissionsMeta,
-    /// Signed fleet BPF-LSM policy artifact metadata.
-    #[serde(default, rename = "bpf_lsm", skip_serializing_if = "Option::is_none")]
-    pub bpf_lsm: Option<BpfLsmPolicyMeta>,
+    /// Authenticated RFC-0022 ability package companion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<PackageContractMeta>,
     /// Runtime integrity, attestation, and provenance facts for this package.
     #[serde(default, skip_serializing_if = "AttestationMeta::is_empty")]
     pub attestation: AttestationMeta,
 }
 
-// The RFC-0001 package metadata schema types moved to the wasm-clean
-// `aos-registry-surface` crate (RFC-0004 Phase 5) so the registry hub's indexer
-// and the Cloudflare Worker share them with the apr/apm client. Re-exported here
-// so `aos_package::types::{ExposeMeta, …}` paths are unchanged. The pure
-// validation free functions below stay native to this crate; only the data
-// contracts and their inherent helpers moved.
-pub use aos_registry_surface::manifest::{
-    AttestationMeta, BpfLsmPolicyArtifactMeta, BpfLsmPolicyMeta, CapabilityKind,
-    ConfigArtifactFormat, ConfigArtifactMeta, ConfigReloadPolicy, ConfinementClass,
-    ConfinementMeta, CredentialMeta, ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta,
-    HostPathMode, HostPathPermission, NetworkPermission, PermissionsMeta, ProvidedCapabilityMeta,
-    RequiredCapabilityMeta, SyscallProfile,
-};
+// Shared package metadata schemas live in the wasm-clean registry-surface
+// crate so the registry hub and package client consume one contract.
+pub use aos_registry_surface::manifest::AttestationMeta;
 
-// Configuration schema types are pure manifest data; they live in the
-// wasm-clean `aos-registry-surface` crate alongside the rest of the package
-// schema (so the hub indexer and the Worker share them) and are re-exported
-// here so `aos_package::types::{ConfigModuleMeta, …}` paths are unchanged.
 pub use aos_registry_surface::manifest::{
-    ConfigModuleArtifacts, ConfigModuleMeta, ConfigOptionDeclaration, ConfigOutputMeta,
-    DocumentationArtifactMeta, ModuleAbiCompat, OwnedRoot, RootContribution,
+    DocumentationArtifactMeta, PackageContractArtifactMeta, PackageContractClosureMemberMeta,
+    PackageContractDocumentMeta, PackageContractMeta, PackageContractSelectorMeta,
 };
 
 /// Returns the top-level root segment of a dotted option path.
@@ -597,44 +510,9 @@ pub fn option_path_root(path: &str) -> &str {
 
 /// Returns whether package metadata must be backed by DSSE provenance.
 ///
-/// RFC-0001 exposure/permission/BPF-LSM metadata requires provenance via
-/// [`rfc0001_metadata_requires_provenance`]; in addition, a configuration
-/// `config_module` block is privileged metadata that independently forces
-/// provenance.
+/// Package documentation and package contracts require provenance.
 pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
-    rfc0001_metadata_requires_provenance(
-        meta.expose.as_ref(),
-        meta.expose_artifact.as_ref(),
-        &meta.permissions,
-        meta.bpf_lsm.as_ref(),
-    ) || meta.config_module.is_some()
-        || meta.documentation.is_some()
-}
-
-/// Returns whether RFC-0001 metadata fields must be backed by DSSE provenance.
-pub(crate) fn rfc0001_metadata_requires_provenance(
-    expose: Option<&ExposeMeta>,
-    expose_artifact: Option<&ExposeArtifactMeta>,
-    permissions: &PermissionsMeta,
-    bpf_lsm: Option<&BpfLsmPolicyMeta>,
-) -> bool {
-    expose.is_some()
-        || expose_artifact.is_some()
-        || !permissions.is_empty()
-        || bpf_lsm.is_some_and(|bpf_lsm| !bpf_lsm.is_empty())
-}
-
-/// Named host policy tier for RFC-0001 permission admission.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PolicyTier {
-    /// Tightest policy tier.
-    Restricted,
-    /// Default policy tier.
-    #[default]
-    Baseline,
-    /// Privileged policy tier.
-    Privileged,
+    meta.documentation.is_some() || meta.contract.is_some()
 }
 
 /// Validate that a package metadata entry can be safely consumed.
@@ -642,12 +520,33 @@ pub enum PolicyTier {
 /// # Errors
 ///
 /// Returns an error when the entry requires a newer format, names an
-/// unsupported feature, uses RFC-0001 metadata without declaring its feature
-/// gate, names invalid package requirements, or requests `CAP_SYS_MODULE`
-/// inside the workload instead of using the host-fulfilled `kernel-modules`
-/// permission.
+/// unsupported feature, uses authenticated metadata without declaring its
+/// feature gate, names invalid package requirements, or requests
+/// `CAP_SYS_MODULE` inside the workload instead of using the host-fulfilled
+/// `kernel-modules` permission.
 pub fn validate_supported_package_meta(meta: &PackageMeta) -> Result<()> {
-    validate_supported_package_meta_with(meta, PACKAGE_META_FORMAT, SUPPORTED_PACKAGE_FEATURES)
+    let supported_features = supported_package_features()?;
+    let supported_features = supported_features
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+
+    validate_supported_package_meta_with(meta, PACKAGE_META_FORMAT, &supported_features)
+}
+
+fn supported_package_features() -> Result<Vec<String>> {
+    let mut features = SUPPORTED_NON_CONTRACT_FEATURES
+        .iter()
+        .map(|feature| (*feature).to_string())
+        .collect::<Vec<_>>();
+    features.extend(
+        aos_ability_validate::package_source_supported_features()?
+            .into_iter()
+            .map(|feature| feature.as_str().to_string()),
+    );
+    features.sort();
+    features.dedup();
+    Ok(features)
 }
 
 /// Validate a package metadata entry against an explicit format/feature set.
@@ -683,35 +582,10 @@ pub fn validate_supported_package_meta_with(
         }
     }
 
-    if meta.expose.is_some() {
-        require_feature(meta, FEATURE_EXPOSE_V1)?;
-        require_feature(meta, FEATURE_NETWORK_POLICY_V1)?;
-    }
-    if meta.expose_artifact.is_some() {
-        require_feature(meta, FEATURE_EXPOSE_ARTIFACT_V1)?;
-    }
-    if !meta.permissions.is_empty() {
-        require_feature(meta, FEATURE_PERMISSIONS_V1)?;
-        if meta.permissions.has_network_policy() {
-            require_feature(meta, FEATURE_NETWORK_POLICY_V1)?;
-        }
-    }
-    if let Some(bpf_lsm) = &meta.bpf_lsm {
-        if !bpf_lsm.is_empty() {
-            require_feature(meta, FEATURE_BPF_LSM_POLICY_V1)?;
-            validate_bpf_lsm_policy_meta(bpf_lsm)
-                .with_context(|| format!("invalid BPF-LSM policy metadata for '{}'", meta.name))?;
-        }
-    }
     if !meta.attestation.is_empty() {
         require_feature(meta, FEATURE_ATTESTATION_V1)?;
         validate_attestation_meta(&meta.attestation)
             .with_context(|| format!("invalid attestation metadata for '{}'", meta.name))?;
-    }
-    if let Some(config_module) = &meta.config_module {
-        require_feature(meta, FEATURE_CONFIG_MODULE_V1)?;
-        validate_config_module_meta(&meta.name, config_module)
-            .with_context(|| format!("invalid config-module metadata for '{}'", meta.name))?;
     }
     if let Some(documentation) = &meta.documentation {
         require_feature(meta, FEATURE_PACKAGE_DOCUMENTATION_V1)?;
@@ -719,75 +593,31 @@ pub fn validate_supported_package_meta_with(
             format!("invalid package-documentation metadata for '{}'", meta.name)
         })?;
     }
-    if meta.images.iter().any(|image| !image.ukis.is_empty()) {
-        require_feature(meta, FEATURE_UKI_SLOTS_V1)?;
+    if let Some(ability) = &meta.contract {
+        require_feature(meta, FEATURE_ABILITIES_V1)?;
+        crate::package_contract::validate_package_contract_meta(ability)
+            .with_context(|| format!("invalid package contract metadata for '{}'", meta.name))?;
     }
-    if meta
-        .images
-        .iter()
-        .any(|image| !image.recovery_ukis.is_empty())
-    {
-        require_feature(meta, FEATURE_RECOVERY_UKIS_V1)?;
+    if !meta.images.is_empty() {
+        require_feature(meta, FEATURE_IMAGE_ARTIFACT_CONTRACT_V1)?;
     }
     for image in &meta.images {
-        validate_image_entry(image)
+        validate_image_entry(image, &meta.version, &meta.platform)
             .with_context(|| format!("invalid sysroot image metadata for '{}'", meta.name))?;
     }
     if package_requires_provenance(meta) && meta.attestation.provenance.is_none() {
-        let reason = if meta.config_module.is_some() {
-            "uses config-module metadata"
-        } else if meta.documentation.is_some() {
+        let reason = if meta.documentation.is_some() {
             "uses package-documentation metadata"
+        } else if meta.contract.is_some() {
+            "uses ability metadata"
         } else {
-            "uses RFC-0001 exposed or permission metadata"
+            "uses BPF-LSM metadata"
         };
         bail!(
             "package '{}' {reason} without attestation provenance",
             meta.name
         );
     }
-
-    if let Some(expose) = &meta.expose {
-        validate_expose_meta_for_package(&meta.name, expose)?;
-        validate_attestation_expose_consistency(meta)?;
-        if !expose.requires.is_empty() {
-            require_feature(meta, FEATURE_REQUIRES_V1)?;
-        }
-        if !expose.config.is_empty() {
-            require_feature(meta, FEATURE_CONFIG_V1)?;
-        }
-        if expose.config.has_optional_credentials() {
-            require_feature(meta, FEATURE_OPTIONAL_CREDENTIALS_V1)?;
-        }
-        if expose.config.has_unit_reconciliation() {
-            require_feature(meta, FEATURE_RELOAD_V1)?;
-        }
-        if !expose.provides.is_empty() || !expose.uses.is_empty() {
-            require_feature(meta, FEATURE_CAPABILITY_ROUTES_V1)?;
-        }
-        if expose_uses_ebpf_net_policy(&meta.name, expose) {
-            require_feature(meta, FEATURE_EBPF_NET_POLICY_V1)?;
-        }
-        if expose_uses_mac_profile(&meta.name, expose) {
-            require_feature(meta, FEATURE_MAC_PROFILE_V1)?;
-        }
-        for required in &expose.requires {
-            validate_package_name(required)
-                .with_context(|| format!("invalid requires entry in package '{}'", meta.name))?;
-        }
-    }
-    if let Some(artifact) = &meta.expose_artifact {
-        if meta.expose.is_none() {
-            bail!(
-                "package '{}' carries expose artifact metadata without expose metadata",
-                meta.name
-            );
-        }
-        validate_expose_artifact_meta(artifact)
-            .with_context(|| format!("invalid expose artifact for package '{}'", meta.name))?;
-    }
-
-    validate_permissions_meta(&meta.name, &meta.permissions)?;
 
     Ok(())
 }
@@ -805,270 +635,6 @@ fn require_feature(meta: &PackageMeta, feature: &str) -> Result<()> {
         "package '{}' uses registry feature '{feature}' without declaring it in requires-features",
         meta.name
     )
-}
-
-fn expose_uses_ebpf_net_policy(package_name: &str, expose: &ExposeMeta) -> bool {
-    let unit = format!("aos-pkg-{package_name}-ebpf.service");
-    expose.units.iter().any(|candidate| candidate == &unit)
-}
-
-fn expose_uses_mac_profile(package_name: &str, expose: &ExposeMeta) -> bool {
-    let unit = format!("aos-pkg-{package_name}-mac.service");
-    expose.units.iter().any(|candidate| candidate == &unit)
-}
-
-/// Validate an RFC-0001 exposure metadata block.
-///
-/// # Errors
-///
-/// Returns an error when the target/unit names, image metadata, or required
-/// package names are malformed.
-pub fn validate_expose_meta(expose: &ExposeMeta) -> Result<()> {
-    validate_target_name(&expose.target)?;
-    let mut unit_names = std::collections::BTreeSet::new();
-    for unit in &expose.units {
-        validate_unit_name(unit)?;
-        unit_names.insert(unit.as_str());
-    }
-    for image in &expose.images {
-        validate_image_entry(image)?;
-    }
-    for required in &expose.requires {
-        validate_package_name(required)?;
-    }
-    validate_expose_config_meta(&expose.config)?;
-    validate_capability_routes(expose)?;
-    validate_expose_unit_references(expose, &unit_names)?;
-    Ok(())
-}
-
-/// Validate an RFC-0001 exposure metadata block for a package.
-///
-/// # Errors
-///
-/// Returns an error when [`validate_expose_meta`] rejects the metadata or the
-/// target is not the package-owned `aos-pkg-<package>.target` activation unit.
-pub fn validate_expose_meta_for_package(package_name: &str, expose: &ExposeMeta) -> Result<()> {
-    validate_package_name(package_name)?;
-    validate_expose_meta(expose)?;
-    let expected = format!("aos-pkg-{package_name}.target");
-    if expose.target != expected {
-        bail!(
-            "expose target for package '{package_name}' must equal {expected}: {}",
-            expose.target
-        );
-    }
-    Ok(())
-}
-
-fn validate_expose_unit_references(
-    expose: &ExposeMeta,
-    unit_names: &std::collections::BTreeSet<&str>,
-) -> Result<()> {
-    for artifact in &expose.config.artifacts {
-        for unit in &artifact.units {
-            if !unit_names.contains(unit.as_str()) {
-                bail!(
-                    "config artifact '{}' references unknown expose unit '{}'",
-                    artifact.name,
-                    unit
-                );
-            }
-        }
-    }
-    for credential in &expose.config.credentials {
-        for unit in &credential.units {
-            if !unit_names.contains(unit.as_str()) {
-                bail!(
-                    "credential '{}' references unknown expose unit '{}'",
-                    credential.name,
-                    unit
-                );
-            }
-        }
-    }
-    for provided in &expose.provides {
-        if let Some(unit) = &provided.unit
-            && !unit_names.contains(unit.as_str())
-        {
-            bail!(
-                "provided capability '{}' references unknown expose unit '{}'",
-                provided.name,
-                unit
-            );
-        }
-    }
-    for required in &expose.uses {
-        if !required.unit.ends_with(".service") {
-            bail!(
-                "required capability '{}.{}' references non-service expose unit '{}'",
-                required.provider,
-                required.name,
-                required.unit
-            );
-        }
-        if !unit_names.contains(required.unit.as_str()) {
-            bail!(
-                "required capability '{}.{}' references unknown expose unit '{}'",
-                required.provider,
-                required.name,
-                required.unit
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Validate RFC-0001 package config metadata.
-///
-/// # Errors
-///
-/// Returns an error when an artifact, credential, field name, or target unit is
-/// malformed.
-pub fn validate_expose_config_meta(config: &ExposeConfigMeta) -> Result<()> {
-    let mut artifact_names = std::collections::BTreeSet::new();
-    let mut artifact_paths = std::collections::BTreeSet::new();
-    for artifact in &config.artifacts {
-        validate_config_artifact_name(&artifact.name)?;
-        if !artifact_names.insert(&artifact.name) {
-            bail!("duplicate config artifact name '{}'", artifact.name);
-        }
-        validate_config_artifact_path(&artifact.path)?;
-        if !artifact_paths.insert(&artifact.path) {
-            bail!("duplicate config artifact path '{}'", artifact.path);
-        }
-        let mut fields = std::collections::BTreeSet::new();
-        for field in artifact.required.iter().chain(&artifact.optional) {
-            validate_config_field_name(field)?;
-            if !fields.insert(field) {
-                bail!(
-                    "config artifact '{}' declares field '{}' more than once",
-                    artifact.name,
-                    field
-                );
-            }
-        }
-        for unit in &artifact.units {
-            validate_unit_name(unit)?;
-        }
-    }
-
-    let mut credential_names = std::collections::BTreeSet::new();
-    for credential in &config.credentials {
-        validate_credential_name(&credential.name)?;
-        if !credential_names.insert(&credential.name) {
-            bail!("duplicate credential name '{}'", credential.name);
-        }
-        if let Some(source) = &credential.source {
-            validate_credential_source_path(source, credential.encrypted)?;
-        }
-        if let Some(ciphertext) = &credential.ciphertext {
-            if !credential.encrypted {
-                bail!(
-                    "credential '{}' declares ciphertext but is not encrypted",
-                    credential.name
-                );
-            }
-            if credential.source.is_some() {
-                bail!(
-                    "credential '{}' must not declare both source and ciphertext",
-                    credential.name
-                );
-            }
-            validate_credential_ciphertext(ciphertext)?;
-        }
-        for unit in &credential.units {
-            validate_unit_name(unit)?;
-            if !unit.ends_with(".service") {
-                bail!(
-                    "credential '{}' references non-service expose unit '{}'",
-                    credential.name,
-                    unit
-                );
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Validate rendered RFC-0001 expose artifact metadata.
-///
-/// # Errors
-///
-/// Returns an error when the store path is not absolute or the recorded NAR
-/// fields are missing or malformed.
-pub fn validate_expose_artifact_meta(artifact: &ExposeArtifactMeta) -> Result<()> {
-    validate_absolute_path(&artifact.store_path, "expose artifact store path")?;
-    if store_path_hash_component(&artifact.store_path).is_none() {
-        bail!(
-            "expose artifact store path is not a Nix-style store path: {}",
-            artifact.store_path
-        );
-    }
-    if !artifact.nar_hash.starts_with("sha256:") && !artifact.nar_hash.starts_with("sha256-") {
-        bail!(
-            "expose artifact '{}' has invalid NAR hash",
-            artifact.store_path
-        );
-    }
-    if artifact.nar_size == 0 {
-        bail!(
-            "expose artifact '{}' must record a non-zero NAR size",
-            artifact.store_path
-        );
-    }
-    Ok(())
-}
-
-/// Validates metadata for the second `config` package output.
-///
-/// Mirrors [`validate_expose_artifact_meta`]: the store path must be absolute
-/// and Nix-style, and the NAR hash must be a recognized `sha256` digest. In
-/// addition, every reference entry must be a bare store-path hash, and no
-/// reference may name a `.drv` — the config output is pure data and must never
-/// pull a derivation into its closure (publish lint, architecture.md §Stage-1).
-///
-/// # Errors
-///
-/// Returns an error when the store path is not an absolute Nix-style store path,
-/// the NAR hash is missing or malformed, the NAR size is zero, or a reference is
-/// not a bare store-path hash or names a derivation.
-pub fn validate_config_output_meta(output: &ConfigOutputMeta) -> Result<()> {
-    validate_absolute_path(&output.store_path, "config output store path")?;
-    if store_path_hash_component(&output.store_path).is_none() {
-        bail!(
-            "config output store path is not a Nix-style store path: {}",
-            output.store_path
-        );
-    }
-    if !output.nar_hash.starts_with("sha256:") && !output.nar_hash.starts_with("sha256-") {
-        bail!("config output '{}' has invalid NAR hash", output.store_path);
-    }
-    if output.nar_size == 0 {
-        bail!(
-            "config output '{}' must record a non-zero NAR size",
-            output.store_path
-        );
-    }
-    for reference in &output.references {
-        if reference.contains(".drv") {
-            bail!(
-                "config output '{}' must not reference a derivation: {reference}",
-                output.store_path
-            );
-        }
-        if reference.contains('/')
-            || reference.len() < 2
-            || !reference.chars().all(|ch| ch.is_ascii_alphanumeric())
-        {
-            bail!(
-                "config output '{}' reference is not a bare store-path hash: {reference}",
-                output.store_path
-            );
-        }
-    }
-    Ok(())
 }
 
 /// Validates a canonical package-documentation artifact locator.
@@ -1129,9 +695,6 @@ pub fn validate_documentation_artifact_meta(
         "documentation semantic_schema_sha256",
         &documentation.semantic_schema_sha256,
     )?;
-    if let Some(digest) = documentation.system_module_nar_hash.as_deref() {
-        validate_sha256_digest("documentation system_module_nar_hash", digest)?;
-    }
     if !documentation.references.is_empty() {
         bail!(
             "documentation '{}' must have an empty reference set",
@@ -1147,349 +710,6 @@ fn validate_sha256_hex(label: &str, digest: &str) -> Result<()> {
     };
     if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("{label} is not a 32-byte hexadecimal digest");
-    }
-    Ok(())
-}
-
-/// Validates configuration-module metadata.
-///
-/// Checks the embedded [`ConfigOutputMeta`], the inclusive ABI band
-/// (`min <= max`), the option paths, owned roots, and contributions for
-/// well-formedness, and the capability tokens declared by the module.
-///
-/// # Errors
-///
-/// Returns an error when the config output is malformed, the ABI band is
-/// inverted, an option path / root / capability token is empty or malformed, a
-/// declared path is not package-private, beneath an owned root, or contained by
-/// a contributed path, or a contribution targets a root the module also owns.
-pub fn validate_config_module_meta(package_name: &str, module: &ConfigModuleMeta) -> Result<()> {
-    validate_package_name(package_name).context("validating config-module package name")?;
-    validate_config_output_meta(&module.config_output)?;
-    if let Some(base_lib) = &module.evaluation_base_lib {
-        validate_config_output_meta(base_lib)
-            .context("validating config-module evaluation base lib")?;
-    }
-    for (name, path) in &module.dependency_outputs {
-        validate_package_name(name)
-            .with_context(|| format!("validating config dependency name {name:?}"))?;
-        validate_absolute_path(path, "config dependency output")
-            .with_context(|| format!("validating config dependency output for {name:?}"))?;
-        if store_path_hash_component(path).is_none() {
-            bail!("config dependency '{name}' output is not a Nix-style store path: {path}");
-        }
-    }
-
-    if module.module_abi_compat.min > module.module_abi_compat.max {
-        bail!(
-            "config module module_abi_compat range is inverted: min {} > max {}",
-            module.module_abi_compat.min,
-            module.module_abi_compat.max
-        );
-    }
-
-    let mut declared = std::collections::BTreeSet::new();
-    for path in &module.declares {
-        validate_option_path(path)?;
-        if !declared.insert(path) {
-            bail!("config module declares option path '{path}' more than once");
-        }
-    }
-    if !module.declaration_schema.is_empty() {
-        let schema_paths = module
-            .declaration_schema
-            .iter()
-            .map(|declaration| declaration.path.as_str())
-            .collect::<Vec<_>>();
-        let declared_paths = module
-            .declares
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        if schema_paths != declared_paths {
-            bail!("config module declaration_schema paths must exactly match sorted declares");
-        }
-        for declaration in &module.declaration_schema {
-            if declaration.type_signature.trim().is_empty() {
-                bail!(
-                    "config module declaration '{}' has an empty type signature",
-                    declaration.path
-                );
-            }
-        }
-    }
-
-    let mut required = std::collections::BTreeSet::new();
-    for path in &module.requires {
-        validate_option_path(path)?;
-        if !required.insert(path) {
-            bail!("config module requires option path '{path}' more than once");
-        }
-    }
-    if module.requires.windows(2).any(|pair| pair[0] >= pair[1]) {
-        bail!("config module requires paths must be sorted and deduplicated");
-    }
-
-    let mut owned = std::collections::BTreeSet::new();
-    for owned_root in &module.owns_roots {
-        validate_option_root("owned root", &owned_root.root)?;
-        if !owned.insert(owned_root.root.as_str()) {
-            bail!(
-                "config module owns root '{}' more than once",
-                owned_root.root
-            );
-        }
-        let mut contributable = std::collections::BTreeSet::new();
-        for path in &owned_root.contributable {
-            validate_option_surface(path)?;
-            if !contributable.insert(path) {
-                bail!(
-                    "owned root '{}' lists contributable sub-path '{path}' more than once",
-                    owned_root.root
-                );
-            }
-        }
-    }
-
-    let mut contributed = std::collections::BTreeMap::new();
-    for contribution in &module.contributes {
-        validate_option_root("contribution root", &contribution.root)?;
-        if owned.contains(contribution.root.as_str()) {
-            bail!(
-                "config module both owns and contributes to root '{}'",
-                contribution.root
-            );
-        }
-        if contributed.contains_key(contribution.root.as_str()) {
-            bail!(
-                "config module contributes to root '{}' more than once",
-                contribution.root
-            );
-        }
-        if contribution.paths.is_empty() {
-            bail!(
-                "config module contribution to root '{}' lists no paths",
-                contribution.root
-            );
-        }
-        let mut contribution_paths = std::collections::BTreeSet::new();
-        for path in &contribution.paths {
-            validate_option_subpath(path)?;
-            if !contribution_paths.insert(path.as_str()) {
-                bail!(
-                    "config module contribution to root '{}' lists path '{path}' more than once",
-                    contribution.root
-                );
-            }
-        }
-        contributed.insert(contribution.root.as_str(), contribution_paths);
-    }
-
-    for path in declared {
-        let path = path.as_str();
-        let root = path.split_once('.').map_or(path, |(root, _)| root);
-        let contribution_authorizes = contributed.get(root).is_some_and(|paths| {
-            path.strip_prefix(root)
-                .and_then(|suffix| suffix.strip_prefix('.'))
-                .is_some_and(|relative| {
-                    paths.iter().any(|allowed| {
-                        relative == *allowed
-                            || relative
-                                .strip_prefix(*allowed)
-                                .is_some_and(|suffix| suffix.starts_with('.'))
-                    })
-                })
-        });
-        if root != package_name && !owned.contains(root) && !contribution_authorizes {
-            bail!(
-                "config module declares option path '{path}' outside its owned roots or contributed paths"
-            );
-        }
-    }
-
-    validate_config_artifact_names("etc", &module.artifacts.etc, validate_relative_etc_path)?;
-    validate_config_artifact_names("unit", &module.artifacts.units, validate_systemd_unit_name)?;
-    validate_config_artifact_names("user", &module.artifacts.users, validate_account_name)?;
-    validate_config_artifact_names("group", &module.artifacts.groups, validate_account_name)?;
-
-    let mut capabilities = std::collections::BTreeSet::new();
-    for token in &module.provides_capabilities {
-        validate_capability_token(token)?;
-        if !capabilities.insert(token) {
-            bail!("config module sets capability '{token}' more than once");
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_config_artifact_names(
-    kind: &str,
-    values: &[String],
-    validate: fn(&str) -> Result<()>,
-) -> Result<()> {
-    let mut seen = std::collections::BTreeSet::new();
-    for value in values {
-        validate(value)
-            .with_context(|| format!("validating config-module {kind} grant {value:?}"))?;
-        if !seen.insert(value.as_str()) {
-            bail!("config module grants {kind} artifact '{value}' more than once");
-        }
-    }
-    Ok(())
-}
-
-fn validate_relative_etc_path(path: &str) -> Result<()> {
-    if path.is_empty() || path.starts_with('/') {
-        bail!("/etc artifact path must be non-empty and relative");
-    }
-    if path.split('/').any(|segment| {
-        segment.is_empty()
-            || matches!(segment, "." | "..")
-            || !segment.chars().all(|ch| {
-                ch.is_ascii_alphanumeric() || matches!(ch, '_' | '@' | '+' | '.' | ',' | '=' | '-')
-            })
-    }) {
-        bail!("unsafe relative /etc artifact path '{path}'");
-    }
-    Ok(())
-}
-
-fn validate_systemd_unit_name(name: &str) -> Result<()> {
-    const SUFFIXES: &[&str] = &[
-        ".service",
-        ".socket",
-        ".target",
-        ".timer",
-        ".path",
-        ".slice",
-        ".mount",
-        ".automount",
-    ];
-    let stem = SUFFIXES
-        .iter()
-        .find_map(|suffix| name.strip_suffix(suffix))
-        .filter(|stem| !stem.is_empty())
-        .context("systemd artifact name has no supported unit suffix")?;
-    if !stem
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '@' | '+' | '.' | '-'))
-    {
-        bail!("invalid systemd unit artifact name '{name}'");
-    }
-    Ok(())
-}
-
-fn validate_account_name(name: &str) -> Result<()> {
-    let mut chars = name.chars();
-    if !chars
-        .next()
-        .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
-        || !chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
-    {
-        bail!("invalid account artifact name '{name}'");
-    }
-    Ok(())
-}
-
-/// Validate a dotted option path used as an inverted-index key.
-fn validate_option_path(path: &str) -> Result<()> {
-    if path.is_empty() {
-        bail!("option path must not be empty");
-    }
-    if path.starts_with('.') || path.ends_with('.') || path.contains("..") {
-        bail!("invalid option path '{path}': empty path segment");
-    }
-    if !path
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
-    {
-        bail!("invalid option path '{path}': use ASCII letters, digits, '.', '_', '-'");
-    }
-    Ok(())
-}
-
-/// Validate a single option-path root segment (no `.`).
-fn validate_option_root(kind: &str, root: &str) -> Result<()> {
-    if root.is_empty() || root.contains('.') {
-        bail!("invalid {kind} '{root}': must be a single option-path segment");
-    }
-    if !root
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
-    {
-        bail!("invalid {kind} '{root}': use ASCII letters, digits, '_', '-'");
-    }
-    Ok(())
-}
-
-/// Validate an option sub-path relative to a shared root.
-fn validate_option_subpath(path: &str) -> Result<()> {
-    validate_option_path(path)
-}
-
-/// Validate an owner-declared contribution surface.
-///
-/// A wildcard is permitted only as an entire dotted segment. The surface is
-/// interpreted as a subtree prefix after segment-aware wildcard matching.
-fn validate_option_surface(path: &str) -> Result<()> {
-    if path.is_empty() || path.starts_with('.') || path.ends_with('.') || path.contains("..") {
-        bail!("invalid contribution surface '{path}': empty path segment");
-    }
-    for segment in path.split('.') {
-        if segment == "*" {
-            continue;
-        }
-        if segment.is_empty()
-            || !segment
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
-        {
-            bail!(
-                "invalid contribution surface '{path}': '*' must occupy a complete segment and other segments use ASCII letters, digits, '_', '-'"
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Validate a capability token (a dotted option path).
-fn validate_capability_token(token: &str) -> Result<()> {
-    validate_option_path(token)
-}
-
-/// Validate signed BPF-LSM policy artifact metadata.
-///
-/// # Errors
-///
-/// Returns an error when names are malformed, artifact paths are not safe
-/// package-relative paths, or program names are not BPF C identifiers.
-pub fn validate_bpf_lsm_policy_meta(meta: &BpfLsmPolicyMeta) -> Result<()> {
-    let mut seen = std::collections::BTreeSet::new();
-    for policy in &meta.policies {
-        validate_policy_artifact_name(&policy.name)?;
-        validate_relative_artifact_path("BPF-LSM policy", &policy.policy, ".json")?;
-        validate_relative_artifact_path("BPF-LSM object", &policy.object, ".bpf.o")?;
-        if !seen.insert(&policy.name) {
-            bail!("duplicate BPF-LSM policy '{}'", policy.name);
-        }
-        if policy.programs.is_empty() {
-            bail!(
-                "BPF-LSM policy '{}' must name at least one program",
-                policy.name
-            );
-        }
-        let mut programs = std::collections::BTreeSet::new();
-        for program in &policy.programs {
-            validate_bpf_program_name(program)?;
-            if !programs.insert(program) {
-                bail!(
-                    "BPF-LSM policy '{}' contains duplicate program '{}'",
-                    policy.name,
-                    program
-                );
-            }
-        }
     }
     Ok(())
 }
@@ -1558,41 +778,6 @@ pub fn validate_attestation_provenance_ref(path: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_attestation_expose_consistency(meta: &PackageMeta) -> Result<()> {
-    let (Some(root_hash), Some(root_hash_sig), Some(expose)) = (
-        meta.attestation.root_hash.as_deref(),
-        meta.attestation.root_hash_sig.as_deref(),
-        meta.expose.as_ref(),
-    ) else {
-        return Ok(());
-    };
-    let Some(attestation_root_hash) = canonical_sha256_digest(root_hash) else {
-        return Ok(());
-    };
-
-    let mut saw_verity_image = false;
-    for image in &expose.images {
-        if image.root_hash.is_none() && image.root_hash_sig.is_none() {
-            continue;
-        }
-        saw_verity_image = true;
-        let image_root_hash = image.root_hash.as_deref().and_then(canonical_sha256_digest);
-        if image_root_hash.as_deref() == Some(attestation_root_hash.as_str())
-            && image.root_hash_sig.as_deref() == Some(root_hash_sig)
-        {
-            return Ok(());
-        }
-    }
-
-    if saw_verity_image {
-        bail!(
-            "attestation root_hash/root_hash_sig for package '{}' must match a verity expose image",
-            meta.name
-        );
-    }
-    Ok(())
-}
-
 fn validate_sha256_digest(kind: &str, digest: &str) -> Result<()> {
     let hex = digest
         .strip_prefix("sha256:")
@@ -1612,17 +797,6 @@ fn canonical_sha256_digest(digest: &str) -> Option<String> {
         return Some(format!("sha256:{}", hex.to_ascii_lowercase()));
     }
     None
-}
-
-fn validate_policy_artifact_name(name: &str) -> Result<()> {
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
-    {
-        bail!("invalid BPF-LSM policy name '{name}'");
-    }
-    Ok(())
 }
 
 fn validate_relative_artifact_path(kind: &str, path: &str, suffix: &str) -> Result<()> {
@@ -1650,222 +824,11 @@ fn validate_relative_artifact_member_path(kind: &str, path: &str) -> Result<()> 
     Ok(())
 }
 
-fn validate_bpf_program_name(program: &str) -> Result<()> {
-    let mut chars = program.chars();
-    let Some(first) = chars.next() else {
-        bail!("BPF program name must not be empty");
-    };
-    if !(first == '_' || first.is_ascii_alphabetic())
-        || !chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-    {
-        bail!("invalid BPF program name '{program}'");
-    }
-    Ok(())
-}
-
-/// Validate an RFC-0001 permission manifest.
-///
-/// # Errors
-///
-/// Returns an error when a manifest entry is malformed or asks for
-/// `CAP_SYS_MODULE` inside the workload.
-pub fn validate_permissions_meta(package_name: &str, permissions: &PermissionsMeta) -> Result<()> {
-    for capability in &permissions.capabilities {
-        validate_capability_name(capability)?;
-        if capability == "CAP_SYS_MODULE" {
-            bail!(
-                "package '{package_name}' requests CAP_SYS_MODULE; load modules through kernel-modules instead"
-            );
-        }
-    }
-    validate_tcp_ports("tcp-bind", &permissions.tcp_bind)?;
-    validate_tcp_ports("tcp-connect", &permissions.tcp_connect)?;
-    for device in &permissions.devices {
-        validate_absolute_path(device, "device")?;
-    }
-    for host_path in &permissions.host_paths {
-        validate_host_path_permission(host_path)?;
-    }
-    let mut static_users = std::collections::BTreeSet::new();
-    for user in &permissions.static_users {
-        validate_account_name(user)?;
-        if !static_users.insert(user) {
-            bail!(
-                "package '{package_name}' permissions.static-users contains duplicate user '{user}'"
-            );
-        }
-    }
-    for module in &permissions.kernel_modules {
-        validate_kernel_module_name(module)?;
-    }
-    if let Some(label) = &permissions.security_label {
-        validate_security_label(label)?;
-    }
-    if let Some(confinement) = &permissions.confinement {
-        validate_confinement_meta(confinement)?;
-        let computed = permissions.computed_confinement();
-        if confinement != &computed {
-            bail!(
-                "package '{package_name}' permissions.confinement does not match computed confinement: expected class {:?}, label '{}', holes {:?}; got class {:?}, label '{}', holes {:?}",
-                computed.class,
-                computed.label,
-                computed.holes,
-                confinement.class,
-                confinement.label,
-                confinement.holes
-            );
-        }
-    }
-    Ok(())
-}
-
-fn validate_tcp_ports(kind: &str, ports: &[u16]) -> Result<()> {
-    let mut seen = std::collections::BTreeSet::new();
-    for port in ports {
-        if *port == 0 {
-            bail!("{kind} contains invalid TCP port 0");
-        }
-        if !seen.insert(port) {
-            bail!("{kind} contains duplicate TCP port {port}");
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_capability_name(capability: &str) -> Result<()> {
-    if capability.starts_with("CAP_")
-        && capability
-            .chars()
-            .all(|ch| ch.is_ascii_uppercase() || ch == '_' || ch.is_ascii_digit())
-    {
-        return Ok(());
-    }
-    bail!("invalid capability name '{capability}'")
-}
-
-pub(crate) fn validate_kernel_module_name(module: &str) -> Result<()> {
-    if module.is_empty()
-        || !module
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
-    {
-        bail!("invalid kernel module name '{module}'");
-    }
-    Ok(())
-}
-
 pub(crate) fn validate_absolute_path(path: &str, kind: &str) -> Result<()> {
     if Path::new(path).is_absolute() {
         return Ok(());
     }
     bail!("{kind} must be an absolute path: {path}")
-}
-
-fn validate_host_path_permission(host_path: &HostPathPermission) -> Result<()> {
-    validate_absolute_path(&host_path.path, "host path")?;
-    let path = Path::new(&host_path.path);
-    if path
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        bail!("host path must not contain '..': {}", host_path.path);
-    }
-    if !host_path.path.chars().all(|ch| {
-        ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | '+' | '=' | '@')
-    }) {
-        bail!(
-            "host path contains unsupported characters: {:?}",
-            host_path.path
-        );
-    }
-    if host_path.mode == HostPathMode::ReadOnly
-        && LANDLOCK_WRITABLE_TEMP_PREFIXES
-            .iter()
-            .any(|prefix| path.starts_with(prefix))
-    {
-        bail!(
-            "read-only host paths under /tmp or /var/tmp would be writable through the package Landlock temp grants: {}",
-            host_path.path
-        );
-    }
-    Ok(())
-}
-
-fn validate_config_artifact_name(name: &str) -> Result<()> {
-    if !name.is_empty()
-        && name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
-        && !name.contains("..")
-    {
-        return Ok(());
-    }
-    bail!("invalid config artifact name '{name}'")
-}
-
-fn validate_config_artifact_path(path: &str) -> Result<()> {
-    validate_absolute_path(path, "config artifact path")?;
-    let p = Path::new(path);
-    if p.starts_with("/etc/aos/packages") && p.components().all(|c| c.as_os_str() != "..") {
-        return Ok(());
-    }
-    bail!("config artifact path must be under /etc/aos/packages: {path}")
-}
-
-pub(crate) fn validate_config_field_name(field: &str) -> Result<()> {
-    if !field.is_empty()
-        && field.chars().enumerate().all(|(idx, ch)| {
-            ch == '_' || ch.is_ascii_alphanumeric() && (idx > 0 || !ch.is_ascii_digit())
-        })
-    {
-        return Ok(());
-    }
-    bail!("invalid config field name '{field}'")
-}
-
-pub(crate) fn validate_credential_name(name: &str) -> Result<()> {
-    if !name.is_empty()
-        && name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
-    {
-        return Ok(());
-    }
-    bail!("invalid credential name '{name}'")
-}
-
-fn validate_credential_source_path(path: &str, encrypted: bool) -> Result<()> {
-    validate_absolute_path(path, "credential source path")?;
-    let p = Path::new(path);
-    if p.components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        bail!("credential source path must not contain '..': {path}");
-    }
-    if !path.chars().all(|ch| {
-        ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | '+' | '=' | '@')
-    }) {
-        bail!("credential source path contains unsupported characters: {path:?}");
-    }
-    let allowed = if encrypted {
-        ENCRYPTED_CREDENTIAL_SOURCE_PREFIXES
-    } else {
-        PLAINTEXT_CREDENTIAL_SOURCE_PREFIXES
-    };
-    if allowed
-        .iter()
-        .any(|prefix| path != *prefix && p.starts_with(prefix))
-    {
-        return Ok(());
-    }
-    if encrypted {
-        bail!(
-            "encrypted credential source path must be under /usr/lib/credstore.encrypted, /etc/credstore.encrypted, or /run/credstore.encrypted: {path}"
-        );
-    }
-    bail!(
-        "credential source path must be under /usr/lib/credstore, /etc/credstore, or /run/credstore: {path}"
-    )
 }
 
 pub(crate) fn validate_credential_ciphertext(ciphertext: &str) -> Result<()> {
@@ -1879,103 +842,7 @@ pub(crate) fn validate_credential_ciphertext(ciphertext: &str) -> Result<()> {
     bail!("credential ciphertext contains unsupported characters")
 }
 
-fn validate_capability_routes(expose: &ExposeMeta) -> Result<()> {
-    let mut provided_names = std::collections::BTreeSet::new();
-    for provided in &expose.provides {
-        validate_capability_route_name(&provided.name)?;
-        if !provided_names.insert(&provided.name) {
-            bail!("duplicate provided capability '{}'", provided.name);
-        }
-        match provided.kind {
-            CapabilityKind::Directory => {
-                let Some(path) = provided.path.as_ref() else {
-                    bail!(
-                        "directory capability '{}' must declare a path",
-                        provided.name
-                    );
-                };
-                validate_absolute_path(path, "provided directory capability path")?;
-                if provided.unit.is_some() {
-                    bail!(
-                        "directory capability '{}' must not declare a unit",
-                        provided.name
-                    );
-                }
-            }
-            CapabilityKind::Namespace | CapabilityKind::Socket => {
-                let Some(unit) = provided.unit.as_ref() else {
-                    bail!(
-                        "{:?} capability '{}' must declare a unit",
-                        provided.kind,
-                        provided.name
-                    );
-                };
-                validate_unit_name(unit)?;
-                if provided.path.is_some() {
-                    bail!(
-                        "{:?} capability '{}' must not declare a path",
-                        provided.kind,
-                        provided.name
-                    );
-                }
-            }
-        }
-    }
-
-    for required in &expose.uses {
-        validate_package_name(&required.provider)?;
-        validate_capability_route_name(&required.name)?;
-        validate_unit_name(&required.unit)?;
-    }
-
-    Ok(())
-}
-
-fn validate_capability_route_name(name: &str) -> Result<()> {
-    if !name.is_empty()
-        && name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
-    {
-        return Ok(());
-    }
-    bail!("invalid capability route name '{name}'")
-}
-
-fn validate_target_name(target: &str) -> Result<()> {
-    validate_unit_name(target)?;
-    if !target.starts_with("aos-pkg-") || !target.ends_with(".target") {
-        bail!("expose target must be named aos-pkg-<name>.target: {target}");
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_unit_name(unit: &str) -> Result<()> {
-    let has_known_suffix = [
-        ".automount",
-        ".mount",
-        ".path",
-        ".service",
-        ".slice",
-        ".socket",
-        ".target",
-        ".timer",
-    ]
-    .iter()
-    .any(|suffix| unit.ends_with(suffix));
-
-    let overlay_safe = unit.chars().enumerate().all(|(index, character)| {
-        character.is_ascii_alphanumeric()
-            || (index > 0 && matches!(character, '+' | '.' | '_' | '=' | '@' | '-'))
-    });
-
-    if !overlay_safe || !has_known_suffix {
-        bail!("invalid systemd unit name '{unit}'");
-    }
-    Ok(())
-}
-
-fn validate_image_entry(image: &SysrootImageEntry) -> Result<()> {
+fn validate_image_entry(image: &SysrootImageEntry, release: &str, platform: &str) -> Result<()> {
     if image.format.is_empty()
         || !image
             .format
@@ -1988,299 +855,7 @@ fn validate_image_entry(image: &SysrootImageEntry) -> Result<()> {
     if !(image.nar_hash.starts_with("sha256:") || image.nar_hash.starts_with("sha256-")) {
         bail!("image '{}' has invalid NAR hash", image.store_path);
     }
-    validate_image_verity_entry(image)?;
-    validate_image_uki_entries(image)?;
-    validate_recovery_uki_entries(image)?;
-    validate_recovery_bundle(image)?;
-    Ok(())
-}
-
-fn validate_recovery_bundle(image: &SysrootImageEntry) -> Result<()> {
-    let Some(bundle) = &image.recovery_bundle else {
-        if !image.recovery_ukis.is_empty() {
-            bail!(
-                "image '{}' recovery UKIs require a bundle manifest",
-                image.store_path
-            );
-        }
-        return Ok(());
-    };
-    if image.recovery_ukis.len() != 2
-        || bundle.schema != "aos.recovery-bundle/v1"
-        || bundle.release != image.delivery.release
-        || bundle.architecture != image.delivery.architecture
-        || bundle.platform != image.delivery.platform
-        || bundle.module_abi == 0
-        || bundle.recovery_abi == 0
-        || image
-            .recovery_ukis
-            .iter()
-            .any(|entry| entry.recovery_abi != bundle.recovery_abi)
-    {
-        bail!(
-            "image '{}' has an inconsistent recovery bundle identity",
-            image.store_path
-        );
-    }
-    let expected = [
-        (RecoveryBundleComponentId::RootImage, "root.img"),
-        (RecoveryBundleComponentId::RootVerity, "root.verity"),
-        (RecoveryBundleComponentId::RootHash, "root.roothash"),
-        (RecoveryBundleComponentId::NormalUkiA, "uki-a.efi"),
-        (RecoveryBundleComponentId::NormalUkiB, "uki-b.efi"),
-        (RecoveryBundleComponentId::RecoveryUkiA, "recovery-a.efi"),
-        (RecoveryBundleComponentId::RecoveryUkiB, "recovery-b.efi"),
-        (RecoveryBundleComponentId::RecoveryEntryA, "recovery-a.conf"),
-        (RecoveryBundleComponentId::RecoveryEntryB, "recovery-b.conf"),
-        (RecoveryBundleComponentId::ImageMetadata, "image-info.json"),
-    ];
-    if bundle.components.len() != expected.len() {
-        bail!(
-            "image '{}' recovery bundle has an incomplete component set",
-            image.store_path
-        );
-    }
-    let mut ids = std::collections::BTreeSet::new();
-    for component in &bundle.components {
-        if !ids.insert(component.id)
-            || component.byte_size == 0
-            || !is_lower_sha256(&component.sha256)
-        {
-            bail!(
-                "image '{}' has malformed recovery bundle components",
-                image.store_path
-            );
-        }
-        let expected_path = expected
-            .iter()
-            .find_map(|(id, path)| (*id == component.id).then_some(*path))
-            .context("recovery bundle contains an unknown component identifier")?;
-        if component.path != expected_path {
-            bail!(
-                "image '{}' recovery bundle uses a noncanonical component path",
-                image.store_path
-            );
-        }
-    }
-    Ok(())
-}
-
-fn validate_recovery_uki_entries(image: &SysrootImageEntry) -> Result<()> {
-    if image.recovery_ukis.is_empty() {
-        return Ok(());
-    }
-    if image.ukis.len() != 2 || image.root_verity.is_none() || image.root_hash.is_none() {
-        bail!(
-            "image '{}' recovery UKIs require a complete A/B verity image",
-            image.store_path
-        );
-    }
-    let mut copies = std::collections::BTreeSet::new();
-    let mut abi = None;
-    let mut release = None;
-    for recovery in &image.recovery_ukis {
-        if !copies.insert(recovery.copy) {
-            bail!(
-                "image '{}' repeats recovery copy {:?}",
-                image.store_path,
-                recovery.copy
-            );
-        }
-        let (uki_path, entry_path) = match recovery.copy {
-            UkiSlot::A => ("recovery-a.efi", "recovery-a.conf"),
-            UkiSlot::B => ("recovery-b.efi", "recovery-b.conf"),
-        };
-        if recovery.path != uki_path || recovery.entry_path != entry_path {
-            bail!(
-                "image '{}' has noncanonical recovery paths",
-                image.store_path
-            );
-        }
-        if recovery.byte_size == 0
-            || recovery.recovery_abi == 0
-            || recovery.release.is_empty()
-            || recovery.sbat.is_empty()
-            || !is_lower_sha256(&recovery.sha256)
-            || !is_lower_sha256(&recovery.sb_signer_cert_sha256)
-        {
-            bail!(
-                "image '{}' has malformed recovery metadata",
-                image.store_path
-            );
-        }
-        if abi
-            .replace(recovery.recovery_abi)
-            .is_some_and(|old| old != recovery.recovery_abi)
-            || release
-                .replace(recovery.release.as_str())
-                .is_some_and(|old| old != recovery.release)
-        {
-            bail!(
-                "image '{}' mixes recovery release identities",
-                image.store_path
-            );
-        }
-    }
-    if copies.len() != 2 || !copies.contains(&UkiSlot::A) || !copies.contains(&UkiSlot::B) {
-        bail!(
-            "image '{}' recovery metadata must contain exactly copies a and b",
-            image.store_path
-        );
-    }
-    Ok(())
-}
-
-fn is_lower_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn validate_image_uki_entries(image: &SysrootImageEntry) -> Result<()> {
-    if image.ukis.is_empty() {
-        return Ok(());
-    }
-    if image.delivery.is_store_backed() && image.delivery.update_payload.is_none() {
-        bail!(
-            "image '{}' slot-specific UKIs require an authenticated update payload",
-            image.store_path
-        );
-    }
-    let mut slots = std::collections::BTreeSet::new();
-    let mut measurements = std::collections::BTreeSet::new();
-    let mut signed_count = 0usize;
-    for uki in &image.ukis {
-        if !slots.insert(uki.slot) {
-            bail!(
-                "image '{}' repeats UKI slot {:?}",
-                image.store_path,
-                uki.slot
-            );
-        }
-        validate_relative_artifact_path("slot UKI", &uki.path, ".efi")?;
-        if uki.sb_signer_cert_sha256.is_some() != uki.expected_pcr11.is_some() {
-            bail!(
-                "image '{}' slot {:?} must record signer and PCR-11 together",
-                image.store_path,
-                uki.slot
-            );
-        }
-        if let Some(cert) = &uki.sb_signer_cert_sha256 {
-            signed_count += 1;
-            if cert.len() != 64
-                || !cert
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            {
-                bail!(
-                    "image '{}' slot {:?} has invalid signer certificate digest",
-                    image.store_path,
-                    uki.slot
-                );
-            }
-            if uki.sbat.is_empty() {
-                bail!(
-                    "image '{}' slot {:?} has a signer but no SBAT facts",
-                    image.store_path,
-                    uki.slot
-                );
-            }
-        }
-        if let Some(pcr11) = &uki.expected_pcr11 {
-            if pcr11.len() != 64
-                || !pcr11
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            {
-                bail!(
-                    "image '{}' slot {:?} has invalid expected PCR-11",
-                    image.store_path,
-                    uki.slot
-                );
-            }
-            measurements.insert(pcr11.as_str());
-        }
-    }
-    if slots.len() != 2 || !slots.contains(&UkiSlot::A) || !slots.contains(&UkiSlot::B) {
-        bail!(
-            "image '{}' slot-specific UKI metadata must contain exactly slots a and b",
-            image.store_path
-        );
-    }
-    if signed_count != 0 && signed_count != 2 {
-        bail!(
-            "image '{}' mixes signed and unsigned slot UKIs",
-            image.store_path
-        );
-    }
-    if measurements.len() == 1 {
-        bail!(
-            "image '{}' records the same PCR-11 for both slots despite distinct measured command lines",
-            image.store_path
-        );
-    }
-    Ok(())
-}
-
-fn validate_image_verity_entry(image: &SysrootImageEntry) -> Result<()> {
-    let verity_field_count = [
-        image.root_image.as_ref(),
-        image.root_verity.as_ref(),
-        image.root_hash.as_ref(),
-        image.root_hash_sig.as_ref(),
-    ]
-    .iter()
-    .filter(|field| field.is_some())
-    .count();
-    let verity_format = matches!(image.format.as_str(), "ext4-verity" | "erofs-verity");
-    // A production A/B disk is distributed as one raw GPT container while
-    // its authenticated update payload carries the root image and verity
-    // sidecars. Recovery metadata distinguishes that contract from an
-    // ordinary raw disk that must not claim standalone verity artifacts.
-    let raw_recovery_image = image.format == "raw" && !image.recovery_ukis.is_empty();
-    let supports_verity = verity_format || raw_recovery_image;
-
-    if verity_field_count == 0 && !supports_verity {
-        return Ok(());
-    }
-
-    if !supports_verity {
-        bail!(
-            "image '{}' declares dm-verity fields but format '{}' is not a verity root format",
-            image.store_path,
-            image.format
-        );
-    }
-    if verity_field_count != 4 {
-        bail!(
-            "image '{}' must declare root_image, root_verity, root_hash, and root_hash_sig together",
-            image.store_path
-        );
-    }
-
-    let root_image = image
-        .root_image
-        .as_ref()
-        .context("verity root_image missing after field-count validation")?;
-    let root_verity = image
-        .root_verity
-        .as_ref()
-        .context("verity root_verity missing after field-count validation")?;
-    let root_hash = image
-        .root_hash
-        .as_ref()
-        .context("verity root_hash missing after field-count validation")?;
-    let root_hash_sig = image
-        .root_hash_sig
-        .as_ref()
-        .context("verity root_hash_sig missing after field-count validation")?;
-
-    validate_relative_artifact_member_path("verity root_image", root_image)?;
-    validate_relative_artifact_path("verity root_verity", root_verity, ".verity")?;
-    validate_sha256_digest("verity root_hash", root_hash)?;
-    validate_relative_artifact_path("verity root_hash_sig", root_hash_sig, ".p7s")?;
-
+    image.delivery.validate(&image.format, release, platform)?;
     Ok(())
 }
 
@@ -2292,32 +867,6 @@ fn store_path_hash_component(path: &str) -> Option<&str> {
     } else {
         None
     }
-}
-
-pub(crate) fn validate_security_label(label: &str) -> Result<()> {
-    if label.is_empty()
-        || !label
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
-    {
-        bail!("invalid security label '{label}'");
-    }
-    Ok(())
-}
-
-fn validate_confinement_meta(confinement: &ConfinementMeta) -> Result<()> {
-    validate_display_ascii("confinement label", &confinement.label)?;
-    for hole in &confinement.holes {
-        validate_display_ascii("confinement hole", hole)?;
-    }
-    Ok(())
-}
-
-fn validate_display_ascii(kind: &str, value: &str) -> Result<()> {
-    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ') {
-        bail!("invalid {kind} '{value}'");
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2374,24 +923,12 @@ pub struct ApmMeta {
     /// NAR hash for the source derivation.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source_nar_hash: String,
-    /// RFC-0001 service exposure metadata captured at install time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expose: Option<ExposeMeta>,
-    /// Rendered RFC-0001 expose artifact captured at install time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expose_artifact: Option<ExposeArtifactMeta>,
-    /// Configuration-only module metadata captured at install time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config_module: Option<ConfigModuleMeta>,
     /// Canonical documentation artifact captured at install time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<DocumentationArtifactMeta>,
-    /// RFC-0001 permission manifest captured at install time.
-    #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
-    pub permissions: PermissionsMeta,
-    /// Fleet BPF-LSM policy metadata captured at install time.
+    /// Authenticated ability companion captured at install time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bpf_lsm: Option<BpfLsmPolicyMeta>,
+    pub contract: Option<PackageContractMeta>,
     /// Runtime integrity, attestation, and provenance facts captured at install time.
     #[serde(default, skip_serializing_if = "AttestationMeta::is_empty")]
     pub attestation: AttestationMeta,
@@ -2875,9 +1412,6 @@ pub struct ApmSettings {
     /// Automatically run gc after autoremove.
     #[serde(default)]
     pub auto_gc: bool,
-    /// PCR policy public key used for signed-PCR credential encryption.
-    #[serde(default)]
-    pub credential_pcr_public_key: Option<String>,
 }
 
 /// Serde default for [`ApmSettings::parallel_downloads`].
@@ -2892,7 +1426,6 @@ impl Default for ApmSettings {
             parallel_downloads: default_parallel(),
             auto_autoremove: false,
             auto_gc: false,
-            credential_pcr_public_key: None,
         }
     }
 }
@@ -3075,26 +1608,6 @@ impl ProfileScope {
             ],
         }
     }
-
-    /// Directories searched for provisioned Secure Boot db certificates, in
-    /// precedence order.
-    ///
-    /// Mirrors [`ProfileScope::trusted_keys_dirs`]: a deployment bakes
-    /// `trusted-sb-certs.d/<registry>.pem` alongside `trusted-keys.d`, giving
-    /// `apm` the db cert to re-verify cataloged UKIs against at download time
-    /// (RFC-0006 phase 4 trust-bootstrap symmetry).
-    pub fn trusted_sb_certs_dirs(&self) -> Vec<PathBuf> {
-        match self {
-            ProfileScope::User => vec![
-                xdg_config_home().join("apm/trusted-sb-certs.d"),
-                apm_system_config_dir().join("trusted-sb-certs.d"),
-            ],
-            ProfileScope::System => vec![
-                apm_system_config_dir().join("trusted-sb-certs.d"),
-                apm_state_dir().join("trusted-sb-certs.d"),
-            ],
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3190,91 +1703,12 @@ pub use aos_registry_surface::manifest::{
 // Sysroot image entry — a pre-compiled image attached to a sysroot package
 // ---------------------------------------------------------------------------
 
-// `SbatEntry` (the UKI `.sbat` component/generation record) moved to the
-// wasm-clean `aos-registry-surface` crate alongside the manifest `ImageEntry`
-// that carries it (RFC-0004 Phase 5 / RFC-0006), so the parse path and the
-// runtime `SysrootImageEntry` share one type. Re-exported here so
-// `aos_package::types::SbatEntry` is unchanged.
-// `SysrootImageEntry` (the pre-compiled image format entry within a sysroot
-// package version) also moved to the wasm-clean `aos-registry-surface` crate
-// (RFC-0004 Phase 5) so the parse path, the `ExposeMeta.images` schema, and the
-// runtime image entry share one type. Re-exported here so
-// `aos_package::types::SysrootImageEntry` is unchanged.
+// `SysrootImageEntry` and its provider-neutral artifact locator live in the
+// wasm-clean registry surface so native and indexed consumers share one schema.
 pub use aos_registry_surface::manifest::{
-    ImageCompression, ImageDelivery, ImageInfoReference, ImageStoreReference, ImageTarget,
-    ImageUkiIdentity, ImageVerificationState, RecoveryBundleComponent, RecoveryBundleComponentId,
-    RecoveryBundleManifest, RecoveryUkiEntry, SbatEntry, SysrootImageEntry, SysrootUkiEntry,
-    UkiSlot,
+    ImageArtifactContractDocumentReference, ImageArtifactContractReference, ImageCompression,
+    ImageDelivery, ImageStoreReference, ImageTarget, SysrootImageEntry,
 };
-
-#[cfg(test)]
-pub(crate) fn test_image_delivery(format: &str) -> ImageDelivery {
-    let image_sha256 = "0".repeat(64);
-    let info_sha256 = "1".repeat(64);
-    let (extension, media_type, compatible_targets) = match format {
-        "qcow2" => (
-            "qcow2",
-            "application/vnd.aos.disk-image.qcow2",
-            vec![ImageTarget::QemuKvm, ImageTarget::Openstack],
-        ),
-        "vmdk" => ("vmdk", "application/x-vmdk", vec![ImageTarget::Vmware]),
-        "vhd" => (
-            "vhd",
-            "application/vnd.aos.disk-image.vhd",
-            vec![ImageTarget::HyperV],
-        ),
-        _ => (
-            "img.zst",
-            "application/vnd.aos.disk-image.raw+zstd",
-            vec![ImageTarget::BareMetal],
-        ),
-    };
-    let filename = format!("aos-test.{extension}");
-    ImageDelivery {
-        schema_version: 1,
-        release: "1.0.0".into(),
-        platform: "x86_64-linux".into(),
-        architecture: "x86_64".into(),
-        logical_image_id: image_sha256.clone(),
-        logical_disk_sha256: image_sha256.clone(),
-        rootfs_sha256: "2".repeat(64),
-        object_key: format!("images/sha256/{image_sha256}/{filename}"),
-        filename,
-        media_type: media_type.into(),
-        compression: if format == "raw" {
-            ImageCompression::Zstd
-        } else {
-            ImageCompression::None
-        },
-        byte_size: 1,
-        sha256: image_sha256.clone(),
-        compatible_targets,
-        uki: ImageUkiIdentity {
-            filename: "aos-test.efi".into(),
-            esp_path: "EFI/Linux/aos-test.efi".into(),
-            byte_size: 1,
-            sha256: "3".repeat(64),
-            verification: ImageVerificationState::Unsigned,
-            signer_cert_sha256: None,
-            sbat: Vec::new(),
-            measured: false,
-            expected_pcr11: None,
-        },
-        image_info: ImageInfoReference {
-            filename: "image-info.json".into(),
-            object_key: format!(
-                "images/sha256/{image_sha256}/metadata/{info_sha256}/image-info.json"
-            ),
-            store_path: String::new(),
-            nar_hash: String::new(),
-            nar_size: 0,
-            media_type: "application/vnd.aos.image-info+json".into(),
-            byte_size: 1,
-            sha256: info_sha256,
-        },
-        update_payload: None,
-    }
-}
 
 /// The action required to re-activate a config-generation under a (possibly
 /// changed) running image's `module_abi`.
@@ -3295,6 +1729,34 @@ pub enum ReactivationPlan {
     CrossAbiReEval(CrossAbiReEvalInputs),
 }
 
+/// One module locator derived from an authenticated package contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageModule {
+    /// Package identity declared by the contract document.
+    pub package: String,
+    /// Domain-separated semantic digest of the complete package document.
+    pub document_digest: String,
+    /// Exact artifact root containing the module.
+    pub store_path: String,
+    /// Authenticated NAR identity of the module artifact.
+    pub nar_hash: String,
+    /// Relative module entrypoint below the artifact root.
+    pub entrypoint: String,
+    /// Authority that supplied the authenticated package contract.
+    pub origin: PackageModuleOrigin,
+}
+
+/// Trust origin of one authenticated package contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PackageModuleOrigin {
+    /// Selected from one authenticated registry release.
+    Registry,
+    /// Recovered from the immutable image package catalog.
+    Image,
+}
+
 /// The retained eval inputs a cross-ABI re-activation must replay
 /// using its retained inputs.
 ///
@@ -3304,10 +1766,8 @@ pub enum ReactivationPlan {
 /// recomputation is deterministic and usually cache-hits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrossAbiReEvalInputs {
-    /// Exact ordered config-output module store paths the evaluator must read.
-    pub config_module_paths: Vec<String>,
-    /// Authenticated package identity corresponding to each ordered module.
-    pub config_module_packages: Vec<String>,
+    /// Exact ordered authenticated package modules the evaluator must read.
+    pub package_modules: Vec<PackageModule>,
     /// Store path of the exact `host.nix` the config-gen was evaluated from.
     pub host_nix_ref: String,
     /// Content-address of the resolved instance facts (`facts.json`).
@@ -3325,85 +1785,41 @@ pub struct CrossAbiReEvalInputs {
 // ---------------------------------------------------------------------------
 //
 // The generation model has two independent persisted axes: image substrate
-// and derived configuration. Legacy bundled records are accepted only by the
-// one-shot migration in `sysroot`; they are never a live authority.
+// and derived configuration.
 
-/// A/B slot discriminant for an image generation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ImageSlot {
-    /// The `A` partition slot.
-    A,
-    /// The `B` partition slot.
-    B,
-}
-
-/// Persisted evidence for one signed, uncounted recovery copy on the ESP.
+/// Opaque retained state emitted and interpreted by the selected boot provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RecoveryGeneration {
-    /// A/B slot whose update transaction owns this recovery copy.
-    pub copy: ImageSlot,
-    /// Fixed ESP-relative recovery UKI path.
-    pub uki_path: String,
-    /// Fixed ESP-relative Type-1 loader-entry path.
-    pub entry_path: String,
-    /// Relative source-artifact path authenticated by the release catalog.
-    pub source_path: String,
-    /// Lowercase hexadecimal SHA-256 of the installed recovery UKI.
-    pub sha256: String,
-    /// Exact installed recovery UKI size in bytes.
-    pub byte_size: u64,
-    /// Signed release identity carried by the recovery UKI.
-    pub release: String,
-    /// Recovery interface and artifact compatibility ABI.
-    pub recovery_abi: u32,
+pub struct BootProviderState {
+    /// Provider-owned schema identifier for the opaque evidence value.
+    pub schema: String,
+    /// Provider-owned retained state or checked observation evidence.
+    pub evidence: serde_json::Value,
 }
 
-/// Durable evidence that an inactive recovery-copy publication is unfinished.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecoveryPublication {
-    /// Inactive slot being replaced by the image transaction.
-    pub target: ImageSlot,
-    /// Fully authenticated recovery artifact intended for that slot.
-    pub artifact: RecoveryGeneration,
-}
-
-/// One measured, signed image-generation: kernel + initrd + base lib +
-/// evaluator + render-core, delivered as an A/B UKI and tracked in the TPM
-/// PCR-11 policy recorded for an image generation.
-///
-/// It is **not** the authority of record — the ESP UKI set + the running
-/// image's `/etc/os-release` are. The `/var` record is a userspace *index*
-/// over what is installed in the ESP slots, used by APM to reason about A/B
-/// state and retention. Persisted in `/var/lib/profiles/image/state.json`.
+/// One authenticated image-generation independent of its boot implementation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImageGeneration {
     /// Image-generation number (names the `image-gen-N/` directory).
     pub number: u32,
-    /// A/B slot this UKI occupies.
-    pub slot: ImageSlot,
-    /// ESP-relative installed path of this generation's UKI, e.g.
-    /// `EFI/Linux/aos-generation-0000000002+3.efi` (the `+N` is the sd-boot
-    /// boot-counting tries-suffix; see build-spec §5.2).
-    pub uki_path: String,
-    /// Canonical UKI path authenticated by the immutable toplevel metadata.
-    ///
-    /// Runtime staging assigns [`Self::uki_path`] from the local monotonic
-    /// image generation so boot ordering does not depend on a human package
-    /// version. This field retains the signed source identity. Older and seed
-    /// records omit it when the installed and canonical paths are identical.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub uki_source_path: Option<String>,
+    /// Immutable locator for the selected provider's boot-artifact contract.
+    pub boot_artifact_contract: String,
+    /// Opaque generation state retained by the selected boot provider.
+    pub boot_provider_state: BootProviderState,
     /// Store path of the sysroot toplevel this image was built from.
     pub toplevel: String,
-    /// Sysroot package name (provenance, migrated from legacy state).
+    /// Sysroot package name used for provenance.
     pub package_name: String,
     /// Sysroot package version.
     pub version: String,
+    /// Authenticated `/var` format contract carried by this image.
+    pub state_version: String,
+    /// Exact native ability executor store path carried by this image.
+    pub native_executor_ref: String,
     /// Source registry the sysroot package was installed from.
     pub registry: String,
-    /// Resolved kernel store path (kernel-change detection across A/B).
+    /// Resolved kernel store path (kernel-change detection across generations).
     #[serde(default)]
     pub kernel_path: Option<String>,
     /// Store path of the base-lib + evaluator closure carried *inside* this
@@ -3413,28 +1829,40 @@ pub struct ImageGeneration {
     /// The monotonic shared-option-schema ABI this image's base lib exports.
     /// Mirrors `AOS_MODULE_ABI` in this image's `/etc/os-release`.
     pub module_abi: u32,
-    /// SHA-256 of the base-lib closure, mirrored as `AOS_BASELIB_DIGEST` in
-    /// `/etc/os-release` and measured into PCR-11 via the `.osrel` section.
-    pub baselib_digest: String,
-    /// dm-verity Merkle root over the erofs root that carries the base lib
-    /// (F1), baked into the UKI `.cmdline` as `roothash=<hex>`. `None` for
-    /// unsigned/VM (ext4) images.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_verity_roothash: Option<String>,
-    /// ukify-predicted PCR-11 for this UKI (RFC-0006 phase 4). `None` when
-    /// `systemd-measure` was unavailable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_pcr11: Option<String>,
-    /// PCR-11 observed in initrd for immutable-image identity reconciliation.
-    /// This is deliberately separate from the published stable `ready` value
-    /// in [`Self::expected_pcr11`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub initrd_pcr11: Option<String>,
-    /// Signed recovery copy atomically published with this normal generation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery: Option<RecoveryGeneration>,
+    /// Canonical hash of the base-lib module ABI and option schema.
+    pub base_lib_abi_hash: String,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
+}
+
+/// Describes the durable phase or terminal result of a qualified image rollout.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageRolloutStatus {
+    /// The candidate is the counted next-boot selection.
+    Staged,
+    /// The candidate booted and is awaiting strict configuration health.
+    CandidateBooted,
+    /// The candidate passed strict activation and native ability health.
+    Succeeded,
+    /// The candidate failed boot or strict health and the prior image returned.
+    HealthFailed,
+}
+
+/// Records one state-compatible, drained image rollout.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageRollout {
+    /// Versioned schema for durable boot-side interpretation.
+    pub schema: String,
+    /// Image generation selected as the rollout candidate.
+    pub candidate: u32,
+    /// Known-good image generation retained for fallback.
+    pub prior: u32,
+    /// Exact `/var` format contract shared by candidate and prior.
+    pub state_version: String,
+    /// Current rollout phase or terminal result.
+    pub status: ImageRolloutStatus,
 }
 
 impl ImageGeneration {
@@ -3452,24 +1880,24 @@ impl ImageGeneration {
 /// Persistent state for the image-generation axis
 /// stored at `/var/lib/profiles/image/state.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImageGenerationState {
+    /// Provider-neutral state schema written by this release.
+    pub schema: String,
     /// The image-gen the live kernel booted (cross-checked against
     /// `/etc/os-release`, never trusted from the network).
     pub running: u32,
-    /// The slot `bootctl set-default` currently points at — the *durable*
-    /// next-boot selection (build-spec §5.2). Distinct from `running` during a
-    /// staged-but-not-yet-rebooted upgrade or a pending rollback.
-    pub default: u32,
-    /// A staged image-gen whose UKI is in the ESP but has not been booted yet;
-    /// cleared on its first successful boot.
+    /// A staged image-generation that has not yet been observed running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<u32>,
-    /// Slot whose paired recovery copy was last accepted by normal boot commit.
+    /// Opaque selected-provider state for selection, recovery, and boot evidence.
+    pub boot_provider_state: BootProviderState,
+    /// Qualified rollout currently crossing the reboot boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery_known_good: Option<ImageSlot>,
-    /// Recoverable evidence for an incomplete inactive recovery publication.
+    pub active_rollout: Option<ImageRollout>,
+    /// Most recently completed qualified rollout outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery_pending: Option<RecoveryPublication>,
+    pub last_rollout: Option<ImageRollout>,
     /// All recorded image-generations, in creation order.
     #[serde(default)]
     pub generations: Vec<ImageGeneration>,
@@ -3480,6 +1908,80 @@ impl ImageGenerationState {
     pub fn running_generation(&self) -> Option<&ImageGeneration> {
         self.generations.iter().find(|g| g.number == self.running)
     }
+
+    /// Validates the provider-neutral identity envelope and generation graph.
+    ///
+    /// Provider-owned evidence remains opaque here. The selected provider
+    /// validates that evidence against its declared schema before acting on it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported state schema, malformed contract or
+    /// provider-schema identities, non-object provider evidence, duplicate
+    /// generations, or state references to absent generations.
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.schema != "aos.image-generation-state/v1" {
+            bail!("unsupported image generation state schema {}", self.schema);
+        }
+        validate_boot_provider_state(&self.boot_provider_state)?;
+
+        let mut generation_numbers = BTreeSet::new();
+        for generation in &self.generations {
+            if !generation_numbers.insert(generation.number) {
+                bail!("duplicate image generation {}", generation.number);
+            }
+            crate::config_eval::materialize::validate_canonical_store_path(
+                &generation.boot_artifact_contract,
+            )
+            .with_context(|| {
+                format!(
+                    "validating image generation {} boot-artifact contract",
+                    generation.number
+                )
+            })?;
+            validate_boot_provider_state(&generation.boot_provider_state)?;
+        }
+
+        if self.generations.is_empty() {
+            if self.running != 0 || self.pending.is_some() {
+                bail!(
+                    "empty image state must use running generation zero and no pending generation"
+                );
+            }
+            return Ok(());
+        }
+        if !generation_numbers.contains(&self.running) {
+            bail!("running image generation {} is absent", self.running);
+        }
+        if let Some(pending) = self.pending
+            && !generation_numbers.contains(&pending)
+        {
+            bail!("pending image generation {pending} is absent");
+        }
+        for rollout in self.active_rollout.iter().chain(&self.last_rollout) {
+            if !generation_numbers.contains(&rollout.candidate)
+                || !generation_numbers.contains(&rollout.prior)
+            {
+                bail!("image rollout references an absent generation");
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_boot_provider_state(state: &BootProviderState) -> Result<()> {
+    let schema = state.schema.as_bytes();
+    if schema.is_empty()
+        || schema.len() > 200
+        || !schema.iter().all(|byte| byte.is_ascii_graphic())
+        || !state.schema.contains('/')
+    {
+        bail!("boot-provider state schema is not a bounded portable identifier");
+    }
+    if !state.evidence.is_object() {
+        bail!("boot-provider evidence must be a JSON object");
+    }
+    Ok(())
 }
 
 /// One config-generation: the materialized `/etc` overlay produced by
@@ -3487,12 +1989,13 @@ impl ImageGenerationState {
 /// specific image generation's base library.
 ///
 /// This is the on-disk authority for `/var/lib/profiles/system/state.json`.
-/// Every security-relevant binding is required: legacy bundled state must be
-/// authenticated and migrated before this type will deserialize it.
+/// Every binding needed to reactivate or re-evaluate the generation is
+/// required by this schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigGeneration {
-    /// Config-generation number (names the `gen-N/` directory; the pointer
-    /// `activate.sh.in` commits).
+    /// Config-generation number naming the `gen-N/` directory selected by
+    /// the checked activation transaction.
     pub number: u32,
     /// The [`ImageGeneration::number`] this config-gen was evaluated against.
     pub image_gen_parent: u32,
@@ -3500,13 +2003,8 @@ pub struct ConfigGeneration {
     pub module_abi_pinned: u32,
     /// Content-address of the canonicalized manifest JSON (the *output*).
     pub manifest_hash: String,
-    /// Store path of the config-module source closure (the eval *input*), or
-    /// the canonical empty-closure hash for a host-only configuration.
-    pub config_module_closure: String,
-    /// Exact evaluator order of config-output module store paths.
-    pub config_module_paths: Vec<String>,
-    /// Authenticated package identity corresponding to each ordered module.
-    pub config_module_packages: Vec<String>,
+    /// Exact evaluator order of authenticated package modules.
+    pub package_modules: Vec<PackageModule>,
     /// Store path / content hash of the exact `host.nix` evaluated.
     pub host_nix_ref: String,
     /// Non-authoritative git commit `host.nix` came from (operator traceability).
@@ -3530,23 +2028,13 @@ impl ConfigGeneration {
     ///
     /// # Errors
     ///
-    /// Returns an error when the authenticated module/package vectors have
-    /// different lengths. Both may be empty for a host-only configuration.
+    /// Returns an error when retained inputs cannot be replayed.
     pub fn reactivation_plan(&self, running_abi: u32) -> Result<ReactivationPlan> {
         if self.module_abi_pinned == running_abi {
             return Ok(ReactivationPlan::DirectReactivate);
         }
-        if self.config_module_paths.len() != self.config_module_packages.len() {
-            anyhow::bail!(
-                "config-gen {} has {} retained modules but {} authenticated package identities",
-                self.number,
-                self.config_module_paths.len(),
-                self.config_module_packages.len()
-            );
-        }
         Ok(ReactivationPlan::CrossAbiReEval(CrossAbiReEvalInputs {
-            config_module_paths: self.config_module_paths.clone(),
-            config_module_packages: self.config_module_packages.clone(),
+            package_modules: self.package_modules.clone(),
             host_nix_ref: self.host_nix_ref.clone(),
             facts_hash: self.facts_hash.clone(),
             facts_ref: self.facts_ref.clone(),
@@ -3571,20 +2059,6 @@ pub struct ConfigGenerationState {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn test_attestation() -> AttestationMeta {
-        AttestationMeta {
-            root_digest: Some(
-                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            ),
-            root_hash: None,
-            root_hash_sig: None,
-            provenance: Some("attestation/test.provenance.jsonl".into()),
-            measurement: Some(
-                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
-            ),
-        }
-    }
 
     #[test]
     fn registry_name_validation_accepts_path_safe_names() {
@@ -3720,22 +2194,6 @@ mod tests {
         ] {
             let err = validate_package_name(name).unwrap_err();
             assert!(err.to_string().contains("package name"));
-        }
-    }
-
-    #[test]
-    fn expose_unit_names_use_the_overlay_safe_token_grammar() {
-        for unit in ["web.service", "web+blue=@.service"] {
-            validate_unit_name(unit).unwrap();
-        }
-        for unit in [
-            "bad,unit.service",
-            "bad:unit.service",
-            "bad\\unit.service",
-            "bad/unit.service",
-        ] {
-            let err = validate_unit_name(unit).unwrap_err();
-            assert!(err.to_string().contains("systemd unit name"));
         }
     }
 
@@ -4147,17 +2605,12 @@ assume_yes = true
 parallel_downloads = 8
 auto_autoremove = true
 auto_gc = false
-credential_pcr_public_key = "/etc/aos/pcr-sign.pem"
 "#;
         let conf: ApmConfFile = toml::from_str(toml_str).unwrap();
         assert!(conf.settings.assume_yes);
         assert_eq!(conf.settings.parallel_downloads, 8);
         assert!(conf.settings.auto_autoremove);
         assert!(!conf.settings.auto_gc);
-        assert_eq!(
-            conf.settings.credential_pcr_public_key.as_deref(),
-            Some("/etc/aos/pcr-sign.pem")
-        );
     }
 
     #[test]
@@ -4312,12 +2765,8 @@ last_update = "2026-02-13T10:30:00Z"
                 held: false,
                 source_drv: "/var/lib/store/src123-curl-8.5.0.drv".into(),
                 source_nar_hash: "sha256:source".into(),
-                expose: None,
-                expose_artifact: None,
-                config_module: None,
                 documentation: None,
-                permissions: Default::default(),
-                bpf_lsm: None,
+                contract: None,
                 attestation: Default::default(),
             }),
         };
@@ -4352,875 +2801,6 @@ last_update = "2026-02-13T10:30:00Z"
         assert!(meta.apm.is_none());
         assert_eq!(meta.access_count, 42);
     }
-
-    #[test]
-    fn package_meta_round_trips_sandbox_schema() {
-        let meta = PackageMeta {
-            name: "webapp".into(),
-            version: "1.0.0".into(),
-            description: "Exposed web app".into(),
-            homepage: None,
-            license: "MIT".into(),
-            maintainer: "aos-team".into(),
-            platform: "x86_64-linux".into(),
-            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
-            nar_hash: "sha256:abc123".into(),
-            nar_size: 1024,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1024,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![
-                FEATURE_ATTESTATION_V1.into(),
-                FEATURE_EXPOSE_V1.into(),
-                FEATURE_EXPOSE_ARTIFACT_V1.into(),
-                FEATURE_PERMISSIONS_V1.into(),
-                FEATURE_REQUIRES_V1.into(),
-                FEATURE_NETWORK_POLICY_V1.into(),
-            ],
-            expose: Some(ExposeMeta {
-                target: "aos-pkg-webapp.target".into(),
-                units: vec!["webapp.service".into()],
-                images: vec![SysrootImageEntry {
-                    format: "dir".into(),
-                    store_path: "/var/lib/store/webapproot-webapp-root".into(),
-                    nar_hash: "sha256:root".into(),
-                    nar_size: 2048,
-                    delivery: test_image_delivery("raw"),
-                    sb_signer_cert_sha256: None,
-                    sbat: Vec::new(),
-                    expected_pcr11: None,
-                    ukis: Vec::new(),
-                    recovery_ukis: Vec::new(),
-                    recovery_bundle: None,
-                    root_image: None,
-                    root_verity: None,
-                    root_hash: None,
-                    root_hash_sig: None,
-                }],
-                requires: vec!["provider".into()],
-                config: Default::default(),
-                provides: Vec::new(),
-                uses: Vec::new(),
-            }),
-            expose_artifact: Some(ExposeArtifactMeta {
-                store_path: "/var/lib/store/exposehash11-expose-webapp".into(),
-                nar_hash: "sha256:artifact".into(),
-                nar_size: 128,
-            }),
-            config_module: None,
-            documentation: None,
-            permissions: PermissionsMeta {
-                capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
-                network: Some(NetworkPermission::PrivateOutbound),
-                host_paths: vec![HostPathPermission {
-                    path: "/srv/webapp".into(),
-                    mode: HostPathMode::ReadOnly,
-                }],
-                syscalls: Some(SyscallProfile::SystemService),
-                confinement: Some(ConfinementMeta {
-                    class: ConfinementClass::SandboxedWithHoles,
-                    label: "sandboxed-with-holes (network:private-outbound, capability:CAP_NET_BIND_SERVICE, host-path:read-only:/srv/webapp, syscalls:system-service)"
-                        .into(),
-                    holes: vec![
-                        "network:private-outbound".into(),
-                        "capability:CAP_NET_BIND_SERVICE".into(),
-                        "host-path:read-only:/srv/webapp".into(),
-                        "syscalls:system-service".into(),
-                    ],
-                }),
-                ..PermissionsMeta::default()
-            },
-            bpf_lsm: None,
-            attestation: test_attestation(),
-        };
-
-        validate_supported_package_meta(&meta).unwrap();
-        let json = serde_json::to_string_pretty(&meta).unwrap();
-        let parsed: PackageMeta = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(parsed.requires_features, meta.requires_features);
-        assert_eq!(parsed.expose, meta.expose);
-        assert_eq!(parsed.expose_artifact, meta.expose_artifact);
-        assert_eq!(parsed.permissions, meta.permissions);
-    }
-
-    #[test]
-    fn permissions_reject_host_paths_with_unsupported_characters() {
-        let permissions = PermissionsMeta {
-            host_paths: vec![HostPathPermission {
-                path: "/srv/my data".into(),
-                mode: HostPathMode::Rw,
-            }],
-            ..PermissionsMeta::default()
-        };
-
-        let err = validate_permissions_meta("webapp", &permissions).unwrap_err();
-
-        assert!(
-            err.to_string()
-                .contains("host path contains unsupported characters"),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn permissions_reject_read_only_temp_host_paths() {
-        let permissions = PermissionsMeta {
-            host_paths: vec![HostPathPermission {
-                path: "/tmp/package-cache".into(),
-                mode: HostPathMode::ReadOnly,
-            }],
-            ..PermissionsMeta::default()
-        };
-
-        let err = validate_permissions_meta("webapp", &permissions).unwrap_err();
-
-        assert!(
-            err.to_string()
-                .contains("read-only host paths under /tmp or /var/tmp"),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn permissions_bind_static_users_into_confinement() {
-        let mut permissions = PermissionsMeta {
-            static_users: vec!["aos-service".into()],
-            ..PermissionsMeta::default()
-        };
-        permissions.confinement = Some(permissions.computed_confinement());
-
-        validate_permissions_meta("webapp", &permissions).unwrap();
-        assert_eq!(
-            permissions.confinement.as_ref().unwrap().holes,
-            ["static-user:aos-service"]
-        );
-
-        permissions.static_users.push("aos-service".into());
-        let err = validate_permissions_meta("webapp", &permissions).unwrap_err();
-        assert!(err.to_string().contains("duplicate user 'aos-service'"));
-    }
-
-    #[test]
-    fn package_meta_requires_supported_feature_gate() {
-        let meta = PackageMeta {
-            name: "webapp".into(),
-            version: "1.0.0".into(),
-            description: "Exposed web app".into(),
-            homepage: None,
-            license: "MIT".into(),
-            maintainer: "aos-team".into(),
-            platform: "x86_64-linux".into(),
-            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
-            nar_hash: "sha256:abc123".into(),
-            nar_size: 1024,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1024,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![FEATURE_PERMISSIONS_V1.into(), FEATURE_ATTESTATION_V1.into()],
-            expose: None,
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: PermissionsMeta {
-                network: Some(NetworkPermission::Host),
-                ..PermissionsMeta::default()
-            },
-            bpf_lsm: None,
-            attestation: test_attestation(),
-        };
-
-        let err =
-            validate_supported_package_meta_with(&meta, PACKAGE_META_FORMAT, &[]).unwrap_err();
-        assert!(err.to_string().contains(FEATURE_PERMISSIONS_V1));
-    }
-
-    #[test]
-    fn package_meta_requires_network_policy_feature_gate() {
-        let mut meta = PackageMeta {
-            name: "webapp".into(),
-            version: "1.0.0".into(),
-            description: "Exposed web app".into(),
-            homepage: None,
-            license: "MIT".into(),
-            maintainer: "aos-team".into(),
-            platform: "x86_64-linux".into(),
-            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
-            nar_hash: "sha256:abc123".into(),
-            nar_size: 1024,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1024,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_PERMISSIONS_V1.into()],
-            expose: None,
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: PermissionsMeta {
-                tcp_connect: vec![443],
-                ..PermissionsMeta::default()
-            },
-            bpf_lsm: None,
-            attestation: test_attestation(),
-        };
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(err.to_string().contains(FEATURE_NETWORK_POLICY_V1));
-
-        meta.requires_features
-            .push(FEATURE_NETWORK_POLICY_V1.into());
-        validate_supported_package_meta(&meta).unwrap();
-    }
-
-    #[test]
-    fn package_meta_requires_network_policy_feature_gate_for_expose() {
-        let mut meta = PackageMeta {
-            name: "webapp".into(),
-            version: "1.0.0".into(),
-            description: "Exposed web app".into(),
-            homepage: None,
-            license: "MIT".into(),
-            maintainer: "aos-team".into(),
-            platform: "x86_64-linux".into(),
-            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
-            nar_hash: "sha256:abc123".into(),
-            nar_size: 1024,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1024,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_EXPOSE_V1.into()],
-            expose: Some(ExposeMeta {
-                target: "aos-pkg-webapp.target".into(),
-                units: vec!["webapp.service".into()],
-                images: Vec::new(),
-                requires: Vec::new(),
-                config: Default::default(),
-                provides: Vec::new(),
-                uses: Vec::new(),
-            }),
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: PermissionsMeta::default(),
-            bpf_lsm: None,
-            attestation: test_attestation(),
-        };
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(err.to_string().contains(FEATURE_NETWORK_POLICY_V1));
-
-        meta.requires_features
-            .push(FEATURE_NETWORK_POLICY_V1.into());
-        validate_supported_package_meta(&meta).unwrap();
-    }
-
-    #[test]
-    fn package_meta_rejects_expose_target_bound_to_other_package() {
-        let meta = PackageMeta {
-            name: "webapp".into(),
-            version: "1.0.0".into(),
-            description: "Exposed web app".into(),
-            homepage: None,
-            license: "MIT".into(),
-            maintainer: "aos-team".into(),
-            platform: "x86_64-linux".into(),
-            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
-            nar_hash: "sha256:abc123".into(),
-            nar_size: 1024,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1024,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![
-                FEATURE_ATTESTATION_V1.into(),
-                FEATURE_EXPOSE_V1.into(),
-                FEATURE_NETWORK_POLICY_V1.into(),
-            ],
-            expose: Some(ExposeMeta {
-                target: "aos-pkg-other.target".into(),
-                units: vec!["webapp.service".into()],
-                images: Vec::new(),
-                requires: Vec::new(),
-                config: Default::default(),
-                provides: Vec::new(),
-                uses: Vec::new(),
-            }),
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: PermissionsMeta::default(),
-            bpf_lsm: None,
-            attestation: test_attestation(),
-        };
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(
-            format!("{err:#}").contains("must equal aos-pkg-webapp.target"),
-            "{err:#}"
-        );
-    }
-
-    #[test]
-    fn package_meta_rejects_invalid_network_policy_ports() {
-        let mut meta = PackageMeta {
-            name: "webapp".into(),
-            version: "1.0.0".into(),
-            description: "Exposed web app".into(),
-            homepage: None,
-            license: "MIT".into(),
-            maintainer: "aos-team".into(),
-            platform: "x86_64-linux".into(),
-            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
-            nar_hash: "sha256:abc123".into(),
-            nar_size: 1024,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1024,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![
-                FEATURE_ATTESTATION_V1.into(),
-                FEATURE_PERMISSIONS_V1.into(),
-                FEATURE_NETWORK_POLICY_V1.into(),
-            ],
-            expose: None,
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: PermissionsMeta {
-                tcp_bind: vec![0],
-                ..PermissionsMeta::default()
-            },
-            bpf_lsm: None,
-            attestation: test_attestation(),
-        };
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(err.to_string().contains("invalid TCP port 0"));
-
-        meta.permissions.tcp_bind = vec![8080, 8080];
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(err.to_string().contains("duplicate TCP port 8080"));
-    }
-
-    #[test]
-    fn package_meta_rejects_mismatched_confinement() {
-        let mut meta = PackageMeta {
-            name: "webapp".into(),
-            version: "1.0.0".into(),
-            description: "Exposed web app".into(),
-            homepage: None,
-            license: "MIT".into(),
-            maintainer: "aos-team".into(),
-            platform: "x86_64-linux".into(),
-            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
-            nar_hash: "sha256:abc123".into(),
-            nar_size: 1024,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1024,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_PERMISSIONS_V1.into()],
-            expose: None,
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: PermissionsMeta {
-                network: Some(NetworkPermission::Host),
-                confinement: Some(ConfinementMeta {
-                    class: ConfinementClass::Sandboxed,
-                    label: "sandboxed".into(),
-                    holes: Vec::new(),
-                }),
-                ..PermissionsMeta::default()
-            },
-            bpf_lsm: None,
-            attestation: test_attestation(),
-        };
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("permissions.confinement does not match computed confinement"),
-            "got: {err}"
-        );
-
-        meta.permissions.confinement = Some(meta.permissions.computed_confinement());
-        validate_supported_package_meta(&meta).unwrap();
-    }
-
-    #[test]
-    fn package_meta_requires_config_and_reload_feature_gates() {
-        let mut meta = PackageMeta {
-            name: "webapp".into(),
-            version: "1.0.0".into(),
-            description: "Exposed web app".into(),
-            homepage: None,
-            license: "MIT".into(),
-            maintainer: "aos-team".into(),
-            platform: "x86_64-linux".into(),
-            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
-            nar_hash: "sha256:abc123".into(),
-            nar_size: 1024,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1024,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![
-                FEATURE_ATTESTATION_V1.into(),
-                FEATURE_EXPOSE_V1.into(),
-                FEATURE_CONFIG_V1.into(),
-                FEATURE_NETWORK_POLICY_V1.into(),
-            ],
-            expose: Some(ExposeMeta {
-                target: "aos-pkg-webapp.target".into(),
-                units: vec!["webapp.service".into()],
-                images: Vec::new(),
-                requires: Vec::new(),
-                config: ExposeConfigMeta {
-                    artifacts: vec![ConfigArtifactMeta {
-                        name: "env".into(),
-                        path: "/etc/aos/packages/webapp/config.env".into(),
-                        format: ConfigArtifactFormat::Env,
-                        required: vec!["TOKEN".into()],
-                        optional: Vec::new(),
-                        units: vec!["webapp.service".into()],
-                        reload: ConfigReloadPolicy::Reload,
-                    }],
-                    credentials: Vec::new(),
-                },
-                provides: Vec::new(),
-                uses: Vec::new(),
-            }),
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: PermissionsMeta::default(),
-            bpf_lsm: None,
-            attestation: test_attestation(),
-        };
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(err.to_string().contains(FEATURE_RELOAD_V1));
-
-        meta.requires_features.push(FEATURE_RELOAD_V1.into());
-        validate_supported_package_meta(&meta).unwrap();
-
-        meta.expose.as_mut().unwrap().config.credentials = vec![CredentialMeta {
-            name: "tls-key".into(),
-            source: None,
-            ciphertext: None,
-            units: vec!["webapp.service".into()],
-            encrypted: true,
-            optional: true,
-        }];
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(err.to_string().contains(FEATURE_OPTIONAL_CREDENTIALS_V1));
-        meta.requires_features
-            .push(FEATURE_OPTIONAL_CREDENTIALS_V1.into());
-        validate_supported_package_meta(&meta).unwrap();
-    }
-
-    #[test]
-    fn package_meta_rejects_unknown_config_unit_references() {
-        let meta = PackageMeta {
-            name: "webapp".into(),
-            version: "1.0.0".into(),
-            description: "Exposed web app".into(),
-            homepage: None,
-            license: "MIT".into(),
-            maintainer: "aos-team".into(),
-            platform: "x86_64-linux".into(),
-            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
-            nar_hash: "sha256:abc123".into(),
-            nar_size: 1024,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1024,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![
-                FEATURE_ATTESTATION_V1.into(),
-                FEATURE_EXPOSE_V1.into(),
-                FEATURE_NETWORK_POLICY_V1.into(),
-                FEATURE_CONFIG_V1.into(),
-                FEATURE_RELOAD_V1.into(),
-            ],
-            expose: Some(ExposeMeta {
-                target: "aos-pkg-webapp.target".into(),
-                units: vec!["webapp.service".into()],
-                images: Vec::new(),
-                requires: Vec::new(),
-                config: ExposeConfigMeta {
-                    artifacts: vec![ConfigArtifactMeta {
-                        name: "env".into(),
-                        path: "/etc/aos/packages/webapp/config.env".into(),
-                        format: ConfigArtifactFormat::Env,
-                        required: vec!["TOKEN".into()],
-                        optional: Vec::new(),
-                        units: vec!["missing.service".into()],
-                        reload: ConfigReloadPolicy::Reload,
-                    }],
-                    credentials: Vec::new(),
-                },
-                provides: Vec::new(),
-                uses: Vec::new(),
-            }),
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: PermissionsMeta::default(),
-            bpf_lsm: None,
-            attestation: test_attestation(),
-        };
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(err.to_string().contains("unknown expose unit"));
-    }
-
-    #[test]
-    fn expose_config_rejects_credential_non_service_units() {
-        let config = ExposeConfigMeta {
-            artifacts: Vec::new(),
-            credentials: vec![CredentialMeta {
-                name: "join-token".into(),
-                source: None,
-                ciphertext: None,
-                units: vec!["webapp.socket".into()],
-                encrypted: true,
-                optional: false,
-            }],
-        };
-
-        let err = validate_expose_config_meta(&config).unwrap_err();
-        assert!(err.to_string().contains("non-service expose unit"));
-    }
-
-    #[test]
-    fn expose_config_rejects_credential_source_outside_credstore() {
-        let config = ExposeConfigMeta {
-            artifacts: Vec::new(),
-            credentials: vec![CredentialMeta {
-                name: "join-token".into(),
-                source: Some("/etc/shadow".into()),
-                ciphertext: None,
-                units: vec!["webapp.service".into()],
-                encrypted: true,
-                optional: false,
-            }],
-        };
-
-        let err = validate_expose_config_meta(&config).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("encrypted credential source path must be under")
-        );
-    }
-
-    #[test]
-    fn expose_config_rejects_credential_source_control_characters() {
-        let config = ExposeConfigMeta {
-            artifacts: Vec::new(),
-            credentials: vec![CredentialMeta {
-                name: "join-token".into(),
-                source: Some(
-                    "/usr/lib/credstore.encrypted/join-token\nPrivateNetwork=false".into(),
-                ),
-                ciphertext: None,
-                units: vec!["webapp.service".into()],
-                encrypted: true,
-                optional: false,
-            }],
-        };
-
-        let err = validate_expose_config_meta(&config).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("credential source path contains unsupported characters")
-        );
-    }
-
-    #[test]
-    fn expose_config_rejects_credential_ciphertext_without_encryption() {
-        let config = ExposeConfigMeta {
-            artifacts: Vec::new(),
-            credentials: vec![CredentialMeta {
-                name: "join-token".into(),
-                source: None,
-                ciphertext: Some("abcDEF0123+/=".into()),
-                units: vec!["webapp.service".into()],
-                encrypted: false,
-                optional: false,
-            }],
-        };
-
-        let err = validate_expose_config_meta(&config).unwrap_err();
-        assert!(err.to_string().contains("is not encrypted"));
-    }
-
-    #[test]
-    fn expose_config_rejects_credential_source_and_ciphertext() {
-        let config = ExposeConfigMeta {
-            artifacts: Vec::new(),
-            credentials: vec![CredentialMeta {
-                name: "join-token".into(),
-                source: Some("/usr/lib/credstore.encrypted/join-token".into()),
-                ciphertext: Some("abcDEF0123+/=".into()),
-                units: vec!["webapp.service".into()],
-                encrypted: true,
-                optional: false,
-            }],
-        };
-
-        let err = validate_expose_config_meta(&config).unwrap_err();
-        assert!(err.to_string().contains("both source and ciphertext"));
-    }
-
-    #[test]
-    fn expose_config_rejects_credential_ciphertext_control_characters() {
-        let config = ExposeConfigMeta {
-            artifacts: Vec::new(),
-            credentials: vec![CredentialMeta {
-                name: "join-token".into(),
-                source: None,
-                ciphertext: Some("abc\nPrivateNetwork=false".into()),
-                units: vec!["webapp.service".into()],
-                encrypted: true,
-                optional: false,
-            }],
-        };
-
-        let err = validate_expose_config_meta(&config).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("credential ciphertext contains unsupported characters")
-        );
-    }
-
-    #[test]
-    fn package_meta_requires_capability_route_feature_gate() {
-        let mut meta = PackageMeta {
-            name: "consumer".into(),
-            version: "1.0.0".into(),
-            description: "Consumer".into(),
-            homepage: None,
-            license: "MIT".into(),
-            maintainer: "aos-team".into(),
-            platform: "x86_64-linux".into(),
-            store_path: "/var/lib/store/consumerhash-consumer-1.0.0".into(),
-            nar_hash: "sha256:abc123".into(),
-            nar_size: 1024,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1024,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![
-                FEATURE_ATTESTATION_V1.into(),
-                FEATURE_EXPOSE_V1.into(),
-                FEATURE_NETWORK_POLICY_V1.into(),
-            ],
-            expose: Some(ExposeMeta {
-                target: "aos-pkg-consumer.target".into(),
-                units: vec!["consumer.service".into()],
-                images: Vec::new(),
-                requires: Vec::new(),
-                config: Default::default(),
-                provides: Vec::new(),
-                uses: vec![RequiredCapabilityMeta {
-                    provider: "provider".into(),
-                    name: "data".into(),
-                    kind: CapabilityKind::Directory,
-                    unit: "consumer.service".into(),
-                }],
-            }),
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: PermissionsMeta::default(),
-            bpf_lsm: None,
-            attestation: test_attestation(),
-        };
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(err.to_string().contains(FEATURE_CAPABILITY_ROUTES_V1));
-
-        meta.requires_features
-            .push(FEATURE_CAPABILITY_ROUTES_V1.into());
-        validate_supported_package_meta(&meta).unwrap();
-    }
-
-    #[test]
-    fn package_meta_requires_ebpf_network_policy_feature_gate() {
-        let mut meta = PackageMeta {
-            name: "webapp".into(),
-            version: "1.0.0".into(),
-            description: "Web application".into(),
-            homepage: None,
-            license: "MIT".into(),
-            maintainer: "aos-team".into(),
-            platform: "x86_64-linux".into(),
-            store_path: "/var/lib/store/webhash-webapp-1.0.0".into(),
-            nar_hash: "sha256:abc123".into(),
-            nar_size: 1024,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1024,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![
-                FEATURE_ATTESTATION_V1.into(),
-                FEATURE_EXPOSE_V1.into(),
-                FEATURE_NETWORK_POLICY_V1.into(),
-            ],
-            expose: Some(ExposeMeta {
-                target: "aos-pkg-webapp.target".into(),
-                units: vec![
-                    "webapp.service".into(),
-                    "aos-pkg-webapp.slice".into(),
-                    "aos-pkg-webapp-ebpf.service".into(),
-                ],
-                images: Vec::new(),
-                requires: Vec::new(),
-                config: Default::default(),
-                provides: Vec::new(),
-                uses: Vec::new(),
-            }),
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: PermissionsMeta::default(),
-            bpf_lsm: None,
-            attestation: test_attestation(),
-        };
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(err.to_string().contains(FEATURE_EBPF_NET_POLICY_V1));
-
-        meta.requires_features
-            .push(FEATURE_EBPF_NET_POLICY_V1.into());
-        validate_supported_package_meta(&meta).unwrap();
-    }
-
-    fn bpf_lsm_package_meta(requires_features: Vec<&str>) -> PackageMeta {
-        PackageMeta {
-            name: "aos-ebpf-lsm-policy".into(),
-            version: "0".into(),
-            description: "Fleet BPF-LSM policy".into(),
-            homepage: None,
-            license: "MIT".into(),
-            maintainer: "aos-team".into(),
-            platform: "x86_64-linux".into(),
-            store_path: "/var/lib/store/bpflsmhash12-aos-ebpf-lsm-policy-0".into(),
-            nar_hash: "sha256:abc123".into(),
-            nar_size: 1024,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1024,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: requires_features.into_iter().map(str::to_string).collect(),
-            expose: None,
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: PermissionsMeta::default(),
-            bpf_lsm: Some(BpfLsmPolicyMeta {
-                policies: vec![BpfLsmPolicyArtifactMeta {
-                    name: "aos-lsm-task-audit".into(),
-                    policy: "share/aos/ebpf-lsm/aos-task-audit.json".into(),
-                    object: "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o".into(),
-                    programs: vec!["aos_lsm_file_mprotect".into()],
-                }],
-            }),
-            attestation: AttestationMeta {
-                root_digest: Some(
-                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                        .into(),
-                ),
-                root_hash: None,
-                root_hash_sig: None,
-                provenance: Some("attestation/aos-ebpf-lsm-policy.provenance.jsonl".into()),
-                measurement: Some(
-                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                        .into(),
-                ),
-            },
-        }
-    }
-
-    #[test]
-    fn package_meta_requires_bpf_lsm_policy_feature_gate() {
-        let mut meta =
-            bpf_lsm_package_meta(vec![FEATURE_ATTESTATION_V1, FEATURE_EBPF_NET_POLICY_V1]);
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(err.to_string().contains(FEATURE_BPF_LSM_POLICY_V1));
-
-        meta.requires_features = vec![
-            FEATURE_ATTESTATION_V1.into(),
-            FEATURE_BPF_LSM_POLICY_V1.into(),
-        ];
-        validate_supported_package_meta(&meta).unwrap();
-    }
-
-    #[test]
-    fn package_meta_rejects_invalid_bpf_lsm_artifacts() {
-        let mut meta =
-            bpf_lsm_package_meta(vec![FEATURE_ATTESTATION_V1, FEATURE_BPF_LSM_POLICY_V1]);
-        meta.bpf_lsm.as_mut().unwrap().policies[0].object = "../escape.bpf.o".into();
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(format!("{err:#}").contains("BPF-LSM object path"));
-    }
-
     fn attestation_package_meta(requires_features: Vec<&str>) -> PackageMeta {
         PackageMeta {
             name: "verity-app".into(),
@@ -5242,12 +2822,8 @@ last_update = "2026-02-13T10:30:00Z"
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: requires_features.into_iter().map(str::to_string).collect(),
-            expose: None,
-            expose_artifact: None,
-            config_module: None,
             documentation: None,
-            permissions: PermissionsMeta::default(),
-            bpf_lsm: None,
+            contract: None,
             attestation: AttestationMeta {
                 root_digest: Some(
                     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -5269,7 +2845,7 @@ last_update = "2026-02-13T10:30:00Z"
 
     #[test]
     fn package_meta_requires_attestation_feature_gate() {
-        let mut meta = attestation_package_meta(vec![FEATURE_PERMISSIONS_V1]);
+        let mut meta = attestation_package_meta(vec![FEATURE_ABILITIES_V1]);
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
         assert!(err.to_string().contains(FEATURE_ATTESTATION_V1));
@@ -5327,323 +2903,6 @@ last_update = "2026-02-13T10:30:00Z"
             "{err:#}",
         );
     }
-
-    #[test]
-    fn package_meta_accepts_attestation_matching_expose_verity_image() {
-        let mut meta = attestation_package_meta(vec![
-            FEATURE_ATTESTATION_V1,
-            FEATURE_EXPOSE_V1,
-            FEATURE_NETWORK_POLICY_V1,
-        ]);
-        meta.attestation.root_hash =
-            Some("sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into());
-        meta.attestation.root_hash_sig = Some("root.roothash.p7s".into());
-        meta.expose = Some(expose_meta_with_image(verity_image_entry()));
-
-        validate_supported_package_meta(&meta).unwrap();
-    }
-
-    #[test]
-    fn package_meta_rejects_attestation_that_diverges_from_expose_verity_image() {
-        let mut meta = attestation_package_meta(vec![
-            FEATURE_ATTESTATION_V1,
-            FEATURE_EXPOSE_V1,
-            FEATURE_NETWORK_POLICY_V1,
-        ]);
-        meta.attestation.root_hash_sig = Some("root.roothash.p7s".into());
-        meta.expose = Some(expose_meta_with_image(verity_image_entry()));
-        meta.attestation.root_hash =
-            Some("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into());
-        meta.attestation.root_digest =
-            Some("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into());
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(format!("{err:#}").contains("must match a verity expose image"));
-    }
-
-    fn expose_meta_with_image(image: SysrootImageEntry) -> ExposeMeta {
-        ExposeMeta {
-            target: "aos-pkg-verity-app.target".into(),
-            units: vec!["verity-app.service".into()],
-            images: vec![image],
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        }
-    }
-
-    fn verity_image_entry() -> SysrootImageEntry {
-        SysrootImageEntry {
-            format: "ext4-verity".into(),
-            store_path: "/var/lib/store/verityimage-verity-app-root".into(),
-            nar_hash: "sha256:root".into(),
-            nar_size: 2048,
-            delivery: test_image_delivery("raw"),
-            sb_signer_cert_sha256: None,
-            sbat: Vec::new(),
-            expected_pcr11: None,
-            ukis: Vec::new(),
-            recovery_ukis: Vec::new(),
-            recovery_bundle: None,
-            root_image: Some("root.img".into()),
-            root_verity: Some("root.verity".into()),
-            root_hash: Some(
-                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            ),
-            root_hash_sig: Some("root.roothash.p7s".into()),
-        }
-    }
-
-    fn slot_uki(slot: UkiSlot, path: &str, pcr_byte: char) -> SysrootUkiEntry {
-        SysrootUkiEntry {
-            slot,
-            path: path.into(),
-            sb_signer_cert_sha256: Some("a".repeat(64)),
-            sbat: vec![SbatEntry {
-                component: "aos".into(),
-                generation: 1,
-            }],
-            expected_pcr11: Some(pcr_byte.to_string().repeat(64)),
-        }
-    }
-
-    #[test]
-    fn ab_uki_metadata_requires_both_distinct_slot_measurements() {
-        let mut image = verity_image_entry();
-        image.ukis = vec![
-            slot_uki(UkiSlot::A, "uki-a.efi", '1'),
-            slot_uki(UkiSlot::B, "uki-b.efi", '2'),
-        ];
-        validate_image_uki_entries(&image).unwrap();
-
-        image.ukis[1].expected_pcr11 = image.ukis[0].expected_pcr11.clone();
-        let error = validate_image_uki_entries(&image).unwrap_err();
-        assert!(error.to_string().contains("same PCR-11"));
-
-        image.ukis.pop();
-        let error = validate_image_uki_entries(&image).unwrap_err();
-        assert!(error.to_string().contains("exactly slots a and b"));
-    }
-
-    #[test]
-    fn store_backed_ab_metadata_requires_update_payload_identity() {
-        let mut image = verity_image_entry();
-        image.delivery.schema_version = 2;
-        image.ukis = vec![
-            slot_uki(UkiSlot::A, "uki-a.efi", '1'),
-            slot_uki(UkiSlot::B, "uki-b.efi", '2'),
-        ];
-
-        let error = validate_image_uki_entries(&image).unwrap_err();
-        assert!(error.to_string().contains("authenticated update payload"));
-
-        image.delivery.update_payload = Some(ImageStoreReference {
-            store_path: "/nix/store/11111111111111111111111111111111-update-payload".into(),
-            nar_hash: format!("sha256:{}", "1".repeat(52)),
-            nar_size: 4096,
-        });
-        validate_image_uki_entries(&image).unwrap();
-    }
-
-    #[test]
-    fn expose_meta_accepts_complete_verity_image() {
-        let expose = expose_meta_with_image(verity_image_entry());
-
-        validate_expose_meta(&expose).unwrap();
-    }
-
-    #[test]
-    fn expose_meta_rejects_partial_verity_image() {
-        let mut image = verity_image_entry();
-        image.root_hash_sig = None;
-        let expose = expose_meta_with_image(image);
-
-        let err = validate_expose_meta(&expose).unwrap_err();
-        assert!(format!("{err:#}").contains("must declare root_image"));
-    }
-
-    #[test]
-    fn expose_meta_rejects_verity_format_without_tuple() {
-        let mut image = verity_image_entry();
-        image.root_image = None;
-        image.root_verity = None;
-        image.root_hash = None;
-        image.root_hash_sig = None;
-        let expose = expose_meta_with_image(image);
-
-        let err = validate_expose_meta(&expose).unwrap_err();
-        assert!(format!("{err:#}").contains("must declare root_image"));
-    }
-
-    #[test]
-    fn expose_meta_rejects_verity_fields_on_plain_image_format() {
-        let mut image = verity_image_entry();
-        image.format = "dir".into();
-        let expose = expose_meta_with_image(image);
-
-        let err = validate_expose_meta(&expose).unwrap_err();
-        assert!(format!("{err:#}").contains("is not a verity root format"));
-    }
-
-    #[test]
-    fn raw_recovery_image_accepts_complete_verity_metadata() {
-        let mut image = verity_image_entry();
-        image.format = "raw".into();
-        image.recovery_ukis.push(RecoveryUkiEntry {
-            copy: UkiSlot::A,
-            path: "recovery-a.efi".into(),
-            entry_path: "recovery-a.conf".into(),
-            byte_size: 1,
-            sha256: "b".repeat(64),
-            release: "test".into(),
-            recovery_abi: 1,
-            sb_signer_cert_sha256: "c".repeat(64),
-            sbat: vec![SbatEntry {
-                component: "aos".into(),
-                generation: 1,
-            }],
-        });
-
-        validate_image_verity_entry(&image).unwrap();
-
-        image.recovery_ukis.clear();
-        let error = validate_image_verity_entry(&image).unwrap_err();
-        assert!(error.to_string().contains("is not a verity root format"));
-    }
-
-    #[test]
-    fn expose_meta_rejects_unsafe_verity_member_path() {
-        let mut image = verity_image_entry();
-        image.root_image = Some("../root.img".into());
-        let expose = expose_meta_with_image(image);
-
-        let err = validate_expose_meta(&expose).unwrap_err();
-        assert!(format!("{err:#}").contains("verity root_image path"));
-    }
-
-    #[test]
-    fn expose_meta_rejects_unsupported_verity_member_path_characters() {
-        let mut image = verity_image_entry();
-        image.root_image = Some("root image.img".into());
-        let expose = expose_meta_with_image(image);
-
-        let err = validate_expose_meta(&expose).unwrap_err();
-        assert!(format!("{err:#}").contains("unsupported characters"));
-    }
-
-    #[test]
-    fn package_meta_requires_mac_profile_feature_gate() {
-        let mut meta = PackageMeta {
-            name: "webapp".into(),
-            version: "1.0.0".into(),
-            description: "Web application".into(),
-            homepage: None,
-            license: "MIT".into(),
-            maintainer: "aos-team".into(),
-            platform: "x86_64-linux".into(),
-            store_path: "/var/lib/store/webhash-webapp-1.0.0".into(),
-            nar_hash: "sha256:abc123".into(),
-            nar_size: 1024,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1024,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![
-                FEATURE_ATTESTATION_V1.into(),
-                FEATURE_EXPOSE_V1.into(),
-                FEATURE_NETWORK_POLICY_V1.into(),
-            ],
-            expose: Some(ExposeMeta {
-                target: "aos-pkg-webapp.target".into(),
-                units: vec![
-                    "webapp.service".into(),
-                    "aos-pkg-webapp.slice".into(),
-                    "aos-pkg-webapp-mac.service".into(),
-                ],
-                images: Vec::new(),
-                requires: Vec::new(),
-                config: Default::default(),
-                provides: Vec::new(),
-                uses: Vec::new(),
-            }),
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: PermissionsMeta::default(),
-            bpf_lsm: None,
-            attestation: test_attestation(),
-        };
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(err.to_string().contains(FEATURE_MAC_PROFILE_V1));
-
-        meta.requires_features.push(FEATURE_MAC_PROFILE_V1.into());
-        validate_supported_package_meta(&meta).unwrap();
-    }
-
-    #[test]
-    fn package_meta_rejects_unknown_or_non_service_capability_units() {
-        let mut meta = PackageMeta {
-            name: "consumer".into(),
-            version: "1.0.0".into(),
-            description: "Consumer".into(),
-            homepage: None,
-            license: "MIT".into(),
-            maintainer: "aos-team".into(),
-            platform: "x86_64-linux".into(),
-            store_path: "/var/lib/store/consumerhash-consumer-1.0.0".into(),
-            nar_hash: "sha256:abc123".into(),
-            nar_size: 1024,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1024,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![
-                FEATURE_ATTESTATION_V1.into(),
-                FEATURE_EXPOSE_V1.into(),
-                FEATURE_NETWORK_POLICY_V1.into(),
-                FEATURE_CAPABILITY_ROUTES_V1.into(),
-            ],
-            expose: Some(ExposeMeta {
-                target: "aos-pkg-consumer.target".into(),
-                units: vec!["consumer.service".into(), "consumer.target".into()],
-                images: Vec::new(),
-                requires: Vec::new(),
-                config: Default::default(),
-                provides: Vec::new(),
-                uses: vec![RequiredCapabilityMeta {
-                    provider: "provider".into(),
-                    name: "data".into(),
-                    kind: CapabilityKind::Directory,
-                    unit: "missing.service".into(),
-                }],
-            }),
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: PermissionsMeta::default(),
-            bpf_lsm: None,
-            attestation: test_attestation(),
-        };
-
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(err.to_string().contains("unknown expose unit"));
-
-        let expose = meta.expose.as_mut().unwrap();
-        expose.uses[0].unit = "consumer.target".into();
-        let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(err.to_string().contains("non-service expose unit"));
-    }
-
     // -----------------------------------------------------------------------
     // TrackingMode tests
     // -----------------------------------------------------------------------
@@ -5933,226 +3192,6 @@ pin = "v2026.02"
         assert_eq!(ProfileScope::System.other(), ProfileScope::User);
     }
 
-    // ----------------------------------------------------------------------
-    // Configuration-module metadata.
-    // ----------------------------------------------------------------------
-
-    fn sample_config_module() -> ConfigModuleMeta {
-        ConfigModuleMeta {
-            config_output: ConfigOutputMeta {
-                store_path: "/nix/store/0000000000000000000000000000000a-firewall-config"
-                    .to_string(),
-                nar_hash: "sha256:deadbeef".to_string(),
-                nar_size: 4096,
-                references: vec!["0000000000000000000000000000000b".to_string()],
-            },
-            evaluation_base_lib: None,
-            dependency_outputs: BTreeMap::new(),
-            module_abi_compat: ModuleAbiCompat { min: 1, max: 2 },
-            declares: vec![
-                "firewall.allowedTCPPorts".to_string(),
-                "firewall.enable".to_string(),
-            ],
-            declaration_schema: vec![],
-            requires: vec![],
-            owns_roots: vec![OwnedRoot {
-                root: "firewall".to_string(),
-                interface_abi: 1,
-                contributable: vec!["allowedTCPPorts".to_string()],
-            }],
-            contributes: vec![RootContribution {
-                root: "nginx".to_string(),
-                interface_abi: 1,
-                paths: vec!["virtualHosts".to_string()],
-            }],
-            artifacts: Default::default(),
-            provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
-        }
-    }
-
-    #[test]
-    fn config_module_meta_toml_round_trip() {
-        let module = sample_config_module();
-        let serialized = toml::to_string(&module).expect("serialize");
-        let parsed: ConfigModuleMeta = toml::from_str(&serialized).expect("deserialize");
-        assert_eq!(parsed, module);
-    }
-
-    #[test]
-    fn config_module_dependency_outputs_round_trip_and_validate() {
-        let mut module = sample_config_module();
-        module.dependency_outputs.insert(
-            "bash".to_string(),
-            "/nix/store/0000000000000000000000000000000c-bash-5.2".to_string(),
-        );
-        validate_config_module_meta("firewall", &module).expect("valid dependency output");
-
-        let serialized = toml::to_string(&module).expect("serialize dependency output");
-        let parsed: ConfigModuleMeta = toml::from_str(&serialized).expect("deserialize");
-        assert_eq!(parsed.dependency_outputs, module.dependency_outputs);
-
-        module
-            .dependency_outputs
-            .insert("broken".to_string(), "relative/path".to_string());
-        assert!(validate_config_module_meta("firewall", &module).is_err());
-    }
-
-    #[test]
-    fn config_module_declares_only_owned_or_contributed_roots() {
-        let mut module = sample_config_module();
-        module.declares.push("foreign.enable".to_string());
-        let error =
-            validate_config_module_meta("firewall", &module).expect_err("foreign declaration");
-        assert!(
-            error
-                .to_string()
-                .contains("outside its owned roots or contributed paths"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn config_module_declaration_must_be_contained_by_contributed_path() {
-        let mut module = sample_config_module();
-        module.declares.push("nginx.enable".to_string());
-        let error = validate_config_module_meta("firewall", &module)
-            .expect_err("sibling path outside contribution");
-        assert!(
-            error
-                .to_string()
-                .contains("outside its owned roots or contributed paths"),
-            "{error}"
-        );
-
-        module.declares.pop();
-        module
-            .declares
-            .push("nginx.virtualHosts.demo.enable".to_string());
-        validate_config_module_meta("firewall", &module).expect("descendant of contributed path");
-    }
-
-    #[test]
-    fn owned_root_surface_wildcard_must_fill_a_complete_segment() {
-        let mut module = sample_config_module();
-        module.owns_roots[0].contributable = vec!["interfaces.*.addresses".to_string()];
-        validate_config_module_meta("firewall", &module).expect("whole-segment wildcard");
-
-        module.owns_roots[0].contributable = vec!["interfaces.eth*".to_string()];
-        let error = validate_config_module_meta("firewall", &module)
-            .expect_err("partial-segment wildcard must be rejected");
-        assert!(error.to_string().contains("complete segment"), "{error}");
-    }
-
-    #[test]
-    fn config_module_private_root_needs_no_owned_root_record() {
-        let mut module = sample_config_module();
-        module.owns_roots.clear();
-        validate_config_module_meta("firewall", &module).expect("implicit package-private root");
-    }
-
-    #[test]
-    fn config_module_requires_paths_are_sorted_unique_and_well_formed() {
-        let mut module = sample_config_module();
-        module.requires = vec!["nginx.enable".into(), "firewall.enable".into()];
-        let error = validate_config_module_meta("firewall", &module)
-            .expect_err("unsorted conservative requirements");
-        assert!(
-            error.to_string().contains("sorted and deduplicated"),
-            "{error}"
-        );
-
-        module.requires = vec!["nginx..enable".into()];
-        let error = validate_config_module_meta("firewall", &module)
-            .expect_err("malformed conservative requirement");
-        assert!(error.to_string().contains("option path"), "{error}");
-    }
-
-    #[test]
-    fn config_module_meta_inside_package_round_trips_and_gates() {
-        // A package carrying config_module must declare the feature and have
-        // attestation provenance, else validation fails.
-        let toml_str = r#"
-name = "firewall"
-version = "1.4.0"
-description = "host firewall"
-license = "MIT"
-maintainer = "aos"
-platform = "x86_64-linux"
-store_path = "/nix/store/0000000000000000000000000000000c-firewall-1.4.0"
-nar_hash = "sha256:aa"
-nar_size = 10
-references = []
-source_drv = "/nix/store/0000000000000000000000000000000d-firewall.drv"
-source_nar_hash = "sha256:bb"
-closure_size = 10
-requires-features = ["config-module-v1", "attestation-v1"]
-
-[config_module.config_output]
-store_path = "/nix/store/0000000000000000000000000000000a-firewall-config"
-nar_hash = "sha256:cc"
-nar_size = 2048
-
-[config_module.module_abi_compat]
-min = 1
-max = 2
-
-[config_module]
-declares = ["firewall.allowedTCPPorts"]
-provides_capabilities = []
-
-[[config_module.owns_roots]]
-root = "firewall"
-interface_abi = 1
-contributable = ["allowedTCPPorts"]
-
-[attestation]
-provenance = "provenance/firewall.jsonl"
-"#;
-        let meta: PackageMeta = toml::from_str(toml_str).expect("parse package meta");
-        assert!(meta.config_module.is_some());
-        validate_supported_package_meta(&meta).expect("valid config-module package");
-    }
-
-    #[test]
-    fn config_module_without_feature_is_rejected() {
-        let mut meta = sample_package_meta();
-        meta.config_module = Some(sample_config_module());
-        // Missing requires-features ⇒ feature gate refuses.
-        let err = validate_supported_package_meta(&meta).expect_err("must refuse");
-        assert!(err.to_string().contains("config-module-v1"), "{err}");
-    }
-
-    #[test]
-    fn config_module_without_provenance_is_rejected() {
-        let mut meta = sample_package_meta();
-        meta.requires_features = vec![FEATURE_CONFIG_MODULE_V1.to_string()];
-        meta.config_module = Some(sample_config_module());
-        let err = validate_supported_package_meta(&meta).expect_err("must refuse");
-        assert!(
-            err.to_string().contains("without attestation provenance"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn config_output_rejects_drv_reference() {
-        let mut output = sample_config_module().config_output;
-        output.references = vec!["abc.drv".to_string()];
-        let err = validate_config_output_meta(&output).expect_err("must refuse .drv ref");
-        assert!(
-            err.to_string().contains("must not reference a derivation"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn config_module_rejects_inverted_abi_band() {
-        let mut module = sample_config_module();
-        module.module_abi_compat = ModuleAbiCompat { min: 3, max: 1 };
-        let err = validate_config_module_meta("firewall", &module).expect_err("inverted band");
-        assert!(err.to_string().contains("inverted"), "{err}");
-    }
-
     // -----------------------------------------------------------------------
     // Two-axis generation records.
     // -----------------------------------------------------------------------
@@ -6167,9 +3206,14 @@ provenance = "provenance/firewall.jsonl"
             image_gen_parent: 2,
             module_abi_pinned: 2,
             manifest_hash: "sha256:beef".into(),
-            config_module_closure: "/nix/store/src-cfg".into(),
-            config_module_paths: vec!["/nix/store/src-cfg".into()],
-            config_module_packages: vec!["server".into()],
+            package_modules: vec![PackageModule {
+                package: "server".into(),
+                document_digest: format!("sha256:{}", "a".repeat(64)),
+                store_path: "/nix/store/src-cfg".into(),
+                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                entrypoint: "module.nix".into(),
+                origin: PackageModuleOrigin::Registry,
+            }],
             host_nix_ref: "/nix/store/hn-host.nix".into(),
             host_nix_commit: Some("deadbeef".into()),
             facts_hash: "sha256:facts".into(),
@@ -6179,58 +3223,73 @@ provenance = "provenance/firewall.jsonl"
         };
         let json = serde_json::to_string(&g).unwrap();
         assert!(json.contains("module_abi_pinned"));
+        assert!(
+            !json.contains("native_executor_ref"),
+            "configuration generations cannot replace the image-owned native executor"
+        );
         let parsed: ConfigGeneration = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.module_abi_pinned, 2);
         assert_eq!(parsed.host_nix_ref, "/nix/store/hn-host.nix");
     }
 
-    /// The image-gen axis state round-trips, including the A/B slot, the durable
-    /// `default`/`pending` boot selection, and the verity/ABI fields.
+    /// The image-generation axis round-trips provider-neutral identity and opaque provider state.
     #[test]
     fn image_generation_state_round_trip() {
         let state = ImageGenerationState {
+            schema: "aos.image-generation-state/v1".into(),
             running: 1,
-            default: 1,
             pending: Some(2),
-            recovery_known_good: None,
-            recovery_pending: None,
+            boot_provider_state: BootProviderState {
+                schema: "aos.test.boot-state/v1".into(),
+                evidence: serde_json::json!({"selected": 2}),
+            },
+            active_rollout: Some(ImageRollout {
+                schema: "aos.image-rollout/v1".into(),
+                candidate: 2,
+                prior: 1,
+                state_version: "7".into(),
+                status: ImageRolloutStatus::Staged,
+            }),
+            last_rollout: None,
             generations: vec![
                 ImageGeneration {
                     number: 1,
-                    slot: ImageSlot::A,
-                    uki_path: "EFI/Linux/aos-2026.06.1+3.efi".into(),
-                    uki_source_path: None,
+                    boot_artifact_contract:
+                        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-boot-contract-1".into(),
+                    boot_provider_state: BootProviderState {
+                        schema: "aos.test.boot-generation-state/v1".into(),
+                        evidence: serde_json::json!({"installed-entry": "entry-1"}),
+                    },
                     toplevel: "/nix/store/top1-server".into(),
                     package_name: "server".into(),
                     version: "2026.06.1".into(),
+                    state_version: "7".into(),
+                    native_executor_ref: "/nix/store/executor-1".into(),
                     registry: "core".into(),
                     kernel_path: Some("/nix/store/k1-linux".into()),
                     evaluator_ref: "/nix/store/bl1-aos-base-lib".into(),
                     module_abi: 1,
-                    baselib_digest: "sha256:aa".into(),
-                    root_verity_roothash: Some("deadbeef".into()),
-                    expected_pcr11: None,
-                    initrd_pcr11: None,
-                    recovery: None,
+                    base_lib_abi_hash: "sha256:aa".into(),
                     created_at: "2026-06-01T00:00:00Z".into(),
                 },
                 ImageGeneration {
                     number: 2,
-                    slot: ImageSlot::B,
-                    uki_path: "EFI/Linux/aos-2026.06.2+3.efi".into(),
-                    uki_source_path: Some("EFI/Linux/aos-canonical+3.efi".into()),
+                    boot_artifact_contract:
+                        "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-boot-contract-2".into(),
+                    boot_provider_state: BootProviderState {
+                        schema: "aos.test.boot-generation-state/v1".into(),
+                        evidence: serde_json::json!({"installed-entry": "entry-2"}),
+                    },
                     toplevel: "/nix/store/top2-server".into(),
                     package_name: "server".into(),
                     version: "2026.06.2".into(),
+                    state_version: "7".into(),
+                    native_executor_ref: "/nix/store/executor-2".into(),
                     registry: "core".into(),
                     kernel_path: Some("/nix/store/k2-linux".into()),
                     evaluator_ref: "/nix/store/bl2-aos-base-lib".into(),
                     module_abi: 2,
-                    baselib_digest: "sha256:bb".into(),
-                    root_verity_roothash: None,
-                    expected_pcr11: None,
-                    initrd_pcr11: None,
-                    recovery: None,
+                    base_lib_abi_hash: "sha256:bb".into(),
                     created_at: "2026-06-02T00:00:00Z".into(),
                 },
             ],
@@ -6239,14 +3298,30 @@ provenance = "provenance/firewall.jsonl"
         let parsed: ImageGenerationState = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.running, 1);
         assert_eq!(parsed.pending, Some(2));
+        assert_eq!(
+            parsed.active_rollout.as_ref().map(|rollout| rollout.status),
+            Some(ImageRolloutStatus::Staged)
+        );
         let running = parsed.running_generation().unwrap();
         assert_eq!(running.module_abi, 1);
         assert!(running.admits_pin(1));
         assert!(!running.admits_pin(2));
         assert_eq!(
-            parsed.generations[1].uki_source_path.as_deref(),
-            Some("EFI/Linux/aos-canonical+3.efi")
+            parsed.generations[1].boot_provider_state.evidence["installed-entry"],
+            "entry-2"
         );
+
+        for required in ["state_version", "native_executor_ref"] {
+            let mut incomplete = serde_json::to_value(&state).unwrap();
+            incomplete["generations"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(required);
+
+            let error = serde_json::from_value::<ImageGenerationState>(incomplete)
+                .expect_err("the final image-generation identity must be complete");
+            assert!(error.to_string().contains(required));
+        }
     }
 
     fn sample_documentation_artifact() -> DocumentationArtifactMeta {
@@ -6264,7 +3339,6 @@ provenance = "provenance/firewall.jsonl"
             semantic_schema_sha256:
                 "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                     .to_string(),
-            system_module_nar_hash: None,
             references: Vec::new(),
         }
     }
@@ -6293,12 +3367,8 @@ provenance = "provenance/firewall.jsonl"
             held: false,
             source_drv: meta.source_drv.clone(),
             source_nar_hash: meta.source_nar_hash.clone(),
-            expose: None,
-            expose_artifact: None,
-            config_module: None,
             documentation: meta.documentation.clone(),
-            permissions: PermissionsMeta::default(),
-            bpf_lsm: None,
+            contract: None,
             attestation: meta.attestation.clone(),
         };
         let encoded = serde_json::to_vec(&installed).expect("installed metadata");
@@ -6319,6 +3389,46 @@ provenance = "provenance/firewall.jsonl"
         assert!(validate_documentation_artifact_meta(&artifact).is_err());
     }
 
+    #[test]
+    fn native_image_rollout_gate_rejects_pre_change_package_readers() {
+        let mut meta = sample_package_meta();
+        meta.name = "aos".to_string();
+        meta.sysroot = true;
+        meta.requires_features = vec![FEATURE_IMAGE_ARTIFACT_CONTRACT_V1.to_string()];
+
+        validate_supported_package_meta(&meta)
+            .expect("the current package reader understands native image rollouts");
+
+        let supported_features = supported_package_features().expect("supported package features");
+        let pre_change_features = supported_features
+            .iter()
+            .map(String::as_str)
+            .filter(|feature| *feature != FEATURE_IMAGE_ARTIFACT_CONTRACT_V1)
+            .collect::<Vec<_>>();
+        let error =
+            validate_supported_package_meta_with(&meta, PACKAGE_META_FORMAT, &pre_change_features)
+                .expect_err("a pre-change package reader must reject the rollout gate");
+        assert!(
+            error
+                .to_string()
+                .contains(FEATURE_IMAGE_ARTIFACT_CONTRACT_V1)
+        );
+    }
+
+    #[test]
+    fn package_reader_features_include_the_shared_contract_reader_surface() {
+        let supported = supported_package_features().expect("supported package features");
+        let package_features = aos_ability_validate::package_source_supported_features()
+            .expect("package contract reader features");
+
+        for feature in package_features {
+            assert!(
+                supported
+                    .iter()
+                    .any(|candidate| candidate == feature.as_str())
+            );
+        }
+    }
     fn sample_package_meta() -> PackageMeta {
         PackageMeta {
             name: "firewall".to_string(),
@@ -6340,12 +3450,8 @@ provenance = "provenance/firewall.jsonl"
             images: vec![],
             min_format: None,
             requires_features: vec![],
-            expose: None,
-            expose_artifact: None,
-            config_module: None,
             documentation: None,
-            permissions: PermissionsMeta::default(),
-            bpf_lsm: None,
+            contract: None,
             attestation: AttestationMeta::default(),
         }
     }

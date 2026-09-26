@@ -1,0 +1,1880 @@
+//! Native provider backend for checked single-host image rollout operations.
+//!
+//! The ordinary ability runtime owns intent, completion, cancellation, and
+//! recovery. This backend owns only the physical sysroot effects. It always
+//! reauthenticates the exact image pair against `ImageGenerationState`, then
+//! uses the existing transition-intent and rollout record for selection.
+
+use std::fs;
+use std::fs::OpenOptions;
+use std::io::{Read as _, Write as _};
+use std::os::unix::fs::OpenOptionsExt as _;
+use std::os::unix::fs::{PermissionsExt as _, symlink};
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail, ensure};
+use aos_contract::Sha256Digest;
+use serde::{Deserialize, Serialize};
+
+use crate::types::{ImageGeneration, ImageGenerationState, ImageRolloutStatus};
+
+use super::{ImageRolloutRequest, MAX_RETENTION_MILLIS, RolloutImageIdentity};
+use super::{qualified_rollout_record, validate_active_rollout_selection};
+use crate::sysroot::{
+    load_image_generation_state_pub, record_pending_image_selection, remove_file_durable,
+    sync_directory, write_atomic_durable,
+};
+
+const EXECUTION_SCHEMA: &str = "aos.ability.native-image-rollout-state/v1";
+const EXECUTION_DIRECTORY: &str = "ability-rollouts";
+
+/// Describes durable progress through the native image provider backend.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum AbilityRolloutPhase {
+    /// Both exact images have durable store and provider retention roots.
+    Retained,
+    /// The candidate's provider-owned boot artifacts are authenticated.
+    Prepared,
+    /// Current workloads have completed the configured drain.
+    Drained,
+    /// The candidate is the durable next-boot selection.
+    Selected,
+    /// The authenticated candidate booted and awaits terminal health.
+    CandidateBooted,
+    /// Candidate health succeeded while both images remain retained.
+    HealthyRetained,
+    /// The predecessor regained authority while both images remain retained.
+    FallbackRetained,
+    /// Retirement was admitted and is durably removing rollout-specific roots.
+    Retiring,
+    /// The later transition removed the inactive image's expired lease.
+    Retired,
+}
+
+/// Preserves the authenticated terminal branch after its lease is retired.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum AbilityRolloutOutcome {
+    /// The candidate remains active after successful health evaluation.
+    CandidateHealthy,
+    /// The candidate failed health and must return authority to the predecessor.
+    CandidateUnhealthy,
+    /// The predecessor remains active after candidate health failure.
+    PredecessorFallback,
+}
+
+/// Records the provider-owned projection of an ordinary checked transaction.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AbilityRolloutState {
+    /// Identifies the durable provider-state schema.
+    pub(crate) schema: String,
+    /// Retains the exact checked rollout request.
+    pub(crate) request: ImageRolloutRequest,
+    /// Identifies the retained predecessor generation.
+    pub(crate) predecessor_generation: u32,
+    /// Identifies the prepared candidate generation.
+    pub(crate) candidate_generation: u32,
+    /// Records the last durably completed physical phase.
+    pub(crate) phase: AbilityRolloutPhase,
+    /// Preserves the terminal active image and health branch through retirement.
+    pub(crate) outcome: Option<AbilityRolloutOutcome>,
+}
+
+/// Reports the physical image outcome used during reconciliation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PhysicalRolloutObservation {
+    /// Selection is durable but no member of the pair has booted from it yet.
+    AwaitingBoot,
+    /// The candidate booted and awaits terminal health assessment.
+    CandidateBooted,
+    /// Candidate health succeeded and the physical rollout finalized.
+    Healthy,
+    /// The predecessor booted after failure, before boot commit finalized it.
+    FallbackPendingCommit,
+    /// The retained predecessor regained authority after candidate failure.
+    Fallback,
+}
+
+/// Applies checked rollout effects to the existing image backend.
+#[derive(Clone, Debug)]
+pub(crate) struct NativeImageRolloutBackend {
+    image_profile: PathBuf,
+}
+
+impl NativeImageRolloutBackend {
+    /// Constructs a backend over one image profile.
+    pub(crate) fn new(image_profile: impl Into<PathBuf>) -> Self {
+        Self {
+            image_profile: image_profile.into(),
+        }
+    }
+
+    /// Reauthenticates the physical rollout prerequisite before runtime intent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request, image pair, active image, durable
+    /// provider state, or retention deadline differs from current authority.
+    pub(crate) fn preflight_operation(
+        &self,
+        request: &ImageRolloutRequest,
+        method: &str,
+        now_millis: u64,
+    ) -> Result<()> {
+        let images = self.authenticate_pair(request)?;
+        let predecessor = unique_image(&images, &request.predecessor, "predecessor")?;
+        let candidate = unique_image(&images, &request.candidate, "candidate")?;
+        let state_path = self.execution_directory(request)?.join("state.json");
+        let has_state = state_path.is_file();
+        if method == "retain" && !has_state {
+            ensure!(
+                predecessor.number == images.running && images.active_rollout.is_none(),
+                "rollout predecessor is stale or another rollout is active"
+            );
+            ensure!(
+                matches!(
+                    request.retention_expires_at_millis.checked_sub(now_millis),
+                    Some(1..=MAX_RETENTION_MILLIS)
+                ),
+                "rollout retention window is invalid"
+            );
+            return Ok(());
+        }
+
+        let state = self.require_state(request)?;
+        ensure!(
+            state.predecessor_generation == predecessor.number
+                && state.candidate_generation == candidate.number,
+            "durable rollout generations differ from authenticated images"
+        );
+        ensure!(
+            images.running == predecessor.number || images.running == candidate.number,
+            "current active image is outside the retained rollout pair"
+        );
+        if method == "retire" {
+            ensure!(
+                now_millis >= request.retention_expires_at_millis,
+                "rollout retention lease has not expired"
+            );
+            self.authenticate_terminal_outcome(request, &state)?;
+        }
+        Ok(())
+    }
+
+    /// Installs both store roots and a durable provider record before mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when image identity is stale or retention roots and
+    /// provider state cannot be written durably.
+    pub(crate) fn retain(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
+        let images = self.authenticate_pair(request)?;
+        let predecessor = unique_image(&images, &request.predecessor, "predecessor")?;
+        let candidate = unique_image(&images, &request.candidate, "candidate")?;
+        ensure!(
+            predecessor.number == images.running,
+            "rollout predecessor is stale"
+        );
+
+        let directory = self.execution_directory(request)?;
+        ensure_private_directory(&self.image_profile.join(EXECUTION_DIRECTORY))?;
+        ensure_private_directory(&directory)?;
+        cleanup_stale_temporaries(&directory, is_execution_temporary)?;
+        // `/var/lib/profiles` is bind-mounted beneath Nix's real gcroots
+        // directory, so these exact closure links are recursively collected as
+        // durable roots rather than ordinary application symlinks.
+        install_exact_root(
+            &directory.join("predecessor-toplevel"),
+            &request.predecessor.toplevel,
+        )?;
+        install_exact_root(
+            &directory.join("predecessor-executor"),
+            &request.predecessor.executor,
+        )?;
+        install_exact_root(
+            &directory.join("candidate-toplevel"),
+            &request.candidate.toplevel,
+        )?;
+        install_exact_root(
+            &directory.join("candidate-executor"),
+            &request.candidate.executor,
+        )?;
+        let state = AbilityRolloutState {
+            schema: EXECUTION_SCHEMA.to_string(),
+            request: request.clone(),
+            predecessor_generation: predecessor.number,
+            candidate_generation: candidate.number,
+            phase: AbilityRolloutPhase::Retained,
+            outcome: None,
+        };
+        self.write_state(&state)?;
+        Ok(state)
+    }
+
+    /// Authenticates the inactive candidate as physically prepared.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when retention has not completed, another image is
+    /// pending, identity changed, or the prepared phase cannot be persisted.
+    pub(crate) fn prepare(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
+        let mut state = self.require_state(request)?;
+        ensure!(
+            matches!(
+                state.phase,
+                AbilityRolloutPhase::Retained | AbilityRolloutPhase::Prepared
+            ),
+            "candidate preparation is out of order"
+        );
+        let images = self.authenticate_pair(request)?;
+        ensure!(
+            images.pending.is_none() || images.pending == Some(state.candidate_generation),
+            "another image is already pending"
+        );
+        state.phase = AbilityRolloutPhase::Prepared;
+        self.write_state(&state)?;
+        Ok(state)
+    }
+
+    /// Records that checked orchestration has completed candidate preparation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when preparation has not completed, identity changed,
+    /// or the drained phase cannot be persisted.
+    pub(crate) fn drain(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
+        let mut state = self.require_state(request)?;
+        if state.phase == AbilityRolloutPhase::Drained {
+            return Ok(state);
+        }
+        ensure!(
+            state.phase == AbilityRolloutPhase::Prepared,
+            "drain is out of order"
+        );
+        self.authenticate_pair(request)?;
+        state.phase = AbilityRolloutPhase::Drained;
+        self.write_state(&state)?;
+        Ok(state)
+    }
+
+    /// Uses the existing durable image-transition intent to select the candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when drain has not completed, physical identity or
+    /// rollout state changed, boot selection fails, or state cannot persist.
+    pub(crate) fn select(
+        &self,
+        request: &ImageRolloutRequest,
+        _entry_id: &str,
+    ) -> Result<AbilityRolloutState> {
+        let mut execution = self.require_state(request)?;
+        if execution.phase == AbilityRolloutPhase::Selected {
+            return Ok(execution);
+        }
+        ensure!(
+            execution.phase == AbilityRolloutPhase::Drained,
+            "selection is out of order"
+        );
+
+        let mut images = self.authenticate_pair(request)?;
+        let rollout = qualified_rollout_record(
+            &images,
+            execution.candidate_generation,
+            &request.candidate.state_format,
+        )?;
+        record_pending_image_selection(
+            &self.image_profile,
+            &mut images,
+            execution.candidate_generation,
+            rollout,
+        )?;
+        execution.phase = AbilityRolloutPhase::Selected;
+        self.write_state(&execution)?;
+        Ok(execution)
+    }
+
+    /// Reauthenticates durable sysroot state after a crash or reboot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when provider state, image identity, or the physical
+    /// active or terminal rollout record differs from the checked request.
+    pub(crate) fn observe(
+        &self,
+        request: &ImageRolloutRequest,
+    ) -> Result<PhysicalRolloutObservation> {
+        let execution = self.require_state(request)?;
+        let images = self.authenticate_pair(request)?;
+        let matching = |rollout: &crate::types::ImageRollout| {
+            rollout.candidate == execution.candidate_generation
+                && rollout.prior == execution.predecessor_generation
+                && rollout.state_version == request.candidate.state_format
+        };
+
+        if let Some(active) = &images.active_rollout {
+            ensure!(
+                matching(active),
+                "active rollout differs from checked identity"
+            );
+            if active.status == ImageRolloutStatus::Staged {
+                validate_active_rollout_selection(&images, active, execution.candidate_generation)?;
+            }
+            return Ok(match active.status {
+                ImageRolloutStatus::Staged => PhysicalRolloutObservation::AwaitingBoot,
+                ImageRolloutStatus::CandidateBooted => {
+                    ensure!(
+                        images.running == execution.candidate_generation,
+                        "active candidate status differs from the running image"
+                    );
+                    PhysicalRolloutObservation::CandidateBooted
+                }
+                ImageRolloutStatus::HealthFailed => {
+                    if images.running == execution.candidate_generation {
+                        PhysicalRolloutObservation::CandidateBooted
+                    } else {
+                        ensure!(
+                            images.running == execution.predecessor_generation,
+                            "failed rollout status differs from the retained image pair"
+                        );
+                        PhysicalRolloutObservation::FallbackPendingCommit
+                    }
+                }
+                ImageRolloutStatus::Succeeded => {
+                    bail!("a successful rollout cannot remain active")
+                }
+            });
+        }
+        let terminal = images
+            .last_rollout
+            .as_ref()
+            .filter(|rollout| matching(rollout))
+            .context("physical image state has no matching active or terminal rollout")?;
+        Ok(match terminal.status {
+            ImageRolloutStatus::Succeeded => {
+                ensure!(
+                    images.running == execution.candidate_generation,
+                    "successful rollout does not name the running candidate"
+                );
+                PhysicalRolloutObservation::Healthy
+            }
+            ImageRolloutStatus::HealthFailed => {
+                ensure!(
+                    images.running == execution.predecessor_generation,
+                    "failed rollout does not name the running predecessor"
+                );
+                PhysicalRolloutObservation::Fallback
+            }
+            _ => bail!("terminal rollout carries a nonterminal status"),
+        })
+    }
+
+    /// Requires a physically finalized rollout outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error while candidate success or predecessor fallback remains
+    /// represented by an active rollout awaiting boot commit.
+    pub(crate) fn observe_terminal_outcome(
+        &self,
+        request: &ImageRolloutRequest,
+    ) -> Result<PhysicalRolloutObservation> {
+        let observation = self.observe(request)?;
+        ensure!(
+            matches!(
+                observation,
+                PhysicalRolloutObservation::Healthy | PhysicalRolloutObservation::Fallback
+            ),
+            "rollout has not reached a physically finalized outcome"
+        );
+        Ok(observation)
+    }
+
+    /// Verifies provider evidence required before physical boot finalization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the running member of the exact image pair has
+    /// the corresponding retained, provider-owned terminal branch.
+    pub(crate) fn verify_boot_commit(
+        &self,
+        request: &ImageRolloutRequest,
+        running: u32,
+    ) -> Result<()> {
+        let state = self.require_state(request)?;
+        let physical = self.observe(request)?;
+        let expected = if running == state.candidate_generation {
+            (
+                AbilityRolloutPhase::HealthyRetained,
+                AbilityRolloutOutcome::CandidateHealthy,
+                PhysicalRolloutObservation::CandidateBooted,
+            )
+        } else if running == state.predecessor_generation {
+            (
+                AbilityRolloutPhase::FallbackRetained,
+                AbilityRolloutOutcome::PredecessorFallback,
+                PhysicalRolloutObservation::FallbackPendingCommit,
+            )
+        } else {
+            bail!("running image is outside the checked rollout pair")
+        };
+        ensure!(
+            (state.phase, state.outcome, physical) == (expected.0, Some(expected.1), expected.2),
+            "provider health evidence does not authorize boot finalization"
+        );
+        self.authenticate_retention(request)?;
+        Ok(())
+    }
+
+    /// Authenticates one method's durable postcondition without replaying it.
+    ///
+    /// This path is used for both reconciliation and cancellation. It may read
+    /// physical image, lease, and provider state, but never writes provider
+    /// state, changes boot selection, drains workloads, or requests a reboot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when durable or physical state does not prove the
+    /// method's postcondition under the exact checked image identity.
+    pub(crate) fn observe_operation(
+        &self,
+        request: &ImageRolloutRequest,
+        method: &str,
+    ) -> Result<AbilityRolloutState> {
+        let state = self.require_state(request)?;
+        let images = self.authenticate_pair(request)?;
+        self.authenticate_state_generations(&state, &images)?;
+
+        match method {
+            "retain" => {
+                ensure!(
+                    !matches!(
+                        state.phase,
+                        AbilityRolloutPhase::Retiring | AbilityRolloutPhase::Retired
+                    ),
+                    "retention postcondition is no longer present"
+                );
+                self.authenticate_retention(request)?;
+                Ok(state)
+            }
+            "prepare" => {
+                ensure!(
+                    !matches!(
+                        state.phase,
+                        AbilityRolloutPhase::Retained
+                            | AbilityRolloutPhase::Retiring
+                            | AbilityRolloutPhase::Retired
+                    ),
+                    "candidate preparation postcondition is not durable"
+                );
+                self.authenticate_retention(request)?;
+                Ok(state)
+            }
+            "drain" => {
+                ensure!(
+                    matches!(
+                        state.phase,
+                        AbilityRolloutPhase::Drained
+                            | AbilityRolloutPhase::Selected
+                            | AbilityRolloutPhase::CandidateBooted
+                            | AbilityRolloutPhase::HealthyRetained
+                            | AbilityRolloutPhase::FallbackRetained
+                    ),
+                    "drain postcondition is not durable"
+                );
+                self.authenticate_retention(request)?;
+                Ok(state)
+            }
+            "select" | "observe-boot" => {
+                let state = self.project_physical_observation(request, state)?;
+                self.authenticate_retention(request)?;
+                Ok(state)
+            }
+            "observe-health" => self.health_assessment(request),
+            "withdraw" => self.observe_withdrawal(request),
+            "hold" => self.observe_hold(request),
+            "retire" => {
+                ensure!(
+                    state.phase == AbilityRolloutPhase::Retired,
+                    "retirement postcondition is not durable"
+                );
+                self.authenticate_terminal_outcome(request, &state)?;
+                self.authenticate_retirement(request, &images)?;
+                Ok(state)
+            }
+            _ => bail!("unsupported rollout method"),
+        }
+    }
+
+    /// Records the reconciled boot or terminal outcome in provider state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when physical observation fails or the reconciled
+    /// provider state cannot be written durably.
+    pub(crate) fn reconcile(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
+        let state = self.require_state(request)?;
+        let state = self.project_physical_observation(request, state)?;
+        self.write_state(&state)?;
+        Ok(state)
+    }
+
+    /// Records the health hook's checked result after candidate activation resumes.
+    ///
+    /// Final firmware blessing remains in `aos-image-boot-commit`, after
+    /// activation publishes its complete transaction evidence. The provider
+    /// record makes recovery independent of later changes to the health hook.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error while the candidate has not booted, when physical image
+    /// state differs from the request, or when the result conflicts with an
+    /// already recorded assessment.
+    pub(crate) fn record_health(
+        &self,
+        request: &ImageRolloutRequest,
+        healthy: bool,
+    ) -> Result<AbilityRolloutState> {
+        let mut state = self.require_state(request)?;
+        let outcome = if healthy {
+            AbilityRolloutOutcome::CandidateHealthy
+        } else {
+            AbilityRolloutOutcome::CandidateUnhealthy
+        };
+        if let Some(recorded) = state.outcome {
+            ensure!(
+                recorded == outcome,
+                "health hook result changed after publication"
+            );
+            return self.health_assessment(request);
+        }
+        ensure!(
+            state.phase == AbilityRolloutPhase::CandidateBooted
+                && self.observe(request)? == PhysicalRolloutObservation::CandidateBooted,
+            "rollout candidate is not ready for health assessment"
+        );
+        let images = self.authenticate_pair(request)?;
+        ensure!(
+            images
+                .active_rollout
+                .as_ref()
+                .is_some_and(|rollout| rollout.status == ImageRolloutStatus::CandidateBooted),
+            "rollout candidate is already withdrawing"
+        );
+        self.authenticate_retention(request)?;
+        state.outcome = Some(outcome);
+        self.write_state(&state)?;
+        Ok(state)
+    }
+
+    /// Reauthenticates a previously published health-hook result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no provisional result exists or physical state no
+    /// longer agrees with the checked rollout branch.
+    pub(crate) fn health_assessment(
+        &self,
+        request: &ImageRolloutRequest,
+    ) -> Result<AbilityRolloutState> {
+        let state = self.require_state(request)?;
+        let physical = self.observe(request)?;
+        let valid = matches!(
+            (state.phase, state.outcome, physical),
+            (
+                AbilityRolloutPhase::CandidateBooted,
+                Some(
+                    AbilityRolloutOutcome::CandidateHealthy
+                        | AbilityRolloutOutcome::CandidateUnhealthy
+                ),
+                PhysicalRolloutObservation::CandidateBooted,
+            ) | (
+                AbilityRolloutPhase::CandidateBooted,
+                Some(AbilityRolloutOutcome::CandidateUnhealthy),
+                PhysicalRolloutObservation::FallbackPendingCommit,
+            ) | (
+                AbilityRolloutPhase::HealthyRetained,
+                Some(AbilityRolloutOutcome::CandidateHealthy),
+                PhysicalRolloutObservation::CandidateBooted | PhysicalRolloutObservation::Healthy,
+            ) | (
+                AbilityRolloutPhase::FallbackRetained,
+                Some(AbilityRolloutOutcome::PredecessorFallback),
+                PhysicalRolloutObservation::FallbackPendingCommit
+                    | PhysicalRolloutObservation::Fallback,
+            )
+        );
+        ensure!(valid, "rollout health assessment is not durable");
+        self.authenticate_retention(request)?;
+        Ok(state)
+    }
+
+    /// Returns a published health assessment without inventing missing evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when provider state is malformed or a published result
+    /// disagrees with the physical rollout.
+    pub(crate) fn health_assessment_if_recorded(
+        &self,
+        request: &ImageRolloutRequest,
+    ) -> Result<Option<AbilityRolloutState>> {
+        let state = self.require_state(request)?;
+        if state.outcome.is_none() {
+            return Ok(None);
+        }
+        self.health_assessment(request).map(Some)
+    }
+
+    /// Completes the transaction after a terminal outcome has a durable lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error until authenticated health or fallback is terminal, or
+    /// when reconciliation fails.
+    pub(crate) fn hold(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
+        let mut state = self.health_assessment(request)?;
+        match state.outcome {
+            Some(AbilityRolloutOutcome::CandidateHealthy) => {
+                state.phase = AbilityRolloutPhase::HealthyRetained;
+            }
+            Some(AbilityRolloutOutcome::PredecessorFallback) => {
+                ensure!(
+                    state.phase == AbilityRolloutPhase::FallbackRetained,
+                    "fallback hold precedes durable withdrawal"
+                );
+            }
+            Some(AbilityRolloutOutcome::CandidateUnhealthy) | None => {
+                bail!("unhealthy candidate has not completed withdrawal")
+            }
+        }
+        self.authenticate_retention(request)?;
+        self.write_state(&state)?;
+        Ok(state)
+    }
+
+    /// Completes fallback withdrawal only after the predecessor is authoritative.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error until authenticated fallback is terminal, or when
+    /// reconciliation fails.
+    pub(crate) fn withdraw(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
+        let mut state = self.health_assessment(request)?;
+        match self.observe(request)? {
+            PhysicalRolloutObservation::CandidateBooted => {
+                ensure!(
+                    state.phase == AbilityRolloutPhase::CandidateBooted
+                        && state.outcome == Some(AbilityRolloutOutcome::CandidateUnhealthy),
+                    "candidate withdrawal lacks failed health evidence"
+                );
+                self.mark_candidate_health_failed(request, &state)?;
+            }
+            PhysicalRolloutObservation::FallbackPendingCommit
+            | PhysicalRolloutObservation::Fallback => {
+                ensure!(
+                    matches!(
+                        state.outcome,
+                        Some(AbilityRolloutOutcome::CandidateUnhealthy)
+                            | Some(AbilityRolloutOutcome::PredecessorFallback)
+                    ),
+                    "fallback lacks failed candidate health evidence"
+                );
+                state.phase = AbilityRolloutPhase::FallbackRetained;
+                state.outcome = Some(AbilityRolloutOutcome::PredecessorFallback);
+                self.write_state(&state)?;
+            }
+            PhysicalRolloutObservation::AwaitingBoot | PhysicalRolloutObservation::Healthy => {
+                bail!("candidate traffic remains admitted or fallback is unproven")
+            }
+        }
+        self.authenticate_retention(request)?;
+        Ok(state)
+    }
+
+    fn observe_withdrawal(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
+        let state = self.health_assessment(request)?;
+        ensure!(
+            state.phase == AbilityRolloutPhase::FallbackRetained
+                && state.outcome == Some(AbilityRolloutOutcome::PredecessorFallback),
+            "rollout withdrawal postcondition is not durable"
+        );
+        Ok(state)
+    }
+
+    fn observe_hold(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
+        let state = self.health_assessment(request)?;
+        ensure!(
+            matches!(
+                (state.phase, state.outcome),
+                (
+                    AbilityRolloutPhase::HealthyRetained,
+                    Some(AbilityRolloutOutcome::CandidateHealthy)
+                ) | (
+                    AbilityRolloutPhase::FallbackRetained,
+                    Some(AbilityRolloutOutcome::PredecessorFallback)
+                )
+            ),
+            "rollout hold postcondition is not durable"
+        );
+        Ok(state)
+    }
+
+    fn mark_candidate_health_failed(
+        &self,
+        request: &ImageRolloutRequest,
+        state: &AbilityRolloutState,
+    ) -> Result<()> {
+        let mut images = self.authenticate_pair(request)?;
+        let rollout = images
+            .active_rollout
+            .as_mut()
+            .context("candidate withdrawal has no active rollout")?;
+        ensure!(
+            rollout.candidate == state.candidate_generation
+                && rollout.prior == state.predecessor_generation
+                && rollout.state_version == request.candidate.state_format
+                && matches!(
+                    rollout.status,
+                    ImageRolloutStatus::CandidateBooted | ImageRolloutStatus::HealthFailed
+                ),
+            "candidate withdrawal differs from checked rollout state"
+        );
+        rollout.status = ImageRolloutStatus::HealthFailed;
+        let bytes = serde_json::to_vec_pretty(&images)?;
+        write_atomic_durable(
+            &self.image_profile.join(crate::sysroot::IMAGE_STATE_FILE),
+            &bytes,
+        )?;
+        Ok(())
+    }
+
+    /// Removes an expired lease during a separately admitted current transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before expiry, for nonterminal or stale state, or when
+    /// inactive roots and the provider artifact lease cannot be removed durably.
+    pub(crate) fn retire(
+        &self,
+        request: &ImageRolloutRequest,
+        now_millis: u64,
+    ) -> Result<AbilityRolloutState> {
+        ensure!(
+            now_millis >= request.retention_expires_at_millis,
+            "rollout retention lease has not expired"
+        );
+        let mut state = self.require_state(request)?;
+        ensure!(
+            matches!(
+                state.phase,
+                AbilityRolloutPhase::HealthyRetained
+                    | AbilityRolloutPhase::FallbackRetained
+                    | AbilityRolloutPhase::Retiring
+            ),
+            "only a terminal rollout lease can retire"
+        );
+        let expected_active = match state.outcome {
+            Some(AbilityRolloutOutcome::CandidateHealthy)
+                if matches!(
+                    state.phase,
+                    AbilityRolloutPhase::HealthyRetained | AbilityRolloutPhase::Retiring
+                ) =>
+            {
+                "candidate"
+            }
+            Some(AbilityRolloutOutcome::PredecessorFallback)
+                if matches!(
+                    state.phase,
+                    AbilityRolloutPhase::FallbackRetained | AbilityRolloutPhase::Retiring
+                ) =>
+            {
+                "predecessor"
+            }
+            _ => bail!("terminal rollout state has no matching authenticated outcome"),
+        };
+        let images = self.authenticate_pair(request)?;
+        self.authenticate_terminal_outcome(request, &state)?;
+        let running = images
+            .running_generation()
+            .context("image state has no running generation")?;
+        let running_identity = if image_matches(running, &request.candidate) {
+            "candidate"
+        } else if image_matches(running, &request.predecessor) {
+            "predecessor"
+        } else {
+            bail!("current active image is outside the retained rollout pair")
+        };
+        ensure!(
+            running_identity == expected_active,
+            "terminal rollout outcome differs from the active image"
+        );
+        self.authenticate_ordinary_image_roots(running)?;
+
+        let directory = self.execution_directory(request)?;
+        if state.phase != AbilityRolloutPhase::Retiring {
+            self.authenticate_retention(request)?;
+            state.phase = AbilityRolloutPhase::Retiring;
+            self.write_state(&state)?;
+        }
+        for identity in ["candidate", "predecessor"] {
+            for suffix in ["toplevel", "executor"] {
+                remove_file_durable(&directory.join(format!("{identity}-{suffix}")))?;
+            }
+        }
+        state.phase = AbilityRolloutPhase::Retired;
+        self.write_state(&state)?;
+        Ok(state)
+    }
+
+    fn project_physical_observation(
+        &self,
+        request: &ImageRolloutRequest,
+        mut state: AbilityRolloutState,
+    ) -> Result<AbilityRolloutState> {
+        let (phase, outcome) = match self.observe(request)? {
+            PhysicalRolloutObservation::AwaitingBoot => {
+                ensure!(
+                    state.outcome.is_none(),
+                    "health evidence precedes candidate boot"
+                );
+                (AbilityRolloutPhase::Selected, None)
+            }
+            PhysicalRolloutObservation::CandidateBooted => {
+                (AbilityRolloutPhase::CandidateBooted, state.outcome)
+            }
+            PhysicalRolloutObservation::Healthy => (
+                AbilityRolloutPhase::HealthyRetained,
+                Some(AbilityRolloutOutcome::CandidateHealthy),
+            ),
+            PhysicalRolloutObservation::FallbackPendingCommit
+            | PhysicalRolloutObservation::Fallback => (
+                AbilityRolloutPhase::FallbackRetained,
+                Some(AbilityRolloutOutcome::PredecessorFallback),
+            ),
+        };
+        state.phase = phase;
+        state.outcome = outcome;
+        Ok(state)
+    }
+
+    fn authenticate_state_generations(
+        &self,
+        state: &AbilityRolloutState,
+        images: &ImageGenerationState,
+    ) -> Result<()> {
+        let predecessor = unique_image(images, &state.request.predecessor, "predecessor")?;
+        let candidate = unique_image(images, &state.request.candidate, "candidate")?;
+        ensure!(
+            state.predecessor_generation == predecessor.number
+                && state.candidate_generation == candidate.number
+                && predecessor.number != candidate.number,
+            "durable rollout generations differ from authenticated images"
+        );
+        ensure!(
+            images.running == predecessor.number || images.running == candidate.number,
+            "current active image is outside the retained rollout pair"
+        );
+        Ok(())
+    }
+
+    fn authenticate_retention(&self, request: &ImageRolloutRequest) -> Result<()> {
+        let directory = self.execution_directory(request)?;
+        for (name, target) in [
+            (
+                "predecessor-toplevel",
+                request.predecessor.toplevel.as_str(),
+            ),
+            (
+                "predecessor-executor",
+                request.predecessor.executor.as_str(),
+            ),
+            ("candidate-toplevel", request.candidate.toplevel.as_str()),
+            ("candidate-executor", request.candidate.executor.as_str()),
+        ] {
+            require_exact_root(&directory.join(name), target)?;
+        }
+        Ok(())
+    }
+
+    fn authenticate_terminal_outcome(
+        &self,
+        request: &ImageRolloutRequest,
+        state: &AbilityRolloutState,
+    ) -> Result<()> {
+        let expected = match self.observe_terminal_outcome(request)? {
+            PhysicalRolloutObservation::Healthy => AbilityRolloutOutcome::CandidateHealthy,
+            PhysicalRolloutObservation::Fallback => AbilityRolloutOutcome::PredecessorFallback,
+            _ => bail!("physical rollout outcome is not terminal"),
+        };
+        ensure!(
+            state.outcome == Some(expected),
+            "durable terminal outcome differs from physical image state"
+        );
+        Ok(())
+    }
+
+    fn authenticate_retirement(
+        &self,
+        request: &ImageRolloutRequest,
+        images: &ImageGenerationState,
+    ) -> Result<()> {
+        let running = images
+            .running_generation()
+            .context("image state has no running generation")?;
+        if !image_matches(running, &request.candidate)
+            && !image_matches(running, &request.predecessor)
+        {
+            bail!("current active image is outside the retained rollout pair")
+        }
+        self.authenticate_ordinary_image_roots(running)?;
+
+        let directory = self.execution_directory(request)?;
+        for identity in ["candidate", "predecessor"] {
+            for suffix in ["toplevel", "executor"] {
+                ensure!(
+                    fs::symlink_metadata(directory.join(format!("{identity}-{suffix}")))
+                        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
+                    "retired rollout-specific root is still present"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn authenticate_ordinary_image_roots(&self, image: &ImageGeneration) -> Result<()> {
+        let directory = self
+            .image_profile
+            .join(format!("image-gen-{}", image.number));
+        require_exact_root(&directory.join("toplevel"), &image.toplevel)?;
+        require_exact_root(&directory.join("executor"), &image.native_executor_ref)
+    }
+
+    fn authenticate_pair(&self, request: &ImageRolloutRequest) -> Result<ImageGenerationState> {
+        ensure!(
+            !request.candidate.state_format.is_empty()
+                && request.candidate.state_format == request.predecessor.state_format,
+            "rollout images have incompatible state formats"
+        );
+        let images = load_image_generation_state_pub(&self.image_profile)?;
+        unique_image(&images, &request.predecessor, "predecessor")?;
+        unique_image(&images, &request.candidate, "candidate")?;
+        Ok(images)
+    }
+
+    pub(crate) fn execution_directory(&self, request: &ImageRolloutRequest) -> Result<PathBuf> {
+        let digest = Sha256Digest::of_canonical(EXECUTION_SCHEMA, request)?;
+        Ok(self
+            .image_profile
+            .join(EXECUTION_DIRECTORY)
+            .join(digest.to_string().replace(':', "-")))
+    }
+
+    fn require_state(&self, request: &ImageRolloutRequest) -> Result<AbilityRolloutState> {
+        let path = self.execution_directory(request)?.join("state.json");
+        let state: AbilityRolloutState = serde_json::from_slice(
+            &read_regular_bounded(&path, 1024 * 1024)
+                .with_context(|| format!("reading {}", path.display()))?,
+        )?;
+        ensure!(
+            state.schema == EXECUTION_SCHEMA && state.request == *request,
+            "durable rollout state differs from checked request"
+        );
+        Ok(state)
+    }
+
+    fn write_state(&self, state: &AbilityRolloutState) -> Result<()> {
+        let directory = self.execution_directory(&state.request)?;
+        ensure_private_directory(&self.image_profile.join(EXECUTION_DIRECTORY))?;
+        ensure_private_directory(&directory)?;
+        cleanup_stale_temporaries(&directory, is_execution_temporary)?;
+        write_atomic_regular(
+            &directory.join("state.json"),
+            &serde_json::to_vec_pretty(state)?,
+            true,
+        )
+    }
+}
+
+fn write_atomic_regular(path: &Path, contents: &[u8], replace: bool) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("durable rollout file has no parent")?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("durable rollout file has no UTF-8 name")?;
+    let temporary = parent.join(format!(".{file_name}.tmp.{}", std::process::id()));
+    remove_stale_regular_temporary(&temporary)?;
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&temporary)?;
+    let written = (|| -> Result<()> {
+        file.write_all(contents)?;
+        file.flush()?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = written {
+        drop(file);
+        let _ = remove_file_durable(&temporary);
+        return Err(error);
+    }
+    drop(file);
+
+    let flags = if replace {
+        rustix::fs::RenameFlags::empty()
+    } else {
+        rustix::fs::RenameFlags::NOREPLACE
+    };
+    if let Err(error) =
+        rustix::fs::renameat_with(rustix::fs::CWD, &temporary, rustix::fs::CWD, path, flags)
+    {
+        let _ = remove_file_durable(&temporary);
+        return Err(error).with_context(|| format!("publishing rollout file {}", path.display()));
+    }
+    sync_directory(parent)
+}
+
+fn remove_stale_regular_temporary(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            ensure!(
+                metadata.file_type().is_file(),
+                "rollout temporary path contains a non-regular entry"
+            );
+            remove_file_durable(path)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn cleanup_stale_temporaries(directory: &Path, recognized: fn(&str) -> bool) -> Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("rollout temporary name is not UTF-8"))?;
+        if !recognized(&name) {
+            continue;
+        }
+        ensure!(
+            entry.file_type()?.is_file(),
+            "rollout temporary path contains a non-regular entry"
+        );
+        remove_file_durable(&entry.path())?;
+    }
+    Ok(())
+}
+
+fn is_execution_temporary(name: &str) -> bool {
+    numeric_suffix(name, ".state.json.tmp.")
+}
+
+fn numeric_suffix(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix).is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+fn read_regular_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file() && metadata.len() <= limit,
+        "rollout lease file is not a bounded regular file"
+    );
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len())?);
+    file.read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 == metadata.len(),
+        "rollout lease file changed while reading"
+    );
+    Ok(bytes)
+}
+
+fn unique_image<'a>(
+    images: &'a ImageGenerationState,
+    identity: &RolloutImageIdentity,
+    label: &str,
+) -> Result<&'a ImageGeneration> {
+    let mut matching = images
+        .generations
+        .iter()
+        .filter(|generation| image_matches(generation, identity));
+    let image = matching
+        .next()
+        .with_context(|| format!("{label} image does not match an authenticated generation"))?;
+    ensure!(
+        matching.next().is_none(),
+        "{label} image identity is ambiguous"
+    );
+    Ok(image)
+}
+
+fn image_matches(generation: &ImageGeneration, identity: &RolloutImageIdentity) -> bool {
+    generation.toplevel == identity.toplevel
+        && generation.native_executor_ref == identity.executor
+        && generation.state_version == identity.state_format
+}
+
+fn ensure_private_directory(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)?;
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink(),
+        "rollout state path is not a directory"
+    );
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    ensure!(
+        fs::symlink_metadata(path)?.permissions().mode() & 0o777 == 0o700,
+        "rollout state directory is not root-private"
+    );
+    Ok(())
+}
+
+fn require_exact_root(path: &Path, target: &str) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.file_type().is_symlink(),
+        "rollout root is not a symlink"
+    );
+    ensure!(
+        fs::read_link(path)? == Path::new(target),
+        "rollout root targets another artifact"
+    );
+    Ok(())
+}
+
+fn install_exact_root(path: &Path, target: &str) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            ensure!(
+                metadata.file_type().is_symlink(),
+                "rollout root path contains a non-symlink"
+            );
+            return require_exact_root(path, target);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let temporary = path.with_extension(format!("new-{}", std::process::id()));
+    ensure!(
+        fs::symlink_metadata(&temporary)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
+        "rollout root temporary path is occupied"
+    );
+    symlink(target, &temporary)?;
+    let published = rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        &temporary,
+        rustix::fs::CWD,
+        path,
+        rustix::fs::RenameFlags::NOREPLACE,
+    );
+    if let Err(error) = published {
+        let _ = fs::remove_file(&temporary);
+        return Err(error).with_context(|| {
+            format!(
+                "publishing rollout root {} without replacement",
+                path.display()
+            )
+        });
+    }
+    if let Some(parent) = path.parent() {
+        sync_directory(parent)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::types::ImageRollout;
+
+    fn image(number: u32, seed: u8) -> ImageGeneration {
+        ImageGeneration {
+            number,
+            boot_artifact_contract: format!(
+                "/nix/store/{}-boot-contract",
+                char::from(b'f' + seed).to_string().repeat(32)
+            ),
+            boot_provider_state: crate::types::BootProviderState {
+                schema: "aos.test.boot-generation-state/v1".into(),
+                evidence: serde_json::json!({"installed-entry": format!("installed-entry-{number}")}),
+            },
+            toplevel: format!(
+                "/nix/store/{}-top",
+                char::from(b'a' + seed).to_string().repeat(32)
+            ),
+            package_name: "aos".into(),
+            version: number.to_string(),
+            state_version: "7".into(),
+            native_executor_ref: format!(
+                "/nix/store/{}-executor",
+                char::from(b'k' + seed).to_string().repeat(32)
+            ),
+            registry: "test".into(),
+            kernel_path: None,
+            evaluator_ref: format!(
+                "/nix/store/{}-base",
+                char::from(b'p' + seed).to_string().repeat(32)
+            ),
+            module_abi: 1,
+            base_lib_abi_hash: "sha256:test".into(),
+            created_at: "2026-09-10T00:00:00Z".into(),
+        }
+    }
+
+    struct Fixture {
+        _tmp: TempDir,
+        backend: NativeImageRolloutBackend,
+        request: ImageRolloutRequest,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let tmp = TempDir::new().unwrap();
+            let predecessor = image(1, 0);
+            let candidate = image(2, 1);
+            let state = ImageGenerationState {
+                schema: "aos.image-generation-state/v1".into(),
+                running: 1,
+                pending: None,
+                boot_provider_state: crate::types::BootProviderState {
+                    schema: "aos.test.boot-state/v1".into(),
+                    evidence: serde_json::json!({}),
+                },
+                active_rollout: None,
+                last_rollout: None,
+                generations: vec![predecessor.clone(), candidate.clone()],
+            };
+            fs::create_dir_all(tmp.path()).unwrap();
+            fs::write(
+                tmp.path().join(crate::sysroot::IMAGE_STATE_FILE),
+                serde_json::to_vec_pretty(&state).unwrap(),
+            )
+            .unwrap();
+            for generation in [&predecessor, &candidate] {
+                crate::store::create_image_gc_roots(
+                    &tmp.path().join(format!("image-gen-{}", generation.number)),
+                    generation,
+                )
+                .unwrap();
+            }
+            let identity = |generation: &ImageGeneration| RolloutImageIdentity {
+                toplevel: generation.toplevel.clone(),
+                boot_artifact_contract: generation.boot_artifact_contract.clone(),
+                executor: generation.native_executor_ref.clone(),
+                state_format: generation.state_version.clone(),
+            };
+            let request = ImageRolloutRequest {
+                predecessor: identity(&predecessor),
+                candidate: identity(&candidate),
+                retention_expires_at_millis: 2_000,
+            };
+            let image_profile = tmp.path().to_path_buf();
+            Self {
+                _tmp: tmp,
+                backend: NativeImageRolloutBackend::new(image_profile),
+                request,
+            }
+        }
+
+        fn images(&self) -> ImageGenerationState {
+            load_image_generation_state_pub(&self.backend.image_profile).unwrap()
+        }
+
+        fn write_images(&self, images: &ImageGenerationState) {
+            fs::write(
+                self.backend
+                    .image_profile
+                    .join(crate::sysroot::IMAGE_STATE_FILE),
+                serde_json::to_vec_pretty(images).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+
+    fn complete_terminal_rollout(
+        fixture: &Fixture,
+        running: u32,
+        status: ImageRolloutStatus,
+    ) -> AbilityRolloutState {
+        fixture.backend.retain(&fixture.request).unwrap();
+        fixture.backend.prepare(&fixture.request).unwrap();
+        fixture.backend.drain(&fixture.request).unwrap();
+        fixture
+            .backend
+            .select(&fixture.request, "installed-entry-2")
+            .unwrap();
+
+        let mut images = fixture.images();
+        images.running = 2;
+        images.active_rollout.as_mut().unwrap().status = ImageRolloutStatus::CandidateBooted;
+        fixture.write_images(&images);
+        fixture.backend.reconcile(&fixture.request).unwrap();
+        fixture
+            .backend
+            .record_health(&fixture.request, status == ImageRolloutStatus::Succeeded)
+            .unwrap();
+        let provider_state = if status == ImageRolloutStatus::Succeeded {
+            fixture.backend.hold(&fixture.request).unwrap()
+        } else {
+            fixture.backend.withdraw(&fixture.request).unwrap();
+            images = fixture.images();
+            images.running = 1;
+            fixture.write_images(&images);
+            fixture.backend.withdraw(&fixture.request).unwrap()
+        };
+
+        images = fixture.images();
+        images.running = running;
+        images.pending = None;
+        images.active_rollout = None;
+        images.last_rollout = Some(ImageRollout {
+            schema: super::super::IMAGE_ROLLOUT_SCHEMA.into(),
+            candidate: 2,
+            prior: 1,
+            state_version: "7".into(),
+            status,
+        });
+        fixture.write_images(&images);
+        provider_state
+    }
+
+    fn publish_retention_prefix(fixture: &Fixture, publications: usize) {
+        if publications == 0 {
+            return;
+        }
+        let directory = fixture
+            .backend
+            .execution_directory(&fixture.request)
+            .unwrap();
+        ensure_private_directory(
+            directory
+                .parent()
+                .expect("execution directory has a parent"),
+        )
+        .unwrap();
+        ensure_private_directory(&directory).unwrap();
+        let roots = [
+            (
+                "predecessor-toplevel",
+                fixture.request.predecessor.toplevel.as_str(),
+            ),
+            (
+                "predecessor-executor",
+                fixture.request.predecessor.executor.as_str(),
+            ),
+            (
+                "candidate-toplevel",
+                fixture.request.candidate.toplevel.as_str(),
+            ),
+            (
+                "candidate-executor",
+                fixture.request.candidate.executor.as_str(),
+            ),
+        ];
+        for (index, (name, target)) in roots.into_iter().enumerate() {
+            if publications > index {
+                install_exact_root(&directory.join(name), target).unwrap();
+            }
+        }
+        if publications > 4 {
+            fixture.backend.retain(&fixture.request).unwrap();
+        }
+    }
+
+    #[test]
+    fn retention_precedes_prepare_drain_and_selection() {
+        let fixture = Fixture::new();
+        assert!(fixture.backend.prepare(&fixture.request).is_err());
+        fixture.backend.retain(&fixture.request).unwrap();
+        fixture.backend.prepare(&fixture.request).unwrap();
+        fixture.backend.drain(&fixture.request).unwrap();
+        fixture
+            .backend
+            .select(&fixture.request, "installed-entry-2")
+            .unwrap();
+
+        let images = fixture.images();
+        assert_eq!(images.pending, Some(2));
+        assert_eq!(images.active_rollout.as_ref().unwrap().candidate, 2);
+        assert_eq!(
+            fixture.backend.observe(&fixture.request).unwrap(),
+            PhysicalRolloutObservation::AwaitingBoot
+        );
+    }
+
+    #[test]
+    fn retention_retry_completes_after_every_durable_publication_prefix() {
+        for publications in 0..=5 {
+            let fixture = Fixture::new();
+            publish_retention_prefix(&fixture, publications);
+
+            let state = fixture.backend.retain(&fixture.request).unwrap();
+            assert_eq!(state.phase, AbilityRolloutPhase::Retained);
+            fixture
+                .backend
+                .observe_operation(&fixture.request, "retain")
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn recovery_observes_partial_health_and_terminal_branches() {
+        let fixture = Fixture::new();
+        fixture.backend.retain(&fixture.request).unwrap();
+        fixture.backend.prepare(&fixture.request).unwrap();
+        fixture.backend.drain(&fixture.request).unwrap();
+        fixture
+            .backend
+            .select(&fixture.request, "installed-entry-2")
+            .unwrap();
+        let mut images = fixture.images();
+        images.running = 2;
+        images.active_rollout.as_mut().unwrap().status = ImageRolloutStatus::CandidateBooted;
+        fixture.write_images(&images);
+        assert_eq!(
+            fixture.backend.reconcile(&fixture.request).unwrap().phase,
+            AbilityRolloutPhase::CandidateBooted
+        );
+        assert_eq!(
+            fixture
+                .backend
+                .record_health(&fixture.request, true)
+                .unwrap()
+                .phase,
+            AbilityRolloutPhase::CandidateBooted
+        );
+        assert_eq!(
+            fixture
+                .backend
+                .require_state(&fixture.request)
+                .unwrap()
+                .phase,
+            AbilityRolloutPhase::CandidateBooted
+        );
+        assert_eq!(
+            fixture.backend.hold(&fixture.request).unwrap().phase,
+            AbilityRolloutPhase::HealthyRetained
+        );
+        assert_eq!(
+            fixture
+                .backend
+                .observe_operation(&fixture.request, "hold")
+                .unwrap()
+                .phase,
+            AbilityRolloutPhase::HealthyRetained
+        );
+        fixture
+            .backend
+            .verify_boot_commit(&fixture.request, 2)
+            .unwrap();
+
+        // Boot commit runs after structured activation and turns the checked
+        // health decision into the firmware and image-state terminal record.
+        images.active_rollout = None;
+        images.last_rollout = Some(ImageRollout {
+            schema: super::super::IMAGE_ROLLOUT_SCHEMA.into(),
+            candidate: 2,
+            prior: 1,
+            state_version: "7".into(),
+            status: ImageRolloutStatus::Succeeded,
+        });
+        fixture.write_images(&images);
+        assert_eq!(
+            fixture
+                .backend
+                .observe_operation(&fixture.request, "hold")
+                .unwrap()
+                .phase,
+            AbilityRolloutPhase::HealthyRetained
+        );
+    }
+
+    #[test]
+    fn unhealthy_assessment_withdraws_before_fallback_can_commit() {
+        let fixture = Fixture::new();
+        fixture.backend.retain(&fixture.request).unwrap();
+        fixture.backend.prepare(&fixture.request).unwrap();
+        fixture.backend.drain(&fixture.request).unwrap();
+        fixture
+            .backend
+            .select(&fixture.request, "installed-entry-2")
+            .unwrap();
+
+        let mut images = fixture.images();
+        images.running = 2;
+        images.active_rollout.as_mut().unwrap().status = ImageRolloutStatus::CandidateBooted;
+        fixture.write_images(&images);
+        fixture.backend.reconcile(&fixture.request).unwrap();
+        let assessed = fixture
+            .backend
+            .record_health(&fixture.request, false)
+            .unwrap();
+        assert_eq!(assessed.phase, AbilityRolloutPhase::CandidateBooted);
+        assert_eq!(
+            assessed.outcome,
+            Some(AbilityRolloutOutcome::CandidateUnhealthy)
+        );
+        assert!(fixture.backend.hold(&fixture.request).is_err());
+        assert!(
+            fixture
+                .backend
+                .verify_boot_commit(&fixture.request, 2)
+                .is_err()
+        );
+
+        let withdrawing = fixture.backend.withdraw(&fixture.request).unwrap();
+        assert_eq!(withdrawing.phase, AbilityRolloutPhase::CandidateBooted);
+        assert_eq!(
+            fixture.images().active_rollout.as_ref().unwrap().status,
+            ImageRolloutStatus::HealthFailed
+        );
+
+        images = fixture.images();
+        images.running = 1;
+        fixture.write_images(&images);
+        assert_eq!(
+            fixture.backend.observe(&fixture.request).unwrap(),
+            PhysicalRolloutObservation::FallbackPendingCommit
+        );
+        let withdrawn = fixture.backend.withdraw(&fixture.request).unwrap();
+        assert_eq!(withdrawn.phase, AbilityRolloutPhase::FallbackRetained);
+        assert_eq!(
+            withdrawn.outcome,
+            Some(AbilityRolloutOutcome::PredecessorFallback)
+        );
+        fixture.backend.hold(&fixture.request).unwrap();
+        assert!(
+            fixture
+                .backend
+                .observe_terminal_outcome(&fixture.request)
+                .is_err(),
+            "pending fallback must not authorize a retained no-op"
+        );
+        assert!(
+            fixture.backend.retire(&fixture.request, 2_000).is_err(),
+            "pending fallback must not authorize rollout-root retirement"
+        );
+        assert!(
+            fixture
+                .backend
+                .preflight_operation(&fixture.request, "retire", 2_000)
+                .is_err(),
+            "pending fallback must reject retirement before effect acquisition"
+        );
+        assert_eq!(
+            fixture
+                .backend
+                .require_state(&fixture.request)
+                .unwrap()
+                .phase,
+            AbilityRolloutPhase::FallbackRetained
+        );
+        fixture
+            .backend
+            .verify_boot_commit(&fixture.request, 1)
+            .unwrap();
+    }
+
+    #[test]
+    fn terminal_status_cannot_complete_before_the_matching_image_is_active() {
+        let fixture = Fixture::new();
+        fixture.backend.retain(&fixture.request).unwrap();
+        fixture.backend.prepare(&fixture.request).unwrap();
+        fixture.backend.drain(&fixture.request).unwrap();
+        fixture
+            .backend
+            .select(&fixture.request, "installed-entry-2")
+            .unwrap();
+
+        let mut images = fixture.images();
+        images.running = 2;
+        images.active_rollout.as_mut().unwrap().status = ImageRolloutStatus::HealthFailed;
+        fixture.write_images(&images);
+        assert_eq!(
+            fixture.backend.observe(&fixture.request).unwrap(),
+            PhysicalRolloutObservation::CandidateBooted
+        );
+        assert!(fixture.backend.withdraw(&fixture.request).is_err());
+        assert!(
+            fixture
+                .backend
+                .record_health(&fixture.request, true)
+                .is_err()
+        );
+
+        let terminal = images.active_rollout.take().unwrap();
+        images.last_rollout = Some(ImageRollout {
+            status: ImageRolloutStatus::Succeeded,
+            ..terminal.clone()
+        });
+        images.running = 1;
+        fixture.write_images(&images);
+        assert!(fixture.backend.observe(&fixture.request).is_err());
+
+        images.last_rollout = Some(ImageRollout {
+            status: ImageRolloutStatus::HealthFailed,
+            ..terminal
+        });
+        images.running = 2;
+        fixture.write_images(&images);
+        assert!(fixture.backend.observe(&fixture.request).is_err());
+    }
+
+    #[test]
+    fn stale_identity_and_early_retirement_fail_without_effects() {
+        let fixture = Fixture::new();
+        let mut stale = fixture.request.clone();
+        stale.candidate.executor.push_str("-forged");
+        assert!(fixture.backend.retain(&stale).is_err());
+        assert!(
+            !fixture
+                .backend
+                .image_profile
+                .join(EXECUTION_DIRECTORY)
+                .exists()
+        );
+
+        fixture.backend.retain(&fixture.request).unwrap();
+        fixture.backend.prepare(&fixture.request).unwrap();
+        assert!(fixture.backend.retire(&fixture.request, 1_999).is_err());
+    }
+
+    #[test]
+    fn preflight_rejects_stale_or_unbounded_fresh_rollouts() {
+        let fixture = Fixture::new();
+        fixture
+            .backend
+            .preflight_operation(&fixture.request, "retain", 1_000)
+            .unwrap();
+        assert!(
+            fixture
+                .backend
+                .preflight_operation(&fixture.request, "retain", 2_000)
+                .is_err()
+        );
+        let mut unbounded = fixture.request.clone();
+        unbounded.retention_expires_at_millis = 1_000 + MAX_RETENTION_MILLIS + 1;
+        assert!(
+            fixture
+                .backend
+                .preflight_operation(&unbounded, "retain", 1_000)
+                .is_err()
+        );
+
+        let mut images = fixture.images();
+        images.running = 2;
+        fixture.write_images(&images);
+        assert!(
+            fixture
+                .backend
+                .preflight_operation(&fixture.request, "retain", 1_000)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn retention_directories_are_private_and_roots_reject_regular_occupants() {
+        let fixture = Fixture::new();
+        let execution = fixture
+            .backend
+            .execution_directory(&fixture.request)
+            .unwrap();
+        ensure_private_directory(
+            execution
+                .parent()
+                .expect("execution directory has a parent"),
+        )
+        .unwrap();
+        ensure_private_directory(&execution).unwrap();
+        let occupied = execution.join("predecessor-toplevel");
+        fs::write(&occupied, "foreign").unwrap();
+
+        assert!(fixture.backend.retain(&fixture.request).is_err());
+        assert!(fs::symlink_metadata(&occupied).unwrap().is_file());
+        assert_eq!(fs::read_to_string(&occupied).unwrap(), "foreign");
+        assert_eq!(
+            fs::symlink_metadata(&execution)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    fn terminal_hold_recovery_rejects_tampered_retention_roots() {
+        let tampered = Fixture::new();
+        complete_terminal_rollout(&tampered, 1, ImageRolloutStatus::HealthFailed);
+        let root = tampered
+            .backend
+            .execution_directory(&tampered.request)
+            .unwrap()
+            .join("predecessor-toplevel");
+        fs::remove_file(&root).unwrap();
+        symlink(&tampered.request.candidate.toplevel, &root).unwrap();
+        let restarted = NativeImageRolloutBackend::new(tampered.backend.image_profile.clone());
+        assert!(restarted.withdraw(&tampered.request).is_err());
+        assert!(
+            restarted
+                .observe_operation(&tampered.request, "withdraw")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn read_only_postcondition_observation_never_updates_provider_state() {
+        let fixture = Fixture::new();
+        fixture.backend.retain(&fixture.request).unwrap();
+        fixture.backend.prepare(&fixture.request).unwrap();
+        let state_path = fixture
+            .backend
+            .execution_directory(&fixture.request)
+            .unwrap()
+            .join("state.json");
+        let before = fs::read(&state_path).unwrap();
+
+        let observed = fixture
+            .backend
+            .observe_operation(&fixture.request, "prepare")
+            .unwrap();
+        assert_eq!(observed.phase, AbilityRolloutPhase::Prepared);
+        assert_eq!(fs::read(&state_path).unwrap(), before);
+        assert!(
+            fixture
+                .backend
+                .observe_operation(&fixture.request, "drain")
+                .is_err()
+        );
+        assert_eq!(fs::read(&state_path).unwrap(), before);
+    }
+
+    #[test]
+    fn retirement_removes_rollout_roots_without_hiding_the_active_generation() {
+        let fixture = Fixture::new();
+        let terminal = complete_terminal_rollout(&fixture, 2, ImageRolloutStatus::Succeeded);
+        assert_eq!(
+            terminal.outcome,
+            Some(AbilityRolloutOutcome::CandidateHealthy)
+        );
+
+        fixture.backend.retire(&fixture.request, 2_000).unwrap();
+        fixture
+            .backend
+            .preflight_operation(&fixture.request, "retire", 2_000)
+            .unwrap();
+
+        let execution = fixture
+            .backend
+            .execution_directory(&fixture.request)
+            .unwrap();
+        assert!(
+            execution
+                .join("predecessor-toplevel")
+                .symlink_metadata()
+                .is_err()
+        );
+        for identity in ["candidate", "predecessor"] {
+            for suffix in ["toplevel", "executor"] {
+                assert!(
+                    execution
+                        .join(format!("{identity}-{suffix}"))
+                        .symlink_metadata()
+                        .is_err()
+                );
+            }
+        }
+        assert_eq!(
+            fs::read_link(fixture.backend.image_profile.join("image-gen-2/toplevel")).unwrap(),
+            Path::new(&fixture.request.candidate.toplevel)
+        );
+
+        let restarted = NativeImageRolloutBackend::new(fixture.backend.image_profile.clone());
+        let recovered = restarted
+            .observe_operation(&fixture.request, "retire")
+            .unwrap();
+        assert_eq!(recovered.phase, AbilityRolloutPhase::Retired);
+        assert_eq!(
+            recovered.outcome,
+            Some(AbilityRolloutOutcome::CandidateHealthy)
+        );
+    }
+
+    #[test]
+    fn retirement_resumes_after_partial_rollout_root_cleanup() {
+        let fixture = Fixture::new();
+        let mut terminal = complete_terminal_rollout(&fixture, 2, ImageRolloutStatus::Succeeded);
+        terminal.phase = AbilityRolloutPhase::Retiring;
+        fixture.backend.write_state(&terminal).unwrap();
+
+        let execution = fixture
+            .backend
+            .execution_directory(&fixture.request)
+            .unwrap();
+        remove_file_durable(&execution.join("candidate-toplevel")).unwrap();
+        let retired = fixture.backend.retire(&fixture.request, 2_000).unwrap();
+        assert_eq!(retired.phase, AbilityRolloutPhase::Retired);
+        fixture
+            .backend
+            .observe_operation(&fixture.request, "retire")
+            .unwrap();
+    }
+
+    #[test]
+    fn fallback_retirement_preserves_the_predecessor_outcome_after_restart() {
+        let fixture = Fixture::new();
+        let terminal = complete_terminal_rollout(&fixture, 1, ImageRolloutStatus::HealthFailed);
+        assert_eq!(
+            terminal.outcome,
+            Some(AbilityRolloutOutcome::PredecessorFallback)
+        );
+
+        fixture.backend.retire(&fixture.request, 2_000).unwrap();
+        let restarted = NativeImageRolloutBackend::new(fixture.backend.image_profile.clone());
+        let recovered = restarted
+            .observe_operation(&fixture.request, "retire")
+            .unwrap();
+        assert_eq!(recovered.phase, AbilityRolloutPhase::Retired);
+        assert_eq!(
+            recovered.outcome,
+            Some(AbilityRolloutOutcome::PredecessorFallback)
+        );
+
+        let execution = fixture
+            .backend
+            .execution_directory(&fixture.request)
+            .unwrap();
+        for identity in ["candidate", "predecessor"] {
+            for suffix in ["toplevel", "executor"] {
+                assert!(
+                    execution
+                        .join(format!("{identity}-{suffix}"))
+                        .symlink_metadata()
+                        .is_err()
+                );
+            }
+        }
+        assert_eq!(
+            fs::read_link(fixture.backend.image_profile.join("image-gen-1/toplevel")).unwrap(),
+            Path::new(&fixture.request.predecessor.toplevel)
+        );
+    }
+}

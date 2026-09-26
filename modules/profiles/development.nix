@@ -149,17 +149,6 @@ in {
 
     aos.security.sudo.enable = lib.mkDefault true;
     aos.security.utempter.enable = lib.mkDefault true;
-    aos.security.wrappers = {
-      ping = {
-        source = "${pkgs.inetutils}/bin/ping";
-        mode = "4755";
-      };
-      ping6 = {
-        source = "${pkgs.inetutils}/bin/ping6";
-        mode = "4755";
-      };
-    };
-
     system.checks.development = {
       description = "Development toolchain and library discovery checks";
       checks = [

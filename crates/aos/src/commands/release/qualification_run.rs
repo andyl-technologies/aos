@@ -7,23 +7,25 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_core::output::Printer;
 use aos_release::artifact::ArtifactRecord;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::evidence::{
-    GateResult, QualificationExecutorRequestV1, QualificationExecutorResponseV1,
+    GateResult, QUALIFICATION_EXECUTOR_REQUEST_V1, QUALIFICATION_EXECUTOR_RESPONSE_V1,
+    QUALIFICATION_REPORT_V1, QualificationExecutorRequestV1, QualificationExecutorResponseV1,
     QualificationObjectV1, QualificationReportV1, QualificationRetainedBundleV1,
-    QualificationRetainedObjectV1, QualificationTrustedKeyV1, QUALIFICATION_EXECUTOR_REQUEST_V1,
-    QUALIFICATION_EXECUTOR_REQUEST_V3, QUALIFICATION_EXECUTOR_RESPONSE_V1, QUALIFICATION_REPORT_V1,
+    QualificationRetainedObjectV1, QualificationTrustedKeyV1,
 };
 use aos_release::manifest::ManifestEnvelopeV1;
 use aos_release::platform::{MatrixCell, Platform};
-use aos_release::qualification_evidence::QualificationPredecessor;
+use aos_release::qualification_evidence::{
+    NATIVE_ADAPTER_MATRIX_REQUIREMENT, QualificationPredecessor, validate_matrix_for_case,
+};
 use aos_release::receipt::{
-    verify_signed_receipt_with_key, HubEnvironment, PublicationReceiptV1, QualificationReceiptV1,
-    SignedReceiptEnvelopeV1, RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT_V1,
+    HubEnvironment, PublicationReceiptV1, QualificationReceiptV1, RECEIPT_SIGNATURE_DOMAIN,
+    SIGNED_RECEIPT_V1, SignedReceiptEnvelopeV1, verify_signed_receipt_with_key,
 };
 use aos_release::signing::{
     SignatureAlgorithm, SignerRole, SigningContext, SigningOperation, SigningRequestV1,
@@ -185,7 +187,7 @@ async fn run_attempt(
             for case in cases.into_iter().flatten() {
                 let platform = case.platform.unwrap_or(Platform::X86_64Linux);
                 requests.push(QualificationExecutorRequestV1 {
-                    schema_version: QUALIFICATION_EXECUTOR_REQUEST_V3.to_owned(),
+                    schema_version: QUALIFICATION_EXECUTOR_REQUEST_V1.to_owned(),
                     registry: plan.registry.clone(),
                     release_id: plan.release_id.clone(),
                     staging_receipt_digest: staging_digest,
@@ -669,16 +671,35 @@ pub(super) fn verify_executor_response(
             bail!("qualification response lacks its exact case observation");
         }
     }
+    let matrix_passed = request
+        .qualification_case
+        .as_ref()
+        .zip(response.evidence.qualification.as_ref())
+        .map(|(case, observation)| validate_matrix_for_case(case, observation))
+        .transpose()?
+        .flatten();
+    let matrix_result_mismatch = matrix_passed.is_some_and(|passed| {
+        response.evidence.result
+            != if passed {
+                GateResult::Passed
+            } else {
+                GateResult::Failed
+            }
+    });
+    // Preserve exact failed matrix observations for cell-level diagnostics.
+    // Central phase validation still rejects them before receipt signing.
+    let rejected_blocking_result = response.evidence.result != GateResult::Passed
+        && request.qualification_case.as_ref().is_none_or(|case| {
+            case.requirement_id != NATIVE_ADAPTER_MATRIX_REQUIREMENT
+                && case.claim.as_ref().is_none_or(|claim| claim.blocks_release)
+        });
     if response.evidence.id != expected_id
         || response.evidence.policy_id != request.policy_id
         || response.evidence.policy_digest != request.policy_digest
         || response.evidence.platform != expected_platform
         || response.evidence.subjects != request.subjects
-        || (response.evidence.result != GateResult::Passed
-            && request
-                .qualification_case
-                .as_ref()
-                .is_none_or(|case| case.claim.as_ref().is_none_or(|claim| claim.blocks_release)))
+        || matrix_result_mismatch
+        || rejected_blocking_result
         || response.evidence.authority_id != identity
         || response.evidence.nonce.as_deref() != Some(request.nonce.as_str())
         || response.evidence.report_digest
@@ -893,9 +914,8 @@ fn platform_map<T>(
 }
 
 fn parse_platform(value: &str) -> Result<Platform> {
-    Platform::ALL
-        .into_iter()
-        .find(|platform| platform.as_str() == value)
+    value
+        .parse()
         .with_context(|| format!("unknown qualification platform {value}"))
 }
 
@@ -1032,6 +1052,7 @@ mod tests {
             kind: ArtifactKind::PackageNar,
             platform: Some(Platform::X86_64Linux),
             system_variant: None,
+            image: None,
             path: BundlePath::parse(format!("objects/{id}")).unwrap(),
             size_bytes: 1,
             sha256: Sha256Digest::of_bytes(id.as_bytes()),

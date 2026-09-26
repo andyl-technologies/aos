@@ -4,11 +4,69 @@
   fetchurl,
   buildPackages,
   stdenv,
+  lib,
 }: let
   version = "0.8.4";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "xxhash";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "The three-byte message abc.";
+        operation = "Hash the message from standard input with XXH64.";
+        expected = "The installed checksum command returns the XXH64 test vector.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/xxhsum" "-H1" "-"];
+            stdin = "abc";
+            exit_code = 0;
+            stdout.exact = "44bc2cf5ad770999  stdin\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "A line that is not a checksum record.";
+        operation = "Ask the installed command to verify that malformed record.";
+        expected = "Checksum verification rejects the malformed input.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/xxhsum" "--check" "-"];
+            stdin = "bad\n";
+            exit_code = 1;
+            observes_rejection = true;
+            stdout.exact = "";
+            stderr.exact = "stdin: no properly formatted xxHash checksum lines found\n";
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://github.com/Cyan4973/xxHash/archive/refs/tags/v${version}.tar.gz"];

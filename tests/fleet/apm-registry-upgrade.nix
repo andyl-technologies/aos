@@ -121,7 +121,28 @@ in {
     # python
     ''
       import json
+      import shlex
       import textwrap
+
+      def service_units(machine, pattern):
+          command = (
+              "systemctl list-unit-files --type=service --no-legend --no-pager "
+              + shlex.quote(pattern)
+              + " | awk '{print $1}'"
+          )
+          return [unit for unit in machine.succeed(command).splitlines() if unit]
+
+      def service_unit_for(machine, executable):
+          command = (
+              "for unit in $(systemctl list-unit-files --type=service "
+              "--no-legend --no-pager 'aos-*.service' | awk '{print $1}'); do "
+              "systemctl cat \"$unit\" | grep -Fq -- "
+              + shlex.quote(executable)
+              + " && printf '%s\\n' \"$unit\"; done"
+          )
+          units = [unit for unit in machine.succeed(command).splitlines() if unit]
+          assert len(units) == 1, (executable, units)
+          return units[0]
 
       # -- 1. Both machines up; registry packages active -----------------
       registry.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
@@ -137,8 +158,9 @@ in {
       registry.wait_until_succeeds(
           "systemctl is-active test-static-cache-server.socket", timeout=120
       )
-      target.wait_until_succeeds(
-          "systemctl is-active test-http-server.service", timeout=120
+      target.wait_until_succeeds("curl -sf http://127.0.0.1:8000/", timeout=120)
+      http_unit = service_unit_for(
+          target, "${pkgs.test-http-server}/bin/test-http-server"
       )
 
       # -- 2. Target preconditions: gen-1, closure absent, baselines -----
@@ -167,10 +189,10 @@ in {
       # gen-2-only surfaces absent; gen-1 baselines (same as
       # apm-system-upgrade.nix).
       target.fail("test -e /etc/aos/upgrade-test/marker.conf")
-      target.fail("test -e /etc/systemd/system/aos-upgrade-test-marker.service")
-      target.wait_until_succeeds(
-          "systemctl is-active aos-upgrade-removed.service", timeout=120
-      )
+      assert service_units(target, "aos-aos-upgrade-test-marker-*.service") == []
+      removed_units = service_units(target, "aos-aos-upgrade-removed-*.service")
+      assert len(removed_units) == 1, removed_units
+      target.succeed(f"systemctl is-active {shlex.quote(removed_units[0])}")
       target.fail("test -e /run/removed-stop-ran")
       baseline_keepalive = target.succeed(
           "cat /proc/sys/net/ipv4/tcp_keepalive_time"
@@ -179,15 +201,13 @@ in {
           f"unexpected baseline keepalive {baseline_keepalive!r}"
       )
       nftd_before = target.succeed(
-          "cat /etc/nftables.conf"
+          "nft list ruleset"
       )
       assert "8443" not in nftd_before, "gen-1 should not yet open port 8443"
-      sysctld_before = target.succeed("cat /etc/sysctl.d/10-aos-kernel.conf")
-      assert "tcp_keepalive_time" not in sysctld_before, sysctld_before
 
       # A rejected image must not restart the running service.
       http_pid_before = int(target.succeed(
-          "systemctl show -p MainPID --value test-http-server.service"
+          f"systemctl show -p MainPID --value {shlex.quote(http_unit)}"
       ).strip())
 
       # -- 3. Producer: publish the gen-2 closure to the registry --------

@@ -1,5 +1,6 @@
 ##! lowdown — Simple Markdown translator
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -8,7 +9,61 @@
   version = "3.1.1";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "lowdown";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Lowdown emits the exact heading and paragraph elements.";
+        "files" = {
+          "answer.md" = "# Answer\n\n42\n";
+        };
+        "input" = "A Markdown heading and paragraph containing the value 42.";
+        "operation" = "Render the document as HTML through Lowdown.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/lowdown"
+              "-Thtml"
+              "answer.md"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "<h1 id=\"answer\">Answer</h1>\n<p>42</p>\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Lowdown rejects the formatter with status 1.";
+        "files" = {
+          "answer.md" = "42\n";
+        };
+        "input" = "A request for a Lowdown output format that does not exist.";
+        "operation" = "Parse the unsupported formatter name.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/lowdown"
+              "-Tqualification-invalid"
+              "answer.md"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -1,7 +1,7 @@
 ##! python3-dbus — Python bindings for the reference D-Bus implementation
 {
-  mkDerivation,
   lib,
+  mkDerivation,
   stdenv,
   fetchurl,
   meson,
@@ -18,7 +18,65 @@
   sitePackages = "lib/python3.14/site-packages";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "python3-dbus";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The signature contains one complete array type and round-trips unchanged.";
+        "files" = {
+          "probe.py" = "import glob\nimport sys\n\nlocations = glob.glob(\"@out@/lib/python*/site-packages\")\nif len(locations) != 1:\n    raise RuntimeError(\"package does not expose one site-packages directory\")\nsys.path.insert(0, locations[0])\n\nimport dbus\nsignature = dbus.Signature(\"a{sv}\")\nassert str(signature) == \"a{sv}\"\nassert len(list(signature)) == 1\n\nprint(\"python3-dbus primary passed\")\n";
+        };
+        "input" = "The D-Bus signature a{sv} for a string-to-variant dictionary.";
+        "operation" = "Parse and iterate the signature through dbus.Signature.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "probe.py"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "python3-dbus primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "dbus-python raises ValueError.";
+        "files" = {
+          "probe.py" = "import glob\nimport sys\n\nlocations = glob.glob(\"@out@/lib/python*/site-packages\")\nif len(locations) != 1:\n    raise RuntimeError(\"package does not expose one site-packages directory\")\nsys.path.insert(0, locations[0])\n\nimport dbus\ntry:\n    dbus.Signature(\"a\")\nexcept ValueError:\n    pass\nelse:\n    raise RuntimeError(\"dbus-python accepted an incomplete signature\")\n\nprint(\"python3-dbus rejected invalid input\", file=sys.stderr)\nraise SystemExit(7)\n";
+        };
+        "input" = "A D-Bus array signature with no element type.";
+        "operation" = "Parse the incomplete signature through dbus.Signature.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "probe.py"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "python3-dbus rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

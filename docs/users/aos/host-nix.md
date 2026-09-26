@@ -39,7 +39,7 @@ metadata transport
   -> detect platform or config drive
   -> fetch exact user-data and facts
   -> authorize host.nix
-  -> restricted initrd evaluation of aos.provisioning
+  -> complete initrd evaluation and storage-plan projection
   -> validate and commit the first-boot storage plan
   -> switch_root
   -> pure stage-2 evaluation and provider fixpoint
@@ -49,9 +49,9 @@ metadata transport
   -> atomically activate the configuration generation
 ```
 
-The initrd evaluation can see only the closed provisioning schema shipped in
-the image. It cannot fetch registry modules or select arbitrary build packages.
-This is the path that runs before disk mutation.
+The initrd evaluation uses the complete image-frozen module and selected
+package/provider fixed point. It cannot fetch registry modules or select
+arbitrary build packages. This is the path that runs before disk mutation.
 
 The stage-2 evaluator is a pure function of the image's ABI-pinned module
 library, authenticated package `config` outputs, the exact accepted `host.nix`,
@@ -83,7 +83,7 @@ Offline media is checked before DMI-based cloud detection.
 | AWS | Native user-data as literal Nix or a pointer document | Pointer `sig_url` only |
 | GCP, Azure, DigitalOcean, OpenStack | Native user-data as literal Nix | Not available through native metadata |
 
-The native network metadata agents support AWS IMDSv2, GCP, Azure,
+The native network metadata providers support AWS IMDSv2, GCP, Azure,
 DigitalOcean, and OpenStack. Other providers are treated as bare metal unless
 an offline metadata or config drive is attached; AOS does not guess at an
 unrecorded provider API.
@@ -324,18 +324,14 @@ audit protocol.
 
 ## Inspect the accepted input and result
 
-The transient boot state is under `/run/aos-metadata`:
+The selected storage provider keeps its private transient artifacts under
+`/run/aos/storage-provisioning`:
 
 ```sh
-cat /run/aos-metadata/platform.env
-cat /run/aos-metadata/provisioning-plan.json
-find /run/aos-metadata/repart.d -maxdepth 3 -type f -print
-
-if test -r /run/aos-metadata/storage-coherence; then
-  cat /run/aos-metadata/storage-coherence
-else
-  echo "storage coherence was not evaluated this boot"
-fi
+systemctl status aos-ability-initrd-controller.service
+journalctl -b -u aos-ability-initrd-controller.service
+cat /run/aos/storage-provisioning/provisioning-plan.json
+find /run/aos/storage-provisioning/repart.d -maxdepth 3 -type f -print
 ```
 
 The durable record is under `/var/lib/aos-provisioning`:
@@ -343,9 +339,6 @@ The durable record is under `/var/lib/aos-provisioning`:
 ```sh
 cat /var/lib/aos-provisioning/audit.json
 cat /var/lib/aos-provisioning/initial-plan.json
-cmp \
-  /var/lib/aos-provisioning/current/host.nix \
-  /run/aos-metadata/host.nix
 ```
 
 The stage-2 source result and activation evidence are:
@@ -368,17 +361,20 @@ manifest, EROFS lower, input GC roots, and activation record survive reboot.
 
 ## Diagnose the boot stages
 
-The relevant initrd units, in order, are:
+The initrd executes one checked ability stage:
 
 ```text
-aos-provisioning-state
-aos-metadata-detect
-aos-metadata-network       cloud transports only
-aos-metadata-fetch
-aos-metadata-authorize
-aos-provisioning-eval
-aos-repart
+aos-ability-initrd-controller
+  -> detect platform
+  -> acquire and authorize metadata
+  -> evaluate and observe the storage plan
+  -> commit storage effects
+  -> complete the initrd substrate and switch root
 ```
+
+The indented steps are typed package-provider operations from the resolved
+stage, not independently managed systemd units. Their exact interfaces,
+requirements, and outputs come from the selected packages' ability contracts.
 
 Stage 2 then runs:
 
@@ -387,9 +383,7 @@ aos-provisioning-persist
 aos-host-config-restore
 aos-eval
   -> aos-host-config-cache
-  -> aos-graph-compile
-     -> aos-fetch.target
-     -> aos-config-render.target
+  -> aos-graph-compile (checked-plan preflight)
      -> aos-activate
      -> aos-config.target
 ```
@@ -398,11 +392,7 @@ Inspect the current boot with:
 
 ```sh
 journalctl -b \
-  -u aos-metadata-detect.service \
-  -u aos-metadata-fetch.service \
-  -u aos-metadata-authorize.service \
-  -u aos-provisioning-eval.service \
-  -u aos-repart.service \
+  -u aos-ability-initrd-controller.service \
   -u aos-eval.service \
   -u aos-graph-compile.service \
   -u aos-activate.service

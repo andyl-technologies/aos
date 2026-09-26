@@ -214,12 +214,8 @@ mod tests {
                 held,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
-                expose: None,
-                expose_artifact: None,
-                config_module: None,
                 documentation: None,
-                permissions: Default::default(),
-                bpf_lsm: None,
+                contract: None,
                 attestation: Default::default(),
             }),
         }

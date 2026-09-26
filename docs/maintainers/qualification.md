@@ -464,6 +464,241 @@ a passing gate. Environment-specific adapters and remote macOS transport must
 be provisioned before a campaign. All source regression groups are exposed at
 `checks.qualification.<requirement-id>` and `checks.qualification.all`.
 
+The RFC-0022 native ability gates are `ability-native-activation`,
+`ability-native-kubernetes`, `ability-native-recovery`, and
+`ability-native-adapter-matrix`. They use release scope so each staging case
+binds the complete finalized non-control artifact set, including the exact
+package, provider, handler, and image records carried by the release. A change
+to the case subjects, qualification policy, executor, or environment
+invalidates its observation.
+
+The production qualification fixtures supply their existing `orderedPackages`
+projections: the same evaluated package sets used to publish and select native
+flight inputs. The recovery cohort deduplicates those selected store paths and
+the generator reads the retained interfaces and implementations projected from
+each package's single final ability-module fixed point. It does not import or
+re-evaluate authored provider modules. Only implementations with a typed
+`qualification` claim participate. That claim
+contains only conformance-family names and a typed package-owned observer
+descriptor. The generator resolves the selected implementation and interface
+from the package declaration, uses the canonical interface identity function,
+and derives methods, effect classes, resource lifetime, and state format from
+those declarations. The generated provider reference retains the selected
+ability-contract store path and implementation name. Runtime handler,
+provider-module, feature, and artifact facts remain in that referenced contract
+and in the candidate's concrete checked plan; the matrix does not copy them.
+The observer descriptor is the one qualification-only fact retained with the
+provider reference because independent observation cannot be derived from the
+runtime handler.
+
+`qualification/native-adapter-scenarios.json` contains only the generic
+durability, revocation, upgrade, adoption, retained-target, dependency, and
+foreign-resource scenarios. Qualification derives the closed family set from
+those scenarios, validates every implementation's declared family names
+against it, and expands its methods only over the selected scenarios. The
+generated cells retain every scenario dimension and exact interface key. The
+matrix subject digest binds the selected provider references, observer
+descriptors, interface-derived methods, and scenario policy. A schema-bound
+applicability partition enumerates compatible-adoption cells that cannot exist
+under the selected provider contracts. Applicable production-VM cells carry
+mandatory postconditions, including durable classification, one resource
+owner, dependent nonexecution after failure, and independent confirmation that
+foreign resources did not change. Adoption, unsupported transfer, and retained
+target cells add fresh-authority and exact-owner requirements.
+
+Every applicable matrix cell requires a production VM observation. Source
+regressions exercise contract closure but remain marked separately and never
+satisfy those cells. The x86 release executor maps
+`ability-native-adapter-matrix` to independent published-image cohorts that
+exercise every applicable generated cell and postcondition. The primary
+cohort covers managed-configuration
+`publish` at three exact crash boundaries: after durable intent, after the
+external return, and after the durable outcome. It also covers rejection of an
+independently injected foreign resource and required-success blocking of the
+corresponding service-management `reload`. A separate production PostgreSQL cohort
+covers compatible `materialize` adoption, incompatible `materialize` rejection
+before effects,
+interrupted `restart` reconciliation, and `restart` activation of the retained
+target under current authority. The candidate package runtime also runs every
+role-revocation timing cell through the real admission and dispatch fences,
+using the published interface descriptors and a no-dispatch sentinel adapter.
+It also covers every executor-incarnation and provider-incarnation
+replacement cells. Executor replacement presents an admitted predecessor token
+to the reopened transaction and requires the candidate runtime's session fence
+to reject it as stale. Provider replacement uses the catalog's independent live
+incarnation observation to violate the checked operation precondition and
+requires rejection before dispatch. Every replacement plan includes a real
+required-success dependent, including the observation-only methods, and proves
+that the initial scheduler exposes only the primary operation.
+The same candidate runtime proves trusted-clock deadline expiry and injected
+cleanup and release failures for every method. These cells use runtime-owned
+controls and never infer provider behavior from a generic adapter. Each run retains an execution
+journal, reservation ledger, exact re-loadable plan bundle, and an independent
+foreign-resource sentinel. A second candidate-linked runtime audit covers every
+`interrupt-before-acquisition` cell. It durably records the exact admission
+boundary, performs no resource acquisition or adapter dispatch, reopens the
+unchanged pending journal, and proves a real required-success dependent remains
+blocked. Cancellation cells run in separate provider cohorts. Each flight
+pauses the candidate runtime
+after durable effect intent, confirms that the transient service executed that
+candidate, sends `SIGTERM`, releases the independent observer, and requires the
+runtime to derive cancellation from the exact concrete `Operation`. A null
+route must produce the durable unsupported-cancellation result before provider
+dispatch; a present route must match the invoked recovery method. The retained record
+binds the handler and entry point, cancellation result, journal and boundary
+timelines, plan bundle, candidate and predecessor authority, owner and live
+state before, during, and after cancellation, an independent foreign-resource
+sentinel, and zero dependent effects. Reference host resources, PostgreSQL,
+Kubernetes, bootstrap systemd, systemd manager, service management, foreground
+processes, and image rollout use distinct physical-state oracles. The verifier
+rejects missing, replayed, cross-cell, or provider-incompatible evidence.
+Its provider-neutral aggregator owns the matrix partition, digest binding, and
+replay set. Named validators under `qualification/providers` own the raw
+reference, PostgreSQL, and rollout plan and live-observation formats and return
+only normalized validation results to that aggregator.
+
+The provider-effect cohorts interrupt each applicable method after acquisition,
+after durable intent, after an external return whose result is lost, and after
+durable outcome. They invoke the checked production graph through the candidate
+package runtime and retain provider-authored `RequiredSuccess` successors.
+Filesystem, credential, network, nginx, systemd manager, PostgreSQL,
+Kubernetes, rollout, and foreground-process state is observed from the live
+substrate independently of the execution journal. Foreground flights run system
+activation and dispatch inside the OCI container and bind receipts to the live
+PID, process group, ownership token, cgroup, and namespaces. The four effect
+cells already covered by the primary and PostgreSQL cohorts are not duplicated.
+The collector also compares every selected checked operation's target lifetime
+with the provider contract compiled from the matrix surface.
+
+The provider-negative cohorts account for the remaining required-success
+dependency and foreign-resource rejection cells in that qualified total. They
+pause each selected real operation after durable intent, change
+authority in the provider's live substrate, and require rejection before the
+external effect. Each provider-authored `RequiredSuccess` successor remains
+unexecuted, and independent resource observations prove the foreign target,
+successor, and any behavioral witness remain unchanged. These cohorts exclude
+the managed
+configuration `publish` foreign-resource cell and service-management `reload`
+dependency cell already owned by the primary cohort.
+
+Provider-state cohorts cover every retained-target and unsupported-transfer
+route, and every compatible-adoption route backed by a
+persistent state-format contract. Each retained flight establishes a live owned
+resource, activates a later predecessor, then rolls back to the exact retained
+generation. It captures the predecessor authority before launch, a distinct
+candidate provider incarnation at acquisition, the republished current grant,
+the durable method journal, and provider-specific state after the exact method
+and its required-success successor settle. Each unsupported flight starts from
+a live sole predecessor owner, pauses the candidate at acquisition, and invokes
+the production checked-plan transfer inspector before any provider effect. The
+inspector derives its rejection from the authenticated request, binding, target
+lifetime, owner implementation, and state-format declaration.
+
+Every PostgreSQL state-family cell runs through its persistent state-format
+contract and real cluster operations. Image rollout has no provider-state
+transfer contract. Its nine methods instead use the package-owned production
+observer and the rollout durability family. The generated cells cover
+interruption after acquisition, durable intent, and durable outcome; a lost
+external result; and cancellation. The production image rollback regression
+also retains the healthy, fallback, rollback, and image-retention paths.
+
+The generated matrix specification records those exact cell IDs and reasons as
+inapplicable. Nix policy, the production evidence builder, and the Rust release
+verifier independently derive the ordered partition from each adapter's
+surface-bound provider contract, then reject missing, overlapping, reordered,
+or reason-mutated exclusions. Their corresponding
+unsupported-transfer cells remain mandatory for adapters that declare the
+provider-state family and prove rejection before effects.
+The production transfer inspector verifies nonpersistent routes against the
+exact checked plan, while persistent providers reject an incompatible
+authenticated format before changing the owner ledger or live state. The
+PostgreSQL package contract checks bind its declared format to the same surface
+descriptors. A product-contract change must
+remove the affected exclusions and add exact cell-bound production evidence in
+the same release.
+
+Every passing probe carries the exact cell ID and digest, the scenario's
+validated disposition, and the digest of a subject wrapper that binds the
+dynamic cohort subject to the cell's boundary, failure, candidate, and
+predecessor dimensions. The verifier rejects an observation digest reused by
+any other postcondition or cell in the matrix.
+
+The established scenario `regressions` fields point to
+`checks.fleet.runtime-module-composition`,
+`checks.fleet.k3s-control-plane-worker`,
+`checks.fleet.ability-native-power-loss`, and
+`checks.fleet.system-image-rollback`. Those derivations establish
+source-candidate regression coverage. They do not satisfy the staging cases:
+release admission still requires fresh executor observations for the exact
+frozen release subjects and acceptance checks. The x86 fleet topology also
+does not claim direct aarch64 execution.
+
+K3s uses its package-function qualification plus the production
+`k3s-control-plane-worker` fleet path. That fleet path selects the real package
+modules, applies them through APM, observes readiness and exact object
+revisions, rejects an operator-authored provider grant without mutation, and
+exercises object replacement and removal. Release admission consumes fresh
+evidence through the ordinary report scenario; it does not patch a fabricated
+package companion to impersonate the finalized K3s or systemd artifacts.
+
+The x86 release executor maps the remaining implemented native policy IDs to
+ability scenarios for the Crucible baseline, adapter matrix, image rollout,
+and recovery. Activation uses the ordinary report scenario while its source
+regression runs the production package-module and APM configuration path.
+Each mapped scenario selects the exact finalized server QCOW2,
+slot-A UKI, metadata, unsigned assembly, and finalized-set objects from the
+downloaded release case.
+It verifies their byte identities and cross-bindings, extracts the UKI's initrd,
+and checks the embedded static ability contract before booting that QCOW2 with
+KVM, UEFI Secure Boot, and a software TPM. It then confirms through the guest's
+recorded running generation, booted UKI digest, kernel, root hash, and host
+static contract that execution stayed on those published subjects.
+
+The production-only image-rollout scenario additionally requires the frozen
+predecessor manifest and its downloaded object bundle. It rejects a missing or
+mismatched bundle before boot, validates the predecessor's complete finalized
+server image controls, and starts independent healthy and failed-health flights
+from exact copies of that predecessor QCOW2. The candidate is obtained only by
+retaining the image's baked authenticated registry trust anchor, redirecting it
+to the bounded HTTPS staging Hub origin, and replacing its channel with the
+exact finalized release-version tag. The healthy flight independently observes
+the health hook and native journal before allowing physical boot commit, then
+proves expiry retires both rollout roots and retained UKIs. The failed-health
+flight observes the exact candidate boot before releasing the failure hook,
+then checks the exact predecessor boot, retained roots, native journal, and
+terminal fallback before allowing physical commit. A missing predecessor,
+untrusted registry configuration, inaccessible staging Hub, non-matching image
+object, absent branch result, or incomplete exact-boot observation leaves no
+scenario report and therefore cannot satisfy the gate.
+
+The scenario also reconstructs the complete published NAR graph rooted at the
+release's `aos`, `apm`, `apr`, and `packageRuntime` outputs. It verifies every
+downloaded NAR and narinfo relationship in an initially empty private Nix store,
+exports that checked graph, imports it into the published guest, and compares
+the guest's registered NAR hashes and references with the downloaded records.
+The executor-owned reference-provider fixture remains separate from the release
+subjects. Before importing it, the scenario replaces its recorded executor
+runtime artifact with the candidate `packageRuntime` artifact, recomputes the
+provider and export identities, and exports the resulting candidate-bound
+companions from the private store. The retained environment identifies those
+fixture companions and records whether the candidate runtime differs from the
+executor fixture runtime.
+
+Before provisioning, every boot checks the image-owned initrd selection and
+the initrd-to-host checkpoint against the current boot ID, running image
+identity, and static-contract digest. The candidate package runtime then
+validates the retained host-receipt journal a second time; the scenario requires
+that this idempotent receipt leave the journal bytes unchanged. This proves the
+complete no-activation-required handoff. A future image that selects an initrd
+activation needs corresponding execution assertions.
+
+After provisioning through the published `apm`, the native fleet body drives
+the published `aos`, `apm`, `apr`, and package runtime paths in the guest. The
+recovery case also observes fresh host authority and resource incarnations
+after reboot. Each scenario writes a fresh canonical report in the private
+executor attempt. No precreated report under
+`/run/aos-release/qualification-reports` can satisfy these mapped staging cases.
+
 The runner reads a canonical v2 executor request on stdin. It verifies every
 anonymous HTTPS download's size and SHA-256, retains it under a hashed name,
 and writes `request.json`, `scenario-registry.json`, and `objects.json` in a
@@ -596,8 +831,8 @@ platform closures at the paths passed to `qualify-run`. Before starting an
 executor, install each applicable report-backed scenario's single-link
 canonical report at
 `/run/aos-release/qualification-reports/<platform>/<case-digest>.json`.
-The staging container lifecycle cases execute directly and do not read this
-report directory.
+The staging container and native ability lifecycle cases execute directly and
+do not read this report directory.
 The x86_64 Linux executor uses the fixed paths
 `/run/aos-release/qualification-reports/operator-recovery.json` and
 `production-recovery.json` for those two operator exercises. Each adapter

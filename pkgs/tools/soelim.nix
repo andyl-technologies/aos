@@ -1,5 +1,6 @@
 ##! GNU soelim — roff source include preprocessor
 {
+  lib,
   mkDerivation,
   fetchurl,
   bison,
@@ -10,7 +11,60 @@
   version = "1.23.0";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "soelim";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Soelim replaces the include request with the referenced file's exact contents.";
+        "files" = {
+          "answer.roff" = "answer=42\n";
+          "document.roff" = ".so answer.roff\n";
+        };
+        "input" = "A roff document that includes a second local source file.";
+        "operation" = "Expand the .so request through GNU soelim.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/soelim"
+              "document.roff"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "answer=42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Soelim rejects the unresolved include with a failure status.";
+        "files" = {
+          "document.roff" = ".so missing.roff\n";
+        };
+        "input" = "A roff include request naming a file that does not exist.";
+        "operation" = "Resolve the missing include through GNU soelim.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/soelim"
+              "document.roff"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

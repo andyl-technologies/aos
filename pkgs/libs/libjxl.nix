@@ -1,5 +1,6 @@
 ##! JPEG XL image codecs and command-line tools.
 {
+  lib,
   mkDerivation,
   callPackage,
   fetchurl,
@@ -23,7 +24,92 @@
   dependencies = [highway brotli lcms2 libpng zlib mozjpeg openexr imath];
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "libjxl";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A two-by-two RGB bitmap.";
+        operation = "Encode it losslessly as JPEG XL and decode it back to PPM.";
+        expected = "The decoded image bytes exactly match the original bitmap.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                from pathlib import Path
+
+                pixels = bytes([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255])
+                Path("input.ppm").write_bytes(b"P6\n2 2\n255\n" + pixels)
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = ["@out@/bin/cjxl" "input.ppm" "output.jxl" "-d" "0"];
+            exit_code = 0;
+          }
+          {
+            argv = ["@out@/bin/djxl" "output.jxl" "decoded.ppm"];
+            exit_code = 0;
+          }
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                from pathlib import Path
+
+                assert Path("input.ppm").read_bytes() == Path("decoded.ppm").read_bytes()
+                print("JPEG XL image round trip passed")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "JPEG XL image round trip passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "Bytes that do not contain a JPEG XL image.";
+        operation = "Attempt to decode them.";
+        expected = "The decoder rejects the invalid image.";
+        files."bad.jxl" = "not JXL\n";
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/djxl" "bad.jxl" "bad.ppm"];
+            exit_code = 1;
+            observes_rejection = true;
+          }
+        ];
+      };
+    };
     inherit (sources) version src;
     passthru.evidenceSources = [sources.src sources.skcms sources.sjpeg sources.googletest sources.testdata];
 

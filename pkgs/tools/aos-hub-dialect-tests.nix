@@ -1,8 +1,8 @@
 ##! aos-hub-dialect-tests — Required live SQL dialect parity gate
 {
   lib,
-  mkCargoPackage,
-  fetchCargoDeps,
+  mkAosCargoPackage,
+  aosWorkspaceVendor,
   openssl,
   perl,
   pkg-config,
@@ -10,39 +10,81 @@
   zlib,
 }: let
   version = "0.1.0";
-  repoRoot = ../..;
-  repoRootString = toString repoRoot;
-  src = builtins.path {
-    path = repoRoot;
-    name = "aos-hub-dialect-test-src";
-    filter = path: _type: let
-      pathString = toString path;
-      base = baseNameOf path;
-    in
-      base
-      != "target"
-      && base != ".git"
-      && (
-        pathString
-        == repoRootString
-        || lib.hasPrefix "${repoRootString}/crates" pathString
-        || pathString == "${repoRootString}/docs"
-        || pathString == "${repoRootString}/docs/rfcs"
-        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
-      );
-  };
 in
-  mkCargoPackage {
+  mkAosCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "build-input";
+    };
     pname = "aos-hub-dialect-tests";
-    inherit version src;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The libtest harness returns success and exposes dialect contract tests.";
+        "files" = {};
+        "input" = "The packaged Rust dialect contract test executable.";
+        "operation" = "List its test inventory without connecting to PostgreSQL or MariaDB.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/aos-hub-dialect-contract\", \"--list\"], capture_output=True, text=True)\nassert result.returncode == 0 and \": test\" in result.stdout, (result.returncode, result.stdout, result.stderr)\nprint(\"aos-hub-dialect-tests operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "aos-hub-dialect-tests operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The libtest harness rejects the unsupported option.";
+        "files" = {};
+        "input" = "A dialect-test invocation containing an unsupported libtest option.";
+        "operation" = "Parse the invalid option without connecting to a database.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/aos-hub-dialect-contract\", \"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"aos-hub-dialect-tests rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "aos-hub-dialect-tests rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
+    inherit version;
 
     cargoFlags = "-p aos-hub --features postgres,mysql,required-live-dialects --test dialect";
     cargoRoot = "crates";
-    cargoDeps = fetchCargoDeps {
-      inherit src;
-      sourceRoot = "source/crates";
-      hash = "sha256-D5x7xhF0PFm3ZmixZQhqAasHvSJ54MQRE4UpMHR2aiM=";
-    };
+    cargoDeps = aosWorkspaceVendor;
 
     buildDeps = [
       perl

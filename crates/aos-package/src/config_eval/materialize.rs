@@ -43,10 +43,10 @@
 //! `<job_scripts_runtime_dir>/<key>` — the path that directory has once the
 //! lower is mounted as `/etc`.
 //!
-//! `users`, `presets`, and `units` are carried by the manifest too, but the
-//! `/etc` materialization here consumes `etc`, `removedEtc`, and `jobScripts`;
-//! the others are applied by their own reconcilers (users via the passwd path,
-//! presets are already `etc` entries under `systemd/system-preset/`).
+//! `users` are carried by the manifest too, but the `/etc` materialization
+//! here consumes `etc`, `removedEtc`, and `jobScripts`; accounts are applied
+//! by their own reconciler. Service-manager policy is represented by the
+//! checked ability fixed point rather than a second manifest catalog.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -64,7 +64,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::runtime::{RuntimePackageOrigin, RuntimePackagePin};
-use crate::types::ModuleAbiCompat;
+use crate::types::{PackageModule, PackageModuleOrigin};
+
+mod ability_activation;
+
+pub use ability_activation::{AbilityActivationInput, PinnedAbilitySidecar};
 
 /// The runtime directory a materialized job script resolves to once the
 /// per-generation lower is mounted at `/etc`. Unit `Exec*=` placeholders are
@@ -110,23 +114,18 @@ pub struct ConfigManifest {
     /// Image-authored `/etc` paths intentionally absent from this generation.
     #[serde(rename = "removedEtc", default, skip_serializing_if = "Vec::is_empty")]
     pub removed_etc: Vec<String>,
-    /// Per-unit activation actions.
-    pub units: BTreeMap<String, UnitAction>,
     /// Job-script bodies keyed by `<unit>:<slot>.<index>`.
     #[serde(rename = "jobScripts", default)]
     pub job_scripts: BTreeMap<String, JobScript>,
     /// Users the generation ensures exist.
     #[serde(default)]
     pub users: Vec<ManifestUser>,
-    /// systemd preset decisions.
-    #[serde(default)]
-    pub presets: Vec<PresetEntry>,
     /// Sorted store closures pinned by the generation.
     #[serde(rename = "storePaths")]
     pub store_paths: Vec<String>,
     /// Shared module ABI used for evaluation.
     pub module_abi: u32,
-    /// The five deterministic evaluator inputs.
+    /// The deterministic evaluator inputs.
     pub inputs: ManifestInputs,
     /// Sorted package names in the converged fixpoint.
     pub packages: Vec<String>,
@@ -137,28 +136,13 @@ pub struct ConfigManifest {
     pub graph: ManifestGraph,
     /// Per-package projected non-secret configuration.
     pub config: BTreeMap<String, serde_json::Value>,
-    /// Per-package credential handles, never secret values.
-    pub credentials: BTreeMap<String, serde_json::Value>,
-    /// Eval-produced exact config bytes and unit actions for migrated expose
-    /// companions. Legacy packages are intentionally absent and render from
-    /// signed flat metadata at staging time.
-    #[serde(
-        rename = "configProjections",
-        default,
-        skip_serializing_if = "BTreeMap::is_empty"
-    )]
-    pub config_projections: BTreeMap<String, ProjectedPackageConfig>,
     /// Ownership index used for fail-closed degraded projection.
     pub ownership: ManifestOwnership,
 }
 
 impl ConfigManifest {
-    /// Legacy manifest schema without runtime operator modules.
-    pub const SCHEMA_V1: &'static str = "aos.config-manifest/v1";
-    /// Manifest schema binding a generation-pinned runtime module set.
-    pub const SCHEMA_V2: &'static str = "aos.config-manifest/v2";
-    /// Default schema emitted for image and host-only manifests.
-    pub const SCHEMA: &'static str = Self::SCHEMA_V1;
+    /// The sole configuration manifest schema.
+    pub const SCHEMA: &'static str = "aos.config-manifest/v1";
 
     /// Validates invariants that Serde's structural checks cannot express.
     ///
@@ -167,147 +151,64 @@ impl ConfigManifest {
     /// Returns an error for a wrong schema, malformed paths or modes, duplicate
     /// ordered records, inconsistent ABI/input data, or an invalid graph.
     pub fn validate(&self) -> Result<()> {
-        if !matches!(self.schema.as_str(), Self::SCHEMA_V1 | Self::SCHEMA_V2) {
+        if self.schema != Self::SCHEMA {
             bail!(
                 "unsupported config-manifest schema {:?} (expected {:?})",
                 self.schema,
-                format!("{} or {}", Self::SCHEMA_V1, Self::SCHEMA_V2)
+                Self::SCHEMA
             );
         }
-        match (self.schema.as_str(), &self.inputs.runtime_modules) {
-            (Self::SCHEMA_V1, None) if self.inputs.expected_current_generation.is_none() => {}
-            (Self::SCHEMA_V1, Some(_)) => bail!("config-manifest/v1 cannot carry runtime_modules"),
-            (Self::SCHEMA_V1, None) => bail!("config-manifest/v1 cannot carry transaction state"),
-            (Self::SCHEMA_V2, Some(runtime)) => {
-                runtime.validate()?;
-                if self.inputs.expected_current_generation.is_none() {
-                    bail!("config-manifest/v2 requires expected_current_generation");
-                }
-            }
-            (Self::SCHEMA_V2, None) => bail!("config-manifest/v2 requires runtime_modules"),
-            _ => unreachable!(),
+
+        let has_transactional_inputs =
+            self.inputs.runtime_modules.is_some() || self.inputs.ability_activation.is_some();
+        if has_transactional_inputs && self.inputs.expected_current_generation.is_none() {
+            bail!("transactional inputs require expected_current_generation");
         }
+        if !has_transactional_inputs && self.inputs.expected_current_generation.is_some() {
+            bail!("expected_current_generation requires transactional inputs");
+        }
+        if let Some(runtime) = &self.inputs.runtime_modules {
+            runtime.validate()?;
+        }
+        if let Some(activation) = &self.inputs.ability_activation {
+            activation.validate(&self.package_outputs, &self.inputs.store_view)?;
+        }
+        self.inputs.store_view.validate()?;
         if self.module_abi != self.inputs.base_lib.module_abi {
             bail!("manifest module_abi does not match inputs.base_lib.module_abi");
         }
         for hash in [
             &self.inputs.base_lib.abi_hash,
-            &self.inputs.config_modules.closure_hash,
             &self.inputs.host_nix.content_hash,
             &self.inputs.instance_facts.facts_hash,
         ] {
             validate_content_sha256(hash)?;
         }
         validate_store_identity_hash(&self.inputs.evaluator.store_hash)?;
-        if self.inputs.config_modules.count != self.inputs.config_modules.store_paths.len() {
-            bail!("config_modules count does not match store_paths");
-        }
-        if self.inputs.config_modules.count != self.inputs.config_modules.nar_hashes.len() {
-            bail!("config_modules count does not match nar_hashes");
-        }
-        if self.inputs.config_modules.count != self.inputs.config_modules.package_names.len() {
-            bail!("config_modules count does not match package_names");
-        }
-        if !self.inputs.config_modules.origins.is_empty()
-            && self.inputs.config_modules.count != self.inputs.config_modules.origins.len()
-        {
-            bail!("config_modules count does not match origins");
-        }
-        if self
-            .inputs
-            .config_modules
-            .origins
-            .iter()
-            .any(|origin| origin != "registry" && origin != "image")
-        {
-            bail!("config_modules contains an unsupported trust origin");
-        }
-        // Manifests written before origin tracking had neither an origin list
-        // nor signed-release identity. Preserve their read/migration path, but
-        // require complete identity for every newly explicit registry origin.
         let has_registry_modules = self
             .inputs
-            .config_modules
-            .origins
+            .package_modules
+            .modules
             .iter()
-            .any(|origin| origin == "registry");
+            .any(|module| module.origin == PackageModuleOrigin::Registry);
         let release_identity = [
-            self.inputs.config_modules.registry.as_ref(),
-            self.inputs.config_modules.release_tag.as_ref(),
-            self.inputs.config_modules.tag_signer_key.as_ref(),
-            self.inputs.config_modules.realization.as_ref(),
+            self.inputs.package_modules.registry.as_ref(),
+            self.inputs.package_modules.release_tag.as_ref(),
+            self.inputs.package_modules.tag_signer_key.as_ref(),
+            self.inputs.package_modules.realization.as_ref(),
         ];
         if has_registry_modules && release_identity.iter().any(|field| field.is_none()) {
-            bail!("registry config modules require complete signed-release identity");
+            bail!("registry package modules require complete signed-release identity");
         }
-        if !self.inputs.config_modules.origins.is_empty()
-            && !has_registry_modules
-            && release_identity.iter().any(|field| field.is_some())
-        {
-            bail!("image-only config modules must not claim signed-release identity");
+        if !has_registry_modules && release_identity.iter().any(|field| field.is_some()) {
+            bail!("image-only package modules must not claim signed-release identity");
         }
-        if self.inputs.config_modules.count != self.inputs.config_modules.module_abi_compat.len() {
-            bail!("config_modules count does not match module_abi_compat");
-        }
-        if !self.inputs.config_modules.authorizations.is_empty()
-            && self.inputs.config_modules.count != self.inputs.config_modules.authorizations.len()
-        {
-            bail!("config_modules count does not match authorizations");
-        }
-        for compat in &self.inputs.config_modules.module_abi_compat {
-            if compat.min > compat.max {
-                bail!("config_modules contains an inverted module ABI range");
+        let mut seen_packages = BTreeSet::new();
+        for module in &self.inputs.package_modules.modules {
+            module.validate()?;
+            if !seen_packages.insert(module.package.as_str()) {
+                bail!("package_modules.modules contains a duplicate package");
             }
-        }
-        let mut seen_config_modules = BTreeSet::new();
-        if self
-            .inputs
-            .config_modules
-            .store_paths
-            .iter()
-            .any(|path| !seen_config_modules.insert(path))
-        {
-            bail!("config_modules.store_paths contains a duplicate path");
-        }
-        if self
-            .inputs
-            .config_modules
-            .store_paths
-            .iter()
-            .any(|path| validate_canonical_store_path(path).is_err())
-        {
-            bail!("config_modules.store_paths contains a noncanonical store path");
-        }
-        for package in &self.inputs.config_modules.package_names {
-            crate::types::validate_package_name(package)
-                .context("config_modules.package_names contains an invalid package")?;
-        }
-        let mut closure_members = self
-            .inputs
-            .config_modules
-            .store_paths
-            .iter()
-            .zip(&self.inputs.config_modules.nar_hashes)
-            .map(|(path, nar_hash)| {
-                let canonical = crate::registry::store::NarBytes::from_hash(nar_hash, 0)
-                    .context("config_modules.nar_hashes contains an invalid NAR hash")?
-                    .nar_hash();
-                if canonical != *nar_hash {
-                    bail!("config_modules.nar_hashes contains a noncanonical NAR hash");
-                }
-                Ok(serde_json::json!([path, nar_hash]))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        closure_members.sort_by(|left, right| {
-            left[0]
-                .as_str()
-                .unwrap_or_default()
-                .cmp(right[0].as_str().unwrap_or_default())
-        });
-        let expected_closure =
-            crate::graph_compile::reproject::hash_cjson(&serde_json::Value::Array(closure_members));
-        if self.inputs.config_modules.closure_hash != expected_closure {
-            bail!("config_modules closure_hash does not match store path/NAR hash set");
         }
         for (field, path) in [
             ("host_nix.store_path", &self.inputs.host_nix.store_path),
@@ -492,18 +393,6 @@ impl ConfigManifest {
                 &format!("config.{package}"),
             )?;
         }
-        for (package, credentials) in &self.credentials {
-            validate_secret_refs(package, credentials, self.package_outputs.get(package))?;
-            validate_json_store_paths(
-                credentials,
-                &pinned_store_paths,
-                &self.ownership.store_paths,
-                Some(package),
-                &self.graph,
-                &format!("credentials.{package}"),
-            )?;
-        }
-        self.validate_config_projections()?;
         for path in self.etc.keys() {
             let mut ancestor = path.as_str();
             while let Some((parent, _)) = ancestor.rsplit_once('/') {
@@ -525,7 +414,6 @@ impl ConfigManifest {
         if let Some(package) = self
             .config
             .keys()
-            .chain(self.credentials.keys())
             .find(|package| !package_set.contains(package.as_str()))
         {
             bail!("manifest package-owned state names absent package {package:?}");
@@ -548,22 +436,7 @@ impl ConfigManifest {
             ) {
                 bail!("packageOutputs.{package}.store_path is not owned by that package");
             }
-            validate_runtime_pin(package, pin)?;
-            if let Some(artifact) = &pin.expose_artifact {
-                if !self.store_paths.contains(&artifact.store_path) {
-                    bail!(
-                        "packageOutputs.{package}.expose_artifact.store_path is absent from manifest storePaths"
-                    );
-                }
-                if !matches!(
-                    self.ownership.store_paths.get(&artifact.store_path),
-                    Some(owner) if owner == package || owner == "@base"
-                ) {
-                    bail!(
-                        "packageOutputs.{package}.expose_artifact.store_path has invalid ownership"
-                    );
-                }
-            }
+            validate_runtime_pin(package, pin, &self.inputs.store_view)?;
         }
         for (package, deps) in &self.graph.edges {
             if !package_set.contains(package.as_str()) {
@@ -575,12 +448,6 @@ impl ConfigManifest {
             }
         }
         validate_owner_keys(self.etc.keys(), &self.ownership.etc, "etc", &package_set)?;
-        validate_owner_keys(
-            self.units.keys(),
-            &self.ownership.units,
-            "units",
-            &package_set,
-        )?;
         validate_owner_keys(
             self.job_scripts.keys(),
             &self.ownership.job_scripts,
@@ -595,20 +462,6 @@ impl ConfigManifest {
             "users",
             &package_set,
         )?;
-        let preset_keys: BTreeSet<String> = self
-            .presets
-            .iter()
-            .map(|preset| format!("{}:{}", preset.unit, preset.source))
-            .collect();
-        if preset_keys.len() != self.presets.len() {
-            bail!("duplicate manifest preset unit/source identity");
-        }
-        validate_owner_keys(
-            preset_keys.iter(),
-            &self.ownership.presets,
-            "presets",
-            &package_set,
-        )?;
         validate_owner_keys(
             self.store_paths.iter(),
             &self.ownership.store_paths,
@@ -617,311 +470,31 @@ impl ConfigManifest {
         )?;
         Ok(())
     }
-
-    fn validate_config_projections(&self) -> Result<()> {
-        let expected = self
-            .package_outputs
-            .iter()
-            .filter_map(|(package, pin)| pin.config_projection.as_ref().map(|_| package.as_str()))
-            .collect::<BTreeSet<_>>();
-        let actual = self
-            .config_projections
-            .keys()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>();
-        if expected != actual {
-            bail!("manifest configProjections must exactly cover migrated expose packages");
-        }
-        for (package, projection) in &self.config_projections {
-            let pin = self.package_outputs[package]
-                .config_projection
-                .as_ref()
-                .context("migrated expose package lost its authenticated projection pin")?;
-            let module_index = self
-                .inputs
-                .config_modules
-                .package_names
-                .iter()
-                .position(|name| name == package)
-                .with_context(|| {
-                    format!("config projection for {package:?} has no evaluated config module")
-                })?;
-            if self.inputs.config_modules.store_paths[module_index] != pin.config_output
-                || self.inputs.config_modules.nar_hashes[module_index] != pin.config_nar_hash
-            {
-                bail!(
-                    "config projection for {package:?} disagrees with authenticated config-module input"
-                );
-            }
-            let expected_schema_hash = expose_config_schema_hash(&pin.config)?;
-            if projection.schema != ProjectedPackageConfig::SCHEMA
-                || projection.schema_hash != expected_schema_hash
-            {
-                bail!("config projection for {package:?} has a missing or tampered schema binding");
-            }
-            if projection.artifacts.len() != pin.config.artifacts.len() {
-                bail!("config projection for {package:?} does not cover every signed artifact");
-            }
-            let desired =
-                desired_package_from_json(self.config.get(package).with_context(|| {
-                    format!("config projection for {package:?} has no desired config")
-                })?)?;
-            let expected_render =
-                crate::render_package_config(package, &pin.config.artifacts, Some(&desired))
-                    .with_context(|| format!("re-rendering config projection for {package:?}"))?;
-            for (rendered, (signed, expected_bytes)) in
-                projection.artifacts.iter().zip(expected_render)
-            {
-                if rendered.path != signed.path || rendered.mode != "0644" {
-                    bail!("config projection artifact metadata disagrees for {package:?}");
-                }
-                if rendered.text.as_bytes() != expected_bytes.as_slice() {
-                    bail!(
-                        "config projection artifact bytes disagree with desired config for {package:?}"
-                    );
-                }
-                let expected_hash = format!(
-                    "sha256:{}",
-                    hex::encode(Sha256::digest(rendered.text.as_bytes()))
-                );
-                if rendered.sha256 != expected_hash {
-                    bail!("config projection artifact bytes are tampered for {package:?}");
-                }
-            }
-            let expected_actions = projected_unit_actions(&pin.config.artifacts);
-            if projection.units != expected_actions {
-                bail!("config projection unit actions disagree with signed policy for {package:?}");
-            }
-        }
-        Ok(())
-    }
 }
 
-/// Validates that evaluated credentials contain references, never plaintext.
-fn validate_secret_refs(
+fn validate_runtime_pin(
     package: &str,
-    value: &serde_json::Value,
-    package_pin: Option<&RuntimePackagePin>,
+    pin: &RuntimePackagePin,
+    store_view: &super::store_view::StoreViewLocator,
 ) -> Result<()> {
-    let handles = value
-        .as_object()
-        .with_context(|| format!("credentials.{package} must be an object"))?;
-    for (name, value) in handles {
-        let reference: crate::secret_ref::SecretRef = serde_json::from_value(value.clone())
-            .with_context(|| {
-                format!(
-                    "credentials.{package}.{name} must contain only name, source, encrypted, units, ref, and package-authored ciphertext"
-                )
-            })?;
-        crate::types::validate_credential_name(name)
-            .with_context(|| format!("invalid credential handle credentials.{package}.{name}"))?;
-        if reference.name != *name {
-            bail!("credentials.{package}.{name} changes its credential name");
-        }
-        reference.validate_reference().with_context(|| {
-            format!("invalid credential reference credentials.{package}.{name}")
-        })?;
-        if let Some(ciphertext) = reference.ciphertext.as_deref() {
-            let signed = package_pin
-                .and_then(|pin| {
-                    pin.config_projection
-                        .as_ref()
-                        .map(|projection| &projection.config)
-                        .or(pin.legacy_config.as_ref())
-                })
-                .and_then(|config| {
-                    config
-                        .credentials
-                        .iter()
-                        .find(|credential| credential.name == *name)
-                })
-                .and_then(|credential| credential.ciphertext.as_deref());
-            if signed != Some(ciphertext) {
-                bail!(
-                    "credentials.{package}.{name} contains ciphertext that was not package-authored"
-                );
-            }
-        }
+    let canonical_runtime_nar =
+        crate::registry::store::NarBytes::from_hash(&pin.nar_hash, pin.nar_size)
+            .with_context(|| format!("validating packageOutputs.{package}.nar_hash"))?;
+    if canonical_runtime_nar.nar_hash() != pin.nar_hash || pin.nar_size == 0 {
+        bail!("packageOutputs.{package} has a noncanonical or empty runtime NAR identity");
     }
-    Ok(())
-}
-
-/// Converts one package's JSON desired-config block into the flat renderer's
-/// TOML value shape, rejecting structural mismatches and JSON nulls.
-fn desired_package_from_json(
-    value: &serde_json::Value,
-) -> Result<BTreeMap<String, BTreeMap<String, toml::Value>>> {
-    let artifacts = value
-        .as_object()
-        .context("desired package config must be an object")?;
-    artifacts
-        .iter()
-        .map(|(artifact, fields)| {
-            let fields = fields.as_object().with_context(|| {
-                format!("desired config artifact {artifact:?} must be an object")
-            })?;
-            let fields = fields
-                .iter()
-                .map(|(field, value)| {
-                    let value = serde_json::from_value::<toml::Value>(value.clone())
-                        .with_context(|| format!("converting desired config field {field:?}"))?;
-                    Ok((field.clone(), value))
-                })
-                .collect::<Result<BTreeMap<_, _>>>()?;
-            Ok((artifact.clone(), fields))
-        })
-        .collect()
-}
-
-/// Exact eval-produced config projection consumed by `render-one`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectedPackageConfig {
-    /// Projection schema discriminator.
-    pub schema: String,
-    /// Canonical hash of the authenticated signed config schema.
-    pub schema_hash: String,
-    /// Exact rendered UTF-8 artifact bytes.
-    pub artifacts: Vec<ProjectedConfigArtifact>,
-    /// Signed reload/restart actions, with restart dominating reload.
-    pub units: BTreeMap<String, UnitReconcileAction>,
-}
-
-impl ProjectedPackageConfig {
-    /// Current projection schema.
-    pub const SCHEMA: &'static str = "aos.package-config-projection/v1";
-}
-
-/// One exact rendered artifact in a migrated package projection.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectedConfigArtifact {
-    /// Final absolute path beneath `/etc`.
-    pub path: String,
-    /// Exact UTF-8 bytes represented as a JSON string.
-    pub text: String,
-    /// Final octal file mode.
-    pub mode: String,
-    /// SHA-256 binding of `text` bytes.
-    pub sha256: String,
-}
-
-/// Derives deterministic unit actions from signed artifact policies.
-pub(crate) fn projected_unit_actions(
-    artifacts: &[crate::types::ConfigArtifactMeta],
-) -> BTreeMap<String, UnitReconcileAction> {
-    use crate::types::ConfigReloadPolicy;
-
-    let mut units = BTreeMap::new();
-    for artifact in artifacts {
-        let action = match artifact.reload {
-            ConfigReloadPolicy::Restart => UnitReconcileAction::Restart,
-            ConfigReloadPolicy::Reload => UnitReconcileAction::Reload,
-            ConfigReloadPolicy::None => UnitReconcileAction::None,
-        };
-        for unit in &artifact.units {
-            units
-                .entry(unit.clone())
-                .and_modify(|current| {
-                    if matches!(action, UnitReconcileAction::Restart)
-                        || matches!(current, UnitReconcileAction::None)
-                    {
-                        *current = action;
-                    }
-                })
-                .or_insert(action);
-        }
-    }
-    units
-}
-
-/// Hashes the fully normalized schema bytes emitted by the Nix expose
-/// renderer. Unlike ordinary Serde output, this retains explicit empty/default
-/// fields because those bytes are part of the generated companion binding.
-pub(crate) fn expose_config_schema_hash(config: &crate::types::ExposeConfigMeta) -> Result<String> {
-    let artifacts = config
-        .artifacts
-        .iter()
-        .map(|artifact| {
-            serde_json::json!({
-                "name": artifact.name,
-                "path": artifact.path,
-                "format": artifact.format,
-                "required": artifact.required,
-                "optional": artifact.optional,
-                "units": artifact.units,
-                "reload": artifact.reload,
-            })
-        })
-        .collect::<Vec<_>>();
-    let credentials = config
-        .credentials
-        .iter()
-        .map(|credential| -> Result<serde_json::Value> {
-            let mut value = serde_json::json!({
-                "name": credential.name,
-                "units": credential.units,
-                "encrypted": credential.encrypted,
-            });
-            let object = value
-                .as_object_mut()
-                .context("normalized credential schema is not an object")?;
-            if credential.optional {
-                object.insert("optional".into(), serde_json::Value::Bool(true));
-            }
-            if let Some(source) = &credential.source {
-                object.insert("source".into(), serde_json::Value::String(source.clone()));
-            }
-            if let Some(ciphertext) = &credential.ciphertext {
-                object.insert(
-                    "ciphertext".into(),
-                    serde_json::Value::String(ciphertext.clone()),
-                );
-            }
-            Ok(value)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(crate::graph_compile::reproject::hash_cjson(
-        &serde_json::json!({
-            "artifacts": artifacts,
-            "credentials": credentials,
-        }),
-    ))
-}
-
-fn validate_runtime_pin(package: &str, pin: &RuntimePackagePin) -> Result<()> {
-    match (&pin.expose, &pin.expose_artifact) {
-        (Some(expose), Some(artifact)) => {
-            crate::types::validate_expose_meta_for_package(package, expose)
-                .with_context(|| format!("validating packageOutputs.{package}.expose"))?;
-            crate::types::validate_expose_artifact_meta(artifact)
-                .with_context(|| format!("validating packageOutputs.{package}.expose_artifact"))?;
-        }
-        (None, None) => {}
-        _ => bail!("packageOutputs.{package} must carry expose metadata and its artifact together"),
-    }
-    if pin.config_projection.is_some() && pin.legacy_config.is_some() {
-        bail!("packageOutputs.{package} must not carry both migrated and legacy config schemas");
-    }
-    if let Some(projection) = &pin.config_projection {
-        validate_canonical_store_path(&projection.config_output).with_context(|| {
-            format!("validating packageOutputs.{package}.config_projection.config_output")
-        })?;
-        let canonical = crate::registry::store::NarBytes::from_hash(&projection.config_nar_hash, 0)
-            .with_context(|| {
-                format!("validating packageOutputs.{package}.config_projection.config_nar_hash")
-            })?
-            .nar_hash();
-        if canonical != projection.config_nar_hash {
-            bail!("packageOutputs.{package}.config_projection.config_nar_hash is not canonical");
-        }
-        crate::types::validate_expose_config_meta(&projection.config).with_context(|| {
-            format!("validating packageOutputs.{package}.config_projection.config")
-        })?;
-    }
-    if let Some(legacy) = &pin.legacy_config {
-        crate::types::validate_expose_config_meta(legacy)
-            .with_context(|| format!("validating packageOutputs.{package}.legacy_config"))?;
+    if let Some(ability) = &pin.contract {
+        super::static_packages::resolve(
+            package,
+            &pin.version,
+            &pin.platform,
+            &pin.store_path,
+            &pin.nar_hash,
+            ability,
+            store_view,
+        )
+        .map(|_| ())
+        .with_context(|| format!("validating packageOutputs.{package}.contract"))?;
     }
     let root_hash = pin
         .store_path
@@ -936,6 +509,7 @@ fn validate_runtime_pin(package: &str, pin: &RuntimePackagePin) -> Result<()> {
     }
     let mut previous = None;
     let mut includes_root = false;
+    let mut includes_exact_root_nar = false;
     for member in &pin.closure {
         if previous.is_some_and(|prior: &String| prior >= &member.store_path_hash) {
             bail!(
@@ -944,6 +518,10 @@ fn validate_runtime_pin(package: &str, pin: &RuntimePackagePin) -> Result<()> {
         }
         previous = Some(&member.store_path_hash);
         includes_root |= member.store_path_hash == root_hash;
+        includes_exact_root_nar |= member.store_path_hash == root_hash
+            && member.realisations.iter().any(|realisation| {
+                realisation.nar_hash == pin.nar_hash && realisation.nar_size == pin.nar_size
+            });
         if let Some(path) = member.store_path.as_deref() {
             let member_hash = path
                 .strip_prefix("/nix/store/")
@@ -979,32 +557,8 @@ fn validate_runtime_pin(package: &str, pin: &RuntimePackagePin) -> Result<()> {
     if !includes_root {
         bail!("packageOutputs.{package}.closure omits its runtime output root");
     }
-    if let Some(artifact) = &pin.expose_artifact {
-        let artifact_hash = crate::registry::store_path_hash(&artifact.store_path);
-        let Some(member) = pin
-            .closure
-            .iter()
-            .find(|member| member.store_path_hash == artifact_hash)
-        else {
-            bail!("packageOutputs.{package}.closure omits its expose artifact root");
-        };
-        if member.store_path.as_deref() != Some(artifact.store_path.as_str()) {
-            bail!(
-                "packageOutputs.{package}.expose artifact root is not a named fetchable closure member"
-            );
-        }
-        let expected =
-            crate::registry::store::NarBytes::from_hash(&artifact.nar_hash, artifact.nar_size)
-                .with_context(|| {
-                    format!("validating packageOutputs.{package}.expose_artifact NAR identity")
-                })?;
-        if !member.realisations.iter().any(|realisation| {
-            realisation.nar_hash == expected.nar_hash() && realisation.nar_size == expected.size
-        }) {
-            bail!(
-                "packageOutputs.{package}.expose artifact disagrees with its authenticated closure"
-            );
-        }
+    if !includes_exact_root_nar {
+        bail!("packageOutputs.{package}.closure does not bless its selected runtime output NAR");
     }
     Ok(())
 }
@@ -1071,32 +625,6 @@ pub struct JobScript {
     pub name: Option<String>,
 }
 
-/// One unit's post-swap reconcile policy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UnitAction {
-    /// Reconcile verb.
-    pub action: UnitReconcileAction,
-    /// Credential handles consumed by this unit.
-    #[serde(default)]
-    pub credentials: Vec<String>,
-    /// Whether the unit is enabled by operator policy.
-    #[serde(default)]
-    pub enable: bool,
-}
-
-/// Reconcile verb for a changed unit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum UnitReconcileAction {
-    /// Restart the unit.
-    Restart,
-    /// Reload the unit, falling back to restart.
-    Reload,
-    /// Materialize without touching the running unit.
-    None,
-}
-
 /// A user declared by the evaluated generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1123,46 +651,29 @@ pub struct ManifestUser {
     pub supplementary_groups: Vec<String>,
 }
 
-/// One systemd preset decision.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PresetEntry {
-    /// Unit name.
-    pub unit: String,
-    /// Enable/disable policy.
-    pub policy: PresetPolicy,
-    /// Package or operator provenance.
-    pub source: String,
-}
-
-/// A systemd preset policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PresetPolicy {
-    /// Enable the unit.
-    Enable,
-    /// Disable the unit.
-    Disable,
-}
-
-/// The five inputs that fully determine the manifest.
+/// The inputs that fully determine the manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestInputs {
+    /// Selected immutable view used to authenticate image package artifacts.
+    pub store_view: super::store_view::StoreViewLocator,
     /// ABI-pinned base library.
     pub base_lib: BaseLibInput,
     /// Evaluator executable.
     pub evaluator: EvaluatorInput,
-    /// Config-only module closure.
-    pub config_modules: ConfigModulesInput,
+    /// Authenticated package modules consumed by the module fixed point.
+    pub package_modules: PackageModulesInput,
     /// Exact authorized host module.
     pub host_nix: HostNixInput,
-    /// Immutable runtime operator module set, present only in manifest v2.
+    /// Immutable runtime operator module set when the candidate uses one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_modules: Option<RuntimeModulesInput>,
     /// Active generation observed before this candidate evaluation began.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_current_generation: Option<u32>,
+    /// Immutable desired and policy inputs for native structured activation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ability_activation: Option<AbilityActivationInput>,
     /// Canonical metadata facts.
     pub instance_facts: InstanceFactsInput,
 }
@@ -1250,10 +761,10 @@ pub struct EvaluatorInput {
     pub store_hash: String,
 }
 
-/// Config module closure identity.
+/// Exact package modules consumed by one module fixed point.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigModulesInput {
+pub struct PackageModulesInput {
     /// Registry whose signed release authenticated the module set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry: Option<String>,
@@ -1266,24 +777,31 @@ pub struct ConfigModulesInput {
     /// Hash of the consumed authenticated `store/` graph subset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub realization: Option<String>,
-    /// Set-hash of the authenticated config-output store paths and NAR hashes.
-    pub closure_hash: String,
-    /// Number of config outputs.
-    pub count: usize,
-    /// Exact evaluator order of config-output store paths retained for rollback.
-    pub store_paths: Vec<String>,
-    /// Canonical authenticated NAR hash corresponding to each store path.
-    pub nar_hashes: Vec<String>,
-    /// Authenticated package identity corresponding to each ordered module.
-    pub package_names: Vec<String>,
-    /// Trust origin aligned with each config output (`registry` or `image`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub origins: Vec<String>,
-    /// ABI compatibility band corresponding to each ordered module path.
-    pub module_abi_compat: Vec<ModuleAbiCompat>,
-    /// Exact authenticated write authorization corresponding to each module.
-    #[serde(default)]
-    pub authorizations: Vec<super::PackageAuthorization>,
+    /// Canonically package-ordered module identities.
+    pub modules: Vec<PackageModule>,
+}
+
+impl PackageModule {
+    fn validate(&self) -> Result<()> {
+        crate::types::validate_package_name(&self.package)
+            .context("package_modules.modules contains an invalid package")?;
+        validate_content_sha256(&self.document_digest)?;
+        validate_canonical_store_path(&self.store_path)?;
+        let canonical = crate::registry::store::NarBytes::from_hash(&self.nar_hash, 0)?.nar_hash();
+        if canonical != self.nar_hash {
+            bail!("package module NAR hash is not canonical");
+        }
+        let entrypoint = Path::new(&self.entrypoint);
+        if entrypoint.is_absolute()
+            || entrypoint
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+            || entrypoint.extension().and_then(|value| value.to_str()) != Some("nix")
+        {
+            bail!("package module entrypoint is not a safe relative Nix path");
+        }
+        Ok(())
+    }
 }
 
 /// Authorized host module identity and trust evidence.
@@ -1331,15 +849,11 @@ pub struct ManifestGraph {
 pub struct ManifestOwnership {
     /// Owners keyed by `/etc` relative path.
     pub etc: BTreeMap<String, String>,
-    /// Owners keyed by unit name.
-    pub units: BTreeMap<String, String>,
     /// Owners keyed by job-script key.
     #[serde(rename = "jobScripts")]
     pub job_scripts: BTreeMap<String, String>,
     /// Owners keyed by user name.
     pub users: BTreeMap<String, String>,
-    /// Owners keyed by `<unit>:<source>`.
-    pub presets: BTreeMap<String, String>,
     /// Owners keyed by absolute store path.
     #[serde(rename = "storePaths")]
     pub store_paths: BTreeMap<String, String>,
@@ -1577,7 +1091,7 @@ fn store_path_root(target: &str) -> Option<&str> {
     Some(&target[.."/nix/store/".len() + first.len()])
 }
 
-pub(super) fn validate_canonical_store_path(path: &str) -> Result<()> {
+pub(crate) fn validate_canonical_store_path(path: &str) -> Result<()> {
     let suffix = path
         .strip_prefix("/nix/store/")
         .ok_or_else(|| anyhow::anyhow!("manifest store path is outside /nix/store: {path:?}"))?;
@@ -1598,6 +1112,35 @@ pub(super) fn validate_canonical_store_path(path: &str) -> Result<()> {
     {
         bail!("manifest storePaths entry has an invalid store name: {path:?}");
     }
+    Ok(())
+}
+
+/// Validates a canonical Nix store root or a normalized path beneath one.
+///
+/// # Errors
+///
+/// Returns an error when `path` is outside `/nix/store`, has an invalid store
+/// root, or contains an empty, dot, or parent component beneath that root.
+pub(crate) fn validate_canonical_store_member_path(path: &str) -> Result<()> {
+    let root = store_path_root(path)
+        .ok_or_else(|| anyhow::anyhow!("store member path is outside /nix/store: {path:?}"))?;
+    validate_canonical_store_path(root).context("validating store member root")?;
+
+    if path == root {
+        return Ok(());
+    }
+
+    let relative = path
+        .strip_prefix(root)
+        .and_then(|suffix| suffix.strip_prefix('/'))
+        .context("store member path is not beneath its store root")?;
+    if relative
+        .split('/')
+        .any(|component| matches!(component, "" | "." | ".."))
+    {
+        bail!("store member path is not normalized: {path:?}");
+    }
+
     Ok(())
 }
 
@@ -1763,7 +1306,8 @@ fn validate_sorted_unique(values: &[String], field: &str) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error if the manifest cannot be read or parsed, if its `schema`
-/// tag is not [`ConfigManifest::SCHEMA`], or if any filesystem write fails.
+/// tag is unsupported, if native activation reaches the standalone
+/// materializer, or if any filesystem write fails.
 pub fn materialize_manifest(
     manifest_path: &Path,
     etc_root: &Path,
@@ -1773,6 +1317,7 @@ pub fn materialize_manifest(
         .with_context(|| format!("reading manifest {}", manifest_path.display()))?;
     let manifest: ConfigManifest = serde_json::from_str(&raw)
         .with_context(|| format!("parsing manifest {}", manifest_path.display()))?;
+    reject_native_activation_on_standalone_materialization(&manifest)?;
     apply(&manifest, etc_root, job_scripts_runtime_dir)
 }
 
@@ -1785,14 +1330,16 @@ pub fn materialize_manifest(
 ///
 /// # Errors
 ///
-/// Returns an error if the manifest or overlay root is invalid, a parent path
-/// crosses a symlink, or an intended leaf cannot be removed.
+/// Returns an error if the manifest or overlay root is invalid, native
+/// activation reaches the standalone materializer, a parent path crosses a
+/// symlink, or an intended leaf cannot be removed.
 pub fn apply_manifest_removals(manifest_path: &Path, etc_root: &Path) -> Result<()> {
     let raw = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("reading manifest {}", manifest_path.display()))?;
     let manifest: ConfigManifest = serde_json::from_str(&raw)
         .with_context(|| format!("parsing manifest {}", manifest_path.display()))?;
     manifest.validate()?;
+    reject_native_activation_on_standalone_materialization(&manifest)?;
 
     let root = openat(
         rustix::fs::CWD,
@@ -1833,9 +1380,10 @@ pub fn apply_manifest_removals(manifest_path: &Path, etc_root: &Path) -> Result<
 ///
 /// # Errors
 ///
-/// Returns an error if the manifest or generation directory is invalid, an
-/// existing artifact fails validation, rendering fails, either EROFS tool
-/// fails, or the durable staging rename cannot be completed.
+/// Returns an error if the manifest or generation directory is invalid, native
+/// activation reaches the standalone materializer, an existing artifact
+/// fails validation, rendering fails, either EROFS tool fails, or the durable
+/// staging rename cannot be completed.
 pub fn materialize_generation_lower(
     manifest_path: &Path,
     generation_dir: &Path,
@@ -1866,8 +1414,9 @@ pub fn materialize_generation_lower(
     manifest
         .validate()
         .with_context(|| format!("validating manifest {}", manifest_path.display()))?;
+    reject_native_activation_on_standalone_materialization(&manifest)?;
     let manifest_value = serde_json::to_value(&manifest)?;
-    let manifest_hash = crate::graph_compile::reproject::hash_cjson(&manifest_value);
+    let manifest_hash = crate::canonical_json_digest(&manifest_value)?;
     let final_dir = generation_dir.join(GENERATION_LOWER_DIR);
     if final_dir.exists() {
         validate_generation_lower(&final_dir, &manifest_hash, fsck_erofs)?;
@@ -1931,6 +1480,13 @@ pub fn materialize_generation_lower(
         let _ = remove_stage_if_present(&stage);
     }
     result
+}
+
+fn reject_native_activation_on_standalone_materialization(manifest: &ConfigManifest) -> Result<()> {
+    if manifest.inputs.ability_activation.is_some() {
+        bail!("native ability generation cannot use the standalone materializer");
+    }
+    Ok(())
 }
 
 fn is_aos_store_tool(path: &Path) -> bool {
@@ -2021,9 +1577,7 @@ fn hash_tree(root: &Path) -> Result<String> {
     }
     let mut records = Vec::new();
     collect_tree_records(root, root, &mut records)?;
-    Ok(crate::graph_compile::reproject::hash_cjson(
-        &serde_json::Value::Array(records),
-    ))
+    crate::canonical_json_digest(&serde_json::Value::Array(records))
 }
 
 fn collect_tree_records(
@@ -2162,13 +1716,15 @@ fn remove_stage_if_present(path: &Path) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error if the schema tag is wrong or any filesystem write fails.
+/// Returns an error if the schema tag is wrong, native activation reaches the
+/// standalone materializer, or any filesystem write fails.
 pub fn apply(
     manifest: &ConfigManifest,
     etc_root: &Path,
     job_scripts_runtime_dir: &str,
 ) -> Result<()> {
     manifest.validate()?;
+    reject_native_activation_on_standalone_materialization(manifest)?;
     std::fs::create_dir_all(etc_root)
         .with_context(|| format!("creating materialization root {}", etc_root.display()))?;
     let root = openat(
@@ -2286,44 +1842,34 @@ fn write_file_beneath(root: &OwnedFd, path: &str, contents: &[u8], mode: &str) -
     Ok(())
 }
 
-/// Writes one relative file beneath a filesystem root without following any
-/// symlink in the path.
-///
-/// This is the shared boundary used by transaction staging as well as the
-/// final `/etc` materializer. The caller supplies an already-created root;
-/// parent directories below it are created with mode `0755`.
-///
-/// # Errors
-///
-/// Returns an error for an unsafe relative path, invalid mode, symlinked path
-/// component, or filesystem failure.
-pub(crate) fn write_bytes_beneath(
-    root_path: &Path,
-    path: &str,
-    contents: &[u8],
-    mode: &str,
-) -> Result<()> {
-    validate_relative_path(path, "staged file")?;
-    std::fs::create_dir_all(root_path)
-        .with_context(|| format!("creating staging root {}", root_path.display()))?;
-    let root = openat(
-        rustix::fs::CWD,
-        root_path,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .with_context(|| format!("opening staging root {}", root_path.display()))?;
-    write_file_beneath(&root, path, contents, mode)
-}
-
-/// Reads one regular file beneath a filesystem root without following any
-/// symlink in the path.
+/// Reads one bounded regular file beneath a filesystem root without following
+/// any symlink in the path.
 ///
 /// # Errors
 ///
 /// Returns an error for an unsafe relative path, a symlink/non-directory path
-/// component, a non-regular final entry, or an I/O failure.
-pub(crate) fn read_bytes_beneath(root_path: &Path, path: &str) -> Result<Vec<u8>> {
+/// component, a non-regular final entry, a file larger than `maximum_bytes`, or
+/// an I/O failure.
+pub(crate) fn read_bounded_bytes_beneath(
+    root_path: &Path,
+    path: &str,
+    maximum_bytes: u64,
+) -> Result<Vec<u8>> {
+    let file = open_regular_file_beneath(root_path, path)?;
+    let read_limit = maximum_bytes
+        .checked_add(1)
+        .context("bounded file read limit overflowed")?;
+    let mut bytes = Vec::new();
+    file.take(read_limit)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading {path:?} beneath {}", root_path.display()))?;
+    if u64::try_from(bytes.len()).map_or(true, |length| length > maximum_bytes) {
+        bail!("file {path:?} exceeds the {maximum_bytes}-byte limit");
+    }
+    Ok(bytes)
+}
+
+fn open_regular_file_beneath(root_path: &Path, path: &str) -> Result<std::fs::File> {
     validate_relative_path(path, "staged file")?;
     let root = openat(
         rustix::fs::CWD,
@@ -2332,15 +1878,15 @@ pub(crate) fn read_bytes_beneath(root_path: &Path, path: &str) -> Result<Vec<u8>
         Mode::empty(),
     )
     .with_context(|| format!("opening staging root {}", root_path.display()))?;
-    let (parent, name) = open_parent_beneath(&root, path)?;
+    let (parent, name) = open_existing_parent_beneath(&root, path)?;
     let fd = openat(
         &parent,
         &name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
         Mode::empty(),
     )
     .with_context(|| format!("opening {path:?} beneath {}", root_path.display()))?;
-    let mut file = std::fs::File::from(fd);
+    let file = std::fs::File::from(fd);
     if !file
         .metadata()
         .with_context(|| format!("inspecting {path:?} beneath {}", root_path.display()))?
@@ -2348,10 +1894,7 @@ pub(crate) fn read_bytes_beneath(root_path: &Path, path: &str) -> Result<Vec<u8>
     {
         bail!("staged path {path:?} is not a regular file");
     }
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .with_context(|| format!("reading {path:?} beneath {}", root_path.display()))?;
-    Ok(bytes)
+    Ok(file)
 }
 
 /// Creates a symlink at `dest` pointing at `target`, creating parent
@@ -2403,6 +1946,30 @@ fn open_parent_beneath(root: &OwnedFd, path: &str) -> Result<(OwnedFd, String)> 
     Ok((directory, name))
 }
 
+fn open_existing_parent_beneath(root: &OwnedFd, path: &str) -> Result<(OwnedFd, String)> {
+    let mut components = path.split('/').collect::<Vec<_>>();
+    let name = components
+        .pop()
+        .context("materialization path has no final component")?
+        .to_string();
+    let mut directory = openat(
+        root,
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    for component in components {
+        directory = openat(
+            &directory,
+            component,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .with_context(|| format!("refusing non-directory or symlink component {component:?}"))?;
+    }
+    Ok((directory, name))
+}
+
 fn unlink_file_if_present(parent: &OwnedFd, name: &str) -> Result<()> {
     match unlinkat(parent, name, AtFlags::empty()) {
         Ok(()) => Ok(()),
@@ -2445,9 +2012,7 @@ mod tests {
     fn manifest_from(json: &str) -> ConfigManifest {
         let mut value: serde_json::Value = serde_json::from_str(json).expect("valid json");
         let object = value.as_object_mut().expect("manifest object");
-        object.insert("units".into(), serde_json::json!({}));
         object.insert("users".into(), serde_json::json!([]));
-        object.insert("presets".into(), serde_json::json!([]));
         let mut stores = BTreeMap::new();
         if let Some(etc) = object.get("etc").and_then(serde_json::Value::as_object) {
             for entry in etc.values() {
@@ -2504,15 +2069,20 @@ mod tests {
         object.insert("packageOutputs".into(), serde_json::json!({}));
         object.insert("graph".into(), serde_json::json!({"edges": {}}));
         object.insert("config".into(), serde_json::json!({}));
-        object.insert("credentials".into(), serde_json::json!({}));
         let hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let store_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         object.insert(
             "inputs".into(),
             serde_json::json!({
+                "store_view": {
+                    "schema":"aos.package-store.read-view-locator/v1",
+                    "identity_root":"/nix/store",
+                    "read_root":"/immutable/store",
+                    "static_contract":"/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-static-contract/contract.json"
+                },
                 "base_lib": {"store_path":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-base", "abi_hash":hash, "module_abi":1},
                 "evaluator": {"store_path":"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-evaluator", "store_hash":store_hash},
-                "config_modules": {"closure_hash":"sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "count":0, "store_paths":[], "nar_hashes":[], "package_names":[], "module_abi_compat":[]},
+                "package_modules": {"modules": []},
                 "host_nix": {"content_hash":hash, "trust_mode":"platform", "platform":"test", "signer_key":null, "store_path":"/nix/store/cccccccccccccccccccccccccccccccc-host-nix"},
                 "instance_facts": {"facts_hash":hash, "platform":"test", "store_path":"/nix/store/dddddddddddddddddddddddddddddddd-facts"}
             }),
@@ -2534,8 +2104,8 @@ mod tests {
         object.insert(
             "ownership".into(),
             serde_json::json!({
-                "etc": etc_owners, "units": {}, "jobScripts": script_owners,
-                "users": {}, "presets": {}, "storePaths": stores
+                "etc": etc_owners, "jobScripts": script_owners,
+                "users": {}, "storePaths": stores
             }),
         );
         serde_json::from_value(value).expect("valid manifest json")
@@ -2568,10 +2138,9 @@ mod tests {
     }
 
     #[test]
-    fn manifest_v2_binds_runtime_module_set_and_transaction_base() {
+    fn manifest_binds_runtime_module_set_and_transaction_base() {
         let mut manifest =
             manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
-        manifest.schema = ConfigManifest::SCHEMA_V2.to_string();
         manifest.inputs.runtime_modules = Some(RuntimeModulesInput {
             schema: "aos.runtime-module-set/v1".to_string(),
             trust_mode: "local-root".to_string(),
@@ -2593,20 +2162,113 @@ mod tests {
     }
 
     #[test]
-    fn manifest_versions_reject_mixed_runtime_state() {
+    fn native_manifest_binds_ability_specialization_inputs() {
+        let mut manifest =
+            manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
+        let sidecar = |document: &str| PinnedAbilitySidecar {
+            store_path: format!("/nix/store/99999999999999999999999999999999-{document}"),
+            nar_hash: format!("sha256:{}", "0".repeat(52)),
+            nar_size: 1,
+            references: Vec::new(),
+            document: format!("{document}.json"),
+            document_sha256: format!("sha256:{}", "a".repeat(64)),
+            document_size: 1,
+        };
+        manifest.inputs.expected_current_generation = Some(7);
+        manifest.inputs.ability_activation = Some(AbilityActivationInput {
+            schema: AbilityActivationInput::SCHEMA.to_string(),
+            required_features: vec![
+                "abilities-v1".to_string(),
+                "ability-effects-v1".to_string(),
+                "native-platform-policy-v1".to_string(),
+                "native-resource-map-v1".to_string(),
+            ],
+            desired_state: sidecar("desired-state"),
+            authenticated_policy_set: sidecar("policy-set"),
+            execution_observer: None,
+        });
+
+        manifest.validate().unwrap();
+        let round_trip: ConfigManifest =
+            serde_json::from_value(serde_json::to_value(&manifest).unwrap()).unwrap();
+        assert_eq!(round_trip, manifest);
+
+        manifest
+            .inputs
+            .ability_activation
+            .as_mut()
+            .unwrap()
+            .required_features = vec!["abilities-v1".to_string(), "ability-effects-v1".to_string()];
+        manifest
+            .validate()
+            .expect_err("an incomplete native feature sequence must be rejected");
+    }
+
+    #[test]
+    fn activation_descriptor_rejects_parallel_package_coordinates() {
+        let mut manifest =
+            manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
+        let sidecar = |document: &str| PinnedAbilitySidecar {
+            store_path: format!("/nix/store/99999999999999999999999999999999-{document}"),
+            nar_hash: format!("sha256:{}", "0".repeat(52)),
+            nar_size: 1,
+            references: Vec::new(),
+            document: format!("{document}.json"),
+            document_sha256: format!("sha256:{}", "a".repeat(64)),
+            document_size: 1,
+        };
+        manifest.inputs.ability_activation = Some(AbilityActivationInput {
+            schema: AbilityActivationInput::SCHEMA.to_string(),
+            required_features: vec![
+                "abilities-v1".to_string(),
+                "ability-effects-v1".to_string(),
+                "native-platform-policy-v1".to_string(),
+                "native-resource-map-v1".to_string(),
+            ],
+            desired_state: sidecar("desired-state"),
+            authenticated_policy_set: sidecar("policy-set"),
+            execution_observer: None,
+        });
+        let mut encoded = serde_json::to_value(manifest).unwrap();
+        encoded["inputs"]["ability_activation"]["packages"] = serde_json::json!([]);
+
+        let error = serde_json::from_value::<ConfigManifest>(encoded)
+            .expect_err("activation package coordinates must have one manifest authority");
+        assert!(
+            error.to_string().contains("unknown field `packages`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn manifest_requires_transactional_state_to_match_generation_snapshot() {
         let mut manifest =
             manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
         manifest.inputs.expected_current_generation = Some(1);
-        assert!(manifest.validate().unwrap_err().to_string().contains("v1"));
-
-        manifest.schema = ConfigManifest::SCHEMA_V2.to_string();
-        manifest.inputs.expected_current_generation = None;
         assert!(
             manifest
                 .validate()
                 .unwrap_err()
                 .to_string()
-                .contains("runtime_modules")
+                .contains("requires transactional inputs")
+        );
+
+        manifest.inputs.expected_current_generation = None;
+        manifest.inputs.runtime_modules = Some(RuntimeModulesInput {
+            schema: "aos.runtime-module-set/v1".to_string(),
+            trust_mode: "local-root".to_string(),
+            store_path: "/nix/store/99999999999999999999999999999999-runtime-modules".to_string(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            entrypoints: vec!["10-packages.nix".to_string()],
+            signer_key: None,
+        });
+        assert!(
+            manifest
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("require expected_current_generation")
         );
     }
 
@@ -2614,7 +2276,6 @@ mod tests {
     fn runtime_module_descriptor_rejects_unsafe_or_duplicate_entrypoints() {
         let mut manifest =
             manifest_from(r#"{ "schema": "aos.config-manifest/v1", "etc": {}, "jobScripts": {} }"#);
-        manifest.schema = ConfigManifest::SCHEMA_V2.to_string();
         manifest.inputs.expected_current_generation = Some(1);
         manifest.inputs.runtime_modules = Some(RuntimeModulesInput {
             schema: "aos.runtime-module-set/v1".to_string(),
@@ -3054,54 +2715,50 @@ mod tests {
     }
 
     #[test]
-    fn expose_schema_hash_omits_default_optional_credential_field() {
-        let config = crate::types::ExposeConfigMeta {
-            artifacts: Vec::new(),
-            credentials: vec![crate::types::CredentialMeta {
-                name: "tls-key".into(),
-                source: None,
-                ciphertext: None,
-                units: vec!["example.service".into()],
-                encrypted: true,
-                optional: false,
-            }],
-        };
-        let expected = crate::graph_compile::reproject::hash_cjson(&serde_json::json!({
-            "artifacts": [],
-            "credentials": [{
-                "name": "tls-key",
-                "units": ["example.service"],
-                "encrypted": true,
-            }],
-        }));
+    fn canonical_store_member_validation_preserves_exact_root_validation() {
+        let root = format!("/nix/store/{}-etc-os-release", "0".repeat(32));
 
-        assert_eq!(expose_config_schema_hash(&config).unwrap(), expected);
+        validate_canonical_store_member_path(&root).expect("store root is a valid member path");
+        validate_canonical_store_member_path(&format!("{root}/os-release"))
+            .expect("normalized child is a valid member path");
+        validate_canonical_store_member_path(&format!("{root}/share/aos/os-release"))
+            .expect("normalized descendant is a valid member path");
+
+        validate_canonical_store_path(&format!("{root}/os-release"))
+            .expect_err("manifest paths must remain exact store roots");
     }
 
     #[test]
-    fn expose_schema_hash_binds_optional_credential_field() {
-        let config = crate::types::ExposeConfigMeta {
-            artifacts: Vec::new(),
-            credentials: vec![crate::types::CredentialMeta {
-                name: "tls-key".into(),
-                source: None,
-                ciphertext: None,
-                units: vec!["example.service".into()],
-                encrypted: true,
-                optional: true,
-            }],
-        };
-        let expected = crate::graph_compile::reproject::hash_cjson(&serde_json::json!({
-            "artifacts": [],
-            "credentials": [{
-                "name": "tls-key",
-                "units": ["example.service"],
-                "encrypted": true,
-                "optional": true,
-            }],
-        }));
+    fn canonical_store_member_validation_rejects_noncanonical_paths() {
+        let root = format!("/nix/store/{}-etc-os-release", "0".repeat(32));
+        for invalid in [
+            format!("{root}/"),
+            format!("{root}//os-release"),
+            format!("{root}/./os-release"),
+            format!("{root}/share/../os-release"),
+            "/nix/store/short-os-release/os-release".to_string(),
+            format!("/nix/store/{}-os-release/os-release", "e".repeat(32)),
+            "/etc/os-release".to_string(),
+        ] {
+            assert!(
+                validate_canonical_store_member_path(&invalid).is_err(),
+                "unexpectedly accepted noncanonical path {invalid:?}"
+            );
+        }
+    }
 
-        assert_eq!(expose_config_schema_hash(&config).unwrap(), expected);
+    #[test]
+    fn bounded_reader_enforces_the_exact_byte_ceiling() {
+        let root = tempdir();
+        std::fs::create_dir_all(root.join("nix/store/object")).unwrap();
+        std::fs::write(root.join("nix/store/object/os-release"), b"12345").unwrap();
+
+        assert_eq!(
+            read_bounded_bytes_beneath(&root, "nix/store/object/os-release", 5).unwrap(),
+            b"12345"
+        );
+        read_bounded_bytes_beneath(&root, "nix/store/object/os-release", 4)
+            .expect_err("the byte immediately above the ceiling must be rejected");
     }
 
     /// Creates a unique temp dir under the process temp root. Avoids a

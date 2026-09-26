@@ -102,7 +102,7 @@ registry, cache, or network connection:
 
 ```sh
 apm docs show nginx
-apm options show nginx.enable --package nginx
+apm options show aos.services.nginx.enable --package nginx
 apm docs man nginx --install
 apm docs serve
 ```
@@ -119,6 +119,11 @@ definition, links, symbols, diagnostics, and quick fixes are advisory because
 the language server never evaluates an editor buffer. Review the authoritative
 result with `apm config diff` before applying it. `apm options complete` exposes
 the same bounded option-path completion to shells and other editor clients.
+The read-only `aos/packageDocumentation/abilityGraph` extension accepts one
+exact loaded package/version plus the canonical shared graph query object. Its
+public-only slice uses the same node identities, relationship meanings, query
+bounds, and limitation diagnostics as `aos ability inspect` and the Hub. It
+does not report deployment authorization or live provider availability.
 
 ## Understand runtime `host.nix`
 
@@ -131,7 +136,7 @@ host.nix + facts + ABI-pinned base library
   -> secretRef resolution
   -> EROFS /etc lower in gen-N
   -> atomic pointer and /etc switch
-  -> unit reconciliation and activation record
+  -> provider resource convergence and activation record
 ```
 
 The resolver imports only authenticated package `config` outputs compatible
@@ -176,7 +181,7 @@ For a package installed through `apm`, put only its configuration in a module:
 
 ```nix
 {
-  nginx = {
+  aos.services.nginx = {
     enable = true;
     virtualHosts.health = {
       listen = [8080];
@@ -233,7 +238,7 @@ machine-readable fields:
 apm --json switch --dry-run
 ```
 
-Apply a reviewed configuration with the same evaluator and graph compiler:
+Apply a reviewed configuration with the same evaluator and checked activation:
 
 ```sh
 apm switch --from ./host.nix
@@ -289,11 +294,6 @@ test -s /run/aos/manifest.json && echo "host input evaluated"
 cat /run/aos/activation.json
 readlink /var/lib/profiles/system/current
 cat /var/lib/profiles/system/state.json
-
-cat /var/lib/aos-provisioning/audit.json
-if test -r /run/aos-metadata/storage-coherence; then
-  cat /run/aos-metadata/storage-coherence
-fi
 ```
 
 An evaluated manifest proves only that module evaluation converged. The current

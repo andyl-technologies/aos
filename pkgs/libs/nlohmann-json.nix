@@ -1,5 +1,6 @@
 ##! nlohmann-json — JSON for Modern C++ (header-only)
 {
+  lib,
   mkDerivation,
   mkGithubUpstream,
   gnumake,
@@ -44,7 +45,93 @@
   inherit (upstream) version;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "nlohmann-json";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The answer field has integer value 42.";
+        "files" = {
+          "primary.cc" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"nlohmann-json primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"nlohmann-json rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <nlohmann/json.hpp>\nint main() {\n    auto document = nlohmann::json::parse(\"{\\\"answer\\\":42}\");\n    return document.at(\"answer\").get<int>() == 42 ? pass() : 2;\n}\n\n";
+        };
+        "input" = "A JSON object containing an integer answer.";
+        "operation" = "Parse the document and read the value through nlohmann::json.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cxx@"
+              "primary.cc"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "nlohmann-json primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The library returns its discarded sentinel.";
+        "files" = {
+          "bad-input.cc" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"nlohmann-json primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"nlohmann-json rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <nlohmann/json.hpp>\nint main() {\n    auto document = nlohmann::json::parse(\"{\\\"answer\\\":42,}\", nullptr, false);\n    if (!document.is_discarded()) return 2;\n    return reject();\n}\n\n";
+        };
+        "input" = "A JSON object with a trailing comma.";
+        "operation" = "Parse the malformed document while disabling exceptions.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cxx@"
+              "bad-input.cc"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "nlohmann-json rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = upstream.components.main.sources.source;

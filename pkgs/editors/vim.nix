@@ -1,5 +1,6 @@
 ##! vim — Vi-compatible text editor
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -14,7 +15,83 @@
   version = "9.2.1036";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "vim";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [
+          {
+            "path" = "answer.txt";
+            "text" = "answer=42\n";
+          }
+        ];
+        "expected" = "Vim writes the transformed value 42 to the file.";
+        "files" = {
+          "answer.txt" = "answer=41\n";
+        };
+        "input" = "A text file containing the decimal value 41.";
+        "operation" = "Run a noninteractive Vim substitution and save the buffer.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/vim"
+              "-Nu"
+              "NONE"
+              "-n"
+              "-es"
+              "-c"
+              "%s/41/42/"
+              "-c"
+              "wq"
+              "answer.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Vim rejects the command with a failure status.";
+        "files" = {};
+        "input" = "An Ex command name that Vim does not define.";
+        "operation" = "Execute the unknown command in noninteractive mode.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/vim"
+              "-Nu"
+              "NONE"
+              "-n"
+              "-es"
+              "-c"
+              "QualificationUnknownCommand"
+              "-c"
+              "quit"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

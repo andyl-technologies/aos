@@ -1,5 +1,6 @@
 ##! python3 — Python 3.14 interpreter
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -19,7 +20,17 @@
   buildPackages,
 }: let
   version = "3.14.3";
+  pythonVersion = "3.14";
+  pythonAbi = "314";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+
+  extensionPlatformBySystem = {
+    "aarch64-linux" = "aarch64-linux-gnu";
+    "x86_64-linux" = "x86_64-linux-gnu";
+  };
+  extensionPlatform =
+    extensionPlatformBySystem.${stdenv.hostPlatform.system} or null;
+  sqliteExtensionFor = platform: "/lib/python${pythonVersion}/lib-dynload/_sqlite3.cpython-${pythonAbi}-${platform}.so";
 
   markupsafeSrc = fetchurl {
     urls = [
@@ -36,7 +47,61 @@
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "python3";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The interpreter prints the exact integer result 42.";
+        "files" = {
+          "answer.py" = "print(19 + 23)\n";
+        };
+        "input" = "A Python program that computes the sum of 19 and 23.";
+        "operation" = "Compile and execute the program with the packaged interpreter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/python3"
+              "answer.py"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The interpreter exits with its syntax-error status.";
+        "files" = {
+          "invalid.py" = "def incomplete(\n";
+        };
+        "input" = "A Python source file with an incomplete function definition.";
+        "operation" = "Compile the malformed source with the packaged interpreter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/python3"
+              "-m"
+              "py_compile"
+              "invalid.py"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -231,7 +296,36 @@ in
     checks = {
       testing,
       self,
+      pkgs,
     }: {
+      ${
+        if extensionPlatform != null
+        then "sqlite-extension-consumption"
+        else null
+      } = let
+        sqliteExtension = sqliteExtensionFor extensionPlatform;
+      in
+        lib.mkArtifactConsumptionAudit {
+          inherit pkgs;
+          name = "python-sqlite-runtime-plugin";
+          consumer = self;
+          consumerPath = "/bin/python3";
+          provider = self;
+          providerPath = sqliteExtension;
+          targetPlatform = {
+            system = stdenv.hostPlatform.constraints.os;
+            architecture = stdenv.hostPlatform.constraints.cpu;
+          };
+          mechanism = "runtime-plugin-load";
+          arguments = [
+            "-c"
+            ''import importlib.util, sys; specification = importlib.util.spec_from_file_location("_sqlite3", sys.argv[1]); module = importlib.util.module_from_spec(specification); specification.loader.exec_module(module); print(module.sqlite_version)''
+            "${self}${sqliteExtension}"
+          ];
+          expectedOutputSha256 = "sha256:${builtins.hashString "sha256" "${sqlite.version}\n"}";
+          inspector = pkgs.buildPackages.aos;
+        };
+
       import = testing.mkVMTest {
         name = "cross-cutting-python-import";
         rootfsDeps = [self];

@@ -5,6 +5,8 @@
 }: {
   name,
   identity,
+  checks,
+  packageChecks,
   assessmentRoot ? "/etc/aos-release/qualification-assessments",
   stagingHubUrl ? "https://aos.staging.andyl.org",
   scenarioSource ? ./qualification-image.py,
@@ -85,6 +87,8 @@ in
       export PYTHONPATH=${lib.escapeShellArg modulePath}
       export AOS_QUALIFICATION_PLATFORM=${lib.escapeShellArg platform}
       export AOS_QUALIFICATION_IDENTITY=${lib.escapeShellArg identity}
+      export AOS_QUALIFICATION_CHECKS=${lib.escapeShellArg (builtins.toJSON checks)}
+      export AOS_QUALIFICATION_PACKAGE_CHECKS=${lib.escapeShellArg (builtins.toJSON packageChecks)}
       export AOS_QUALIFICATION_ASSESSMENTS=${lib.escapeShellArg assessmentRoot}
       export AOS_QUALIFICATION_STAGING_HUB_URL=${lib.escapeShellArg stagingHubUrl}
       export AOS_QUALIFICATION_QEMU=${lib.escapeShellArg qemu}

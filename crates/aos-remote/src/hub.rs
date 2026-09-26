@@ -602,6 +602,10 @@ enum HubTopologyMethod {
     GetPackage,
     /// Selects exact canonical package documentation.
     GetPackageDocumentation,
+    /// Selects a canonical public ability reference derived from a signed companion.
+    GetPackageAbilityReference,
+    /// Selects a release-wide graph derived from signed package references.
+    GetReleaseAbilityGraph,
     /// Selects indexed package-documentation search.
     SearchPackageDocumentation,
     /// Selects a filtered page of structured package options.
@@ -614,6 +618,14 @@ enum HubTopologyMethod {
     GetDocumentationArtifact,
     /// Selects the closed package-documentation JSON Schema.
     GetPackageDocumentationSchema,
+    /// Selects a reviewed deployment reporter enrollment plan.
+    PlanConfigureAbilityDeploymentReporter,
+    /// Selects deployment reporter enrollment or revocation.
+    ConfigureAbilityDeploymentReporter,
+    /// Selects a freshness-bounded private package deployment report.
+    ReportPackageAbilityDeployment,
+    /// Selects one exact private package deployment overlay.
+    GetPackageAbilityDeployment,
     /// Selects the normalized `ListChannels` Connect operation.
     ListChannels,
     /// Selects the normalized `GetChannel` Connect operation.
@@ -1173,6 +1185,10 @@ impl HubTopologyMethod {
             ListPackages => "aos.hub.v1.PackageService/ListPackages",
             GetPackage => "aos.hub.v1.PackageService/GetPackage",
             GetPackageDocumentation => "aos.hub.v1.DocumentationService/GetPackageDocumentation",
+            GetPackageAbilityReference => {
+                "aos.hub.v1.DocumentationService/GetPackageAbilityReference"
+            }
+            GetReleaseAbilityGraph => "aos.hub.v1.DocumentationService/GetReleaseAbilityGraph",
             SearchPackageDocumentation => {
                 "aos.hub.v1.DocumentationService/SearchPackageDocumentation"
             }
@@ -1185,6 +1201,16 @@ impl HubTopologyMethod {
             GetPackageDocumentationSchema => {
                 "aos.hub.v1.DocumentationService/GetPackageDocumentationSchema"
             }
+            PlanConfigureAbilityDeploymentReporter => {
+                "aos.hub.v1.AbilityDeploymentService/PlanConfigureReporter"
+            }
+            ConfigureAbilityDeploymentReporter => {
+                "aos.hub.v1.AbilityDeploymentService/ConfigureReporter"
+            }
+            ReportPackageAbilityDeployment => {
+                "aos.hub.v1.AbilityDeploymentService/ReportPackageOverlay"
+            }
+            GetPackageAbilityDeployment => "aos.hub.v1.AbilityDeploymentService/GetPackageOverlay",
             ListChannels => "aos.hub.v1.ChannelService/ListChannels",
             GetChannel => "aos.hub.v1.ChannelService/GetChannel",
             ListImages => "aos.hub.v1.ImageService/ListImages",
@@ -1672,12 +1698,18 @@ pub mod hub_rpc {
         ListPackages: ListPackagesRequest => ListPackagesResponse;
         GetPackage: GetPackageRequest => GetPackageResponse;
         GetPackageDocumentation: GetPackageDocumentationRequest => GetPackageDocumentationResponse;
+        GetPackageAbilityReference: GetPackageAbilityReferenceRequest => GetPackageAbilityReferenceResponse;
+        GetReleaseAbilityGraph: GetReleaseAbilityGraphRequest => GetReleaseAbilityGraphResponse;
         SearchPackageDocumentation: SearchPackageDocumentationRequest => SearchPackageDocumentationResponse;
         ListPackageOptions: ListPackageOptionsRequest => ListPackageOptionsResponse;
         GetPackageOption: GetPackageOptionRequest => GetPackageOptionResponse;
         ComparePackageDocumentation: ComparePackageDocumentationRequest => ComparePackageDocumentationResponse;
         GetDocumentationArtifact: GetDocumentationArtifactRequest => GetPackageDocumentationResponse;
         GetPackageDocumentationSchema: GetPackageDocumentationSchemaRequest => GetPackageDocumentationSchemaResponse;
+        PlanConfigureAbilityDeploymentReporter: PlanConfigureAbilityDeploymentReporterRequest => TopologyPlanResponse;
+        ConfigureAbilityDeploymentReporter: ApplyTopologyPlanRequest => AbilityDeploymentReporter;
+        ReportPackageAbilityDeployment: ReportPackageAbilityDeploymentRequest => PackageAbilityDeploymentResponse;
+        GetPackageAbilityDeployment: GetPackageAbilityDeploymentRequest => PackageAbilityDeploymentResponse;
         ListChannels: ListChannelsRequest => ListChannelsResponse;
         GetChannel: GetChannelRequest => GetChannelResponse;
         ListImages: ListImagesRequest => ListImagesResponse;
@@ -1896,6 +1928,27 @@ impl HubClient {
         M: HubRpc,
     {
         self.call(M::method(), request).await
+    }
+
+    /// Calls one normalized read method whose selected resource may be absent.
+    ///
+    /// Only the Hub's exact Connect `not_found` envelope becomes `None`.
+    /// Authentication, authorization, transport, and decoding failures remain
+    /// errors so an optional projection cannot hide a failed access check.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Hub is unreachable, rejects the request for a
+    /// reason other than `not_found`, or returns a malformed response.
+    pub async fn call_topology_optional<M>(
+        &self,
+        _method: M,
+        request: &M::Request,
+    ) -> Result<Option<M::Response>>
+    where
+        M: HubRpc,
+    {
+        self.call_optional(M::method(), request).await
     }
 
     /// Completes one publication multipart upload without a unary RPC deadline.
@@ -2179,6 +2232,26 @@ impl HubClient {
             .with_context(|| format!("decoding the hub response from {url}"))
     }
 
+    async fn call_optional<Req, Resp>(&self, full_method: &str, req: &Req) -> Result<Option<Resp>>
+    where
+        Req: Serialize + ?Sized,
+        Resp: DeserializeOwned,
+    {
+        let url = format!("{}{full_method}", self.base);
+        let response = self
+            .connect_json_request(&url, req)
+            .send()
+            .await
+            .with_context(|| format!("contacting the hub at {url}"))?;
+
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .with_context(|| format!("reading the hub response from {url}"))?;
+        decode_optional_response(status, &body, &url)
+    }
+
     /// Builds one conforming Connect unary JSON request.
     fn connect_json_request<Req>(&self, url: &str, req: &Req) -> reqwest::RequestBuilder
     where
@@ -2208,6 +2281,41 @@ struct ConnectError {
     message: String,
 }
 
+fn decode_optional_response<Resp>(
+    status: reqwest::StatusCode,
+    body: &[u8],
+    url: &str,
+) -> Result<Option<Resp>>
+where
+    Resp: DeserializeOwned,
+{
+    if status.is_success() {
+        return serde_json::from_slice(body)
+            .with_context(|| format!("decoding the hub response from {url}"))
+            .map(Some);
+    }
+    if status == reqwest::StatusCode::NOT_FOUND
+        && serde_json::from_slice::<ConnectError>(body)
+            .is_ok_and(|envelope| envelope.code == "not_found")
+    {
+        return Ok(None);
+    }
+    if let Ok(envelope) = serde_json::from_slice::<ConnectError>(body) {
+        anyhow::bail!("hub error [{}]: {}", envelope.code, envelope.message);
+    }
+
+    let detail = String::from_utf8_lossy(body);
+    let detail = detail.trim();
+    anyhow::bail!(
+        "hub request to {url} failed ({status}){}",
+        if detail.is_empty() {
+            String::new()
+        } else {
+            format!(": {detail}")
+        }
+    );
+}
+
 /// Returns `s` with a single trailing slash so `format!("{base}{method}")`
 /// joins cleanly whether or not the parsed URL already ended in `/`.
 fn ensure_trailing_slash(s: &str) -> String {
@@ -2220,7 +2328,7 @@ fn ensure_trailing_slash(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{HubClient, HubSurfaceRef, HubTopologyMethod};
+    use super::{HubClient, HubSurfaceRef, HubTopologyMethod, decode_optional_response};
     use aos_proto_types::surface_ref::Target;
     use aos_proto_types::{
         CONNECT_PROTOCOL_VERSION_HEADER, PlanCreatePlacementRequest, PlanUpdatePlacementRequest,
@@ -2242,6 +2350,54 @@ mod tests {
             request.headers()[reqwest::header::CONTENT_TYPE],
             "application/json"
         );
+    }
+
+    #[test]
+    fn optional_reads_only_suppress_exact_not_found_envelopes() {
+        let missing = decode_optional_response::<serde_json::Value>(
+            reqwest::StatusCode::NOT_FOUND,
+            br#"{"code":"not_found","message":"reference not found"}"#,
+            "https://hub.example/reference",
+        )
+        .unwrap();
+        assert!(missing.is_none());
+
+        let denied = decode_optional_response::<serde_json::Value>(
+            reqwest::StatusCode::FORBIDDEN,
+            br#"{"code":"permission_denied","message":"denied"}"#,
+            "https://hub.example/reference",
+        )
+        .unwrap_err();
+        assert!(denied.to_string().contains("permission_denied"));
+
+        let disguised_denial = decode_optional_response::<serde_json::Value>(
+            reqwest::StatusCode::NOT_FOUND,
+            br#"{"code":"permission_denied","message":"denied"}"#,
+            "https://hub.example/reference",
+        )
+        .unwrap_err();
+        assert!(disguised_denial.to_string().contains("permission_denied"));
+
+        for status in [
+            reqwest::StatusCode::UNAUTHORIZED,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            let false_missing = decode_optional_response::<serde_json::Value>(
+                status,
+                br#"{"code":"not_found","message":"misleading"}"#,
+                "https://hub.example/reference",
+            )
+            .unwrap_err();
+            assert!(false_missing.to_string().contains("not_found"));
+        }
+
+        let value = decode_optional_response::<serde_json::Value>(
+            reqwest::StatusCode::OK,
+            br#"{"value":1}"#,
+            "https://hub.example/reference",
+        )
+        .unwrap();
+        assert_eq!(value, Some(serde_json::json!({ "value": 1 })));
     }
 
     #[test]

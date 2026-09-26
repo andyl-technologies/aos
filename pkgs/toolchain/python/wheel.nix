@@ -1,5 +1,6 @@
 ##! wheel — Python wheel archive utility
 {
+  lib,
   mkDerivation,
   fetchurl,
   python3,
@@ -8,7 +9,66 @@
   version = "0.48.0";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "wheel";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "WheelFile preserves the member bytes and emits the wheel RECORD metadata.";
+        "files" = {
+          "probe.py" = "import glob\nimport sys\n\nlocations = glob.glob(\"@out@/lib/python*/site-packages\")\nassert len(locations) == 1\nsys.path.insert(0, locations[0])\n\nfrom wheel.wheelfile import WheelFile\n\nwheel_path = \"answer-1.0-py3-none-any.whl\"\nwith WheelFile(wheel_path, \"w\") as archive:\n    archive.writestr(\"answer/__init__.py\", b\"VALUE = 42\\n\")\nwith WheelFile(wheel_path) as archive:\n    assert archive.read(\"answer/__init__.py\") == b\"VALUE = 42\\n\"\n    assert \"answer-1.0.dist-info/RECORD\" in archive.namelist()\nprint(\"wheel archive passed\")\n";
+        };
+        "input" = "A Python module payload written through WheelFile.";
+        "operation" = "Create a wheel archive through the packaged API, reopen it, and read the module bytes.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "probe.py"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "wheel archive passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "WheelFile propagates BadZipFile for the invalid container.";
+        "files" = {
+          "broken-1.0-py3-none-any.whl" = "not a wheel archive\n";
+          "probe.py" = "import glob\nimport sys\nimport zipfile\n\nlocations = glob.glob(\"@out@/lib/python*/site-packages\")\nassert len(locations) == 1\nsys.path.insert(0, locations[0])\n\nfrom wheel.wheelfile import WheelFile\n\ntry:\n    WheelFile(\"broken-1.0-py3-none-any.whl\")\nexcept zipfile.BadZipFile:\n    print(\"wheel rejected invalid archive\")\nelse:\n    raise RuntimeError(\"WheelFile accepted an invalid archive\")\n";
+        };
+        "input" = "A wheel-shaped filename containing plain text rather than a ZIP archive.";
+        "operation" = "Open the malformed archive through WheelFile.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "probe.py"
+            ];
+            "exit_code" = 0;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "wheel rejected invalid archive\n";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

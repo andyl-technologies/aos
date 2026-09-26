@@ -7,6 +7,7 @@
 ##! across thread counts (pigz partitions the input deterministically;
 ##! threading only affects scheduling).
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -15,7 +16,78 @@
   version = "2.8";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "pigz";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The decompressed bytes exactly equal the original text.";
+        "files" = {
+          "answer.txt" = "answer=42\n";
+        };
+        "input" = "A fixed text file compressed as a deterministic gzip stream.";
+        "operation" = "Compress the file without name metadata and decode it back.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/pigz"
+              "-n"
+              "-k"
+              "answer.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/pigz"
+              "-d"
+              "-c"
+              "answer.txt.gz"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "answer=42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "pigz reports corrupt input with a non-success status.";
+        "files" = {
+          "invalid.gz" = "not a gzip stream\n";
+        };
+        "input" = "A file carrying the gzip suffix but no gzip header.";
+        "operation" = "Attempt to decompress the malformed stream.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/pigz"
+              "-d"
+              "-c"
+              "invalid.gz"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -12,22 +12,30 @@
   pkgs,
   ...
 }: {
+  imports = [
+    ./_artifact-backend.nix
+    ./_base-packages.nix
+    ./_image-builder.nix
+    ./_kernel.nix
+    ./_system-manager.nix
+  ];
+
   # Image capability: the evaluator, base module library, and activation
   # machinery live on a read-only EROFS root authenticated by dm-verity.
+  aos.image.enable = true;
   aos.filesystems.zfs.enable = lib.mkDefault false;
   aos.filesystems.rootFsType = lib.mkDefault "erofs";
   aos.filesystems.rootReadOnly = lib.mkDefault true;
   aos.security.verity.enable = lib.mkDefault true;
-  # The complete source-built runtime occupies 586 MiB of EROFS on x86.
+  aos.boot.initrd.abilityHandoff.enable = lib.mkDefault true;
   aos.image.budgets = {
     maxRootMiB = 640;
     maxVerityMiB = 16;
     maxInitrdMiB = 132;
+    maxBootExecutableMiB = 160;
+    maxFirmwarePartitionMiB = 384;
+    maxRuntimeClosureMiB = 768;
     maxDownloadMiB = 768;
-    # VHD block allocation adds a small fixed overhead above 800 MiB on AArch64.
-    maxConvertedDownloadMiB =
-      lib.mkIf
-      (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64") (lib.mkDefault 801);
   };
 
   # The service modules predate host-time evaluation and default to enabled.

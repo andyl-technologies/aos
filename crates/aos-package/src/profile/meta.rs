@@ -398,12 +398,8 @@ pub fn rebuild_meta(
                     held: false,
                     source_drv: pkg.source_drv.clone(),
                     source_nar_hash: pkg.source_nar_hash.clone(),
-                    expose: pkg.expose.clone(),
-                    expose_artifact: pkg.expose_artifact.clone(),
-                    config_module: pkg.config_module.clone(),
                     documentation: pkg.documentation.clone(),
-                    permissions: pkg.permissions.clone(),
-                    bpf_lsm: pkg.bpf_lsm.clone(),
+                    contract: pkg.contract.clone(),
                     attestation: pkg.attestation.clone(),
                 }),
             }
@@ -473,12 +469,8 @@ mod tests {
                 held,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
-                expose: None,
-                expose_artifact: None,
-                config_module: None,
                 documentation: None,
-                permissions: Default::default(),
-                bpf_lsm: None,
+                contract: None,
                 attestation: Default::default(),
             }),
         }
@@ -520,7 +512,6 @@ mod tests {
         let result = read_meta(&profile, "nonexistent").unwrap();
         assert!(result.is_none());
     }
-
     // 3. delete_meta removes the file
     #[test]
     fn delete_meta_removes_file() {

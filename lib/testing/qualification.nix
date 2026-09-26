@@ -12,10 +12,7 @@
     name = "${name}-scenarios";
     destination = "/scenarios.json";
     text = builtins.toJSON ({
-        schema_version =
-          if caseScenarios == {}
-          then "aos.release.qualification-scenarios/v1"
-          else "aos.release.qualification-scenarios/v2";
+        schema_version = "aos.release.qualification-scenarios/v1";
         inherit platform scenarios;
       }
       // (

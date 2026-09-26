@@ -1,5 +1,6 @@
 ##! dnsmasq — Lightweight DNS, DHCP, and TFTP server
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -10,6 +11,7 @@
   nettle,
   gmp,
   dbus,
+  systemd,
   libnetfilter_conntrack,
   libnfnetlink,
   nftables,
@@ -17,7 +19,66 @@
   version = "2.93";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "dnsmasq";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Dnsmasq accepts the configuration without starting a daemon.";
+        "files" = {
+          "dnsmasq.conf" = "port=0\nno-dhcp-interface=*\nlog-facility=-\n";
+        };
+        "input" = "A self-contained dnsmasq configuration with DNS and DHCP disabled.";
+        "operation" = "Parse and validate the configuration with dnsmasq's test mode.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/sbin/dnsmasq"
+              "--test"
+              "--conf-file=dnsmasq.conf"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Dnsmasq rejects the unknown directive with status 1.";
+        "files" = {
+          "invalid.conf" = "aos-not-a-dnsmasq-option=42\n";
+        };
+        "input" = "A dnsmasq configuration containing an unknown directive.";
+        "operation" = "Parse the malformed configuration in test mode.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/sbin/dnsmasq"
+              "--test"
+              "--conf-file=invalid.conf"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -32,11 +93,14 @@ in
       nettle
       gmp
       dbus
+      systemd
       libnetfilter_conntrack
       libnfnetlink
       nftables
     ];
     propagatedDeps = [];
+
+    abilities = ./_dnsmasq;
 
     phases = [
       {
@@ -77,13 +141,88 @@ in
     checks = {
       testing,
       self,
+      pkgs,
+      mkSystem,
       ...
-    }: {
+    }: let
+      evaluated = mkSystem {
+        systemName = "dnsmasq-package-check";
+        modules = [
+          ../../systems/_artifact-backend.nix
+          ../../systems/_base-packages.nix
+          ../../systems/_system-manager.nix
+          {
+            aos.kernel.packageRoot = pkgs.linux;
+            aos.services.dnsmasq = {
+              enable = true;
+              port = 5353;
+              dhcpRanges = ["192.0.2.10,192.0.2.20,12h"];
+            };
+          }
+        ];
+      };
+      requests = evaluated.config.aos.abilities.requests;
+      configuration = requests."dnsmasq:server-configuration".parameters.source;
+      dependencies = requests."dnsmasq:dnsmasq-dependencies".parameters;
+      ingress = requests."dnsmasq:network-ingress".parameters;
+      expectedRequestOutput = localKey: output: {
+        authority = {
+          kind = "package";
+          package = self.pname;
+        };
+        inherit localKey output;
+      };
+      contractHolds =
+        self.abilities ? interfaces
+        && self.abilities ? implementations
+        && self.abilities ? requirementTemplates
+        && self.abilities ? guarantees
+        && !(self.abilities ? contract)
+        && builtins.hasAttr "listener-claim" self.abilities.requirementTemplates
+        && builtins.hasAttr "network-ingress-policy" self.abilities.requirementTemplates
+        && builtins.all (assertion: assertion.assertion) evaluated.config.assertions
+        && configuration.kind == "interpolated-text"
+        && !(lib.hasInfix "/run/" (builtins.toJSON configuration))
+        && ingress.endpoints
+        == [
+          {
+            transport = "tcp";
+            port = 5353;
+          }
+          {
+            transport = "udp";
+            port = 5353;
+          }
+          {
+            transport = "udp";
+            port = 67;
+          }
+        ]
+        && builtins.map
+        (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
+        dependencies.prerequisites
+        == [
+          (expectedRequestOutput "listener-tcp-5353" "resource")
+          (expectedRequestOutput "listener-udp-5353" "resource")
+          (expectedRequestOutput "listener-udp-67" "resource")
+          (expectedRequestOutput "network-ingress" "resource")
+        ]
+        && dependencies.after == []
+        && dependencies.requires == [];
+    in {
       tool = testing.mkToolCheck {
         pname = "tool-dnsmasq";
         tool = self;
         command = "dnsmasq --version | grep ' IDN ' | grep ' Lua ' | grep ' DNSSEC ' | grep ' nftset '";
       };
+      ability-module-contract =
+        if contractHolds
+        then
+          pkgs.runCommand "dnsmasq-ability-module-contract" {} ''
+            mkdir -p "$out"
+            printf '%s\n' PASS > "$out/result"
+          ''
+        else throw "the dnsmasq native ability contract check failed";
     };
 
     meta = {

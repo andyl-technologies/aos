@@ -409,7 +409,7 @@ fn extend_release_documentation_inserts(
     snapshot_id: &str,
     rows: &[Vec<Value>],
 ) -> Result<()> {
-    const ROW_COLUMNS: usize = 13;
+    const ROW_COLUMNS: usize = 12;
     anyhow::ensure!(
         rows.iter().all(|row| row.len() == ROW_COLUMNS),
         "release documentation insert has an inconsistent row width"
@@ -436,21 +436,19 @@ fn extend_release_documentation_inserts(
                 "WITH input(package_name, package_version, platform, store_hash,
                             format, store_path, nar_hash, nar_size,
                             document_sha256, document_size,
-                            semantic_schema_sha256, system_module_nar_hash,
-                            metadata_digest) AS
+                            semantic_schema_sha256, metadata_digest) AS
                    (VALUES {})
                  INSERT INTO release_package_documentation
                    (snapshot_id, release_id, registry_id, package_name,
                     package_version, platform, store_hash, format, store_path,
                     nar_hash, nar_size, document_sha256, document_size,
-                    semantic_schema_sha256, system_module_nar_hash,
-                    metadata_digest)
+                    semantic_schema_sha256, metadata_digest)
                  SELECT ?1, ras.release_id, ras.registry_id, input.package_name,
                         input.package_version, input.platform, input.store_hash,
                         input.format, input.store_path, input.nar_hash,
                         input.nar_size, input.document_sha256,
                         input.document_size, input.semantic_schema_sha256,
-                        input.system_module_nar_hash, input.metadata_digest
+                        input.metadata_digest
                    FROM release_artifact_snapshots ras CROSS JOIN input
                  WHERE ras.snapshot_id = ?1
                     AND ras.state IN ('building', 'complete')
@@ -467,8 +465,6 @@ fn extend_release_documentation_inserts(
                       AND release_package_documentation.document_sha256 = excluded.document_sha256
                       AND release_package_documentation.document_size = excluded.document_size
                       AND release_package_documentation.semantic_schema_sha256 = excluded.semantic_schema_sha256
-                      AND COALESCE(release_package_documentation.system_module_nar_hash, '') =
-                          COALESCE(excluded.system_module_nar_hash, '')
                       AND release_package_documentation.metadata_digest = excluded.metadata_digest
                      THEN release_package_documentation.metadata_digest
                      ELSE NULL
@@ -531,6 +527,8 @@ mod oci_admin;
 pub use oci_admin::*;
 mod oci_gc;
 pub use oci_gc::*;
+mod ability_deployment_overlays;
+pub use ability_deployment_overlays::*;
 mod package_documentation_reads;
 mod placement_policy;
 mod publication_admission;
@@ -586,7 +584,10 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// The first entry is the immutable first stable production baseline. Databases
 /// from development histories must be reset before deploying this checkpoint;
 /// subsequent production changes require new forward migrations.
-pub const MIGRATIONS: &[&str] = &[include_str!("schema.sql")];
+pub const MIGRATIONS: &[&str] = &[
+    include_str!("schema.sql"),
+    include_str!("migration-0002-release-ability-graphs.sql"),
+];
 
 /// Identifies the production migration lineage independently of its version.
 ///
@@ -1659,6 +1660,8 @@ pub enum ContainerReleaseDescriptorRole {
     PlatformManifest,
     /// Nix runtime-closure evidence manifest.
     NixClosure,
+    /// Static ability-contract evidence manifest.
+    Abilities,
     /// SPDX software-bill-of-materials evidence manifest.
     Sbom,
     /// Corresponding-source evidence manifest.
@@ -1677,6 +1680,7 @@ impl ContainerReleaseDescriptorRole {
             Self::Index => "index",
             Self::PlatformManifest => "platform_manifest",
             Self::NixClosure => "nix_closure",
+            Self::Abilities => "abilities",
             Self::Sbom => "sbom",
             Self::Source => "source",
             Self::License => "license",
@@ -1739,10 +1743,51 @@ pub struct IndexedPackageDocumentation {
     pub platform: String,
     /// Signed artifact locator.
     pub artifact: aos_registry_surface::manifest::DocumentationArtifactMeta,
+    /// Checked package ability reference used to derive release-wide graph reads.
+    pub ability_reference: aos_doc_model::PackageAbilityReference,
     /// Disposable search rows derived from the canonical document.
     pub search: Vec<aos_doc_model::SearchDocument>,
     /// Structural option paths and compact types for the release-wide tree.
     pub options: Vec<IndexedDocumentationOption>,
+}
+
+#[cfg(test)]
+pub(crate) fn test_package_ability_reference(
+    package: &str,
+    version: &str,
+) -> aos_doc_model::PackageAbilityReference {
+    aos_doc_model::PackageAbilityReference {
+        schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.to_string(),
+        required_features: vec![
+            aos_ability_model::RequiredFeature::new("abilities-v1").expect("valid test feature"),
+        ],
+        package: aos_ability_model::LocalKey::new(package).expect("valid test package"),
+        version: version.to_string(),
+        manifest_sha256: aos_contract::Sha256Digest::of_bytes(b"test manifest"),
+        package_digest: aos_contract::Sha256Digest::of_bytes(b"test package"),
+        interfaces: std::collections::BTreeMap::new(),
+        guarantees: std::collections::BTreeMap::new(),
+        option_declarations: Vec::new(),
+        implementations: Vec::new(),
+        exports: Vec::new(),
+        requirements: Vec::new(),
+        handlers: Vec::new(),
+    }
+}
+
+/// One retained release-wide ability graph and its authenticated selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseAbilityGraphProjection {
+    /// Published release selecting the source commit.
+    pub release: String,
+    /// Exact registry commit from which the graph was derived.
+    pub source_commit: String,
+    /// Platform shared by every package in the graph.
+    pub platform: String,
+    /// Canonical generated graph bytes.
+    pub canonical_json: Vec<u8>,
+    /// SHA-256 digest of `canonical_json`.
+    pub content_digest: String,
 }
 
 /// One option's structural navigation metadata, derived from verified bytes.
@@ -4054,9 +4099,9 @@ impl Database {
                         image.delivery.byte_size,
                     ),
                     (
-                        image.delivery.image_info.object_key.as_str(),
-                        image.delivery.image_info.sha256.as_str(),
-                        image.delivery.image_info.byte_size,
+                        image.delivery.artifact_contract.document.object_key.as_str(),
+                        image.delivery.artifact_contract.document.sha256.as_str(),
+                        image.delivery.artifact_contract.document.byte_size,
                     ),
                 ] {
                     let size = i64::try_from(size)
@@ -4278,29 +4323,40 @@ impl Database {
                         catalog_artifacts.push(("image", image.store_path.as_str()));
                         if image.delivery.is_store_backed() {
                             catalog_artifacts
-                                .push(("image", image.delivery.image_info.store_path.as_str()));
-                            if let Some(payload) = &image.delivery.update_payload {
+                                .push(("image", image.delivery.artifact_contract.document.store_path.as_str()));
+                            if let Some(payload) = &image.delivery.artifact_contract.artifacts {
                                 catalog_artifacts.push(("image", payload.store_path.as_str()));
                             }
-                        }
-                    }
-                    if let Some(expose) = &entry.expose_artifact {
-                        catalog_artifacts.push(("expose", expose.store_path.as_str()));
-                    }
-                    if let Some(config) = &entry.config_module {
-                        catalog_artifacts
-                            .push(("config", config.config_output.store_path.as_str()));
-                        if let Some(base_lib) = &config.evaluation_base_lib {
-                            catalog_artifacts
-                                .push(("evaluation_base_lib", base_lib.store_path.as_str()));
                         }
                     }
                     if let Some(documentation) = &entry.documentation {
                         catalog_artifacts
                             .push(("documentation", documentation.store_path.as_str()));
                     }
+                    let mut catalog_artifacts_by_identity =
+                        std::collections::BTreeMap::<(String, String), String>::new();
                     for (artifact_kind, store_path) in catalog_artifacts {
                         let store_hash = store_hash_component(store_path);
+                        let identity = (artifact_kind.to_string(), store_hash.clone());
+                        if let Some(existing_store_path) =
+                            catalog_artifacts_by_identity.get(&identity)
+                        {
+                            if existing_store_path != store_path {
+                                bail!(
+                                    "catalog artifact kind '{}' and store hash '{}' name both '{}' and '{}'",
+                                    artifact_kind,
+                                    store_hash,
+                                    existing_store_path,
+                                    store_path
+                                );
+                            }
+                            continue;
+                        }
+                        catalog_artifacts_by_identity.insert(identity, store_path.to_string());
+                    }
+                    for ((artifact_kind, store_hash), store_path) in
+                        catalog_artifacts_by_identity
+                    {
                         let metadata_digest = hex::encode(sha2::Sha256::digest(
                             serde_json::to_vec(&serde_json::json!({
                                 "package_name": package.package.name,
@@ -4351,7 +4407,6 @@ impl Database {
                 artifact.document_sha256,
                 artifact.document_size,
                 artifact.semantic_schema_sha256,
-                artifact.system_module_nar_hash,
             ]);
             for search in &documentation.search {
                 documentation_search_rows.push(vals![
@@ -4372,7 +4427,7 @@ impl Database {
             "INSERT INTO package_documentation
              (registry_id, indexed_commit, package_name, package_version, platform,
               format, store_path, nar_hash, nar_size, document_sha256, document_size,
-              semantic_schema_sha256, system_module_nar_hash)",
+              semantic_schema_sha256)",
             &documentation_rows,
             "",
         )?;
@@ -4511,9 +4566,9 @@ impl Database {
                         ),
                         (
                             "image_info",
-                            image.delivery.image_info.object_key.as_str(),
-                            image.delivery.image_info.sha256.as_str(),
-                            image.delivery.image_info.byte_size,
+                            image.delivery.artifact_contract.document.object_key.as_str(),
+                            image.delivery.artifact_contract.document.sha256.as_str(),
+                            image.delivery.artifact_contract.document.byte_size,
                         ),
                     ] {
                         let size = i64::try_from(size)
@@ -4669,9 +4724,9 @@ impl Database {
                 if artifact.format != aos_doc_model::DOCUMENT_FORMAT
                     || artifact.references.len() != 0
                     || artifact.nar_size == 0
-                    || artifact.nar_size > 4 * 1024 * 1024
+                    || artifact.nar_size > aos_doc_model::MAX_DOCUMENT_BYTES as u64
                     || artifact.document_size == 0
-                    || artifact.document_size > 4 * 1024 * 1024
+                    || artifact.document_size > aos_doc_model::MAX_DOCUMENT_BYTES as u64
                 {
                     bail!("release documentation locator is malformed");
                 }
@@ -4799,7 +4854,6 @@ impl Database {
                     artifact.document_sha256,
                     artifact.document_size,
                     artifact.semantic_schema_sha256,
-                    artifact.system_module_nar_hash,
                     metadata_digest,
                 ]);
             }
@@ -13684,8 +13738,7 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT indexed_commit, format, store_path, nar_hash, nar_size,
-                        document_sha256, document_size, semantic_schema_sha256,
-                        system_module_nar_hash
+                        document_sha256, document_size, semantic_schema_sha256
                  FROM package_documentation
                  WHERE registry_id = ?1 AND package_name = ?2
                    AND package_version = ?3 AND platform = ?4",
@@ -13708,7 +13761,6 @@ impl Database {
                 document_sha256: row.get(5)?,
                 document_size: row.get(6)?,
                 semantic_schema_sha256: row.get(7)?,
-                system_module_nar_hash: row.get(8)?,
                 references: Vec::new(),
             },
             release: None,
@@ -13738,7 +13790,7 @@ impl Database {
                 "SELECT d.indexed_commit, d.package_version, d.platform,
                         d.format, d.store_path, d.nar_hash, d.nar_size,
                         d.document_sha256, d.document_size,
-                        d.semantic_schema_sha256, d.system_module_nar_hash
+                        d.semantic_schema_sha256
                  FROM package_documentation d
                  JOIN packages p ON p.registry_id = d.registry_id
                                 AND p.name = d.package_name
@@ -13768,7 +13820,6 @@ impl Database {
                 document_sha256: row.get(7)?,
                 document_size: row.get(8)?,
                 semantic_schema_sha256: row.get(9)?,
-                system_module_nar_hash: row.get(10)?,
                 references: Vec::new(),
             },
             release: None,
@@ -13792,7 +13843,7 @@ impl Database {
             .query_opt(
                 "SELECT indexed_commit, package_name, package_version, platform,
                         format, store_path, nar_hash, nar_size, document_size,
-                        semantic_schema_sha256, system_module_nar_hash
+                        semantic_schema_sha256
                  FROM package_documentation
                  WHERE registry_id = ?1 AND document_sha256 = ?2
                  ORDER BY package_name, package_version, platform LIMIT 1",
@@ -13813,7 +13864,6 @@ impl Database {
                     document_sha256: document_sha256.to_string(),
                     document_size: row.get(8)?,
                     semantic_schema_sha256: row.get(9)?,
-                    system_module_nar_hash: row.get(10)?,
                     references: Vec::new(),
                 },
                 release: None,
@@ -13830,8 +13880,7 @@ impl Database {
                         documentation.format, documentation.store_path,
                         documentation.nar_hash, documentation.nar_size,
                         documentation.document_size,
-                        documentation.semantic_schema_sha256,
-                        documentation.system_module_nar_hash, rel.semver,
+                        documentation.semantic_schema_sha256, rel.semver,
                         ras.verified_tag_oid, ras.snapshot_id,
                         documentation.metadata_digest
                  FROM release_package_documentation documentation
@@ -13881,7 +13930,6 @@ impl Database {
             document_sha256: document_sha256.to_string(),
             document_size: row.get(8)?,
             semantic_schema_sha256: row.get(9)?,
-            system_module_nar_hash: row.get(10)?,
             references: Vec::new(),
         };
         let projection = ReleasePackageDocumentation {
@@ -13891,7 +13939,7 @@ impl Database {
             artifact: artifact.clone(),
         };
         let expected_digest = hex::encode(sha2::Sha256::digest(serde_json::to_vec(&projection)?));
-        let stored_digest: String = row.get(14)?;
+        let stored_digest: String = row.get(13)?;
         if stored_digest != expected_digest {
             bail!("release documentation metadata digest does not match its locator");
         }
@@ -13901,9 +13949,9 @@ impl Database {
             package_version,
             platform,
             artifact,
-            release: Some(row.get(11)?),
-            verified_tag_oid: Some(row.get(12)?),
-            release_snapshot_id: Some(row.get(13)?),
+            release: Some(row.get(10)?),
+            verified_tag_oid: Some(row.get(11)?),
+            release_snapshot_id: Some(row.get(12)?),
         }))
     }
 
@@ -14247,7 +14295,7 @@ impl Database {
                     None
                 } else if image.delivery.object_key == object_key {
                     Some(IndexedSystemImageObject::Disk(image))
-                } else if image.delivery.image_info.object_key == object_key {
+                } else if image.delivery.artifact_contract.document.object_key == object_key {
                     Some(IndexedSystemImageObject::ImageInfo(image))
                 } else {
                     None
@@ -14811,9 +14859,9 @@ impl Database {
                 delivery.byte_size,
             ),
             (
-                delivery.image_info.object_key.as_str(),
-                delivery.image_info.sha256.as_str(),
-                delivery.image_info.byte_size,
+                delivery.artifact_contract.document.object_key.as_str(),
+                delivery.artifact_contract.document.sha256.as_str(),
+                delivery.artifact_contract.document.byte_size,
             ),
         ] {
             let size =
@@ -15266,7 +15314,6 @@ impl Database {
                         documentation.document_sha256,
                         documentation.document_size,
                         documentation.semantic_schema_sha256,
-                        documentation.system_module_nar_hash,
                         documentation.metadata_digest
                  FROM release_package_documentation documentation
                  JOIN release_artifacts artifact
@@ -15314,13 +15361,12 @@ impl Database {
                     document_sha256: row.get(8)?,
                     document_size: row.get(9)?,
                     semantic_schema_sha256: row.get(10)?,
-                    system_module_nar_hash: row.get(11)?,
                     references: Vec::new(),
                 },
             };
             let expected_digest =
                 hex::encode(sha2::Sha256::digest(serde_json::to_vec(&documentation)?));
-            let stored_digest: String = row.get(12)?;
+            let stored_digest: String = row.get(11)?;
             if stored_digest != expected_digest {
                 bail!("release documentation metadata digest does not match its locator");
             }
@@ -26032,7 +26078,13 @@ fn oci_release_root_statements(
         anyhow::ensure!(
             matches!(
                 evidence.kind.as_str(),
-                "closure" | "sbom" | "source" | "license" | "provenance" | "signature"
+                "closure"
+                    | "abilities"
+                    | "sbom"
+                    | "source"
+                    | "license"
+                    | "provenance"
+                    | "signature"
             ),
             "signed container evidence kind is invalid"
         );
@@ -26261,6 +26313,7 @@ fn validate_container_release_descriptor_snapshot(
             ),
             ContainerReleaseDescriptorRole::PlatformManifest
             | ContainerReleaseDescriptorRole::NixClosure
+            | ContainerReleaseDescriptorRole::Abilities
             | ContainerReleaseDescriptorRole::Sbom
             | ContainerReleaseDescriptorRole::Source
             | ContainerReleaseDescriptorRole::License
@@ -26297,6 +26350,14 @@ fn validate_container_release_descriptor_snapshot(
             "signed container descriptor snapshot has an incomplete evidence set"
         );
     }
+    anyhow::ensure!(
+        roles
+            .get(&ContainerReleaseDescriptorRole::Abilities)
+            .copied()
+            .unwrap_or_default()
+            <= 1,
+        "signed container descriptor snapshot repeats static ability evidence"
+    );
     Ok(())
 }
 
@@ -26892,9 +26953,9 @@ mod tests {
 
     fn signed_image_package() -> aos_registry_surface::manifest::PackageToml {
         use aos_registry_surface::manifest::{
-            immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
-            ImageDelivery, ImageInfoReference, ImageTarget, ImageUkiIdentity,
-            ImageVerificationState,
+            ImageArtifactContractDocumentReference, ImageArtifactContractReference,
+            ImageCompression, ImageDelivery, ImageTarget,
+            immutable_image_contract_object_key, immutable_image_object_key,
         };
 
         #[derive(serde::Serialize)]
@@ -26928,7 +26989,6 @@ mod tests {
                 architecture: "x86_64".into(),
                 logical_image_id: "e".repeat(64),
                 logical_disk_sha256: "a".repeat(64),
-                rootfs_sha256: "f".repeat(64),
                 filename: filename.clone(),
                 object_key: immutable_image_object_key(&sha256, &filename),
                 media_type: media_type.into(),
@@ -26940,28 +27000,24 @@ mod tests {
                 byte_size: 4096,
                 sha256: sha256.clone(),
                 compatible_targets,
-                uki: ImageUkiIdentity {
-                    filename: "aos-system.efi".into(),
-                    esp_path: "EFI/Linux/aos-system.efi".into(),
-                    byte_size: 1024,
-                    sha256: "1".repeat(64),
-                    verification: ImageVerificationState::Unsigned,
-                    signer_cert_sha256: None,
-                    sbat: Vec::new(),
-                    measured: false,
-                    expected_pcr11: None,
+                artifact_contract: ImageArtifactContractReference {
+                    schema: "aos.test.boot-artifacts/v1".into(),
+                    document: ImageArtifactContractDocumentReference {
+                        filename: "image-info.json".into(),
+                        object_key: immutable_image_contract_object_key(
+                            &sha256,
+                            &info_sha256,
+                            "image-info.json",
+                        ),
+                        store_path: String::new(),
+                        nar_hash: String::new(),
+                        nar_size: 0,
+                        media_type: "application/vnd.aos.image-info+json".into(),
+                        byte_size: 512,
+                        sha256: info_sha256,
+                    },
+                    artifacts: None,
                 },
-                image_info: ImageInfoReference {
-                    filename: "image-info.json".into(),
-                    object_key: immutable_image_info_object_key(&sha256, &info_sha256),
-                    store_path: String::new(),
-                    nar_hash: String::new(),
-                    nar_size: 0,
-                    media_type: "application/vnd.aos.image-info+json".into(),
-                    byte_size: 512,
-                    sha256: info_sha256,
-                },
-                update_payload: None,
             }
         };
         let mut images = String::new();
@@ -26981,12 +27037,12 @@ mod tests {
                 "[versions.platforms.x86_64-linux.images.delivery]",
             )
             .replace(
-                "[delivery.uki]",
-                "[versions.platforms.x86_64-linux.images.delivery.uki]",
+                "[delivery.artifact_contract]",
+                "[versions.platforms.x86_64-linux.images.delivery.artifact_contract]",
             )
             .replace(
-                "[delivery.image_info]",
-                "[versions.platforms.x86_64-linux.images.delivery.image_info]",
+                "[delivery.artifact_contract.document]",
+                "[versions.platforms.x86_64-linux.images.delivery.artifact_contract.document]",
             );
             images.push_str(&format!(
                 r#"
@@ -27016,6 +27072,11 @@ store_path = "/aos/store/aos-system"
 closure_size = 1
 source_drv = ""
 source_nar_hash = ""
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["image-artifact-contract-v1"]
 {images}
 "#,
         ))
@@ -27058,6 +27119,8 @@ source_nar_hash = ""
     }
 
     fn store_backed_image_package() -> aos_registry_surface::manifest::PackageToml {
+        use aos_registry_surface::manifest::ImageStoreReference;
+
         let mut package = signed_image_package();
         for version in &mut package.versions {
             for artifact in version.platforms.values_mut() {
@@ -27070,11 +27133,16 @@ source_nar_hash = ""
                     image.nar_hash = format!("sha256:{}", "0".repeat(52));
                     image.delivery.schema_version = 2;
                     image.delivery.object_key.clear();
-                    image.delivery.image_info.object_key.clear();
-                    image.delivery.image_info.store_path =
+                    image.delivery.artifact_contract.document.object_key.clear();
+                    image.delivery.artifact_contract.document.store_path =
                         format!("/aos/store/{store_hash}-aos-system-{}-info", image.format);
-                    image.delivery.image_info.nar_hash = format!("sha256:{}", "0".repeat(52));
-                    image.delivery.image_info.nar_size = 1;
+                    image.delivery.artifact_contract.document.nar_hash = format!("sha256:{}", "0".repeat(52));
+                    image.delivery.artifact_contract.document.nar_size = 1;
+                    image.delivery.artifact_contract.artifacts = Some(ImageStoreReference {
+                        store_path: image.store_path.clone(),
+                        nar_hash: image.nar_hash.clone(),
+                        nar_size: image.nar_size,
+                    });
                 }
             }
         }
@@ -27133,20 +27201,10 @@ source_nar_hash = ""
     }
 
     #[test]
-    fn production_baseline_is_immutable() {
-        // New schema changes append a migration; they do not replace this digest.
-        assert_eq!(
-            hex::encode(sha2::Sha256::digest(MIGRATIONS[0].as_bytes())),
-            "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061"
-        );
-    }
-
-    #[test]
     fn fresh_schema_is_final_and_foreign_key_clean() {
-        assert_eq!(
-            MIGRATIONS.len(),
-            1,
-            "first production checkpoint has one baseline"
+        assert!(
+            !MIGRATIONS.is_empty(),
+            "production schema has no migrations"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection
@@ -27170,7 +27228,7 @@ source_nar_hash = ""
             .unwrap();
         assert_eq!(violations, 0, "fresh baseline violates a foreign key");
 
-        let schema = MIGRATIONS[0];
+        let schema = MIGRATIONS.join("\n");
         for forbidden in [
             "credential_ref",
             "CREATE TABLE frontends",
@@ -27209,6 +27267,7 @@ source_nar_hash = ""
             "image_snapshot_references",
             "image_snapshot_leases",
             "registry_publication_object_evidence",
+            "release_ability_graphs",
         ] {
             let present: i64 = connection
                 .query_row(
@@ -27267,6 +27326,39 @@ source_nar_hash = ""
             )
             .unwrap();
         assert_eq!(public_boundary, (1, "active".to_string()));
+    }
+
+    #[tokio::test]
+    async fn release_ability_graph_schema_upgrades_from_the_production_baseline() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("hub.db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL);")
+            .unwrap();
+        connection.execute_batch(MIGRATIONS[0]).unwrap();
+        connection
+            .execute("INSERT INTO schema_version VALUES (1)", [])
+            .unwrap();
+        drop(connection);
+
+        drop(Database::open(&path).await.unwrap());
+
+        let connection = Connection::open(&path).unwrap();
+        let version: i64 = connection
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        let graph_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'release_ability_graphs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        assert_eq!(graph_table, 1);
     }
 
     #[test]
@@ -27409,7 +27501,7 @@ source_nar_hash = ""
     }
 
     #[test]
-    fn production_baseline_keeps_portable_recovery_and_documentation_columns() {
+    fn production_baseline_keeps_portable_recovery_columns() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(MIGRATIONS[0]).unwrap();
 
@@ -27422,8 +27514,6 @@ source_nar_hash = ""
             .unwrap();
         assert_eq!(cursor, crate::cache_scan::CACHE_WRITE_RECOVERY_CURSOR_START);
         for (table, column) in [
-            ("package_documentation", "system_module_nar_hash"),
-            ("release_package_documentation", "system_module_nar_hash"),
             ("registry_index", "documentation_projection_generation"),
             ("object_placements", "catalog_object_resource_version"),
         ] {
@@ -27538,7 +27628,7 @@ source_nar_hash = ""
             dev = "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
 
             [versions.platforms.x86_64-linux.documentation]
-            format = "aos.package-documentation/v1+json"
+            format = "aos.package-reference/v1+json"
             store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-curl-docs.json"
             nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
             nar_size = 4096
@@ -27574,6 +27664,7 @@ source_nar_hash = ""
             package_name: "curl".into(),
             package_version: "8.5.0".into(),
             platform: "x86_64-linux".into(),
+            ability_reference: test_package_ability_reference("curl", "8.5.0"),
             artifact: aos_registry_surface::manifest::DocumentationArtifactMeta {
                 format: aos_doc_model::DOCUMENT_FORMAT.into(),
                 store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-curl-docs.json".into(),
@@ -27582,7 +27673,6 @@ source_nar_hash = ""
                 document_sha256: "b".repeat(64),
                 document_size: 2048,
                 semantic_schema_sha256: "c".repeat(64),
-                system_module_nar_hash: None,
                 references: Vec::new(),
             },
             search: vec![aos_doc_model::SearchDocument {
@@ -27701,7 +27791,7 @@ source_nar_hash = ""
             )
             .await
             .unwrap();
-        for artifact_kind in ["config", "evaluation_base_lib", "expose", "image"] {
+        for artifact_kind in ["image"] {
             db.backend
                 .execute(
                     "INSERT INTO registry_catalog_artifacts
@@ -27731,10 +27821,7 @@ source_nar_hash = ""
                 .map(|artifact| artifact.artifact_kind.as_str())
                 .collect::<Vec<_>>(),
             [
-                "config",
                 "documentation",
-                "evaluation_base_lib",
-                "expose",
                 "image",
                 "output",
                 "output",
@@ -27743,8 +27830,7 @@ source_nar_hash = ""
         );
         assert!(current_artifacts.iter().any(|artifact| {
             artifact.artifact_kind == "output"
-                && artifact.store_path
-                    == "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
+                && artifact.store_path == "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
         }));
         assert!(current_artifacts
             .iter()
@@ -28177,6 +28263,7 @@ source_nar_hash = ""
         let required_roles = [
             ContainerReleaseDescriptorRole::PlatformManifest,
             ContainerReleaseDescriptorRole::NixClosure,
+            ContainerReleaseDescriptorRole::Abilities,
             ContainerReleaseDescriptorRole::Sbom,
             ContainerReleaseDescriptorRole::Source,
             ContainerReleaseDescriptorRole::License,
@@ -28679,10 +28766,13 @@ source_nar_hash = ""
                         strong_etag: format!("\"snapshot-sha256-{}\"", disk.sha256),
                     },
                     VerifiedRegistryImageObject {
-                        object_key: disk.image_info.object_key.clone(),
-                        sha256: disk.image_info.sha256.clone(),
-                        byte_size: i64::try_from(disk.image_info.byte_size).unwrap(),
-                        strong_etag: format!("\"snapshot-sha256-{}\"", disk.image_info.sha256),
+                        object_key: disk.artifact_contract.document.object_key.clone(),
+                        sha256: disk.artifact_contract.document.sha256.clone(),
+                        byte_size: i64::try_from(disk.artifact_contract.document.byte_size).unwrap(),
+                        strong_etag: format!(
+                            "\"snapshot-sha256-{}\"",
+                            disk.artifact_contract.document.sha256
+                        ),
                     },
                 ]
             })

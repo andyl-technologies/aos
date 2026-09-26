@@ -1,5 +1,6 @@
 ##! cpio — GNU cpio archive utility
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -7,7 +8,71 @@
   version = "2.15";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "cpio";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Cpio emits the exact archived path when reading its own archive.";
+        "files" = {
+          "payload.txt" = "cpio payload\n";
+        };
+        "input" = "A file name and payload to store in a newc archive.";
+        "operation" = "Create the archive from the name list, then list its stored member.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/cpio"
+              "--create"
+              "--format=newc"
+              "--file=archive.cpio"
+            ];
+            "exit_code" = 0;
+            "stdin" = "payload.txt\n";
+          }
+          {
+            "argv" = [
+              "@out@/bin/cpio"
+              "--list"
+              "--file=archive.cpio"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "payload.txt\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Cpio rejects the invalid archive with status 2.";
+        "files" = {
+          "invalid.cpio" = "not a cpio archive\n";
+        };
+        "input" = "A text file that is not any supported cpio archive format.";
+        "operation" = "List members from the malformed archive.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/cpio"
+              "--list"
+              "--file=invalid.cpio"
+            ];
+            "exit_code" = 2;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

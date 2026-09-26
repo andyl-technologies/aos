@@ -1,0 +1,64 @@
+##! Ensures provider selection only considers modules from selected packages.
+{
+  lib,
+  pkgs,
+}: let
+  evaluate = packages:
+    lib.evalModules {
+      inherit lib;
+      modules = [
+        ../../modules/abilities/default.nix
+        {
+          config.aos.abilities.environment = {
+            authority = "test";
+            key = "selected-package-provider-discovery";
+            stage = "host";
+          };
+        }
+      ];
+      packageModules =
+        builtins.map
+        lib.abilities.authenticatedPackageModuleRecordFor
+        packages;
+    };
+  select = evaluation:
+    lib.abilities.selectBindings evaluation.config.aos.abilities;
+  selectionFails = evaluation:
+    !(builtins.tryEval (builtins.deepSeq (select evaluation) true)).success;
+
+  consumerOnly = evaluate [pkgs.nftables];
+  withProvider = evaluate [
+    pkgs.nftables
+    pkgs.aos-network-ruleset-provider
+  ];
+  selected = select withProvider;
+  providerName = "aos-network-ruleset-provider:network-ruleset";
+  unownedProvider =
+    withProvider.config.aos.abilities
+    // {
+      implementations =
+        withProvider.config.aos.abilities.implementations
+        // {
+          ${providerName} =
+            withProvider.config.aos.abilities.implementations.${providerName}
+            // {package = null;};
+        };
+    };
+  unownedProviderFails =
+    !(builtins.tryEval (builtins.deepSeq (
+        lib.abilities.selectBindings unownedProvider
+      )
+      true)).success;
+  selectedBindings = builtins.attrValues selected.bindings;
+  selectedInstances = builtins.attrValues selected.instances;
+in
+  assert selectionFails consumerOnly;
+  assert unownedProviderFails;
+  assert builtins.length selectedBindings == 1;
+  assert (builtins.head selectedBindings).request == "nftables:ruleset";
+  assert (builtins.head selectedBindings).implementation
+  == "aos-network-ruleset-provider:network-ruleset";
+  assert builtins.length selectedInstances == 1;
+  assert !(builtins.head selectedInstances ? package);
+  assert withProvider.config.aos.abilities.implementations.${providerName}.package
+  == "aos-network-ruleset-provider"; true

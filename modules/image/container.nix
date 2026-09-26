@@ -1,9 +1,8 @@
-##! modules/image/container.nix — Per-system OCI artifact projection
+##! Target-neutral selection of a package-owned container artifact backend.
 ##!
-##! Associates publishable OCI artifacts with the same evaluated system variant
-##! that produces disk images. The OCI builder consumes an explicit userland
-##! projection; it never packages the bootable system toplevel, kernel, initrd,
-##! bootloader, or other disk-only state.
+##! The base module knows only the selected backend value and checked package
+##! projections. OCI layout, runtime initialization, and platform mapping stay
+##! inside the backend package.
 {
   config,
   lib,
@@ -11,101 +10,40 @@
   systemName,
   ...
 }: let
-  cfg = config.aos.containers;
-  buildPackages = pkgs.buildPackages;
-  containerSchema = import ../../lib/containers/schema.nix;
-  # Archive and inventory builders execute on the build machine, even when
-  # their payload contains binaries for a different architecture.
-  oci = import ../../lib/build/oci {
-    inherit lib;
-    inherit (buildPackages) mkDerivation coreutils findutils gzip jq tar;
+  cfg =
+    config.aos.containers or {
+      enable = false;
+      default = null;
+      definitions = {};
+    };
+  enabled = cfg.enable;
+  defaultContainerName =
+    if !enabled || cfg.default == null
+    then null
+    else builtins.unsafeDiscardStringContext cfg.default;
+  backend = config.aos.artifacts.backend;
+  targetPlatform = {
+    os = pkgs.stdenv.hostPlatform.constraints.os;
+    cpu = pkgs.stdenv.hostPlatform.constraints.cpu;
+    abi = pkgs.stdenv.hostPlatform.constraints.abi;
+    features = pkgs.stdenv.hostPlatform.constraints.features;
   };
-  retainedSource = name: source:
-    pkgs.writeTextFile {
-      name = "aos-container-source-${name}";
-      text = builtins.readFile source;
-      destination = "/source/${builtins.baseNameOf source}";
-    };
-  evidenceOverrides = let
-    artifacts = config.aos.config.artifacts;
-    version = config.aos.system.version;
-    bootStorageSource = retainedSource "boot-storage" ../base/boot-storage.nix;
-    secureBootSource = retainedSource "secure-boot" ../base/secure-boot.nix;
-    firmwareEnrollmentSource = pkgs.mkDerivation {
-      pname = "aos-container-source-firmware-enrollment";
-      version = "1";
-      src = null;
-      buildDeps = [pkgs.coreutils];
-      runtimeDeps = [];
-      propagatedDeps = [];
-      phases = [
-        {
-          name = "install";
-          script = ''
-            mkdir -p "$out/source"
-            cp ${config.aos.boot.secureBoot.enrollAuthDir}/*.auth "$out/source/"
-          '';
-        }
-      ];
-    };
-  in
-    [
-      {
-        output = artifacts.esp-mount;
-        outputName = "out";
-        pname = "aos-mount-esp";
-        inherit version;
-        licenses = ["Apache-2.0"];
-        sources = [bootStorageSource (retainedSource "mount-esp" ../base/mount-esp.sh.in)];
+  runtimeClosureAudit = lib.build.runtimeClosureAudit;
+  defaultDefinition =
+    if enabled
+    then
+      (backend.defaultDefinition {
+        inherit lib pkgs targetPlatform;
+        systemPackageSlice = cfg.systemPackageSlice;
+      })
+      .config
+      // {
+        # Only the system-derived definition inherits image fixture policy.
+        runtimePolicy = {
+          inherit (config.aos.image) allowTestArtifacts testArtifactRoots;
+        };
       }
-      {
-        output = artifacts.esp-sync;
-        outputName = "out";
-        pname = "aos-sync-esps";
-        inherit version;
-        licenses = ["Apache-2.0"];
-        sources = [bootStorageSource (retainedSource "sync-esps" ../base/sync-esps.sh.in)];
-      }
-    ]
-    ++ lib.optionals config.aos.boot.secureBoot.enable [
-      {
-        output = artifacts.secure-boot-enroll;
-        outputName = "out";
-        pname = "aos-sb-enroll";
-        inherit version;
-        licenses = ["Apache-2.0"];
-        sources = [secureBootSource];
-      }
-    ]
-    # Fixture keys do not produce a public enrollment artifact. Release
-    # finalization does, and its container evidence must retain that output.
-    ++ lib.optionals (
-      config.aos.boot.secureBoot.enable
-      && config.aos.boot.secureBoot.externalFinalization.enable
-    ) [
-      {
-        output = artifacts.secure-boot-enrollment-public;
-        outputName = "out";
-        pname = "aos-public-firmware-enrollment";
-        version = "1";
-        licenses = ["Apache-2.0"];
-        sources = [secureBootSource firmwareEnrollmentSource];
-      }
-    ];
-  defaultAosDefinition =
-    (import ../../containers/aos.nix {
-      inherit lib pkgs evidenceOverrides;
-      goldenRoots = config.environment.systemPackages;
-      aosSystem = pkgs.stdenv.hostPlatform.system;
-    })
-    .config
-    // {
-      # Only the system-derived definition inherits image fixture policy.
-      # Independently declared containers keep the schema's strict defaults.
-      runtimePolicy = {
-        inherit (config.aos.image) allowTestArtifacts testArtifactRoots;
-      };
-    };
+    else null;
   systemIdentity = {
     inherit
       (config.aos.system)
@@ -125,107 +63,70 @@
         ;
     };
   };
-  definitionAssertions = definition:
-    definition.assertions
-    ++ [
+  builtContainers =
+    if !enabled
+    then {}
+    else
+      lib.mapAttrs
+      (name: container:
+        backend.buildContainer {
+          inherit
+            lib
+            pkgs
+            container
+            systemIdentity
+            runtimeClosureAudit
+            ;
+          buildPackages = pkgs.buildPackages;
+          definitionAttribute = "systems.${systemName}.build.containers.${name}";
+        })
+      cfg.definitions;
+in {
+  options.system.build = {
+    containers = lib.mkOption {
+      type = lib.types.attrsOf lib.types.anything;
+      default = {};
+      readOnly = true;
+      description = "Container artifacts derived by the selected package backend.";
+    };
+
+    defaultContainer = lib.mkOption {
+      type = lib.types.nullOr lib.types.anything;
+      default = null;
+      readOnly = true;
+      description = "Default container artifact associated with this system variant.";
+    };
+  };
+
+  config = lib.mkIf enabled {
+    aos.containers.definitions.aos = lib.mkDefault defaultDefinition;
+
+    assertions = [
       {
-        assertion = definition.platform.aosSystem == pkgs.stdenv.hostPlatform.system;
-        message = "container platform.aosSystem must match the evaluated package-set target";
+        assertion = (backend._type or null) == "aos-package-artifact-backend";
+        message = "container artifacts require one selected package-owned backend";
       }
       {
-        assertion =
-          definition.platform.architecture
-          == (
-            if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
-            then "amd64"
-            else "arm64"
-          );
-        message = "container OCI architecture must match the evaluated AOS target";
+        assertion = builtins.match "[A-Za-z_][A-Za-z0-9_-]*" systemName != null;
+        message = "system variant names with containers must be canonical Nix attribute identifiers";
+      }
+      {
+        assertion = defaultContainerName == null || builtins.hasAttr defaultContainerName cfg.definitions;
+        message = "aos.containers.default must name an enabled container definition";
+      }
+      {
+        assertion = let
+          systemPaths = map builtins.toString config.environment.systemPackages;
+        in
+          builtins.all (package: builtins.elem (builtins.toString package) systemPaths) cfg.systemPackageSlice;
+        message = "aos.containers.systemPackageSlice must select packages from environment.systemPackages";
       }
     ];
-  checkedDefinition = name: definition: let
-    failures = builtins.filter (assertion: !assertion.assertion) (definitionAssertions definition);
-    checked =
-      if failures == []
-      then definition
-      else
-        throw ''
-          Container '${name}' failed evaluation:
-          ${lib.concatStringsSep "\n" (map (failure: "  - ${failure.message}") failures)}
-        '';
-  in
-    builtins.seq checked checked;
-  builtContainers =
-    lib.mapAttrs
-    (name: definition: let
-      container = checkedDefinition name definition;
-    in
-      import ../../lib/containers/build.nix {
-        inherit lib pkgs container oci systemIdentity;
-        definitionAttribute = "systems.${systemName}.build.containers.${name}";
-      })
-    cfg.definitions;
-in {
-  options.aos.containers = {
-    enable = lib.mkOption {
-      type = lib.types.bool;
-      default = pkgs.stdenv.hostPlatform.isLinux;
-      description = "Whether this system evaluation exposes associated OCI container artifacts.";
-    };
-
-    default = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = "aos";
-      description = "Name of the container associated with this system variant by default.";
-    };
-
-    definitions = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.submodule containerSchema);
-      default = {};
-      internal = true;
-      description = "Strict OCI artifact definitions evaluated with this system variant.";
-    };
-  };
-
-  options.system.build.containers = lib.mkOption {
-    type = lib.types.attrsOf lib.types.anything;
-    default = {};
-    readOnly = true;
-    description = "OCI artifacts derived from this evaluated system configuration.";
-  };
-
-  options.system.build.defaultContainer = lib.mkOption {
-    type = lib.types.nullOr lib.types.anything;
-    default = null;
-    readOnly = true;
-    description = "Default OCI artifact associated with this system variant.";
-  };
-
-  config = lib.mkIf cfg.enable {
-    aos.containers.definitions.aos = defaultAosDefinition;
-
-    assertions =
-      [
-        {
-          assertion = builtins.match "[A-Za-z_][A-Za-z0-9_-]*" systemName != null;
-          message = "system variant names with containers must be canonical Nix attribute identifiers";
-        }
-        {
-          assertion = cfg.default == null || builtins.hasAttr cfg.default cfg.definitions;
-          message = "aos.containers.default must name an enabled container definition";
-        }
-      ]
-      ++ builtins.concatMap
-      (name:
-        map
-        (assertion: assertion // {message = "container '${name}': ${assertion.message}";})
-        (definitionAssertions cfg.definitions.${name}))
-      (builtins.attrNames cfg.definitions);
 
     system.build.containers = builtContainers;
     system.build.defaultContainer =
-      if cfg.default == null
+      if defaultContainerName == null
       then null
-      else builtContainers.${cfg.default};
+      else builtContainers.${defaultContainerName};
   };
 }

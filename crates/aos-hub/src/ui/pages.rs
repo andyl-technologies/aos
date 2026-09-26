@@ -133,6 +133,10 @@ pub fn package_page(
         context,
         None,
         false,
+        None,
+        false,
+        None,
+        false,
         started,
         &current_session_indicator(),
     )

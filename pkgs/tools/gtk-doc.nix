@@ -1,5 +1,6 @@
 ##! gtk-doc — Documentation generator for GObject-based libraries
 {
+  lib,
   mkDerivation,
   fetchurl,
   meson,
@@ -19,7 +20,65 @@
   sitePackages = "lib/python3.14/site-packages";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "gtk-doc";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Gtk-doc records the public function in the generated declaration list.";
+        "files" = {
+          "probe.h" = "/**\n * probe_answer:\n *\n * Returns: the answer\n */\nint probe_answer(void);\n";
+        };
+        "input" = "A public C header containing one documented function declaration.";
+        "operation" = "Scan the header and inspect gtk-doc's declaration inventory.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, subprocess\nresult = subprocess.run([\"@out@/bin/gtkdoc-scan\", \"--module=probe\", \"--source-dir=.\"], capture_output=True)\nassert result.returncode == 0, result.stderr\ndeclarations = pathlib.Path(\"probe-decl-list.txt\").read_text()\nassert \"probe_answer\" in declarations\nprint(\"gtk-doc operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "gtk-doc operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Gtk-doc rejects the unknown option before scanning sources.";
+        "files" = {};
+        "input" = "A gtkdoc-scan option that is not defined.";
+        "operation" = "Invoke the scanner with the unknown option.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/gtkdoc-scan\", \"--aos-invalid-option\"], capture_output=True)\nif result.returncode == 0:\n    raise SystemExit(2)\nsys.stderr.write(\"gtk-doc rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "gtk-doc rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

@@ -1,5 +1,6 @@
 ##! SQLite — Self-contained SQL database engine
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -10,7 +11,60 @@
   srcVersion = "3530400";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "sqlite";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "SQLite evaluates the query and prints 42.";
+        "files" = {};
+        "input" = "SQL that inserts two integers and computes their sum.";
+        "operation" = "Execute the statements in an in-memory SQLite database.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/sqlite3"
+              ":memory:"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "CREATE TABLE values_(value INTEGER); INSERT INTO values_ VALUES (19), (23); SELECT sum(value) FROM values_;\n";
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "SQLite rejects the syntax error with status 1.";
+        "files" = {};
+        "input" = "A SELECT statement with an incomplete expression.";
+        "operation" = "Parse the malformed SQL.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/sqlite3"
+              ":memory:"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdin" = "SELECT 19 +;\n";
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

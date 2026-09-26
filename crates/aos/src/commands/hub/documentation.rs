@@ -1,12 +1,23 @@
 //! Handles hub documentation commands and their domain-specific request validation.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use crate::cli::{HubAccessArgs, HubDocumentationCmd};
 use crate::commands::hub::client::hub_client;
 use crate::commands::hub::mutation::topology_read;
 use crate::commands::hub::output::print_hub_json;
+use crate::commands::input::read_bounded_file;
 use anyhow::{Context as _, Result};
+use aos_ability_inspect::{
+    DeploymentReportContext, INSPECTION_BUNDLE_MAX_BYTES, InspectionBundle,
+    planned_deployment_overlay,
+};
+use aos_ability_model::LocalKey;
+use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
+use aos_doc_model::{PackageAbilityReference, ability_reference_supported_features};
 use aos_remote::{hub_rpc as HubTopologyMethod, hub_types};
+use sha2::{Digest as _, Sha256};
 
 /// Handles the hub documentation command family through the public API.
 ///
@@ -15,6 +26,160 @@ use aos_remote::{hub_rpc as HubTopologyMethod, hub_types};
 /// Returns an error if request validation, credential resolution, or a hub API call fails.
 pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationCmd) -> Result<()> {
     match command {
+        HubDocumentationCmd::Abilities {
+            access,
+            registry,
+            release,
+            platform,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            let response: hub_types::GetReleaseAbilityGraphResponse = client
+                .call_topology(
+                    HubTopologyMethod::GetReleaseAbilityGraph,
+                    &hub_types::GetReleaseAbilityGraphRequest {
+                        registry: registry.clone(),
+                        release: release.clone().unwrap_or_default(),
+                        platform: platform.clone().unwrap_or_default(),
+                    },
+                )
+                .await?;
+            let graph = verify_ability_graph_response(&response)?;
+            let identity = response
+                .identity
+                .as_ref()
+                .context("Hub omitted release ability graph identity")?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "identity": {
+                        "registry_commit": identity.registry_commit,
+                        "release": identity.release,
+                        "platform": identity.platform,
+                        "graph_sha256": identity.graph_sha256,
+                    },
+                    "graph": graph,
+                }));
+            } else {
+                print_ability_graph(&graph, identity);
+            }
+            Ok(())
+        }
+        HubDocumentationCmd::Report {
+            access,
+            bundle,
+            expected_digest,
+            registry,
+            release,
+            package,
+            version,
+            platform,
+            deployment,
+            sequence,
+            reporter_resource_version,
+            valid_for_seconds,
+        } => {
+            let bundle_bytes = read_bounded_file(
+                bundle,
+                u64::try_from(INSPECTION_BUNDLE_MAX_BYTES)?,
+                "inspection bundle",
+            )?;
+            let expected_digest = expected_digest
+                .as_deref()
+                .map(Sha256Digest::parse)
+                .transpose()
+                .context("parsing expected inspection-bundle digest")?;
+            let checked = InspectionBundle::decode(&bundle_bytes)
+                .context("decoding canonical ability inspection bundle")?
+                .check(expected_digest)
+                .context("checking ability inspection bundle semantics")?;
+
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            let response: hub_types::GetPackageAbilityReferenceResponse = client
+                .call_topology(
+                    HubTopologyMethod::GetPackageAbilityReference,
+                    &hub_types::GetPackageAbilityReferenceRequest {
+                        registry: registry.clone(),
+                        package: package.clone(),
+                        version: version.clone(),
+                        platform: platform.clone(),
+                        release: release.clone().unwrap_or_default(),
+                    },
+                )
+                .await?;
+            let identity = response
+                .identity
+                .as_ref()
+                .context("Hub omitted package ability reference identity")?;
+            let reference = PackageAbilityReference::from_canonical_json(
+                &response.canonical_json,
+                &ability_reference_supported_features()?,
+            )
+            .context("Hub returned an invalid canonical package ability reference")?;
+            let digest = hex::encode(Sha256::digest(&response.canonical_json));
+            anyhow::ensure!(
+                digest == response.etag
+                    && identity.package == *package
+                    && identity.package == reference.package.as_str()
+                    && identity.version == *version
+                    && identity.version == reference.version
+                    && identity.platform == *platform
+                    && identity.manifest_sha256 == reference.manifest_sha256.to_string()
+                    && identity.package_digest == reference.package_digest.to_string(),
+                "Hub package ability reference identity does not match canonical bytes"
+            );
+
+            let reported_at_unix_seconds = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .context("system clock precedes the Unix epoch")?
+                .as_secs();
+            let overlay = planned_deployment_overlay(
+                checked.plan(),
+                &reference,
+                DeploymentReportContext {
+                    registry_commit: identity.registry_commit.clone(),
+                    platform: platform.clone(),
+                    deployment: LocalKey::new(deployment.clone())
+                        .context("invalid deployment reporter slot")?,
+                    sequence: *sequence,
+                    reported_at_unix_seconds,
+                    valid_for_seconds: *valid_for_seconds,
+                },
+            )
+            .context("projecting checked planned deployment")?;
+            let canonical_json = overlay.canonical_json()?;
+            let accepted: hub_types::PackageAbilityDeploymentResponse = client
+                .call_topology(
+                    HubTopologyMethod::ReportPackageAbilityDeployment,
+                    &hub_types::ReportPackageAbilityDeploymentRequest {
+                        registry: registry.clone(),
+                        deployment: deployment.clone(),
+                        reporter_resource_version: *reporter_resource_version,
+                        canonical_json: canonical_json.clone(),
+                    },
+                )
+                .await?;
+            anyhow::ensure!(
+                accepted.canonical_json == canonical_json,
+                "Hub returned different deployment overlay bytes"
+            );
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "overlay": overlay,
+                    "authority": accepted.authority,
+                    "received_at": accepted.received_at,
+                    "expires_at": accepted.expires_at,
+                    "reporter_resource_version": accepted.reporter_resource_version,
+                }));
+            } else {
+                println!(
+                    "Reported {} planned ability exports for {} in deployment {} (sequence {})",
+                    overlay.plan.exports.len(),
+                    package,
+                    deployment,
+                    sequence
+                );
+            }
+            Ok(())
+        }
         HubDocumentationCmd::Search {
             access,
             query,
@@ -63,7 +228,7 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
             prefix,
             owner,
             option_type,
-            contributable,
+            extensible,
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref()).await?;
@@ -79,7 +244,7 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
                     prefix: prefix.clone().unwrap_or_default(),
                     owner: owner.clone().unwrap_or_default(),
                     r#type: option_type.clone().unwrap_or_default(),
-                    contributable: *contributable,
+                    extensible: *extensible,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },
@@ -184,6 +349,95 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
     }
 }
 
+fn verify_ability_graph_response(
+    response: &hub_types::GetReleaseAbilityGraphResponse,
+) -> Result<aos_doc_model::ReleaseAbilityGraph> {
+    let identity = response
+        .identity
+        .as_ref()
+        .context("Hub omitted release ability graph identity")?;
+    let graph = aos_doc_model::ReleaseAbilityGraph::from_canonical_json(&response.canonical_json)
+        .context("Hub returned an invalid canonical release ability graph")?;
+    let digest = hex::encode(Sha256::digest(&response.canonical_json));
+    anyhow::ensure!(
+        graph.platform == identity.platform
+            && digest == identity.graph_sha256
+            && response.etag == identity.graph_sha256,
+        "Hub release ability graph identity does not match canonical bytes"
+    );
+    Ok(graph)
+}
+
+fn print_ability_graph(
+    graph: &aos_doc_model::ReleaseAbilityGraph,
+    identity: &hub_types::ReleaseAbilityGraphIdentity,
+) {
+    println!(
+        "Ability graph for release {} on {}",
+        identity.release, graph.platform
+    );
+    println!("Registry commit: {}", identity.registry_commit);
+    println!(
+        "{} packages, {} interfaces, {} providers, {} requirements",
+        graph.packages.len(),
+        graph.interfaces.len(),
+        graph.providers.len(),
+        graph.requirements.len()
+    );
+
+    for interface in &graph.interfaces {
+        let providers = graph
+            .providers
+            .iter()
+            .filter(|provider| provider.interface == interface.key)
+            .collect::<Vec<_>>();
+        let consumers = graph
+            .requirements
+            .iter()
+            .filter(|requirement| requirement.matching_interfaces.contains(&interface.key))
+            .collect::<Vec<_>>();
+        println!(
+            "\n{} ABI {} ({} providers, {} consumers)",
+            interface.key.name,
+            interface.key.abi,
+            providers.len(),
+            consumers.len()
+        );
+        for provider in providers {
+            println!(
+                "  provides: {}@{}/{}",
+                provider.id.package.name, provider.id.package.version, provider.id.export
+            );
+        }
+        for consumer in consumers {
+            let scope = consumer
+                .id
+                .implementation
+                .as_ref()
+                .map_or_else(|| "package".to_string(), ToString::to_string);
+            println!(
+                "  consumes: {}@{} ({scope})/{}",
+                consumer.id.package.name, consumer.id.package.version, consumer.id.alias
+            );
+        }
+    }
+
+    let unresolved = graph
+        .requirements
+        .iter()
+        .filter(|requirement| requirement.matching_providers.is_empty())
+        .collect::<Vec<_>>();
+    if !unresolved.is_empty() {
+        println!("\nUnresolved requirements");
+        for requirement in unresolved {
+            println!(
+                "  {}@{}/{}",
+                requirement.id.package.name, requirement.id.package.version, requirement.id.alias
+            );
+        }
+    }
+}
+
 fn documentation_browser_url(
     origin: &str,
     registry: &str,
@@ -234,34 +488,36 @@ async fn fetch_documentation(
 
 fn verify_documentation_response(
     response: &hub_types::GetPackageDocumentationResponse,
-) -> Result<aos_doc_model::PackageDocumentation> {
+) -> Result<aos_doc_model::PackageDocumentationProjection> {
     let identity = response
         .identity
         .as_ref()
         .context("Hub omitted package documentation identity")?;
-    let document =
-        aos_doc_model::PackageDocumentation::from_canonical_json(&response.canonical_json)
-            .context("Hub returned invalid canonical package documentation")?;
+    let projection = aos_doc_model::PackageDocumentationProjection::from_canonical_json(
+        &response.canonical_json,
+    )
+    .context("Hub returned an invalid canonical package reference")?;
+    let document = &projection.document;
     anyhow::ensure!(
         document.package.name == identity.package
             && document.package.version == identity.version
             && document.package.platform == identity.platform
-            && document.document_sha256()? == identity.document_sha256
+            && projection.document_sha256()? == identity.document_sha256
             && response.etag == identity.document_sha256,
         "Hub documentation identity does not match canonical bytes"
     );
-    Ok(document)
+    Ok(projection)
 }
 
 fn print_documentation_response(
     printer: &Printer,
     response: &hub_types::GetPackageDocumentationResponse,
 ) -> Result<()> {
-    let document = verify_documentation_response(response)?;
+    let projection = verify_documentation_response(response)?;
     if printer.mode() == OutputMode::Json {
         printer.json(&serde_json::from_slice(&response.canonical_json)?);
     } else {
-        print!("{}", document.render_plain());
+        print!("{}", projection.render_plain());
     }
     Ok(())
 }
@@ -295,5 +551,36 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn release_ability_graph_response_binds_identity_to_canonical_bytes() {
+        let graph = aos_doc_model::ReleaseAbilityGraph {
+            schema: aos_doc_model::RELEASE_ABILITY_GRAPH_SCHEMA.to_string(),
+            platform: "x86_64-linux".to_string(),
+            packages: Vec::new(),
+            interfaces: Vec::new(),
+            providers: Vec::new(),
+            requirements: Vec::new(),
+        };
+        let canonical_json = graph.canonical_json().expect("canonical graph");
+        let digest = hex::encode(Sha256::digest(&canonical_json));
+        let mut response = hub_types::GetReleaseAbilityGraphResponse {
+            identity: Some(hub_types::ReleaseAbilityGraphIdentity {
+                registry_commit: "commit".to_string(),
+                release: "1.0.0".to_string(),
+                platform: graph.platform.clone(),
+                graph_sha256: digest.clone(),
+            }),
+            canonical_json,
+            etag: digest,
+        };
+
+        assert_eq!(
+            verify_ability_graph_response(&response).expect("verified graph"),
+            graph
+        );
+        response.etag = "tampered".to_string();
+        assert!(verify_ability_graph_response(&response).is_err());
     }
 }

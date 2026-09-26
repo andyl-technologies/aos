@@ -1,6 +1,7 @@
 ##! harfbuzz — Text shaping and glyph rendering for image processing.
 {
   mkDerivation,
+  lib,
   fetchurl,
   buildPackages,
   stdenv,
@@ -16,7 +17,97 @@
   version = "14.3.1";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "harfbuzz";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "The UTF-8 text ffi and an empty shaping font.";
+        operation = "Shape the text through the public HarfBuzz buffer and font APIs.";
+        expected = "Shaping retains three glyphs and the first input cluster.";
+        artifacts = [];
+        files."probe.c" = ''
+          #include <hb.h>
+          #include <stdio.h>
+
+          int main(void) {
+              hb_buffer_t *buffer = hb_buffer_create();
+              hb_buffer_add_utf8(buffer, "ffi", -1, 0, -1);
+              hb_buffer_guess_segment_properties(buffer);
+              hb_shape(hb_font_get_empty(), buffer, NULL, 0);
+
+              unsigned int count = 0;
+              const hb_glyph_info_t *glyphs = hb_buffer_get_glyph_infos(buffer, &count);
+              if (count != 3 || glyphs == NULL || glyphs[0].cluster != 0) {
+                  hb_buffer_destroy(buffer);
+                  return 1;
+              }
+
+              hb_buffer_destroy(buffer);
+              puts("shaped three glyphs");
+              return 0;
+          }
+        '';
+        steps = [
+          {
+            argv = [
+              "@cc@"
+              "-I@out@/include/harfbuzz"
+              "probe.c"
+              "@out@/lib/libharfbuzz.so"
+              "-Wl,-rpath,@out@/lib"
+              "-o"
+              "@work@/primary/probe"
+            ];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = ["@work@/primary/probe"];
+            exit_code = 0;
+            stdout.exact = "shaped three glyphs\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "A file containing text instead of font data.";
+        operation = "Ask hb-shape to load the malformed font and shape text.";
+        expected = "The font loader rejects the malformed file.";
+        artifacts = [];
+        files."bad.ttf" = "not a font\n";
+        steps = [
+          {
+            argv = ["@out@/bin/hb-shape" "bad.ttf" "ffi"];
+            exit_code = 2;
+            observes_rejection = true;
+            stdout.exact = "";
+            stderr.exact = "hb-shape: bad.ttf: Failed loading font face\nTry `hb-shape --help' for more information.\n";
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://github.com/harfbuzz/harfbuzz/archive/${version}.tar.gz"];

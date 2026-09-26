@@ -8,6 +8,7 @@
 {
   mkDerivation,
   pname,
+  platformSupport,
   version,
   src,
   changeId,
@@ -41,6 +42,7 @@
   needsNativeZlibLink ? builtins.compareVersions version "1.79.0" >= 0 && builtins.compareVersions version "1.93.0" < 0,
   description,
   buildTool ? null,
+  qualification ? null,
 }: let
   buildTriple = stdenv.buildPlatform.config;
   buildTripleEnv = builtins.replaceStrings ["-"] ["_"] buildTriple;
@@ -50,7 +52,7 @@
   isFinal = builtins.elem "dev" outputs;
 in
   mkDerivation {
-    inherit pname version src outputs;
+    inherit pname version src outputs qualification platformSupport;
 
     buildDeps =
       [

@@ -7,18 +7,16 @@
 ##! tools at runtime and needs no PATH wrapper — `$out/bin/aos-hub` is the
 ##! complete artifact.
 ##!
-##! Hermetic, like every package here: the toolchain is the AOS-built
-##! `pkgs.rust`, dependencies are vendored by `fetchCargoDeps`, and the only
-##! native build inputs are `pkg-config`, `openssl`, and `sqlite` (the `reqwest`
-##! rustls stack still links `openssl-sys` transitively through the workspace) and
-##! `protobuf` (the `aos-proto` build script runs `protoc` to generate the
-##! `aos.hub.v1` ConnectRPC stubs).
+##! The AOS Rust toolchain and pinned workspace vendor output make this build
+##! hermetic. Native inputs include `pkg-config`, `openssl`, `sqlite`, and
+##! `protobuf`; the `aos-proto` build script runs `protoc` to generate the
+##! `aos.hub.v1` ConnectRPC stubs.
 {
   lib,
-  mkCargoPackage,
+  mkAosCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceVendor,
   openssl,
   perl,
   pkg-config,
@@ -43,33 +41,7 @@
     if isDarwinCross
     then buildPackages.protobuf
     else protobuf;
-  repoRoot = ../../..;
-  repoRootString = toString repoRoot;
-  src = builtins.path {
-    path = repoRoot;
-    name = "aos-hub-workspace-src";
-    filter = path: _type: let
-      pathString = toString path;
-      base = baseNameOf path;
-    in
-      base
-      != "target"
-      && base != ".git"
-      && (
-        pathString
-        == repoRootString
-        || lib.hasPrefix "${repoRootString}/crates" pathString
-        || pathString == "${repoRootString}/docs"
-        || pathString == "${repoRootString}/docs/rfcs"
-        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
-      );
-  };
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = "sha256-6FU3M+iwF2iVd+nl7JvCC6r2oGz4Yq1PWOqBC2nBqDQ=";
-  };
+  cargoDeps = aosWorkspaceVendor;
   cargoEnv = {
     OPENSSL_DIR = "${openssl}";
     OPENSSL_LIB_DIR = "${openssl}/lib";
@@ -101,9 +73,92 @@
     runtimeDeps = [openssl sqlite zlib];
   };
 in
-  mkCargoPackage {
+  mkAosCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      role = "public-package";
+    };
     pname = "aos-hub";
-    inherit version src;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The command returns success and documents Usage.";
+        "files" = {};
+        "input" = "The packaged aos-hub command-line interface.";
+        "operation" = "Request its offline help text.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/aos-hub\",\"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"Usage\" in (result.stdout + result.stderr), (result.returncode, result.stdout, result.stderr)\nprint(\"aos-hub operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "aos-hub operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The command rejects the unsupported option before performing its main operation.";
+        "files" = {};
+        "input" = "A aos-hub invocation containing an unsupported command-line option.";
+        "operation" = "Parse the unknown option without starting a service or contacting a remote endpoint.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/aos-hub\",\"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"aos-hub rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "aos-hub rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
+    inherit version;
 
     # Build the hub package's control-plane and fixed egress binaries.
     # PostgreSQL is the strongly-consistent shared nonce store for replicated
@@ -116,6 +171,8 @@ in
     buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf];
     # libgit2 still links zlib for compressed Git objects.
     runtimeDeps = [openssl sqlite zlib];
+
+    abilities = ./_aos-hub;
 
     # The workspace test suite is exercised by the `aos` package's
     # `cargoTestFlags = "--workspace"`; this derivation only needs to compile

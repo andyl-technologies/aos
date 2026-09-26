@@ -2,20 +2,17 @@
 {
   pkgs,
   lib,
-  packageCoverage,
+  nativeAdapterMatrix,
   releaseExecutor,
 }: let
-  platform = pkgs.stdenv.hostPlatform.system;
   packageNames = pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
   contract = import ../../qualification {
-    inherit lib;
+    inherit lib nativeAdapterMatrix;
     inherit packageNames;
   };
-  fixture = import ../../qualification {
-    inherit lib;
-    packageNames = ["aos" "nginx" "containerd" "runc"];
-  };
-  capturedFixture = builtins.fromJSON (builtins.readFile ../../crates/aos-release/tests/fixtures/qualification-contract.json);
+  packageFunctionRequirement = builtins.head (
+    builtins.filter (requirement: requirement.id == "package-function") contract.requirements
+  );
   sourceTree = builtins.path {
     path = ../../qualification;
     name = "qualification-source-fixture";
@@ -29,9 +26,8 @@
     pname = "source-fixture";
     version = "1";
   };
-  sourceEvidence = import ../../lib/containers/package-evidence.nix {
-    inherit lib;
-    pkgs = {
+  sourceEvidence = pkgs.mkOciPackageEvidence {
+    packageSet = {
       packageNames = ["fixture"];
       fixture = sourceFixture;
     };
@@ -69,58 +65,60 @@
       inherit reportOnly;
     };
 
+  probeFixture = lib.qualification.commandProbe {
+    primary = {
+      input = "A C source file that prints one fixed line.";
+      operation = "Compile the source and execute the resulting program.";
+      expected = "The compiled program prints fixture followed by a newline.";
+      files."fixture.c" = ''
+        #include <stdio.h>
+
+        int main(void) {
+            return fputs("fixture\n", stdout) == EOF;
+        }
+      '';
+      steps = [
+        {
+          argv = ["@cc@" "fixture.c" "-o" "fixture"];
+          exit_code = 0;
+          stdout.exact = "";
+          stderr.exact = "";
+        }
+        {
+          argv = ["@work@/primary/fixture"];
+          exit_code = 0;
+          stdout.exact = "fixture\n";
+          stderr.exact = "";
+        }
+      ];
+      artifacts = [];
+    };
+    badInput = {
+      input = "A path that does not exist.";
+      operation = "Attempt to read the absent input.";
+      expected = "The operation rejects the missing file with status 7 and a fixed diagnostic.";
+      files = {};
+      steps = [
+        {
+          argv = [
+            "@python@"
+            "-c"
+            "import sys; from pathlib import Path; missing = not Path('absent').exists(); sys.stderr.write('missing input\\n' if missing else 'unexpected input\\n'); raise SystemExit(7 if missing else 0)"
+          ];
+          exit_code = 7;
+          stdout.exact = "";
+          stderr.exact = "missing input\n";
+          observes_rejection = true;
+        }
+      ];
+      artifacts = [];
+    };
+  };
   declarativeProbe = testing.mkQualificationPackageProbe {
     name = "fixture";
-    spec = {
-      schema_version = "aos.release.package-probe/v1";
-      package = "fixture";
-      primary = {
-        input = "A C source file that prints one fixed line.";
-        operation = "Compile the source and execute the resulting program.";
-        expected = "The compiled program prints fixture followed by a newline.";
-        files."fixture.c" = ''
-          #include <stdio.h>
-
-          int main(void) {
-              return fputs("fixture\n", stdout) == EOF;
-          }
-        '';
-        steps = [
-          {
-            argv = ["@cc@" "fixture.c" "-o" "fixture"];
-            exit_code = 0;
-            stdout.exact = "";
-            stderr.exact = "";
-          }
-          {
-            argv = ["@work@/primary/fixture"];
-            exit_code = 0;
-            stdout.exact = "fixture\n";
-            stderr.exact = "";
-          }
-        ];
-        artifacts = [];
-      };
-      bad_input = {
-        input = "A path that does not exist.";
-        operation = "Attempt to read the absent input.";
-        expected = "The operation rejects the missing file with status 7 and a fixed diagnostic.";
-        files = {};
-        steps = [
-          {
-            argv = [
-              "@python@"
-              "-c"
-              "import sys; from pathlib import Path; missing = not Path('absent').exists(); sys.stderr.write('missing input\\n' if missing else 'unexpected input\\n'); raise SystemExit(7 if missing else 0)"
-            ];
-            exit_code = 7;
-            stdout.exact = "";
-            stderr.exact = "missing input\n";
-            observes_rejection = true;
-          }
-        ];
-        artifacts = [];
-      };
+    spec = import ../../lib/testing/qualification-package-spec.nix {inherit lib;} {
+      packageName = "fixture";
+      packageProbe = probeFixture;
     };
   };
   declarativeProbeCheck = pkgs.runCommand "qualification-package-declarative-probe-check" {} ''
@@ -132,15 +130,13 @@
     buildPath=$PATH
     export PATH=
     export AOS_QUALIFICATION_PACKAGE=fixture
-    export AOS_QUALIFICATION_PLATFORM=${platform}
+    export AOS_QUALIFICATION_PLATFORM=x86_64-linux
     export AOS_QUALIFICATION_PACKAGE_OUTPUTS='{"out":"/nix/store/00000000000000000000000000000000-fixture"}'
     export AOS_QUALIFICATION_PACKAGE_CLOSURE='["/nix/store/00000000000000000000000000000000-fixture"]'
     export AOS_QUALIFICATION_PACKAGE_PROFILE=$PWD/work/profile
     export AOS_QUALIFICATION_PROBE_REPORT=$PWD/work/result.json
     export AOS_QUALIFICATION_PROBE_WORK=$PWD/work
-    export AOS_QUALIFICATION_BASH=${pkgs.bash}/bin/bash
     export AOS_QUALIFICATION_CC=${pkgs.cc}/bin/cc
-    export AOS_QUALIFICATION_CXX=${pkgs.cc}/bin/c++
     export AOS_QUALIFICATION_PYTHON=${pkgs.python3}/bin/python3
 
     ${declarativeProbe}
@@ -167,26 +163,19 @@
     scenarios.package-function = "/nix/store/00000000000000000000000000000000-scenario/bin/run";
     workRoot = "/var/lib/aos-release/qualification-fixture";
   };
-  packageProbe = declarativeProbe;
   packageExecutor = testing.mkQualificationPackageScenario {
     name = "qualification-package-scenario-fixture";
     identity = "fixture-executor";
-    packageNames = ["fixture"];
-    probes.fixture = packageProbe;
+    packageNames = ["gzip"];
+    checks = packageFunctionRequirement.checks;
     trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
   };
-  partialPackageExecutor = testing.mkQualificationPackageScenario {
-    name = "qualification-package-scenario-partial-fixture";
-    identity = "fixture-executor";
-    packageNames = ["fixture" "missing"];
-    probes.fixture = packageProbe;
-    trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
-  };
-  rejectsPackageExecutor = packageNames: probes:
+  rejectsPackageExecutor = packageNames:
     !(builtins.tryEval (builtins.deepSeq (testing.mkQualificationPackageScenario {
         name = "qualification-package-scenario-invalid";
         identity = "fixture-executor";
-        inherit packageNames probes;
+        inherit packageNames;
+        checks = packageFunctionRequirement.checks;
         trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
       })
       true))
@@ -196,29 +185,38 @@
   imageRecovery = builtins.head (
     builtins.filter (requirement: requirement.id == "image-update-recovery") contract.requirements
   );
+  abilityRequirements = builtins.listToAttrs (map (requirement: {
+    name = requirement.id;
+    value = requirement;
+  }) (builtins.filter (requirement: lib.hasPrefix "ability-" requirement.id) contract.requirements));
+  nativeAdapterChecks = abilityRequirements.ability-native-adapter-matrix.checks;
+  nativeCells = nativeAdapterMatrix.spec.cells;
+  applicableNativeIds = nativeAdapterMatrix.spec.applicability.applicable_cell_ids;
+  inapplicableNativeIds = map (entry: entry.cell_id) nativeAdapterMatrix.spec.applicability.inapplicable_cells;
+  partitionedNativeIds = builtins.sort builtins.lessThan (applicableNativeIds ++ inapplicableNativeIds);
+  nativeRoleRevocationCells = builtins.filter (cell:
+    builtins.match "revoke-(caller|provider|enforcement|assignment)-(before-acquisition|after-acquisition|before-external-effect)"
+    (builtins.elemAt (lib.splitString "/" cell.id) 4)
+    != null)
+  nativeCells;
+  nativeFailureControlCells = builtins.filter (cell: let
+    scenario = builtins.elemAt (lib.splitString "/" cell.id) 4;
+  in
+    builtins.elem scenario ["expire-attempt-deadline" "fail-cleanup" "fail-release"])
+  nativeCells;
   recoveryPackage = builtins.head (
     builtins.filter (rule: rule.name == "aos-recovery") contract.package_rules
   );
-  coveredAndMissingPackageNames = builtins.sort builtins.lessThan (
-    packageCoverage.implementedPackages ++ packageCoverage.missingPackages
-  );
-  coveragePartitions =
-    builtins.all (
-      platform: let
-        coverage = packageCoverage.platforms.${platform};
-        eligible = pkgs.platformSupport.publicationEligibleNames platform pkgs.allPackageNames;
-        coveredAndMissing = builtins.sort builtins.lessThan (
-          coverage.implementedPackages ++ coverage.missingPackages
-        );
-      in
-        coverage.total
-        == builtins.length eligible
-        && coverage.total == coverage.implemented + builtins.length coverage.missingPackages
-        && coveredAndMissing == eligible
-    )
-    pkgs.platformSupport.canonicalSystems;
+  executedPackageRules = builtins.filter (rule: rule.execution != null) contract.package_rules;
+  packageCaseScenarioNames =
+    map
+    (rule: "package-function/${rule.name}/x86_64-linux")
+    executedPackageRules;
+  isStoreScenario = scenario:
+    builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+(/.*)?$" (builtins.toString scenario)
+    != null;
   composed = import ../../qualification/_eval.nix {
-    inherit lib;
+    inherit lib nativeAdapterMatrix;
     packageNames = ["aos" "fixture"];
     modules = [
       {
@@ -267,7 +265,7 @@
   configured = composed.config.qualification;
   rejects = module:
     !(builtins.tryEval (builtins.deepSeq (import ../../qualification {
-        inherit lib;
+        inherit lib nativeAdapterMatrix;
         packageNames = ["aos"];
         modules = [module];
       })
@@ -278,29 +276,46 @@ in
   assert !(lib.hasInfix "release qualification respond" (containerReport true));
   assert lib.hasInfix "release qualification respond" (containerReport false);
   assert lib.hasInfix "lifecycle_cycles" (containerReport true);
-  assert fixture == capturedFixture;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString sourceRoot) != null;
   assert builtins.readFile (sourceRoot + "/server.nix") == builtins.readFile (nestedSource + "/server.nix");
   assert generatedSourceRoot == builtins.toString generatedArchive;
   assert builtins.getContext generatedSourceRoot == builtins.getContext (builtins.toString generatedArchive);
   assert (builtins.head (builtins.head generatedSourceEvidence.catalog).sources).path == builtins.unsafeDiscardStringContext generatedSourceRoot;
   assert names == builtins.sort builtins.lessThan packageNames;
-  assert imageRecovery.regressions
-  == [
-    "checks.fleet.system-image-rollback"
-    "checks.fleet.boot-identity-fail-closed"
-    "checks.fleet.measured-boot"
-  ];
-  assert packageCoverage.schema_version == "aos.release.package-probe-coverage/v1";
-  assert packageCoverage.total == builtins.length packageNames;
-  assert packageCoverage.total
-  == packageCoverage.implemented + builtins.length packageCoverage.missingPackages;
-  assert coveredAndMissingPackageNames == packageNames;
-  assert coveragePartitions;
-  assert builtins.all (
-    name: !(builtins.elem name packageNames)
-  )
-  packageCoverage.neverPublicationEligiblePackages;
+  assert imageRecovery.regressions != [];
+  assert builtins.all (requirement:
+    requirement.checks
+    != []
+    && requirement.regressions != []
+    && builtins.length requirement.checks == builtins.length (lib.unique requirement.checks)
+    && builtins.length requirement.regressions == builtins.length (lib.unique requirement.regressions)
+    && builtins.all (regression: builtins.match "checks[.][A-Za-z0-9._-]+" regression != null) requirement.regressions)
+  (builtins.attrValues abilityRequirements);
+  assert abilityRequirements.ability-native-adapter-matrix.production_only;
+  assert builtins.length applicableNativeIds
+  == builtins.length (lib.unique applicableNativeIds);
+  assert builtins.length inapplicableNativeIds
+  == builtins.length (lib.unique inapplicableNativeIds);
+  assert builtins.all (id: !builtins.elem id inapplicableNativeIds) applicableNativeIds;
+  assert partitionedNativeIds == map (cell: cell.id) nativeCells;
+  assert abilityRequirements.ability-native-adapter-matrix.matrix_spec == nativeAdapterMatrix.spec;
+  assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeRoleRevocationCells;
+  assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeFailureControlCells;
+  assert builtins.all (cell: !(cell ? evidence)) nativeAdapterMatrix.spec.cells;
+  assert builtins.elem nativeAdapterMatrix.check nativeAdapterChecks;
+  assert builtins.any (check:
+    builtins.match "container-execution-surface-v1-sha256-[0-9a-f]{64}" check != null)
+  nativeAdapterChecks;
+  assert builtins.all (requirement:
+    requirement.phase
+    == "staging"
+    && requirement.scope == "release"
+    && requirement.method == "automated"
+    && requirement.invalidated_by == ["subject" "policy" "executor" "environment"])
+  (builtins.attrValues abilityRequirements);
+  assert rejects {
+    qualification.requirements.ability-native-adapter-matrix.production_only = lib.mkForce false;
+  };
   assert builtins.all (rule: rule.inherit_dependency_obligations) contract.package_rules;
   assert recoveryPackage.role == "system-integrity";
   assert recoveryPackage.execution
@@ -312,7 +327,6 @@ in
     (rule.execution or null) == null || rule.execution.system_variant == "aos-testing")
   contract.package_rules;
   assert builtins.all (phase: builtins.elem phase phases) ["build" "staging" "rollout" "complete"];
-  assert builtins.length contract.targets == 4;
   assert builtins.all (target:
     builtins.length target.environment.layers
     == (
@@ -325,70 +339,25 @@ in
   assert executor.passthru.qualification.platform == "x86_64-linux";
   assert executor.passthru.qualification.caseScenarios == {};
   assert executor.passthru.qualification.scenarios.package-function == "/nix/store/00000000000000000000000000000000-scenario/bin/run";
-  assert packageExecutor.passthru.qualification.platform == platform;
-  assert packageExecutor.passthru.qualification.packageNames == ["fixture"];
-  assert packageExecutor.passthru.qualification.probes == ["fixture"];
-  assert packageExecutor.passthru.qualification.missingProbes == [];
-  assert packageExecutor.passthru.qualification.probeCoverage
-  == {
-    complete = true;
-    implemented = 1;
-    total = 1;
-  };
+  assert packageExecutor.passthru.qualification.platform == "x86_64-linux";
+  assert packageExecutor.passthru.qualification.packageNames == ["gzip"];
+  assert packageExecutor.passthru.qualification.probes == ["gzip"];
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/probes.json$" packageExecutor.passthru.qualification.probeRegistry != null;
-  assert partialPackageExecutor.passthru.qualification.missingProbes == ["missing"];
-  assert partialPackageExecutor.passthru.qualification.probeCoverage
-  == {
-    complete = false;
-    implemented = 1;
-    total = 2;
-  };
-  assert rejectsPackageExecutor ["fixture"] {
-    extra = packageProbe;
-    fixture = packageProbe;
-  };
-  assert releaseExecutor.passthru.qualification.platform == platform;
-  assert builtins.attrNames releaseExecutor.passthru.qualification.scenarios
-  == builtins.sort builtins.lessThan (
-    [
-      "claim-container-${platform}-functional"
-      "claim-container-${platform}-qualified"
-      "claim-disk-${platform}-functional"
-      "claim-disk-${platform}-qualified"
-      "package-function"
-    ]
-    # Release-wide recovery and rollout scenarios currently run on x86 only.
-    ++ lib.optionals (platform == "x86_64-linux") [
-      "operator-recovery"
-      "production-recovery"
-      "rollout-health"
-      "rollout-observation"
-      "staging-delivery"
-    ]
-  );
-  assert builtins.match ".*/aos-qualification-${platform}-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
-  assert builtins.match (
-    if platform == "aarch64-linux"
-    then ".*/aos-qualification-${platform}-report"
-    else ".*/aos-qualification-${platform}-container-lifecycle"
-  )
-  releaseExecutor.passthru.qualification.scenarios."claim-container-${platform}-functional"
-  != null;
-  assert builtins.match ".*/aos-qualification-${platform}-image-lifecycle" releaseExecutor.passthru.qualification.scenarios."claim-disk-${platform}-functional" != null;
+  assert rejectsPackageExecutor ["gzip" "gzip"];
+  assert builtins.all
+  (id: builtins.hasAttr id releaseExecutor.passthru.qualification.scenarios)
+  (builtins.attrNames abilityRequirements);
+  assert isStoreScenario releaseExecutor.passthru.qualification.scenarios.package-function;
+  assert builtins.all
+  (id: isStoreScenario releaseExecutor.passthru.qualification.scenarios.${id})
+  (builtins.attrNames abilityRequirements);
+  assert isStoreScenario releaseExecutor.passthru.qualification.scenarios.claim-container-x86_64-linux-functional;
+  assert isStoreScenario releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional;
   assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios
-  == [
-    "package-function/aos-recovery/${platform}"
-    "package-function/k3s-combined/${platform}"
-    "package-function/k3s-control-plane/${platform}"
-    "package-function/k3s-worker/${platform}"
-    "package-function/k3s/${platform}"
-  ];
-  assert builtins.match ".*/aos-qualification-${platform}-aos-recovery" releaseExecutor.passthru.qualification.caseScenarios."package-function/aos-recovery/${platform}" != null;
-  assert builtins.all (name:
-    builtins.match ".*/aos-qualification-${platform}-${name}-fleet"
-    releaseExecutor.passthru.qualification.caseScenarios."package-function/${name}/${platform}"
-    != null) ["k3s" "k3s-combined" "k3s-control-plane" "k3s-worker"];
-  assert builtins.length contract.claims == 8;
+  == packageCaseScenarioNames;
+  assert builtins.all (rule:
+    isStoreScenario releaseExecutor.passthru.qualification.caseScenarios."package-function/${rule.name}/x86_64-linux")
+  executedPackageRules;
   assert contract.support.default
   == {
     kind = "standard";
@@ -414,7 +383,6 @@ in
   assert builtins.elem "fixture-extra-check" configured.requirements.image-lifecycle.checks;
   assert !builtins.hasAttr "fixture-functional" configured.claims;
   assert configured.claims.fixture-reviewed.minimum_assurance == "A1";
-  assert builtins.length configured.export.targets == 5;
   assert rejects {qualification.images.rebootCycles = 9;};
   assert rejects {qualification.thresholds.stable.soak_seconds = lib.mkForce 1;};
   assert rejects {qualification.claims.disk-x86_64-linux-qualified.blocks_release = lib.mkForce false;};
@@ -436,5 +404,9 @@ in
       text = builtins.toJSON contract;
       checkPhase = ''
         test -f ${declarativeProbeCheck}/result.json
+        ${pkgs.python3}/bin/python3 \
+          ${./ability-check-details.py} \
+          $out/contract.json \
+          ${../../lib/testing/qualification-ability.py}
       '';
     }

@@ -1,5 +1,6 @@
 ##! highway — Portable SIMD primitives for image processing.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -7,14 +8,91 @@
 }: let
   version = "1.4.0";
   needsAssembler = stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isx86_64;
+  testingFlag =
+    if stdenv.isCross
+    then "OFF"
+    else "ON";
   assembler = import ./_highway-assembler.nix {inherit buildPackages fetchurl;};
   src = fetchurl {
     urls = ["https://github.com/google/highway/archive/${version}.tar.gz"];
     hash = "0g2599v8z8w107qh78r6hx1x8ic0a25pdv9cwlx6bfr4jnn428p7";
   };
+  probeSource = builtins.readFile ./_highway-probe.cpp;
+  compileProbe = {
+    argv = [
+      "@cxx@"
+      "probe.cpp"
+      "-I@out@/include"
+      "-L@out@/lib"
+      "-Wl,-rpath,@out@/lib"
+      "-lhwy"
+      "-o"
+      "probe"
+    ];
+    exit_code = 0;
+    stdout.exact = "";
+    stderr.exact = "";
+  };
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "highway";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "Two vectors filled with 2 and 3.";
+        operation = "Add the vectors with Highway and inspect every output lane.";
+        expected = "Every lane contains 5 and the aligned buffer is released.";
+        files."probe.cpp" = probeSource;
+        artifacts = [];
+        steps = [
+          compileProbe
+          {
+            argv = ["@work@/primary/probe" "add"];
+            exit_code = 0;
+            stdout.exact = "Highway SIMD addition passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "An allocation request larger than addressable memory.";
+        operation = "Request the impossible buffer size through Highway's allocator.";
+        expected = "The allocator returns null without exposing a buffer.";
+        files."probe.cpp" = probeSource;
+        artifacts = [];
+        steps = [
+          compileProbe
+          {
+            argv = ["@work@/bad-input/probe" "oversize"];
+            exit_code = 0;
+            observes_rejection = true;
+            stdout.exact = "Highway rejected oversized allocation\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+    };
     inherit version src;
 
     buildDeps = [buildPackages.cmake buildPackages.gnumake];
@@ -70,7 +148,7 @@ in
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
               -DBUILD_SHARED_LIBS=ON \
-              -DBUILD_TESTING=${if stdenv.isCross then "OFF" else "ON"} \
+              -DBUILD_TESTING=${testingFlag} \
               -DHWY_TEST_STANDALONE=ON
           '';
         }

@@ -22,22 +22,18 @@
   aos.roles.server.enable = true;
 
   # Signed normal and A/B recovery UKIs must coexist with the inactive-copy
-  # publication transaction have required up to 528 MiB. Earlier complete
-  # compressed fixtures reached 787 MiB; keep both allowances local to this test.
+  # publication transaction. Keep this test fixture's larger storage and
+  # direct-download contracts scoped away from the production server image.
   aos.image.budgets = {
-    # AArch64 uses 184 MiB normal and 117 MiB recovery UKIs; retaining both
-    # recovery copies through an update requires up to 750 MiB on the ESP.
-    maxEspMiB =
+    maxBootExecutableMiB =
+      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
+      then 192
+      else 160;
+    maxFirmwarePartitionMiB =
       if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
       then 768
       else 544;
     maxDownloadMiB = 800;
-    # Converted VHDs reach 885 MiB on x86_64 and 1029 MiB on AArch64,
-    # including the lockdown fixture's signed recovery payload.
-    maxConvertedDownloadMiB =
-      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
-      then 1056
-      else 896;
   };
   aos.image.allowTestArtifacts = true;
 

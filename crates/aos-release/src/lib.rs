@@ -29,12 +29,13 @@
 extern crate self as aos_release;
 
 #[cfg(test)]
-#[path = "../tests/support/qualification.rs"]
-mod qualification_fixture;
+mod test_support;
 
 #[cfg(test)]
-#[path = "qualification/assurance_tests.rs"]
 mod assurance_tests;
+
+#[cfg(test)]
+mod native_adapter_matrix_tests;
 
 pub mod artifact;
 pub mod artifact_profile;

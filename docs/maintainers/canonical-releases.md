@@ -34,8 +34,9 @@ defined in [Maintain the AOS trust model](trust-model.md).
 
 The current implementation provides these fail-closed operations:
 
-- `aos release plan` derives the complete four-target package inventory and
-  exact Nix derivation outputs, verifies source and contributor-authorization
+- `aos release plan` applies the release policy's selected four targets to
+  package-owned platform declarations, derives every package decision and exact
+  Nix derivation output, verifies source and contributor-authorization
   preconditions, and writes a new canonical plan;
 - `aos release build` realizes every frozen derivation, repeats each build with
   Nix `--check`, and writes build, SBOM, and append-only journal evidence;
@@ -145,7 +146,9 @@ request supplies:
 - digests of the public evidence and restricted operator policies.
 
 Package eligibility is deliberately absent from the request. Planning derives
-every package decision from the versioned Nix inventory for this closed matrix:
+every package decision from native recipe `platformSupport` declarations through
+the caller-selected policy in [`pkgs/_target-policy.nix`](../../pkgs/_target-policy.nix).
+The release contract selects this matrix:
 
 | Artifact | `x86_64-linux` | `aarch64-linux` | `x86_64-darwin` | `aarch64-darwin` |
 | --- | --- | --- | --- | --- |

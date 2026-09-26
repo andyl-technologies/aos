@@ -14,6 +14,7 @@
 }: {
   version,
   srcHash,
+  platformSupport,
   # Projects (LLVM_ENABLE_PROJECTS)
   projects ? [
     "clang"
@@ -40,6 +41,7 @@
   needsGccIteratorCompat ? false,
   extraRuntimeDeps ? [],
   extraCmakeFlags ? [],
+  qualification ? null,
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   versionMatch = builtins.match "([0-9]+)\\..*" version;
@@ -60,7 +62,8 @@
 in
   mkDerivation {
     pname = "llvm";
-    inherit version;
+    inherit platformSupport;
+    inherit version qualification;
 
     src = fetchurl {
       urls = [

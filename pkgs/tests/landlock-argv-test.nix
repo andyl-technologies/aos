@@ -5,7 +5,10 @@
   recorder = writeShellScriptBin "landlock-argv-test-recorder" ''
     set -eu
 
-    out=/var/lib/aos-pkg-landlock-argv-test/argv
+    state_dir=$1
+    shift
+    mkdir -p "$state_dir"
+    out=$state_dir/argv
     : > "$out"
     printf 'argc=%s\n' "$#" >> "$out"
 
@@ -17,9 +20,17 @@
   '';
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "build-input";
+    };
     pname = "landlock-argv-test";
     version = "1.0.0";
     src = null;
+
+    runtimeDeps = [recorder];
 
     phases = [
       {
@@ -27,29 +38,14 @@ in
         script = ''
           mkdir -p "$out/share/landlock-argv-test"
           printf landlock-argv-test > "$out/share/landlock-argv-test/payload.txt"
+          mkdir -p "$out/bin"
+          ln -s ${recorder}/bin/landlock-argv-test-recorder \
+            "$out/bin/landlock-argv-test-recorder"
         '';
       }
     ];
 
-    expose = {
-      units."landlock-argv-test.service" = {
-        description = "AOS Landlock argv preservation test";
-        serviceConfig = {
-          Type = "oneshot";
-          ExecStart = "${recorder}/bin/landlock-argv-test-recorder plain 'two words' 'semi;colon' 'quote\"inner' 'colon:value'";
-          RemainAfterExit = true;
-          StateDirectory = "aos-pkg-landlock-argv-test";
-        };
-      };
-
-      permissions = {
-        network = "private";
-        capabilities = [];
-        devices = [];
-        host-paths = [];
-        syscalls = "restricted";
-      };
-    };
+    abilities = ./_landlock-argv-test;
 
     meta = {
       description = "AOS Landlock exec argv preservation test payload";

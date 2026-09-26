@@ -7,6 +7,7 @@
 {
   mkDerivation,
   pname,
+  platformSupport,
   version,
   src,
   nativeGo,
@@ -15,6 +16,7 @@
   legacyCBootstrap ? false,
   stdenv,
   description,
+  qualification ? null,
 }: let
   targetOs = stdenv.hostPlatform.go.os;
   targetArch = stdenv.hostPlatform.go.arch;
@@ -30,7 +32,7 @@
     else nativeCc;
 in
   mkDerivation {
-    inherit pname version src;
+    inherit pname version src qualification platformSupport;
     inherit update;
 
     buildDeps = [nativeGo];

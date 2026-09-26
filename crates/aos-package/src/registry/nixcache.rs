@@ -1094,7 +1094,7 @@ pub fn collect_static_cache_roots(registry_dir: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Collects cache roots and the documentation roots requiring plain NAR transport.
+/// Collects cache roots and semantic companions requiring plain NAR transport.
 fn collect_static_cache_root_inventory(registry_dir: &Path) -> Result<CacheRootInventory> {
     let packages = registry_dir.join("packages");
     if !packages.exists() {
@@ -1231,7 +1231,8 @@ fn collect_store_paths_from_package(value: &TomlValue, inventory: &mut CacheRoot
                     }
                     if let Some(path) = image
                         .get("delivery")
-                        .and_then(|delivery| delivery.get("image_info"))
+                        .and_then(|delivery| delivery.get("artifact_contract"))
+                        .and_then(|contract| contract.get("document"))
                         .and_then(|metadata| metadata.get("store_path"))
                         .and_then(TomlValue::as_str)
                         .filter(|path| !path.is_empty())
@@ -1240,7 +1241,8 @@ fn collect_store_paths_from_package(value: &TomlValue, inventory: &mut CacheRoot
                     }
                     if let Some(path) = image
                         .get("delivery")
-                        .and_then(|delivery| delivery.get("update_payload"))
+                        .and_then(|delivery| delivery.get("artifact_contract"))
+                        .and_then(|contract| contract.get("artifacts"))
                         .and_then(|payload| payload.get("store_path"))
                         .and_then(TomlValue::as_str)
                         .filter(|path| !path.is_empty())
@@ -1249,27 +1251,17 @@ fn collect_store_paths_from_package(value: &TomlValue, inventory: &mut CacheRoot
                     }
                 }
             }
-            if let Some(config_module) = platform.get("config_module") {
-                for output in ["config_output", "evaluation_base_lib"] {
-                    if let Some(path) = config_module
-                        .get(output)
-                        .and_then(|metadata| metadata.get("store_path"))
-                        .and_then(TomlValue::as_str)
-                    {
-                        inventory.roots.insert(path.to_string());
-                    }
-                }
-            }
-            if let Some(expose_artifact) = platform.get("expose_artifact")
-                && let Some(path) = expose_artifact
-                    .get("store_path")
-                    .and_then(TomlValue::as_str)
-            {
-                inventory.roots.insert(path.to_string());
-            }
             if let Some(documentation) = platform.get("documentation")
                 && let Some(path) = documentation.get("store_path").and_then(TomlValue::as_str)
             {
+                inventory.roots.insert(path.to_string());
+                inventory.uncompressed.insert(path.to_string());
+            }
+            if let Some(ability) = platform.get("ability")
+                && let Some(path) = ability.get("store_path").and_then(TomlValue::as_str)
+            {
+                // Hub and Worker derive static reference data from the exact
+                // bounded NAR without introducing a target-specific decoder.
                 inventory.roots.insert(path.to_string());
                 inventory.uncompressed.insert(path.to_string());
             }
@@ -1691,37 +1683,23 @@ store_path = "/nix/store/img111-system-image"
 nar_hash = "sha256:image"
 nar_size = 2
 
-[versions.platforms.x86_64-linux.images.delivery.image_info]
+[versions.platforms.x86_64-linux.images.delivery.artifact_contract.document]
 store_path = "/nix/store/info111-system-image-info"
 
-[versions.platforms.x86_64-linux.images.delivery.update_payload]
+[versions.platforms.x86_64-linux.images.delivery.artifact_contract.artifacts]
 store_path = "/nix/store/payload111-system-update-payload"
 
-[versions.platforms.x86_64-linux.config_module.config_output]
-store_path = "/nix/store/cfg111-kernel-config"
-nar_hash = "sha256:config"
-nar_size = 3
-references = []
-
-[versions.platforms.x86_64-linux.config_module.evaluation_base_lib]
-store_path = "/nix/store/lib111-config-base-lib"
-nar_hash = "sha256:base-lib"
-nar_size = 4
-references = []
-
-[versions.platforms.x86_64-linux.expose_artifact]
-store_path = "/nix/store/expose111-kernel-expose"
-nar_hash = "sha256:expose"
-nar_size = 5
-
 [versions.platforms.x86_64-linux.documentation]
-format = "aos.package-documentation/v1+json"
+format = "aos.package-reference/v1+json"
 store_path = "/nix/store/docs111-kernel-docs.json"
 nar_hash = "sha256:docs"
 nar_size = 6
 document_sha256 = "sha256:document"
 document_size = 5
 semantic_schema_sha256 = "sha256:semantic"
+
+[versions.platforms.x86_64-linux.ability]
+store_path = "/nix/store/ability111-kernel-abilities"
 "#,
         )
         .unwrap();
@@ -1729,13 +1707,11 @@ semantic_schema_sha256 = "sha256:semantic"
         assert_eq!(
             inventory.roots.into_iter().collect::<Vec<_>>(),
             vec![
-                "/nix/store/cfg111-kernel-config".to_string(),
+                "/nix/store/ability111-kernel-abilities".to_string(),
                 "/nix/store/dev111-kernel".to_string(),
                 "/nix/store/docs111-kernel-docs.json".to_string(),
-                "/nix/store/expose111-kernel-expose".to_string(),
                 "/nix/store/img111-system-image".to_string(),
                 "/nix/store/info111-system-image-info".to_string(),
-                "/nix/store/lib111-config-base-lib".to_string(),
                 "/nix/store/payload111-system-update-payload".to_string(),
                 "/nix/store/root111-kernel".to_string(),
                 "/nix/store/src111-kernel-source".to_string(),
@@ -1744,7 +1720,10 @@ semantic_schema_sha256 = "sha256:semantic"
         );
         assert_eq!(
             inventory.uncompressed,
-            BTreeSet::from(["/nix/store/docs111-kernel-docs.json".to_string()])
+            BTreeSet::from([
+                "/nix/store/ability111-kernel-abilities".to_string(),
+                "/nix/store/docs111-kernel-docs.json".to_string(),
+            ])
         );
     }
 

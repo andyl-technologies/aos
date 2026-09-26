@@ -59,8 +59,8 @@ consumption, and on-host activation as distinct installed capabilities.
   packages, profiles, and package rollback.
 - [Configure package registries](registries.md) covers the built-in registry,
   other public and internal registries, priorities, credentials, and trust.
-- [Understand the package sandbox](package-sandbox.md) explains the runtime
-  boundary for exposed services and how to inspect its effective policy.
+- [Understand native package runtime policy](package-sandbox.md) explains how
+  typed package requests become concrete host resources.
 - [Operate an AOS host](operations.md) covers services, logs, storage,
   packages, monitoring, and maintenance.
 - [Run ZFS storage](storage-zfs.md) covers the memory budget, dataset
@@ -91,6 +91,9 @@ consumption, and on-host activation as distinct installed capabilities.
 
 - [Package an application for AOS](package-authoring.md) follows a service from
   its derivation through image inclusion, registry publication, and upgrade.
+- [Inspect ability plans and retained execution](ability-inspection.md) covers
+  offline checked graphs, private operator views, retained diagnostics, and
+  realized artifact-consumption evidence.
 - Package and service configuration is generated from each package's Nix
   interface and signed runtime contract. Use `apm docs`, `apm options`, the
   offline `apm docs serve` browser, or the package documentation workspace in

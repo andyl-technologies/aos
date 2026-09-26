@@ -1,0 +1,25 @@
+[package]
+name = "aos-systemd-provider"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+aos-ability-model.workspace = true
+aos-ability-validate.workspace = true
+aos-contract.workspace = true
+aos-net = { workspace = true, default-features = false }
+aos-provider-protocol.workspace = true
+aos-systemd.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error = "0.1"
+sha2.workspace = true
+rustix = { workspace = true, features = ["fs"] }
+tempfile.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

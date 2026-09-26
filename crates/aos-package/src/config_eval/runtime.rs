@@ -12,25 +12,46 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::registry::{RegistrySet, store_path_hash};
-use crate::types::{ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta};
+use crate::types::PackageContractMeta;
+use aos_ability_model::{ArtifactReference, LocalKey};
+
+use super::store_view::StoreViewLocator;
+
+/// Identifies the authority that supplied one exact package contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "origin", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ContractOrigin {
+    /// Resolves a package through its signed registry publication metadata.
+    Registry {
+        /// Carries the exact signed publication and artifact retention record.
+        metadata: PackageContractMeta,
+    },
+    /// Resolves a package through the running image's authenticated static contract.
+    EmbeddedStatic {
+        /// Identifies the exact static-contract artifact retained by the image.
+        contract: ArtifactReference,
+        /// Selects one package entry from that checked static contract.
+        package: LocalKey,
+    },
+}
 
 /// An exact image-bundled package available from the active system profile.
 #[derive(Debug, Clone)]
 pub struct LocalRuntimePackage {
     /// Package version recorded by the image seed.
     pub version: String,
+    /// Exact target platform retained by the checked static contract.
+    pub platform: String,
     /// Exact runtime output in the immutable image closure.
     pub store_path: String,
-    /// Signed service exposure contract retained in the image seed.
-    pub expose: Option<ExposeMeta>,
-    /// Rendered expose artifact retained in the image seed.
-    pub expose_artifact: Option<ExposeArtifactMeta>,
-    /// Config-only companion retained in the image seed.
-    pub config_module: Option<crate::types::ConfigModuleMeta>,
+    /// Authenticated NAR identity of the runtime output.
+    pub nar_hash: String,
+    /// Authenticated package contract retained in the image.
+    pub contract: Option<ContractOrigin>,
     /// Lazily verified closure reused across outer fixpoint iterations.
     pub(super) closure: RefCell<Option<Vec<RuntimeClosurePin>>>,
 }
@@ -60,26 +81,15 @@ pub struct RuntimePackagePin {
     pub origin: RuntimePackageOrigin,
     /// Exact runtime output store path.
     pub store_path: String,
-    /// Config-module dependency outputs authenticated by package metadata.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub config_dependency_outputs: BTreeMap<String, String>,
+    /// Exact selected runtime output NAR identity.
+    pub nar_hash: String,
+    /// Exact selected runtime output uncompressed NAR size.
+    pub nar_size: u64,
     /// Complete authenticated closure, keyed by input-addressed store hash.
     pub closure: Vec<RuntimeClosurePin>,
-    /// Signed service exposure contract for this package.
+    /// Exact authenticated package contract selected with this package.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expose: Option<ExposeMeta>,
-    /// Exact rendered unit artifact authenticated by the selected registry.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expose_artifact: Option<ExposeArtifactMeta>,
-    /// Authenticated expose schema projected by this package's generated
-    /// config companion. Absent for legacy flat-render packages.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config_projection: Option<RuntimeExposeConfigPin>,
-    /// Registry-authenticated flat expose config for a package that has not
-    /// migrated to a config-module projection. This keeps `render-one` from
-    /// consulting mutable profile or registry metadata after evaluation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legacy_config: Option<ExposeConfigMeta>,
+    pub contract: Option<ContractOrigin>,
 }
 
 /// Trust origin for an exact runtime package pin.
@@ -97,18 +107,6 @@ impl RuntimePackageOrigin {
     fn is_registry(&self) -> bool {
         *self == Self::Registry
     }
-}
-
-/// Registry-authenticated binding for one generated expose config companion.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeExposeConfigPin {
-    /// Exact config-output store path evaluated for this package.
-    pub config_output: String,
-    /// Authenticated NAR hash of that config output.
-    pub config_nar_hash: String,
-    /// Signed RFC-0001 artifact and credential schema.
-    pub config: ExposeConfigMeta,
 }
 
 /// One member of a registry-authenticated runtime closure.
@@ -137,9 +135,8 @@ pub struct RuntimeRealisationPin {
 
 /// Resolves package names to exact authenticated runtime pins.
 ///
-/// Package-level `expose.requires` and capability-provider dependencies are
-/// recursively included by [`resolve_multiple`]. Registries without a
-/// published `store/` graph are refused: their narinfo fallback cannot pin and
+/// Registries without a published `store/` graph are refused: their narinfo
+/// fallback cannot pin and
 /// authenticate every anonymous closure member, so it is insufficient for a
 /// transactional configuration generation.
 ///
@@ -149,14 +146,16 @@ pub struct RuntimeRealisationPin {
 /// dependency cycle exists, the selected registry has no `store/` graph, a
 /// graph member has no blessed NAR, or root metadata disagrees with the graph.
 pub fn resolve_runtime(registries: &RegistrySet, selected: &[String]) -> Result<RuntimeResolution> {
-    resolve_runtime_with_local(registries, &BTreeMap::new(), selected)
+    resolve_runtime_inner(registries, &BTreeMap::new(), selected, None)
 }
 
 /// Resolves packages with registry priority and measured-image fallback.
 ///
-/// A local package is considered only when no configured registry publishes
-/// its name. Registry parse, trust, graph, and integrity failures therefore
-/// remain terminal rather than silently crossing the trust boundary.
+/// A local package is considered when no configured registry publishes its
+/// name or when an absent registry prevents a safe priority decision. Only the
+/// caller's authenticated image catalog is eligible for that fallback. An
+/// absent higher-priority registry never permits a loaded lower-priority
+/// registry to win.
 ///
 /// # Errors
 ///
@@ -167,6 +166,16 @@ pub fn resolve_runtime_with_local(
     registries: &RegistrySet,
     local: &BTreeMap<String, LocalRuntimePackage>,
     selected: &[String],
+    store_view: &StoreViewLocator,
+) -> Result<RuntimeResolution> {
+    resolve_runtime_inner(registries, local, selected, Some(store_view))
+}
+
+fn resolve_runtime_inner(
+    registries: &RegistrySet,
+    local: &BTreeMap<String, LocalRuntimePackage>,
+    selected: &[String],
+    store_view: Option<&StoreViewLocator>,
 ) -> Result<RuntimeResolution> {
     let mut pending = selected.iter().cloned().collect::<BTreeSet<_>>();
     let mut closures = Vec::new();
@@ -179,22 +188,21 @@ pub fn resolve_runtime_with_local(
         {
             continue;
         }
-        if registries.resolve(&name).is_some() {
-            let closure = crate::resolve::resolve_closure(registries, &name, None)
-                .with_context(|| format!("resolving package '{name}'"))?;
-            if let Some(expose) = &closure.root.expose {
-                pending.extend(expose.requires.iter().cloned());
-                pending.extend(expose.uses.iter().map(|route| route.provider.clone()));
+        match registries.resolve_for_config_evaluation(&name) {
+            Ok(Some(_)) => {
+                let closure = crate::resolve::resolve_closure(registries, &name, None)
+                    .with_context(|| format!("resolving package '{name}'"))?;
+                closures.push(closure);
             }
-            closures.push(closure);
-        } else if let Some(package) = local.get(&name) {
-            if let Some(expose) = &package.expose {
-                pending.extend(expose.requires.iter().cloned());
-                pending.extend(expose.uses.iter().map(|route| route.provider.clone()));
+            Ok(None) | Err(_) if local.contains_key(&name) => {
+                local_names.insert(name);
             }
-            local_names.insert(name);
-        } else {
-            return Err(aos_core::error::AosError::PackageNotFound { name }.into());
+            Err(error) => {
+                return Err(error).with_context(|| format!("resolving package '{name}'"));
+            }
+            Ok(None) => {
+                return Err(aos_core::error::AosError::PackageNotFound { name }.into());
+            }
         }
     }
     let selected_roots: BTreeMap<String, String> = closures
@@ -224,19 +232,8 @@ pub fn resolve_runtime_with_local(
                 closure.root.name
             );
         }
-        if closure.root.expose.is_some() != closure.root.expose_artifact.is_some() {
-            bail!(
-                "package '{}@{}' must publish signed expose metadata and its rendered artifact together",
-                closure.root.name,
-                closure.root.version
-            );
-        }
-
         let root_hash = store_path_hash(&closure.root.store_path);
         let mut member_hashes = store.reachable(root_hash);
-        if let Some(artifact) = &closure.root.expose_artifact {
-            member_hashes.extend(store.reachable(store_path_hash(&artifact.store_path)));
-        }
         member_hashes.sort();
         member_hashes.dedup();
         let mut members = Vec::with_capacity(member_hashes.len());
@@ -260,31 +257,14 @@ pub fn resolve_runtime_with_local(
                     closure.root.name
                 );
             }
-            let mut store_path = registries
+            let store_path = registries
                 .resolve_hash_in(&closure.registry_name, &member_hash)
                 .map(|meta| meta.store_path.clone());
-            if let Some(artifact) = &closure.root.expose_artifact
-                && member_hash == store_path_hash(&artifact.store_path)
-            {
-                store_path = Some(artifact.store_path.clone());
-            }
             members.push(RuntimeClosurePin {
                 store_path_hash: member_hash,
                 store_path,
                 realisations,
             });
-        }
-        if let Some(module) = &closure.root.config_module {
-            for (name, path) in &module.dependency_outputs {
-                let hash = store_path_hash(path);
-                if !members.iter().any(|member| member.store_path_hash == hash) {
-                    bail!(
-                        "package '{}@{}' config dependency '{name}' ({path}) is outside its authenticated runtime closure",
-                        closure.root.name,
-                        closure.root.version
-                    );
-                }
-            }
         }
 
         let root_pin = members
@@ -305,25 +285,6 @@ pub fn resolve_runtime_with_local(
                 closure.registry_name
             );
         }
-        if let Some(artifact) = &closure.root.expose_artifact {
-            let artifact_hash = store_path_hash(&artifact.store_path);
-            let artifact_pin = members
-                .iter()
-                .find(|member| member.store_path_hash == artifact_hash)
-                .context("authenticated closure omitted its expose artifact root")?;
-            if !artifact_pin.realisations.iter().any(|pin| {
-                crate::registry::store::NarBytes::from_hash(&artifact.nar_hash, artifact.nar_size)
-                    .is_ok_and(|nar| pin.nar_hash == nar.nar_hash() && pin.nar_size == nar.size)
-            }) {
-                bail!(
-                    "package '{}@{}' expose artifact NAR disagrees with registry '{}' store graph",
-                    closure.root.name,
-                    closure.root.version,
-                    closure.registry_name
-                );
-            }
-        }
-
         let mut dependencies = BTreeSet::new();
         for hash in store.direct_deps(root_hash) {
             if let Some(package) = selected_roots.get(&hash)
@@ -332,54 +293,10 @@ pub fn resolve_runtime_with_local(
                 dependencies.insert(package.clone());
             }
         }
-        if let Some(expose) = closure.root.expose.as_ref() {
-            dependencies.extend(
-                expose
-                    .requires
-                    .iter()
-                    .chain(expose.uses.iter().map(|route| &route.provider))
-                    .filter(|package| *package != &closure.root.name)
-                    .cloned(),
-            );
-        }
         edges.insert(
             closure.root.name.clone(),
             dependencies.into_iter().collect(),
         );
-        let config_projection = match closure.root.config_module.as_ref() {
-            Some(module)
-                if module.declares.iter().any(|path| {
-                    path == &format!("{}._aosExposeConfigProjection", closure.root.name)
-                }) =>
-            {
-                let expose = closure.root.expose.as_ref().with_context(|| {
-                    format!(
-                        "package '{}' declares an expose config projection without signed expose metadata",
-                        closure.root.name
-                    )
-                })?;
-                let config_nar_hash = crate::registry::store::NarBytes::from_hash(
-                    &module.config_output.nar_hash,
-                    module.config_output.nar_size,
-                )?
-                .nar_hash();
-                Some(RuntimeExposeConfigPin {
-                    config_output: module.config_output.store_path.clone(),
-                    config_nar_hash,
-                    config: expose.config.clone(),
-                })
-            }
-            _ => None,
-        };
-        let legacy_config = if config_projection.is_none() {
-            closure
-                .root
-                .expose
-                .as_ref()
-                .map(|expose| expose.config.clone())
-        } else {
-            None
-        };
         packages.insert(
             closure.root.name.clone(),
             RuntimePackagePin {
@@ -388,17 +305,18 @@ pub fn resolve_runtime_with_local(
                 registry: closure.registry_name.clone(),
                 origin: RuntimePackageOrigin::Registry,
                 store_path: closure.root.store_path.clone(),
-                config_dependency_outputs: closure
-                    .root
-                    .config_module
-                    .as_ref()
-                    .map(|module| module.dependency_outputs.clone())
-                    .unwrap_or_default(),
+                nar_hash: crate::registry::store::NarBytes::from_hash(
+                    &closure.root.nar_hash,
+                    closure.root.nar_size,
+                )?
+                .nar_hash(),
+                nar_size: closure.root.nar_size,
                 closure: members,
-                expose: closure.root.expose.clone(),
-                expose_artifact: closure.root.expose_artifact.clone(),
-                config_projection,
-                legacy_config,
+                contract: closure
+                    .root
+                    .contract
+                    .clone()
+                    .map(|metadata| ContractOrigin::Registry { metadata }),
             },
         );
     }
@@ -407,95 +325,33 @@ pub fn resolve_runtime_with_local(
         let package = local
             .get(&name)
             .with_context(|| format!("image-local package '{name}' disappeared"))?;
-        if package.expose.is_some() != package.expose_artifact.is_some() {
-            bail!(
-                "image-local package '{}@{}' must retain expose metadata and its artifact together",
-                name,
-                package.version
-            );
-        }
-        let closure = local_closure(package)
+        let store_view =
+            store_view.context("image-local package resolution has no selected store view")?;
+        let closure = local_closure(package, store_view)
             .with_context(|| format!("validating image-local closure for '{name}'"))?;
-        if let Some(module) = &package.config_module {
-            for (dependency, path) in &module.dependency_outputs {
-                let hash = store_path_hash(path);
-                if !closure.iter().any(|member| member.store_path_hash == hash) {
-                    bail!(
-                        "image-local package '{name}' config dependency '{dependency}' ({path}) is outside its runtime closure"
-                    );
-                }
-            }
-        }
-        let expose_artifact = package
-            .expose_artifact
-            .as_ref()
-            .map(|artifact| {
-                let member = closure
-                    .iter()
-                    .find(|member| member.store_path_hash == store_path_hash(&artifact.store_path))
-                    .context("image-local closure omitted its expose artifact")?;
-                let realization = member
-                    .realisations
-                    .first()
-                    .context("image-local expose artifact has no NAR identity")?;
-                let mut exact = artifact.clone();
-                exact.nar_hash = realization.nar_hash.clone();
-                exact.nar_size = realization.nar_size;
-                Ok::<_, anyhow::Error>(exact)
-            })
-            .transpose()?;
-        let mut dependencies = BTreeSet::new();
-        if let Some(expose) = &package.expose {
-            dependencies.extend(expose.requires.iter().cloned());
-            dependencies.extend(expose.uses.iter().map(|route| route.provider.clone()));
-            dependencies.remove(&name);
-        }
-        edges.insert(name.clone(), dependencies.into_iter().collect());
-        let config_projection = match package.config_module.as_ref() {
-            Some(module)
-                if module
-                    .declares
-                    .iter()
-                    .any(|path| path == &format!("{name}._aosExposeConfigProjection")) =>
-            {
-                let expose = package.expose.as_ref().with_context(|| {
-                    format!("image-local package '{name}' projects expose config without expose metadata")
-                })?;
-                Some(RuntimeExposeConfigPin {
-                    config_output: module.config_output.store_path.clone(),
-                    config_nar_hash: crate::registry::store::NarBytes::from_hash(
-                        &module.config_output.nar_hash,
-                        module.config_output.nar_size,
-                    )?
-                    .nar_hash(),
-                    config: expose.config.clone(),
-                })
-            }
-            _ => None,
-        };
-        let legacy_config = if config_projection.is_none() {
-            package.expose.as_ref().map(|expose| expose.config.clone())
-        } else {
-            None
-        };
+        edges.insert(name.clone(), Vec::new());
+        let root_hash = store_path_hash(&package.store_path);
+        let root_realization = closure
+            .iter()
+            .find(|member| member.store_path_hash == root_hash)
+            .and_then(|member| member.realisations.first())
+            .context("image-local closure omitted its runtime output NAR identity")?;
+        ensure!(
+            package.nar_hash == root_realization.nar_hash,
+            "image-local runtime output differs from its authenticated static contract"
+        );
         packages.insert(
             name,
             RuntimePackagePin {
                 version: package.version.clone(),
-                platform: "image".to_string(),
+                platform: package.platform.clone(),
                 registry: "image".to_string(),
                 origin: RuntimePackageOrigin::Image,
                 store_path: package.store_path.clone(),
-                config_dependency_outputs: package
-                    .config_module
-                    .as_ref()
-                    .map(|module| module.dependency_outputs.clone())
-                    .unwrap_or_default(),
+                nar_hash: root_realization.nar_hash.clone(),
+                nar_size: root_realization.nar_size,
                 closure,
-                expose: package.expose.clone(),
-                expose_artifact,
-                config_projection,
-                legacy_config,
+                contract: package.contract.clone(),
             },
         );
     }
@@ -503,14 +359,14 @@ pub fn resolve_runtime_with_local(
     Ok(RuntimeResolution { packages, edges })
 }
 
-fn local_closure(package: &LocalRuntimePackage) -> Result<Vec<RuntimeClosurePin>> {
+fn local_closure(
+    package: &LocalRuntimePackage,
+    store_view: &StoreViewLocator,
+) -> Result<Vec<RuntimeClosurePin>> {
     if let Some(cached) = package.closure.borrow().as_ref() {
         return Ok(cached.clone());
     }
-    let mut roots = vec![package.store_path.as_str()];
-    if let Some(artifact) = &package.expose_artifact {
-        roots.push(&artifact.store_path);
-    }
+    let roots = [package.store_path.as_str()];
     let output = Command::new("nix-store")
         .args(["--query", "--requisites"])
         .args(&roots)
@@ -529,7 +385,7 @@ fn local_closure(package: &LocalRuntimePackage) -> Result<Vec<RuntimeClosurePin>
         .map(str::trim)
         .filter(|path| !path.is_empty())
     {
-        let lower_path = immutable_lower_store_path(path)?;
+        let lower_path = store_view.read_path(Path::new(path))?;
         if !lower_path.exists() {
             bail!("image-local closure member {path} is absent from the immutable image store");
         }
@@ -544,35 +400,6 @@ fn local_closure(package: &LocalRuntimePackage) -> Result<Vec<RuntimeClosurePin>
     members.dedup_by(|left, right| left.store_path_hash == right.store_path_hash);
     *package.closure.borrow_mut() = Some(members.clone());
     Ok(members)
-}
-
-/// Resolves a canonical store path through the immutable lower image store.
-///
-/// # Errors
-///
-/// Returns an error for nested, relative, or otherwise non-canonical store
-/// paths. Callers must separately require the returned path to exist.
-pub(crate) fn immutable_lower_store_path(path: &str) -> Result<std::path::PathBuf> {
-    let store_path = Path::new(path);
-    if store_path.parent() != Some(Path::new("/nix/store")) {
-        bail!("image catalog contains non-canonical store path {path:?}");
-    }
-    let name = store_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("image catalog store path is not UTF-8")?;
-    let Some((hash, output_name)) = name.split_once('-') else {
-        bail!("image catalog store path has no output name: {path:?}");
-    };
-    if hash.len() != 32
-        || output_name.is_empty()
-        || !hash
-            .bytes()
-            .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
-    {
-        bail!("image catalog contains malformed store path {path:?}");
-    }
-    Ok(Path::new("/nix.lower/store").join(name))
 }
 
 pub(crate) fn local_store_identity_at(identity: &str, read_path: &Path) -> Result<(String, u64)> {
@@ -599,9 +426,39 @@ mod tests {
     use super::*;
     use crate::registry::parse::{CURL_TOML, ZLIB_TOML};
     use crate::registry::tests::{
-        FIX_NAR, curl_store_record, make_registry, make_registry_with_store, zlib_store_record,
+        FIX_NAR, curl_store_record, make_registry, make_registry_with_store, registry_config,
+        zlib_store_record,
     };
     use tempfile::TempDir;
+
+    #[test]
+    fn runtime_package_pin_requires_exact_nar_identity_fields() {
+        let complete = serde_json::json!({
+            "version": "1.0.0",
+            "platform": "x86_64-linux",
+            "registry": "test",
+            "store_path": "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example",
+            "nar_hash": format!("sha256:{}", "0".repeat(52)),
+            "nar_size": 1,
+            "closure": [],
+        });
+
+        for field in ["nar_hash", "nar_size"] {
+            let mut incomplete = complete.clone();
+            incomplete
+                .as_object_mut()
+                .expect("runtime pin fixture must be an object")
+                .remove(field);
+
+            let error = serde_json::from_value::<RuntimePackagePin>(incomplete)
+                .expect_err("runtime NAR identity fields must be present");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("missing field `{field}`"))
+            );
+        }
+    }
 
     #[test]
     fn resolves_exact_authenticated_outputs_and_dependency_edges() {
@@ -653,6 +510,76 @@ mod tests {
         let error = resolve_runtime(&set, &["curl".to_string()]).unwrap_err();
         assert!(
             format!("{error:#}").contains("publishes no authenticated store graph"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn absent_registry_uses_only_an_authenticated_image_fallback() {
+        let temp = TempDir::new().unwrap();
+        let missing = registry_config("andyl", 500);
+        let registries =
+            RegistrySet::load_for_config_evaluation(temp.path(), &[&missing], "x86_64-linux")
+                .unwrap();
+        let store_path = "/nix/store/00000000000000000000000000000000-image-web";
+        let mut image_packages = BTreeMap::new();
+        image_packages.insert(
+            "image-web".to_string(),
+            LocalRuntimePackage {
+                version: "1.2.3".to_string(),
+                platform: "x86_64-linux".to_string(),
+                store_path: store_path.to_string(),
+                nar_hash: format!("sha256:{FIX_NAR}"),
+                contract: None,
+                closure: RefCell::new(Some(vec![RuntimeClosurePin {
+                    store_path_hash: store_path_hash(store_path).to_string(),
+                    store_path: Some(store_path.to_string()),
+                    realisations: vec![RuntimeRealisationPin {
+                        nar_hash: format!("sha256:{FIX_NAR}"),
+                        nar_size: 64,
+                    }],
+                }])),
+            },
+        );
+
+        let store_view = StoreViewLocator::new(
+            "/nix/store".into(),
+            "/immutable/store".into(),
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-contract/contract.json".into(),
+        )
+        .unwrap();
+        let resolution = resolve_runtime_with_local(
+            &registries,
+            &image_packages,
+            &["image-web".to_string()],
+            &store_view,
+        )
+        .unwrap();
+        let selected = &resolution.packages["image-web"];
+
+        assert_eq!(selected.origin, RuntimePackageOrigin::Image);
+        assert_eq!(selected.registry, "image");
+        assert_eq!(selected.version, "1.2.3");
+        assert_eq!(selected.store_path, store_path);
+    }
+
+    #[test]
+    fn absent_higher_registry_blocks_a_loaded_lower_runtime_package() {
+        let temp = TempDir::new().unwrap();
+        let missing = registry_config("primary", 600);
+        let lower = registry_config("fallback", 500);
+        let _ = make_registry(&temp, &lower.name, lower.priority, &[("curl", CURL_TOML)]);
+        let registries = RegistrySet::load_for_config_evaluation(
+            temp.path(),
+            &[&missing, &lower],
+            "x86_64-linux",
+        )
+        .unwrap();
+
+        let error = resolve_runtime(&registries, &["curl".to_string()]).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("configured registry 'primary' is unavailable"),
             "{error:#}"
         );
     }

@@ -177,10 +177,13 @@ fn instantiate_planned_roots(
     planned_derivations: &[PathBuf],
 ) -> Result<()> {
     let mut instantiated = BTreeSet::new();
+    let release_platforms = Platform::ALL.map(Platform::as_str);
     for platform in Platform::ALL {
-        instantiated.extend(
-            nix.instantiate_all_for_target("releasePackageDerivationRoots", platform.as_str())?,
-        );
+        instantiated.extend(nix.instantiate_all_for_target(
+            "releasePackageDerivationRoots",
+            platform.as_str(),
+            &release_platforms,
+        )?);
     }
 
     for image in &plan.images {

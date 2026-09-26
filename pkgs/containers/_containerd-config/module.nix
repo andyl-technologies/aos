@@ -1,113 +1,126 @@
-##! Typed standalone containerd runtime configuration.
+##! Typed, package-owned standalone containerd service declaration.
 {
   config,
   lib,
   ...
 }: let
   cfg = config.containerd;
-  inherit (lib) mkOption types;
-  absoluteStatePath = types.strMatching "/var/lib/containerd(/[A-Za-z0-9._/-]+)?";
-  absoluteRuntimePath = types.strMatching "/run/containerd(/[A-Za-z0-9._/-]+)?";
-  pluginName = types.strMatching "[A-Za-z0-9][A-Za-z0-9._-]*";
-in {
-  options.containerd = {
-    enable = mkOption {
-      type = types.bool;
-      default = false;
-      description = "Whether to run containerd as a standalone host runtime.";
-    };
-    root = mkOption {
-      type = absoluteStatePath;
-      default = "/var/lib/containerd";
-      description = "Persistent containerd content and metadata root.";
-    };
-    state = mkOption {
-      type = absoluteRuntimePath;
-      default = "/run/containerd";
-      description = "Volatile containerd state directory.";
-    };
-    grpcAddress = mkOption {
-      type = absoluteRuntimePath;
-      default = "/run/containerd/containerd.sock";
-      description = "Unix socket used by local containerd clients.";
-    };
-    metricsAddress = mkOption {
-      type = types.nullOr (types.strMatching "[^[:space:]]+:[0-9]+");
-      default = null;
-      description = "Optional Prometheus metrics listen address.";
-    };
-    disabledPlugins = mkOption {
-      type = types.listOf pluginName;
-      default = [];
-      description = "Containerd plugins disabled at startup.";
-    };
-    requiredPlugins = mkOption {
-      type = types.listOf pluginName;
-      default = [];
-      description = "Plugins whose initialization failure aborts startup.";
-    };
-    snapshotter = mkOption {
-      type = types.enum ["overlayfs" "native"];
-      default = "overlayfs";
-      description = "Default CRI image snapshotter.";
-    };
-    defaultRuntime = mkOption {
-      type = types.enum ["runc"];
-      default = "runc";
-      description = "Default OCI runtime registered with the CRI plugin.";
-    };
-    systemdCgroup = mkOption {
-      type = types.bool;
-      default = true;
-      description = "Whether runc delegates cgroup management to systemd.";
-    };
-    sandboxImage = mkOption {
-      type = types.strMatching "[^[:space:]]+";
-      default = "registry.k8s.io/pause:3.10";
-      description = "CRI pod sandbox image reference.";
-    };
-    registryConfigPath = mkOption {
-      type = types.strMatching "/etc/containerd(/[A-Za-z0-9._/-]+)?";
-      default = "/etc/containerd/certs.d";
-      description = "Root containing host-specific registry configuration.";
-    };
-  };
+  inherit (lib) mkOption;
+  inherit (lib.abilities) resultOf;
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
+  serviceTypes = serviceManagement.types;
+  abilityTypes = lib.abilities.types;
 
-  config = {
-    assertions = [
+  pluginName = abilityTypes.refined {
+    name = "containerd plugin name";
+    description = "a non-empty containerd plugin identifier";
+    type = abilityTypes.runtimeString;
+    constraints = [
       {
-        assertion = !(lib.elem "io.containerd.cri.v1.runtime" cfg.disabledPlugins);
-        message = "containerd.disabledPlugins cannot disable the configured CRI runtime plugin";
+        kind = "string-pattern";
+        pattern = "[A-Za-z0-9][A-Za-z0-9._-]*";
       }
     ];
-
-    containerd.config = {
-      runtime.CONTAINERD_ENABLED =
-        if cfg.enable
-        then "true"
-        else "false";
-      config = {
-        version = 3;
-        root = cfg.root;
-        state = cfg.state;
-        disabled_plugins = cfg.disabledPlugins;
-        required_plugins = cfg.requiredPlugins;
-        grpc.address = cfg.grpcAddress;
-        metrics = lib.optionalAttrs (cfg.metricsAddress != null) {
-          address = cfg.metricsAddress;
-        };
-        plugins = {
-          "io.containerd.cri.v1.images" = {
-            snapshotter = cfg.snapshotter;
-            pinned_images.sandbox = cfg.sandboxImage;
-            registry.config_path = cfg.registryConfigPath;
+  };
+  pluginNames = abilityTypes.list {
+    element = pluginName;
+    maxItems = 256;
+  };
+  persistentRoot = abilityTypes.refined {
+    name = "containerd persistent root";
+    description = "an absolute path beneath /var/lib/containerd";
+    type = serviceTypes.storagePath;
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "/var/lib/containerd(/[A-Za-z0-9._/-]+)?";
+      }
+    ];
+  };
+  runtimeRoot = abilityTypes.refined {
+    name = "containerd runtime root";
+    description = "an absolute path beneath /run/containerd";
+    type = serviceTypes.storagePath;
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "/run/containerd(/[A-Za-z0-9._/-]+)?";
+      }
+    ];
+  };
+  metricsAddress = abilityTypes.refined {
+    name = "containerd metrics address";
+    description = "a non-empty host and port accepted by containerd";
+    type = abilityTypes.runtimeString;
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[^[:space:]]+:[0-9]+";
+      }
+    ];
+  };
+  sandboxImage = abilityTypes.refined {
+    name = "containerd sandbox image";
+    description = "a non-empty image reference without whitespace";
+    type = abilityTypes.runtimeString;
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[^[:space:]]+";
+      }
+    ];
+  };
+  optionalMetrics = {
+    type = abilityTypes.optional (abilityTypes.record {
+      fields.address = metricsAddress;
+    });
+    optional = true;
+  };
+  optionalRegistry = {
+    type = abilityTypes.optional (abilityTypes.record {
+      fields.config_path = abilityTypes.deferredResult serviceTypes.hostPath;
+    });
+    optional = true;
+  };
+  serverConfigType = abilityTypes.record {
+    fields = {
+      version = abilityTypes.integer {
+        minimum = 3;
+        maximum = 3;
+      };
+      root = abilityTypes.deferredResult serviceTypes.storagePath;
+      state = abilityTypes.deferredResult serviceTypes.storagePath;
+      disabled_plugins = pluginNames;
+      required_plugins = pluginNames;
+      grpc = abilityTypes.record {
+        fields.address = abilityTypes.deferredResult serviceTypes.storagePath;
+      };
+      metrics = optionalMetrics;
+      plugins = abilityTypes.record {
+        fields = {
+          "io.containerd.cri.v1.images" = abilityTypes.record {
+            fields = {
+              snapshotter = abilityTypes.enum ["native" "overlayfs"];
+              pinned_images = abilityTypes.record {
+                fields.sandbox = sandboxImage;
+              };
+              registry = optionalRegistry;
+            };
           };
-          "io.containerd.cri.v1.runtime" = {
-            containerd = {
-              default_runtime_name = cfg.defaultRuntime;
-              runtimes.runc = {
-                runtime_type = "io.containerd.runc.v2";
-                options.SystemdCgroup = cfg.systemdCgroup;
+          "io.containerd.cri.v1.runtime" = abilityTypes.record {
+            fields.containerd = abilityTypes.record {
+              fields = {
+                default_runtime_name = abilityTypes.enum ["runc"];
+                runtimes = abilityTypes.record {
+                  fields.runc = abilityTypes.record {
+                    fields = {
+                      runtime_type = abilityTypes.enum ["io.containerd.runc.v2"];
+                      options = abilityTypes.record {
+                        fields.SystemdCgroup = abilityTypes.boolean;
+                      };
+                    };
+                  };
+                };
               };
             };
           };
@@ -115,4 +128,356 @@ in {
       };
     };
   };
+  rootPath = resultOf "root-storage" "planned-path";
+  statePath = resultOf "state-storage" "planned-path";
+  socketPath = resultOf "grpc-socket-view" "planned-path";
+  configPath = resultOf "server-configuration" "planned-path";
+  serverConfig =
+    {
+      version = 3;
+      root = rootPath;
+      state = statePath;
+      disabled_plugins = cfg.disabledPlugins;
+      required_plugins = cfg.requiredPlugins;
+      grpc.address = socketPath;
+      plugins = {
+        "io.containerd.cri.v1.images" =
+          {
+            snapshotter = cfg.snapshotter;
+            pinned_images.sandbox = cfg.sandboxImage;
+          }
+          // lib.optionalAttrs (cfg.registryConfigResource != null) {
+            registry.config_path = resultOf "registry-config-view" "host-path";
+          };
+        "io.containerd.cri.v1.runtime".containerd = {
+          default_runtime_name = cfg.defaultRuntime;
+          runtimes.runc = {
+            runtime_type = "io.containerd.runc.v2";
+            options.SystemdCgroup = cfg.systemdCgroup;
+          };
+        };
+      };
+    }
+    // lib.optionalAttrs (cfg.metricsAddress != null) {
+      metrics.address = cfg.metricsAddress;
+    };
+  producer = key: interface: parameters:
+    serviceManagement.forProducer {
+      consumerInstance = "containerd";
+      inherit key interface parameters;
+    };
+  storage = serviceManagement.forProducers {
+    consumerInstance = "containerd";
+    interface = serviceManagement.interfaces.storageAllocation;
+    producers = [
+      {
+        key = "state-storage";
+        parameters = {
+          name = "state";
+          purpose = "runtime";
+          mode = "0750";
+          requested_path = cfg.state;
+        };
+      }
+    ];
+  };
+  rootStorage = producer "root-storage" serviceManagement.interfaces.persistentStorageAllocation {
+    name = "root";
+    purpose = "state";
+    mode = "0750";
+    requested_path = cfg.root;
+  };
+  grpcSocket = producer "grpc-socket-view" serviceManagement.interfaces.storageView {
+    name = "grpc-socket";
+    source = resultOf "state-storage" "resource";
+    source_path = statePath;
+    access = "read-write";
+    relative_path = cfg.grpcSocketName;
+  };
+  registryConfig = serviceManagement.forProducers {
+    consumerInstance = "containerd";
+    interface = serviceManagement.interfaces.hostPathView;
+    producers = lib.optionals (cfg.registryConfigResource != null) [
+      {
+        key = "registry-config-view";
+        parameters = {
+          name = "registry-config";
+          source = cfg.registryConfigResource;
+          access = "read-only";
+        };
+      }
+    ];
+  };
+  kernelModules = producer "kernel-modules" serviceManagement.interfaces.kernelModules {
+    modules = ["overlay"];
+    required = true;
+  };
+  networkReadiness = producer "network-readiness" serviceManagement.interfaces.networkReadiness {
+    scope = "stack-prepared";
+    address_families = ["ipv4" "ipv6"];
+  };
+  configuration = serviceManagement.forConfiguration {
+    inherit serviceTypes;
+    consumerInstance = "containerd";
+    declaration = {
+      name = "server-configuration";
+      source = serviceManagement.structuredSource {
+        format = "toml";
+        valueType = serverConfigType;
+        value = serverConfig;
+      };
+      mode = "0444";
+    };
+  };
+  command = arguments: {
+    executable = {
+      artifact = lib.abilities.packageOutput {};
+      entry_point = "bin/containerd";
+      inherit arguments;
+    };
+    ignore_failure = false;
+  };
+  service = {
+    policy.hardening = {
+      allow_privilege_escalation = true;
+      ambient_privileges = [
+        "change-file-ownership"
+        "create-device-node"
+        "administer-network"
+        "raw-network"
+        "change-group-identity"
+        "change-user-identity"
+        "administer-host"
+        "change-root-directory"
+      ];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = [
+          "change-file-ownership"
+          "create-device-node"
+          "administer-network"
+          "raw-network"
+          "change-group-identity"
+          "change-user-identity"
+          "administer-host"
+          "change-root-directory"
+        ];
+      };
+      resource_control_delegation = true;
+      resource_control_access = "host";
+      device_access_scope = "shared";
+      host_clock_mutation = true;
+      host_name_mutation = true;
+      operating_system_log_access = true;
+      operating_system_extension_access = true;
+      operating_system_tunable_access = true;
+      lock_execution_personality = false;
+      writable_executable_memory = true;
+      isolation_domains = [];
+      network_families = ["ipv4" "ipv6" "route-control" "raw-packet" "local"];
+      memory_pressure_adjustment = -999;
+      permit_realtime = true;
+      permit_elevated_file_identity = true;
+      process_visibility = "all";
+      security_label = "aos-pkg-containerd";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = [];
+      operation_profile = "privileged";
+      isolated_identity_mapping = "none";
+    };
+    consumerInstance = "containerd";
+    service = "main";
+    lifecycle = {
+      description = "containerd standalone container runtime";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [(command ["--config" configPath])];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "always";
+      restart_token = cfg.restartToken;
+      restart_delay_millis = 5000;
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [
+        (resultOf "kernel-modules" "resource")
+        (resultOf "network-readiness" "resource")
+        (resultOf "root-storage" "resource")
+        (resultOf "state-storage" "resource")
+      ];
+      before = [];
+      requires = [
+        (resultOf "kernel-modules" "resource")
+        (resultOf "root-storage" "resource")
+        (resultOf "state-storage" "resource")
+      ];
+      wants = [(resultOf "network-readiness" "resource")];
+    };
+    supervision = {
+      startup_protocol = "notification";
+      notification_access = "main-process";
+    };
+    readiness = {
+      mechanism = "process-signal";
+      signal_scope = "main-process";
+      timeout_millis = 90000;
+    };
+    resources = {
+      open_files = {
+        kind = "maximum";
+        value = 1048576;
+      };
+      processes.kind = "unbounded";
+      tasks.kind = "unbounded";
+    };
+    configuration.views = [
+      {
+        name = "server";
+        source = configPath;
+        optional = false;
+      }
+    ];
+    storage.mounts = [
+      {
+        name = "root";
+        source = rootPath;
+        access = "read-write";
+      }
+      {
+        name = "state";
+        source = statePath;
+        access = "read-write";
+      }
+    ];
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0750";
+    };
+    isolation = {
+      privilege = "privileged";
+      filesystem = "host";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "main-process";
+      temporary_directory = "shared";
+      devices = [];
+      host_paths = lib.optionals (cfg.registryConfigResource != null) [
+        {
+          source = resultOf "registry-config-view" "host-path";
+          mode = "read-only";
+        }
+      ];
+      permit_core_dumps = true;
+    };
+  };
+  producers = [
+    storage
+    rootStorage
+    grpcSocket
+    registryConfig
+    kernelModules
+    networkReadiness
+    configuration
+  ];
+in {
+  options.containerd = {
+    enable = mkOption {
+      type = abilityTypes.boolean;
+      default = false;
+      description = "Run containerd as a standalone host runtime.";
+    };
+    restartToken = mkOption {
+      type = abilityTypes.optional serviceTypes.restartToken;
+      default = null;
+      description = "Operator-controlled token whose change requests a service restart.";
+    };
+    root = mkOption {
+      type = persistentRoot;
+      default = "/var/lib/containerd";
+      description = "Requested persistent containerd content and metadata root.";
+    };
+    state = mkOption {
+      type = runtimeRoot;
+      default = "/run/containerd";
+      description = "Requested volatile containerd state directory.";
+    };
+    grpcSocketName = mkOption {
+      type = abilityTypes.relativePath;
+      default = "containerd.sock";
+      description = "Socket path relative to the allocated volatile state directory.";
+    };
+    metricsAddress = mkOption {
+      type = abilityTypes.optional metricsAddress;
+      default = null;
+      description = "Optional Prometheus metrics listen address.";
+    };
+    disabledPlugins = mkOption {
+      type = pluginNames;
+      default = [];
+      description = "Containerd plugins disabled at startup.";
+    };
+    requiredPlugins = mkOption {
+      type = pluginNames;
+      default = [];
+      description = "Plugins whose initialization failure aborts startup.";
+    };
+    snapshotter = mkOption {
+      type = abilityTypes.enum ["native" "overlayfs"];
+      default = "overlayfs";
+      description = "Default CRI image snapshotter.";
+    };
+    defaultRuntime = mkOption {
+      type = abilityTypes.enum ["runc"];
+      default = "runc";
+      description = "Default OCI runtime registered with the CRI plugin.";
+    };
+    systemdCgroup = mkOption {
+      type = abilityTypes.boolean;
+      default = true;
+      description = "Whether runc delegates cgroup management to the selected service manager.";
+    };
+    sandboxImage = mkOption {
+      type = sandboxImage;
+      default = "registry.k8s.io/pause:3.10";
+      description = "CRI pod sandbox image reference.";
+    };
+    registryConfigResource = mkOption {
+      type = abilityTypes.optional abilityTypes.resourceReference;
+      default = null;
+      description = "Optional authorized host resource containing registry configuration.";
+    };
+  };
+
+  config = lib.mkMerge [
+    {
+      assertions = [
+        {
+          assertion = !(lib.elem "io.containerd.cri.v1.runtime" cfg.disabledPlugins);
+          message = "containerd.disabledPlugins cannot disable the configured CRI runtime plugin";
+        }
+        {
+          assertion = builtins.length cfg.disabledPlugins == builtins.length (lib.unique cfg.disabledPlugins);
+          message = "containerd.disabledPlugins must not contain duplicates";
+        }
+        {
+          assertion = builtins.length cfg.requiredPlugins == builtins.length (lib.unique cfg.requiredPlugins);
+          message = "containerd.requiredPlugins must not contain duplicates";
+        }
+      ];
+      aos.services."containerd.main" = service // {enable = cfg.enable;};
+    }
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = config.aos.services."containerd.main".enable;
+    })
+  ];
 }

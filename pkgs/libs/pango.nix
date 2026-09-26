@@ -1,5 +1,6 @@
 ##! pango — Text layout and rendering for image processing.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -30,7 +31,94 @@
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "pango";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "The markup <b>AOS</b>.";
+        operation = "Build and serialize its text layout.";
+        expected = "The layout contains AOS text with a bold weight attribute.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@out@/bin/pango-view"
+              "--no-display"
+              "--markup"
+              "--text=<b>AOS</b>"
+              "--serialize-to=layout.json"
+            ];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import json
+                from pathlib import Path
+
+                layout = json.loads(Path("layout.json").read_text())
+                assert layout["text"] == "AOS"
+                assert any(
+                    attribute["type"] == "weight" and attribute["value"] == "bold"
+                    for attribute in layout["attributes"]
+                )
+                print("pango bold text layout passed")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "pango bold text layout passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "An unclosed bold markup tag.";
+        operation = "Attempt to build its text layout.";
+        expected = "Pango rejects the malformed markup.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@out@/bin/pango-view"
+              "--no-display"
+              "--markup"
+              "--text=<b>AOS"
+              "--serialize-to=layout.json"
+            ];
+            exit_code = 1;
+            observes_rejection = true;
+            stdout.exact = "";
+          }
+        ];
+      };
+    };
     inherit version src;
     passthru.evidenceSources = [src fallbackFontFixture fallbackFontLicense];
 

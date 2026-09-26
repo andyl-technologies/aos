@@ -27,6 +27,7 @@
 {
   system,
   bash ? null,
+  abilityInterfaceDirectory ? null,
 }: let
   trivial = import ./trivial.nix;
   lists = import ./lists.nix;
@@ -56,15 +57,53 @@
       ;
   };
 
-  evalSubmodule = moduleArgs: loc: defs: let
+  evalSubmoduleResult = moduleArgs: loc: defs: let
     # `submodule [m1 m2 m3]` and `submodule m` should both work; nixpkgs
     # accepts either a single module or a list of modules.
-    baseModules =
-      if builtins.isList moduleArgs
-      then moduleArgs
-      else [moduleArgs];
+    moduleRecords =
+      if builtins.isAttrs moduleArgs && moduleArgs ? _aosOriginRecords
+      then moduleArgs._aosOriginRecords
+      else
+        builtins.map
+        (module: {
+          inherit module;
+          provenance = "@base";
+        })
+        (
+          if builtins.isList moduleArgs
+          then moduleArgs
+          else [moduleArgs]
+        );
+    moduleWithSource = record: let
+      module = record.module;
+      source = record.file or null;
+    in
+      if source == null
+      then module
+      else if builtins.isFunction module
+      then args: (module args) // {_file = source;}
+      else if builtins.isAttrs module
+      then module // {_file = source;}
+      else module;
+    baseModules = builtins.map moduleWithSource (builtins.filter
+      (record:
+        builtins.elem record.provenance ["@base" "@host-import" "@runtime-import"])
+      moduleRecords);
+    operatorOptionModules = builtins.map moduleWithSource (builtins.filter
+      (record: record.provenance == "@host")
+      moduleRecords);
+    runtimeOptionModules = builtins.map moduleWithSource (builtins.filter
+      (record: record.provenance == "@runtime")
+      moduleRecords);
+    packageOptionModules =
+      builtins.map (record: {
+        name = strings.removePrefix "package:" record.provenance;
+        module = moduleWithSource record;
+      }) (builtins.filter
+        (record: strings.hasPrefix "package:" record.provenance)
+        moduleRecords);
 
-    # Each definition contributes a `config = def.value` module, so the
+    # Each definition becomes a `config = def.value` module, so the
     # submodule's option declarations (defaults, types, mkIf/mkMerge)
     # process it as a normal module input.
     applyInheritedPriority = priority: value:
@@ -111,7 +150,6 @@
       builtins.map (d: {
         name = strings.removePrefix "package:" d.provenance;
         module = defModule d;
-        authorization = d.authorization;
       }) (builtins.filter
         (d: strings.hasPrefix "package:" (d.provenance or "@base"))
         defs);
@@ -136,29 +174,85 @@
       # and also recursively delegate to `evalSubmodule`.
       lib = finalLib;
       inherit specialArgs;
-      operatorModules = operatorDefModules;
-      runtimeModules = runtimeDefModules;
-      packageModules = packageDefRecords;
-      enforcePackageAuthorization = false;
+      operatorModules = operatorOptionModules ++ operatorDefModules;
+      runtimeModules = runtimeOptionModules ++ runtimeDefModules;
+      packageModules = packageOptionModules ++ packageDefRecords;
+      enforcePackageAuthorship = false;
     };
   in
-    evaluated.config;
+    evaluated;
 
-  # Module-namespacing and contributable-surface helpers.
-  # Pure data over evaluated module sets / module values; takes the wired
-  # `types` and `mkOption` so callers reach them at `lib.mkPackageRoot` etc.
-  namespacing = import ./namespacing.nix {
+  evalSubmodule = moduleArgs: loc: defs:
+    (evalSubmoduleResult moduleArgs loc defs).config;
+
+  submoduleOptionDeclarations = optionType: loc:
+    if optionType ? _submodule
+    then (evalSubmoduleResult optionType._submodule loc [])._optionDecls
+    else throw "submoduleOptionDeclarations requires a submodule option type";
+
+  submoduleOptions = optionType: loc:
+    if optionType ? _submodule
+    then (evalSubmoduleResult optionType._submodule loc []).options
+    else throw "submoduleOptions requires a submodule option type";
+
+  # Declaration-derived option extension helpers.
+  namespacing = import ./namespacing.nix {};
+
+  abilityCore = import ./abilities {
     inherit types;
     inherit (modules) mkOption;
+    evalModules = modules.evalModules;
+    interfaceDirectory = abilityInterfaceDirectory;
   };
-
-  # Version-stable primitive contracts shared by independently authenticated
-  # package modules. Logical service schemas remain package-owned.
-  serviceTypes = import ./service-types.nix {
-    inherit types;
-    inherit (modules) mkOption;
+  abilities =
+    abilityCore
+    // {
+      projectPackage = abilityCore.packageProjectionFor {
+        lib = finalLib;
+        inherit abilities;
+      };
+      selectBindings = abilityConfiguration:
+        import ./build/select-ability-bindings.nix {
+          lib = finalLib;
+          abilities = abilityConfiguration;
+        };
+    };
+  qualification = import ./qualification.nix {inherit abilities;};
+  packagePlatform = import ./package-platform.nix {
+    inherit lists;
+    platform = platformMod;
   };
-  aosDoc = import ./documentation.nix;
+  mkArtifactConsumptionAudit = args:
+    import ./build/artifact-consumption-audit.nix (
+      args
+      // {
+        lib = finalLib;
+      }
+    );
+  build = {
+    referenceGraph = args:
+      import ./build/reference-graph.nix (
+        args
+        // {
+          lib = finalLib;
+        }
+      );
+    closureInfo = args:
+      import ./build/closure-info.nix (
+        args
+        // {
+          lib = finalLib;
+        }
+      );
+    runtimeClosureAudit = args:
+      import ./build/runtime-closure-audit.nix (
+        args
+        // {
+          lib = finalLib;
+        }
+      );
+    storeView = import ./build/store-view.nix {lib = finalLib;};
+  };
 
   platformMod = import ./platform.nix;
   derivations = import ./derivations.nix {inherit system bash;};
@@ -179,8 +273,12 @@
     // strings
     // {
       inherit types system;
-      inherit serviceTypes;
-      inherit aosDoc;
+      inherit submoduleOptionDeclarations submoduleOptions;
+      inherit abilities;
+      inherit qualification;
+      inherit packagePlatform;
+      inherit mkArtifactConsumptionAudit;
+      inherit build;
       literalExpression = text: {
         _type = "literalExpression";
         inherit text;
@@ -262,13 +360,11 @@
       # Check composition helper (pure data, no deps) for use in modules
       inherit (checks) composeChecks;
 
-      # Namespacing and contributable-surface helpers.
+      # Declaration-derived option extension helpers.
       inherit
         (namespacing)
         optionSurface
-        contributableSurface
-        mkPackageRoot
-        mountPackageModules
+        extensibleSurface
         ;
 
       # Compiler-hardening token vocabulary and set algebra. Used by the

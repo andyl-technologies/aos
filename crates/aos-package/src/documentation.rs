@@ -13,9 +13,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use aos_core::output::{OutputMode, Printer};
+#[cfg(test)]
+use aos_doc_model::PackageAbilityReference;
 use aos_doc_model::{
-    DOCUMENT_JSON_SCHEMA, DOCUMENT_SCHEMA, DocumentationComparison, MAX_DOCUMENT_BYTES,
-    OptionDocument, PackageDocumentation, SearchDocument, tokenize,
+    DocumentationComparison, MAX_DOCUMENT_BYTES, OptionDocument, PackageDocumentation,
+    PackageDocumentationProjection, SearchDocument, documentation_metadata_json_schema, tokenize,
 };
 use aos_proto_types::{
     ComparePackageDocumentationRequest, GetPackageDocumentationRequest,
@@ -33,8 +35,43 @@ use crate::{DocumentationCacheCommand, DocumentationCommand, DocumentationOutput
 /// One reverified canonical document and its signed installed locator.
 #[derive(Clone)]
 pub(crate) struct LoadedDocumentation {
-    /// Decoded canonical document.
-    pub document: PackageDocumentation,
+    /// The one signed package reference shared by every consumer.
+    pub(crate) projection: PackageDocumentationProjection,
+}
+
+/// One Hub document tied to the exact indexed registry commit that served it.
+struct VerifiedRemoteDocumentation {
+    projection: PackageDocumentationProjection,
+    registry_commit: String,
+}
+
+impl LoadedDocumentation {
+    #[cfg(test)]
+    pub(crate) fn from_parts(
+        document: PackageDocumentation,
+        ability_reference: PackageAbilityReference,
+    ) -> Result<Self> {
+        Ok(Self {
+            projection: PackageDocumentationProjection::new(document, ability_reference)?,
+        })
+    }
+
+    pub(crate) fn from_projection(projection: PackageDocumentationProjection) -> Result<Self> {
+        projection.validate()?;
+        Ok(Self { projection })
+    }
+
+    fn render_plain(&self) -> Result<String> {
+        Ok(self.projection.render_plain())
+    }
+
+    fn render_html(&self) -> Result<String> {
+        Ok(self.projection.render_html())
+    }
+
+    fn render_roff(&self) -> Result<String> {
+        Ok(self.projection.render_roff())
+    }
 }
 
 /// Runs one `apm docs` command.
@@ -87,8 +124,8 @@ pub async fn run(command: &DocumentationCommand, printer: &Printer) -> Result<()
             token,
             system,
         } => {
-            let document = if let Some(hub) = hub {
-                remote_document(
+            let loaded = if let Some(hub) = hub {
+                remote_loaded_document(
                     hub,
                     registry
                         .as_deref()
@@ -106,7 +143,6 @@ pub async fn run(command: &DocumentationCommand, printer: &Printer) -> Result<()
                     version.as_deref(),
                     platform.as_deref(),
                 )?
-                .document
             };
             let format = format.unwrap_or_else(|| {
                 if printer.mode() == OutputMode::Json {
@@ -115,14 +151,15 @@ pub async fn run(command: &DocumentationCommand, printer: &Printer) -> Result<()
                     DocumentationOutput::Plain
                 }
             });
-            write_rendered(&document, format, output.as_deref())
+            write_rendered(&loaded, format, output.as_deref())
         }
         DocumentationCommand::Schema { hub, token } => {
-            let bytes = if let Some(hub) = hub {
-                remote_schema(hub, token.as_deref()).await?
-            } else {
-                DOCUMENT_JSON_SCHEMA.as_bytes().to_vec()
-            };
+            if hub.is_some() || token.is_some() {
+                bail!(
+                    "the package metadata JSON Schema is generated locally; use `apm schema <package> --hub ... --registry ...` for an exact signed package reference"
+                );
+            }
+            let bytes = documentation_metadata_json_schema()?;
             write_bytes(&bytes, None)
         }
         DocumentationCommand::Man {
@@ -133,15 +170,15 @@ pub async fn run(command: &DocumentationCommand, printer: &Printer) -> Result<()
         } => {
             let scope = scope(*system);
             let loaded = local_document(scope, package, None, None)?;
-            let roff = loaded.document.render_roff();
+            let roff = loaded.render_roff()?;
             if *install {
-                let path = install_manpage(scope, &loaded.document, roff.as_bytes())?;
+                let path = install_manpage(scope, &loaded.projection.document, roff.as_bytes())?;
                 if *print_path || printer.mode() == OutputMode::Quiet {
                     println!("{}", path.display());
                 } else if printer.mode() == OutputMode::Json {
                     printer.json(&serde_json::json!({
-                        "package": loaded.document.package.name,
-                        "version": loaded.document.package.version,
+                        "package": loaded.projection.document.package.name,
+                        "version": loaded.projection.document.package.version,
                         "path": path,
                     }));
                 } else {
@@ -220,7 +257,7 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
                 for row in rows.into_iter().filter(|row| {
                     row.key == *path && package.as_ref().is_none_or(|name| row.package == *name)
                 }) {
-                    let document = remote_document(
+                    let loaded = remote_loaded_document(
                         hub,
                         registry,
                         token.as_deref(),
@@ -230,8 +267,9 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
                     )
                     .await?;
                     matches.extend(
-                        document
-                            .options
+                        loaded
+                            .projection
+                            .options()
                             .into_iter()
                             .filter(|option| option.display_path == *path),
                     );
@@ -243,9 +281,9 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
                     .filter(|loaded| {
                         package
                             .as_ref()
-                            .is_none_or(|name| loaded.document.package.name == *name)
+                            .is_none_or(|name| loaded.projection.document.package.name == *name)
                     })
-                    .flat_map(|loaded| loaded.document.options)
+                    .flat_map(|loaded| loaded.projection.options())
                     .filter(|option| option.display_path == *path)
                     .collect()
             };
@@ -279,12 +317,11 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
                 printer.json(&serde_json::to_value(&comparison)?);
             } else {
                 println!(
-                    "{} {} -> {} (schema changed: {}, runtime changed: {})",
+                    "{} {} -> {} (schema changed: {})",
                     comparison.package,
                     comparison.from_version,
                     comparison.to_version,
-                    comparison.semantic_changed,
-                    comparison.runtime_changed
+                    comparison.semantic_changed
                 );
                 for change in comparison.option_changes {
                     println!("{:?}\t{}", change.kind, change.path);
@@ -295,7 +332,7 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
         OptionsCommand::Complete { prefix, system } => {
             let mut paths = load_installed_documents(scope(*system))?
                 .into_iter()
-                .flat_map(|loaded| loaded.document.options)
+                .flat_map(|loaded| loaded.projection.options())
                 .map(|option| option.display_path)
                 .filter(|path| path.starts_with(prefix))
                 .collect::<Vec<_>>();
@@ -309,14 +346,14 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
     }
 }
 
-/// Exports the global closed schema or one exact package model.
+/// Exports the canonical documentation schema or one exact signed package reference.
 ///
 /// # Errors
 ///
 /// Returns an error when the local or Hub selection cannot be verified.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_schema(
-    package: Option<&str>,
+    package: &str,
     hub: Option<&str>,
     registry: Option<&str>,
     version: Option<&str>,
@@ -324,32 +361,22 @@ pub async fn run_schema(
     token: Option<&str>,
     system: bool,
 ) -> Result<()> {
-    match package {
-        Some(package) => {
-            let document = match hub {
-                Some(hub) => {
-                    remote_document(
-                        hub,
-                        registry.context("remote schema lookup requires --registry")?,
-                        token,
-                        package,
-                        version,
-                        platform,
-                    )
-                    .await?
-                }
-                None => local_document(scope(system), package, version, platform)?.document,
-            };
-            write_bytes(&document.canonical_json()?, None)
+    let projection = match hub {
+        Some(hub) => {
+            remote_schema(
+                hub,
+                registry.context("remote schema lookup requires --registry")?,
+                token,
+                package,
+                version,
+                platform,
+            )
+            .await?
         }
-        None => {
-            let bytes = match hub {
-                Some(hub) => remote_schema(hub, token).await?,
-                None => DOCUMENT_JSON_SCHEMA.as_bytes().to_vec(),
-            };
-            write_bytes(&bytes, None)
-        }
-    }
+        None => local_document(scope(system), package, version, platform)?.projection,
+    };
+
+    write_bytes(&projection.canonical_json()?, None)
 }
 
 fn scope(system: bool) -> ProfileScope {
@@ -378,25 +405,29 @@ pub(crate) fn load_installed_documents(scope: ProfileScope) -> Result<Vec<Loaded
         };
         let path = Path::new(&artifact.store_path);
         let loaded = load_document_file(path, Some(&artifact), &apm.name)?;
-        if loaded.document.package.name != apm.name
-            || loaded.document.package.version != apm.version
+        if loaded.projection.document.package.name != apm.name
+            || loaded.projection.document.package.version != apm.version
         {
             bail!(
                 "installed documentation identity mismatch for '{}': expected {} {}, got {} {}",
                 apm.name,
                 apm.name,
                 apm.version,
-                loaded.document.package.name,
-                loaded.document.package.version
+                loaded.projection.document.package.name,
+                loaded.projection.document.package.version
             );
         }
         documents.push(loaded);
     }
     documents.sort_by(|left, right| {
-        (&left.document.package.name, &left.document.package.version).cmp(&(
-            &right.document.package.name,
-            &right.document.package.version,
-        ))
+        (
+            &left.projection.document.package.name,
+            &left.projection.document.package.version,
+        )
+            .cmp(&(
+                &right.projection.document.package.name,
+                &right.projection.document.package.version,
+            ))
     });
     Ok(documents)
 }
@@ -429,19 +460,20 @@ fn load_document_file(
             path.display()
         )
     })?;
-    let document = PackageDocumentation::from_canonical_json(&bytes)
+    let projection = PackageDocumentationProjection::from_canonical_json(&bytes)
         .with_context(|| format!("validating documentation object for {source}"))?;
 
     if let Some(expected) = expected {
         let actual = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
         if expected.document_sha256 != actual
             || expected.document_size != u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-            || expected.semantic_schema_sha256 != document.identity.semantic_schema_sha256
+            || expected.semantic_schema_sha256
+                != projection.document.identity.semantic_schema_sha256
         {
             bail!("documentation object identity mismatch for {source}");
         }
     }
-    Ok(LoadedDocumentation { document })
+    LoadedDocumentation::from_projection(projection)
 }
 
 fn local_document(
@@ -453,9 +485,9 @@ fn local_document(
     load_installed_documents(scope)?
         .into_iter()
         .find(|loaded| {
-            loaded.document.package.name == package
-                && version.is_none_or(|value| loaded.document.package.version == value)
-                && platform.is_none_or(|value| loaded.document.package.platform == value)
+            loaded.projection.document.package.name == package
+                && version.is_none_or(|value| loaded.projection.document.package.version == value)
+                && platform.is_none_or(|value| loaded.projection.document.package.platform == value)
         })
         .with_context(|| {
             format!(
@@ -495,7 +527,7 @@ fn search_loaded_documents(
     let query_terms = tokenize(query);
     let mut results = Vec::new();
     for loaded in documents {
-        for row in loaded.document.search_documents() {
+        for row in loaded.projection.search_documents() {
             if kind.is_some_and(|kind| row.kind != kind) {
                 continue;
             }
@@ -514,9 +546,9 @@ fn search_loaded_documents(
                 continue;
             }
             results.push(SearchResult {
-                package: loaded.document.package.name.clone(),
-                version: loaded.document.package.version.clone(),
-                platform: loaded.document.package.platform.clone(),
+                package: loaded.projection.document.package.name.clone(),
+                version: loaded.projection.document.package.version.clone(),
+                platform: loaded.projection.document.package.platform.clone(),
                 kind: row.kind,
                 key: row.key,
                 title: row.title,
@@ -601,14 +633,29 @@ async fn remote_search(
     Ok(results)
 }
 
-async fn remote_document(
+async fn remote_loaded_document(
     hub: &str,
     registry: &str,
     token: Option<&str>,
     package: &str,
     version: Option<&str>,
     platform: Option<&str>,
-) -> Result<PackageDocumentation> {
+) -> Result<LoadedDocumentation> {
+    let remote =
+        remote_document_selection(hub, registry, token, package, version, platform).await?;
+    crate::types::validate_commit_hash(&remote.registry_commit)
+        .context("Hub package reference response has an invalid registry commit")?;
+    LoadedDocumentation::from_projection(remote.projection)
+}
+
+async fn remote_document_selection(
+    hub: &str,
+    registry: &str,
+    token: Option<&str>,
+    package: &str,
+    version: Option<&str>,
+    platform: Option<&str>,
+) -> Result<VerifiedRemoteDocumentation> {
     let response = hub_client(hub, token)?
         .call_topology(
             hub_rpc::GetPackageDocumentation,
@@ -623,43 +670,76 @@ async fn remote_document(
     let identity = response
         .identity
         .context("Hub documentation response omitted its signed identity")?;
-    let document = PackageDocumentation::from_canonical_json(&response.canonical_json)
-        .context("validating Hub package documentation")?;
-    if document.package.name != identity.package
-        || document.package.version != identity.version
-        || document.package.platform != identity.platform
-        || document.document_sha256()? != identity.document_sha256
-        || document.identity.semantic_schema_sha256 != identity.semantic_schema_sha256
+    crate::types::validate_commit_hash(&identity.registry_commit)
+        .context("Hub documentation response has an invalid registry commit")?;
+    let projection = PackageDocumentationProjection::from_canonical_json(&response.canonical_json)
+        .context("validating Hub package reference")?;
+    if projection.document.package.name != identity.package
+        || projection.document.package.version != identity.version
+        || projection.document.package.platform != identity.platform
+        || projection.document_sha256()? != identity.document_sha256
+        || projection.document.identity.semantic_schema_sha256 != identity.semantic_schema_sha256
         || response.etag != identity.document_sha256
     {
         bail!("Hub documentation response identity mismatch");
     }
-    Ok(document)
+    Ok(VerifiedRemoteDocumentation {
+        projection,
+        registry_commit: identity.registry_commit,
+    })
 }
 
-async fn remote_schema(hub: &str, token: Option<&str>) -> Result<Vec<u8>> {
+async fn remote_schema(
+    hub: &str,
+    registry: &str,
+    token: Option<&str>,
+    package: &str,
+    version: Option<&str>,
+    platform: Option<&str>,
+) -> Result<PackageDocumentationProjection> {
     let response = hub_client(hub, token)?
         .call_topology(
             hub_rpc::GetPackageDocumentationSchema,
-            &GetPackageDocumentationSchemaRequest {},
+            &GetPackageDocumentationSchemaRequest {
+                registry: registry.to_string(),
+                package: package.to_string(),
+                version: version.unwrap_or_default().to_string(),
+                platform: platform.unwrap_or_default().to_string(),
+                release: String::new(),
+            },
         )
         .await?;
-    if response.schema != DOCUMENT_SCHEMA {
-        bail!(
-            "Hub returned unsupported documentation schema '{}'",
-            response.schema
-        );
-    }
-    let value: serde_json::Value = serde_json::from_slice(&response.json_schema)
-        .context("Hub returned invalid documentation JSON Schema")?;
-    if value
-        .pointer("/properties/schema/const")
-        .and_then(serde_json::Value::as_str)
-        != Some(DOCUMENT_SCHEMA)
+    let documentation_identity = response
+        .documentation_identity
+        .context("Hub package reference response omitted its signed identity")?;
+    let ability_reference_identity = response
+        .ability_reference_identity
+        .context("Hub package reference response omitted its checked ability identity")?;
+    crate::types::validate_commit_hash(&documentation_identity.registry_commit)
+        .context("Hub package reference response has an invalid registry commit")?;
+    crate::types::validate_commit_hash(&ability_reference_identity.registry_commit)
+        .context("Hub package reference response has an invalid ability registry commit")?;
+    let projection = PackageDocumentationProjection::from_canonical_json(&response.canonical_json)
+        .context("validating Hub package reference")?;
+    let ability_reference = &projection.ability_reference;
+    if documentation_identity.package != projection.document.package.name
+        || documentation_identity.version != projection.document.package.version
+        || documentation_identity.platform != projection.document.package.platform
+        || documentation_identity.document_sha256 != projection.document_sha256()?
+        || documentation_identity.semantic_schema_sha256
+            != projection.document.identity.semantic_schema_sha256
+        || ability_reference_identity.registry_commit != documentation_identity.registry_commit
+        || ability_reference_identity.package != projection.document.package.name
+        || ability_reference_identity.version != projection.document.package.version
+        || ability_reference_identity.platform != projection.document.package.platform
+        || ability_reference_identity.manifest_sha256
+            != ability_reference.manifest_sha256.to_string()
+        || ability_reference_identity.package_digest != ability_reference.package_digest.to_string()
+        || response.etag != projection.response_sha256()?
     {
-        bail!("Hub documentation JSON Schema has the wrong identity");
+        bail!("Hub package reference response identity mismatch");
     }
-    Ok(response.json_schema)
+    Ok(projection)
 }
 
 fn hub_client(hub: &str, token: Option<&str>) -> Result<HubClient> {
@@ -670,15 +750,8 @@ fn hub_client(hub: &str, token: Option<&str>) -> Result<HubClient> {
 }
 
 fn validate_kind(kind: Option<&str>) -> Result<()> {
-    if kind.is_some_and(|kind| {
-        !matches!(
-            kind,
-            "package" | "option" | "service" | "credential" | "capability"
-        )
-    }) {
-        bail!(
-            "unsupported documentation kind; expected package, option, service, credential, or capability"
-        );
+    if kind.is_some_and(|kind| !matches!(kind, "package" | "option" | "capability")) {
+        bail!("unsupported documentation kind; expected package, option, or capability");
     }
     Ok(())
 }
@@ -724,69 +797,17 @@ fn print_exact_option(
         "  owner: {} / {}{}",
         option.owner.package,
         option.owner.root,
-        if option.contributable {
-            " (contributable)"
+        if option.extensible {
+            " (extensible)"
         } else {
             ""
         }
     );
-    for block in option.description {
-        println!("{}", render_prose_block(&block));
+    let description = aos_doc_model::render_prose_plain(&option.description);
+    if !description.is_empty() {
+        println!("{description}");
     }
     Ok(())
-}
-
-fn render_prose_block(block: &aos_doc_model::ProseBlock) -> String {
-    match block {
-        aos_doc_model::ProseBlock::Paragraph { spans } => spans
-            .iter()
-            .map(|span| match span {
-                aos_doc_model::InlineSpan::Text { text }
-                | aos_doc_model::InlineSpan::Code { text } => text.as_str(),
-                aos_doc_model::InlineSpan::Link { label, .. } => label.as_str(),
-            })
-            .collect::<Vec<_>>()
-            .join(""),
-        aos_doc_model::ProseBlock::Code { text, .. } => text.clone(),
-        aos_doc_model::ProseBlock::List { items, .. } => items
-            .iter()
-            .map(|item| {
-                format!(
-                    "- {}",
-                    item.iter()
-                        .map(render_prose_block)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        aos_doc_model::ProseBlock::Note { severity, blocks } => format!(
-            "{:?}: {}",
-            severity,
-            blocks
-                .iter()
-                .map(render_prose_block)
-                .collect::<Vec<_>>()
-                .join(" ")
-        ),
-        aos_doc_model::ProseBlock::Definitions { entries } => entries
-            .iter()
-            .map(|entry| {
-                format!(
-                    "{}: {}",
-                    entry.term,
-                    entry
-                        .body
-                        .iter()
-                        .map(render_prose_block)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
 }
 
 async fn serve(scope: ProfileScope, listen: &str, once: bool, printer: &Printer) -> Result<()> {
@@ -855,10 +876,10 @@ fn local_http_response(documents: &[LoadedDocumentation], request: &[u8]) -> Vec
             "<!doctype html><meta charset=utf-8><title>Installed package documentation</title><main><h1>Installed package documentation</h1><ul>",
         );
         for loaded in documents {
-            let name = html_escape(&loaded.document.package.name);
+            let name = html_escape(&loaded.projection.document.package.name);
             body.push_str(&format!(
                 "<li><a href=\"/packages/{name}\">{name}</a> <code>{}</code></li>",
-                html_escape(&loaded.document.package.version)
+                html_escape(&loaded.projection.document.package.version)
             ));
         }
         body.push_str("</ul></main>");
@@ -872,11 +893,20 @@ fn local_http_response(documents: &[LoadedDocumentation], request: &[u8]) -> Vec
     };
     let Some(document) = documents
         .iter()
-        .find(|loaded| loaded.document.package.name == name)
+        .find(|loaded| loaded.projection.document.package.name == name)
     else {
         return http_response("404 Not Found", "text/plain", b"not found\n");
     };
-    let body = document.document.render_html();
+    let body = match document.render_html() {
+        Ok(body) => body,
+        Err(_) => {
+            return http_response(
+                "500 Internal Server Error",
+                "text/plain",
+                b"documentation rendering failed\n",
+            );
+        }
+    };
     http_response("200 OK", "text/html; charset=utf-8", body.as_bytes())
 }
 
@@ -932,9 +962,9 @@ fn run_cache(command: &DocumentationCacheCommand, printer: &Printer) -> Result<(
             .iter()
             .map(|loaded| {
                 serde_json::json!({
-                    "package": &loaded.document.package.name,
-                    "version": &loaded.document.package.version,
-                    "platform": &loaded.document.package.platform,
+                    "package": &loaded.projection.document.package.name,
+                    "version": &loaded.projection.document.package.version,
+                    "platform": &loaded.projection.document.package.platform,
                 })
             })
             .collect::<Vec<_>>();
@@ -951,9 +981,9 @@ fn run_cache(command: &DocumentationCacheCommand, printer: &Printer) -> Result<(
         for loaded in &documents {
             println!(
                 "document\t{}\t{}\t{}",
-                loaded.document.package.name,
-                loaded.document.package.version,
-                loaded.document.package.platform
+                loaded.projection.document.package.name,
+                loaded.projection.document.package.version,
+                loaded.projection.document.package.platform
             );
         }
         println!("generated manpages\t{}", generated.len());
@@ -965,17 +995,21 @@ fn run_cache(command: &DocumentationCacheCommand, printer: &Printer) -> Result<(
 }
 
 fn write_rendered(
-    document: &PackageDocumentation,
+    loaded: &LoadedDocumentation,
     format: DocumentationOutput,
     output: Option<&Path>,
 ) -> Result<()> {
+    write_bytes(&rendered_bytes(loaded, format)?, output)
+}
+
+fn rendered_bytes(loaded: &LoadedDocumentation, format: DocumentationOutput) -> Result<Vec<u8>> {
     let bytes = match format {
-        DocumentationOutput::Plain => document.render_plain().into_bytes(),
-        DocumentationOutput::Json => document.canonical_json()?,
-        DocumentationOutput::Html => document.render_html().into_bytes(),
-        DocumentationOutput::Man => document.render_roff().into_bytes(),
+        DocumentationOutput::Plain => loaded.render_plain()?.into_bytes(),
+        DocumentationOutput::Json => loaded.projection.canonical_json()?,
+        DocumentationOutput::Html => loaded.render_html()?.into_bytes(),
+        DocumentationOutput::Man => loaded.render_roff()?.into_bytes(),
     };
-    write_bytes(&bytes, output)
+    Ok(bytes)
 }
 
 fn write_bytes(bytes: &[u8], output: Option<&Path>) -> Result<()> {
@@ -1016,15 +1050,21 @@ fn install_manpage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_ability_model::{
+        ABILITY_LIMITS_V1, ArtifactReference, InterfaceDocument, LocalKey, OptionSource,
+        OptionVisibility, PackageOptionDeclaration, ProviderImplementation, RequiredFeature,
+        RequirementDeclaration, RequirementStrength, ValueSchema, decode_canonical,
+    };
+    use aos_contract::Sha256Digest;
     use aos_doc_model::{
-        ConfinementSummary, DocumentationIdentity, DocumentedPackage, InlineSpan, OptionDocument,
-        OptionOwner, OptionType, ProseBlock, RuntimeSurface, SourceLocator, Visibility,
+        AbilityExportReference, AbilityHandlerReference, DocumentationIdentity, DocumentedPackage,
+        OptionType, PackageAbilityReference,
     };
     use tempfile::TempDir;
 
     fn fixture() -> PackageDocumentation {
         let mut document = PackageDocumentation {
-            schema: DOCUMENT_SCHEMA.to_string(),
+            schema: aos_doc_model::DOCUMENT_SCHEMA.to_string(),
             package: DocumentedPackage {
                 name: "nginx".to_string(),
                 version: "1.0".to_string(),
@@ -1036,55 +1076,7 @@ mod tests {
             identity: DocumentationIdentity {
                 semantic_schema_sha256: String::new(),
                 runtime_nar_hash: format!("sha256:{}", "a".repeat(64)),
-                config_module_nar_hash: None,
-                system_module_nar_hash: None,
-                expose_artifact_nar_hash: None,
                 source_nar_hash: format!("sha256:{}", "b".repeat(64)),
-            },
-            sections: Vec::new(),
-            options: vec![OptionDocument {
-                path: vec![
-                    aos_doc_model::PathSegment::Literal {
-                        value: "nginx".to_string(),
-                    },
-                    aos_doc_model::PathSegment::Literal {
-                        value: "enable".to_string(),
-                    },
-                ],
-                display_path: "nginx.enable".to_string(),
-                type_signature: "boolean".to_string(),
-                option_type: OptionType::Bool,
-                description: vec![ProseBlock::Paragraph {
-                    spans: vec![InlineSpan::Text {
-                        text: "Enables the HTTP server.".to_string(),
-                    }],
-                }],
-                default: None,
-                example: None,
-                visibility: Visibility::Public,
-                read_only: false,
-                deprecated: None,
-                replacement: None,
-                owner: OptionOwner {
-                    package: "nginx".to_string(),
-                    root: "nginx".to_string(),
-                    interface_abi: Some(1),
-                },
-                contributable: false,
-                activation: None,
-                source: Some(SourceLocator {
-                    path: "pkgs/networking/nginx.nix".to_string(),
-                    attribute: Some("nginx.enable".to_string()),
-                    line: Some(1),
-                }),
-            }],
-            runtime: RuntimeSurface {
-                confinement: Some(ConfinementSummary {
-                    class: "standard".to_string(),
-                    network: "private".to_string(),
-                    private_root: true,
-                }),
-                ..RuntimeSurface::default()
             },
         };
         document.identity.semantic_schema_sha256 =
@@ -1092,22 +1084,112 @@ mod tests {
         document
     }
 
+    fn ability_reference() -> PackageAbilityReference {
+        let supported = aos_doc_model::ability_reference_supported_features().unwrap();
+        let mut interface = decode_canonical::<InterfaceDocument>(
+            include_bytes!("../../../tests/abilities/fixtures/interface.json"),
+            ABILITY_LIMITS_V1,
+            &supported,
+        )
+        .unwrap();
+        interface.interface.configuration = Some(ValueSchema::String {
+            max_length: 64,
+            syntax: None,
+        });
+        let interface_key = interface.interface_key().unwrap();
+        let requirement = RequirementDeclaration {
+            description: "Describes this consumed ability.".to_string(),
+            alias: LocalKey::new("service-runtime").unwrap(),
+            accepted_interfaces: vec![interface_key.clone().into()],
+            methods: Vec::new(),
+            guarantees: Vec::new(),
+            strength: RequirementStrength::Required,
+            fallback: None,
+        };
+        let implementation = ProviderImplementation {
+            name: LocalKey::new("server").unwrap(),
+            description: "Implements the test server interface.".to_string(),
+            interface: interface_key.clone(),
+            methods: Vec::new(),
+            guarantees: Vec::new(),
+            artifact: ArtifactReference {
+                content: Sha256Digest::of_bytes("provider-content"),
+                store_path: "/nix/store/00000000000000000000000000000000-provider".to_string(),
+                nar_hash: Sha256Digest::of_bytes("provider-nar"),
+                closure: Sha256Digest::of_bytes("provider-closure"),
+            },
+            requirements: vec![requirement.clone()],
+            desired_schema: None,
+            composition_schema: None,
+            provider_module: None,
+            handler: None,
+            owns_resource_kinds: Vec::new(),
+            state_format: None,
+        };
+        let implementation_key = implementation.descriptor_digest().unwrap();
+
+        PackageAbilityReference {
+            schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.to_string(),
+            required_features: vec![RequiredFeature::new("abilities-v1").unwrap()],
+            package: LocalKey::new("nginx").unwrap(),
+            version: "1.0".to_string(),
+            manifest_sha256: Sha256Digest::of_bytes("manifest"),
+            package_digest: Sha256Digest::of_bytes("package"),
+            interfaces: std::collections::BTreeMap::from([(
+                LocalKey::new("server-interface").unwrap(),
+                interface,
+            )]),
+            guarantees: std::collections::BTreeMap::new(),
+            option_declarations: vec![PackageOptionDeclaration {
+                path: vec!["nginx".to_string(), "enable".to_string()],
+                type_signature: "boolean".to_string(),
+                structured_type: OptionType::Bool,
+                description: "Enables the HTTP server.".to_string(),
+                default: None,
+                example: None,
+                visibility: OptionVisibility::Public,
+                read_only: false,
+                extensible: false,
+                deprecated: None,
+                replacement: None,
+                source: OptionSource {
+                    path: aos_ability_model::RelativePath::new("module.nix")
+                        .expect("valid option source"),
+                },
+            }],
+            implementations: vec![implementation],
+            exports: vec![AbilityExportReference {
+                name: LocalKey::new("server").unwrap(),
+                implementation: implementation_key,
+                interface: interface_key.clone(),
+            }],
+            requirements: Vec::new(),
+            handlers: vec![AbilityHandlerReference {
+                name: LocalKey::new("configure").unwrap(),
+                entry_point: ".handler\\entry\u{1b}\n</code><script>bad()</script>".to_string(),
+                arguments: ValueSchema::Boolean,
+                result: ValueSchema::Boolean,
+            }],
+        }
+    }
+
     #[test]
     fn local_file_loader_rejects_signed_byte_or_semantic_drift() {
         let temporary = TempDir::new().unwrap();
         let path = temporary.path().join("doc.json");
         let document = fixture();
-        let bytes = document.canonical_json().unwrap();
+        let projection =
+            PackageDocumentationProjection::new(document.clone(), ability_reference()).unwrap();
+        let bytes = projection.canonical_json().unwrap();
         fs::write(&path, &bytes).unwrap();
         let mut artifact = DocumentationArtifactMeta {
             format: aos_doc_model::DOCUMENT_FORMAT.to_string(),
             store_path: path.to_string_lossy().into_owned(),
             nar_hash: "sha256:unused".to_string(),
             nar_size: 0,
-            document_sha256: document.document_sha256().unwrap(),
+            document_sha256: projection.document_sha256().unwrap(),
             document_size: bytes.len() as u64,
             semantic_schema_sha256: document.identity.semantic_schema_sha256.clone(),
-            system_module_nar_hash: None,
             references: Vec::new(),
         };
         assert!(load_document_file(&path, Some(&artifact), "fixture").is_ok());
@@ -1118,7 +1200,10 @@ mod tests {
     #[test]
     fn local_search_is_weighted_and_man_cache_is_profile_scoped() {
         let document = fixture();
-        let row = document
+        let reference = ability_reference();
+        let loaded = LoadedDocumentation::from_parts(document, reference).unwrap();
+        let row = loaded
+            .projection
             .search_documents()
             .into_iter()
             .find(|row| row.kind == "option")
@@ -1126,12 +1211,21 @@ mod tests {
         assert!(score_search_row(&row, &["enable".to_string()]) > 0);
         assert_eq!(score_search_row(&row, &["database".to_string()]), 0);
 
-        let loaded = LoadedDocumentation { document };
         let browsed = search_loaded_documents(std::slice::from_ref(&loaded), "", None, 25)
             .expect("empty documentation search browses packages");
         assert_eq!(browsed.len(), 1);
         assert_eq!(browsed[0].kind, "package");
         assert_eq!(browsed[0].package, "nginx");
+
+        let capabilities =
+            search_loaded_documents(std::slice::from_ref(&loaded), "", Some("capability"), 25)
+                .expect("ability search uses the checked documentation projection");
+        let capability_keys = capabilities
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(capability_keys.contains("provided:server"));
+        assert!(capability_keys.contains("consumed:implementation:server:service-runtime"));
 
         let options = search_loaded_documents(&[loaded], "", Some("option"), 25)
             .expect("empty kind-filtered search browses that projection");
@@ -1140,10 +1234,19 @@ mod tests {
     }
 
     #[test]
+    fn documentation_search_rejects_unproduced_result_kinds() {
+        for kind in ["service", "credential"] {
+            assert!(validate_kind(Some(kind)).is_err());
+        }
+        for kind in ["package", "option", "capability"] {
+            assert!(validate_kind(Some(kind)).is_ok());
+        }
+    }
+
+    #[test]
     fn documentation_loopback_browser_is_content_bearing_and_bounded() {
-        let loaded = LoadedDocumentation {
-            document: fixture(),
-        };
+        let reference = ability_reference();
+        let loaded = LoadedDocumentation::from_parts(fixture(), reference).unwrap();
         let index = local_http_response(
             std::slice::from_ref(&loaded),
             b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n",
@@ -1159,6 +1262,10 @@ mod tests {
         );
         let detail = String::from_utf8(detail).unwrap();
         assert!(detail.contains("nginx.enable"));
+        assert!(detail.contains("Declared abilities"));
+        assert!(detail.contains("Declared export <code>server</code>"));
+        assert!(detail.contains("does not report activation"));
+        assert!(detail.contains("&#x1b;&#xa;&lt;/code&gt;&lt;script&gt;bad()&lt;/script&gt;"));
         assert!(!detail.contains("<script"));
 
         let rejected = local_http_response(&[], b"POST / HTTP/1.1\r\n\r\n");
@@ -1167,5 +1274,98 @@ mod tests {
                 .unwrap()
                 .starts_with("HTTP/1.1 405 Method Not Allowed")
         );
+    }
+
+    #[test]
+    fn ordinary_renderers_show_only_the_static_public_declaration() {
+        let reference = ability_reference();
+        let loaded = LoadedDocumentation::from_parts(fixture(), reference).unwrap();
+
+        let plain = loaded.render_plain().unwrap();
+        assert!(plain.contains("DECLARED ABILITIES"));
+        assert!(plain.contains("PROVIDED ABILITIES"));
+        assert!(plain.contains("CONSUMED ABILITIES"));
+        assert!(plain.contains("declared export\tserver\taos.test.echo\tABI 1"));
+        assert!(plain.contains("service-runtime\trequired\tconsumed by implementation server"));
+        assert!(plain.contains("declared request or contribution schema"));
+        assert!(plain.contains("declared operator-owned provider instance configuration schema"));
+        assert!(plain.contains("\"max_length\": 64"));
+        assert!(plain.contains("declared aggregate output"));
+        assert!(plain.contains("declared method"));
+        assert!(plain.contains("does not report activation, provider selection"));
+        assert!(plain.contains("public schemas only, never deployed instance values"));
+        assert!(plain.contains("\\u{1b}\\n</code><script>bad()</script>"));
+
+        let html = loaded.render_html().unwrap();
+        assert!(html.contains("Declared request or contribution schema"));
+        assert!(html.contains("Provided abilities"));
+        assert!(html.contains("Consumed abilities"));
+        assert!(html.contains("consumed by <code>implementation server</code>"));
+        assert!(html.contains("Declared operator-owned provider instance configuration schema"));
+        assert!(html.contains("&quot;max_length&quot;: 64"));
+        assert!(html.contains("public schemas only, never deployed instance values"));
+
+        let roff = loaded.render_roff().unwrap();
+        assert!(roff.contains(".SH \"DECLARED ABILITIES\""));
+        assert!(roff.contains("declared operator-owned provider instance configuration schema"));
+        assert!(roff.contains("\\eentry\\eu{1b}\\en</code><script>bad()</script>"));
+        assert!(!roff.contains("\n.handler"));
+
+        let mut without_configuration = loaded.clone();
+        let reference = &mut without_configuration.projection.ability_reference;
+        let interface = reference.interfaces.values_mut().next().unwrap();
+        interface.interface.configuration = None;
+        let interface_key = interface.interface_key().unwrap();
+        reference.implementations[0].interface = interface_key.clone();
+        for requirement in &mut reference.implementations[0].requirements {
+            requirement.accepted_interfaces = vec![interface_key.clone().into()];
+        }
+        let implementation_key = reference.implementations[0].descriptor_digest().unwrap();
+        reference.exports[0].interface = interface_key.clone();
+        reference.exports[0].implementation = implementation_key;
+        assert!(
+            without_configuration
+                .render_plain()
+                .unwrap()
+                .contains("no operator-owned provider instance configuration is declared")
+        );
+
+        let canonical_document = rendered_bytes(&loaded, DocumentationOutput::Json).unwrap();
+        assert_eq!(
+            PackageDocumentationProjection::from_canonical_json(&canonical_document).unwrap(),
+            loaded.projection
+        );
+        assert!(
+            String::from_utf8(canonical_document)
+                .unwrap()
+                .contains("package-ability-reference")
+        );
+    }
+
+    #[test]
+    fn packages_without_ability_projections_document_empty_ability_directions() {
+        let mut reference = ability_reference();
+        reference.interfaces.clear();
+        reference.guarantees.clear();
+        reference.option_declarations.clear();
+        reference.implementations.clear();
+        reference.exports.clear();
+        reference.requirements.clear();
+        reference.handlers.clear();
+        let loaded = LoadedDocumentation::from_parts(fixture(), reference).unwrap();
+
+        let plain = loaded.render_plain().unwrap();
+        assert!(plain.contains("PROVIDED ABILITIES\nNo provider interfaces are declared."));
+        assert!(
+            plain.contains("CONSUMED ABILITIES\nNo consumed ability requirements are declared.")
+        );
+
+        let html = loaded.render_html().unwrap();
+        assert!(html.contains("<h3>Provided abilities</h3>"));
+        assert!(html.contains("<h3>Consumed abilities</h3>"));
+
+        let roff = loaded.render_roff().unwrap();
+        assert!(roff.contains("PROVIDED ABILITIES"));
+        assert!(roff.contains("CONSUMED ABILITIES"));
     }
 }

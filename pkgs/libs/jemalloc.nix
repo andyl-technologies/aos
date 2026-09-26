@@ -1,5 +1,6 @@
 ##! jemalloc — general-purpose scalable concurrent malloc implementation
 {
+  lib,
   mkDerivation,
   mkGithubUpstream,
   gnumake,
@@ -53,7 +54,95 @@
   inherit (upstream) version;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "jemalloc";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The allocation succeeds and its usable size is at least 64 bytes.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"jemalloc primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"jemalloc rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <jemalloc/jemalloc.h>\nint main(void) {\n    void *memory = mallocx(64, 0);\n    if (memory == NULL || sallocx(memory, 0) < 64) return 2;\n    memset(memory, 0x5a, 64); dallocx(memory, 0);\n    return pass();\n}\n\n";
+        };
+        "input" = "A request for a 64-byte allocation and its usable size.";
+        "operation" = "Allocate, query, write, and free memory through jemalloc's public API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-ljemalloc"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "jemalloc primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "jemalloc rejects the overflowing request by returning a null pointer.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"jemalloc primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"jemalloc rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <stdint.h>\n#include <jemalloc/jemalloc.h>\nint main(void) {\n    if (mallocx(SIZE_MAX, 0) != NULL) return 2;\n    return reject();\n}\n\n";
+        };
+        "input" = "An allocation request whose size is the maximum size_t value.";
+        "operation" = "Request the impossible allocation through mallocx.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-ljemalloc"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "jemalloc rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = upstream.components.main.sources.source;

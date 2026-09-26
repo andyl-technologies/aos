@@ -1,5 +1,6 @@
 ##! docker-buildx — Docker BuildKit CLI plugin
 {
+  lib,
   mkGoPackage,
   fetchGoModules,
   fetchurl,
@@ -15,7 +16,68 @@
   };
 in
   mkGoPackage {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "docker-buildx";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Buildx returns JSON with the declared context, Dockerfile, and tag.";
+        "files" = {
+          "Containerfile" = "FROM scratch\n";
+          "docker-bake.hcl" = "target \"default\" {\n  context = \".\"\n  dockerfile = \"Containerfile\"\n  tags = [\"example.test/qualification:latest\"]\n}\n";
+        };
+        "input" = "A Docker Bake file declaring one local build target.";
+        "operation" = "Resolve and print the bake plan without contacting a daemon.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import json, subprocess\nresult = subprocess.run([\"@out@/bin/docker-buildx\", \"bake\", \"--file\", \"docker-bake.hcl\", \"--print\"], capture_output=True, text=True)\nassert result.returncode == 0\nplan = json.loads(result.stdout)\ntarget = plan[\"target\"][\"default\"]\nassert target[\"context\"] == \".\" and target[\"dockerfile\"] == \"Containerfile\"\nassert target[\"tags\"] == [\"example.test/qualification:latest\"]\nprint(\"docker-buildx operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "docker-buildx operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Buildx rejects the invalid HCL before attempting a build.";
+        "files" = {
+          "docker-bake.hcl" = "target \"default\" {\n  context = \".\"\n";
+        };
+        "input" = "A Docker Bake file with an unterminated target block.";
+        "operation" = "Ask buildx to resolve the malformed bake plan.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/docker-buildx\", \"bake\", \"--file\", \"docker-bake.hcl\", \"--print\"], capture_output=True)\nif result.returncode == 0:\n    raise SystemExit(2)\nsys.stderr.write(\"docker-buildx rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "docker-buildx rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src goModules;
     goPackage = "./cmd/buildx";
     goOutput = "docker-buildx";

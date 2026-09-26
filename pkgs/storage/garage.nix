@@ -11,9 +11,6 @@
   mkCargoPackage,
   fetchurl,
   fetchCargoDeps,
-  bash,
-  coreutils,
-  writeShellScriptBin,
 }: let
   version = "2.3.0";
   src = fetchurl {
@@ -22,52 +19,92 @@
     ];
     hash = "sha256-uDqYFndnazVAC7uvIJdMOW8y2jHHx2MM5V/D5iwOLgE=";
   };
-  control = writeShellScriptBin "garage-control" ''
-    set -euo pipefail
-
-    runtime=/etc/aos/packages/garage/runtime.env
-    config=/etc/aos/packages/garage/garage.toml
-
-    enabled() {
-      set -a
-      source "$runtime"
-      set +a
-      [[ "''${GARAGE_ENABLED:-0}" == 1 ]]
-    }
-
-    use_credential() {
-      local variable="$1"
-      local name="$2"
-      local source="''${CREDENTIALS_DIRECTORY:-}/$name"
-      if [[ -n "''${CREDENTIALS_DIRECTORY:-}" && -r "$source" ]]; then
-        export "$variable=$source"
-      fi
-    }
-
-    case "''${1:-}" in
-      enabled)
-        enabled
-        ;;
-      prepare)
-        ${coreutils}/bin/install -d -m 0750 \
-          /var/lib/aos-pkg-garage/meta \
-          /var/lib/aos-pkg-garage/data
-        ;;
-      run)
-        use_credential GARAGE_RPC_SECRET_FILE rpc-secret
-        use_credential GARAGE_ADMIN_TOKEN_FILE admin-token
-        use_credential GARAGE_METRICS_TOKEN_FILE metrics-token
-        exec /bin/garage -c "$config" server
-        ;;
-      *)
-        echo "usage: garage-control {enabled|prepare|run}" >&2
-        exit 64
-        ;;
-    esac
-  '';
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      role = "public-package";
+    };
     pname = "garage";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Garage returns success and reports its version.";
+        "files" = {};
+        "input" = "The packaged Garage server's release identity.";
+        "operation" = "Request its version without opening storage or network listeners.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/garage\", \"--version\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"garage\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nprint(\"garage operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "garage operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Garage rejects the unsupported command.";
+        "files" = {};
+        "input" = "A Garage invocation naming an unknown command.";
+        "operation" = "Parse the unsupported command without opening storage.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/garage\", \"aos-invalid-command\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"garage rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "garage rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     cargoDeps = fetchCargoDeps {
@@ -80,193 +117,52 @@ in
     # libraries are needed beyond the stdenv C compiler.
     cargoFlags = "-p garage";
     doCheck = false;
-    runtimeDeps = [bash coreutils control];
+    runtimeDeps = [];
 
-    postInstall = ''
-      ln -s ${control}/bin/garage-control "$out/bin/garage-control"
-      test -x "$out/bin/garage-control"
-    '';
-
-    expose = {
-      units = {
-        "garage-prepare.service" = {
-          description = "Prepare Garage state";
-          before = ["garage.service"];
-          serviceConfig = {
-            Type = "oneshot";
-            User = "garage";
-            Group = "garage";
-            EnvironmentFile = "/etc/aos/packages/garage/runtime.env";
-            ExecCondition = "/bin/garage-control enabled";
-            ExecStart = "/bin/garage-control prepare";
-            StateDirectory = "aos-pkg-garage";
-            StateDirectoryMode = "0750";
-            RuntimeDirectory = "garage";
-            RuntimeDirectoryMode = "0750";
-            RemainAfterExit = true;
-            UMask = "0027";
-          };
-        };
-
-        "garage.service" = {
-          description = "Garage object-storage server";
-          after = ["network.target" "garage-prepare.service"];
-          requires = ["garage-prepare.service"];
-          restartIfChanged = true;
-          stopOnRemoval = true;
-          serviceConfig = {
-            Type = "simple";
-            User = "garage";
-            Group = "garage";
-            EnvironmentFile = "/etc/aos/packages/garage/runtime.env";
-            ExecCondition = "/bin/garage-control enabled";
-            ExecStart = "/bin/garage-control run";
-            Restart = "on-failure";
-            RestartSec = "5s";
-            TimeoutStopSec = "60s";
-            StateDirectory = "aos-pkg-garage";
-            StateDirectoryMode = "0750";
-            RuntimeDirectory = "garage";
-            RuntimeDirectoryMode = "0750";
-            LogsDirectory = "garage";
-            LogsDirectoryMode = "0750";
-            UMask = "0027";
-            LimitNOFILE = "65536";
-          };
-        };
-      };
-
-      config = {
-        artifacts = [
-          {
-            name = "runtime";
-            path = "/etc/aos/packages/garage/runtime.env";
-            format = "env";
-            required = ["GARAGE_CONFIG_GENERATION" "GARAGE_ENABLED"];
-            units = ["garage-prepare.service" "garage.service"];
-            reload = "restart";
-          }
-        ];
-        credentials =
-          builtins.map (name: {
-            inherit name;
-            source = "/run/credstore/garage/${name}";
-            units = ["garage.service"];
-            encrypted = false;
-            optional = true;
-          }) [
-            "rpc-secret"
-            "admin-token"
-            "metrics-token"
-          ];
-      };
-
-      permissions = {
-        network = "host";
-        capabilities = [];
-        devices = [];
-        host-paths = [
-          {
-            path = "/etc/aos/packages/garage/garage.toml";
-            mode = "read-only";
-          }
-        ];
-        syscalls = "system-service";
-        security-label = "aos-pkg-garage";
-      };
-    };
-
-    configModule = {
-      src = ./_garage-config;
-      moduleAbiCompat = {
-        min = 1;
-        max = 2;
-      };
-      declares = [
-        "garage.admin.bindAddress"
-        "garage.admin.enable"
-        "garage.admin.metrics.requireToken"
-        "garage.admin.metrics.token"
-        "garage.admin.token"
-        "garage.dbEngine"
-        "garage.enable"
-        "garage.replicationFactor"
-        "garage.rpc.bindAddress"
-        "garage.rpc.bootstrapPeers"
-        "garage.rpc.publicAddress"
-        "garage.rpc.secret"
-        "garage.s3.bindAddress"
-        "garage.s3.region"
-        "garage.s3.rootDomain"
-        "garage.web.bindAddress"
-        "garage.web.enable"
-        "garage.web.rootDomain"
-      ];
-      ownsRoots = [
-        {
-          root = "garage";
-          interfaceAbi = 1;
-        }
-      ];
-      artifacts = {
-        etc = ["aos/packages/garage/garage.toml"];
-        units = [];
-        users = ["garage"];
-        groups = ["garage"];
-      };
-      documentation = {
-        summary = "Garage — S3-compatible distributed object storage service";
-        sections = {
-          lifecycle = lib.aosDoc.section "State and lifecycle" [
-            (lib.aosDoc.paragraph "Garage retains metadata and object data in package state and performs compatible migrations during startup. Configuration changes restart the daemon rather than pretending TOML is reloadable.")
-          ];
-          cluster = lib.aosDoc.section "Cluster identity" [
-            (lib.aosDoc.paragraph "The RPC secret is a 32-byte cluster key encoded as 64 hexadecimal characters. Bootstrap peers and public addresses must remain stable across members.")
-          ];
-          credentials = lib.aosDoc.section "Administration credentials" [
-            (lib.aosDoc.paragraph "RPC, administrator, and metrics tokens are opaque references projected through service credentials and *_FILE interfaces, never TOML or process arguments.")
-          ];
-        };
-      };
-    };
+    abilities = ./_garage-config;
 
     checks = {
       testing,
       self,
       pkgs,
+      mkSystem,
     }: let
-      moduleStub = {
-        options = {
-          assertions = lib.mkOption {
-            type = lib.types.listOf lib.types.attrs;
-            default = [];
-          };
-          garage.config = lib.mkOption {
-            type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
-            default = {};
-          };
-          garage.credentials = lib.mkOption {
-            type = lib.types.attrsOf lib.types.attrs;
-            default = {};
-          };
-          environment.etc = lib.mkOption {
-            type = lib.types.attrsOf lib.types.attrs;
-            default = {};
-          };
-          aos.users.users = lib.mkOption {
-            type = lib.types.attrsOf lib.types.attrs;
-            default = {};
-          };
-          aos.users.groups = lib.mkOption {
-            type = lib.types.attrsOf lib.types.attrs;
-            default = {};
-          };
-        };
+      serviceManagement = lib.abilities.interfaces.serviceManagement;
+      environmentId = lib.abilities.environmentId {
+        authority = "system-image";
+        key = "garage-package-check";
+        stage = "host";
       };
-      evaluate = value:
-        lib.evalModules {
-          modules = [moduleStub ./_garage-config/module.nix {garage = value;}];
-          inherit lib;
+      credentialProvider = lib.abilities.instanceId {
+        environment = environmentId;
+        key = "credential-provider";
+      };
+      expectedRequestOutput = localKey: output: {
+        authority = {
+          kind = "package";
+          package = self.pname;
+        };
+        inherit localKey output;
+      };
+      secret = name:
+        lib.abilities.resourceReference {
+          interface = serviceManagement.interfaces.credentialDelivery.identity;
+          resource = {
+            provider = credentialProvider;
+            key = name;
+          };
+          operations = ["observe"];
+          lifetime = "persistent";
+        };
+      evaluate = garageConfig:
+        mkSystem {
+          systemName = "garage-package-check";
+          modules = [
+            {
+              environment.systemPackages = [self];
+              garage = garageConfig;
+            }
+          ];
         };
       evaluated = evaluate {
         enable = true;
@@ -276,7 +172,7 @@ in
           bindAddress = "127.0.0.1:43901";
           publicAddress = "127.0.0.1:43901";
           bootstrapPeers = ["0000000000000000000000000000000000000000000000000000000000000000@127.0.0.1:43909"];
-          secret.ref = "system-credential:garage-rpc";
+          secret.resource = secret "rpc-secret";
         };
         s3 = {
           bindAddress = "127.0.0.1:43900";
@@ -289,40 +185,102 @@ in
           rootDomain = ".web.test";
         };
       };
+      disabled = evaluate {};
+      evaluatedAdmin = evaluate {
+        enable = true;
+        rpc.secret.resource = secret "rpc-secret";
+        admin = {
+          enable = true;
+          token.resource = secret "admin-token";
+          metrics.token.resource = secret "metrics-token";
+        };
+      };
+      evaluatedAdminWithoutMetricsToken = evaluate {
+        enable = true;
+        rpc.secret.resource = secret "rpc-secret";
+        admin = {
+          enable = true;
+          token.resource = secret "admin-token";
+          metrics.requireToken = false;
+        };
+      };
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
+      ownedValues = lib.filterAttrs (_: value: value.package == self.pname);
       invalidRpc = evaluate {enable = true;};
       invalidAdmin = evaluate {
-        rpc.secret.ref = "system-credential:garage-rpc";
+        enable = true;
+        rpc.secret.resource = secret "rpc-secret";
         admin.enable = true;
       };
       invalidPeers = evaluate {
         rpc = {
-          secret.ref = "system-credential:garage-rpc";
+          secret.resource = secret "rpc-secret";
           bootstrapPeers = ["same@host:3901" "same@host:3901"];
         };
       };
-      rendered = evaluated.config.environment.etc."aos/packages/garage/garage.toml".text;
-      renderedConfig = builtins.toFile "garage-config-module-check.toml" rendered;
-      signedExpose = builtins.fromJSON self.expose.manifest;
-      signedCredentials = signedExpose.expose.config.credentials;
-      credentialNames = ["rpc-secret" "admin-token" "metrics-token"];
-      credentialContract =
-        builtins.length signedCredentials
-        == builtins.length credentialNames
-        && builtins.all (credential:
-          builtins.elem credential.name credentialNames
-          && credential.source == "/run/credstore/garage/${credential.name}"
-          && !credential.encrypted
-          && credential.optional
-          && credential.units == ["garage.service"])
-        signedCredentials;
+      enabledAbilityConfig = evaluated.config.aos.abilities;
+      disabledAbilityConfig = disabled.config.aos.abilities;
+      adminAbilityConfig = evaluatedAdmin.config.aos.abilities;
+      adminWithoutMetricsTokenAbilityConfig = evaluatedAdminWithoutMetricsToken.config.aos.abilities;
+      requests = builtins.attrNames enabledAbilityConfig.requests;
+      disabledRequirements = builtins.attrNames disabledAbilityConfig.requirementTemplates;
+      adminRequests = builtins.attrNames adminAbilityConfig.requests;
+      adminWithoutMetricsTokenRequests = builtins.attrNames adminWithoutMetricsTokenAbilityConfig.requests;
+      configurationSource = enabledAbilityConfig.requests."garage:server-configuration".parameters.source;
+      servicePrincipal = enabledAbilityConfig.requests."garage:service-principal".parameters;
+      mainStorageMounts = enabledAbilityConfig.requests."garage:main-storage".parameters.mounts;
+      renderedConfig = builtins.toFile "garage-runtime-check.toml" ''
+        metadata_dir = "/var/lib/aos-pkg-garage/meta"
+        data_dir = "/var/lib/aos-pkg-garage/data"
+        db_engine = "sqlite"
+        replication_factor = 1
+        rpc_bind_addr = "127.0.0.1:43901"
+
+        [s3_api]
+        api_bind_addr = "127.0.0.1:43900"
+        s3_region = "aos-test"
+      '';
       contractHolds =
         assertionsHold evaluated
+        && lib.abilities.types.isPortableOptionTree evaluated.options.garage
         && !assertionsHold invalidRpc
         && !assertionsHold invalidAdmin
         && !assertionsHold invalidPeers
-        && credentialContract;
+        && ownedValues disabledAbilityConfig.instances == {}
+        && ownedValues disabledAbilityConfig.requests == {}
+        && builtins.elem "garage:credential-delivery" disabledRequirements
+        && builtins.elem "garage:main-service-lifecycle" disabledRequirements
+        && builtins.elem "garage:main-lifecycle" requests
+        && builtins.elem "garage:main-storage" requests
+        && builtins.elem "garage:service-principal" requests
+        && builtins.elem "garage:credential-rpc-secret" requests
+        && !(builtins.elem "garage:credential-admin-token" requests)
+        && builtins.elem "garage:credential-admin-token" adminRequests
+        && builtins.elem "garage:credential-metrics-token" adminRequests
+        && builtins.elem "garage:credential-admin-token" adminWithoutMetricsTokenRequests
+        && !(builtins.elem "garage:credential-metrics-token" adminWithoutMetricsTokenRequests)
+        && lib.abilities.requestOutputIdentity {
+          requests = enabledAbilityConfig.requests;
+          reference = servicePrincipal.home_directory;
+        }
+        == expectedRequestOutput "home-storage" "planned-path"
+        && builtins.map
+        (mount:
+          lib.abilities.requestOutputIdentity {
+            requests = enabledAbilityConfig.requests;
+            reference = mount.source;
+          })
+        mainStorageMounts
+        == [
+          (expectedRequestOutput "metadata-storage" "planned-path")
+          (expectedRequestOutput "data-storage" "planned-path")
+          (expectedRequestOutput "runtime-storage" "planned-path")
+        ]
+        && configurationSource.kind == "structured-value"
+        && configurationSource.format == "toml"
+        && !(lib.hasInfix "/var/lib/aos-pkg-garage" (builtins.toJSON configurationSource))
+        && !(lib.hasInfix "rpc-secret" (builtins.toJSON configurationSource));
     in {
       version = testing.mkToolCheck {
         pname = "storage-garage";
@@ -330,35 +288,16 @@ in
         command = "garage --version";
       };
 
-      config-module-contract =
+      ability-module-contract =
         if contractHolds
         then
-          pkgs.runCommand "storage-garage-config-module-contract" {} ''
-            test -f ${self.config}/module.nix
-            grep -q '"root":"garage"' ${self.config}/config-meta.json
-            grep -Fq 'metadata_dir = "/var/lib/aos-pkg-garage/meta"' ${renderedConfig}
-            grep -Fq 'db_engine = "sqlite"' ${renderedConfig}
-            grep -Fq 'replication_factor = 1' ${renderedConfig}
-            grep -Fq 'bootstrap_peers = ["0000000000000000000000000000000000000000000000000000000000000000@127.0.0.1:43909"]' ${renderedConfig}
-            grep -Fq '[s3_web]' ${renderedConfig}
-            if grep -Eq '(rpc_secret|admin_token|metrics_token)[[:space:]]*=' ${renderedConfig}; then
-              echo "Garage rendered secret material or secret paths into TOML" >&2
-              exit 1
-            fi
-            grep -qx 'User=garage' ${self.expose}/units/garage.service
-            grep -qx 'StateDirectory=aos-pkg-garage' ${self.expose}/units/garage.service
-            grep -qx 'BindReadOnlyPaths=/etc/aos/packages/garage/garage.toml' ${self.expose}/units/garage.service
-            grep -Eq '^Requires=.*garage-prepare\.service( |$)' ${self.expose}/units/garage.service
-            if grep -Eq 'LoadCredential(Encrypted)?=.*(rpc-secret|admin-token|metrics-token)' ${self.expose}/units/garage.service; then
-              echo "optional Garage credentials became unconditional unit bindings" >&2
-              exit 1
-            fi
+          pkgs.runCommand "storage-garage-ability-module-contract" {} ''
             mkdir -p "$out"
             printf '%s\n' PASS >"$out/result"
           ''
-        else throw "the Garage config-module contract checks failed";
+        else throw "the Garage ability module contract checks failed";
 
-      config-module-lifecycle = import ./_garage-tests/lifecycle.nix {
+      lifecycle = import ./_garage-tests/lifecycle.nix {
         inherit testing self renderedConfig;
         coreutils = pkgs.coreutils;
         grep = pkgs.grep;

@@ -38,7 +38,7 @@
         aos.boot.secureBoot.measuredBoot.pinnedPcrs = lib.mkForce "7";
         # Boundary tests temporarily duplicate a complete normal UKI so a
         # failed addon boot cannot affect the clean default entry.
-        aos.image.espExtraFreeMiB = 192;
+        aos.image.extraFirmwareFreeMiB = 192;
         # Keep the serial console last so /dev/console and journald expose
         # initrd transaction failures in the fleet-test transcript.
         aos.boot.kernelParams = lib.mkAfter ["console=ttyS0,115200"];
@@ -47,17 +47,31 @@
         # These are deliberate guest-side verification fixtures: objcopy
         # independently reads the booted UKI, while test-http-server proves
         # package activation across measured configuration generations.
-        aos.image.testArtifactRoots = [pkgs.binutils pkgs.test-http-server.expose];
+        aos.image.testArtifactRoots = [pkgs.binutils pkgs.test-http-server];
         aos.image.budgets.maxRootMiB = 768;
         # Retain both recovery UKIs, a complete inactive update transaction,
         # and the boundary test's extra normal-UKI staging space.
-        aos.image.budgets.maxEspMiB = 704;
+        aos.image.budgets.maxFirmwarePartitionMiB = 704;
         # Guest-side UKI inspection and policy verification retain binutils,
         # jq, and diffutils in this fixture's measured runtime closure.
         aos.image.budgets.maxRuntimeClosureMiB = 912;
         aos.image.budgets.maxDownloadMiB = 816;
       }
     ];
+  };
+  measuredVarDependencies =
+    measuredSystem
+    .config
+    .system
+    .build
+    .initrdAbilityGraph
+    .requests
+    ."aos-systemd-var-policy:aos-var-crypt-dependencies"
+    .parameters;
+  verityReadiness = {
+    _type = "aos-request-output-reference";
+    request = "aos-systemd-var-policy:verity-root";
+    output = "resource";
   };
   ukiBMedia = effectiveSystem: let
     measuredImage = effectiveSystem.config.system.build.image.raw;
@@ -127,7 +141,7 @@
       ];
     };
 in {
-  name = assert builtins.elem "aos-verity-root-verify.service" measuredSystem.config.boot.initrd.systemd.services."aos-var-crypt".requires; "measured-boot";
+  name = assert builtins.elem verityReadiness measuredVarDependencies.requires; "measured-boot";
   # Image boot + enrollment/migration + the A/B counted-candidate lifecycle.
   timeout = 5400;
   # The emulated TPM (swtpm) adds tens of seconds of slow command
@@ -206,6 +220,7 @@ in {
       import hashlib
       import base64
       import json
+      import shlex
       import os
       import re
       import time
@@ -222,7 +237,7 @@ in {
       TPM2_CHECKQUOTE = "${pkgs.tpm2-tools}/bin/tpm2_checkquote"
       TPM2_PCREXTEND = "${pkgs.tpm2-tools}/bin/tpm2_pcrextend"
       TPM2_PCRREAD = "${pkgs.tpm2-tools}/bin/tpm2_pcrread"
-      VAR_POLICY_MIGRATE = "${pkgs.aos-var-policy-migrate}/bin/aos-var-policy-migrate"
+      VAR_POLICY_MIGRATE = "${pkgs.aos-systemd-var-policy}/bin/aos-var-policy-migrate"
       VARDEV = "/dev/disk/by-partlabel/var"
       MOUNT = "${pkgs.util-linux}/bin/mount"
       UMOUNT = "${pkgs.util-linux}/bin/umount"
@@ -321,6 +336,19 @@ in {
                   for key in sorted(value)
               ) + "}"
           raise TypeError(f"unsupported canonical JSON value: {type(value)!r}")
+
+      def store_view_read_path(locator, identity):
+          assert locator["schema"] == "aos.package-store.read-view-locator/v1", locator
+          identity_root = locator["identity_root"].rstrip("/")
+          read_root = locator["read_root"].rstrip("/")
+          assert identity_root.startswith("/") and read_root.startswith("/"), locator
+          prefix = identity_root + "/"
+          assert identity.startswith(prefix), (locator, identity)
+          relative = identity.removeprefix(prefix)
+          assert relative and all(
+              part not in ("", ".", "..") for part in relative.split("/")
+          ), relative
+          return read_root + "/" + relative
 
       def efivar_byte(name):
           path = f"/sys/firmware/efi/efivars/{name}-{SB_GUID}"
@@ -611,7 +639,6 @@ in {
               rm -rf /run/runtime-config-attestation-switch
               {APM} switch \
                 --from /run/runtime-config-attested-host.nix \
-                --facts /run/aos-metadata/facts.json \
                 --eval-root /run/runtime-config-attestation-switch
           """, timeout=300)
 
@@ -646,23 +673,14 @@ in {
           recorded_pcr11 = inputs["base_lib"]["pcr11_expected"].removeprefix("sha256:")
           assert recorded_pcr11 == expected_pcr11, (recorded_pcr11, expected_pcr11)
           assert inputs["evaluator"] == manifest["inputs"]["evaluator"]
-          config_inputs = manifest["inputs"]["config_modules"]
-          attested_modules = inputs["config_modules"]
-          assert attested_modules["closure_hash"] == config_inputs["closure_hash"]
-          assert attested_modules["count"] == config_inputs["count"]
-          assert attested_modules["count"] == 1, attested_modules
-          assert attested_modules["store_paths"] == config_inputs["store_paths"]
-          assert attested_modules["nar_hashes"] == config_inputs["nar_hashes"]
-          assert attested_modules["package_names"] == config_inputs["package_names"]
-          assert config_inputs["origins"] == ["image"], config_inputs
+          package_inputs = manifest["inputs"]["package_modules"]
+          attested_modules = inputs["package_modules"]
+          assert attested_modules == package_inputs, (attested_modules, package_inputs)
+          assert len(package_inputs["modules"]) == 1, package_inputs
+          assert [member["origin"] for member in package_inputs["modules"]] == ["image"]
           for field in ("registry", "release_tag", "tag_signer_key", "realization"):
               assert attested_modules.get(field) is None, (field, attested_modules)
-              assert config_inputs.get(field) is None, (field, config_inputs)
-          assert attested_modules["provenance"] == {
-              "module_abi_compat": config_inputs["module_abi_compat"],
-              "authorizations": config_inputs["authorizations"],
-              "origins": config_inputs["origins"],
-          }
+              assert package_inputs.get(field) is None, (field, package_inputs)
           assert inputs["host_nix"] == {
               key: value
               for key, value in manifest["inputs"]["host_nix"].items()
@@ -798,72 +816,39 @@ in {
           # Exercise the public, identity-pinned generation verifier. The
           # verifier policy is a separate file even in this single-node test;
           # production callers supply these values from their fleet catalog.
-          immutable_top = target.succeed("readlink /aos-toplevel").strip()
-          immutable_top_lower = (
-              "/nix.lower/store/" + immutable_top.removeprefix("/nix/store/")
+          store_view = manifest["inputs"]["store_view"]
+          static_contract_path = store_view_read_path(
+              store_view, store_view["static_contract"]
           )
-          immutable_seed = target.succeed(
-              f"readlink {immutable_top_lower}/package-profile-seed"
-          ).strip()
-          immutable_seed_lower = (
-              "/nix.lower/store/" + immutable_seed.removeprefix("/nix/store/")
-          )
-          seed_meta_paths = target.succeed(
-              f"ls -1 {immutable_seed_lower}/meta/*.json"
-          ).splitlines()
-          seed_records = [
-              json.loads(target.succeed(f"cat {path}")) for path in seed_meta_paths
-          ]
+          static_contract = json.loads(target.succeed(
+              f"cat {shlex.quote(static_contract_path)}"
+          ))
+          static_packages = static_contract["platforms"][0]["packages"]
           image_members = []
-          for package_name, store_path, nar_hash, abi, authorization, origin in zip(
-              config_inputs["package_names"],
-              config_inputs["store_paths"],
-              config_inputs["nar_hashes"],
-              config_inputs["module_abi_compat"],
-              config_inputs["authorizations"],
-              config_inputs["origins"],
-          ):
-              if origin != "image":
+          for module in package_inputs["modules"]:
+              if module["origin"] != "image":
                   continue
               matches = [
-                  item for item in seed_records
-                  if item.get("pushed_by") == "aos-image"
-                  and item.get("apm", {}).get("registry") == "seed"
-                  and item.get("apm", {}).get("name") == package_name
-                  and item.get("apm", {}).get("config_module", {})
-                      .get("config_output", {}).get("store_path") == store_path
+                  item for item in static_packages
+                  if item["name"] == module["package"]
               ]
-              assert len(matches) == 1, (package_name, matches)
-              lower_store_path = (
-                  "/nix.lower/store/" + store_path.removeprefix("/nix/store/")
-              )
-              target.succeed(f"test -e {lower_store_path}")
-              actual_nar_hash = "sha256:" + target.succeed(
-                  f"${pkgs.nix}/bin/nix-store --dump {lower_store_path} "
-                  "| ${pkgs.nix}/bin/nix-hash --type sha256 --base32 "
-                  "--flat /dev/stdin"
-              ).strip()
-              assert actual_nar_hash == nar_hash, (actual_nar_hash, nar_hash)
-              module = matches[0]["apm"]["config_module"]
-              owns = sorted(set(item["root"] for item in module["owns_roots"]))
-              contributes = {}
-              for contribution in module["contributes"]:
-                  contributes.setdefault(contribution["root"], []).extend(
-                      contribution["paths"]
-                  )
-              contributes = {
-                  root: sorted(set(paths)) for root, paths in sorted(contributes.items())
-              }
-              assert abi == module["module_abi_compat"], (abi, module)
-              assert authorization == {"owns": owns, "contributes": contributes}, (
-                  authorization, module
-              )
+              assert len(matches) == 1, (module["package"], matches)
+              manifest_path = matches[0]["manifest"]["store_path"]
+              lower_manifest = store_view_read_path(store_view, manifest_path)
+              package_document = json.loads(target.succeed(
+                  f"cat {lower_manifest}/contract.json"
+              ))
+              locator = package_document["package_module"]
+              assert package_document["package"]["name"] == module["package"]
+              assert locator["artifact"]["store_path"] == module["store_path"]
+              assert locator["artifact"]["nar_hash"] == module["nar_hash"]
+              assert locator["path"] == module["entrypoint"]
               image_members.append({
-                  "package_name": package_name,
-                  "store_path": store_path,
-                  "nar_hash": nar_hash,
-                  "module_abi_compat": abi,
-                  "authorization": authorization,
+                  "package_name": module["package"],
+                  "document_digest": module["document_digest"],
+                  "store_path": module["store_path"],
+                  "nar_hash": module["nar_hash"],
+                  "entrypoint": module["entrypoint"],
               })
           policy = {
               "schema": "aos.gen-attestation-policy/v2",
@@ -874,7 +859,7 @@ in {
               "expected_facts_hash": inputs["instance_facts"]["facts_hash"],
               "trusted_config_keys": [],
               "trusted_platforms": [inputs["host_nix"]["platform"]],
-              "image_config_modules": image_members,
+              "image_package_modules": image_members,
           }
           policy_encoded = base64.b64encode(
               json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
@@ -1010,22 +995,12 @@ in {
       # identity recorded by initrd authorization. Reaching multi-user also
       # proves the mandatory quote was published successfully.
       target.succeed(f"""
-          platform=$({JQ} -er '.platform_id' \
-            /run/aos-metadata/.provisioning-result.json)
           current=$({JQ} -er '.current' /var/lib/profiles/system/state.json)
-          {JQ} -e --arg platform "$platform" \
+          {JQ} -e \
             '.quote_status == "quoted"
              and .inputs.host_nix.trust_mode == "platform"
-             and .inputs.host_nix.platform == $platform' \
+             and (.inputs.host_nix.platform | type == "string")' \
             /var/lib/profiles/system/gen-$current/gen-attestation.json
-      """)
-      target.succeed("""
-          set -eu
-          for file in /var/lib/aos-provisioning/desired/repart.d/*/*-var.conf; do
-            while IFS= read -r line; do
-              case "$line" in Format=*) exit 1 ;; esac
-            done < "$file"
-          done
       """)
 
       # ════ 2. Enroll db → KEK → PK, reboot into enforcing SB ═══════════
@@ -1039,9 +1014,7 @@ in {
       # ════ 3. First enforcing boot — /var sealed to the signed policy ══
       wait_multi_user("boot2 (enforcing seal)")
       assert efivar_byte("SecureBoot") == 1, "Secure Boot should be enforcing"
-      target.succeed(
-          "test \"$(cat /run/aos-metadata/storage-coherence)\" = coherent"
-      )
+      target.succeed("test ! -e /run/aos-metadata")
       # /var is now a LUKS2 device, mounted via the device-mapper node.
       # isLuks confirms LUKS; inspect the machine-readable metadata because
       # the human dump's verbose TPM2 blob can exceed the agent capture limit.

@@ -1,8 +1,8 @@
 ##! gobject-introspection — Metadata compiler for GObject libraries
 {
+  lib,
   mkDerivation,
   fetchurl,
-  lib,
   stdenv,
   meson,
   ninja,
@@ -30,7 +30,64 @@
   pythonPath = "${setuptools}/${sitePackages}:${python3-mako}/${sitePackages}:${python3-markdown}/${sitePackages}";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "gobject-introspection";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "G-ir-compiler accepts the schema and writes the typelib representation.";
+        "files" = {
+          "Probe-1.0.gir" = "<?xml version=\"1.0\"?>\n<repository version=\"1.2\"\n    xmlns=\"http://www.gtk.org/introspection/core/1.0\"\n    xmlns:c=\"http://www.gtk.org/introspection/c/1.0\">\n  <namespace name=\"Probe\" version=\"1.0\" c:identifier-prefixes=\"Probe\">\n    <record name=\"Point\" c:type=\"ProbePoint\">\n      <field name=\"x\"><type name=\"gint\" c:type=\"int\"/></field>\n    </record>\n  </namespace>\n</repository>\n";
+        };
+        "input" = "A GIR repository declaring one namespace and record type.";
+        "operation" = "Compile the XML repository to a binary typelib.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/g-ir-compiler"
+              "--output=Probe-1.0.typelib"
+              "Probe-1.0.gir"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "G-ir-compiler rejects the document with status 1.";
+        "files" = {
+          "invalid.gir" = "<repository version=\"1.2\" xmlns=\"http://www.gtk.org/introspection/core/1.0\">\n  <namespace name=\"Probe\" version=\"1.0\">\n</repository>\n";
+        };
+        "input" = "A GIR document whose namespace element is not closed.";
+        "operation" = "Compile the malformed XML repository.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/g-ir-compiler"
+              "--output=invalid.typelib"
+              "invalid.gir"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

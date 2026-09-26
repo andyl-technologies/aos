@@ -1,10 +1,10 @@
 //! `aos show` — display a package's metadata.
 //!
-//! Evaluates `pkgs.<package>.meta` and, when the expose manifest is complete at
-//! evaluation time, the package expose manifest passthru data. It pretty-prints
-//! common package fields plus the RFC-0001 expose target, confinement label,
-//! and permission summary. With `--json`, expose packages include an
-//! `exposeManifest` field next to the raw meta attrset.
+//! Evaluates `pkgs.<package>.meta` and the package's canonical static contract
+//! projection. It pretty-prints common package fields and a compact ability
+//! summary. With `--json`, contract-bearing packages include the complete
+//! static contract as `abilityProjection` next to the raw metadata attrset.
+//! This local projection is not a resolved or signed publication.
 
 use anyhow::{Context, Result};
 
@@ -21,8 +21,12 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {
     let attr = format!("pkgs.{package}.meta");
     let package_name =
         serde_json::to_string(package).context("serializing package name for Nix expression")?;
-    let expose_manifest_expr = format!(
-        "let root = import {}/default.nix {{}}; pkg = builtins.getAttr {} root.pkgs; in if pkg ? expose then pkg.expose.passthru.manifest else null",
+    let ability_projection_expr = format!(
+        r#"let
+          root = import {}/default.nix {{}};
+          pkg = builtins.getAttr {} root.pkgs;
+        in
+          if pkg ? contract then pkg.contract.value else null"#,
         nix.root().display(),
         package_name
     );
@@ -33,17 +37,17 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {
     let mut meta = nix
         .eval_json(&attr)
         .with_context(|| format!("evaluating metadata for '{package}'"))?;
-    let expose_manifest = match nix
-        .eval_expr_json(&expose_manifest_expr)
-        .with_context(|| format!("evaluating expose manifest for '{package}'"))?
+    let ability_projection = match nix
+        .eval_expr_json(&ability_projection_expr)
+        .with_context(|| format!("evaluating local ability projection for '{package}'"))?
     {
         serde_json::Value::Null => None,
         value => Some(value),
     };
     spinner.finish_and_clear();
 
-    if let (Some(object), Some(manifest)) = (meta.as_object_mut(), expose_manifest.as_ref()) {
-        object.insert("exposeManifest".to_string(), manifest.clone());
+    if let (Some(object), Some(projection)) = (meta.as_object_mut(), ability_projection.as_ref()) {
+        object.insert("abilityProjection".to_string(), projection.clone());
     }
 
     if printer.json_if_active(&meta) {
@@ -99,23 +103,22 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {
             printer.kv("Maintainers", &names.join(", "));
         }
     }
-    if let Some(manifest) = expose_manifest.as_ref() {
-        if let Some(target) = manifest
-            .pointer("/expose/target")
-            .and_then(|value| value.as_str())
-        {
-            printer.kv("Expose target", target);
-        }
-        if let Some(label) = manifest
-            .pointer("/confinement/label")
-            .and_then(|value| value.as_str())
-        {
-            printer.kv("Confinement", label);
-        }
-        if let Some(permissions) = manifest.get("permissions") {
-            let rendered =
-                serde_json::to_string(permissions).context("serializing expose permissions")?;
-            printer.kv("Permissions", &rendered);
+    if let Some(projection) = ability_projection.as_ref() {
+        for (pointer, label) in [
+            ("/interfaces", "Ability interfaces"),
+            ("/implementation/providers", "Ability implementations"),
+            ("/requirements", "Ability requirement templates"),
+            ("/guarantees", "Ability guarantees"),
+        ] {
+            if let Some(entries) = projection.pointer(pointer) {
+                let count = entries
+                    .as_array()
+                    .map(Vec::len)
+                    .or_else(|| entries.as_object().map(serde_json::Map::len));
+                if let Some(count) = count {
+                    printer.kv(label, &count.to_string());
+                }
+            }
         }
     }
 

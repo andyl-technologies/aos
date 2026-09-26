@@ -71,13 +71,10 @@
         maxRuntimeClosureMiB = 896;
       };
       aos.boot.kernelParams = ["net.ifnames=0"];
-      environment.etc."systemd/network/10-fleet-eth0.network".text = ''
-        [Match]
-        MACAddress=52:54:00:12:00:02
-
-        [Network]
-        Address=192.168.50.11/24
-      '';
+      aos.networking.interfaces.fleet-eth0 = {
+        matchMACAddress = "52:54:00:12:00:02";
+        address = "192.168.50.11/24";
+      };
       systemd.services.aos-test-agent = {
         description = "AOS VM Test Guest Agent";
         wantedBy = ["multi-user.target"];
@@ -113,7 +110,7 @@
   server2Image = candidate.config.system.build.image.raw;
   server2ImageDisk = candidate.config.system.build.imageArtifacts.raw.disk;
   server2ImageInfo = candidate.config.system.build.imageArtifacts.raw.info;
-  server2Uki = candidate.config.system.build.uki;
+  server2Uki = candidate.config.system.build.initialBootExecutable;
 
   targetSystem = mkSystem [
     ../../systems/server-verity.nix

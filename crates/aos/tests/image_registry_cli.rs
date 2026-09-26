@@ -73,7 +73,11 @@ nar_size = {nar_size}
 closure_size = {nar_size}
 source_drv = "/nix/store/{store_hash}-aos-{version}.drv"
 source_nar_hash = "{hash}"
-references = []
+
+[versions.platforms.{platform}.references]
+hashes = []
+min-format = 1
+requires-features = ["image-artifact-contract-v1"]
 
 [[versions.platforms.{platform}.images]]
 format = "qcow2"
@@ -88,7 +92,6 @@ platform = "{platform}"
 architecture = "{architecture}"
 logical_image_id = "{fixture_hash}"
 logical_disk_sha256 = "{fixture_hash}"
-rootfs_sha256 = "{fixture_hash}"
 filename = "aos-{architecture}-{version}.qcow2"
 media_type = "application/vnd.aos.disk-image.qcow2"
 compression = "none"
@@ -96,16 +99,10 @@ byte_size = {byte_size}
 sha256 = "{sha}"
 compatible_targets = ["qemu-kvm", "openstack"]
 
-[versions.platforms.{platform}.images.delivery.uki]
-filename = "aos.efi"
-esp_path = "EFI/Linux/aos.efi"
-byte_size = 16
-sha256 = "{fixture_hash}"
-verification = "unsigned"
-sbat = []
-measured = false
+[versions.platforms.{platform}.images.delivery.artifact_contract]
+schema = "aos.test.boot-artifacts/v1"
 
-[versions.platforms.{platform}.images.delivery.image_info]
+[versions.platforms.{platform}.images.delivery.artifact_contract.document]
 filename = "image-info.json"
 store_path = "/nix/store/{store_hash}-image-info.json"
 nar_hash = "{hash}"
@@ -113,6 +110,11 @@ nar_size = {nar_size}
 media_type = "application/vnd.aos.image-info+json"
 byte_size = 16
 sha256 = "{fixture_hash}"
+
+[versions.platforms.{platform}.images.delivery.artifact_contract.artifacts]
+store_path = "/nix/store/{store_hash}-boot-artifacts"
+nar_hash = "{hash}"
+nar_size = {nar_size}
 "#,
         nar_size = nar.len(),
         byte_size = bytes.len()

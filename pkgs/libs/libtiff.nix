@@ -1,5 +1,6 @@
 ##! TIFF image codecs and image-processing tools.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -18,7 +19,111 @@
   dependencyPrefixes = builtins.concatStringsSep ";" (map toString codecDependencies);
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "libtiff";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A two-by-two RGB bitmap.";
+        operation = "Encode it as TIFF, copy it with a different compression, and compare decoded pixels.";
+        expected = "Both TIFF files decode to the same two-by-two RGB image.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                from pathlib import Path
+
+                pixels = bytes([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255])
+                Path("pixels.ppm").write_bytes(b"P6\n2 2\n255\n" + pixels)
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = ["@out@/bin/ppm2tiff" "pixels.ppm" "packed.tif"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = ["@out@/bin/tiffcp" "-c" "none" "packed.tif" "unpacked.tif"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = ["@out@/bin/tiffcmp" "packed.tif" "unpacked.tif"];
+            exit_code = 0;
+            stdout.exact = "Compression: 32773 1\n";
+            stderr.exact = "";
+          }
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import subprocess
+
+                result = subprocess.run(
+                    ["@out@/bin/tiffinfo", "unpacked.tif"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                assert "Image Width: 2 Image Length: 2" in result.stdout
+                assert "Samples/Pixel: 3" in result.stdout
+                assert "Compression Scheme: None" in result.stdout
+                print("libtiff image conversion passed")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "libtiff image conversion passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "Bytes that do not contain a TIFF image.";
+        operation = "Inspect them with tiffinfo.";
+        expected = "The parser rejects the invalid image.";
+        files."broken.tif" = "not a TIFF\n";
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/tiffinfo" "broken.tif"];
+            exit_code = 1;
+            observes_rejection = true;
+            stdout.exact = "";
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://download.osgeo.org/libtiff/tiff-${version}.tar.xz"];

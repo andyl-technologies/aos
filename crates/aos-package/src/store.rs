@@ -270,21 +270,27 @@ pub async fn filter_missing(store_paths: &[String]) -> Result<Vec<String>> {
 /// For packages with canonical documentation:
 ///   `gen_dir/docs/{documentation_hash}` -> `{documentation_store_path}`
 ///
+/// For packages with authenticated abilities:
+///   `gen_dir/abilities/{artifact_hash}` -> `{companion_or_artifact_store_path}`
+///
 /// Uses `std::os::unix::fs::symlink` for atomic symlink creation.
 ///
 /// # Errors
 ///
-/// Returns an error if the `usr/`/`src/`/`docs/` directories cannot be created or a
-/// symlink cannot be created or renamed into place.
+/// Returns an error if a root directory cannot be created or a symlink cannot
+/// be created or renamed into place.
 pub fn create_gc_roots(gen_dir: &Path, packages: &[PackageMeta]) -> Result<()> {
     let usr_dir = gen_dir.join("usr");
     let src_dir = gen_dir.join("src");
     let docs_dir = gen_dir.join("docs");
+    let abilities_dir = gen_dir.join("abilities");
 
     std::fs::create_dir_all(&usr_dir).with_context(|| format!("creating {}", usr_dir.display()))?;
     std::fs::create_dir_all(&src_dir).with_context(|| format!("creating {}", src_dir.display()))?;
     std::fs::create_dir_all(&docs_dir)
         .with_context(|| format!("creating {}", docs_dir.display()))?;
+    std::fs::create_dir_all(&abilities_dir)
+        .with_context(|| format!("creating {}", abilities_dir.display()))?;
 
     for meta in packages {
         // Create usr/{hash} -> store_path
@@ -321,6 +327,23 @@ pub fn create_gc_roots(gen_dir: &Path, packages: &[PackageMeta]) -> Result<()> {
                     documentation.store_path
                 )
             })?;
+        }
+
+        if let Some(ability) = &meta.contract {
+            for store_path in std::iter::once(&ability.document.store_path).chain(
+                crate::package_contract::retained_artifacts(ability)
+                    .map(|artifact| &artifact.store_path),
+            ) {
+                let artifact_hash = store_path_hash(store_path);
+                let artifact_link = abilities_dir.join(artifact_hash);
+                atomic_symlink(store_path, &artifact_link).with_context(|| {
+                    format!(
+                        "creating ability GC root {} -> {}",
+                        artifact_link.display(),
+                        store_path
+                    )
+                })?;
+            }
         }
     }
 
@@ -367,9 +390,9 @@ pub fn create_config_gc_roots(
 /// retained by the active configuration generations.
 ///
 /// Pins **only** the base-lib + evaluator closure of one image-generation —
-/// not the kernel/initrd/whole UKI — keyed by the image's `module_abi`. This is
+/// not the boot artifact — keyed by the image's `module_abi`. This is
 /// the per-image-gen retention root that keeps ≥1 prior base lib alive on
-/// `/var` independent of the ESP ×2 UKI slot count, so cross-pruned-image
+/// `/var` independent of the provider artifact count, so cross-pruned-image
 /// rollback re-eval is always satisfiable without re-download.
 ///
 /// `image_gen_dir` is the `image-gen-N/` directory; `evaluator_ref` is the
@@ -397,6 +420,28 @@ pub fn create_baselib_gc_root(
     })
 }
 
+/// Creates every ordinary GC root needed to keep one image generation usable.
+///
+/// The toplevel and native executor roots complement the evaluator root. They
+/// keep both the booted system and the exact ability runtime that owns its
+/// checked transitions alive while the generation remains in the image
+/// retention floor.
+///
+/// # Errors
+///
+/// Returns an error if an image identity is incomplete or a root cannot be
+/// created or replaced atomically.
+pub fn create_image_gc_roots(
+    image_gen_dir: &Path,
+    image: &crate::types::ImageGeneration,
+) -> Result<()> {
+    create_baselib_gc_root(image_gen_dir, image.module_abi, &image.evaluator_ref)?;
+    atomic_symlink(&image.toplevel, &image_gen_dir.join("toplevel"))?;
+
+    atomic_symlink(&image.native_executor_ref, &image_gen_dir.join("executor"))?;
+    Ok(())
+}
+
 /// Computes the exact image generations whose base-library roots survive.
 ///
 /// Retention is generation-scoped, not merely ABI-scoped: two releases may
@@ -409,19 +454,9 @@ fn retained_baselib_image_generations(
 ) -> std::collections::BTreeSet<u32> {
     let mut keep = std::collections::BTreeSet::new();
     keep.insert(images.running);
-    keep.insert(images.default);
     keep.extend(images.pending);
-
-    for slot in [crate::types::ImageSlot::A, crate::types::ImageSlot::B] {
-        if let Some(number) = images
-            .generations
-            .iter()
-            .filter(|image| image.slot == slot)
-            .map(|image| image.number)
-            .max()
-        {
-            keep.insert(number);
-        }
+    if let Some(rollout) = images.active_rollout.as_ref() {
+        keep.extend([rollout.prior, rollout.candidate]);
     }
 
     // Retained configuration inputs name the exact image/base library they
@@ -467,19 +502,19 @@ fn retained_baselib_image_generations(
     keep
 }
 
-/// Reconciles production image-scoped base-library roots with the retention
-/// floor.
+/// Reconciles production image-scoped roots with the retention floor.
 ///
-/// Roots are retained for the exact A/B-resident generations, exact retained
-/// configuration parents, and one prior-distinct-ABI recovery generation;
-/// every other image-scoped root is removed. The operation never downloads a
-/// missing base library.
+/// Roots are retained for the exact provider-retained generations, exact retained
+/// configuration parents, and one prior-distinct-ABI recovery generation.
+/// Each retained generation pins its evaluator, toplevel, and exact native
+/// executor; every obsolete image-scoped root is removed. The operation never
+/// downloads a missing store path.
 ///
 /// # Errors
 ///
 /// Returns an error when a required retained store path is absent or a root
 /// cannot be created or removed.
-pub fn reconcile_baselib_gc_roots(
+pub fn reconcile_image_gc_roots(
     image_profile: &Path,
     images: &crate::types::ImageGenerationState,
     configs: &crate::types::ConfigGenerationState,
@@ -490,23 +525,39 @@ pub fn reconcile_baselib_gc_roots(
     let keep = retained_baselib_image_generations(images, configs);
     for image in &images.generations {
         let dir = image_profile.join(format!("image-gen-{}", image.number));
-        let link = dir.join("baselib").join(image.module_abi.to_string());
+        let baselib = dir.join("baselib").join(image.module_abi.to_string());
+        let toplevel = dir.join("toplevel");
+        let executor = dir.join("executor");
         if keep.contains(&image.number) {
-            if !Path::new(&image.evaluator_ref).exists() {
+            for (label, store_path) in [
+                ("base library", image.evaluator_ref.as_str()),
+                ("toplevel", image.toplevel.as_str()),
+                ("native executor", image.native_executor_ref.as_str()),
+            ] {
+                if Path::new(store_path).exists() {
+                    continue;
+                }
                 bail!(
-                    "retained image generation {} base library is unavailable: {}",
+                    "retained image generation {} {label} is unavailable: {store_path}",
                     image.number,
-                    image.evaluator_ref
                 );
             }
-            create_baselib_gc_root(&dir, image.module_abi, &image.evaluator_ref)?;
-        } else if link.exists() || link.symlink_metadata().is_ok() {
-            std::fs::remove_file(&link)
-                .with_context(|| format!("removing obsolete base-lib root {}", link.display()))?;
-            sync_directory(
-                link.parent()
-                    .context("base-library root has no parent directory")?,
-            )?;
+            create_image_gc_roots(&dir, image)?;
+        } else {
+            for root in [baselib, toplevel, executor] {
+                if root
+                    .symlink_metadata()
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                {
+                    continue;
+                }
+                std::fs::remove_file(&root)
+                    .with_context(|| format!("removing obsolete image root {}", root.display()))?;
+                sync_directory(
+                    root.parent()
+                        .context("image root has no parent directory")?,
+                )?;
+            }
         }
     }
     Ok(())
@@ -710,12 +761,8 @@ mod tests {
             images: vec![],
             min_format: None,
             requires_features: Vec::new(),
-            expose: None,
-            expose_artifact: None,
-            config_module: None,
             documentation: None,
-            permissions: Default::default(),
-            bpf_lsm: None,
+            contract: None,
             attestation: Default::default(),
         }
     }
@@ -1186,46 +1233,47 @@ mod tests {
         );
     }
 
-    fn image_generation(
-        number: u32,
-        slot: crate::types::ImageSlot,
-        module_abi: u32,
-    ) -> crate::types::ImageGeneration {
+    fn test_boot_provider_state() -> crate::types::BootProviderState {
+        crate::types::BootProviderState {
+            schema: "aos.test.boot-generation-state/v1".to_string(),
+            evidence: serde_json::json!({}),
+        }
+    }
+
+    fn image_generation(number: u32, module_abi: u32) -> crate::types::ImageGeneration {
         crate::types::ImageGeneration {
             number,
-            slot,
-            uki_path: format!("EFI/Linux/aos-{number}.efi"),
-            uki_source_path: None,
+            boot_artifact_contract: format!("/nix/store/{number:032}-boot-contract"),
+            boot_provider_state: test_boot_provider_state(),
             toplevel: format!("/nix/store/top-{number}"),
             package_name: "aos-system".to_string(),
             version: number.to_string(),
+            state_version: "1".into(),
+            native_executor_ref: format!("/nix/store/executor-{number}"),
             registry: "core".to_string(),
             kernel_path: None,
             evaluator_ref: format!("/nix/store/base-lib-{number}"),
             module_abi,
-            baselib_digest: format!("sha256:{number:064x}"),
-            root_verity_roothash: None,
-            expected_pcr11: None,
-            initrd_pcr11: None,
-            recovery: None,
+            base_lib_abi_hash: format!("sha256:{number:064x}"),
             created_at: "2026-08-04T00:00:00Z".to_string(),
         }
     }
 
     #[test]
-    fn baselib_retention_drops_historical_images_sharing_a_retained_abi() {
-        use crate::types::{ConfigGenerationState, ImageGenerationState, ImageSlot};
+    fn baselib_retention_drops_historical_images_sharing_the_running_abi() {
+        use crate::types::{ConfigGenerationState, ImageGenerationState};
 
         let images = ImageGenerationState {
+            schema: "aos.image-generation-state/v1".to_string(),
             running: 3,
-            default: 3,
             pending: None,
-            recovery_known_good: None,
-            recovery_pending: None,
+            boot_provider_state: test_boot_provider_state(),
+            active_rollout: None,
+            last_rollout: None,
             generations: vec![
-                image_generation(1, ImageSlot::A, 7),
-                image_generation(2, ImageSlot::B, 7),
-                image_generation(3, ImageSlot::A, 7),
+                image_generation(1, 7),
+                image_generation(2, 7),
+                image_generation(3, 7),
             ],
         };
         let configs = ConfigGenerationState {
@@ -1235,41 +1283,43 @@ mod tests {
         };
 
         let keep = retained_baselib_image_generations(&images, &configs);
-        assert_eq!(keep, [2, 3].into_iter().collect());
-        assert!(
-            !keep.contains(&1),
-            "ABI equality must not retain every old image"
-        );
+        assert_eq!(keep, [3].into_iter().collect());
     }
 
     #[test]
     fn baselib_reconciliation_removes_only_the_obsolete_same_abi_root() {
-        use crate::types::{ConfigGenerationState, ImageGenerationState, ImageSlot};
+        use crate::types::{ConfigGenerationState, ImageGenerationState};
 
         let temp = TempDir::new().unwrap();
         let image_profile = temp.path().join("image");
         let mut generations = vec![
-            image_generation(1, ImageSlot::A, 7),
-            image_generation(2, ImageSlot::B, 7),
-            image_generation(3, ImageSlot::A, 7),
+            image_generation(1, 7),
+            image_generation(2, 7),
+            image_generation(3, 7),
         ];
         for image in &mut generations {
             let evaluator = temp.path().join(format!("base-lib-{}", image.number));
+            let toplevel = temp.path().join(format!("toplevel-{}", image.number));
+            let executor = temp.path().join(format!("executor-{}", image.number));
             std::fs::create_dir(&evaluator).unwrap();
+            std::fs::create_dir(&toplevel).unwrap();
+            std::fs::create_dir(&executor).unwrap();
             image.evaluator_ref = evaluator.to_string_lossy().into_owned();
-            create_baselib_gc_root(
+            image.toplevel = toplevel.to_string_lossy().into_owned();
+            image.native_executor_ref = executor.to_string_lossy().into_owned();
+            create_image_gc_roots(
                 &image_profile.join(format!("image-gen-{}", image.number)),
-                image.module_abi,
-                &image.evaluator_ref,
+                image,
             )
             .unwrap();
         }
         let images = ImageGenerationState {
+            schema: "aos.image-generation-state/v1".to_string(),
             running: 3,
-            default: 3,
             pending: None,
-            recovery_known_good: None,
-            recovery_pending: None,
+            boot_provider_state: test_boot_provider_state(),
+            active_rollout: None,
+            last_rollout: None,
             generations,
         };
         let configs = ConfigGenerationState {
@@ -1278,7 +1328,7 @@ mod tests {
             generations: Vec::new(),
         };
 
-        reconcile_baselib_gc_roots(&image_profile, &images, &configs).unwrap();
+        reconcile_image_gc_roots(&image_profile, &images, &configs).unwrap();
 
         assert!(
             image_profile
@@ -1286,25 +1336,57 @@ mod tests {
                 .symlink_metadata()
                 .is_err()
         );
-        assert!(image_profile.join("image-gen-2/baselib/7").is_symlink());
         assert!(image_profile.join("image-gen-3/baselib/7").is_symlink());
+        assert!(
+            image_profile
+                .join("image-gen-1/toplevel")
+                .symlink_metadata()
+                .is_err()
+        );
+        assert!(
+            image_profile
+                .join("image-gen-1/executor")
+                .symlink_metadata()
+                .is_err()
+        );
+        assert!(
+            image_profile
+                .join("image-gen-2/baselib/7")
+                .symlink_metadata()
+                .is_err()
+        );
+        assert!(
+            image_profile
+                .join("image-gen-2/toplevel")
+                .symlink_metadata()
+                .is_err()
+        );
+        assert!(
+            image_profile
+                .join("image-gen-2/executor")
+                .symlink_metadata()
+                .is_err()
+        );
+        assert!(image_profile.join("image-gen-3/toplevel").is_symlink());
+        assert!(image_profile.join("image-gen-3/executor").is_symlink());
     }
 
     #[test]
     fn baselib_retention_floor_keeps_one_exact_prior_abi_image() {
-        use crate::types::{ConfigGenerationState, ImageGenerationState, ImageSlot};
+        use crate::types::{ConfigGenerationState, ImageGenerationState};
 
         let images = ImageGenerationState {
+            schema: "aos.image-generation-state/v1".to_string(),
             running: 4,
-            default: 4,
             pending: None,
-            recovery_known_good: None,
-            recovery_pending: None,
+            boot_provider_state: test_boot_provider_state(),
+            active_rollout: None,
+            last_rollout: None,
             generations: vec![
-                image_generation(1, ImageSlot::A, 1),
-                image_generation(2, ImageSlot::A, 2),
-                image_generation(3, ImageSlot::A, 2),
-                image_generation(4, ImageSlot::A, 3),
+                image_generation(1, 1),
+                image_generation(2, 2),
+                image_generation(3, 2),
+                image_generation(4, 3),
             ],
         };
         let configs = ConfigGenerationState {
@@ -1319,21 +1401,20 @@ mod tests {
 
     #[test]
     fn baselib_retention_keeps_newest_prior_abi_even_when_an_older_abi_is_a_config_parent() {
-        use crate::types::{
-            ConfigGeneration, ConfigGenerationState, ImageGenerationState, ImageSlot,
-        };
+        use crate::types::{ConfigGeneration, ConfigGenerationState, ImageGenerationState};
 
         let images = ImageGenerationState {
+            schema: "aos.image-generation-state/v1".to_string(),
             running: 4,
-            default: 4,
             pending: None,
-            recovery_known_good: None,
-            recovery_pending: None,
+            boot_provider_state: test_boot_provider_state(),
+            active_rollout: None,
+            last_rollout: None,
             generations: vec![
-                image_generation(1, ImageSlot::A, 1),
-                image_generation(2, ImageSlot::A, 2),
-                image_generation(3, ImageSlot::B, 2),
-                image_generation(4, ImageSlot::A, 3),
+                image_generation(1, 1),
+                image_generation(2, 2),
+                image_generation(3, 2),
+                image_generation(4, 3),
             ],
         };
         let configs = ConfigGenerationState {
@@ -1344,9 +1425,7 @@ mod tests {
                 image_gen_parent: 1,
                 module_abi_pinned: 1,
                 manifest_hash: "sha256:manifest".into(),
-                config_module_closure: "/nix/store/config-closure".into(),
-                config_module_paths: Vec::new(),
-                config_module_packages: Vec::new(),
+                package_modules: Vec::new(),
                 host_nix_ref: "/nix/store/host".into(),
                 host_nix_commit: None,
                 facts_hash: "sha256:facts".into(),

@@ -1,5 +1,6 @@
 ##! nerdctl — Docker-compatible CLI for containerd
 {
+  lib,
   mkGoPackage,
   mkGithubUpstream,
   fetchGoModules,
@@ -75,7 +76,63 @@
   };
 in
   mkGoPackage {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "nerdctl";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Nerdctl returns a Bash function wired to its completion endpoint.";
+        "files" = {};
+        "input" = "A request for nerdctl's Bash completion program.";
+        "operation" = "Generate the completion program without contacting containerd.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/nerdctl\", \"completion\", \"bash\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"__start_nerdctl\" in result.stdout and \"complete -o default\" in result.stdout, (result.returncode, result.stdout, result.stderr)\nprint(\"nerdctl operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "nerdctl operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Nerdctl rejects the unknown command.";
+        "files" = {};
+        "input" = "A nerdctl invocation naming an unknown top-level command.";
+        "operation" = "Parse the unsupported command without contacting containerd.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/nerdctl\", \"aos-invalid-command\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"nerdctl rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "nerdctl rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     inherit goModules;

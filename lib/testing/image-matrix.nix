@@ -5,6 +5,7 @@
 }: {
   systems,
   sourceIdentity,
+  evalCheck ? null,
 }: let
   buildPackages = pkgs.buildPackages;
   platform = pkgs.stdenv.hostPlatform.system;
@@ -175,7 +176,10 @@ in
       pname = "aos-image-matrix-${platform}";
       version = "1";
       src = null;
-      buildDeps = [buildPackages.coreutils buildPackages.python3 runner] ++ builtins.attrValues checks;
+      buildDeps =
+        [buildPackages.coreutils buildPackages.python3 runner]
+        ++ lib.optional (evalCheck != null) evalCheck
+        ++ builtins.attrValues checks;
       outputChecks.out = {};
       dontStrip = true;
       dontNukeRefs = true;

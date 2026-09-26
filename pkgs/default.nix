@@ -8,6 +8,7 @@
   buildPackages ? null,
   firmwarePackages ? null,
   targetPackages ? null,
+  releasePlatforms ? [stdenv.hostPlatform],
   sharedGoCacheDir ? null,
   sharedBazelCacheDir ? null,
   sharedRustTargetDir ? null,
@@ -32,7 +33,17 @@
   mkManualUpstream = import ./build-support/_manual-upstream.nix {
     platform = stdenv.hostPlatform.system;
   };
-  platformSupport = import ./_platform-support.nix;
+  declarationPackages =
+    if buildPackages != null
+    then buildPackages
+    else self;
+  platformSupport = import ./_target-policy.nix {
+    inherit lib releasePlatforms;
+    # Package declarations are invariant across splices. Reading them from
+    # the native package set avoids evaluating an unsupported cross package
+    # merely to decide that its host constraint excludes it.
+    packages = declarationPackages;
+  };
 
   # Cross package-set roles. `self` is the host package set: its outputs run
   # on stdenv.hostPlatform. Build tools must be selected from buildPackages so
@@ -148,6 +159,11 @@
         // extra;
     };
   withDefaultMaintainers = withDistributionMeta {};
+  withContractFrom = declaration: package:
+    package
+    // {
+      inherit (declaration) contract platformSupport;
+    };
 
   # Bootstrap tools retain their audited derivations, but need the same public
   # metadata as their target builds. Never attach a different source version.
@@ -163,19 +179,118 @@
     assert version == package.version;
       (withDistributionMeta package.meta bootstrap) // {inherit version;};
 
-  exposeRenderer = import ./build-support/_expose-renderer.nix {
-    inherit lib;
-    pkgs = self;
-  };
   cargoArtifactsSupport = import ./build-support/_cargo-artifacts.nix {
     inherit lib mkDerivation;
   };
 
-  # Turn a package-authored `configModule` arg into the package's logical
-  # `config` output (a pure-data store path carrying `module.nix` plus a
-  # declared-interface manifest). A fixed companion derivation builds it so
-  # package-authored phases cannot skip or mutate its validation boundary.
-  configModuleRenderer = import ./build-support/_config-module-renderer.nix {inherit lib;};
+  # The selected OCI backend owns its artifact constructors. Package recipes
+  # receive this API through callPackage instead of importing backend-private
+  # implementation files or rebuilding the tool splice themselves.
+  mkOciTools = {
+    buildPackages ? resolvedBuildPackages,
+    abilityContractValidator ? buildPackages.aos-ability-contract-validator,
+    mkReferenceGraph ?
+      lib.build.referenceGraph {
+        inherit (buildPackages) mkDerivation coreutils jq;
+      },
+  }:
+    import ./containers/_aos-oci-backend/oci {
+      inherit lib abilityContractValidator mkReferenceGraph;
+      inherit (buildPackages) mkDerivation coreutils findutils gzip jq tar;
+    };
+  ociTools = mkOciTools {};
+  mkOciMultiPlatformContainer = args:
+    import ./containers/_aos-oci-backend/container/multi-platform.nix (
+      args
+      // {
+        inherit lib;
+        pkgs = self;
+        oci = ociTools;
+      }
+    );
+  mkOciPackageEvidence = {packageSet ? self, ...} @ args:
+    import ./containers/_aos-oci-backend/container/package-evidence.nix (
+      (builtins.removeAttrs args ["packageSet"])
+      // {
+        inherit lib;
+        pkgs = packageSet;
+      }
+    );
+
+  packageContractDocument = {
+    packageName,
+    version,
+    projection,
+  }: let
+    projectionJson = builtins.unsafeDiscardStringContext (builtins.toJSON projection);
+    source = builtins.toFile "${packageName}-package-projection.json" projectionJson;
+  in
+    if builtins.hasContext projectionJson || lib.hasInfix "/nix/store/" projectionJson
+    then throw "package projection for '${packageName}' contains a store locator"
+    else
+      rawMkDerivation {
+        pname = "${packageName}-package-contract";
+        inherit version;
+        src = null;
+        phases = [
+          {
+            name = "install";
+            script = ''
+              ${stdenv.coreutils}/bin/rm -rf "$out"
+              ${stdenv.coreutils}/bin/cp ${source} "$out"
+            '';
+          }
+        ];
+        outputChecks.out.allowedReferences = [];
+        preferLocalBuild = true;
+        allowSubstitutes = false;
+      };
+
+  probeOnlyPackageContract = {
+    packageName,
+    version,
+    packageProbe,
+  }: let
+    projected = lib.abilities.projectPackage {
+      inherit packageName version packageProbe;
+      evaluated = {
+        guarantees = {};
+        implementations = {};
+        interfaces = {};
+        requirementTemplates = {};
+      };
+    };
+  in {
+    value = projected.value;
+    document = packageContractDocument {
+      inherit packageName version;
+      projection = projected.value;
+    };
+    selectors = projected.selectors;
+  };
+
+  withProbeOnlyPackageContract = {
+    packageName,
+    version,
+    packageProbe,
+    platformSupport ? null,
+  }: package: let
+    normalizedPlatformSupport =
+      if platformSupport == null
+      then null
+      else lib.packagePlatform.normalize "package '${packageName}' platformSupport" platformSupport;
+  in
+    (builtins.removeAttrs package ["abilities" "module"])
+    // {
+      pname = packageName;
+      inherit version;
+      contract = probeOnlyPackageContract {
+        inherit packageName version packageProbe;
+      };
+    }
+    // lib.optionalAttrs (normalizedPlatformSupport != null) {
+      platformSupport = normalizedPlatformSupport;
+    };
 
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
   # wrapped to inject nuke-references into every package's buildDeps so
@@ -183,232 +298,250 @@
   # store paths out of the output (matches nixpkgs nuke-refs idiom).
   mkDerivation = args: let
     packageName =
-      args.pname
+      args.catalogName
+      or args.pname
       or args.name
       or (throw "mkDerivation: package must set pname or name");
-    renderedExpose =
-      if args ? expose
-      then
-        exposeRenderer.render {
-          inherit packageName drv;
-          expose = args.expose;
-        }
-      else null;
-    exposeAttrs =
-      if args ? expose
-      then {expose = renderedExpose;}
-      else {};
-    hasGeneratedExposeConfig = args ? expose;
-    generatedExposeDeclares = [
-      "${packageName}._aosExposeConfigProjection"
-      "${packageName}.config"
-      "${packageName}.credentials"
-    ];
-    generatedExposeConfigFile =
-      if hasGeneratedExposeConfig
-      then
-        builtins.toFile "expose-config-${packageName}.json" (builtins.toJSON {
-          package = packageName;
-          config = exposeRenderer.normalizeConfig packageName (args.expose.config or {});
-        })
-      else null;
-    generatedConfigSource =
-      if hasGeneratedExposeConfig
-      then
-        rawMkDerivation {
-          pname = "${packageName}-generated-config-source";
-          version = args.version or "0";
-          src = null;
-          phases = [
-            {
-              name = "install";
-              script = ''
-                mkdir -p "$out"
-                cp ${./build-support/_generated-expose-config-module.nix} "$out/module.nix"
-                cp ${generatedExposeConfigFile} "$out/expose-config.json"
-              '';
-            }
-          ];
-          preferLocalBuild = true;
-          allowSubstitutes = false;
-        }
-      else null;
-    authoredConfigModule = args.configModule or null;
-    preparedAuthoredConfigModule =
-      if authoredConfigModule != null
-      then
-        configModuleRenderer.prepare {
-          inherit packageName;
-          configModule = authoredConfigModule;
-        }
-      else null;
-    authoredConfigMeta =
-      if preparedAuthoredConfigModule != null
-      then builtins.fromJSON preparedAuthoredConfigModule.metaJson
-      else null;
-    composedModuleFile = builtins.toFile "composed-config-module-${packageName}.nix" ''
-      { ... }: {
-        imports = [
-          ./authored/module.nix
-          ./generated/module.nix
-        ];
-      }
-    '';
-    composedConfigSource =
-      if authoredConfigModule != null && hasGeneratedExposeConfig
-      then
-        rawMkDerivation {
-          pname = "${packageName}-composed-config-source";
-          version = args.version or "0";
-          src = null;
-          phases = [
-            {
-              name = "install";
-              script = ''
-                mkdir -p "$out/authored" "$out/generated"
-                cp -R ${preparedAuthoredConfigModule.src}/. "$out/authored/"
-                cp -R ${generatedConfigSource}/. "$out/generated/"
-                cp ${composedModuleFile} "$out/module.nix"
-              '';
-            }
-          ];
-          preferLocalBuild = true;
-          allowSubstitutes = false;
-        }
-      else null;
-    effectiveConfigModule =
-      if authoredConfigModule != null
-      then authoredConfigModule
-      else if hasGeneratedExposeConfig
-      then {
-        src = generatedConfigSource;
-        moduleAbiCompat = {
-          min = 1;
-          max = 1;
-        };
-        declares = generatedExposeDeclares;
-      }
-      else null;
-    hasConfigModule = effectiveConfigModule != null;
-    preparedConfigModule =
-      if authoredConfigModule != null && hasGeneratedExposeConfig
-      then {
-        src = composedConfigSource;
-        metaJson = builtins.toJSON (authoredConfigMeta
-          // {
-            declares = lib.unique (authoredConfigMeta.declares ++ generatedExposeDeclares);
-          });
-        dependencyOutputs = preparedAuthoredConfigModule.dependencyOutputs;
-      }
-      else if hasGeneratedExposeConfig
-      then {
-        src = generatedConfigSource;
-        metaJson = builtins.toJSON {
-          schema = "aos.config-module-meta/v1";
-          module_abi_compat = {
-            min = 1;
-            max = 1;
-          };
-          declares = effectiveConfigModule.declares;
-          owns_roots = [];
-          contributes = [];
-          provides_capabilities = [];
-          dependencies = [];
-        };
-        dependencyOutputs = {};
-      }
-      else if hasConfigModule
-      then preparedAuthoredConfigModule
-      else null;
-    configModuleMetaFile =
-      if hasConfigModule
-      then builtins.toFile "config-meta-${packageName}.json" preparedConfigModule.metaJson
-      else null;
     existingOutputs = args.outputs or ["out"];
-    configStoreDir = args.storeDir or "/nix/store";
-    configArtifact =
-      if hasConfigModule
-      then
-        lib.throwIfNot
-        (!(builtins.elem "config" existingOutputs))
-        "mkDerivation configModule for package '${packageName}' reserves the 'config' output name"
-        (rawMkDerivation {
-          pname = "${packageName}-config";
-          version = args.version or "0";
-          src = preparedConfigModule.src;
-          outputs = ["config"];
-          buildDeps = [resolvedBuildPackages.nix];
-          phases = [
+    reservedAbilityOutputs = ["abilities" "module"];
+    conflictingAbilityOutputs =
+      builtins.filter
+      (output: builtins.elem output reservedAbilityOutputs)
+      existingOutputs;
+    authoredAbilities = args.abilities or null;
+    authoredPlatformSupport = args.platformSupport or null;
+    packagePlatformSupport =
+      if authoredPlatformSupport == null
+      then null
+      else lib.packagePlatform.normalize "package '${packageName}' platformSupport" authoredPlatformSupport;
+    authoredQualification = args.qualification or null;
+    authoredPackageProbe =
+      if authoredQualification == null
+      then null
+      else if !builtins.isAttrs authoredQualification
+      then throw "mkDerivation qualification for package '${packageName}' must be an attribute set"
+      else if builtins.attrNames authoredQualification != ["packageProbe"]
+      then throw "mkDerivation qualification for package '${packageName}' supports only packageProbe"
+      else lib.qualification.normalizePackageProbe authoredQualification.packageProbe;
+    abilityModuleSource =
+      if authoredAbilities == null
+      then null
+      else if conflictingAbilityOutputs != []
+      then throw "mkDerivation abilities for package '${packageName}' reserves output names ${builtins.toJSON conflictingAbilityOutputs}"
+      else if !builtins.isPath authoredAbilities
+      then throw "mkDerivation abilities for package '${packageName}' must be a path-backed module directory"
+      else let
+        sourceType = builtins.readFileType authoredAbilities;
+        modulePath = authoredAbilities + "/module.nix";
+      in
+        if sourceType != "directory"
+        then throw "mkDerivation abilities for package '${packageName}' must name a directory"
+        else if !builtins.pathExists modulePath || builtins.readFileType modulePath != "regular"
+        then throw "mkDerivation abilities directory for package '${packageName}' must contain a regular module.nix"
+        else {
+          source = authoredAbilities;
+          path = "module.nix";
+        };
+    abilityModules =
+      if authoredAbilities == null
+      then []
+      else [(abilityModuleSource.source + "/module.nix")];
+    retainedAbilityModule = {imports = abilityModules;};
+    validAbilityModuleTree = path:
+      builtins.all
+      (name: let
+        type = (builtins.readDir path).${name};
+      in
+        type
+        == "regular"
+        || (type == "directory" && validAbilityModuleTree (path + "/${name}")))
+      (builtins.attrNames (builtins.readDir path));
+    abilityModuleArtifact =
+      if abilityModuleSource == null
+      then null
+      else if !validAbilityModuleTree abilityModuleSource.source
+      then throw "mkDerivation abilities for package '${packageName}' may contain only regular files and directories"
+      else
+        lib.throwIf
+        (builtins.elem "module" existingOutputs)
+        "mkDerivation abilities for package '${packageName}' reserve the 'module' output name for the separately built ability module"
+        (
+          if lib.hasPrefix "/nix/store/" (builtins.toString abilityModuleSource.source)
+          then
+            builtins.path {
+              path = abilityModuleSource.source;
+              name = "${packageName}-module";
+            }
+          else
+            (builtins.fetchTree {
+              type = "path";
+              path = builtins.toString abilityModuleSource.source;
+            }).outPath
+        );
+    symbolicAbilityModuleLocator =
+      if abilityModuleArtifact == null
+      then null
+      else {
+        artifact = lib.abilities.packageOutput {output = "module";};
+        inherit (abilityModuleSource) path;
+      };
+    abilityEvaluation =
+      if authoredAbilities == null
+      then null
+      else
+        lib.evalModules {
+          modules = [
+            lib.abilities.module
+            ../modules/_package-domain-options.nix
+            ../modules/abilities/_service.nix
+          ];
+          packageModules = [
             {
-              name = "install";
-              script = ''
-                ${stdenv.coreutils}/bin/env -i TMPDIR=/build \
-                  ${stdenv.bash}/bin/bash --noprofile --norc -euo pipefail -c ${
-                  lib.escapeShellArg ''
-                    output=$1
-                    source=$2
-                    authored_meta=$(${stdenv.findutils}/bin/find "$source" -name config-meta.json -print -quit)
-                    if [[ -n "$authored_meta" ]]; then
-                      echo "config module for '${packageName}' must not author config-meta.json" >&2
-                      exit 1
-                    fi
-
-                    ${stdenv.coreutils}/bin/mkdir -p "$output"
-                    ${stdenv.coreutils}/bin/cp -R "$source/." "$output/"
-                    ${stdenv.coreutils}/bin/chmod -R u+w "$output"
-                    # Directory derivations carry an AOS target marker. Nested
-                    # generated inputs are module content here, not separately
-                    # publishable outputs, so discard their copied metadata.
-                    ${stdenv.findutils}/bin/find "$output" -path '*/nix-support/aos-target-platform' -delete
-                    ${stdenv.findutils}/bin/find "$output" -type d -name nix-support -empty -delete
-                    ${stdenv.coreutils}/bin/cp "${configModuleMetaFile}" "$output/config-meta.json"
-
-                    invalid_entry=$(${stdenv.findutils}/bin/find "$output" ! -type d ! -type f -print -quit)
-                    if [[ -n "$invalid_entry" ]]; then
-                      echo "config module for '${packageName}' contains a non-regular entry: $invalid_entry" >&2
-                      exit 1
-                    fi
-                    if [[ ! -f "$output/module.nix" ]]; then
-                      echo "config module for '${packageName}' must contain a regular module.nix" >&2
-                      exit 1
-                    fi
-                    invalid_helper=$(${stdenv.findutils}/bin/find "$output" -type f ! -name '*.nix' ! -path "$output/config-meta.json" ${lib.optionalString hasGeneratedExposeConfig ''! -path "$output/expose-config.json" ! -path "$output/generated/expose-config.json"''} -print -quit)
-                    if [[ -n "$invalid_helper" ]]; then
-                      echo "config module for '${packageName}' contains a non-Nix helper: $invalid_helper" >&2
-                      exit 1
-                    fi
-                    if ! ${stdenv.diffutils}/bin/cmp -s "${configModuleMetaFile}" "$output/config-meta.json"; then
-                      echo "config module for '${packageName}' did not retain the generated metadata bytes" >&2
-                      exit 1
-                    fi
-                    ${stdenv.findutils}/bin/find "$output" -type f -name '*.nix' \
-                      -exec ${resolvedBuildPackages.nix}/bin/nix-instantiate --store dummy:// --parse {} \; >/dev/null
-                      # Reject direct store literals and builtins.storeDir. The
-                      # evaluated manifest validator is the semantic boundary for
-                      # paths assembled by otherwise ordinary Nix expressions.
-                      if ${stdenv.grep}/bin/grep -R -n -F "${configStoreDir}/" "$output" \
-                        || ${stdenv.grep}/bin/grep -R -n -E 'builtins\.storeDir' "$output"; then
-                      echo "config module for '${packageName}' contains a Nix store-path construction" >&2
-                      exit 1
-                    fi
-                  ''
-                } _ "$config" "$src"
-              '';
+              name = packageName;
+              module = retainedAbilityModule;
             }
           ];
-          outputChecks.config.allowedReferences = [];
-          preferLocalBuild = true;
-          allowSubstitutes = false;
-        })
-      else null;
-    configModuleAttrs =
-      if hasConfigModule
-      then {
-        config = configArtifact;
-        configModule = configArtifact;
-        configModuleDependencies = preparedConfigModule.dependencyOutputs;
-      }
-      else {};
+          inherit lib;
+          pkgs = self;
+          specialArgs = {
+            inherit packageName;
+            packageVersion = args.version or "0";
+          };
+        };
+    evaluatedAbilities =
+      if abilityEvaluation == null
+      then null
+      else abilityEvaluation.config.aos.abilities;
+    projectedAbilities =
+      if evaluatedAbilities != null
+      then evaluatedAbilities
+      else {
+        guarantees = {};
+        implementations = {};
+        interfaces = {};
+        requirementTemplates = {};
+      };
+    normalizeOptionType = value:
+      if builtins.isList value
+      then builtins.map normalizeOptionType value
+      else if builtins.isAttrs value
+      then
+        lib.mapAttrs (_: normalizeOptionType)
+        (lib.filterAttrs (_: field: field != null) value)
+      else value;
+    abilityOptionDeclarations =
+      if abilityEvaluation == null
+      then []
+      else let
+        moduleSource = builtins.toString abilityModuleSource.source;
+        sourceFor = declaration: let
+          source = builtins.toString declaration.source;
+          directoryPrefix = "${moduleSource}/";
+        in
+          if lib.hasPrefix directoryPrefix source
+          then builtins.substring (builtins.stringLength directoryPrefix) (-1) source
+          else throw "ability option '${declaration.pathStr}' for package '${packageName}' is declared outside its authenticated module tree";
+        optionDocumentFor = sourcePath: path: declaration:
+          {
+            inherit (declaration) description visibility extensible;
+            inherit path;
+            type_signature = declaration.typeSig;
+            structured_type = normalizeOptionType declaration.type;
+            read_only = declaration.readOnly;
+            source.path = sourcePath;
+          }
+          // lib.optionalAttrs (declaration.default != null) {inherit (declaration) default;}
+          // lib.optionalAttrs (declaration.example != null) {inherit (declaration) example;}
+          // lib.optionalAttrs (declaration.deprecated != null) {inherit (declaration) deprecated;}
+          // lib.optionalAttrs (declaration.replacement != null) {inherit (declaration) replacement;};
+        packageOptions =
+          builtins.map
+          (declaration: optionDocumentFor (sourceFor declaration) declaration.path declaration)
+          (builtins.filter
+            (declaration:
+              declaration.owner
+              == packageName
+              && declaration.pathStr != "aos.services")
+            abilityEvaluation._optionDecls);
+        serviceType = abilityEvaluation.options.aos.services.type._elementType;
+        serviceOptions = builtins.concatMap (name: let
+          declarations = lib.submoduleOptionDeclarations serviceType ["aos" "services" name];
+          selected =
+            builtins.filter
+            (declaration:
+              declaration.path
+              != []
+              && declaration.owner == packageName)
+            declarations;
+        in
+          builtins.map
+          (declaration:
+            optionDocumentFor
+            (sourceFor declaration)
+            (["aos" "services" name] ++ declaration.path)
+            declaration)
+          selected)
+        (builtins.attrNames abilityEvaluation.config.aos.services);
+      in
+        packageOptions ++ serviceOptions;
+    packageProjectionResult =
+      if builtins.elem "contract" existingOutputs
+      then throw "mkDerivation package contract for '${packageName}' reserves the 'contract' output name"
+      else
+        lib.abilities.projectPackage {
+          inherit packageName;
+          version = args.version or "0";
+          evaluated = projectedAbilities;
+          packageModuleLocator = symbolicAbilityModuleLocator;
+          optionDeclarations = abilityOptionDeclarations;
+          packageProbe = authoredPackageProbe;
+        };
+    packageProjection = packageProjectionResult.value;
+    packageAbilityProjection =
+      if evaluatedAbilities == null
+      then null
+      else packageProjectionResult.abilities;
+    packageProjectionSource = packageContractDocument {
+      inherit packageName;
+      version = args.version or "0";
+      projection = packageProjection;
+    };
+    needsRuntimeProjection =
+      evaluatedAbilities
+      != null
+      && (
+        authoredPackageProbe
+        != null
+        || builtins.any
+        (implementation: !implementation.activationAvailable)
+        (builtins.attrValues evaluatedAbilities.implementations)
+      );
+    # Qualification probes and image builders can inspect outputs that a
+    # running system never needs. Derive the deployable view from the same
+    # module evaluation while keeping the complete authoring contract.
+    runtimeProjectionResult =
+      if !needsRuntimeProjection
+      then packageProjectionResult
+      else
+        lib.abilities.projectPackage {
+          inherit packageName;
+          version = args.version or "0";
+          evaluated = projectedAbilities;
+          packageModuleLocator = symbolicAbilityModuleLocator;
+          optionDeclarations = abilityOptionDeclarations;
+          activationOnly = true;
+        };
+    runtimeProjectionSource =
+      if runtimeProjectionResult == null
+      then null
+      else if !needsRuntimeProjection
+      then packageProjectionSource
+      else
+        packageContractDocument {
+          inherit packageName;
+          version = args.version or "0";
+          projection = runtimeProjectionResult.value;
+        };
     crossFixupPhase =
       if stdenv.hostPlatform.objectFormat == "macho"
       then phases.darwinCrossFixupPhase
@@ -423,9 +556,9 @@
         else phase
     ) (args.phases or []);
     lowerArgs =
-      # `configModule` is an mkDerivation-level arg consumed here, not passed
-      # down to the raw builder (mirrors how `expose` is handled).
-      (builtins.removeAttrs args ["configModule" "sharedBuildCache"])
+      # Package integration modules are evaluated by this wrapper and never
+      # become low-level derivation attributes.
+      (builtins.removeAttrs args ["abilities" "catalogName" "platformSupport" "qualification" "sharedBuildCache"])
       // {
         meta =
           (args.meta or {})
@@ -435,7 +568,7 @@
         buildDeps =
           builtins.map spliceBuildDependency (args.buildDeps or [])
           ++ [resolvedBuildPackages.nuke-references];
-        passthru = (args.passthru or {}) // exposeAttrs // configModuleAttrs;
+        passthru = args.passthru or {};
       }
       // lib.optionalAttrs (
         args
@@ -446,47 +579,52 @@
         # Replace only that exact implementation so package-authored phases
         # that happen to use the same name retain their behavior.
         phases = crossPhases;
-      }
-      // exposeAttrs;
+      };
     drv = rawMkDerivation lowerArgs;
-    exposeCheck =
-      if args ? expose
-      then
-        resolvedBuildPackages.runCommand "expose-payload-closure-check-${packageName}" {
-          payload = drv;
-          exposePath = renderedExpose;
-          disallowedRequisites = [renderedExpose];
-          preferLocalBuild = true;
-          allowSubstitutes = false;
-        } ''
-          set -eu
-          ln -s "$payload" "$out"
-        ''
-      else null;
+    abilityAttrs =
+      {
+        contract = {
+          value = packageProjection;
+          document = packageProjectionSource;
+          selectors = packageProjectionResult.selectors;
+        };
+      }
+      // lib.optionalAttrs needsRuntimeProjection {
+        runtimeContract = {
+          value = runtimeProjectionResult.value;
+          document = runtimeProjectionSource;
+          selectors = runtimeProjectionResult.selectors;
+        };
+      }
+      // lib.optionalAttrs (evaluatedAbilities != null) {
+        abilities = packageAbilityProjection;
+        # Module selection and artifact binding use the package's real
+        # module output. The static ability view contains semantic data only.
+        module = abilityModuleArtifact;
+      };
+    platformAttrs = lib.optionalAttrs (packagePlatformSupport != null) {
+      platformSupport = packagePlatformSupport;
+    };
     secondaryOutputAttrs = builtins.listToAttrs (
       builtins.map (outputName: {
         name = outputName;
         value =
-          (builtins.getAttr outputName drv)
-          // {
-            pname = args.pname or packageName;
-            meta = drv.meta or {};
-          }
-          // lib.optionalAttrs (args ? version) {inherit (args) version;};
+          addBuilderOverrides
+          (updatedArgs: builtins.getAttr outputName (mkDerivation updatedArgs))
+          args
+          (
+            (builtins.getAttr outputName drv)
+            // {
+              pname = args.pname or packageName;
+              meta = drv.meta or {};
+            }
+            // lib.optionalAttrs (args ? version) {inherit (args) version;}
+            // abilityAttrs
+            // platformAttrs
+          );
       }) (builtins.filter (outputName: outputName != drv.outputName) drv.outputs)
     );
-    result =
-      drv
-      // secondaryOutputAttrs
-      // configModuleAttrs
-      // (
-        if args ? expose
-        then {
-          inherit exposeCheck;
-          passthru = drv.passthru // {inherit exposeCheck;};
-        }
-        else {}
-      );
+    result = drv // secondaryOutputAttrs // abilityAttrs // platformAttrs;
   in
     addBuilderOverrides mkDerivation args result;
 
@@ -591,11 +729,13 @@
     "cargoDeps"
     "cargoArtifacts"
     "cargoRoot"
+    "cargoWorkspaceMembers"
     "cargoEnv"
     "cargoBuildCommands"
     "installCargoArtifacts"
     "cargoArtifactContract"
     "cargoNextest"
+    "cargoNextestProfile"
     "cargoNextestOpenFilesLimit"
     "cargoNextestMaxTestThreads"
     "nextestFlags"
@@ -922,6 +1062,19 @@
         )
       );
 
+  # AOS packages use their existing Cargo package selectors as the single
+  # source of truth for the local workspace source they build and test.
+  mkAosCargoPackage = args:
+    if args ? src
+    then throw "mkAosCargoPackage derives src from its Cargo package selectors"
+    else
+      addBuilderOverrides mkAosCargoPackage args (
+        mkCargoPackage (
+          (removeAttrs args ["aosWorkspaceIntegrationInputs"])
+          // (removeAttrs (aosWorkspaceSliceFor args) ["configureWorkspace"])
+        )
+      );
+
   # Builds a reusable Cargo target directory from a manifest-only dummy
   # workspace. The caller owns dummy-source construction so ordinary Rust
   # implementation edits do not alter this derivation's identity.
@@ -1133,7 +1286,7 @@
   };
   packageArgumentScope =
     self
-    // {inherit firmwarePackages;}
+    // {inherit firmwarePackages aosWorkspaceIntegrationSource aosWorkspaceSliceFor aosWorkspaceVendor;}
     // lib.optionalAttrs stdenv.isCross (
       builtins.listToAttrs (
         builtins.map (name: {
@@ -1154,10 +1307,12 @@
       packageArgumentScope
       // {
         inherit mkDerivation fetchurl fetchgit mkUpstream mkGithubUpstream mkManualUpstream callPackage;
+        inherit withProbeOnlyPackageContract;
       }
     );
   in
     fn (auto // overrides);
+  trivialBuilders = callPackage ./build-support/_trivial-builders.nix {};
 
   # Shared Linux kernel source (single tarball for linux and linux-headers)
   linuxSource = import ./kernel/_source.nix {inherit fetchurl mkManualUpstream;};
@@ -1167,6 +1322,41 @@
 
   # Shared KubeEdge source (single tarball for cloudcore, edgecore)
   kubeedgeSource = import ./kubernetes/_kubeedge-source.nix {inherit fetchurl;};
+
+  # Runtime Rust packages share the workspace-only source and vendor closure.
+  # Repository-aware integration tests add Nix inputs without changing runtime
+  # package identities when unrelated modules or package recipes change.
+  aosWorkspaceIntegrationSource = import ./tools/aos/_workspace-source.nix {
+    inherit lib;
+    includeIntegrationInputs = true;
+  };
+  aosWorkspaceSliceFor = args:
+    import ./tools/aos/_workspace-slice.nix {
+      inherit lib;
+      cargoFlags = args.cargoFlags or "";
+      cargoTestFlags =
+        if args.doCheck or true
+        then args.cargoTestFlags or ""
+        else "";
+      cargoBuildCommands = args.cargoBuildCommands or [];
+      includeIntegrationInputs = args.aosWorkspaceIntegrationInputs or false;
+    };
+  # Vendoring reads the lockfile alone. Keep source and test edits from
+  # changing the vendor derivation for every Cargo package.
+  aosWorkspaceVendorSource = builtins.path {
+    path = ../crates;
+    name = "aos-workspace-lockfile";
+    filter = path: _: let
+      cratesRoot = toString ../crates;
+    in
+      path == cratesRoot || path == "${cratesRoot}/Cargo.lock";
+  };
+  aosWorkspaceVendor = fetchCargoVendor {
+    src = aosWorkspaceVendorSource;
+    name = "aos-workspace-vendor";
+    sourceRoot = "source";
+    hash = "sha256-OrHXSHeyEXfKM+fRt0CpuDhvqUhDd4+hZ3CsGxcnNRk=";
+  };
 
   # Auto-discover packages from subdirectories.
   # Recursively scans for .nix files, skipping default.nix and _-prefixed
@@ -1197,7 +1387,20 @@
     filePackages = builtins.listToAttrs (
       map (name: {
         name = lib.removeSuffix ".nix" name;
-        value = callPackage (dir + "/${name}") {};
+        # The catalog name comes from the recipe path. Versioned variants may
+        # share a derivation pname but still need distinct contract identities.
+        value = let
+          path = dir + "/${name}";
+          acceptsMkDerivation = (builtins.functionArgs (import path)) ? mkDerivation;
+          # Recipes can build internal derivations. Stamp only the returned
+          # package so those dependencies keep their own contract identities.
+          package = callPackage path {};
+        in
+          if !acceptsMkDerivation
+          then package
+          else if package ? overrideAttrs
+          then package.overrideAttrs {catalogName = lib.removeSuffix ".nix" name;}
+          else throw "discovered package '${name}' cannot receive its catalog identity";
       })
       nixFiles
     );
@@ -1318,6 +1521,23 @@
       license = "GPL-3.0-or-later WITH GCC-exception-3.1";
     };
   };
+  darwinRuntimePlatformSupport = lib.packagePlatform.normalize "package 'darwin-runtimes' platformSupport" {
+    build = [
+      {
+        abi = ["gnu"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["darwin"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["darwin"];
+      }
+    ];
+    target = [];
+    role = "public-package";
+  };
   darwinDtraceCompiler = import ./darwin/_darwin-dtrace-compiler.nix {
     inherit mkDerivation fetchurl;
     llvm = resolvedBuildPackages.llvm;
@@ -1342,17 +1562,8 @@
     libbsd = resolvedBuildPackages.libbsd;
     util-linux = resolvedBuildPackages.util-linux;
   };
-  # Discovered factory modules are callable package constructors, not
-  # derivations. Keep them in `pkgs` for their consumers, but never advertise
-  # them as buildable `pkg-*` flake outputs or aggregate build dependencies.
-  # This explicit structural inventory preserves lazy package enumeration:
-  # probing every value with tryEval would execute unrelated IFDs.
-  packageFactories = [
-    "aos-uki"
-    "dbus-conf"
-  ];
   uncheckedPackageNames = builtins.attrNames (
-    builtins.removeAttrs discoveredPackages (["trivial-builders"] ++ packageFactories)
+    discoveredPackages
     // {
       nuke-references = null;
       qemu-crucible = null;
@@ -1387,6 +1598,11 @@
       platformSupport.selectTargetPackages targetSystem self allPackageNames
     );
   localMaintenanceRoots = [
+    "ability-package-smoke"
+    "aos-ability-boundary-observer"
+    "ability-package-smoke-provider"
+    "aos-ability-contract-validator"
+    "aos-ability-crucible"
     "aos"
     "aos-agent-rpc"
     "aos-boot-identity"
@@ -1402,6 +1618,7 @@
     "aos-landlock"
     "aos-recovery"
     "aos-registry-server"
+    "aos-credential-delivery-test"
     "aos-release-signer"
     "aos-secret-reference-test"
     "aos-selinux-run"
@@ -1409,11 +1626,9 @@
     "aos-system-image-e2e-fixture"
     "aos-test-agent"
     "aos-test-driver"
-    "aos-var-policy-migrate"
+    "aos-systemd-var-policy"
     "aos-verity-root-guard"
     "aos-vm"
-    "apm-systemd-client-test"
-    "config-module-smoke"
     "crucible"
     "crucible-controller"
     "crucible-fixtures"
@@ -1423,9 +1638,9 @@
     "crucible-qemu-trace-plugin"
     "desired-config-test"
     "desired-prune-test"
-    "expose-smoke"
     "test-http-server"
     "test-static-cache-server"
+    "upgrade-transition-fixture"
   ];
   frozenMaintenanceRoots = [
     "ant-bootstrap"
@@ -1528,7 +1743,7 @@
             system:
               builtins.all (member: platformSupport.supportsTarget system member) declared.members
           )
-          platformSupport.canonicalSystems);
+          platformSupport.platforms);
       in
         declared // {platforms = eligiblePlatforms;}
     )
@@ -1574,7 +1789,8 @@
       inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream lib packageNames allPackageNames;
       inherit maintenanceInventory;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
-      inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
+      inherit mkCargoPackage mkAosCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
+      inherit mkOciTools ociTools mkOciMultiPlatformContainer mkOciPackageEvidence;
       inherit (cargoArtifactsSupport) mkCargoDummySource;
       inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;
       inherit bootstrapTools;
@@ -1590,11 +1806,90 @@
       # nuke-references uses the raw (un-wrapped) mkDerivation so it can't
       # depend on itself. Every other package gets nuke-references injected
       # into buildDeps automatically via the wrapped mkDerivation above.
-      nuke-references = import ../lib/build-support/nuke-references {
-        mkDerivation = args:
-          withDefaultMaintainers (rawMkDerivation args);
-        inherit (self) bash coreutils grep sed;
-      };
+      nuke-references =
+        withProbeOnlyPackageContract {
+          packageName = "nuke-references";
+          platformSupport = {
+            build = [
+              {
+                abi = ["gnu"];
+                os = ["linux"];
+              }
+            ];
+            host = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+            ];
+            target = [];
+            role = "build-input";
+          };
+          version = "0";
+          packageProbe = lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [
+                {
+                  "path" = "reference.txt";
+                  "text" = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-package/data\n";
+                }
+              ];
+              "expected" = "The hash is replaced by 32 e characters while surrounding bytes remain unchanged.";
+              "files" = {
+                "reference.txt" = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-package/data\n";
+              };
+              "input" = "Text containing one syntactically valid Nix store reference.";
+              "operation" = "Rewrite the store hash through nuke-refs.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/nuke-refs"
+                    "reference.txt"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "nuke-refs rejects the exclusion with status 1.";
+              "files" = {
+                "reference.txt" = "unchanged\n";
+              };
+              "input" = "An exclusion value that is not a complete Nix store path.";
+              "operation" = "Parse the malformed exclusion through nuke-refs.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/nuke-refs"
+                    "-e"
+                    "not-a-store-path"
+                    "reference.txt"
+                  ];
+                  "exit_code" = 1;
+                  "observes_rejection" = true;
+                  "stderr" = {
+                    "exact" = "nuke-refs: -e needs a store path\n";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+          };
+        } (import ../lib/build-support/nuke-references {
+          mkDerivation = args:
+            withDefaultMaintainers (rawMkDerivation args);
+          inherit (self) bash coreutils grep sed;
+        });
     }
     // discoveredPackages
     // {
@@ -1655,11 +1950,131 @@
 
       qemu-crucible = mkQemuPackage {
         pname = "qemu-crucible";
+        qualification.packageProbe = lib.qualification.commandProbe {
+          "primary" = {
+            "artifacts" = [];
+            "expected" = "qemu-img reports the two images as identical.";
+            "files" = {
+              "left.raw" = "AOS raw image payload\n";
+              "right.raw" = "AOS raw image payload\n";
+            };
+            "input" = "Two raw disk-image byte streams with identical contents.";
+            "operation" = "Compare the images byte for byte through qemu-img's raw-image reader.";
+            "steps" = [
+              {
+                "argv" = [
+                  "@out@/bin/qemu-img"
+                  "compare"
+                  "-f"
+                  "raw"
+                  "-F"
+                  "raw"
+                  "left.raw"
+                  "right.raw"
+                ];
+                "exit_code" = 0;
+                "stderr" = {
+                  "exact" = "";
+                };
+                "stdout" = {
+                  "exact" = "Images are identical.\n";
+                };
+              }
+            ];
+          };
+          "badInput" = {
+            "artifacts" = [];
+            "expected" = "qemu-img identifies the content mismatch and returns its comparison status.";
+            "files" = {
+              "left.raw" = "answer=41\n";
+              "right.raw" = "answer=42\n";
+            };
+            "input" = "Two raw disk-image byte streams that differ in one value.";
+            "operation" = "Compare the mismatched images through qemu-img.";
+            "steps" = [
+              {
+                "argv" = [
+                  "@out@/bin/qemu-img"
+                  "compare"
+                  "-f"
+                  "raw"
+                  "-F"
+                  "raw"
+                  "left.raw"
+                  "right.raw"
+                ];
+                "exit_code" = 1;
+                "observes_rejection" = true;
+              }
+            ];
+          };
+        };
+
         enablePlugins = true;
         applyCruciblePatches = true;
       };
       qemu-crucible-reference = mkQemuPackage {
         pname = "qemu-crucible-reference";
+        qualification.packageProbe = lib.qualification.commandProbe {
+          "primary" = {
+            "artifacts" = [];
+            "expected" = "qemu-img reports the two images as identical.";
+            "files" = {
+              "left.raw" = "AOS raw image payload\n";
+              "right.raw" = "AOS raw image payload\n";
+            };
+            "input" = "Two raw disk-image byte streams with identical contents.";
+            "operation" = "Compare the images byte for byte through qemu-img's raw-image reader.";
+            "steps" = [
+              {
+                "argv" = [
+                  "@out@/bin/qemu-img"
+                  "compare"
+                  "-f"
+                  "raw"
+                  "-F"
+                  "raw"
+                  "left.raw"
+                  "right.raw"
+                ];
+                "exit_code" = 0;
+                "stderr" = {
+                  "exact" = "";
+                };
+                "stdout" = {
+                  "exact" = "Images are identical.\n";
+                };
+              }
+            ];
+          };
+          "badInput" = {
+            "artifacts" = [];
+            "expected" = "qemu-img identifies the content mismatch and returns its comparison status.";
+            "files" = {
+              "left.raw" = "answer=41\n";
+              "right.raw" = "answer=42\n";
+            };
+            "input" = "Two raw disk-image byte streams that differ in one value.";
+            "operation" = "Compare the mismatched images through qemu-img.";
+            "steps" = [
+              {
+                "argv" = [
+                  "@out@/bin/qemu-img"
+                  "compare"
+                  "-f"
+                  "raw"
+                  "-F"
+                  "raw"
+                  "left.raw"
+                  "right.raw"
+                ];
+                "exit_code" = 1;
+                "observes_rejection" = true;
+              }
+            ];
+          };
+        };
+
         enablePlugins = true;
         applyCruciblePatches = false;
       };
@@ -1703,190 +2118,810 @@
       darwinSdk = self.darwin-sdk;
       darwin-runtimes =
         if stdenv.hostPlatform.isDarwin
-        then withDefaultMaintainers stdenv.darwinRuntimes
-        else null;
+        then
+          withProbeOnlyPackageContract {
+            packageName = "darwin-runtimes";
+            platformSupport = darwinRuntimePlatformSupport;
+            version = stdenv.darwinRuntimes.version or "0";
+            packageProbe = lib.qualification.commandProbe {
+              "primary" = {
+                "artifacts" = [];
+                "expected" = "All three public runtime libraries resolve to Mach-O binaries.";
+                "files" = {};
+                "input" = "The installed Darwin libc++, libc++abi, and libunwind libraries.";
+                "operation" = "Resolve their dylinks and inspect the Mach-O library magic.";
+                "steps" = [
+                  {
+                    "argv" = [
+                      "@python@"
+                      "-c"
+                      "import pathlib\nroot = pathlib.Path(\"@out@\")\nmacho_magic = {bytes.fromhex(\"cffaedfe\"), bytes.fromhex(\"feedfacf\")}\nlibraries = [next(root.rglob(name)).resolve() for name in [\"libc++.dylib\", \"libc++abi.dylib\", \"libunwind.dylib\"]]\nassert all(library.read_bytes()[:4] in macho_magic for library in libraries)\nprint(\"darwin-runtimes data passed\")\n"
+                    ];
+                    "exit_code" = 0;
+                    "stderr" = {
+                      "exact" = "";
+                    };
+                    "stdout" = {
+                      "exact" = "darwin-runtimes data passed\n";
+                    };
+                  }
+                ];
+              };
+              "badInput" = {
+                "artifacts" = [];
+                "expected" = "The runtime set rejects the disabled sanitizer artifact.";
+                "files" = {};
+                "input" = "A request for the disabled AddressSanitizer Darwin runtime.";
+                "operation" = "Resolve an undeclared sanitizer dynamic library.";
+                "steps" = [
+                  {
+                    "argv" = [
+                      "@python@"
+                      "-c"
+                      "import pathlib, sys\nif pathlib.Path(\"@out@/lib/libclang_rt.asan_osx_dynamic.dylib\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"darwin-runtimes rejected invalid input\\n\")\nraise SystemExit(7)\n"
+                    ];
+                    "exit_code" = 7;
+                    "observes_rejection" = true;
+                    "stderr" = {
+                      "exact" = "darwin-runtimes rejected invalid input\n";
+                    };
+                    "stdout" = {
+                      "exact" = "";
+                    };
+                  }
+                ];
+              };
+            };
+          }
+          (withDefaultMaintainers stdenv.darwinRuntimes)
+        else {
+          pname = "darwin-runtimes";
+          platformSupport = darwinRuntimePlatformSupport;
+          unavailable = true;
+        };
       darwinRuntimes = self.darwin-runtimes;
       java-native-foundation =
         if stdenv.hostPlatform.isDarwin
         then discoveredPackages.java-native-foundation
-        else null;
+        else callPackage ./toolchain/java/java-native-foundation.nix {declarationOnly = true;};
 
       # --- stdenv packages (linked, not rebuilt) ---
       gcc =
-        (withDistributionMeta {
-            description = "GNU Compiler Collection with AOS target and runtime defaults";
-            homepage = "https://gcc.gnu.org/";
-            license = "GPL-3.0-or-later WITH GCC-exception-3.1";
-          }
-          (
-            if stdenv.hostPlatform.isDarwin
-            then darwinGcc
-            else if stdenv.isCross && stdenv.hostPlatform.isLinux
-            # Preserve the public package identity so build dependencies
-            # resolve to native GCC rather than the target-hosted wrapper.
-            then linuxHostedCc // {pname = "gcc";}
-            else stdenv.gcc
-          ))
-        // {
-          version =
-            if stdenv.hostPlatform.isDarwin
-            then darwinGcc.version
-            else "16.2.0";
-        };
-      glibc =
-        (withDistributionMeta {
-            description = "GNU C Library for the AOS target runtime";
-            homepage = "https://www.gnu.org/software/libc/";
-            license = "LGPL-2.1-or-later";
-          }
-          (
-            (
-              if stdenv.isCross && stdenv.hostPlatform.isLinux
-              then linuxHostedGlibc
-              else stdenv.glibc
-            )
-            // lib.optionalAttrs stdenv.hostPlatform.isDarwin {
-              dev = stdenv.glibc;
-              static = stdenv.glibc;
+        withProbeOnlyPackageContract {
+          packageName = "gcc";
+          platformSupport = {
+            build = [
+              {
+                abi = ["gnu"];
+                os = ["linux"];
+              }
+            ];
+            host = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            target = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            role = "public-package";
+          };
+          version = "16.2.0";
+          packageProbe = lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "The compiler succeeds and the binary prints the fixed result.";
+              "files" = {
+                "valid.c" = "#include <stdio.h>\n\nint main(void) {\n    int values[] = {19, 23};\n    return printf(\"compiler result: %d\\n\", values[0] + values[1]) < 0;\n}\n";
+              };
+              "input" = "A C program that computes and prints an integer result.";
+              "operation" = "Compile the program with gcc, then execute the generated binary.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/gcc"
+                    "valid.c"
+                    "-o"
+                    "compiled-program"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+                {
+                  "argv" = [
+                    "@work@/primary/compiled-program"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "compiler result: 42\n";
+                  };
+                }
+              ];
+            };
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "The compiler rejects the syntax error with status 1.";
+              "files" = {
+                "invalid.c" = "int main(void) { int answer = ; return answer; }\n";
+              };
+              "input" = "A C translation unit with an incomplete initializer.";
+              "operation" = "Ask gcc to compile the malformed source.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/gcc"
+                    "invalid.c"
+                    "-o"
+                    "invalid-program"
+                  ];
+                  "exit_code" = 1;
+                  "observes_rejection" = true;
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+          };
+        } (
+          (withDistributionMeta {
+              description = "GNU Compiler Collection with AOS target and runtime defaults";
+              homepage = "https://gcc.gnu.org/";
+              license = "GPL-3.0-or-later WITH GCC-exception-3.1";
             }
-          ))
-        // {version = "2.39.0";};
+            (
+              if stdenv.hostPlatform.isDarwin
+              then darwinGcc
+              else if stdenv.isCross && stdenv.hostPlatform.isLinux
+              # Preserve the public package identity so build dependencies
+              # resolve to native GCC rather than the target-hosted wrapper.
+              then linuxHostedCc // {pname = "gcc";}
+              else stdenv.gcc
+            ))
+          // {version = "16.2.0";}
+        );
+      glibc =
+        withProbeOnlyPackageContract {
+          packageName = "glibc";
+          platformSupport = {
+            build = [
+              {
+                abi = ["gnu"];
+                os = ["linux"];
+              }
+            ];
+            host = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+            ];
+            target = [];
+            role = "public-package";
+          };
+          version = "2.39.0";
+          packageProbe = lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "The AOS libc sorts the vector into the exact ascending sequence.";
+              "files" = {
+                "primary.c" = "#include <stdio.h>\n#include <stdlib.h>\n\nstatic int compare(const void *left, const void *right) {\n    int a = *(const int *)left;\n    int b = *(const int *)right;\n    return (a > b) - (a < b);\n}\n\nint main(void) {\n    int values[] = {23, 5, 42, 17};\n    qsort(values, 4, sizeof(values[0]), compare);\n    return printf(\"%d,%d,%d,%d\\n\", values[0], values[1], values[2], values[3]) < 0;\n}\n";
+              };
+              "input" = "A C program sorting a fixed integer vector with libc qsort.";
+              "operation" = "Compile it and execute it through the packaged dynamic loader and libc.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@cc@"
+                    "primary.c"
+                    "-o"
+                    "primary"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+                {
+                  "argv" = [
+                    "@python@"
+                    "-c"
+                    "import pathlib, subprocess\nloader = next(pathlib.Path(\"@out@/lib\").glob(\"ld-linux*.so*\"))\nresult = subprocess.run([str(loader), \"--library-path\", \"@out@/lib\", \"@work@/primary/primary\"], capture_output=True, text=True)\nassert result.returncode == 0 and result.stderr == \"\"\nprint(result.stdout, end=\"\")\n"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "5,17,23,42\n";
+                  };
+                }
+              ];
+            };
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "Glibc rejects the unknown conversion and sets EINVAL.";
+              "files" = {
+                "bad-input.c" = "#include <errno.h>\n#include <iconv.h>\n#include <stdio.h>\n\nint main(void) {\n    errno = 0;\n    iconv_t conversion = iconv_open(\"AOS-NOT-A-CHARSET\", \"UTF-8\");\n    if (conversion != (iconv_t)-1 || errno != EINVAL) {\n        if (conversion != (iconv_t)-1) {\n            iconv_close(conversion);\n        }\n        return 2;\n    }\n    fputs(\"glibc rejected invalid input\\n\", stderr);\n    return 7;\n}\n";
+              };
+              "input" = "A request for a character-set conversion name that does not exist.";
+              "operation" = "Call iconv_open through a program loaded by the packaged libc.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@cc@"
+                    "bad-input.c"
+                    "-o"
+                    "bad-input"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+                {
+                  "argv" = [
+                    "@python@"
+                    "-c"
+                    "import pathlib, subprocess, sys\nloader = next(pathlib.Path(\"@out@/lib\").glob(\"ld-linux*.so*\"))\nresult = subprocess.run([str(loader), \"--library-path\", \"@out@/lib\", \"@work@/bad-input/bad-input\"], capture_output=True)\nif result.returncode != 7 or result.stderr != b\"glibc rejected invalid input\\n\":\n    raise SystemExit(2)\nsys.stderr.write(\"glibc rejected invalid input\\n\")\nraise SystemExit(7)\n"
+                  ];
+                  "exit_code" = 7;
+                  "observes_rejection" = true;
+                  "stderr" = {
+                    "exact" = "glibc rejected invalid input\n";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+          };
+        } (
+          (withDistributionMeta {
+              description = "GNU C Library for the AOS target runtime";
+              homepage = "https://www.gnu.org/software/libc/";
+              license = "LGPL-2.1-or-later";
+            }
+            (
+              (
+                if stdenv.isCross && stdenv.hostPlatform.isLinux
+                then linuxHostedGlibc
+                else stdenv.glibc
+              )
+              // lib.optionalAttrs stdenv.hostPlatform.isDarwin {
+                dev = stdenv.glibc;
+                static = stdenv.glibc;
+              }
+            ))
+          // {version = "2.39.0";}
+        );
       binutils =
-        (withDistributionMeta {
-            description = "GNU binary utilities for the AOS target toolchain";
-            license = "GPL-3.0-or-later";
-          }
-          (
-            if stdenv.hostPlatform.isDarwin
-            then darwinBinutils
-            else if stdenv.isCross && stdenv.hostPlatform.isLinux
-            then linuxHostedBinutils
-            else stdenv.binutils
-          ))
-        // {version = "2.41.0";};
+        withProbeOnlyPackageContract {
+          packageName = "binutils";
+          platformSupport = {
+            build = [
+              {
+                abi = ["gnu"];
+                os = ["linux"];
+              }
+            ];
+            host = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            target = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            role = "public-package";
+          };
+          version = "2.41.0";
+          packageProbe = lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "Strings emits exactly the two qualifying runs.";
+              "files" = {
+                "sample.bin" = "alpha\nxy\nbravo\n";
+              };
+              "input" = "Data containing printable runs above and below a five-byte threshold.";
+              "operation" = "Extract printable runs of at least five bytes with GNU strings.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/strings"
+                    "--bytes=5"
+                    "@work@/primary/sample.bin"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "alpha\nbravo\n";
+                  };
+                }
+              ];
+            };
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "Strings rejects the bound with status 1.";
+              "files" = {
+                "sample.bin" = "alpha\n";
+              };
+              "input" = "A minimum string length of zero, outside the accepted positive range.";
+              "operation" = "Invoke strings with the invalid length bound.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/strings"
+                    "--bytes=0"
+                    "@work@/bad-input/sample.bin"
+                  ];
+                  "exit_code" = 1;
+                  "observes_rejection" = true;
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+          };
+        } (
+          (withDistributionMeta {
+              description = "GNU binary utilities for the AOS target toolchain";
+              license = "GPL-3.0-or-later";
+            }
+            (
+              if stdenv.hostPlatform.isDarwin
+              then darwinBinutils
+              else if stdenv.isCross && stdenv.hostPlatform.isLinux
+              then linuxHostedBinutils
+              else stdenv.binutils
+            ))
+          // {version = "2.41.0";}
+        );
       inherit darwinDtraceCompiler;
       inherit appleLibTapi;
       inherit darwinCctoolsLinker;
       cc =
-        (withDistributionMeta {
-            description = "AOS C and C++ compiler wrapper toolchain";
-            license = "GPL-3.0-or-later WITH GCC-exception-3.1";
-          }
-          (
-            if stdenv.hostPlatform.isDarwin
-            then darwinCc
-            else if stdenv.isCross && stdenv.hostPlatform.isLinux
-            then linuxHostedCc
-            else stdenv.cc
-          ))
-        // {version = "0.1.0";};
-      # The Linux toolchain's unwrapped GCC stage2. Perl's Config scrub uses
-      # this path instead of the public wrapper recorded via specs/PATH.
+        withProbeOnlyPackageContract {
+          packageName = "cc";
+          platformSupport = {
+            build = [
+              {
+                abi = ["gnu"];
+                os = ["linux"];
+              }
+            ];
+            host = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            target = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            role = "public-package";
+          };
+          version = "0.1.0";
+          packageProbe = lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "The compiler succeeds and the binary prints the fixed result.";
+              "files" = {
+                "valid.c" = "#include <stdio.h>\n\nint main(void) {\n    int values[] = {19, 23};\n    return printf(\"compiler result: %d\\n\", values[0] + values[1]) < 0;\n}\n";
+              };
+              "input" = "A C program that computes and prints an integer result.";
+              "operation" = "Compile the program with cc, then execute the generated binary.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/cc"
+                    "valid.c"
+                    "-o"
+                    "compiled-program"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+                {
+                  "argv" = [
+                    "@work@/primary/compiled-program"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "compiler result: 42\n";
+                  };
+                }
+              ];
+            };
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "The compiler rejects the syntax error with status 1.";
+              "files" = {
+                "invalid.c" = "int main(void) { int answer = ; return answer; }\n";
+              };
+              "input" = "A C translation unit with an incomplete initializer.";
+              "operation" = "Ask cc to compile the malformed source.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/cc"
+                    "invalid.c"
+                    "-o"
+                    "invalid-program"
+                  ];
+                  "exit_code" = 1;
+                  "observes_rejection" = true;
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+          };
+        } (
+          (withDistributionMeta {
+              description = "AOS C and C++ compiler wrapper toolchain";
+              license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+            }
+            (
+              if stdenv.hostPlatform.isDarwin
+              then darwinCc
+              else if stdenv.isCross && stdenv.hostPlatform.isLinux
+              then linuxHostedCc
+              else stdenv.cc
+            ))
+          // {version = "0.1.0";}
+        );
+      # The unwrapped gcc-16.2.0-stage2. `pkgs.gcc` is the wrapped
+      # gcc-16.2.0-wrapped; the perl Config scrub needs to substitute
+      # and block the unwrapped one, since that's what Configure
+      # records via specs/PATH.
       gccUnwrapped =
-        (withDistributionMeta {
-            description = "Unwrapped GNU Compiler Collection for the AOS target toolchain";
-            license = "GPL-3.0-or-later WITH GCC-exception-3.1";
-          }
-          (
-            if stdenv.hostPlatform.isDarwin
-            then darwinGcc
-            else if stdenv.isCross && stdenv.hostPlatform.isLinux
-            then linuxHostedGcc
-            else if stdenv ? gccStage2
-            then stdenv.gccStage2
-            else stdenv.gcc
-          ))
-        // {
-          version =
-            if stdenv.hostPlatform.isDarwin
-            then darwinGcc.version
-            else "16.2.0";
-        };
-      gcc-libs =
+        withProbeOnlyPackageContract {
+          packageName = "gccUnwrapped";
+          platformSupport = {
+            build = [
+              {
+                abi = ["gnu"];
+                os = ["linux"];
+              }
+            ];
+            host = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            target = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+              {
+                abi = ["darwin"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["darwin"];
+              }
+            ];
+            role = "public-package";
+          };
+          version = "16.2.0";
+          packageProbe = lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "The compiler succeeds and the binary prints the fixed result.";
+              "files" = {
+                "valid.c" = "#include <stdio.h>\n\nint main(void) {\n    int values[] = {19, 23};\n    return printf(\"compiler result: %d\\n\", values[0] + values[1]) < 0;\n}\n";
+              };
+              "input" = "A C program that computes and prints an integer result.";
+              "operation" = "Compile the program with gcc, then execute the generated binary.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/gcc"
+                    "valid.c"
+                    "-o"
+                    "compiled-program"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+                {
+                  "argv" = [
+                    "@work@/primary/compiled-program"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "compiler result: 42\n";
+                  };
+                }
+              ];
+            };
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "The compiler rejects the syntax error with status 1.";
+              "files" = {
+                "invalid.c" = "int main(void) { int answer = ; return answer; }\n";
+              };
+              "input" = "A C translation unit with an incomplete initializer.";
+              "operation" = "Ask gcc to compile the malformed source.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/gcc"
+                    "invalid.c"
+                    "-o"
+                    "invalid-program"
+                  ];
+                  "exit_code" = 1;
+                  "observes_rejection" = true;
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+          };
+        } (
+          (withDistributionMeta {
+              description = "Unwrapped GNU Compiler Collection for the AOS target toolchain";
+              license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+            }
+            (
+              if stdenv.hostPlatform.isDarwin
+              then darwinGcc
+              else if stdenv.isCross && stdenv.hostPlatform.isLinux
+              then linuxHostedGcc
+              else if stdenv ? gccStage2
+              then stdenv.gccStage2
+              else stdenv.gcc
+            ))
+          // {version = "16.2.0";}
+        );
+      gcc-libs = withContractFrom discoveredPackages.gcc-libs (
         if stdenv.hostPlatform.isDarwin
         then withDefaultMaintainers darwinGcc
         else if stdenv.isCross && stdenv.hostPlatform.isLinux
         then withDefaultMaintainers linuxTargetGccLibs
-        else discoveredPackages.gcc-libs;
+        else discoveredPackages.gcc-libs
+      );
       getent =
-        (withDistributionMeta {
-            description = "Name service database lookup utility from GNU C Library";
-            homepage = "https://www.gnu.org/software/libc/";
-            license = "LGPL-2.1-or-later";
-          }
-          (lib.getOutput "getent" stdenv.glibc))
-        // {
+        withProbeOnlyPackageContract {
+          packageName = "getent";
+          platformSupport = {
+            build = [
+              {
+                abi = ["gnu"];
+                os = ["linux"];
+              }
+            ];
+            host = [
+              {
+                abi = ["gnu"];
+                cpu = ["x86_64" "aarch64"];
+                os = ["linux"];
+              }
+            ];
+            target = [];
+            role = "public-package";
+          };
           version = "2.39.0";
-          passthru.evidenceSources = stdenv.glibc.passthru.evidenceSources;
-        };
+          packageProbe = lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "Getent returns the protocol number 6 record for TCP.";
+              "files" = {};
+              "input" = "The TCP protocol key in the files-backed protocols database.";
+              "operation" = "Resolve the key through getent with the files service selected explicitly.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@python@"
+                    "-c"
+                    "import subprocess\nresult = subprocess.run([\"@out@/bin/getent\", \"--service=files\", \"protocols\", \"tcp\"], capture_output=True, text=True)\nassert result.returncode == 0, result.stderr\nfields = result.stdout.split()\nassert fields[0] == \"tcp\" and fields[1] == \"6\"\nprint(\"getent operation passed\")\n"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "getent operation passed\n";
+                  };
+                }
+              ];
+            };
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "Getent rejects the unknown database name.";
+              "files" = {};
+              "input" = "A database name that getent does not support.";
+              "operation" = "Resolve a key through the unknown database.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@python@"
+                    "-c"
+                    "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/getent\", \"aos-unknown-database\", \"key\"], capture_output=True)\nif result.returncode == 0:\n    raise SystemExit(2)\nsys.stderr.write(\"getent rejected invalid input\\n\")\nraise SystemExit(7)\n"
+                  ];
+                  "exit_code" = 7;
+                  "observes_rejection" = true;
+                  "stderr" = {
+                    "exact" = "getent rejected invalid input\n";
+                  };
+                  "stdout" = {
+                    "exact" = "";
+                  };
+                }
+              ];
+            };
+          };
+        } (
+          (withDistributionMeta {
+              description = "Name service database lookup utility from GNU C Library";
+              homepage = "https://www.gnu.org/software/libc/";
+              license = "LGPL-2.1-or-later";
+            }
+            (lib.getOutput "getent" stdenv.glibc))
+          // {
+            version = "2.39.0";
+            passthru.evidenceSources = stdenv.glibc.passthru.evidenceSources;
+          }
+        );
       # Native package sets retain the final stdenv tools. Cross package roots
       # must be actual target builds; scheduler-native tools remain available
       # only through buildPackages and build-dependency splicing.
-      bash = withDefaultMaintainers (
+      bash = withContractFrom discoveredPackages.bash (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.bash
         else withBootstrapPublication "bash"
-      );
-      coreutils = withDefaultMaintainers (
+      ));
+      coreutils = withContractFrom discoveredPackages.coreutils (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.coreutils
         else withBootstrapPublication "coreutils"
-      );
-      gnumake = withDefaultMaintainers (
+      ));
+      gnumake = withContractFrom discoveredPackages.gnumake (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.gnumake
         else withBootstrapPublication "gnumake"
-      );
-      sed = withDefaultMaintainers (
+      ));
+      sed = withContractFrom discoveredPackages.sed (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.sed
         else withBootstrapPublication "sed"
-      );
-      grep = withDefaultMaintainers (
+      ));
+      grep = withContractFrom discoveredPackages.grep (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.grep
         else withBootstrapPublication "grep"
-      );
-      findutils = withDefaultMaintainers (
+      ));
+      findutils = withContractFrom discoveredPackages.findutils (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.findutils
         else withBootstrapPublication "findutils"
-      );
-      gawk = withDefaultMaintainers (
+      ));
+      gawk = withContractFrom discoveredPackages.gawk (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.gawk
         else withBootstrapPublication "gawk"
-      );
-      diffutils = withDefaultMaintainers (
+      ));
+      diffutils = withContractFrom discoveredPackages.diffutils (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.diffutils
         else withBootstrapPublication "diffutils"
-      );
-      tar = withDefaultMaintainers (
+      ));
+      tar = withContractFrom discoveredPackages.tar (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.tar
         else withBootstrapPublication "tar"
-      );
-      gzip = withDefaultMaintainers (
+      ));
+      gzip = withContractFrom discoveredPackages.gzip (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.gzip
         else withBootstrapPublication "gzip"
-      );
-      patch = withDefaultMaintainers (
+      ));
+      patch = withContractFrom discoveredPackages.patch (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.patch
         else withBootstrapPublication "patch"
-      );
+      ));
     }
     # --- Trivial builders, exposed flat on the package set ---
-    # The file at pkgs/build-support/trivial-builders.nix is also picked up
-    # by discoverPackages as `self.trivial-builders`; here we re-inherit the
-    # four primitives into the top level so consumers can call
-    # `pkgs.writeTextFile` / `pkgs.runCommand` etc. directly, matching the
+    # The private builder module supplies four primitives at the top level,
+    # so consumers can call `pkgs.writeTextFile` / `pkgs.runCommand`, matching the
     # nixpkgs convention that the ported systemd library expects.
     // (
       let
-        tb = self.trivial-builders;
+        tb = trivialBuilders;
       in {
         inherit
           (tb)

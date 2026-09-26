@@ -1,8 +1,8 @@
 ##! bind — Authoritative DNS server, recursive resolver, and DNS utilities
 {
+  lib,
   mkDerivation,
   fetchurl,
-  lib,
   stdenv,
   gnumake,
   perl,
@@ -31,7 +31,71 @@
   version = "9.20.27";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "bind";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "BIND accepts the zone and its serial and record relationships.";
+        "files" = {
+          "example.zone" = "$ORIGIN example.test.\n@ 3600 IN SOA ns.example.test. hostmaster.example.test. (\n  1 3600 600 86400 60\n)\n@   IN NS ns.example.test.\nns  IN A  192.0.2.53\nwww IN A  192.0.2.42\n";
+        };
+        "input" = "A complete authoritative DNS zone with SOA, NS, and address records.";
+        "operation" = "Load and validate the zone with named-checkzone.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/named-checkzone"
+              "example.test"
+              "example.zone"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "BIND rejects the invalid address with status 1.";
+        "files" = {
+          "invalid.zone" = "$ORIGIN example.test.\n@ 3600 IN SOA ns.example.test. hostmaster.example.test. (1 3600 600 86400 60)\n@  IN NS ns.example.test.\nns IN A 999.0.2.53\n";
+        };
+        "input" = "A DNS zone containing an IPv4 octet outside the valid range.";
+        "operation" = "Load the malformed zone with named-checkzone.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/named-checkzone"
+              "example.test"
+              "invalid.zone"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
     outputs = ["out" "dnsutils"];
 
@@ -66,6 +130,8 @@ in
         readline
       ];
     propagatedDeps = [];
+
+    abilities = ./_bind;
 
     phases = [
       {
@@ -186,8 +252,99 @@ in
     checks = {
       testing,
       self,
+      pkgs,
+      mkSystem,
       ...
-    }: {
+    }: let
+      evaluated = mkSystem {
+        systemName = "bind-package-check";
+        modules = [
+          ../../systems/_artifact-backend.nix
+          ../../systems/_base-packages.nix
+          ../../systems/_system-manager.nix
+          {
+            aos.kernel.packageRoot = pkgs.linux;
+            aos.services.bind = {
+              enable = true;
+              port = 5353;
+              listenIPv4 = ["127.0.0.1"];
+              listenIPv6 = [];
+            };
+          }
+        ];
+      };
+      conflictingListenerClaims = builtins.tryEval (builtins.deepSeq (
+          (mkSystem {
+            systemName = "conflicting-listener-claims";
+            modules = [
+              ../../systems/_artifact-backend.nix
+              ../../systems/_base-packages.nix
+              ../../systems/_system-manager.nix
+              {
+                aos.kernel.packageRoot = pkgs.linux;
+                aos.services.bind = {
+                  enable = true;
+                  port = 5353;
+                };
+                aos.services.dnsmasq = {
+                  enable = true;
+                  port = 5353;
+                };
+              }
+            ];
+          })
+          .config
+          .aos
+          .abilities
+          .compositionOutputs
+        )
+        true);
+      requests = evaluated.config.aos.abilities.requests;
+      configuration = requests."bind:server-configuration".parameters.source;
+      dependencies = requests."bind:named-dependencies".parameters;
+      ingress = requests."bind:dns-ingress".parameters;
+      expectedRequestOutput = localKey: output: {
+        authority = {
+          kind = "package";
+          package = self.pname;
+        };
+        inherit localKey output;
+      };
+      contractHolds =
+        self.abilities ? interfaces
+        && self.abilities ? implementations
+        && self.abilities ? requirementTemplates
+        && self.abilities ? guarantees
+        && !(self.abilities ? contract)
+        && builtins.hasAttr "listener-claim" self.abilities.requirementTemplates
+        && builtins.hasAttr "network-ingress-policy" self.abilities.requirementTemplates
+        && !conflictingListenerClaims.success
+        && builtins.all (assertion: assertion.assertion) evaluated.config.assertions
+        && configuration.kind == "interpolated-text"
+        && !(lib.hasInfix "/var/lib/" (builtins.toJSON configuration))
+        && !(lib.hasInfix "/run/" (builtins.toJSON configuration))
+        && ingress.endpoints
+        == [
+          {
+            transport = "tcp";
+            port = 5353;
+          }
+          {
+            transport = "udp";
+            port = 5353;
+          }
+        ]
+        && builtins.map
+        (reference: lib.abilities.requestOutputIdentity {inherit requests reference;})
+        dependencies.prerequisites
+        == [
+          (expectedRequestOutput "dns-ingress" "resource")
+          (expectedRequestOutput "listener-tcp-5353" "resource")
+          (expectedRequestOutput "listener-udp-5353" "resource")
+        ]
+        && dependencies.after == []
+        && dependencies.requires == [];
+    in {
       link = testing.mkLinkCheck {
         pname = "lib-bind-dns";
         library = self;
@@ -211,6 +368,14 @@ in
         tool = self.dnsutils;
         command = "dig -v && nslookup -version";
       };
+      ability-module-contract =
+        if contractHolds
+        then
+          pkgs.runCommand "bind-ability-module-contract" {} ''
+            mkdir -p "$out"
+            printf '%s\n' PASS > "$out/result"
+          ''
+        else throw "the BIND native ability contract check failed";
     };
 
     meta = {

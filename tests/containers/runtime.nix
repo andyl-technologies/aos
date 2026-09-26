@@ -1,7 +1,7 @@
 ##! tests/containers/runtime.nix -- focused Phase-2 container runtime checks.
 ##!
 ##! Exercises the production init transaction against an isolated rooted local
-##! store and validates the build-time golden-package facade without requiring
+##! store and validates the build-time selected-package facade without requiring
 ##! chroot, mounts, a container daemon, or host tools.
 {
   pkgs,
@@ -9,13 +9,10 @@
   containerImage,
   aosSystem,
   systemIdentity,
-  goldenRoots,
+  bakedRoots,
   forbiddenRuntimeRoots,
 }: let
-  oci = import ../../lib/build/oci {
-    inherit lib;
-    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
-  };
+  oci = pkgs.ociTools;
   firstPackage = pkgs.runCommand "container-runtime-first-package" {} ''
     mkdir -p "$out/bin" "$out/sbin"
     printf '#!${pkgs.bash}/bin/bash\nprintf first-only\\n\n' > "$out/bin/first-only"
@@ -44,7 +41,7 @@
     text = builtins.concatStringsSep "\n" (map builtins.toString roots) + "\n";
     destination = "/baked-roots";
   };
-  facadeLayer = import ../../lib/containers/facade-layer.nix {
+  facadeLayer = import ../../pkgs/containers/_aos-oci-backend/container/facade-layer.nix {
     inherit lib pkgs oci referenceGraph;
     packageRoots = roots;
     expectedCollisions = ["shared"];
@@ -70,7 +67,7 @@
     done
   '';
   testRoot = "/build/aos-container-runtime-root";
-  initText = import ../../lib/containers/init-script.nix {
+  initText = import ../../pkgs/containers/_aos-oci-backend/container/init-script.nix {
     inherit lib pkgs;
     rootPrefix = testRoot;
     registrationPath = "${referenceGraph}/registration";
@@ -267,11 +264,11 @@ in
           gzip -dc ${facadeLayer}/blob \
             | tar --same-permissions --no-same-owner -xf - -C facade-root
           test "$(readlink facade-root/usr/bin/shared)" = ${lib.escapeShellArg "${firstPackage}/bin/shared"} \
-            || fail "golden facade did not preserve first-wins package order"
+            || fail "baked facade did not preserve first-wins package order"
           test "$(readlink facade-root/usr/bin/second-only)" = ${lib.escapeShellArg "${secondPackage}/sbin/second-only"} \
-            || fail "golden facade omitted an sbin executable"
+            || fail "baked facade omitted an sbin executable"
           test ! -e facade-root/usr/bin/.hidden-internal \
-            || fail "golden facade exposed a hidden wrapper implementation"
+            || fail "baked facade exposed a hidden wrapper implementation"
           jq -e '
             .schema == "aos.container.facade-policy/v1"
             and .directoryOrder == ["bin", "sbin"]
@@ -287,7 +284,7 @@ in
                 shadowedSource: $shadowed
               }]
             ' ${facadeLayer}/facade.json >/dev/null \
-            || fail "golden facade collision manifest is incorrect"
+            || fail "baked facade collision manifest is incorrect"
 
           mkdir production-metadata production-facade
           gzip -dc ${productionMetadata}/blob \
@@ -320,11 +317,11 @@ in
           cmp production-metadata/usr/lib/aos-container/store-paths \
             ${productionReferenceGraph}/store-paths \
             || fail "embedded production store inventory differs from the authoritative graph"
-          printf '%s\n' ${lib.concatMapStringsSep " " lib.escapeShellArg (map builtins.toString (lib.unique (goldenRoots ++ [pkgs.aos pkgs.aos.apm pkgs.aos.apr])))} \
+          printf '%s\n' ${lib.concatMapStringsSep " " lib.escapeShellArg (map builtins.toString bakedRoots)} \
             > expected-production-baked-roots
           cmp expected-production-baked-roots \
             production-metadata/usr/lib/aos-container/baked-roots \
-            || fail "embedded baked roots differ from the production golden package list"
+            || fail "embedded baked roots differ from the selected container package list"
           test "$(readlink production-metadata/var/lib/profiles)" \
             = /nix/var/nix/gcroots/aos-profiles \
             || fail "APM profiles are not rooted inside Nix gcroots"
@@ -350,18 +347,11 @@ in
           test ! -e production-facade/usr/bin/.aos-unwrapped
           test ! -e production-facade/usr/bin/.apm-unwrapped
           test ! -e production-facade/usr/bin/.apr-unwrapped
-          test "$(readlink production-facade/usr/bin/kill)" = ${pkgs.coreutils}/bin/coreutils \
-            || fail "production facade changed the reviewed kill winner"
-          jq -e \
-            --arg winner ${lib.escapeShellArg "${pkgs.coreutils}/bin/coreutils"} \
-            --arg shadowed ${lib.escapeShellArg "${pkgs.util-linux}/bin/kill"} '
-              .expectedCollisions == ["kill"]
-              and .collisions == [{
-                name: "kill",
-                winner: $winner,
-                shadowed: $shadowed,
-                shadowedSource: $shadowed
-              }]
+          test "$(readlink production-facade/usr/bin/kill)" = ${pkgs.util-linux}/bin/kill \
+            || fail "production facade changed the reviewed kill provider"
+          jq -e '
+              .expectedCollisions == []
+              and .collisions == []
             ' ${productionFacade}/facade.json >/dev/null \
             || fail "production facade collisions differ from reviewed policy"
 

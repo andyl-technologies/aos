@@ -23,7 +23,67 @@
 in
   mkDerivation (
     {
+      platformSupport = {
+        build = [{abi = ["gnu"]; os = ["linux"];}];
+        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        target = [];
+        role = "public-package";
+      };
       pname = "gnu-efi";
+      qualification.packageProbe = lib.qualification.commandProbe {
+        "primary" = {
+          "artifacts" = [];
+          "expected" = "The headers compile and libefi plus libgnuefi are valid Unix archives.";
+          "files" = {
+            "consumer.c" = "#include <efi.h>\n\nEFI_STATUS qualification(EFI_GUID *guid) {\n    return guid == 0 ? EFI_INVALID_PARAMETER : EFI_SUCCESS;\n}\n";
+          };
+          "input" = "A C translation unit using GNU-EFI's public GUID and status types.";
+          "operation" = "Compile it against the installed architecture headers and inspect both static libraries.";
+          "steps" = [
+            {
+              "argv" = [
+                "@python@"
+                "-c"
+                "import pathlib, subprocess\ninclude = pathlib.Path(\"@out@/include/efi\")\narchitecture = next(path.parent for path in include.glob(\"*/efibind.h\"))\nresult = subprocess.run([\"@cc@\", \"-I\" + str(include), \"-I\" + str(architecture), \"-c\", \"consumer.c\", \"-o\", \"consumer.o\"], capture_output=True)\nassert result.returncode == 0, result.stderr\nassert pathlib.Path(\"@out@/lib/libefi.a\").read_bytes()[:8] == b\"!<arch>\\n\"\nassert pathlib.Path(\"@out@/lib/libgnuefi.a\").read_bytes()[:8] == b\"!<arch>\\n\"\nprint(\"gnu-efi data passed\")\n"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "gnu-efi data passed\n";
+              };
+            }
+          ];
+        };
+        "badInput" = {
+          "artifacts" = [];
+          "expected" = "The compiler rejects the unknown firmware type.";
+          "files" = {
+            "invalid.c" = "#include <efi.h>\nAOS_MISSING_EFI_TYPE value;\n";
+          };
+          "input" = "A C translation unit requesting an EFI type that does not exist.";
+          "operation" = "Compile it against the same installed headers.";
+          "steps" = [
+            {
+              "argv" = [
+                "@python@"
+                "-c"
+                "import pathlib, subprocess, sys\ninclude = pathlib.Path(\"@out@/include/efi\")\narchitecture = next(path.parent for path in include.glob(\"*/efibind.h\"))\nresult = subprocess.run([\"@cc@\", \"-I\" + str(include), \"-I\" + str(architecture), \"-c\", \"invalid.c\", \"-o\", \"invalid.o\"], capture_output=True)\nif result.returncode == 0:\n    raise SystemExit(2)\nsys.stderr.write(\"gnu-efi rejected invalid input\\n\")\nraise SystemExit(7)\n"
+              ];
+              "exit_code" = 7;
+              "observes_rejection" = true;
+              "stderr" = {
+                "exact" = "gnu-efi rejected invalid input\n";
+              };
+              "stdout" = {
+                "exact" = "";
+              };
+            }
+          ];
+        };
+      };
+
       inherit version;
 
       src = fetchurl {

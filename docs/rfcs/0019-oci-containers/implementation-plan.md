@@ -61,7 +61,7 @@ Every phase is committed separately and pushed to `dplecki/aos-containers`.
 - [x] Use AOS-built `jq` and coreutils for build-time canonical JSON and digest
   assembly, validated by shared Rust OCI types, avoiding a `pkgs.aos` cycle.
 - [x] Add an executable Nix check for the golden layer vector, independently
-  evaluated golden roots, daemonless DB initialization, and baked-root GC
+  evaluated container roots, daemonless DB initialization, and baked-root GC
   retention.
 
 ### Exit criteria
@@ -144,12 +144,14 @@ mutation capability resolve them. No second review round was used.
 
 ## Phase 2: The single `aos` image and runtime contract
 
-### Golden-image parity
+### System-package slice
 
-- [x] Define `containers/aos.nix` as the sole registered image.
-- [x] Take package roots from
-  `systems.server.config.environment.systemPackages` without copying the list.
-- [x] Assert exact package-root equality in pure evaluation.
+- [x] Define the AOS image in the selected `aos-oci-backend` package.
+- [x] Select portable package roots through
+  `systems.server.config.aos.containers.systemPackageSlice`, sharing the value
+  declared for `environment.systemPackages`.
+- [x] Assert exact parity between the selected slice, backend roots, layers,
+  and baked GC roots in pure evaluation.
 - [x] Include no kernel, initrd, system toplevel, boot image, systemd PID 1, or
   host service graph.
 - [x] Use the AOS release identity in OCI labels and `os-release`.
@@ -160,7 +162,7 @@ mutation capability resolve them. No second review round was used.
 - [x] Create `/tmp`, HOME, work, XDG, APM, profile, and Nix state directories
   with explicit modes.
 - [x] Add CA bundle aliases and TLS environment.
-- [x] Build a collision-checked PATH facade matching the golden package roots.
+- [x] Build a collision-checked PATH facade matching the selected container roots.
 - [x] Omit runtime-owned hosts, hostname, and resolver files.
 - [x] Do not declare `/nix` as a volume.
 
@@ -170,7 +172,7 @@ mutation capability resolve them. No second review round was used.
 - [x] Embed closure registration and a single-user `nix.conf`.
 - [x] Add an idempotent init executable that initializes/loads the local Nix
   database and execs argv without shell parsing.
-- [x] Reconcile atomic GC roots for every baked golden package root before APM
+- [x] Reconcile atomic GC roots for every baked container package root before APM
   can run.
 - [x] Set the explicit container runtime marker and leave `AOS_ROOT` unset.
 - [x] Make read-only-store failures actionable.

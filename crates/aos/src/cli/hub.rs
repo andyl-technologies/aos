@@ -255,6 +255,55 @@ pub enum HubCmd {
 
 #[derive(Subcommand)]
 pub enum HubDocumentationCmd {
+    /// Browse package providers and consumers across one release
+    Abilities {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        #[arg(long)]
+        registry: String,
+        #[arg(long)]
+        release: Option<String>,
+        #[arg(long)]
+        platform: Option<String>,
+    },
+    /// Report planned package ability selections from a checked effect plan
+    Report {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Canonical ability inspection bundle
+        #[arg(long)]
+        bundle: PathBuf,
+        /// Independent expected digest of the inspection bundle
+        #[arg(long)]
+        expected_digest: Option<String>,
+        /// Registry containing the authenticated package reference
+        #[arg(long)]
+        registry: String,
+        /// Release pin for the package reference
+        #[arg(long)]
+        release: Option<String>,
+        /// Package whose planned exports will be reported
+        #[arg(long)]
+        package: String,
+        /// Exact package version
+        #[arg(long)]
+        version: String,
+        /// Exact package platform
+        #[arg(long)]
+        platform: String,
+        /// Enrolled deployment reporter slot
+        #[arg(long)]
+        deployment: String,
+        /// Next strictly increasing sequence for this reporter slot
+        #[arg(long)]
+        sequence: u64,
+        /// Current enrollment resource version of this reporter slot
+        #[arg(long)]
+        reporter_resource_version: u64,
+        /// Report lifetime in seconds, at most 300
+        #[arg(long, default_value_t = 60)]
+        valid_for_seconds: u64,
+    },
     /// Search package documentation
     Search {
         #[command(flatten)]
@@ -297,7 +346,7 @@ pub enum HubDocumentationCmd {
         #[arg(long = "type")]
         option_type: Option<String>,
         #[arg(long)]
-        contributable: Option<bool>,
+        extensible: Option<bool>,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },

@@ -1,5 +1,6 @@
 ##! nmap — Network exploration and security scanner
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -17,7 +18,68 @@
   version = "7.99";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "nmap";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [
+          {
+            "path" = "received.txt";
+            "text" = "answer=42\n";
+          }
+        ];
+        "expected" = "Ncat transports the exact input through the local socket.";
+        "files" = {};
+        "input" = "The text answer=42 sent over a local Unix-domain socket.";
+        "operation" = "Listen and connect through Ncat, then capture the transferred bytes.";
+        "steps" = [
+          {
+            "argv" = [
+              "@bash@"
+              "-c"
+              "set -eu\n\"@out@/bin/ncat\" -l -U channel.sock > received.txt &\nlistener=$!\nfor attempt in 1 2 3 4 5 6 7 8 9 10; do\n  test -S channel.sock && break\n  read -r -t 0.05 ignored || true\ndone\nprintf 'answer=42\\n' | \"@out@/bin/ncat\" -U channel.sock\nwait \"$listener\"\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Ncat rejects the incompatible modes with status 2.";
+        "files" = {};
+        "input" = "A request to listen and perform zero-I/O scanning simultaneously.";
+        "operation" = "Parse the conflicting flags through Ncat.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/ncat"
+              "-l"
+              "-z"
+            ];
+            "exit_code" = 2;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "Ncat: Services designed for LISTENING can't be used with -z QUITTING.\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

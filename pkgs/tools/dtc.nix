@@ -1,5 +1,6 @@
 ##! dtc — Device Tree Compiler and flattened device tree library
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -13,7 +14,91 @@
   version = "1.8.1";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "dtc";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The compiled blob reports the exact decimal property value.";
+        "files" = {
+          "tree.dts" = "/dts-v1/;\n/ {\n  compatible = \"aos,qualification\";\n  probe {\n    answer = <42>;\n  };\n};\n";
+        };
+        "input" = "A device tree containing a 32-bit answer property.";
+        "operation" = "Compile the source tree to a blob, then read the property with fdtget.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/dtc"
+              "-I"
+              "dts"
+              "-O"
+              "dtb"
+              "-o"
+              "tree.dtb"
+              "tree.dts"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/fdtget"
+              "-t"
+              "u"
+              "tree.dtb"
+              "/probe"
+              "answer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Dtc rejects the syntax error with status 1.";
+        "files" = {
+          "invalid.dts" = "/dts-v1/;\n/ { node { value = <1>; };\n";
+        };
+        "input" = "A device tree source with an unterminated node.";
+        "operation" = "Compile the malformed device tree source.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/dtc"
+              "-I"
+              "dts"
+              "-O"
+              "dtb"
+              "-o"
+              "invalid.dtb"
+              "invalid.dts"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

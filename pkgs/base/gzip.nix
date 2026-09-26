@@ -1,4 +1,5 @@
 {
+  lib,
   mkDerivation,
   fetchurl,
   m4,
@@ -16,7 +17,76 @@
   version = "1.14";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "gzip";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The decompressed bytes exactly reproduce the original payload.";
+        "files" = {
+          "payload.txt" = "AOS qualification payload\n";
+        };
+        "input" = "A fixed text payload.";
+        "operation" = "Compress the payload, then decompress the resulting stream through gzip.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/gzip"
+              "@work@/primary/payload.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/gzip"
+              "-d"
+              "-c"
+              "@work@/primary/payload.txt.gz"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "AOS qualification payload\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The decoder rejects the malformed stream with a failure status.";
+        "files" = {
+          "invalid.gz" = "not a compressed stream\n";
+        };
+        "input" = "A regular text file that is not a gzip stream.";
+        "operation" = "Ask gzip to decompress the invalid stream.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/gzip"
+              "-d"
+              "-c"
+              "@work@/bad-input/invalid.gz"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

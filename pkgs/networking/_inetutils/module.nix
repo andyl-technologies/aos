@@ -1,0 +1,39 @@
+##! Package-owned privileged ping wrapper requests.
+{
+  config,
+  lib,
+  ...
+}: let
+  configured =
+    config.aos.abilities.environment
+    != null
+    && config.aos.profiles.development.enable;
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
+  wrapper = name:
+    serviceManagement.forProducer {
+      consumerInstance = "runtime";
+      key = "wrapper-${name}";
+      interface = serviceManagement.interfaces.privilegedExecutable;
+      methods = ["observe"];
+      parameters = {
+        inherit name;
+        source = {
+          artifact = lib.abilities.packageOutput {};
+          path = "bin/${name}";
+        };
+        owner = "root";
+        group = "root";
+        mode = "4755";
+        maximum_size_bytes = lib.abilities.types.limits.maxSafeInteger;
+      };
+    };
+  producers = [
+    (wrapper "ping")
+    (wrapper "ping6")
+  ];
+in {
+  config = serviceManagement.producerModule {
+    inherit config lib producers;
+    enabled = configured;
+  };
+}

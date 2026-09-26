@@ -47,6 +47,10 @@
     constraintsCompatible
     ;
   hardening = import ./hardening.nix;
+  packagePlatform = import ./package-platform.nix {
+    lists = import ./lists.nix;
+    platform = import ./platform.nix;
+  };
 
   unique = values:
     builtins.foldl' (
@@ -697,7 +701,6 @@
     passthru ? {},
     update ? null,
     checks ? null,
-    expose ? null,
     # ── Compiler-hardening policy ─────────────────────────────────────
     # Per-package opt-in / opt-out over the central token set. The
     # effective set is (defaultHardeningFlags ++ hardeningEnable) minus
@@ -740,8 +743,13 @@
     #   outputChecks = { out = { disallowedReferences = [ gcc ]; }; };
     # When null (default), behaves identically to historical mkDerivation.
     outputChecks ? null,
+    platformSupport ? null,
     ...
   }: let
+    normalizedPlatformSupport =
+      if platformSupport == null
+      then null
+      else packagePlatform.normalize "package '${effectivePname}' platformSupport" platformSupport;
     useStructuredAttrs = outputChecks != null;
     mergeAllowed = inherited: perOutput:
       if inherited == null
@@ -859,16 +867,34 @@
       then crossElfFixupPhase
       else fixupPhase;
 
+    # A published output must itself retain dependencies needed by consumers;
+    # builder inputs alone do not become references in the output closure.
+    propagatedDependencyMetadataPhase = {
+      name = "propagated-dependency-metadata";
+      script = ''
+        for outputName in ''${AOS_OUTPUT_NAMES:-out}; do
+          eval "outputPath=\"\''${$outputName:-}\""
+          [ -d "$outputPath" ] && [ ! -L "$outputPath" ] || continue
+          mkdir -p "$outputPath/nix-support"
+          printf '%s\n' ${builtins.concatStringsSep " " (map (dependency: escapeShellArg (builtins.toString dependency)) propagatedDeps)} \
+            > "$outputPath/nix-support/propagated-build-inputs"
+        done
+      '';
+    };
+
     allPhases =
       (
         if builtins.any (p: p.name == "fixup") finalPhases
         then finalPhases
         else finalPhases ++ [defaultFixupPhase]
       )
-      ++ [
-        scrubPhase
-        (targetPlatformMetadataPhase outputPlatform.system)
-      ];
+      ++ [scrubPhase]
+      ++ (
+        if propagatedDeps == []
+        then []
+        else [propagatedDependencyMetadataPhase]
+      )
+      ++ [(targetPlatformMetadataPhase outputPlatform.system)];
 
     builder = phasesToScript allPhases shell useStructuredAttrs;
 
@@ -914,7 +940,7 @@
       "passthru"
       "update"
       "checks"
-      "expose"
+      "platformSupport"
       "hardeningEnable"
       "hardeningDisable"
       "defaultHardeningFlags"
@@ -1153,19 +1179,26 @@
 
     # Named outputs are fresh derivation attrsets. Preserve the package-level
     # dependency and execution contract when consumers select one directly.
-    outputMetadata = {
-      inherit meta version runtimeDeps propagatedDeps;
-      pname = effectivePname;
-      platforms = derivationPlatforms;
-      constraints = {
-        build = buildPlatform.constraints;
-        execute = ourExecute;
-        target =
-          if meta ? target
-          then codeTargetPlatform.constraints
-          else null;
-      };
-    };
+    outputMetadata =
+      {
+        inherit meta;
+        inherit version runtimeDeps propagatedDeps;
+        pname = effectivePname;
+        platforms = derivationPlatforms;
+        constraints = {
+          build = buildPlatform.constraints;
+          execute = ourExecute;
+          target =
+            if meta ? target
+            then codeTargetPlatform.constraints
+            else null;
+        };
+      }
+      // (
+        if normalizedPlatformSupport == null
+        then {}
+        else {platformSupport = normalizedPlatformSupport;}
+      );
     annotatedOutputs = builtins.listToAttrs (
       builtins.map (output: {
         name = output;
@@ -1197,11 +1230,6 @@
             platforms = derivationPlatforms;
           }
           // (
-            if expose != null
-            then {inherit expose;}
-            else {}
-          )
-          // (
             if update != null
             then {
               aos = (passthru.aos or {}) // {maintenance = update;};
@@ -1209,11 +1237,6 @@
             else {}
           );
       }
-      // (
-        if expose != null
-        then {inherit expose;}
-        else {}
-      )
       // (
         if checks != null
         then {inherit checks;}

@@ -8,6 +8,12 @@
   revision = "e5927fecf8a6ce89e1a4eac5b828e7d42676452a";
   mkLlvm = callPackage ../../toolchain/llvm/_llvm.nix {};
   compiler = mkLlvm {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "build-input";
+    };
     version = "23.0.0";
     srcHash = "sha256-KgZxjdv6wRj+Fxwyvm3Lj+U/+CprwkH5JMclPr1HcaM=";
     projects = ["clang" "lld"];

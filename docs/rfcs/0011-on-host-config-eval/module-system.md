@@ -73,11 +73,11 @@ The options a module **declares** are its `provides`. They are extracted by an
 **options-only evaluation** that does not force `config`: `options.path.{type,
 default, isDefined, definitions}` do not force the merge; only `.value` does
 (`lib/modules.nix:924-930`, real precedent at `lib/testing/eval.nix:20`). At
-publish, each package's `config` module is options-evaluated in isolation
-(base lib injected) to derive its declared option paths, retained as
-**per-package metadata** (`ConfigModuleMeta.declares`, looked up by name from
-`registry.toml`). It is **not** aggregated into any cross-package registry-wide
-structure. This is mechanical and trustworthy — computed, not claimed.
+each selected package contributes its authenticated module through
+`PackageDocument.package_module`. The complete selected-package fixed point
+projects `option_declarations` from those modules; no second package metadata
+record or registry-wide index restates that surface. This is mechanical and
+trustworthy — computed, not claimed.
 
 ### Requires — discovered, never hand-declared
 
@@ -240,12 +240,12 @@ configuration:
 > conscripting the service stays blocked. The bullets below specify that model.
 
 - **A package may write/enable only within roots it owns, or within the
-  owner-declared *contributable sub-paths* of a shared root.** A write outside
+  owner-declared *extensible sub-paths* of a shared root.** A write outside
   those (a foreign root, or an owner-only sub-path like `enable`) is rejected at
   **resolve time**, detected from the **resolver-assigned provenance**
   (authenticated package identity, *not* module `_file` — see precedence above)
-  checked against the installed owner's contributable surface in `SystemRoots`
-  (`RootContribution.paths ⊆ RootOwner.contributable`). Publish-side lints may
+  checked against the installed owner's extensible surface in `SystemRoots`
+  (`RootContribution.paths ⊆ RootOwner.extensible`). Publish-side lints may
   still check a package's *own* metadata, but the foreign-write/conscription
   check is per-system and no longer runs against a global index.
 - **Foreign top-level service enable is forbidden.** `redis-exporter` cannot set

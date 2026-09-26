@@ -7,30 +7,25 @@ use crate::provenance::sign_statement_dsse_jsonl;
 use crate::registry::keys::{KeysToml, RevokedKey, RosterKey};
 use crate::registry::store::{DepEdge, NarBytes, Realisation};
 use crate::registry::{keys, store};
-use crate::registry_ops::config_modules::DerivedOptionDeclaration;
+use crate::registry_ops::attestation::package_nar_root_digest;
 use crate::registry_ops::git::git;
 use crate::registry_ops::images::files::{
     open_stable_regular_file_with_links, sha256_open_file, verify_stable_regular_file,
 };
-use crate::registry_ops::images::{PublishedImage, inspect_published_image_with};
-use crate::registry_ops::mac::{
-    PublishExposeManifest, compile_publish_selinux_profile, expected_publish_selinux_profile,
-    publish_selinux_identifier_for_label,
-};
+use crate::registry_ops::images::{PublishedImage, inspect_published_image};
 use crate::registry_ops::provenance::{
-    LocalPackageProvenanceSigner, PublishProvenanceArtifact, publish_provenance_artifact,
+    LocalPackageProvenanceSigner, PublishProvenanceArtifact, publish_provenance_ref,
+    publish_provenance_statement,
 };
 use crate::registry_ops::release::ReleaseTreeOptions;
 use crate::registry_ops::store_paths::{RELEASE_POLICY_RELATIVE_PATH, StorePathInfo, extract_hash};
-use crate::registry_ops::uki::SbFacts;
 use crate::testutil;
 use crate::types::{
-    ApmSettings, ConfigModuleMeta, ConfigOutputMeta, ExposeMeta, ModuleAbiCompat, OwnedRoot,
-    PermissionsMeta, ProfileScope, RegistryConfig, RegistryUploadAuthConfig, SigningKeySource,
+    ApmSettings, AttestationMeta, ProfileScope, RegistryConfig, RegistryUploadAuthConfig,
+    SigningKeySource,
 };
 use anyhow::{Context, Result};
 use aos_cache::AuthOptions;
-use aos_doc_model::{OptionType, Visibility};
 use aos_oci_types::{
     Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
     CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerEvidenceMappingQualification,
@@ -40,31 +35,11 @@ use aos_oci_types::{
     NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest,
 };
 use serde_json::Value;
-use std::collections::BTreeMap;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
-
-pub(in crate::registry_ops) fn documentation_declaration(
-    path: &str,
-    visibility: Visibility,
-) -> DerivedOptionDeclaration {
-    DerivedOptionDeclaration {
-        path: path.split('.').map(str::to_string).collect(),
-        path_str: path.to_string(),
-        type_sig: "boolean".to_string(),
-        option_type: OptionType::Bool,
-        description: "Fixture option.".to_string(),
-        default: None,
-        example: None,
-        visibility,
-        read_only: false,
-        contributable: false,
-        owner: "nginx".to_string(),
-    }
-}
 
 pub(in crate::registry_ops) fn write_direct_image_output(
     container: &Path,
@@ -72,9 +47,7 @@ pub(in crate::registry_ops) fn write_direct_image_output(
     targets: serde_json::Value,
 ) -> StorePathInfo {
     let root = container.join("00000000000000000000000000000000-image-output");
-    let uki_root = container.join("uki-output");
     fs::create_dir_all(&root).unwrap();
-    fs::create_dir_all(&uki_root).unwrap();
     let extension = if format == "raw" { "img.zst" } else { format };
     let filename = format!("aos-test.{extension}");
     let image_path = root.join(&filename);
@@ -86,7 +59,6 @@ pub(in crate::registry_ops) fn write_direct_image_output(
         .unwrap()
         .set_len(36 * 1024 * 1024)
         .unwrap();
-    let logical_size = fs::metadata(&logical_path).unwrap().len();
     let (mut logical_file, logical_identity) =
         open_stable_regular_file_with_links(&logical_path, false).unwrap();
     let logical_sha256 = sha256_open_file(&mut logical_file, &logical_path).unwrap();
@@ -102,13 +74,6 @@ pub(in crate::registry_ops) fn write_direct_image_output(
         open_stable_regular_file_with_links(&image_path, false).unwrap();
     let sha256 = sha256_open_file(&mut image_file, &image_path).unwrap();
     verify_stable_regular_file(&image_path, &image_file, &image_identity).unwrap();
-    let uki_filename = "aos-test.efi";
-    let uki_path = uki_root.join(uki_filename);
-    fs::write(&uki_path, b"unsigned fake UKI bytes").unwrap();
-    let (mut uki_file, uki_identity) =
-        open_stable_regular_file_with_links(&uki_path, false).unwrap();
-    let uki_sha256 = sha256_open_file(&mut uki_file, &uki_path).unwrap();
-    verify_stable_regular_file(&uki_path, &uki_file, &uki_identity).unwrap();
     let media_type = match format {
         "raw" => "application/vnd.aos.disk-image.raw+zstd",
         "qcow2" => "application/vnd.aos.disk-image.qcow2",
@@ -127,47 +92,12 @@ pub(in crate::registry_ops) fn write_direct_image_output(
         "mediaType": media_type,
         "compression": if format == "raw" { "zstd" } else { "none" },
         "byteSize": fs::metadata(&image_path).unwrap().len(),
-        "virtualSizeBytes": logical_size,
         "sha256": &sha256,
         "logicalDiskSha256": &logical_sha256,
-        "rootfsSha256": "2".repeat(64),
-        "artifactBudgetsMiB": {
-            "root": 1,
-            "verity": 1,
-            "initrd": 1,
-            "uki": 1,
-            "esp": 34,
-            "runtimeClosure": 1,
-            "download": 64,
-        },
         "compatibleTargets": targets,
-        "partitionTable": "gpt",
-        "kernelParams": "",
-        "partitions": [{
-            "number": 1,
-            "label": "ESP",
-            "type": "esp",
-            "filesystem": "vfat",
-            "sizeMiB": 34,
-            "offsetBytes": 0,
-            "sizeBytes": 34 * 1024 * 1024,
-        }, {
-            "number": 2,
-            "label": "root-a",
-            "type": "root",
-            "filesystem": "fake",
-            "sizeMiB": 1,
-            "offsetBytes": 34 * 1024 * 1024,
-            "sizeBytes": 1024 * 1024,
-        }],
-        "esp": {"uki": "EFI/Linux/aos-test.efi", "sdBoot": "EFI/systemd/systemd-bootx64.efi"},
-        "uki": {
-            "filename": uki_filename,
-            "espPath": "EFI/Linux/aos-test.efi",
-            "byteSize": uki_identity.len,
-            "sha256": uki_sha256,
-            "signed": false,
-            "measured": false,
+        "providerContract": {
+            "schema": "aos.test-boot-artifacts/v1",
+            "opaqueEvidence": {"provider-owned": true},
         },
     });
     fs::write(
@@ -215,22 +145,15 @@ pub(in crate::registry_ops) fn inspect_test_image(
     platform: &str,
 ) -> Result<PublishedImage> {
     let (disk_store, info_store) = write_test_image_projections(&payload)?;
-    let payload_path = Path::new(&payload.path);
-    let uki_path = payload_path
-        .parent()
-        .unwrap()
-        .join("uki-output/aos-test.efi");
-    inspect_published_image_with(
+    inspect_published_image(
         format,
         payload,
         disk_store,
         info_store,
-        &uki_path,
+        "aos.test-boot-artifacts/v1",
         "test",
         release,
         platform,
-        None,
-        |_uki, _db_cert| Ok(SbFacts::default()),
     )
 }
 
@@ -246,46 +169,6 @@ pub(in crate::registry_ops) fn rewrite_test_image_parent(
     info["architecture"] = serde_json::json!(platform.split('-').next().unwrap_or_default());
     fs::write(path, serde_json::to_vec(&info).unwrap()).unwrap();
 }
-
-pub(in crate::registry_ops) fn config_module_fixture() -> ConfigModuleMeta {
-    ConfigModuleMeta {
-        config_output: ConfigOutputMeta {
-            store_path: "/nix/store/0000000000000000000000000000000a-firewall-config".to_string(),
-            nar_hash: "sha256:cc".to_string(),
-            nar_size: 2048,
-            references: vec![],
-        },
-        evaluation_base_lib: None,
-        dependency_outputs: BTreeMap::new(),
-        module_abi_compat: ModuleAbiCompat { min: 1, max: 2 },
-        declares: vec!["firewall.allowedTCPPorts".to_string()],
-        declaration_schema: vec![],
-        requires: vec![],
-        owns_roots: vec![OwnedRoot {
-            root: "firewall".to_string(),
-            interface_abi: 1,
-            contributable: vec!["allowedTCPPorts".to_string()],
-        }],
-        contributes: vec![],
-        artifacts: Default::default(),
-        provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
-    }
-}
-
-pub(in crate::registry_ops) fn config_module_fixture_with_base() -> ConfigModuleMeta {
-    let mut module = config_module_fixture();
-    module.config_output.nar_hash =
-        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
-    module.evaluation_base_lib = Some(ConfigOutputMeta {
-        store_path: "/nix/store/0000000000000000000000000000000c-base-lib".to_string(),
-        nar_hash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-            .to_string(),
-        nar_size: 1,
-        references: vec![],
-    });
-    module
-}
-
 pub(in crate::registry_ops) fn test_release_options(tmp: &TempDir) -> ReleaseTreeOptions {
     ReleaseTreeOptions {
         version: semver::Version::parse("1.0.0").unwrap(),
@@ -386,6 +269,7 @@ pub(in crate::registry_ops) fn container_release_inputs(
         },
         qualification: qualification.clone(),
         evidence: ContainerReleaseEvidence {
+            abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
             sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
             source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
             license: evidence_descriptor(MediaType::AosLicenseReport, "license"),
@@ -399,6 +283,7 @@ pub(in crate::registry_ops) fn container_release_inputs(
         oci: release.oci.clone(),
         nix: release.nix.clone(),
         evidence: ContainerSignatureInputEvidence {
+            abilities: release.evidence.abilities.clone(),
             sbom: release.evidence.sbom.clone(),
             source: release.evidence.source.clone(),
             license: release.evidence.license.clone(),
@@ -432,100 +317,6 @@ pub(in crate::registry_ops) fn write_internal_release_policy(path: &Path, identi
     )
     .unwrap();
 }
-
-pub(in crate::registry_ops) fn write_publish_selinux_artifacts(root: &Path, label: &str) {
-    let module_name = publish_selinux_identifier_for_label(label);
-    let source_text = expected_publish_selinux_profile(label);
-    let compiled = compile_publish_selinux_profile(&source_text, &module_name).unwrap();
-    let profile_path = root.join(format!("mac/selinux/{module_name}.pp"));
-    fs::create_dir_all(profile_path.parent().unwrap()).unwrap();
-    fs::write(&profile_path, compiled.profile).unwrap();
-    fs::write(
-        root.join(format!("mac/selinux/{module_name}.mod")),
-        compiled.module,
-    )
-    .unwrap();
-    fs::write(
-        root.join(format!("mac/selinux/{module_name}.te")),
-        source_text,
-    )
-    .unwrap();
-}
-
-pub(in crate::registry_ops) fn verity_expose_manifest(root_hash: &str) -> PublishExposeManifest {
-    PublishExposeManifest {
-        expose: ExposeMeta {
-            target: "aos-pkg-webapp.target".into(),
-            units: vec!["webapp.service".into()],
-            images: vec![crate::types::SysrootImageEntry {
-                format: "ext4-verity".into(),
-                store_path: "/nix/store/imagehash111-webapp-root".into(),
-                nar_hash: "sha256:image".into(),
-                nar_size: 4096,
-                delivery: crate::types::test_image_delivery("raw"),
-                sb_signer_cert_sha256: None,
-                sbat: Vec::new(),
-                expected_pcr11: None,
-                ukis: Vec::new(),
-                recovery_ukis: Vec::new(),
-                recovery_bundle: None,
-                root_image: Some("root.img".into()),
-                root_verity: Some("root.verity".into()),
-                root_hash: Some(root_hash.into()),
-                root_hash_sig: Some("root.roothash.p7s".into()),
-            }],
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        },
-        permissions: PermissionsMeta::default(),
-        mac: None,
-        _kernel: None,
-        _firewall: None,
-        _confinement: None,
-    }
-}
-
-pub(in crate::registry_ops) fn synthetic_pe_section(
-    name: &[u8],
-    virtual_size: u32,
-    raw: &[u8],
-) -> Vec<u8> {
-    assert!(name.len() <= 8);
-    let pe_offset = 0x40_usize;
-    let optional_size = 112_usize;
-    let section_table = pe_offset + 4 + 20 + optional_size;
-    let raw_offset = section_table + 40;
-    let mut pe = vec![0_u8; raw_offset + raw.len()];
-    pe[0..2].copy_from_slice(b"MZ");
-    pe[0x3c..0x40].copy_from_slice(&(pe_offset as u32).to_le_bytes());
-    pe[pe_offset..pe_offset + 4].copy_from_slice(&0x0000_4550_u32.to_le_bytes());
-    let coff = pe_offset + 4;
-    pe[coff + 2..coff + 4].copy_from_slice(&1_u16.to_le_bytes());
-    pe[coff + 16..coff + 18].copy_from_slice(&(optional_size as u16).to_le_bytes());
-    pe[coff + 20..coff + 22].copy_from_slice(&0x020b_u16.to_le_bytes());
-    pe[section_table..section_table + name.len()].copy_from_slice(name);
-    pe[section_table + 8..section_table + 12].copy_from_slice(&virtual_size.to_le_bytes());
-    pe[section_table + 16..section_table + 20].copy_from_slice(&(raw.len() as u32).to_le_bytes());
-    pe[section_table + 20..section_table + 24].copy_from_slice(&(raw_offset as u32).to_le_bytes());
-    pe[raw_offset..].copy_from_slice(raw);
-    pe
-}
-
-/// Wrap a DER value in a SEQUENCE/SET/context tag with a short length.
-pub(in crate::registry_ops) fn der_wrap(tag: u8, value: &[u8]) -> Vec<u8> {
-    assert!(value.len() < 0x80, "test helper only handles short form");
-    let mut out = vec![tag, value.len() as u8];
-    out.extend_from_slice(value);
-    out
-}
-
-pub(in crate::registry_ops) const SBCERT_A: &str =
-    "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
-
-pub(in crate::registry_ops) const SBCERT_B: &str =
-    "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752";
 
 pub(in crate::registry_ops) struct TestSigningFixture {
     pub(in crate::registry_ops) trusted_key: String,
@@ -595,6 +386,7 @@ pub(in crate::registry_ops) fn test_provenance_signer() -> TestProvenanceSigner 
         signer: LocalPackageProvenanceSigner {
             key_id: TEST_PROVENANCE_KEY_ID.to_string(),
             key_path: key.private_key.clone(),
+            trusted_key: key.trusted_key.clone(),
         },
         trusted_key: key.trusted_key,
         _tmp: tmp,
@@ -608,6 +400,7 @@ pub(in crate::registry_ops) fn signed_provenance_statement(
         key_id: TEST_PROVENANCE_KEY_ID.to_string(),
         key: test_provenance_signer().trusted_key,
         retired_before_sequence: None,
+        package_contract_retired_before_sequence: None,
     }];
     let (statement, key_id) =
         crate::provenance::verify_statement_dsse_jsonl(&artifact.jsonl, &trusted).unwrap();
@@ -642,6 +435,7 @@ pub(in crate::registry_ops) fn write_test_roster(
                 id: (*id).to_string(),
                 key: None,
                 provenance_before_sequence: None,
+                package_contract_before_sequence: None,
                 reason: Some("test".into()),
             })
             .collect(),
@@ -707,23 +501,44 @@ pub(in crate::registry_ops) fn sample_transparency_provenance()
         references: vec![],
         closure_size: 4096,
     };
-    let root_hash = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-    let manifest = verity_expose_manifest(root_hash);
-    let manifest_digest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    let root_digest = package_nar_root_digest(&info.nar_hash);
+    let binding_digest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    let measurement = crate::package_attestation::package_measurement_digest(
+        "webapp",
+        "1.0.0",
+        &root_digest,
+        binding_digest,
+    );
+    let provenance = publish_provenance_ref("webapp", "x86_64-linux", &measurement).unwrap();
+    let attestation = AttestationMeta {
+        root_digest: Some(root_digest),
+        provenance: Some(provenance.clone()),
+        measurement: Some(measurement),
+        ..AttestationMeta::default()
+    };
     let signer = test_provenance_signer();
-    let artifact = publish_provenance_artifact(
+    let statement = publish_provenance_statement(
         TEST_PROVENANCE_REGISTRY,
         "webapp",
         "1.0.0",
         "x86_64-linux",
         &info,
         Some(&source),
-        &manifest,
-        manifest_digest,
-        &signer.signer,
+        binding_digest,
+        &attestation,
+        &signer.signer.key_id,
     )
-    .unwrap()
     .unwrap();
+    let artifact = PublishProvenanceArtifact {
+        path: provenance,
+        jsonl: sign_statement_dsse_jsonl(
+            &statement,
+            TEST_PROVENANCE_KEY_ID,
+            signer.signer.key_path.as_path(),
+        )
+        .unwrap(),
+        attestation,
+    };
     (info, source, artifact)
 }
 
@@ -789,8 +604,6 @@ pub(in crate::registry_ops) fn write_sample_package_toml(
     let path = root.join("packages").join("w").join("webapp.toml");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let root_digest = artifact.attestation.root_digest.as_deref().unwrap();
-    let root_hash = artifact.attestation.root_hash.as_deref().unwrap();
-    let root_hash_sig = artifact.attestation.root_hash_sig.as_deref().unwrap();
     let provenance = artifact.attestation.provenance.as_deref().unwrap();
     let measurement = measurement_override
         .or(artifact.attestation.measurement.as_deref())
@@ -811,16 +624,12 @@ pub(in crate::registry_ops) fn write_sample_package_toml(
              source_drv = \"{}\"\n\
              source_nar_hash = \"{}\"\n\
              root_digest = \"{}\"\n\
-             root_hash = \"{}\"\n\
-             root_hash_sig = \"{}\"\n\
              provenance = \"{}\"\n\
              measurement = \"{}\"\n",
             info.path,
             source.path,
             source.nar_hash,
             root_digest,
-            root_hash,
-            root_hash_sig,
             provenance,
             measurement
         ),

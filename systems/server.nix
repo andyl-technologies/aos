@@ -10,7 +10,16 @@
   pkgs,
   ...
 }: {
+  imports = [
+    ./_artifact-backend.nix
+    ./_base-packages.nix
+    ./_image-builder.nix
+    ./_kernel.nix
+    ./_system-manager.nix
+  ];
+
   # Image capability: immutable root with writable state provisioned on /var.
+  aos.image.enable = true;
   aos.filesystems.zfs.enable = lib.mkDefault false;
   aos.filesystems.rootFsType = lib.mkDefault "erofs";
   aos.filesystems.rootReadOnly = lib.mkDefault true;
@@ -18,15 +27,15 @@
   # root is authenticated by the roothash carried in the signed/measured UKI.
   # Specialized writable-root test variants may override this mkDefault.
   aos.security.verity.enable = lib.mkDefault true;
+  aos.boot.initrd.abilityHandoff.enable = lib.mkDefault true;
   aos.image.budgets = {
     maxRootMiB = 640;
     maxVerityMiB = 16;
     maxInitrdMiB = 132;
+    maxBootExecutableMiB = 160;
+    maxFirmwarePartitionMiB = 384;
+    maxRuntimeClosureMiB = 768;
     maxDownloadMiB = 768;
-    # VHD block allocation adds a small fixed overhead above 800 MiB on AArch64.
-    maxConvertedDownloadMiB =
-      lib.mkIf
-      (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64") (lib.mkDefault 801);
   };
 
   # The service modules retain backwards-compatible enabled defaults. Keep

@@ -57,11 +57,34 @@ in
             (.subtract | map(.path) | length) == (.subtract | map(.path) | unique | length)
           ' "$NIX_ATTRS_JSON_FILE" >/dev/null
 
-          # Preserve Nix's graph order for the registration stream.  This is the
-          # exact algorithm historically used by closure-info.nix.
-          jq '
-            (.subtract | map(.path) | unique) as $subtracted
-            | [.roots[] | select(.path as $path | ($subtracted | index($path) | not))]
+          # The exported graph can include build inputs that are not reachable
+          # from the requested output roots. Follow exact runtime references
+          # before writing registration records or a filesystem inventory.
+          jq \
+            --argjson requestedRoots ${lib.escapeShellArg (builtins.toJSON roots)} \
+            --argjson requestedSubtractRoots ${lib.escapeShellArg (builtins.toJSON subtract)} '
+            def reachable($by_path; $pending; $seen):
+              if ($pending | length) == 0 then
+                $seen
+              else
+                ($pending[-1]) as $path
+                | if $seen[$path] then
+                    reachable($by_path; $pending[:-1]; $seen)
+                  else
+                    ($by_path[$path] // error("reference graph is missing " + $path)) as $entry
+                    | reachable(
+                        $by_path;
+                        ($pending[:-1] + $entry.references);
+                        ($seen + {($path): true})
+                      )
+                  end
+              end;
+
+            (.roots | INDEX(.path)) as $root_index
+            | (.subtract | INDEX(.path)) as $subtract_index
+            | reachable($root_index; $requestedRoots; {}) as $selected
+            | reachable($subtract_index; $requestedSubtractRoots; {}) as $subtracted
+            | [.roots[] | select($selected[.path] and ($subtracted[.path] | not))]
           ' "$NIX_ATTRS_JSON_FILE" > selected-order.json
 
           selected_count=$(jq 'length' selected-order.json)

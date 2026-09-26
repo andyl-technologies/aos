@@ -9,24 +9,23 @@
 ##!      as a newer sysroot target for `apm upgrade --system`.
 ##!   2. one new environment.etc symlink-mode entry → lands in the EROFS
 ##!      metadata image, proving the /etc overlay swap landed.
-##!   3. upgraded HTTP fixture: bumped aos.firewall.allowedTCP, added
-##!      a kernel.sysctl entry, added one new oneshot systemd.services
-##!      entry, and removed one gen-1 oneshot unit. Exercises:
-##!      - firewall ruleset regeneration → nftables.service reloads
-##!        (its X-Reload-Triggers covers /etc/nftables.conf).
-##!      - sysctl regeneration → systemd-sysctl.service restarts
-##!        (its X-Reload-Triggers covers /etc/sysctl.d).
-##!      - a newly-added unit gets installed and started.
-##!      - a removed unit is stopped before the old unit file disappears.
-##!   4. perturbed dbus.service (a serviceConfig limit) → its unit text
-##!      changes, so the reconciler must act on the system message bus. Since
-##!      dbus.service is reloadIfChanged, this exercises reload-not-restart:
+##!   3. upgraded package-owned transition fixture: its typed ingress policy
+##!      adds port 8443, its typed kernel-tunable request changes keepalive,
+##!      and its service declaration replaces the gen-1 removal sentinel with
+##!      a gen-2 marker. Exercises provider reconciliation for each resource:
+##!      - the aggregate network ruleset gains the requested endpoint.
+##!      - the kernel-tunable provider applies the requested value.
+##!      - the new service starts and the removed service stops before its
+##!        provider realization disappears.
+##!   4. perturbed D-Bus package service (an open-file limit) → its native
+##!      service resource changes, so the reconciler must act on the system
+##!      message bus. Its configuration-change policy exercises reload:
 ##!      the bus the reconciler is driven over must NOT be torn down. Guards
 ##!      the dbus-self-restart hang.
 ##!
-##! No kernel change. No bootloader change. Pure /etc + systemd
-##! reconciliation surface, which is exactly what this fixture exists
-##! to cover. Auto-registers as `systems.server-2`.
+##! No kernel change. No bootloader change. The fixture isolates the live
+##! resource transition performed by `apm upgrade --system`. Auto-registers
+##! as `systems.server-2`.
 {
   lib,
   pkgs,
@@ -72,12 +71,12 @@
     text = "marker = 1\n";
   };
 
-  # Perturb dbus.service so its effective fingerprint differs between gen-1
-  # and gen-2, forcing the reconciler to act on the system message bus. This
-  # is the regression surface for the "restart dbus over its own bus" hang:
-  # because dbus.service is reloadIfChanged (modules/services/dbus.nix), the
-  # diff must schedule a *reload* (preserving the daemon's PID and the live
-  # bus), never a restart. The fleet test asserts exactly that. The added
-  # limit is innocuous; only the resulting unit-text change matters.
-  systemd.services.dbus.serviceConfig.LimitNOFILE = "16384";
+  # Perturb the package-owned D-Bus service resource so its effective
+  # fingerprint differs between gen-1 and gen-2, forcing the reconciler to act
+  # on the system message bus. This is the regression surface for the "restart
+  # dbus over its own bus" hang: the D-Bus declaration requests reload on
+  # configuration changes, preserving the daemon's PID and the live bus. The
+  # fleet test asserts exactly that. The added limit is innocuous; only the
+  # resulting resource change matters.
+  aos.services.dbus.openFileLimit = 16384;
 }

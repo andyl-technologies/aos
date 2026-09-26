@@ -36,6 +36,7 @@ let
   lib = import ./lib {
     inherit system;
     bash = null;
+    abilityInterfaceDirectory = ./modules/abilities/_interfaces;
   };
 
   freeze = import ./lib/build/freeze-pkgs.nix {inherit lib;};
@@ -59,8 +60,12 @@ let
   # host changes to values that base modules project into aggregate files,
   # users, units, presets, and closure pins.
   imageManifest =
-    builtins.fromJSON
-    (builtins.unsafeDiscardStringContext (builtins.readFile ./image-manifest.json));
+    if builtins.pathExists ./image-manifest.json
+    then
+      builtins.fromJSON
+      (freeze.decodeEmbeddedStorePaths
+        (builtins.unsafeDiscardStringContext (builtins.readFile ./image-manifest.json)))
+    else throw "image manifest is unavailable in the initrd-only evaluation view";
   mergeImageManifestImpl = import ./lib/build/merge-image-manifest.nix {inherit lib;};
 
   # The bundled base module set + the image's system-variant modules. These are
@@ -68,8 +73,60 @@ let
   # packages, which arrive at stage-2 as authenticated `packageModules`).
   baseModules = import ./modules;
   systemModules = import ./system-modules.nix;
-in {
+  hostPackageModules =
+    freeze.decodeStorePaths
+    (builtins.fromJSON
+      (builtins.unsafeDiscardStringContext (builtins.readFile ./host-package-modules.json)));
+  frozenHostEvaluationInputs =
+    builtins.fromJSON
+    (builtins.unsafeDiscardStringContext (builtins.readFile ./host-evaluation-inputs.json));
+  initrdPackageModules =
+    freeze.decodeStorePaths
+    (builtins.fromJSON
+      (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-package-modules.json)));
+  initrdProviderModules =
+    freeze.decodeStorePaths
+    (builtins.fromJSON
+      (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-provider-modules.json)));
+  frozenInitrdEvaluationInputs =
+    builtins.fromJSON
+    (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-evaluation-inputs.json));
+  storeViewLib = import ./lib/build/store-view.nix {inherit lib;};
+
+  baseLibraryModule = {
+    aos.config.frozenArtifacts = frozenArtifacts;
+    aos.config.evaluationMode = "activation";
+    # The frozen image manifest carries this output's canonical identity.
+    # Importing the source through a rooted store may give ./. a physical
+    # read path or a fresh fetchTree name, neither of which is that identity.
+    # The initrd-only view predates the image manifest and does not emit one.
+    aos.config.evalAtBoot.baseLib =
+      if builtins.pathExists ./image-manifest.json
+      then imageManifest.inputs.base_lib.store_path
+      else builtins.unsafeDiscardStringContext (builtins.toString ./.);
+    aos.config.evalAtBoot.baseLibAbiHash = "@abiHash@";
+  };
+
+  # Replay the image constructor's package/stage selection pass. Stage
+  # contributions are ordinary module values and may close over current
+  # operator, runtime, fact, and package configuration. Derive them again from
+  # those authoritative inputs instead of serializing a second representation
+  # into the base library.
+  evalConfigurationSelection = {
+    operatorModules ? [],
+    runtimeModules ? [],
+    packageModules ? [],
+    packageImportRoots ? {},
+    factsModules ? [],
+  }:
+    lib.evalModules {
+      modules = baseModules ++ systemModules ++ factsModules ++ [baseLibraryModule];
+      pkgs = frozenPkgs;
+      inherit lib operatorModules runtimeModules packageModules packageImportRoots;
+    };
+in rec {
   inherit lib imageManifest;
+  inherit (storeViewLib) readPathFor;
 
   ## Merge an evaluated runtime candidate with the immutable image baseline.
   mergeImageManifest = {
@@ -77,47 +134,6 @@ in {
     candidate,
   }:
     mergeImageManifestImpl {inherit imageManifest baseline candidate;};
-
-  ## Evaluate the closed one-time provisioning projection.
-  ##
-  ## This entrypoint is used in the initrd before package configuration modules
-  ## or registry access exist. Only the provisioning schema module is declared,
-  ## so unrelated `host.nix` definitions are dropped by the intentionally
-  ## non-strict AOS module engine and are never forced.
-  evalProvisioningConfig = {operatorModules ? []}: let
-    evaluated = lib.evalModules {
-      # This closed projection has no package modules to arbitrate. Append the
-      # operator module at the normal tier so attrsOf/submodule values merge
-      # per key and field; the full evaluator retains the reserved priority-75
-      # operator tier needed to beat package contributions.
-      modules = [./modules/base/provisioning.nix] ++ operatorModules;
-      pkgs = frozenPkgs;
-      inherit lib;
-    };
-    partitions =
-      builtins.mapAttrs
-      (_: partition: {
-        inherit
-          (partition)
-          device
-          label
-          type
-          sizeMin
-          sizeMax
-          weight
-          format
-          uuid
-          grow
-          growFs
-          priority
-          ;
-      })
-      evaluated.config.aos.provisioning.storage.partitions;
-  in {
-    # Do not return the module engine's internal `_module` metadata. This
-    # closed value is the complete initrd/Rust data contract.
-    config.aos.provisioning.storage = {inherit partitions;};
-  };
 
   ## Evaluate the package-name seed required before registry module resolution.
   evalHostSelection = {
@@ -131,7 +147,7 @@ in {
       enforceRuntimeDeclarations = false;
     };
 
-  ## Evaluate a host configuration on-host into a config manifest.
+  ## Evaluates one complete authenticated configuration fixed point.
   ##
   ## `operatorModules` is the verified leaf `host.nix` (CS4 operator-provenance
   ## seam — its bare defs win at the reserved priority-75 band). `packageModules`
@@ -139,31 +155,156 @@ in {
   ## fetched from the registry. Returns
   ## the full `evalModules` result; the caller forces
   ## `config.system.build.configManifest`.
-  evalHostConfig = {
+  evalCompleteConfig = {
+    environment ? null,
     operatorModules ? [],
     runtimeModules ? [],
     packageModules ? [],
+    selectedProviderModules ? [],
+    packageImportRoots ? {},
+    abilityInstances ? {},
+    abilityBindings ? {},
+    abilityRequests ? {},
+    abilityRequirements ? {},
+    abilitySelectionBindings ? abilityBindings,
+    enableAbilitySelection ? true,
     factsModules ? [],
+    configurationModules ? [],
   }:
     lib.evalModules {
       modules =
         baseModules
         ++ systemModules
         ++ factsModules
-        ++ [
-          {
-            aos.config.frozenArtifacts = frozenArtifacts;
-            # Keep the full stage-2 projection self-referential. A path value
-            # asks the evaluator to import this already-realized directory as
-            # a new store object, yielding a nonexistent doubled-name path in
-            # the manifest. Discarding the path context records the exact
-            # immutable store path supplied via --base-lib instead.
-            aos.config.evalAtBoot.baseLib =
-              builtins.unsafeDiscardStringContext (builtins.toString ./.);
-            aos.config.evalAtBoot.baseLibAbiHash = "@abiHash@";
-          }
-        ];
+        ++ [baseLibraryModule]
+        ++ configurationModules
+        ++ lib.optional (environment != null) {
+          aos.abilities.environment = environment;
+        }
+        ++ lib.optional (abilityInstances != {} || abilityBindings != {}) {
+          aos.abilities = {
+            instances = abilityInstances;
+            bindings = abilityBindings;
+          };
+        };
       pkgs = frozenPkgs;
-      inherit lib operatorModules runtimeModules packageModules;
+      inherit lib operatorModules packageModules selectedProviderModules packageImportRoots;
+      inherit enableAbilitySelection;
+      inherit runtimeModules;
+      specialArgs.abilityResolution = {
+        bindings = abilitySelectionBindings;
+        requests = abilityRequests;
+        requirements = abilityRequirements;
+      };
+    };
+
+  ## Resolves selected provider modules around the complete host module graph.
+  resolveHostConfig = {
+    operatorModules ? [],
+    runtimeModules ? [],
+    packageModules ? [],
+    sourceModuleRoots ? {},
+    packageImportRoots ? {},
+    factsModules ? [],
+  }: let
+    contextualize = storeViewLib.contextualizeModule sourceModuleRoots;
+    dynamicNames = builtins.listToAttrs (builtins.map (record: {
+        name = record.name;
+        value = true;
+      })
+      packageModules);
+    imageModules =
+      builtins.filter
+      (record: !(builtins.hasAttr record.name dynamicNames))
+      (builtins.map contextualize hostPackageModules);
+    initialPackageModules = imageModules ++ packageModules;
+    selectionEvaluation = evalConfigurationSelection {
+      inherit operatorModules runtimeModules factsModules;
+      inherit packageImportRoots;
+      packageModules = initialPackageModules;
+    };
+    configurationModules = selectionEvaluation.config.aos.abilities.stages.host.modules;
+    resolution = import ./lib/build/resolve-ability-configuration.nix {
+      inherit lib initialPackageModules;
+      evaluate = {
+        packageModules,
+        providerModules,
+        selectionModule,
+        enableAbilitySelection,
+        selectionBindings,
+      }:
+        evalCompleteConfig {
+          environment = frozenHostEvaluationInputs.environment;
+          inherit operatorModules runtimeModules packageModules factsModules;
+          inherit packageImportRoots;
+          inherit configurationModules;
+          selectedProviderModules = builtins.map contextualize providerModules;
+          abilityInstances = selectionModule.module.aos.abilities.instances;
+          abilityBindings = selectionModule.module.aos.abilities.bindings;
+          abilitySelectionBindings = selectionBindings;
+          abilityRequests = selectionModule.requests;
+          abilityRequirements = selectionModule.requirements;
+          inherit enableAbilitySelection;
+        };
+    };
+  in
+    builtins.seq resolution.checked resolution.evaluation;
+
+  ## Maps the frozen canonical initrd inputs into one checked read view.
+  initrdEvaluationInputs = storeView: let
+    checked = storeViewLib.validate storeView;
+    staticContractIdentity = frozenInitrdEvaluationInputs.staticContractIdentity;
+    staticContract = storeViewLib.staticContractFor checked staticContractIdentity;
+  in {
+    environment = frozenInitrdEvaluationInputs.environment;
+    abilityInstances = frozenInitrdEvaluationInputs.abilityInstances;
+    abilityBindings = frozenInitrdEvaluationInputs.abilityBindings;
+    abilityRequests = frozenInitrdEvaluationInputs.abilityRequests;
+    abilityRequirements = frozenInitrdEvaluationInputs.abilityRequirements;
+    packageModules = builtins.map (storeViewLib.mapAuthenticatedModule checked) initrdPackageModules;
+    selectedProviderModules = builtins.map (storeViewLib.mapAuthenticatedModule checked) initrdProviderModules;
+    inherit staticContract;
+  };
+
+  ## Evaluates the frozen initrd through the same complete configuration graph.
+  evalCompleteInitrdConfig = {
+    storeView,
+    sourceModuleRoots ? {},
+    packageImportRoots ? {},
+    operatorModules ? [],
+    runtimeModules ? [],
+    factsModules ? [],
+    configurationModules ? [],
+  }: let
+    frozen = initrdEvaluationInputs storeView;
+    contextualize = storeViewLib.contextualizeModule sourceModuleRoots;
+    selectionEvaluation = evalConfigurationSelection {
+      inherit operatorModules runtimeModules factsModules;
+      inherit packageImportRoots;
+      packageModules = builtins.map contextualize hostPackageModules;
+    };
+    stageConfigurationModules = selectionEvaluation.config.aos.abilities.stages.initrd.modules;
+    evaluated = evalCompleteConfig {
+      inherit operatorModules runtimeModules factsModules;
+      inherit packageImportRoots;
+      configurationModules = stageConfigurationModules ++ configurationModules;
+      inherit (frozen) environment abilityInstances abilityBindings abilityRequests abilityRequirements;
+      packageModules = builtins.map contextualize frozen.packageModules;
+      selectedProviderModules = builtins.map contextualize frozen.selectedProviderModules;
+    };
+  in
+    evaluated // {initrdStaticContract = frozen.staticContract;};
+
+  ## Evaluates a host configuration through the common complete graph.
+  evalHostConfig = {
+    operatorModules ? [],
+    runtimeModules ? [],
+    packageModules ? [],
+    sourceModuleRoots ? {},
+    packageImportRoots ? {},
+    factsModules ? [],
+  }:
+    resolveHostConfig {
+      inherit operatorModules runtimeModules packageModules sourceModuleRoots packageImportRoots factsModules;
     };
 }

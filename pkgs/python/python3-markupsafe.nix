@@ -1,5 +1,6 @@
 ##! python3-markupsafe — Safe markup strings for Python
 {
+  lib,
   mkDerivation,
   fetchurl,
   python3,
@@ -11,7 +12,65 @@
   sitePackages = "lib/python3.14/site-packages";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "python3-markupsafe";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "MarkupSafe emits the exact entity-escaped representation.";
+        "files" = {
+          "probe.py" = "import glob\nimport sys\n\nlocations = glob.glob(\"@out@/lib/python*/site-packages\")\nif len(locations) != 1:\n    raise RuntimeError(\"package does not expose one site-packages directory\")\nsys.path.insert(0, locations[0])\n\nfrom markupsafe import escape\nassert str(escape(\"<answer>42 & more</answer>\")) == \"&lt;answer&gt;42 &amp; more&lt;/answer&gt;\"\n\nprint(\"python3-markupsafe primary passed\")\n";
+        };
+        "input" = "HTML markup containing an element and ampersand.";
+        "operation" = "Escape the text through markupsafe.escape.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "probe.py"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "python3-markupsafe primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "MarkupSafe rejects the conversion with ValueError.";
+        "files" = {
+          "probe.py" = "import glob\nimport sys\n\nlocations = glob.glob(\"@out@/lib/python*/site-packages\")\nif len(locations) != 1:\n    raise RuntimeError(\"package does not expose one site-packages directory\")\nsys.path.insert(0, locations[0])\n\nfrom markupsafe import Markup\ntry:\n    Markup(\"{value!z}\").format(value=\"answer\")\nexcept ValueError:\n    pass\nelse:\n    raise RuntimeError(\"MarkupSafe accepted an invalid conversion\")\n\nprint(\"python3-markupsafe rejected invalid input\", file=sys.stderr)\nraise SystemExit(7)\n";
+        };
+        "input" = "A safe-format template containing an unsupported conversion specifier.";
+        "operation" = "Format the malformed template through Markup.format.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "probe.py"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "python3-markupsafe rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

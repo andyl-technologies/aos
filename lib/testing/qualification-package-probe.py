@@ -127,11 +127,18 @@ def placeholders(work: pathlib.Path, outputs: dict[str, str]) -> dict[str, str]:
     values = {
         "@work@": str(work),
         "@profile@": os.environ["AOS_QUALIFICATION_PACKAGE_PROFILE"],
-        "@bash@": os.environ["AOS_QUALIFICATION_BASH"],
-        "@cc@": os.environ["AOS_QUALIFICATION_CC"],
-        "@cxx@": os.environ["AOS_QUALIFICATION_CXX"],
         "@python@": os.environ["AOS_QUALIFICATION_PYTHON"],
     }
+    for marker, variable in (
+        ("@bash@", "AOS_QUALIFICATION_BASH"),
+        ("@cc@", "AOS_QUALIFICATION_CC"),
+        ("@cxx@", "AOS_QUALIFICATION_CXX"),
+        ("@perl@", "AOS_QUALIFICATION_PERL"),
+        ("@rustc@", "AOS_QUALIFICATION_RUSTC"),
+    ):
+        executable = os.environ.get(variable)
+        if executable:
+            values[marker] = executable
     for name, path in outputs.items():
         values[f"@output:{name}@"] = path
         store_hash = pathlib.Path(path).name.split("-", 1)[0]
@@ -382,7 +389,8 @@ def main() -> None:
     )
     allowed_harness_commands = {
         pathlib.Path(substitutions[marker])
-        for marker in ("@bash@", "@cc@", "@cxx@", "@python@")
+        for marker in ("@bash@", "@cc@", "@cxx@", "@perl@", "@python@", "@rustc@")
+        if marker in substitutions
     }
     primary_root = work / "primary"
     bad_input_root = work / "bad-input"

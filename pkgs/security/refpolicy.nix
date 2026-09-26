@@ -1,5 +1,6 @@
 ##! SELinux Reference Policy
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -9,11 +10,71 @@
   checkpolicy,
   semodule-utils,
   policycoreutils,
+  libselinux,
+  bash,
+  coreutils,
+  grep,
 }: let
   version = "2.20240916";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "refpolicy";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The base policy package and refpolicy include Makefile are nonempty and identify refpolicy.";
+        "files" = {};
+        "input" = "The installed SELinux base policy modules and development interface tree.";
+        "operation" = "Inspect the base module and the policy-development Makefile contract.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib\nroot = pathlib.Path(\"@out@/usr/share/selinux/refpolicy\")\nassert (root / \"base.pp\").stat().st_size > 0\nmakefile = (root / \"include/Makefile\").read_text()\nassert \"refpolicy\" in makefile and (root / \"include/support\").is_dir()\nprint(\"refpolicy operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "refpolicy operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The policy package rejects the absent module name.";
+        "files" = {};
+        "input" = "A request for an uncompiled qualification-invalid policy module.";
+        "operation" = "Resolve the nonexistent module from the installed policy store.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport pathlib\nassert not pathlib.Path(\"@out@/usr/share/selinux/refpolicy/qualification-invalid.pp\").exists()\n\nsys.stderr.write(\"refpolicy rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "refpolicy rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -32,8 +93,10 @@ in
       semodule-utils
       policycoreutils
     ];
-    runtimeDeps = [];
+    runtimeDeps = [bash coreutils grep policycoreutils libselinux];
     propagatedDeps = [];
+
+    abilities = ./_refpolicy;
 
     phases = [
       {
@@ -92,6 +155,26 @@ in
         script = ''
           make install DESTDIR=$out
           make install-headers DESTDIR=$out
+
+          checkmodule -M -m \
+            -o "$out/usr/share/selinux/refpolicy/aos_base.mod" \
+            ${./refpolicy-aos-base.te}
+          semodule_package \
+            -o "$out/usr/share/selinux/refpolicy/aos_base.pp" \
+            -m "$out/usr/share/selinux/refpolicy/aos_base.mod"
+
+          mkdir -p "$out/libexec"
+          sed \
+            -e "s|@bash@|${bash}|g" \
+            -e "s|@coreutils@|${coreutils}|g" \
+            -e "s|@grep@|${grep}|g" \
+            -e "s|@policycoreutils@|${policycoreutils}|g" \
+            -e "s|@libselinux@|${libselinux}|g" \
+            -e "s|@out@|$out|g" \
+            ${./refpolicy-load-policy.sh} \
+            > "$out/libexec/aos-selinux-load-policy"
+          chmod 0755 "$out/libexec/aos-selinux-load-policy"
+          test -s "$out/usr/share/selinux/refpolicy/aos_base.pp"
 
           # Patch the installed devel Makefile to use store paths instead
           # of hardcoded /usr and /etc paths

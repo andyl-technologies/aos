@@ -1,5 +1,6 @@
 ##! cargo-nextest — process-per-test Rust test runner.
 {
+  lib,
   stdenv,
   buildPackages,
   mkDerivation,
@@ -48,7 +49,63 @@
   };
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "cargo-nextest";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Cargo-nextest returns success and identifies its executable.";
+        "files" = {};
+        "input" = "The packaged nextest runner's release identity.";
+        "operation" = "Request its version without reading a Cargo workspace.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/cargo-nextest\", \"--version\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"cargo-nextest\" in (result.stdout + result.stderr), (result.returncode, result.stdout, result.stderr)\nprint(\"cargo-nextest operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "cargo-nextest operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Cargo-nextest rejects the unsupported operation.";
+        "files" = {};
+        "input" = "A cargo-nextest invocation naming an unknown operation.";
+        "operation" = "Parse the unknown operation without reading a workspace.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/cargo-nextest\", \"aos-invalid-operation\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"cargo-nextest rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "cargo-nextest rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     inherit cargoDeps;

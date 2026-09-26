@@ -24,6 +24,7 @@
 //! /{slug}/-/                       registry home (HTML)
 //! /{slug}/-/packages               package index (HTML; ?filter/?sort/?page)
 //! /{slug}/-/packages/{name}        package detail (HTML)
+//! /{slug}/-/abilities              release ability graph (HTML; ?release/?platform)
 //! /{slug}/-/images                 signed system-image downloads (HTML)
 //! /{slug}/-/containers             public OCI repository index (HTML)
 //! /{slug}/-/containers/repository  repository and tags (?repository=)
@@ -36,6 +37,7 @@
 //! /{slug}/-/api/registry           registry meta + index (JSON)
 //! /{slug}/-/api/packages           package list (JSON)
 //! /{slug}/-/api/packages/{name}    package detail (JSON)
+//! /{slug}/-/api/v1/abilities       canonical release ability graph (JSON)
 //! /{slug}/-/api/channels           channel list (JSON)
 //! /{slug}/-/api/releases           releases (JSON)
 //! ```
@@ -57,12 +59,12 @@
 
 use crate::clock::Instant;
 
-use axum::http::{header, HeaderMap};
+use axum::http::{HeaderMap, header};
 
 use aos_proto_types as pb;
 
 use crate::db::{IndexStatus, RegistryRecord};
-use crate::domain::{iam, Permission, Principal, Scope};
+use crate::domain::{Permission, Principal, Scope, iam};
 use crate::ratelimit::{RateClass, RateDecision};
 use crate::service::RpcService;
 use crate::web::browse_pages as pages;
@@ -75,7 +77,8 @@ use crate::web::session;
 ///
 /// The transport layer ([`crate::connect`]) maps these to responses:
 /// [`Rendered::Html`] to a `200` `text/html` with the strict `default-src
-/// 'self'` CSP, [`Rendered::Json`] to a `200` `application/json`,
+/// 'self'` CSP, [`Rendered::PrivateHtml`] to the same document response with
+/// private no-store cache controls, [`Rendered::Json`] to a `200` `application/json`,
 /// [`Rendered::Redirect`] to a `308 Permanent Redirect`,
 /// [`Rendered::TooManyRequests`] to a `429` with a `Retry-After`, and
 /// [`Rendered::NotFound`] to a bare `404` (which the visibility matrix returns
@@ -84,6 +87,8 @@ use crate::web::session;
 pub enum Rendered {
     /// A complete HTML document.
     Html(String),
+    /// Session- or bearer-visible HTML, never stored in a shared HTTP cache.
+    PrivateHtml(String),
     /// A serialized JSON document.
     Json(String),
     /// Session-visible browser data, never stored in a shared HTTP cache.
@@ -201,9 +206,14 @@ pub(super) async fn browse_rate_limited(svc: &RpcService, headers: &HeaderMap) -
     }
 }
 
-/// Whether the request's session user may `Read` at `scope` under their current
-/// memberships.
-async fn session_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope) -> bool {
+/// Whether the request's session user holds `permission` at `scope` under
+/// current memberships.
+async fn session_allows(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    scope: &Scope,
+    permission: Permission,
+) -> bool {
     let Some(secret) = session::session_secret_from_headers(headers) else {
         return false;
     };
@@ -216,7 +226,11 @@ async fn session_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scop
     let Ok(Some(context)) = svc.db.authorization_context(scope.as_str()).await else {
         return false;
     };
-    iam::allow(&grants, Permission::Read, &context)
+    iam::allow(&grants, permission, &context)
+}
+
+async fn session_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope) -> bool {
+    session_allows(svc, headers, scope, Permission::Read).await
 }
 
 /// Whether the request's session user holds any membership covering `org_id`.
@@ -227,8 +241,13 @@ async fn session_is_org_member(svc: &RpcService, headers: &HeaderMap, org_id: i6
     session_allows_read(svc, headers, &Scope::parse(&org.stable_id)).await
 }
 
-/// Whether a bearer JWT in `headers` grants `Read` at `scope`.
-async fn bearer_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope) -> bool {
+/// Whether a bearer JWT in `headers` grants `permission` at `scope`.
+async fn bearer_allows(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    scope: &Scope,
+    permission: Permission,
+) -> bool {
     let Some(value) = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -240,11 +259,28 @@ async fn bearer_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope
     };
     match svc.jwt_keys.verify(token) {
         Ok(claims) => svc
-            .require_permission(&claims, Permission::Read, scope)
+            .require_permission(&claims, permission, scope)
             .await
             .is_ok(),
         Err(_) => false,
     }
+}
+
+async fn bearer_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope) -> bool {
+    bearer_allows(svc, headers, scope, Permission::Read).await
+}
+
+async fn can_read_ability_deployments(
+    svc: &RpcService,
+    registry: &RegistryRecord,
+    headers: &HeaderMap,
+) -> bool {
+    let Ok(scope_key) = svc.db.registry_authorization_scope(registry.id).await else {
+        return false;
+    };
+    let scope = Scope::parse(&scope_key);
+    session_allows(svc, headers, &scope, Permission::AuditRead).await
+        || bearer_allows(svc, headers, &scope, Permission::AuditRead).await
 }
 
 /// Whether the caller in `headers` may see `registry` at all (the session-aware
@@ -403,8 +439,8 @@ pub struct BrowseQuery {
     /// Documentation option type-signature filter.
     #[serde(rename = "type")]
     pub option_type: Option<String>,
-    /// Documentation contribution filter.
-    pub contributable: Option<bool>,
+    /// Filters options that other packages may extend.
+    pub extensible: Option<bool>,
     /// Source package version for a documentation comparison.
     pub from: Option<String>,
     /// Destination package version for a documentation comparison.
@@ -491,7 +527,7 @@ impl BrowseQuery {
                 "prefix" => out.prefix = Some(value.into_owned()),
                 "owner" => out.owner = Some(value.into_owned()),
                 "type" => out.option_type = Some(value.into_owned()),
-                "contributable" => out.contributable = value.parse().ok(),
+                "extensible" => out.extensible = value.parse().ok(),
                 "from" => out.from = Some(value.into_owned()),
                 "to" => out.to = Some(value.into_owned()),
                 "platform" => out.platform = Some(value.into_owned()),
@@ -704,6 +740,87 @@ pub async fn packages(
         &session,
     )
     .await
+}
+
+/// The release-wide ability contract, provider, and consumer browser.
+pub async fn abilities(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    if let Some(limited) = browse_rate_limited(svc, headers).await {
+        return limited;
+    }
+    let started = Instant::now();
+    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    let context = match super::release_browse::ReleaseContext::load(
+        &svc.db,
+        registry.id,
+        query.release.as_deref(),
+        false,
+    )
+    .await
+    {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    if let Some(redirect) = query.pin_release(&format!("/{slug}/-/abilities"), &context) {
+        return redirect;
+    }
+    let Some(release) = context.selected() else {
+        return Rendered::NotFound;
+    };
+    let projection = match svc
+        .db
+        .release_ability_graph(
+            registry.id,
+            release,
+            query.platform.as_deref().unwrap_or_default(),
+        )
+        .await
+    {
+        Ok(Some(projection)) => projection,
+        Ok(None) if query.platform.is_some() => return Rendered::NotFound,
+        Ok(None) => {
+            return Rendered::Html(super::release_browse::unavailable_page(
+                &registry,
+                status.as_ref(),
+                &context,
+                "abilities",
+                "The ability graph for this release is still indexing or has no published package references.",
+                started,
+                &session_indicator(svc, headers).await,
+            ));
+        }
+        Err(_) => return Rendered::ServiceUnavailable,
+    };
+    let graph =
+        match aos_doc_model::ReleaseAbilityGraph::from_canonical_json(&projection.canonical_json) {
+            Ok(graph) => graph,
+            Err(_) => return Rendered::ServiceUnavailable,
+        };
+    let platforms = match svc
+        .db
+        .release_ability_graph_platforms(registry.id, release)
+        .await
+    {
+        Ok(platforms) => platforms,
+        Err(_) => return Rendered::ServiceUnavailable,
+    };
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(super::ability_graph_page::page(
+        &registry,
+        status.as_ref(),
+        &context,
+        &graph,
+        &platforms,
+        &projection.content_digest,
+        started,
+        &session,
+    ))
 }
 
 /// The signed system-image catalog and direct-download page.
@@ -1159,7 +1276,7 @@ async fn package_index_html(
     session: &SessionIndicator,
 ) -> Rendered {
     use crate::db::PackageRow;
-    use crate::filter::{version_key, Filter};
+    use crate::filter::{Filter, version_key};
 
     let context = match super::release_browse::ReleaseContext::load(
         db,
@@ -1187,7 +1304,7 @@ async fn package_index_html(
                     "The package catalog for this release is still indexing.",
                     started,
                     session,
-                ))
+                ));
             }
             Err(_) => return Rendered::ServiceUnavailable,
         }
@@ -1320,7 +1437,7 @@ pub async fn package(
                 "The package catalog for this release is still indexing.",
                 started,
                 &session_indicator(svc, headers).await,
-            ))
+            ));
         }
         Err(_) => return Rendered::ServiceUnavailable,
     };
@@ -1337,11 +1454,17 @@ pub async fn package(
     };
     let detail = super::release_browse::package_detail(package);
     let closures = super::release_browse::package_closures(&catalog, &detail, REVERSE_DEP_CAP);
-    let (session, caches, external, documentation_result) = futures_util::future::join4(
+    let (session, caches, external, package_reference_result) = futures_util::future::join4(
         session_indicator(svc, headers),
         svc.db.registry_cache_stack_entries(registry.id),
         svc.registry_setup_url(&registry),
-        package_documentation_reference(&svc.db, registry.id, &detail, Some(release)),
+        package_reference_projection(
+            svc,
+            registry.id,
+            &detail,
+            release,
+            context.selected_commit(),
+        ),
     )
     .await;
     let caches = resolved_cache_urls(caches.unwrap_or_default());
@@ -1351,12 +1474,55 @@ pub async fn package(
         external.ok().as_deref(),
         &caches,
     );
-    let documentation_unavailable = documentation_result.is_err();
-    let documentation = documentation_result
+    let package_reference_unavailable = package_reference_result.is_err();
+    let (documentation, ability_reference) = package_reference_result
         .ok()
         .flatten()
-        .map(pages::PackageDocumentationReference::from);
-    Rendered::Html(pages::package_page(
+        .map(|(documentation, ability_reference)| {
+            (
+                Some(pages::PackageDocumentationReference::from(documentation)),
+                Some(ability_reference),
+            )
+        })
+        .unwrap_or((None, None));
+    let deployment_access = can_read_ability_deployments(svc, &registry, headers).await;
+    let (ability_deployments, ability_deployments_unavailable) = if deployment_access {
+        match &ability_reference {
+            Some(panel) => match svc
+                .load_package_ability_deployments_for_browser(
+                    registry.id,
+                    &panel.locator,
+                    &panel.projection,
+                )
+                .await
+            {
+                Ok(overlays) => (
+                    Some(
+                        overlays
+                            .into_iter()
+                            .map(|(stored, overlay)| {
+                                super::ability_reference_page::PackageAbilityDeploymentPanel {
+                                    overlay,
+                                    authority: format!(
+                                        "reporter-bearer:{}:{}",
+                                        stored.principal_kind, stored.principal_ref
+                                    ),
+                                    received_at: stored.received_at,
+                                    expires_at: stored.expires_at,
+                                }
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                    false,
+                ),
+                Err(_) => (Some(Vec::new()), true),
+            },
+            None => (Some(Vec::new()), package_reference_unavailable),
+        }
+    } else {
+        (None, false)
+    };
+    let body = pages::package_page(
         &registry,
         status.as_ref(),
         &detail,
@@ -1364,10 +1530,72 @@ pub async fn package(
         &setup,
         &context,
         documentation.as_ref(),
-        documentation_unavailable,
+        package_reference_unavailable,
+        ability_reference.as_ref(),
+        package_reference_unavailable,
+        ability_deployments.as_deref(),
+        ability_deployments_unavailable,
         started,
         &session,
-    ))
+    );
+    if deployment_access {
+        Rendered::PrivateHtml(body)
+    } else {
+        Rendered::Html(body)
+    }
+}
+
+/// Loads the one signed package reference selected by the exact release.
+async fn package_reference_projection(
+    svc: &RpcService,
+    registry_id: i64,
+    detail: &crate::db::PackageDetail,
+    release: &str,
+    release_commit: Option<&str>,
+) -> anyhow::Result<
+    Option<(
+        crate::db::PackageDocumentationLocator,
+        super::ability_reference_page::PackageAbilityReferencePanel,
+    )>,
+> {
+    let Some(version) = detail.versions.first() else {
+        return Ok(None);
+    };
+    let Some(platform) = version.platforms.first() else {
+        return Ok(None);
+    };
+    let Some(release_commit) = release_commit else {
+        anyhow::bail!("selected package release has no authenticated source commit");
+    };
+    let Some(documentation_locator) = svc
+        .db
+        .package_documentation_locator_at_release(
+            registry_id,
+            release_commit,
+            &detail.name,
+            &version.version,
+            &platform.platform,
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+
+    if documentation_locator.indexed_commit != release_commit {
+        anyhow::bail!("package reference is unavailable for the selected release commit");
+    }
+    let projection = svc
+        .load_package_documentation_locator(registry_id, &documentation_locator)
+        .await?;
+
+    Ok(Some((
+        documentation_locator.clone(),
+        super::ability_reference_page::PackageAbilityReferencePanel {
+            release: release.to_string(),
+            projection,
+            locator: documentation_locator,
+        },
+    )))
 }
 
 /// Resolves only the signed reference for the package selection already shown.
@@ -1376,6 +1604,7 @@ pub async fn package(
 /// object storage. The exact docs page remains responsible for fetching and
 /// verifying the document bytes. Never use empty selectors here: a release
 /// selection without documentation must not silently link to newer content.
+#[cfg(test)]
 async fn package_documentation_reference(
     db: &crate::db::Database,
     registry_id: i64,
@@ -2114,6 +2343,65 @@ pub async fn api_package_documentation(
     }
 }
 
+/// `GET /{slug}/-/api/v1/packages/{package}/abilities` — signed reference JSON.
+pub async fn api_package_ability_reference(
+    svc: &RpcService,
+    slug: &str,
+    package: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    let Some(response) = or_not_found(
+        svc.get_package_ability_reference(
+            None,
+            pb::GetPackageAbilityReferenceRequest {
+                registry: slug.to_string(),
+                package: package.to_string(),
+                version: query.version.clone().unwrap_or_default(),
+                platform: query.platform.clone().unwrap_or_default(),
+                release: query.release.clone().unwrap_or_default(),
+            },
+        )
+        .await,
+    ) else {
+        return Rendered::NotFound;
+    };
+    match String::from_utf8(response.canonical_json) {
+        Ok(body) => Rendered::RevalidatedJson {
+            body,
+            etag: response.etag,
+        },
+        Err(_) => Rendered::NotFound,
+    }
+}
+
+/// `GET /{slug}/-/api/v1/abilities` — canonical release ability graph JSON.
+pub async fn api_release_ability_graph(
+    svc: &RpcService,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    let Some(response) = or_not_found(
+        svc.get_release_ability_graph(
+            None,
+            pb::GetReleaseAbilityGraphRequest {
+                registry: slug.to_string(),
+                release: query.release.clone().unwrap_or_default(),
+                platform: query.platform.clone().unwrap_or_default(),
+            },
+        )
+        .await,
+    ) else {
+        return Rendered::NotFound;
+    };
+    match String::from_utf8(response.canonical_json) {
+        Ok(body) => Rendered::RevalidatedJson {
+            body,
+            etag: response.etag,
+        },
+        Err(_) => Rendered::NotFound,
+    }
+}
+
 /// `GET /{slug}/-/api/v1/packages/{package}/options` — structured options.
 pub async fn api_package_options(
     svc: &RpcService,
@@ -2132,7 +2420,7 @@ pub async fn api_package_options(
                 prefix: query.prefix.clone().unwrap_or_default(),
                 owner: query.owner.clone().unwrap_or_default(),
                 r#type: query.option_type.clone().unwrap_or_default(),
-                contributable: query.contributable,
+                extensible: query.extensible,
                 page_size: 1_000,
                 page_token: String::new(),
             },
@@ -2172,11 +2460,11 @@ pub async fn api_package_option(
         return Rendered::NotFound;
     };
     match document
-        .options
-        .iter()
+        .options()
+        .into_iter()
         .find(|option| option.display_path == display_path)
     {
-        Some(option) => json(option),
+        Some(option) => json(&option),
         None => Rendered::NotFound,
     }
 }
@@ -2239,12 +2527,18 @@ pub async fn api_documentation_artifact(svc: &RpcService, slug: &str, digest: &s
     }
 }
 
-/// `GET /{slug}/-/api/docs/schema` — the closed document JSON Schema.
+/// `GET /{slug}/-/api/docs/schema` — the package metadata JSON Schema.
 pub async fn api_documentation_schema(svc: &RpcService, slug: &str) -> Rendered {
     if registry(svc, slug).await.is_none() {
         return Rendered::NotFound;
     }
-    Rendered::Json(aos_doc_model::DOCUMENT_JSON_SCHEMA.to_string())
+    let Ok(schema) = aos_doc_model::documentation_metadata_json_schema() else {
+        return Rendered::ServiceUnavailable;
+    };
+    match String::from_utf8(schema) {
+        Ok(schema) => Rendered::Json(schema),
+        Err(_) => Rendered::ServiceUnavailable,
+    }
 }
 
 /// `GET /{slug}/-/api/channels` — the channel list (JSON).
@@ -2338,7 +2632,7 @@ mod package_documentation_reference_tests {
             db.backend.execute("INSERT INTO package_documentation
                 (registry_id, indexed_commit, package_name, package_version, platform, format,
                  store_path, nar_hash, nar_size, document_sha256, document_size, semantic_schema_sha256)
-                VALUES (?1, 'commit', 'package-docs', ?2, ?3, 'aos.package-documentation/v1+json',
+                VALUES (?1, 'commit', 'package-docs', ?2, ?3, 'aos.package-reference/v1+json',
                  '/nix/store/missing-document', 'signed-nar', 1, 'signed-document', 1, 'signed-schema')",
                 &[Value::Int(registry), Value::Text(version.into()), Value::Text(platform.into())]).await.unwrap();
         }
@@ -2356,112 +2650,132 @@ mod package_documentation_reference_tests {
                 (version, platform)
             );
         }
-        assert!(package_documentation_reference(
-            &db,
-            registry,
-            &selection("1.0.0", "aarch64-linux"),
-            None,
-        )
-        .await
-        .unwrap()
-        .is_none());
-        assert!(package_documentation_reference(
-            &db,
-            registry,
-            &selection("0.1.0", "x86_64-linux"),
-            None,
-        )
-        .await
-        .unwrap()
-        .is_none());
-        assert!(documentation_locator_for_page(
-            &db,
-            registry,
-            "package-docs",
-            "1.0.0",
-            "x86_64-linux",
-            Some("signed-document")
-        )
-        .await
-        .unwrap()
-        .is_some());
-        assert!(documentation_locator_for_page(
-            &db,
-            registry,
-            "other-package",
-            "1.0.0",
-            "x86_64-linux",
-            Some("signed-document")
-        )
-        .await
-        .unwrap()
-        .is_none());
-        assert!(documentation_locator_for_page(
-            &db,
-            registry,
-            "package-docs",
-            "9.0.0",
-            "x86_64-linux",
-            Some("signed-document")
-        )
-        .await
-        .unwrap()
-        .is_none());
-        assert!(documentation_locator_for_page(
-            &db,
-            registry,
-            "package-docs",
-            "1.0.0",
-            "aarch64-linux",
-            Some("signed-document")
-        )
-        .await
-        .unwrap()
-        .is_none());
-        assert!(documentation_locator_for_page(
-            &db,
-            registry,
-            "package-docs",
-            "1.0.0",
-            "x86_64-linux",
-            Some("unknown-document")
-        )
-        .await
-        .unwrap()
-        .is_none());
+        assert!(
+            package_documentation_reference(
+                &db,
+                registry,
+                &selection("1.0.0", "aarch64-linux"),
+                None,
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            package_documentation_reference(
+                &db,
+                registry,
+                &selection("0.1.0", "x86_64-linux"),
+                None,
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            documentation_locator_for_page(
+                &db,
+                registry,
+                "package-docs",
+                "1.0.0",
+                "x86_64-linux",
+                Some("signed-document")
+            )
+            .await
+            .unwrap()
+            .is_some()
+        );
+        assert!(
+            documentation_locator_for_page(
+                &db,
+                registry,
+                "other-package",
+                "1.0.0",
+                "x86_64-linux",
+                Some("signed-document")
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            documentation_locator_for_page(
+                &db,
+                registry,
+                "package-docs",
+                "9.0.0",
+                "x86_64-linux",
+                Some("signed-document")
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            documentation_locator_for_page(
+                &db,
+                registry,
+                "package-docs",
+                "1.0.0",
+                "aarch64-linux",
+                Some("signed-document")
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            documentation_locator_for_page(
+                &db,
+                registry,
+                "package-docs",
+                "1.0.0",
+                "x86_64-linux",
+                Some("unknown-document")
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
         // Digest navigation may resolve retained identities outside the current
         // catalog; unpinned legacy URLs still require current package membership.
-        assert!(documentation_locator_for_page(
-            &db,
-            registry,
-            "package-docs",
-            "1.0.0",
-            "x86_64-linux",
-            None
-        )
-        .await
-        .unwrap()
-        .is_none());
+        assert!(
+            documentation_locator_for_page(
+                &db,
+                registry,
+                "package-docs",
+                "1.0.0",
+                "x86_64-linux",
+                None
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
         let mut empty = selection("1.0.0", "x86_64-linux");
         empty.versions.clear();
         queries.store(0, Ordering::Relaxed);
-        assert!(package_documentation_reference(&db, registry, &empty, None)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            package_documentation_reference(&db, registry, &empty, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(queries.load(Ordering::Relaxed), 0);
         db.backend
             .execute("DROP TABLE package_documentation", &[])
             .await
             .unwrap();
-        assert!(package_documentation_reference(
-            &db,
-            registry,
-            &selection("1.0.0", "x86_64-linux"),
-            None,
-        )
-        .await
-        .is_err());
+        assert!(
+            package_documentation_reference(
+                &db,
+                registry,
+                &selection("1.0.0", "x86_64-linux"),
+                None,
+            )
+            .await
+            .is_err()
+        );
     }
 }
 

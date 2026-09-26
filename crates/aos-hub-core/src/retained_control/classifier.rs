@@ -278,6 +278,7 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                         | "BinaryCacheService/BeginCacheMultipartUpload"
                         | "BinaryCacheService/CompleteCacheMultipartUpload"
                         | "BinaryCacheService/AbortCacheMultipartUpload"
+                        | "AbilityDeploymentService/ReportPackageOverlay"
                 ) {
                     violations.push(violation(
                         method,

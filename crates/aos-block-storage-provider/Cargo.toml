@@ -1,0 +1,50 @@
+[package]
+name = "aos-block-storage-provider"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+aos-ability-model.workspace = true
+aos-contract.workspace = true
+aos-provider-protocol.workspace = true
+aos-storage-provisioning.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "aos-cryptsetup-provider"
+path = "src/bin/cryptsetup.rs"
+
+[[bin]]
+name = "aos-storage-format-provider"
+path = "src/bin/storage_format.rs"
+
+[[bin]]
+name = "aos-zfs-pool-provider"
+path = "src/bin/zfs_pool.rs"
+
+[[bin]]
+name = "aos-zfs-dataset-provider"
+path = "src/bin/zfs_dataset.rs"
+
+[[bin]]
+name = "aos-zfs-memory-policy"
+path = "src/bin/zfs_memory_policy.rs"
+
+[[bin]]
+name = "aos-zfs-maintenance"
+path = "src/bin/zfs_maintenance.rs"
+
+[[bin]]
+name = "aos-storage-provisioning-provider"
+path = "src/bin/storage_provisioning.rs"
+
+[[bin]]
+name = "aos-storage-provisioning-marker-observer"
+path = "src/bin/storage_provisioning_marker.rs"
+
+[[bin]]
+name = "aos-boot-transaction-storage-provider"
+path = "src/bin/boot_transaction_storage.rs"

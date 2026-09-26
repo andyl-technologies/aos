@@ -1,5 +1,6 @@
 ##! pkg-config — Helper tool for compiling applications and libraries
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -39,7 +40,61 @@
   '';
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "pkg-config";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "pkg-config accepts the metadata without diagnostics.";
+        "files" = {
+          "qualification.pc" = "prefix=/qualification\nName: qualification\nDescription: qualification metadata\nVersion: 1.0\nLibs: -L\${prefix}/lib -lqualification\nCflags: -I\${prefix}/include\n";
+        };
+        "input" = "A complete pkg-config metadata document.";
+        "operation" = "Validate its variables and required package fields through pkg-config.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/pkg-config"
+              "--validate"
+              "qualification.pc"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "pkg-config rejects the document with status 1.";
+        "files" = {
+          "invalid.pc" = "Name qualification\nVersion: 1.0\n";
+        };
+        "input" = "A metadata document whose Name field lacks its required colon.";
+        "operation" = "Validate the malformed document through pkg-config.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/pkg-config"
+              "--validate"
+              "invalid.pc"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

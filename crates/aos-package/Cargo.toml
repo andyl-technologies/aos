@@ -5,14 +5,25 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+aos-ability-inspect = { workspace = true }
+aos-ability-model = { workspace = true }
+aos-ability-plan = { workspace = true }
+aos-ability-runtime = { workspace = true }
+aos-ability-validate = { workspace = true }
+aos-contract = { workspace = true }
+aos-package-store-model = { workspace = true }
 aos-core = { workspace = true }
 aos-doc-model = { workspace = true }
 aos-cache = { workspace = true }
-aos-net = { workspace = true }
+aos-net = { workspace = true, features = ["transfer"] }
 aos-oci-types = { workspace = true }
+aos-provider-protocol = { workspace = true }
 aos-remote = { workspace = true }
+aos-release = { workspace = true }
 aos-proto-types = { workspace = true }
 aos-systemd = { workspace = true }
+aos-storage-provisioning = { workspace = true }
+aos-metadata = { workspace = true }
 aos-registry-surface = { workspace = true }
 aos-boot-identity = { workspace = true }
 anyhow = { workspace = true }
@@ -47,7 +58,16 @@ ssh-key = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 rayon = { workspace = true }
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["event", "net", "process"] }
+zeroize = { workspace = true }
+
+[build-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
+aos-ability-inspect = { workspace = true, features = ["test-support"] }
+aos-ability-plan = { workspace = true, features = ["test-support"] }
+aos-ability-validate = { workspace = true, features = ["test-support"] }
 crc32fast = { workspace = true }
+zbus = { version = "5", default-features = false, features = ["tokio", "p2p", "bus-impl"] }

@@ -4,6 +4,7 @@
   perl,
 }: {
   pname,
+  platformSupport,
   version,
   src,
   sourceRoot,
@@ -13,13 +14,14 @@
   description,
   homepage,
   license,
+  qualification ? null,
 }: let
   runtimeClosure = [perl] ++ dependencies;
   dependencyPath = builtins.concatStringsSep ":" (map (dependency: "${dependency}/lib/perl5") dependencies);
   runtimeClosureManifest = builtins.concatStringsSep "\n" (map builtins.toString runtimeClosure);
 in
   mkDerivation {
-    inherit pname version src;
+    inherit pname version src qualification platformSupport;
 
     buildDeps = [perl];
     runtimeDeps = runtimeClosure;

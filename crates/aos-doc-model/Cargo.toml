@@ -6,8 +6,12 @@ license.workspace = true
 description = "Closed package-documentation schema, validation, search, and safe renderers for AOS"
 
 [dependencies]
+aos-ability-model = { workspace = true }
+aos-ability-validate = { workspace = true }
+aos-contract = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 

@@ -1,5 +1,6 @@
 ##! DocBook transformation frontend and conditional XML filter.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -23,7 +24,80 @@
   runtimePath = builtins.concatStringsSep ":" (map (package: "${package}/bin") runtimeTools);
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "xmlto";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A DocBook article containing one title and paragraph.";
+        operation = "Transform the article to HTML with the installed xmlto frontend.";
+        expected = "The generated HTML contains the title and paragraph.";
+        files."probe.xml" = ''
+          <?xml version="1.0"?>
+          <!DOCTYPE article PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN" "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
+          <article><title>AOS Probe</title><para>The answer is 42.</para></article>
+        '';
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/xmlto" "html" "probe.xml"];
+            exit_code = 0;
+          }
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                from pathlib import Path
+
+                html = Path("index.html").read_text()
+                assert "AOS Probe" in html
+                assert "The answer is 42." in html
+                print("xmlto transformed DocBook article")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "xmlto transformed DocBook article\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "An XML article with mismatched tags.";
+        operation = "Validate and transform the malformed article.";
+        expected = "Xmlto rejects the malformed XML before transformation.";
+        files."broken.xml" = "<article><title>Broken</article>\n";
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/xmlto" "html" "broken.xml"];
+            exit_code = 14;
+            observes_rejection = true;
+            stdout.exact = "";
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://releases.pagure.org/xmlto/xmlto-${version}.tar.bz2"];

@@ -58,11 +58,11 @@
     }
   ];
   sbTop = sbSystem.config.system.build.toplevel;
-  sbUki = sbSystem.config.system.build.uki;
+  sbUki = sbSystem.config.system.build.initialBootExecutable;
   sbImage = sbSystem.config.system.build.image.raw;
   sbImageDisk = sbSystem.config.system.build.imageArtifacts.raw.disk;
   sbImageInfo = sbSystem.config.system.build.imageArtifacts.raw.info;
-  publicationClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
+  publicationClosureInfo = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = [
       sbTop
       sbUki

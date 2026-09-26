@@ -1,5 +1,6 @@
 ##! jq — Lightweight command-line JSON processor
 {
+  lib,
   mkDerivation,
   mkGithubUpstream,
   gnumake,
@@ -57,7 +58,57 @@
   inherit (upstream) version;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "jq";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "jq emits the canonical integer result 42.";
+        "files" = {};
+        "input" = "A JSON object whose answer member is 41.";
+        "operation" = "Parse the document and increment its answer with a jq filter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/jq"
+              ".answer + 1"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "{\"answer\":41}\n";
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "jq exits with its invalid-JSON status.";
+        "files" = {};
+        "input" = "A truncated JSON object.";
+        "operation" = "Parse the malformed document with the identity filter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/jq"
+              "."
+            ];
+            "exit_code" = 5;
+            "observes_rejection" = true;
+            "stdin" = "{\"answer\":";
+          }
+        ];
+      };
+    };
+
     inherit version;
     outputs = ["out" "dev"];
 

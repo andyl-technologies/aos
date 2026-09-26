@@ -1,4 +1,5 @@
 {
+  lib,
   mkDerivation,
   fetchurl,
   m4,
@@ -15,7 +16,60 @@
   version = "5.4.1";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "gawk";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Awk emits the exact aggregate.";
+        "files" = {};
+        "input" = "Two colon-delimited records.";
+        "operation" = "Sum the numeric second fields with awk.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/awk"
+              "-F:"
+              "{ total += $2 } END { print total }"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "alpha:19\nbeta:23\n";
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Awk rejects the syntax error with status 1.";
+        "files" = {};
+        "input" = "An awk program with an unterminated action.";
+        "operation" = "Parse the malformed awk program.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/awk"
+              "{ print $1"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

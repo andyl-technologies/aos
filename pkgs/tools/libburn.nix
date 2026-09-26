@@ -8,6 +8,7 @@
 ##! physical media burning — but xorriso's configure marks libburn as
 ##! a FATAL prerequisite so it's packaged unconditionally.
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -16,7 +17,71 @@
   version = "1.5.8";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "libburn";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Cdrskin creates one padded track whose payload and zero-filled remainder are exact.";
+        "files" = {
+          "answer.txt" = "answer=42\n";
+        };
+        "input" = "A ten-byte data track containing answer=42.";
+        "operation" = "Burn the track into an emulated stdio device through cdrskin.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/cdrskin"
+              "--allow_emulated_drives"
+              "dev=stdio:track.img"
+              "-data"
+              "answer.txt"
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "data=open('track.img','rb').read(); assert len(data)==2048 and data[:10]==b'answer=42\\n' and not any(data[10:])"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Cdrskin rejects the missing source with status 3.";
+        "files" = {};
+        "input" = "A data-track pathname that does not exist.";
+        "operation" = "Attach the missing track to an emulated stdio device through cdrskin.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/cdrskin"
+              "--allow_emulated_drives"
+              "dev=stdio:track.img"
+              "-data"
+              "missing.txt"
+            ];
+            "exit_code" = 3;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

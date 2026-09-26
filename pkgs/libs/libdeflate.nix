@@ -5,6 +5,7 @@
   buildPackages,
   stdenv,
   zlib,
+  lib,
 }: let
   version = "1.26";
   src = fetchurl {
@@ -13,7 +14,75 @@
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "libdeflate";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A short text message passed through the installed compressor.";
+        operation = "Compress with libdeflate-gzip and decompress with libdeflate-gunzip.";
+        expected = "The round trip reproduces the exact input bytes.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''                import subprocess, sys
+                payload = b"AOS libdeflate roundtrip\n"
+                compressed = subprocess.run([sys.argv[1], "-c"], input=payload, capture_output=True, check=True)
+                restored = subprocess.run([sys.argv[2], "-c"], input=compressed.stdout, capture_output=True, check=True)
+                assert restored.stdout == payload
+                print("libdeflate roundtrip passed")
+              ''
+              "@out@/bin/libdeflate-gzip"
+              "@out@/bin/libdeflate-gunzip"
+            ];
+            exit_code = 0;
+            stdout.exact = "libdeflate roundtrip passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "Bytes without a gzip header.";
+        operation = "Decompress malformed input with the installed utility.";
+        expected = "The decompressor rejects the malformed stream.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/libdeflate-gunzip" "-c"];
+            stdin = "invalid gzip";
+            exit_code = 1;
+            observes_rejection = true;
+            stdout.exact = "";
+            stderr.exact = "libdeflate-gunzip: standard input: not in gzip format\n";
+          }
+        ];
+      };
+    };
     inherit version src;
 
     buildDeps = [buildPackages.cmake buildPackages.gnumake];

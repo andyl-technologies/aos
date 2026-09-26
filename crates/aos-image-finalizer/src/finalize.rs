@@ -15,7 +15,9 @@ use crate::assembly::{AssemblyFileKind, ImageCommandLinesV1, UnsignedImageAssemb
 use crate::filesystem::{
     extract_erofs, extract_initrd, kernel_modules, rebuild_erofs, rebuild_initrd,
 };
-use crate::input::{VerifiedInput, digest_regular_file, verified_tool};
+use crate::input::{
+    VerifiedInput, digest_regular_file, digest_regular_file_beneath, verified_tool,
+};
 use crate::module_signature::verify_signed_module;
 use crate::request::{ImageRequestAuthorizer, ImageSigningIntent, verify_intent};
 use crate::signer::ImageSigner;
@@ -158,6 +160,10 @@ pub async fn prepare_filesystems(
         &initrd_scratch.join("recovery-b"),
     )
     .await?;
+
+    if assembly.schema_version == crate::assembly::UNSIGNED_IMAGE_ASSEMBLY_V2 {
+        verify_static_ability_contract_attachments(assembly_root, assembly, &input, &initrd_tree)?;
+    }
 
     let certificate_digest = digest_regular_file(&module_certificate)?.1;
     let mut signing_operations = Vec::new();
@@ -346,6 +352,60 @@ fn capture_copy(
     Ok(destination.to_path_buf())
 }
 
+/// Captures both stage contracts and binds the initrd contract to its image file.
+///
+/// The initrd comparison opens every embedded path component without following
+/// links. The host contract remains authoritative through its captured store
+/// artifact and selected package-store locator. `captured_inputs` must exist
+/// and must not already contain either captured contract filename.
+///
+/// # Errors
+///
+/// Returns an error when an assembly sidecar changed, the embedded initrd
+/// contract is absent or linked, a parent escapes its extracted tree, or its
+/// exact bytes differ.
+pub fn verify_static_ability_contract_attachments(
+    assembly_root: &Path,
+    assembly: &UnsignedImageAssemblyV1,
+    captured_inputs: &Path,
+    initrd_tree: &Path,
+) -> Result<()> {
+    let initrd_contract = capture_copy(
+        assembly_root,
+        assembly,
+        AssemblyFileKind::InitrdStaticAbilityContract,
+        &captured_inputs.join("initrd-static-ability-contract.json"),
+    )?;
+    require_embedded_contract_matches(
+        &initrd_contract,
+        initrd_tree,
+        Path::new("lib/aos/initrd/static-ability-contract.json"),
+        "initrd static ability contract",
+    )?;
+
+    capture_copy(
+        assembly_root,
+        assembly,
+        AssemblyFileKind::HostStaticAbilityContract,
+        &captured_inputs.join("host-static-ability-contract.json"),
+    )?;
+    Ok(())
+}
+
+fn require_embedded_contract_matches(
+    captured: &Path,
+    tree: &Path,
+    embedded: &Path,
+    label: &str,
+) -> Result<()> {
+    let captured_identity = digest_regular_file(captured)?;
+    let embedded_identity = digest_regular_file_beneath(tree, embedded)?;
+    if captured_identity != embedded_identity {
+        bail!("captured {label} differs from the contract embedded in its filesystem");
+    }
+    Ok(())
+}
+
 fn mebibytes(value: u64) -> Result<u64> {
     value
         .checked_mul(1024 * 1024)
@@ -360,11 +420,50 @@ fn path_text(path: &Path) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::fs::symlink;
 
-    use anyhow::Result;
+    use super::*;
 
-    use super::replace_signed_module;
+    #[test]
+    fn rejects_a_sidecar_that_differs_from_the_embedded_contract() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let sidecar = temporary.path().join("sidecar.json");
+        let tree = temporary.path().join("tree");
+        let embedded = tree.join("lib/aos/initrd/static-ability-contract.json");
+        fs::create_dir_all(
+            embedded
+                .parent()
+                .context("fixture contract has no parent")?,
+        )?;
+        symlink(".", tree.join("usr"))?;
+        fs::write(&sidecar, b"{\"stage\":\"initrd\"}")?;
+        fs::write(&embedded, b"{\"stage\":\"initrd\"}")?;
+        require_embedded_contract_matches(
+            &sidecar,
+            &tree,
+            Path::new("lib/aos/initrd/static-ability-contract.json"),
+            "test",
+        )?;
+        assert_eq!(
+            fs::read(tree.join("usr/lib/aos/initrd/static-ability-contract.json"))?,
+            fs::read(&sidecar)?,
+        );
+
+        fs::write(&sidecar, b"{\"stage\":\"host\"}")?;
+        let error = require_embedded_contract_matches(
+            &sidecar,
+            &tree,
+            Path::new("lib/aos/initrd/static-ability-contract.json"),
+            "test",
+        )
+        .expect_err("a changed sidecar must not bind an unchanged filesystem");
+        assert!(
+            error
+                .to_string()
+                .contains("differs from the contract embedded")
+        );
+        Ok(())
+    }
 
     #[test]
     fn replaces_module_in_read_only_image_directory() -> Result<()> {

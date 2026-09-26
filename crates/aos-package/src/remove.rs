@@ -12,16 +12,12 @@
 //! package. `apm remove --autoremove` removes orphans created by the
 //! removal; `apm autoremove` removes all current orphans.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashSet;
 use std::io::Write;
 
 use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
-use super::exposed_units::{
-    rebuild_generation_expose_image_roots, rebuild_generation_expose_roots,
-    reconcile_system_profile, validate_generation_exposed_units,
-};
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{delete_meta, list_meta, snapshot_profile_meta_to_generation};
@@ -66,26 +62,7 @@ pub async fn run(
     yes: bool,
     printer: &Printer,
 ) -> Result<RemoveOutcome> {
-    run_inner(config, packages, auto_remove, dry_run, yes, printer, true).await
-}
-
-/// Run `apm remove <packages>` without reconciling exposed systemd units.
-///
-/// This is used by higher-level workflows that perform multiple profile or
-/// artifact updates and reconcile the exposed unit surface once at the end.
-///
-/// # Errors
-///
-/// Returns the same errors as [`run`].
-pub(crate) async fn run_deferred_expose_reconcile(
-    config: &ApmConfig,
-    packages: &[String],
-    auto_remove: bool,
-    dry_run: bool,
-    yes: bool,
-    printer: &Printer,
-) -> Result<RemoveOutcome> {
-    run_inner(config, packages, auto_remove, dry_run, yes, printer, false).await
+    run_inner(config, packages, auto_remove, dry_run, yes, printer).await
 }
 
 async fn run_inner(
@@ -95,7 +72,6 @@ async fn run_inner(
     dry_run: bool,
     yes: bool,
     printer: &Printer,
-    reconcile_exposed_units: bool,
 ) -> Result<RemoveOutcome> {
     if packages.is_empty() {
         printer.info("No packages specified.");
@@ -107,16 +83,17 @@ async fn run_inner(
     let current_gen = inspect_profile
         .current_generation()?
         .ok_or_else(|| anyhow::anyhow!("no current generation -- nothing installed"))?;
+    let installed = list_meta(&inspect_profile)?;
 
     // Step 2: Find installed packages matching the requested names.
-    let to_remove = find_installed(&inspect_profile, packages)?;
+    let to_remove = select_installed_for_removal(&installed, packages)?;
 
     // Step 3: Collect hashes to remove.
     let mut remove_hashes = root_hashes_for_installed(&to_remove);
 
     // Step 4: If --autoremove, also find orphaned auto-installed deps.
     let orphans = if auto_remove {
-        find_orphans(&inspect_profile, &remove_hashes).await?
+        find_orphans(&installed, &remove_hashes).await?
     } else {
         Vec::new()
     };
@@ -163,21 +140,12 @@ async fn run_inner(
         delete_meta(&profile, &hash)?;
     }
     snapshot_profile_meta_to_generation(&profile, &new_gen)?;
-    let future_installed = list_meta(&profile)?;
-    rebuild_generation_expose_roots(&new_gen, &future_installed)?;
-    rebuild_generation_expose_image_roots(&new_gen, &future_installed)?;
-    validate_generation_exposed_units(&new_gen, &future_installed)?;
-
     // Step 9: Rebuild FHS tree on the new generation.
     printer.step(2, 3, "Rebuilding file tree...");
     build_generation_fhs_tree(&new_gen, printer)?;
 
     // Step 10: Switch to the new generation.
     profile.switch_to(&new_gen)?;
-    if reconcile_exposed_units {
-        reconcile_system_profile(config, printer).await?;
-    }
-
     // Step 11: Report success.
     printer.step(3, 3, "Done!");
     let total_removed = to_remove.len() + orphans.len();
@@ -224,10 +192,10 @@ pub async fn run_autoremove(
     let current_gen = inspect_profile
         .current_generation()?
         .ok_or_else(|| anyhow::anyhow!("no current generation -- nothing installed"))?;
-
+    let installed = list_meta(&inspect_profile)?;
     // Step 2: Find orphaned packages.
     let empty_exclude: HashSet<String> = HashSet::new();
-    let orphans = find_orphans(&inspect_profile, &empty_exclude).await?;
+    let orphans = find_orphans(&installed, &empty_exclude).await?;
 
     if orphans.is_empty() {
         if printer.mode() == OutputMode::Json {
@@ -289,19 +257,12 @@ pub async fn run_autoremove(
         delete_meta(&profile, &hash)?;
     }
     snapshot_profile_meta_to_generation(&profile, &new_gen)?;
-    let future_installed = list_meta(&profile)?;
-    rebuild_generation_expose_roots(&new_gen, &future_installed)?;
-    rebuild_generation_expose_image_roots(&new_gen, &future_installed)?;
-    validate_generation_exposed_units(&new_gen, &future_installed)?;
-
     // Step 7: Rebuild FHS tree.
     printer.step(2, 3, "Rebuilding file tree...");
     build_generation_fhs_tree(&new_gen, printer)?;
 
     // Step 8: Switch.
     profile.switch_to(&new_gen)?;
-    reconcile_system_profile(config, printer).await?;
-
     printer.step(3, 3, "Done!");
     printer.success(&format!(
         "Removed {} orphaned package(s) in generation {}.",
@@ -386,14 +347,6 @@ fn installed_meta_json(meta: &InstalledMeta) -> serde_json::Value {
     })
 }
 
-/// Find installed metadata entries matching package names.
-///
-/// Returns the matching entries. Errors on any name not found in the profile.
-fn find_installed(profile: &Profile, names: &[String]) -> Result<Vec<InstalledMeta>> {
-    let all = list_meta(profile)?;
-    select_installed_for_removal(&all, names)
-}
-
 /// Select installed entries that should be removed for requested package names.
 ///
 /// Explicit entries are profile roots the user intentionally installed. If an
@@ -458,14 +411,14 @@ fn select_installed_for_removal(
 /// An orphan is a package with `explicit=false` that would not be needed
 /// after removing the packages in `pending_remove_hashes`.
 async fn find_orphans(
-    profile: &Profile,
+    installed: &[InstalledMeta],
     pending_remove_hashes: &HashSet<String>,
 ) -> Result<Vec<InstalledMeta>> {
-    let all = list_meta(profile)?;
-    let needed_hashes = needed_hashes_for_remaining_explicit(&all, pending_remove_hashes).await?;
+    let needed_hashes =
+        needed_hashes_for_remaining_explicit(installed, pending_remove_hashes).await?;
 
     Ok(find_orphans_from_meta(
-        &all,
+        installed,
         pending_remove_hashes,
         &needed_hashes,
     ))
@@ -493,67 +446,20 @@ async fn needed_hashes_for_remaining_explicit(
     Ok(needed)
 }
 
-/// Return non-removed installed entries retained by explicit packages.
-///
-/// RFC-0001 `expose.requires` names package-level co-install requirements,
-/// which are not necessarily visible in a Nix store closure. Autoremove must
-/// therefore keep any installed package named by a remaining explicit package,
-/// and repeat that walk transitively.
+/// Return non-removed explicit package entries.
 pub(crate) fn retained_installed_indexes(
     installed: &[InstalledMeta],
     pending_remove_hashes: &HashSet<String>,
 ) -> Vec<usize> {
-    let by_name = installed_indexes_by_package_name(installed, pending_remove_hashes);
-    let mut retained = Vec::new();
-    let mut seen_hashes = HashSet::new();
-    let mut queue = VecDeque::new();
-
-    for (index, meta) in installed.iter().enumerate() {
-        let hash = store_path_hash(&meta.store_path);
-        if pending_remove_hashes.contains(hash) {
-            continue;
-        }
-        if meta.apm.as_ref().is_some_and(|apm| apm.explicit) {
-            queue.push_back(index);
-        }
-    }
-
-    while let Some(index) = queue.pop_front() {
-        let meta = &installed[index];
-        let hash = store_path_hash(&meta.store_path);
-        if !seen_hashes.insert(hash.to_string()) {
-            continue;
-        }
-
-        retained.push(index);
-
-        let Some(apm) = &meta.apm else { continue };
-        let Some(expose) = &apm.expose else { continue };
-        for required in &expose.requires {
-            if let Some(indexes) = by_name.get(required.as_str()) {
-                queue.extend(indexes.iter().copied());
-            }
-        }
-    }
-
-    retained
-}
-
-fn installed_indexes_by_package_name<'a>(
-    installed: &'a [InstalledMeta],
-    pending_remove_hashes: &HashSet<String>,
-) -> HashMap<&'a str, Vec<usize>> {
-    let mut by_name: HashMap<&'a str, Vec<usize>> = HashMap::new();
-    for (index, meta) in installed.iter().enumerate() {
-        let hash = store_path_hash(&meta.store_path);
-        if pending_remove_hashes.contains(hash) {
-            continue;
-        }
-        if let Some(apm) = &meta.apm {
-            by_name.entry(apm.name.as_str()).or_default().push(index);
-        }
-    }
-    by_name
+    installed
+        .iter()
+        .enumerate()
+        .filter(|(_, meta)| {
+            !pending_remove_hashes.contains(store_path_hash(&meta.store_path))
+                && meta.apm.as_ref().is_some_and(|apm| apm.explicit)
+        })
+        .map(|(index, _)| index)
+        .collect()
 }
 
 /// Select non-explicit entries that are neither already being removed nor
@@ -575,7 +481,7 @@ fn find_orphans_from_meta(
         .collect()
 }
 
-/// Collect each entry's package, source, and documentation store-path hashes.
+/// Collect every store-path hash rooted on behalf of installed entries.
 ///
 /// Every returned hash names a GC root owned by the profile generation. Keeping
 /// these identities together ensures removal drops all artifacts belonging to
@@ -591,6 +497,13 @@ fn root_hashes_for_installed(installed: &[InstalledMeta]) -> HashSet<String> {
             if let Some(documentation) = &apm.documentation {
                 hashes.insert(store_path_hash(&documentation.store_path).to_string());
             }
+            if let Some(ability) = &apm.contract {
+                hashes.insert(store_path_hash(&ability.document.store_path).to_string());
+                hashes.extend(
+                    crate::package_contract::retained_artifacts(ability)
+                        .map(|artifact| store_path_hash(&artifact.store_path).to_string()),
+                );
+            }
         }
     }
     hashes
@@ -598,7 +511,7 @@ fn root_hashes_for_installed(installed: &[InstalledMeta]) -> HashSet<String> {
 
 /// Copy roots from one generation to another, EXCLUDING specific hashes.
 ///
-/// Copies `usr/`, `src/`, and `docs/` symlinks, skipping any entry whose
+/// Copies package, source, documentation, and ability symlinks, skipping entries whose
 /// name (hash) is in the `exclude` set.
 fn copy_roots_except(
     from: &super::profile::Generation,
@@ -607,7 +520,7 @@ fn copy_roots_except(
 ) -> Result<()> {
     use std::os::unix::fs::symlink;
 
-    for root_class in ["usr", "src", "docs"] {
+    for root_class in ["usr", "src", "docs", "abilities"] {
         let from_root = from.path.join(root_class);
         let to_root = to.path.join(root_class);
         std::fs::create_dir_all(&to_root)
@@ -697,7 +610,7 @@ mod tests {
 
     use crate::profile::Generation;
     use crate::profile::meta::write_meta;
-    use crate::types::{ApmMeta, DocumentationArtifactMeta, ExposeMeta, ProfileScope};
+    use crate::types::{ApmMeta, DocumentationArtifactMeta, ProfileScope};
 
     fn test_profile(tmp: &TempDir) -> Profile {
         Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap()
@@ -721,36 +634,12 @@ mod tests {
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
-                expose: None,
-                expose_artifact: None,
-                config_module: None,
                 documentation: None,
-                permissions: Default::default(),
-                bpf_lsm: None,
+                contract: None,
                 attestation: Default::default(),
             }),
         }
     }
-
-    fn sample_installed_requiring(
-        name: &str,
-        hash: &str,
-        explicit: bool,
-        requires: &[&str],
-    ) -> InstalledMeta {
-        let mut installed = sample_installed(name, hash, explicit);
-        installed.apm.as_mut().unwrap().expose = Some(ExposeMeta {
-            target: format!("aos-pkg-{name}.target"),
-            units: Vec::new(),
-            images: Vec::new(),
-            requires: requires.iter().map(|name| (*name).to_string()).collect(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        });
-        installed
-    }
-
     fn sample_installed_from_registry(
         name: &str,
         hash: &str,
@@ -776,7 +665,6 @@ mod tests {
             semantic_schema_sha256:
                 "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                     .to_string(),
-            system_module_nar_hash: None,
             references: Vec::new(),
         });
         installed
@@ -802,7 +690,9 @@ mod tests {
         .unwrap();
         write_meta(&profile, "ghi789", &sample_installed("jq", "ghi789", true)).unwrap();
 
-        let found = find_installed(&profile, &["curl".into(), "jq".into()]).unwrap();
+        let installed = list_meta(&profile).unwrap();
+        let found =
+            select_installed_for_removal(&installed, &["curl".into(), "jq".into()]).unwrap();
         assert_eq!(found.len(), 2);
 
         let names: HashSet<String> = found
@@ -826,7 +716,8 @@ mod tests {
         )
         .unwrap();
 
-        let result = find_installed(&profile, &["nonexistent".into()]);
+        let installed = list_meta(&profile).unwrap();
+        let result = select_installed_for_removal(&installed, &["nonexistent".into()]);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("nonexistent"), "error was: {err}");
@@ -1008,7 +899,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let profile = test_profile(&tmp);
 
-        let result = find_installed(&profile, &["curl".into()]);
+        let installed = list_meta(&profile).unwrap();
+        let result = select_installed_for_removal(&installed, &["curl".into()]);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("curl"), "error was: {err}");
@@ -1049,80 +941,6 @@ mod tests {
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].apm.as_ref().unwrap().name, "openssl");
     }
-
-    #[test]
-    fn find_orphans_keeps_auto_dep_needed_by_remaining_explicit() {
-        let installed = vec![
-            sample_installed("left", "aaa111", true),
-            sample_installed("right", "bbb222", true),
-            sample_installed("shared", "ccc333", false),
-        ];
-        let pending: HashSet<String> = ["aaa111".to_string()].into_iter().collect();
-        let needed: HashSet<String> = ["bbb222".to_string(), "ccc333".to_string()]
-            .into_iter()
-            .collect();
-
-        let orphans = find_orphans_from_meta(&installed, &pending, &needed);
-
-        assert!(orphans.is_empty());
-    }
-
-    #[test]
-    fn find_orphans_removes_auto_dep_when_no_remaining_explicit_needs_it() {
-        let installed = vec![
-            sample_installed("left", "aaa111", true),
-            sample_installed("shared", "ccc333", false),
-        ];
-        let pending: HashSet<String> = ["aaa111".to_string()].into_iter().collect();
-        let needed: HashSet<String> = HashSet::new();
-
-        let orphans = find_orphans_from_meta(&installed, &pending, &needed);
-
-        assert_eq!(orphans.len(), 1);
-        assert_eq!(orphans[0].apm.as_ref().unwrap().name, "shared");
-    }
-
-    #[test]
-    fn retained_installed_indexes_keep_name_level_requirements() {
-        let installed = vec![
-            sample_installed_requiring("client", "aaa111", true, &["provider"]),
-            sample_installed("provider", "bbb222", false),
-            sample_installed("unused", "ccc333", false),
-        ];
-        let pending = HashSet::new();
-
-        let retained = retained_installed_indexes(&installed, &pending);
-
-        let names: HashSet<_> = retained
-            .iter()
-            .filter_map(|index| installed[*index].apm.as_ref().map(|apm| apm.name.as_str()))
-            .collect();
-        assert!(names.contains("client"));
-        assert!(names.contains("provider"));
-        assert!(!names.contains("unused"));
-    }
-
-    #[test]
-    fn retained_installed_indexes_follow_transitive_name_requirements() {
-        let installed = vec![
-            sample_installed_requiring("client", "aaa111", true, &["proxy"]),
-            sample_installed_requiring("proxy", "bbb222", false, &["provider"]),
-            sample_installed("provider", "ccc333", false),
-        ];
-        let pending = HashSet::new();
-
-        let retained = retained_installed_indexes(&installed, &pending);
-
-        let names: HashSet<_> = retained
-            .iter()
-            .filter_map(|index| installed[*index].apm.as_ref().map(|apm| apm.name.as_str()))
-            .collect();
-        assert_eq!(names.len(), 3);
-        assert!(names.contains("client"));
-        assert!(names.contains("proxy"));
-        assert!(names.contains("provider"));
-    }
-
     #[test]
     fn root_hashes_for_installed_includes_source_roots() {
         let mut installed =

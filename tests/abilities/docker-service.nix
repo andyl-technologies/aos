@@ -1,0 +1,168 @@
+##! Pure evaluation checks for the native Docker service declaration.
+{
+  lib,
+  pkgs,
+}: let
+  evaluate = serviceConfig:
+    lib.evalModules {
+      inherit lib;
+      specialArgs = {inherit pkgs;};
+      modules = [
+        ../../modules/abilities/default.nix
+        ../../modules/_package-domain-options.nix
+        ({lib, ...}: {
+          options.environment.systemPackages = lib.mkOption {
+            type = lib.types.listOf lib.types.package;
+            default = [];
+          };
+          options.system.checks = lib.mkOption {
+            type = lib.types.attrsOf lib.types.anything;
+            default = {};
+          };
+
+          config = {
+            aos.abilities.environment = {
+              authority = "deployment";
+              key = "docker-service-test";
+              stage = "host";
+            };
+            aos.services.docker = serviceConfig;
+          };
+        })
+      ];
+      packageModules = [
+        (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
+        {
+          name = "docker-engine";
+          inherit (pkgs.docker-engine) version;
+          module = pkgs.docker-engine.module + "/module.nix";
+        }
+      ];
+    };
+
+  disabled = evaluate {enable = false;};
+  enabled = evaluate {
+    enable = true;
+    dataRoot = "/srv/docker";
+    storageDriver = "btrfs";
+    liveRestore = false;
+    extraOptions = ["--debug"];
+  };
+  packageProjection = pkgs.docker-engine.abilities;
+  packageContract = pkgs.docker-engine.contract.value;
+  documentedOptionPaths =
+    builtins.map
+    (option: lib.concatStringsSep "." option.path)
+    packageContract.option_declarations;
+  requests = enabled.config.aos.abilities.requests;
+  dockerRequests = evaluated:
+    lib.filterAttrs
+    (_: request: lib.abilities.packageForDeclarationAuthority request.authority == "docker-engine")
+    evaluated.config.aos.abilities.requests;
+  dockerRequirements = evaluated:
+    builtins.listToAttrs (builtins.map
+      (localKey: let
+        name = "docker-engine:${localKey}";
+      in {
+        inherit name;
+        value = evaluated.config.aos.abilities.requirementTemplates.${name};
+      })
+      (builtins.attrNames packageProjection.requirementTemplates));
+  dockerInstances = evaluated:
+    lib.filterAttrs
+    (_: instance: lib.abilities.packageForDeclarationAuthority instance.authority == "docker-engine")
+    evaluated.config.aos.abilities.instances;
+  lifecycle = requests."docker-engine:docker-lifecycle".parameters;
+  start = (builtins.head lifecycle.start).executable;
+in
+  assert enabled.config.aos.abilities.runtimeChecks."docker-engine:docker".description
+  == "Docker service checks";
+  assert builtins.attrNames packageProjection.interfaces == [];
+  assert builtins.attrNames packageProjection.implementations == [];
+  assert builtins.attrNames packageProjection.guarantees == [];
+  assert builtins.map (requirement: requirement.alias) packageContract.requirements
+  == builtins.attrNames packageProjection.requirementTemplates;
+  assert documentedOptionPaths
+  == [
+    "aos.services.docker.dataRoot"
+    "aos.services.docker.enable"
+    "aos.services.docker.extraOptions"
+    "aos.services.docker.liveRestore"
+    "aos.services.docker.storageDriver"
+  ];
+  assert builtins.all
+  (option: option.source.path == "module.nix" && option.description != "")
+  packageContract.option_declarations;
+  assert packageContract.package_module
+  == {
+    artifact = {
+      package = "docker-engine";
+      output = "module";
+    };
+    path = "module.nix";
+  };
+  assert pkgs.docker-engine ? module;
+  assert dockerRequests disabled == {};
+  assert dockerInstances disabled == {};
+  assert builtins.attrNames (dockerRequirements disabled)
+  == builtins.map
+  (name: "docker-engine:${name}")
+  (builtins.attrNames packageProjection.requirementTemplates);
+  assert builtins.attrNames (dockerRequests enabled)
+  == [
+    "docker-engine:docker-data-storage"
+    "docker-engine:docker-dependencies"
+    "docker-engine:docker-hardening"
+    "docker-engine:docker-isolation"
+    "docker-engine:docker-lifecycle"
+    "docker-engine:docker-logging"
+    "docker-engine:docker-network-readiness"
+    "docker-engine:docker-readiness"
+    "docker-engine:docker-reload"
+    "docker-engine:docker-resources"
+    "docker-engine:docker-runtime-storage"
+    "docker-engine:docker-storage"
+    "docker-engine:docker-supervision"
+    "docker-engine:docker-termination"
+  ];
+  assert requests."docker-engine:docker-data-storage".parameters.requested_path == "/srv/docker";
+  assert requests."docker-engine:docker-runtime-storage".parameters.requested_path == "/run/docker";
+  assert requests."docker-engine:docker-storage".parameters.mounts
+  == [
+    {
+      name = "data";
+      source = {
+        _type = "aos-request-output-reference";
+        request = "docker-engine:docker-data-storage";
+        output = "planned-path";
+      };
+      access = "read-write";
+      ownership = "provider";
+    }
+    {
+      name = "runtime";
+      source = {
+        _type = "aos-request-output-reference";
+        request = "docker-engine:docker-runtime-storage";
+        output = "planned-path";
+      };
+      access = "read-write";
+      ownership = "provider";
+    }
+  ];
+  assert start.artifact == lib.abilities.packageOutput {package = "docker-engine";};
+  assert start.arguments
+  == [
+    "--host=unix:///run/docker.sock"
+    "--data-root=/srv/docker"
+    "--exec-root=/run/docker"
+    "--pidfile=/run/docker/docker.pid"
+    "--group=root"
+    "--storage-driver=btrfs"
+    "--debug"
+  ];
+  assert requests."docker-engine:docker-resources".parameters.open_files.kind == "unbounded";
+  assert requests."docker-engine:docker-resources".parameters.processes.kind == "unbounded";
+  assert requests."docker-engine:docker-resources".parameters.tasks.kind == "unbounded";
+  assert requests."docker-engine:docker-hardening".parameters.privilege_bounds.kind == "unrestricted";
+  assert !requests."docker-engine:docker-termination".parameters.send_to_all_processes; true

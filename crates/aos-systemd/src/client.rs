@@ -20,6 +20,9 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 use crate::error::{Error, Result, is_no_such_unit};
 use crate::manager_proxy::{ListUnitsEntry, ManagerProxy, ServiceProxy, UnitProxy};
 
+const SYSTEMD_ALREADY_SUBSCRIBED: &str = "org.freedesktop.systemd1.AlreadySubscribed";
+const PINNED_COMPLETION_LIMIT: usize = 1_024;
+
 /// Classification of a systemd job's terminal `result`, per the `job_result`
 /// table in systemd's `src/core/job.h`. We name only the four cases
 /// switch-to-configuration-ng classifies explicitly; everything else
@@ -85,6 +88,96 @@ pub struct JobOutcome {
     pub job_path: OwnedObjectPath,
     /// Classified terminal result from the job's `JobRemoved` signal.
     pub result: JobResult,
+}
+
+/// Classifies a unit's exact systemd `ActiveState` while preserving new labels.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UnitActiveState {
+    /// The unit is fully active.
+    Active,
+    /// The unit is active while reloading its configuration.
+    Reloading,
+    /// The unit is fully inactive.
+    Inactive,
+    /// The unit entered a failed state.
+    Failed,
+    /// The unit is still activating.
+    Activating,
+    /// The unit is still deactivating.
+    Deactivating,
+    /// The unit is in systemd's maintenance state.
+    Maintenance,
+    /// The unit is refreshing its state.
+    Refreshing,
+    /// The manager returned an unrecognized future state.
+    Unknown(String),
+}
+
+impl UnitActiveState {
+    /// Classifies one raw systemd `ActiveState` label without discarding it.
+    #[must_use]
+    pub fn from_systemd(state: &str) -> Self {
+        match state {
+            "active" => Self::Active,
+            "reloading" => Self::Reloading,
+            "inactive" => Self::Inactive,
+            "failed" => Self::Failed,
+            "activating" => Self::Activating,
+            "deactivating" => Self::Deactivating,
+            "maintenance" => Self::Maintenance,
+            "refreshing" => Self::Refreshing,
+            other => Self::Unknown(other.to_string()),
+        }
+    }
+
+    /// Returns the exact systemd label represented by this state.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Active => "active",
+            Self::Reloading => "reloading",
+            Self::Inactive => "inactive",
+            Self::Failed => "failed",
+            Self::Activating => "activating",
+            Self::Deactivating => "deactivating",
+            Self::Maintenance => "maintenance",
+            Self::Refreshing => "refreshing",
+            Self::Unknown(state) => state,
+        }
+    }
+
+    /// Reports whether the unit is fully active.
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        matches!(self, Self::Active)
+    }
+}
+
+/// Identifies one system bus lifetime and the exact systemd service owner.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManagerIncarnation {
+    bus_id: String,
+    owner: String,
+}
+
+impl ManagerIncarnation {
+    /// Returns the D-Bus GUID identifying this bus lifetime.
+    #[must_use]
+    pub fn bus_id(&self) -> &str {
+        &self.bus_id
+    }
+
+    /// Returns systemd's unique service owner within the bus lifetime.
+    #[must_use]
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    /// Returns an opaque durable token suitable for provider assignment identity.
+    #[must_use]
+    pub fn token(&self) -> String {
+        format!("bus:{};owner:{}", self.bus_id, self.owner)
+    }
 }
 
 /// A unit found in a failed (or failed-and-auto-restarting) state by
@@ -169,6 +262,128 @@ struct JobRegistry {
     closed: bool,
 }
 
+#[derive(Default)]
+struct PinnedJobRegistry {
+    /// Awaiters grouped by job path. systemd may merge concurrent requests and
+    /// return the same path to each caller, so one completion wakes the group.
+    waiters: BTreeMap<String, BTreeMap<u64, oneshot::Sender<JobResult>>>,
+    /// Results that raced ahead of one or more outstanding method replies.
+    completed: BTreeMap<String, JobResult>,
+    /// Calls whose method reply has not exposed the job path yet.
+    active_submissions: usize,
+    /// Total lifecycle calls holding one bounded registry reservation.
+    pending_calls: usize,
+    next_waiter_id: u64,
+    closed: bool,
+    /// Set when unrelated signals exhaust the bounded early-completion map.
+    overflowed: bool,
+}
+
+struct PinnedSubmission {
+    jobs: Arc<Mutex<PinnedJobRegistry>>,
+    before_reply: bool,
+    waiter: Option<(String, u64)>,
+    pending: bool,
+}
+
+enum PinnedRegistration {
+    Completed(JobResult),
+    Pending(oneshot::Receiver<JobResult>),
+}
+
+impl PinnedSubmission {
+    fn begin(jobs: &Arc<Mutex<PinnedJobRegistry>>) -> Result<Self> {
+        let mut registry = lock_pinned_registry(jobs);
+        if registry.overflowed {
+            return Err(Error::JobCompletionOverflow);
+        }
+        if registry.closed {
+            return Err(Error::JobSenderDropped("manager signal stream".to_string()));
+        }
+        if registry.pending_calls >= PINNED_COMPLETION_LIMIT {
+            return Err(Error::JobCompletionOverflow);
+        }
+        registry.pending_calls += 1;
+        registry.active_submissions += 1;
+
+        Ok(Self {
+            jobs: Arc::clone(jobs),
+            before_reply: true,
+            waiter: None,
+            pending: true,
+        })
+    }
+
+    fn register(&mut self, path_key: &str) -> Result<PinnedRegistration> {
+        let mut registry = lock_pinned_registry(&self.jobs);
+        registry.active_submissions = registry.active_submissions.saturating_sub(1);
+        self.before_reply = false;
+
+        if registry.overflowed {
+            return Err(Error::JobCompletionOverflow);
+        }
+        if let Some(result) = registry.completed.get(path_key).cloned() {
+            if registry.active_submissions == 0 {
+                registry.completed.clear();
+            }
+            registry.pending_calls = registry.pending_calls.saturating_sub(1);
+            self.pending = false;
+            return Ok(PinnedRegistration::Completed(result));
+        }
+        if registry.closed {
+            return Err(Error::JobSenderDropped(path_key.to_string()));
+        }
+        if registry.active_submissions == 0 {
+            registry.completed.clear();
+        }
+
+        let waiter_id = registry.next_waiter_id;
+        registry.next_waiter_id = registry
+            .next_waiter_id
+            .checked_add(1)
+            .ok_or(Error::JobCompletionOverflow)?;
+        let (sender, receiver) = oneshot::channel();
+        registry
+            .waiters
+            .entry(path_key.to_string())
+            .or_default()
+            .insert(waiter_id, sender);
+        self.waiter = Some((path_key.to_string(), waiter_id));
+
+        Ok(PinnedRegistration::Pending(receiver))
+    }
+
+    fn finish(&mut self) {
+        let mut registry = lock_pinned_registry(&self.jobs);
+        registry.pending_calls = registry.pending_calls.saturating_sub(1);
+        self.waiter = None;
+        self.pending = false;
+    }
+}
+
+impl Drop for PinnedSubmission {
+    fn drop(&mut self) {
+        if self.pending {
+            let mut registry = lock_pinned_registry(&self.jobs);
+            if self.before_reply {
+                registry.active_submissions = registry.active_submissions.saturating_sub(1);
+            }
+            if let Some((path, waiter_id)) = self.waiter.take()
+                && let Some(waiters) = registry.waiters.get_mut(&path)
+            {
+                waiters.remove(&waiter_id);
+                if waiters.is_empty() {
+                    registry.waiters.remove(&path);
+                }
+            }
+            registry.pending_calls = registry.pending_calls.saturating_sub(1);
+            if registry.active_submissions == 0 {
+                registry.completed.clear();
+            }
+        }
+    }
+}
+
 /// Typed async client for `org.freedesktop.systemd1`.
 pub struct SystemdClient {
     conn: zbus::Connection,
@@ -181,6 +396,30 @@ pub struct SystemdClient {
     job_event_rx: AsyncMutex<mpsc::UnboundedReceiver<()>>,
     /// Background signal-listener tasks; aborted on drop.
     tasks: Vec<JoinHandle<()>>,
+}
+
+/// A listener-free capability for one caller-selected systemd bus.
+///
+/// The connection itself fixes the manager scope. Native catalogs retain this
+/// capability and create bounded unique-owner pins from it; they never replace
+/// a supplied user, container, or initrd transport with the host system bus.
+#[derive(Clone)]
+pub struct SystemdManagerConnection {
+    conn: zbus::Connection,
+}
+
+/// A lifecycle client bound to one exact systemd service owner.
+///
+/// Calls are addressed to the owner's D-Bus unique name, and job completion
+/// signals flow into a registry owned only by this pin. This keeps an unrelated
+/// `JobRemoved` from a replacement manager from completing an earlier call
+/// that happened to receive the same object path.
+pub struct PinnedSystemdManager {
+    conn: zbus::Connection,
+    incarnation: ManagerIncarnation,
+    manager: ManagerProxy<'static>,
+    jobs: Arc<Mutex<PinnedJobRegistry>>,
+    job_task: JoinHandle<()>,
 }
 
 impl SystemdClient {
@@ -447,6 +686,22 @@ impl SystemdClient {
 
     // ---- Inspection -------------------------------------------------------
 
+    /// Returns the current bus and service-owner incarnation of systemd.
+    ///
+    /// A D-Bus unique name is unique only during one bus lifetime and may be
+    /// reused after restart. This token therefore combines the bus GUID with
+    /// the current unique owner of `org.freedesktop.systemd1`. Callers can
+    /// persist and recheck it across reconnection without confusing two bus
+    /// lifetimes that both assigned a name such as `:1.0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bus daemon cannot resolve
+    /// `org.freedesktop.systemd1` to a current unique owner.
+    pub async fn manager_incarnation(&self) -> Result<ManagerIncarnation> {
+        read_manager_incarnation(&self.conn).await
+    }
+
     /// Whether `name`'s `ActiveState == "active"`. A unit that isn't loaded
     /// (systemd returns `NoSuchUnit`) counts as not-active — matching
     /// `systemctl is-active` on an unknown unit.
@@ -470,11 +725,9 @@ impl SystemdClient {
         }
     }
 
-    /// Read a single property off a unit's `org.freedesktop.systemd1.Unit`
-    /// interface, returning the raw `OwnedValue`. Callers convert with
-    /// `T::try_from(value)`. (The spec sketched a generic `unit_property::<T>`;
-    /// returning `OwnedValue` avoids gnarly trait bounds while serving the same
-    /// callers — `is_active` and the `_test-systemd-client property` op.)
+    /// Reads one property from a unit's `org.freedesktop.systemd1.Unit`
+    /// interface and returns its exact D-Bus value. Callers convert the
+    /// [`OwnedValue`] according to the property's declared type.
     ///
     /// # Errors
     ///
@@ -693,6 +946,739 @@ impl SystemdClient {
     }
 }
 
+impl PinnedSystemdManager {
+    /// Opens the host system bus and pins its current systemd manager owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the system bus is unavailable or the manager cannot
+    /// be identified, subscribed, and rechecked on the new connection.
+    pub async fn connect() -> Result<Self> {
+        SystemdManagerConnection::system().await?.pin().await
+    }
+
+    /// Pins the current systemd manager on a caller-supplied bus connection.
+    ///
+    /// The connection must be attached to a real D-Bus broker because manager
+    /// identity uses the bus GUID and unique-name owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manager cannot be identified, subscribed, or
+    /// rechecked on the supplied connection.
+    pub async fn from_connection(conn: zbus::Connection) -> Result<Self> {
+        let incarnation = read_manager_incarnation(&conn).await?;
+        let manager = ManagerProxy::builder(&conn)
+            .destination(incarnation.owner.clone())?
+            .build()
+            .await?;
+
+        // Subscription state belongs to this bus connection and manager
+        // process, not to the proxy object. Addressing Subscribe to the unique
+        // owner proves which process accepted it and keeps replacement owners
+        // outside this pin's signal stream.
+        if let Err(error) = manager.subscribe().await
+            && !is_already_subscribed(&error)
+        {
+            return Err(error.into());
+        }
+
+        let mut job_removed = manager.receive_job_removed().await?;
+        let jobs = Arc::new(Mutex::new(PinnedJobRegistry::default()));
+        let jobs_for_task = Arc::clone(&jobs);
+        let job_task = tokio::spawn(async move {
+            while let Some(signal) = job_removed.next().await {
+                let Ok(args) = signal.args() else { continue };
+                let path_key = args.job.as_str().to_owned();
+                let result = JobResult::from_systemd(&args.result);
+                route_pinned_completion(&jobs_for_task, path_key, result);
+            }
+
+            let mut registry = lock_pinned_registry(&jobs_for_task);
+            registry.closed = true;
+            registry.waiters.clear();
+        });
+
+        let pinned = Self {
+            conn,
+            incarnation,
+            manager,
+            jobs,
+            job_task,
+        };
+        pinned.ensure_current().await?;
+        Ok(pinned)
+    }
+
+    /// Returns the bus and manager identity held by this pin.
+    #[must_use]
+    pub fn incarnation(&self) -> &ManagerIncarnation {
+        &self.incarnation
+    }
+
+    /// Loads one exact unit definition without starting the unit.
+    ///
+    /// This is a preparation operation for a newly published unit after a
+    /// daemon reload. The returned identity is the loaded object path, and the
+    /// unit's canonical `Id` must equal `name` so aliases cannot acquire
+    /// lifecycle authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manager incarnation changed, systemd cannot
+    /// load the unit, or the requested name resolves as an alias.
+    pub async fn load_unit(&self, name: &str) -> Result<String> {
+        self.ensure_current().await?;
+        let path = self.manager.load_unit(name).await?;
+        let identity = path.as_str().to_string();
+        let unit = UnitProxy::builder(&self.conn)
+            .destination(self.incarnation.owner.clone())?
+            .path(path)?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let canonical_name = unit.id().await?;
+        if canonical_name != name {
+            return Err(Error::UnitAlias {
+                requested: name.to_string(),
+                canonical: canonical_name,
+            });
+        }
+        Ok(identity)
+    }
+
+    /// Reloads manager configuration through this exact manager incarnation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manager changes before or during the reload,
+    /// or when systemd rejects the request.
+    pub async fn daemon_reload(&self) -> Result<()> {
+        self.ensure_current().await?;
+        self.manager.reload().await?;
+        self.ensure_current().await
+    }
+
+    /// Requests re-execution of this exact manager incarnation.
+    ///
+    /// The systemd D-Bus method intentionally has no reply. Callers must drop
+    /// this pin and establish a new one, then prove that its incarnation differs
+    /// before treating the re-execution as complete.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manager changed before the request or rejects
+    /// the no-reply call.
+    pub async fn reexecute(&self) -> Result<()> {
+        self.ensure_current().await?;
+        self.manager.reexecute().await?;
+        Ok(())
+    }
+
+    /// Starts a unit through the pinned owner and awaits its exact job result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manager incarnation changed, the call fails, or
+    /// the pinned signal stream closes before the job result arrives.
+    pub async fn start_unit(&self, name: &str) -> Result<JobOutcome> {
+        self.ensure_current().await?;
+        let submission = self.begin_submission()?;
+        let path = self.manager.start_unit(name, "replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Stops a unit through the pinned owner and awaits its exact job result.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`PinnedSystemdManager::start_unit`].
+    pub async fn stop_unit(&self, name: &str) -> Result<JobOutcome> {
+        self.ensure_current().await?;
+        let submission = self.begin_submission()?;
+        let path = self.manager.stop_unit(name, "replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Restarts a unit through the pinned owner and awaits its exact job result.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`PinnedSystemdManager::start_unit`].
+    pub async fn restart_unit(&self, name: &str) -> Result<JobOutcome> {
+        self.ensure_current().await?;
+        let submission = self.begin_submission()?;
+        let path = self.manager.restart_unit(name, "replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Reloads a unit through the pinned owner and awaits its exact job result.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`PinnedSystemdManager::start_unit`].
+    pub async fn reload_unit(&self, name: &str) -> Result<JobOutcome> {
+        self.ensure_current().await?;
+        let submission = self.begin_submission()?;
+        let path = self.manager.reload_unit(name, "replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Starts one canonical unit after rechecking its admission-qualified identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `name` is an alias, the unit object changed since
+    /// admission, the manager incarnation changed, or the job does not complete.
+    pub async fn start_unit_exact(
+        &self,
+        name: &str,
+        expected_identity: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        let submission = self.begin_submission()?;
+        let path = unit.start("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Starts one canonical unit after rechecking its object and loaded revision.
+    ///
+    /// `expected_revision` is the semantic revision encoded by the canonical
+    /// AOS `file:` receipt URI in the unit's parsed `Documentation=` property.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the unit identity or loaded revision changed, the
+    /// revision marker is missing or ambiguous, or the job does not complete.
+    pub async fn start_unit_exact_revision(
+        &self,
+        name: &str,
+        expected_identity: &str,
+        expected_revision: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self
+            .exact_unit_revision(name, expected_identity, expected_revision)
+            .await?;
+        let submission = self.begin_submission()?;
+        let path = unit.start("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Starts one canonical unit only when its loaded definition is current.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the unit identity changed, systemd reports that a
+    /// daemon reload is needed, or the job does not complete.
+    pub async fn start_unit_exact_current(
+        &self,
+        name: &str,
+        expected_identity: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        if unit.need_daemon_reload().await? {
+            return Err(Error::UnitNeedsDaemonReload {
+                unit: name.to_string(),
+            });
+        }
+        let submission = self.begin_submission()?;
+        let path = unit.start("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Stops one canonical unit after rechecking its admission-qualified identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact`].
+    pub async fn stop_unit_exact(&self, name: &str, expected_identity: &str) -> Result<JobOutcome> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        let submission = self.begin_submission()?;
+        let path = unit.stop("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Stops one canonical unit after rechecking its object and loaded revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact_revision`].
+    pub async fn stop_unit_exact_revision(
+        &self,
+        name: &str,
+        expected_identity: &str,
+        expected_revision: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self
+            .exact_unit_revision(name, expected_identity, expected_revision)
+            .await?;
+        let submission = self.begin_submission()?;
+        let path = unit.stop("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Restarts one canonical unit after rechecking its admission-qualified identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact`].
+    pub async fn restart_unit_exact(
+        &self,
+        name: &str,
+        expected_identity: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        let submission = self.begin_submission()?;
+        let path = unit.restart("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Restarts one canonical unit after rechecking its object and loaded revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact_revision`].
+    pub async fn restart_unit_exact_revision(
+        &self,
+        name: &str,
+        expected_identity: &str,
+        expected_revision: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self
+            .exact_unit_revision(name, expected_identity, expected_revision)
+            .await?;
+        let submission = self.begin_submission()?;
+        let path = unit.restart("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Reloads one canonical unit after rechecking its admission-qualified identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact`].
+    pub async fn reload_unit_exact(
+        &self,
+        name: &str,
+        expected_identity: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        let submission = self.begin_submission()?;
+        let path = unit.reload("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Reloads one canonical unit after rechecking its object and loaded revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact_revision`].
+    pub async fn reload_unit_exact_revision(
+        &self,
+        name: &str,
+        expected_identity: &str,
+        expected_revision: &str,
+    ) -> Result<JobOutcome> {
+        let unit = self
+            .exact_unit_revision(name, expected_identity, expected_revision)
+            .await?;
+        let submission = self.begin_submission()?;
+        let path = unit.reload("replace").await?;
+        self.await_submission(submission, path).await
+    }
+
+    /// Reports whether a unit is active according to the pinned owner.
+    ///
+    /// An unloaded unit is inactive.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manager incarnation changed or the D-Bus
+    /// inspection fails for a reason other than `NoSuchUnit`.
+    pub async fn is_active(&self, name: &str) -> Result<bool> {
+        self.ensure_current().await?;
+        match self.manager.get_unit(name).await {
+            Ok(path) => {
+                let unit = UnitProxy::builder(&self.conn)
+                    .destination(self.incarnation.owner.clone())?
+                    .path(path)?
+                    .cache_properties(CacheProperties::No)
+                    .build()
+                    .await?;
+                Ok(unit.active_state().await? == "active")
+            }
+            Err(error) if is_no_such_unit(&error) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Reports activity only after rechecking a canonical qualified unit identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact`], plus failures
+    /// while reading the unit's active state.
+    pub async fn is_active_exact(&self, name: &str, expected_identity: &str) -> Result<bool> {
+        Ok(self
+            .active_state_exact(name, expected_identity)
+            .await?
+            .is_active())
+    }
+
+    /// Returns a unit's exact active state after rechecking its qualified identity.
+    ///
+    /// Unknown future systemd labels remain available through
+    /// [`UnitActiveState::Unknown`] instead of being collapsed into inactivity.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact`], plus failures
+    /// while reading the unit's active state.
+    pub async fn active_state_exact(
+        &self,
+        name: &str,
+        expected_identity: &str,
+    ) -> Result<UnitActiveState> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        Ok(UnitActiveState::from_systemd(&unit.active_state().await?))
+    }
+
+    /// Reports whether one exact loaded unit needs a manager reload.
+    ///
+    /// The property is read without a proxy cache from the canonical unit
+    /// object selected during admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact`], plus failures
+    /// while reading systemd's `NeedDaemonReload` property.
+    pub async fn needs_daemon_reload_exact(
+        &self,
+        name: &str,
+        expected_identity: &str,
+    ) -> Result<bool> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        Ok(unit.need_daemon_reload().await?)
+    }
+
+    /// Returns a unit's active state after checking its object and loaded revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact_revision`], plus
+    /// failures while reading the unit's active state.
+    pub async fn active_state_exact_revision(
+        &self,
+        name: &str,
+        expected_identity: &str,
+        expected_revision: &str,
+    ) -> Result<UnitActiveState> {
+        let unit = self
+            .exact_unit_revision(name, expected_identity, expected_revision)
+            .await?;
+        Ok(UnitActiveState::from_systemd(&unit.active_state().await?))
+    }
+
+    /// Resolves a configured unit name to systemd's canonical object identity.
+    ///
+    /// The resolved object's canonical `Id` must equal `name`, so aliases are
+    /// rejected before they can become durable resource bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manager incarnation changed or the unit cannot
+    /// be resolved by the pinned owner.
+    pub async fn unit_identity(&self, name: &str) -> Result<String> {
+        let (identity, canonical_name) = self.resolve_unit_identity(name).await?;
+        if canonical_name != name {
+            return Err(Error::UnitAlias {
+                requested: name.to_string(),
+                canonical: canonical_name,
+            });
+        }
+        Ok(identity)
+    }
+
+    /// Resolves a canonical unit and verifies the revision parsed by systemd.
+    ///
+    /// This reads the uncached `Documentation` property from the loaded unit
+    /// object. Exactly one entry must equal the canonical AOS `file:` receipt
+    /// URI for this unit and revision; missing, duplicate, or conflicting AOS
+    /// receipt markers fail closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manager changed, the name is an alias, the
+    /// unit is not loaded, or its loaded AOS revision is absent or differs.
+    pub async fn unit_identity_at_revision(
+        &self,
+        name: &str,
+        expected_revision: &str,
+    ) -> Result<String> {
+        let (identity, unit) = self.resolve_unit(name).await?;
+        require_unit_revision(name, &unit.documentation().await?, expected_revision)?;
+        Ok(identity)
+    }
+
+    async fn exact_unit<'a>(
+        &'a self,
+        name: &str,
+        expected_identity: &str,
+    ) -> Result<UnitProxy<'a>> {
+        self.ensure_current().await?;
+        let path = self.manager.get_unit(name).await?;
+        let actual = path.as_str().to_string();
+        let unit = UnitProxy::builder(&self.conn)
+            .destination(self.incarnation.owner.clone())?
+            .path(path)?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let canonical_name = unit.id().await?;
+        if canonical_name != name {
+            return Err(Error::UnitAlias {
+                requested: name.to_string(),
+                canonical: canonical_name,
+            });
+        }
+        if actual != expected_identity {
+            return Err(Error::UnitIdentityChanged {
+                unit: name.to_string(),
+                expected: expected_identity.to_string(),
+                actual,
+            });
+        }
+        Ok(unit)
+    }
+
+    async fn exact_unit_revision<'a>(
+        &'a self,
+        name: &str,
+        expected_identity: &str,
+        expected_revision: &str,
+    ) -> Result<UnitProxy<'a>> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        require_unit_revision(name, &unit.documentation().await?, expected_revision)?;
+        Ok(unit)
+    }
+
+    async fn resolve_unit_identity(&self, name: &str) -> Result<(String, String)> {
+        let (identity, unit) = self.resolve_unit(name).await?;
+        let canonical_name = unit.id().await?;
+        Ok((identity, canonical_name))
+    }
+
+    async fn resolve_unit<'a>(&'a self, name: &str) -> Result<(String, UnitProxy<'a>)> {
+        self.ensure_current().await?;
+        let path = self.manager.get_unit(name).await?;
+        let identity = path.as_str().to_string();
+        let unit = UnitProxy::builder(&self.conn)
+            .destination(self.incarnation.owner.clone())?
+            .path(path)?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let canonical_name = unit.id().await?;
+        if canonical_name != name {
+            return Err(Error::UnitAlias {
+                requested: name.to_string(),
+                canonical: canonical_name,
+            });
+        }
+        Ok((identity, unit))
+    }
+
+    async fn ensure_current(&self) -> Result<()> {
+        if read_manager_incarnation(&self.conn).await? == self.incarnation {
+            Ok(())
+        } else {
+            Err(Error::ManagerIncarnationChanged)
+        }
+    }
+
+    fn begin_submission(&self) -> Result<PinnedSubmission> {
+        PinnedSubmission::begin(&self.jobs)
+    }
+
+    async fn await_submission(
+        &self,
+        mut submission: PinnedSubmission,
+        path: OwnedObjectPath,
+    ) -> Result<JobOutcome> {
+        let path_key = path.as_str().to_owned();
+        let receiver = match submission.register(&path_key)? {
+            PinnedRegistration::Completed(result) => {
+                return Ok(JobOutcome {
+                    job_path: path,
+                    result,
+                });
+            }
+            PinnedRegistration::Pending(receiver) => receiver,
+        };
+        let result = match receiver.await {
+            Ok(result) => result,
+            Err(_) if lock_pinned_registry(&self.jobs).overflowed => {
+                return Err(Error::JobCompletionOverflow);
+            }
+            Err(_) => return Err(Error::JobSenderDropped(path.as_str().to_string())),
+        };
+        submission.finish();
+        Ok(JobOutcome {
+            job_path: path,
+            result,
+        })
+    }
+}
+
+const UNIT_REVISION_RECEIPT_PREFIX: &str = "file:/etc/aos/ability-revisions/";
+
+fn require_unit_revision(
+    unit: &str,
+    documentation: &[String],
+    expected_revision: &str,
+) -> Result<()> {
+    let mut revisions = documentation
+        .iter()
+        .filter(|entry| entry.starts_with(UNIT_REVISION_RECEIPT_PREFIX));
+    let Some(actual) = revisions.next() else {
+        return Err(Error::UnitRevisionUnknown {
+            unit: unit.to_string(),
+        });
+    };
+    if revisions.next().is_some() {
+        return Err(Error::UnitRevisionUnknown {
+            unit: unit.to_string(),
+        });
+    }
+    let expected = unit_revision_receipt_uri(unit, expected_revision).ok_or_else(|| {
+        Error::UnitRevisionUnknown {
+            unit: unit.to_string(),
+        }
+    })?;
+    if actual != &expected {
+        return Err(Error::UnitRevisionChanged {
+            unit: unit.to_string(),
+            expected,
+            actual: (*actual).clone(),
+        });
+    }
+    Ok(())
+}
+
+fn unit_revision_receipt_uri(unit: &str, revision: &str) -> Option<String> {
+    let digest = revision.strip_prefix("sha256:")?;
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return None;
+    }
+    Some(format!(
+        "{UNIT_REVISION_RECEIPT_PREFIX}{}/sha256/{digest}",
+        encode_uri_path_segment(unit)
+    ))
+}
+
+fn encode_uri_path_segment(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    encoded
+}
+
+impl SystemdManagerConnection {
+    /// Opens an explicit host system-bus capability without starting listeners.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::SystemdUnavailable`] when the host system bus cannot be
+    /// reached.
+    pub async fn system() -> Result<Self> {
+        let conn = zbus::Connection::system()
+            .await
+            .map_err(Error::SystemdUnavailable)?;
+        Ok(Self { conn })
+    }
+
+    /// Wraps a caller-selected bus connection without changing its scope.
+    #[must_use]
+    pub const fn from_connection(conn: zbus::Connection) -> Self {
+        Self { conn }
+    }
+
+    /// Pins the current manager on this exact connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manager cannot be identified, subscribed, or
+    /// rechecked on the retained connection.
+    pub async fn pin(&self) -> Result<PinnedSystemdManager> {
+        PinnedSystemdManager::from_connection(self.conn.clone()).await
+    }
+}
+
+impl Drop for PinnedSystemdManager {
+    fn drop(&mut self) {
+        self.job_task.abort();
+    }
+}
+
+async fn read_manager_incarnation(conn: &zbus::Connection) -> Result<ManagerIncarnation> {
+    let proxy = zbus::fdo::DBusProxy::new(conn).await?;
+    let service =
+        zbus::names::BusName::try_from("org.freedesktop.systemd1").map_err(zbus::Error::from)?;
+    let bus = proxy.get_id().await?;
+    let owner = proxy.get_name_owner(service).await?;
+    Ok(ManagerIncarnation {
+        bus_id: bus.to_string(),
+        owner: owner.to_string(),
+    })
+}
+
+fn is_already_subscribed(error: &zbus::Error) -> bool {
+    matches!(error, zbus::Error::MethodError(name, _, _) if name.as_str() == SYSTEMD_ALREADY_SUBSCRIBED)
+}
+
+fn lock_pinned_registry(
+    registry: &Mutex<PinnedJobRegistry>,
+) -> std::sync::MutexGuard<'_, PinnedJobRegistry> {
+    registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn route_pinned_completion(jobs: &Mutex<PinnedJobRegistry>, path_key: String, result: JobResult) {
+    let mut registry = lock_pinned_registry(jobs);
+    let waiters = registry.waiters.remove(&path_key).unwrap_or_default();
+    for sender in waiters.into_values() {
+        let _ = sender.send(result.clone());
+    }
+
+    if registry.active_submissions == 0 {
+        return;
+    }
+    if registry.completed.contains_key(&path_key)
+        || registry.completed.len() < PINNED_COMPLETION_LIMIT
+    {
+        registry.completed.insert(path_key, result);
+        return;
+    }
+
+    registry.overflowed = true;
+    registry.completed.clear();
+    registry.waiters.clear();
+}
+
 impl Drop for SystemdClient {
     fn drop(&mut self) {
         // Stop the background listeners.
@@ -725,5 +1711,183 @@ async fn systemctl_status(unit: &str) -> String {
     {
         Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
         Err(e) => format!("(failed to capture `systemctl status {unit}`: {e})"),
+    }
+}
+
+#[cfg(test)]
+mod pinned_tests {
+    use super::*;
+
+    #[test]
+    fn loaded_unit_revision_requires_one_exact_marker() {
+        let revision = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let marker = unit_revision_receipt_uri("example.service", revision).unwrap();
+
+        require_unit_revision("example.service", &[marker.clone()], revision).unwrap();
+        assert!(matches!(
+            require_unit_revision("example.service", &[], revision),
+            Err(Error::UnitRevisionUnknown { .. })
+        ));
+        assert!(matches!(
+            require_unit_revision(
+                "example.service",
+                &[marker.clone(), marker.clone(),],
+                revision,
+            ),
+            Err(Error::UnitRevisionUnknown { .. })
+        ));
+        assert!(matches!(
+            require_unit_revision(
+                "example.service",
+                &[
+                    marker,
+                    unit_revision_receipt_uri(
+                        "example.service",
+                        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    )
+                    .unwrap(),
+                ],
+                revision,
+            ),
+            Err(Error::UnitRevisionUnknown { .. })
+        ));
+        assert!(matches!(
+            require_unit_revision(
+                "example.service",
+                &[unit_revision_receipt_uri(
+                    "example.service",
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                )
+                .unwrap()],
+                revision,
+            ),
+            Err(Error::UnitRevisionChanged { .. })
+        ));
+    }
+
+    #[test]
+    fn unrelated_early_completions_fail_closed_at_the_bound() {
+        let jobs = Mutex::new(PinnedJobRegistry {
+            active_submissions: 1,
+            pending_calls: 1,
+            ..PinnedJobRegistry::default()
+        });
+
+        for index in 0..PINNED_COMPLETION_LIMIT {
+            route_pinned_completion(&jobs, format!("/unrelated/{index}"), JobResult::Done);
+        }
+        assert_eq!(
+            lock_pinned_registry(&jobs).completed.len(),
+            PINNED_COMPLETION_LIMIT
+        );
+
+        route_pinned_completion(&jobs, "/overflow".to_string(), JobResult::Done);
+        let registry = lock_pinned_registry(&jobs);
+        assert!(registry.overflowed);
+        assert!(registry.completed.is_empty());
+    }
+
+    #[test]
+    fn idle_pinned_registry_discards_unrelated_completions() {
+        let jobs = Mutex::new(PinnedJobRegistry::default());
+
+        route_pinned_completion(&jobs, "/unrelated/1".to_string(), JobResult::Done);
+
+        assert!(lock_pinned_registry(&jobs).completed.is_empty());
+    }
+
+    #[test]
+    fn never_completing_calls_are_bounded_across_registered_waiters() {
+        let jobs = Arc::new(Mutex::new(PinnedJobRegistry::default()));
+        let mut calls = Vec::with_capacity(PINNED_COMPLETION_LIMIT);
+
+        for index in 0..PINNED_COMPLETION_LIMIT {
+            let mut submission = PinnedSubmission::begin(&jobs).unwrap();
+            let registration = submission.register(&format!("/job/{index}")).unwrap();
+            assert!(matches!(registration, PinnedRegistration::Pending(_)));
+            calls.push(submission);
+        }
+
+        let registry = lock_pinned_registry(&jobs);
+        assert_eq!(registry.pending_calls, PINNED_COMPLETION_LIMIT);
+        assert_eq!(
+            registry.waiters.values().map(BTreeMap::len).sum::<usize>(),
+            PINNED_COMPLETION_LIMIT
+        );
+        drop(registry);
+        assert!(matches!(
+            PinnedSubmission::begin(&jobs),
+            Err(Error::JobCompletionOverflow)
+        ));
+
+        drop(calls);
+        let registry = lock_pinned_registry(&jobs);
+        assert_eq!(registry.pending_calls, 0);
+        assert!(registry.waiters.is_empty());
+    }
+
+    #[test]
+    fn dropping_an_awaiting_call_removes_its_waiter() {
+        let jobs = Arc::new(Mutex::new(PinnedJobRegistry::default()));
+        let mut submission = PinnedSubmission::begin(&jobs).unwrap();
+        let registration = submission.register("/job/cancelled").unwrap();
+        assert!(matches!(registration, PinnedRegistration::Pending(_)));
+        assert_eq!(lock_pinned_registry(&jobs).pending_calls, 1);
+
+        drop(submission);
+
+        let registry = lock_pinned_registry(&jobs);
+        assert_eq!(registry.pending_calls, 0);
+        assert!(registry.waiters.is_empty());
+    }
+
+    #[tokio::test]
+    async fn duplicate_job_path_completion_wakes_every_waiter() {
+        let jobs = Arc::new(Mutex::new(PinnedJobRegistry::default()));
+        let mut first = PinnedSubmission::begin(&jobs).unwrap();
+        let mut second = PinnedSubmission::begin(&jobs).unwrap();
+        let PinnedRegistration::Pending(first_receiver) = first.register("/job/merged").unwrap()
+        else {
+            panic!("first call unexpectedly completed before a signal");
+        };
+        let PinnedRegistration::Pending(second_receiver) = second.register("/job/merged").unwrap()
+        else {
+            panic!("second call unexpectedly completed before a signal");
+        };
+
+        route_pinned_completion(&jobs, "/job/merged".to_string(), JobResult::Done);
+
+        assert_eq!(first_receiver.await.unwrap(), JobResult::Done);
+        assert_eq!(second_receiver.await.unwrap(), JobResult::Done);
+        first.finish();
+        second.finish();
+        let registry = lock_pinned_registry(&jobs);
+        assert_eq!(registry.pending_calls, 0);
+        assert!(registry.waiters.is_empty());
+    }
+
+    #[tokio::test]
+    async fn merged_early_completion_reaches_a_later_method_reply() {
+        let jobs = Arc::new(Mutex::new(PinnedJobRegistry::default()));
+        let mut first = PinnedSubmission::begin(&jobs).unwrap();
+        let mut second = PinnedSubmission::begin(&jobs).unwrap();
+        let PinnedRegistration::Pending(first_receiver) = first.register("/job/merged").unwrap()
+        else {
+            panic!("first call unexpectedly completed before a signal");
+        };
+
+        route_pinned_completion(&jobs, "/job/merged".to_string(), JobResult::Done);
+
+        let PinnedRegistration::Completed(second_result) = second.register("/job/merged").unwrap()
+        else {
+            panic!("early completion was not retained for the pending method reply");
+        };
+        assert_eq!(first_receiver.await.unwrap(), JobResult::Done);
+        assert_eq!(second_result, JobResult::Done);
+        first.finish();
+        let registry = lock_pinned_registry(&jobs);
+        assert_eq!(registry.pending_calls, 0);
+        assert!(registry.completed.is_empty());
+        assert!(registry.waiters.is_empty());
     }
 }

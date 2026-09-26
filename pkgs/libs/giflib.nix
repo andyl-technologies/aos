@@ -4,6 +4,7 @@
   callPackage,
   buildPackages,
   stdenv,
+  lib,
 }: let
   version = "6.1.3-unstable-a8e3114";
   src = callPackage ./_giflib-source.nix {};
@@ -13,7 +14,78 @@
     else "Linux";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "giflib";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A valid one-pixel GIF89a image.";
+        operation = "Decode the image with the installed giftext utility.";
+        expected = "The decoder reports one image with a one-by-one screen.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''                import pathlib, subprocess, sys
+                image = pathlib.Path(sys.argv[2])
+                image.write_bytes(bytes.fromhex(
+                    "47494638396101000100800000000000ffffff21f9040100000000"
+                    "2c00000000010001000002024401003b"
+                ))
+                result = subprocess.run([sys.argv[1], str(image)], check=True, capture_output=True, text=True)
+                assert "Screen Size - Width = 1, Height = 1." in result.stdout
+                assert "GIF file terminated normally." in result.stdout
+                print("giflib decoded one-pixel image")
+              ''
+              "@out@/bin/giftext"
+              "@work@/sample.gif"
+            ];
+            exit_code = 0;
+            stdout.exact = "giflib decoded one-pixel image\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "Bytes that do not have a GIF header.";
+        operation = "Decode the malformed file with the installed giftext utility.";
+        expected = "The decoder rejects the malformed image.";
+        files."bad.gif" = "not a gif";
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/giftext" "@work@/bad.gif"];
+            exit_code = 1;
+            observes_rejection = true;
+            stdout.exact = "";
+            stderr.exact = "GIF-LIB error: Data is not in GIF format.\n";
+          }
+        ];
+      };
+    };
     inherit version src;
     buildDeps = [buildPackages.gnumake buildPackages.libxslt buildPackages.docbook-xml buildPackages.docbook-xsl];
     runtimeDeps = [];

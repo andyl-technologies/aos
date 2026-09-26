@@ -1,46 +1,45 @@
 //! Package publication orchestration and its exclusive authoring-clone lock.
 
 use crate::config::ApmConfig;
-use crate::provenance::ProvenanceSigner;
-use crate::registry::parse::ImageVerificationState;
-use crate::registry::sb_certs::SbCertsToml;
-use crate::registry::{objectstore, sb_certs, store};
-use crate::registry_ops::attestation::{
-    publish_config_attestation_meta, publish_documentation_attestation_meta,
+use crate::package_contract::{
+    PackageContractCoordinate, ability_provenance_statement, canonical_nar_hash,
+    contract_retention_digest,
 };
-use crate::registry_ops::config::{
-    format_size, read_registry_toml, registry_content_addressed, resolve_registry_name,
-};
-use crate::registry_ops::config_modules::{
-    parse_config_dependency_outputs, read_publish_config_module,
-};
-use crate::registry_ops::documentation::{
-    derive_system_documentation, publish_package_documentation,
-};
+use crate::provenance::{ProvenanceSigner, sign_statement_dsse_jsonl_external};
+use crate::registry::parse::parse_package_file;
+use crate::registry::{objectstore, store};
+use crate::registry_ops::attestation::publish_documentation_attestation_meta;
+use crate::registry_ops::config::{format_size, registry_content_addressed, resolve_registry_name};
+use crate::registry_ops::documentation::publish_package_documentation;
 use crate::registry_ops::git::{
     commit_registry_paths, current_git_head, refresh_registry_object_store,
 };
 use crate::registry_ops::images::{PublishedImage, inspect_published_image};
-use crate::registry_ops::mac::{
-    infer_publish_expose_artifact, read_publish_expose_manifest, read_publish_manifest_digest,
+use crate::registry_ops::metadata::{
+    build_package_toml, record_named_output, record_package_contract, record_package_documentation,
 };
-use crate::registry_ops::metadata::{build_package_toml_with_documentation, record_named_output};
+use crate::registry_ops::package_contract::{
+    PackageContractSelectorRegistry, resolve_release_projection, resolve_store_artifact,
+};
+use crate::registry_ops::package_contract_transparency::append_package_contract_transparency_log;
 use crate::registry_ops::provenance::{
     append_package_provenance_transparency_log, bind_documentation_provenance,
-    publish_config_provenance_artifact_with_documentation,
-    publish_documentation_provenance_artifact, publish_provenance_artifact_with_documentation,
-    resolve_package_provenance_signer, validate_external_provenance_signer,
+    publish_documentation_provenance_artifact, validate_external_provenance_signer,
 };
 use crate::registry_ops::signing::resolve_producer_signing_key;
 use crate::registry_ops::store_paths::{
     first_letter, introspect_deriver, introspect_store_path, parse_store_path,
     resolve_publish_platform, validate_store_path_release_policy, write_store_files,
 };
-use crate::registry_ops::uki::sb_db_cert_path;
 use crate::registry_ops::workflow::{current_git_branch, git_branch_entries};
-use crate::types::{validate_package_name, validate_registry_name};
+use crate::types::{
+    PackageContractDocumentMeta, PackageContractMeta, validate_package_name, validate_registry_name,
+};
 use anyhow::{Context, Result, bail};
+use aos_ability_model::VersionedDocument;
+use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
+use std::collections::BTreeSet;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -49,50 +48,28 @@ use std::path::{Path, PathBuf};
 /// `apr publish <STORE_PATH>` — records a built Nix store path in the
 /// registry.
 ///
-/// Introspects the store path (NAR hash and size, closure size, direct
-/// references, and the source derivation when known), writes or merges the
-/// entry in `packages/<letter>/<name>.toml`, and regenerates the closure
-/// adjacency file under `closures/`. Unless `--no-commit` is set, the
-/// touched paths are committed (SSH-signed when `--key`/`--key-id` is
-/// given) and the dumb-HTTP object store is refreshed.
+/// Ordinary package publication selects the exact primary output from the
+/// target's evaluated derivation inventory. Package metadata, generated
+/// documentation, named outputs, and any package contract are authored from
+/// that one record and committed atomically with the complete realization
+/// graph.
 ///
-/// Package name and version are parsed from the store path basename and can
-/// be overridden. Platform is read from the output's AOS target-platform
-/// marker, falling back to the producer's native platform for legacy outputs;
-/// `--platform` may override only an unstamped output or agree with its stamp.
-/// `--image-payload`, `--image-disk`,
-/// `--image-info`, `--image-format`, and `--image-uki` groups attach explicit
-/// cache artifacts and their exact canonical UKI to the platform entry;
-/// `--sysroot` marks
-/// the package as a system root, `--previous` records the predecessor
-/// version for delta upgrades, and `--source-drv` records explicit source
-/// provenance for prebuilt binaries whose deriver is not visible to Nix.
-/// `--expose-manifest` records the RFC-0001 expose and permission metadata
-/// rendered by the package builder. Exposed packages also emit DSSE-wrapped
-/// provenance, so they must be published with `--key-id`; a raw `--key` has
-/// no stable roster id for the DSSE builder identity.
-///
-/// `--config-module` publishes the package's config-only companion output.
-/// `--config-base-lib` is required with it and records the exact options
-/// library used by the restricted, no-IFD options-only evaluation. The signed
-/// provenance binds the payload, config output, base lib, and (when present)
-/// expose manifest in one statement.
-/// `--documentation-base-lib` additionally extracts image-owned service
-/// options selected by the base library's canonical Nix service catalog. It
-/// changes documentation only and never grants package configuration authority.
+/// Manual metadata, source overrides, and `--no-commit` apply only to sysroot
+/// image entries. `--image-payload`, `--image-disk`,
+/// `--image-info`, `--image-format`, and `--image-contract-schema` groups attach
+/// disk bytes and an opaque provider-owned artifact contract to the platform entry;
+/// `--sysroot` marks the package as a system root, and `--previous` records the
+/// predecessor version for delta upgrades.
 ///
 /// # Errors
 ///
-/// Fails when required package distribution metadata is missing, empty, or a
-/// legacy placeholder; when the registry has no writable authoring clone;
-/// when the package name is not safe for registry package paths; when the
-/// platform name is not safe for package metadata; when the image arguments are not
-/// given in triples or their files/metadata disagree, when the `nix path-info` /
-/// `nix-store` queries fail for the store path, when `--expose-manifest`
-/// cannot be parsed or validated, when the config output references a
-/// derivation, when authored config metadata disagrees with the mechanically
-/// evaluated/scanned interface, or when a file write, the commit, or the
-/// object-store refresh fails. Policy-bearing internal components also fail
+/// Fails when the requested ordinary path is absent from the evaluated target
+/// inventory, authenticated publication metadata is incomplete, the registry
+/// has no writable authoring clone, or the registry tree is dirty. Sysroot
+/// publication also fails when required manual metadata is absent or its image
+/// argument groups disagree. Both modes fail when Nix introspection, file
+/// authoring, signing, committing, or object-store refresh fails.
+/// Policy-bearing internal components also fail
 /// when published directly, and aggregate roots fail unless their restricted
 /// component and corresponding source are direct runtime references.
 ///
@@ -114,12 +91,7 @@ pub async fn publish(
     image_disk_paths: &[String],
     image_info_paths: &[String],
     image_formats: &[String],
-    image_uki_paths: &[String],
-    expose_manifest_path: Option<&str>,
-    config_module_path: Option<&str>,
-    config_base_lib_path: Option<&str>,
-    documentation_base_lib_path: Option<&str>,
-    config_dependencies: &[String],
+    image_contract_schemas: &[String],
     bless: bool,
     no_ca: bool,
     no_commit: bool,
@@ -131,6 +103,32 @@ pub async fn publish(
 ) -> Result<()> {
     let registry_name = resolve_registry_name(config, registry)?;
     let registry_dir = config.scope.registries_path().join(&registry_name);
+
+    if !sysroot {
+        return super::inventory_publish::publish_evaluated_package(
+            config,
+            &registry_dir,
+            &registry_name,
+            store_path,
+            name_override,
+            version_override,
+            platform_override,
+            description,
+            homepage,
+            license,
+            maintainer,
+            previous,
+            source_drv,
+            bless,
+            no_ca,
+            no_commit,
+            message,
+            key,
+            key_id,
+            printer,
+        )
+        .await;
+    }
 
     publish_to_registry_directory(
         config,
@@ -151,12 +149,7 @@ pub async fn publish(
         image_disk_paths,
         image_info_paths,
         image_formats,
-        image_uki_paths,
-        expose_manifest_path,
-        config_module_path,
-        config_base_lib_path,
-        documentation_base_lib_path,
-        config_dependencies,
+        image_contract_schemas,
         bless,
         no_ca,
         no_commit,
@@ -195,19 +188,14 @@ pub(crate) async fn publish_to_registry_directory(
     image_disk_paths: &[String],
     image_info_paths: &[String],
     image_formats: &[String],
-    image_uki_paths: &[String],
-    expose_manifest_path: Option<&str>,
-    config_module_path: Option<&str>,
-    config_base_lib_path: Option<&str>,
-    documentation_base_lib_path: Option<&str>,
-    config_dependencies: &[String],
+    image_contract_schemas: &[String],
     bless: bool,
     no_ca: bool,
     no_commit: bool,
     message: Option<&str>,
     key: Option<&str>,
     key_id: Option<&str>,
-    external_provenance_signer: Option<&mut dyn ProvenanceSigner>,
+    _external_provenance_signer: Option<&mut dyn ProvenanceSigner>,
     printer: &Printer,
 ) -> Result<()> {
     let description = required_publish_metadata(description, "--description", "No description")?;
@@ -216,8 +204,6 @@ pub(crate) async fn publish_to_registry_directory(
 
     validate_registry_name(name)?;
     ensure_writable_registry_clone(name, dir)?;
-    let require_signed_ukis =
-        read_registry_toml(dir)?.is_some_and(|root| root.registry.require_signed_ukis);
     if let Some(name) = name_override {
         validate_package_name(name)?;
     }
@@ -233,22 +219,16 @@ pub(crate) async fn publish_to_registry_directory(
     if image_payload_paths.len() != image_disk_paths.len()
         || image_payload_paths.len() != image_info_paths.len()
         || image_payload_paths.len() != image_formats.len()
-        || image_payload_paths.len() != image_uki_paths.len()
+        || image_payload_paths.len() != image_contract_schemas.len()
     {
         bail!(
-            "--image-payload, --image-disk, --image-info, --image-format, and --image-uki must be specified in groups ({} payloads, {} disks, {} metadata files, {} formats, {} UKIs)",
+            "--image-payload, --image-disk, --image-info, --image-format, and --image-contract-schema must be specified in groups ({} payloads, {} disks, {} metadata files, {} formats, {} schemas)",
             image_payload_paths.len(),
             image_disk_paths.len(),
             image_info_paths.len(),
             image_formats.len(),
-            image_uki_paths.len()
+            image_contract_schemas.len()
         );
-    }
-    if config_module_path.is_some() != config_base_lib_path.is_some() {
-        bail!("--config-module and --config-base-lib must be specified together");
-    }
-    if config_module_path.is_none() && !config_dependencies.is_empty() {
-        bail!("--config-dependency requires --config-module");
     }
     if !image_payload_paths.is_empty() && !sysroot {
         bail!("image artifact options are valid only with --sysroot");
@@ -271,46 +251,15 @@ pub(crate) async fn publish_to_registry_directory(
     let pkg_version = version_override.unwrap_or(&parsed_version);
     validate_package_name(pkg_name)?;
     let platform = resolve_publish_platform(&info.path, platform_override)?;
-    let config_module_info = config_module_path
-        .map(introspect_store_path)
-        .transpose()
-        .context("introspecting config-module store path")?;
-    let config_base_lib_info = config_base_lib_path
-        .map(introspect_store_path)
-        .transpose()
-        .context("introspecting config base-lib")?;
-    let documentation_base_lib_info = documentation_base_lib_path
-        .map(introspect_store_path)
-        .transpose()
-        .context("introspecting documentation base-lib")?;
-    let config_dependency_outputs = parse_config_dependency_outputs(config_dependencies, &info)?;
-    let config_module_bundle = match (config_module_info.as_ref(), config_base_lib_info.as_ref()) {
-        (Some(output), Some(base_lib)) => Some(read_publish_config_module(
-            output,
-            base_lib,
-            pkg_name,
-            &info.path,
-            &config_dependency_outputs,
-        )?),
-        (None, None) => None,
-        _ => bail!("--config-module and --config-base-lib must be specified together"),
-    };
-    let config_module = config_module_bundle.as_ref().map(|bundle| &bundle.metadata);
-    let system_documentation = documentation_base_lib_info
-        .map(|base_lib| derive_system_documentation(base_lib, pkg_name))
-        .transpose()?
-        .flatten();
-    // Bind the exact disk, canonical per-format metadata, and paired UKI
-    // before catalog construction. Committed Secure Boot policy is enforced
-    // below.
-    let sb_db_cert = sb_db_cert_path(config, name);
+    // Bind the exact disk and provider-owned contract without interpreting
+    // the selected provider's boot artifact schema.
     let mut image_infos: Vec<PublishedImage> = Vec::new();
-    for ((((payload_path, disk_path), info_path), img_fmt), uki_path) in image_payload_paths
+    for ((((payload_path, disk_path), info_path), img_fmt), contract_schema) in image_payload_paths
         .iter()
         .zip(image_disk_paths.iter())
         .zip(image_info_paths.iter())
         .zip(image_formats.iter())
-        .zip(image_uki_paths.iter())
+        .zip(image_contract_schemas.iter())
     {
         let payload_info = introspect_store_path(payload_path)?;
         let disk_info = introspect_store_path(disk_path)?;
@@ -320,73 +269,17 @@ pub(crate) async fn publish_to_registry_directory(
             payload_info,
             disk_info,
             metadata_info,
-            Path::new(uki_path),
+            contract_schema,
             pkg_name,
             pkg_version,
             &platform,
-            sb_db_cert.as_deref(),
         )?);
     }
-    let sb_catalog = sb_certs::load_sb_certs_toml(dir)?;
-    apply_publish_sb_policy(
-        &mut image_infos,
-        sb_catalog.as_ref(),
-        sb_db_cert.is_some(),
-        require_signed_ukis,
-    )?;
-    let expose_manifest = expose_manifest_path
-        .map(|path| read_publish_expose_manifest(path, pkg_name))
-        .transpose()?;
-    let expose_artifact_info = expose_manifest_path
-        .map(infer_publish_expose_artifact)
-        .transpose()?;
-    let expose_manifest_digest = expose_manifest_path
-        .map(|path| read_publish_manifest_digest(Path::new(path)))
-        .transpose()?;
-    let documentation_declarations = config_module_bundle
-        .as_ref()
-        .into_iter()
-        .flat_map(|bundle| bundle.declarations.iter().cloned())
-        .chain(
-            system_documentation
-                .as_ref()
-                .into_iter()
-                .flat_map(|surface| surface.declarations.iter().cloned()),
-        )
-        .collect::<Vec<_>>();
-    let documentation = publish_package_documentation(
-        pkg_name,
-        pkg_version,
-        &platform,
-        description,
-        homepage,
-        license,
-        &info,
-        source_info.as_ref(),
-        config_module,
-        config_module_bundle.as_ref().map(|bundle| &bundle.authored),
-        system_documentation.as_ref(),
-        expose_manifest.as_ref(),
-        expose_artifact_info.as_ref(),
-        &documentation_declarations,
-    )?;
-    let mut local_provenance_signer;
-    let provenance_signer: &mut dyn ProvenanceSigner =
-        if let Some(signer) = external_provenance_signer {
-            validate_external_provenance_signer(dir, signer)?;
-            signer
-        } else {
-            local_provenance_signer =
-                resolve_package_provenance_signer(dir, name, signing_key.as_ref(), key_id)?;
-            &mut local_provenance_signer
-        };
-
     let letter = first_letter(pkg_name);
     let pkg_dir = dir.join("packages").join(&letter);
 
-    // Everything above derives and validates the entry: store-path inspection,
-    // metadata, provenance signer resolution. Stop before taking the publish
-    // lock, because a preview must not block a concurrent real publisher.
+    // A preview has completed all derivation and validation work. Stop before
+    // taking the publication lock or writing any registry state.
     if crate::dry_run::active() {
         let toml_path = pkg_dir.join(format!("{pkg_name}.toml"));
         printer.info(&format!(
@@ -406,7 +299,7 @@ pub(crate) async fn publish_to_registry_directory(
         return Ok(());
     }
 
-    let _publish_lock = RegistryPublishLock::acquire(&dir)?;
+    let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(&dir)?;
 
     printer.step(2, 4, "Writing package TOML...");
     std::fs::create_dir_all(&pkg_dir)?;
@@ -420,33 +313,7 @@ pub(crate) async fn publish_to_registry_directory(
         String::new()
     };
 
-    let config_attestation = config_module
-        .map(|module| {
-            publish_config_attestation_meta(
-                pkg_name,
-                pkg_version,
-                &platform,
-                &info,
-                module,
-                expose_manifest_digest.as_deref(),
-            )
-        })
-        .transpose()?
-        .map(|attestation| {
-            bind_documentation_provenance(attestation, pkg_name, &platform, &documentation.metadata)
-        })
-        .transpose()?;
-    let documentation_attestation = if config_module.is_none() && expose_manifest.is_none() {
-        Some(bind_documentation_provenance(
-            publish_documentation_attestation_meta(pkg_name, pkg_version, &platform, &info)?,
-            pkg_name,
-            &platform,
-            &documentation.metadata,
-        )?)
-    } else {
-        None
-    };
-    let new_content = build_package_toml_with_documentation(
+    let new_content = build_package_toml(
         &content,
         pkg_name,
         pkg_version,
@@ -460,82 +327,9 @@ pub(crate) async fn publish_to_registry_directory(
         previous,
         &image_infos,
         source_info.as_ref(),
-        expose_manifest.as_ref(),
-        expose_artifact_info.as_ref(),
-        expose_manifest_digest.as_deref(),
-        config_module,
-        config_attestation.as_ref(),
-        Some(&documentation.metadata),
-        documentation_attestation.as_ref(),
     )?;
-    let provenance_artifact =
-        if let (Some(module), Some(attestation)) = (config_module, config_attestation.as_ref()) {
-            Some(
-                publish_config_provenance_artifact_with_documentation(
-                    &name,
-                    pkg_name,
-                    pkg_version,
-                    &platform,
-                    &info,
-                    source_info.as_ref(),
-                    module,
-                    expose_manifest_digest.as_deref(),
-                    attestation,
-                    &documentation.metadata,
-                    provenance_signer,
-                )
-                .await?,
-            )
-        } else {
-            match (expose_manifest.as_ref(), expose_manifest_digest.as_deref()) {
-                (Some(manifest), Some(manifest_digest)) => {
-                    publish_provenance_artifact_with_documentation(
-                        &name,
-                        pkg_name,
-                        pkg_version,
-                        &platform,
-                        &info,
-                        source_info.as_ref(),
-                        manifest,
-                        manifest_digest,
-                        &documentation.metadata,
-                        provenance_signer,
-                    )
-                    .await?
-                }
-                _ => Some(
-                    publish_documentation_provenance_artifact(
-                        &name,
-                        pkg_name,
-                        pkg_version,
-                        &platform,
-                        &info,
-                        source_info.as_ref(),
-                        &documentation.metadata,
-                        documentation_attestation.as_ref().context(
-                            "documentation-only package is missing attestation metadata",
-                        )?,
-                        provenance_signer,
-                    )
-                    .await?,
-                ),
-            }
-        };
 
     std::fs::write(&toml_path, &new_content)?;
-    let provenance_path = if let Some(artifact) = &provenance_artifact {
-        let path = dir.join(&artifact.path);
-        let parent = path
-            .parent()
-            .with_context(|| format!("provenance path has no parent: {}", path.display()))?;
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating provenance directory {}", parent.display()))?;
-        std::fs::write(&path, &artifact.jsonl)
-            .with_context(|| format!("writing provenance artifact {}", path.display()))?;
-        Some(path)
-    } else {
-        None
-    };
 
     printer.step(3, 4, "Computing realisation graph...");
     let content_addressed = registry_content_addressed(&dir) && !no_ca;
@@ -552,63 +346,6 @@ pub(crate) async fn publish_to_registry_directory(
             );
         }
     }
-    let expose_store_report = if let Some(artifact) = &expose_artifact_info {
-        Some(
-            write_store_files(&dir, &artifact.path, content_addressed, bless, printer)
-                .with_context(|| {
-                    format!(
-                        "writing store/ realisation graph for expose artifact {}",
-                        artifact.path
-                    )
-                })?,
-        )
-    } else {
-        None
-    };
-    let config_store_report = if let Some(output) = &config_module_info {
-        Some(
-            write_store_files(&dir, &output.path, content_addressed, bless, printer).with_context(
-                || {
-                    format!(
-                        "writing store/ realisation graph for config module {}",
-                        output.path
-                    )
-                },
-            )?,
-        )
-    } else {
-        None
-    };
-    let documentation_store_report = write_store_files(
-        &dir,
-        &documentation.info.path,
-        content_addressed,
-        bless,
-        printer,
-    )
-    .with_context(|| {
-        format!(
-            "writing store/ realisation graph for documentation {}",
-            documentation.info.path
-        )
-    })?;
-    let transparency_log_path = if let Some(artifact) = &provenance_artifact {
-        let provenance_file_path = provenance_path
-            .as_ref()
-            .context("provenance artifact path missing before transparency log append")?;
-        Some(append_package_provenance_transparency_log(
-            &dir,
-            pkg_name,
-            pkg_version,
-            &platform,
-            &info,
-            source_info.as_ref(),
-            artifact,
-            provenance_file_path,
-        )?)
-    } else {
-        None
-    };
 
     printer.step(4, 4, "Done.");
     printer.kv("Package", pkg_name);
@@ -625,33 +362,6 @@ pub(crate) async fn publish_to_registry_directory(
             &report.summary(),
         );
     }
-    if let Some(artifact) = &expose_artifact_info {
-        printer.kv("Expose artifact", &artifact.path);
-    }
-    if let Some(report) = &expose_store_report {
-        printer.kv("Expose artifact graph", &report.summary());
-    }
-    if let Some(output) = &config_module_info {
-        printer.kv("Config module", &output.path);
-    }
-    if let Some(report) = &config_store_report {
-        printer.kv("Config module graph", &report.summary());
-    }
-    printer.kv("Documentation", &documentation.info.path);
-    printer.kv("Documentation graph", &documentation_store_report.summary());
-    if let Some(artifact) = &provenance_artifact {
-        printer.kv("Provenance", &artifact.path);
-    }
-    if let Some(path) = &transparency_log_path {
-        printer.kv(
-            "Transparency log",
-            &path
-                .strip_prefix(&dir)
-                .unwrap_or(path)
-                .display()
-                .to_string(),
-        );
-    }
     if let Some(source_info) = &source_info {
         printer.kv("Source drv", &source_info.path);
     }
@@ -665,9 +375,10 @@ pub(crate) async fn publish_to_registry_directory(
         printer.kv(&format!("Image ({})", image.format), &image.store.path);
         printer.kv("  File", &image.delivery.filename);
         printer.kv("  SHA-256", &image.delivery.sha256);
-        if let Some(cert) = &image.sb.signer_cert_sha256 {
-            printer.kv(&format!("  SB signer cert ({})", image.format), cert);
-        }
+        printer.kv(
+            "  Artifact contract",
+            &image.delivery.artifact_contract.schema,
+        );
     }
 
     let mut committed = false;
@@ -675,13 +386,7 @@ pub(crate) async fn publish_to_registry_directory(
     if !no_commit {
         let default_msg = format!("publish {pkg_name} {pkg_version} ({platform})");
         let msg = message.unwrap_or(&default_msg);
-        let mut staged_paths = vec![toml_path.clone(), dir.join(store::STORE_DIR)];
-        if let Some(path) = &provenance_path {
-            staged_paths.push(path.clone());
-        }
-        if let Some(path) = &transparency_log_path {
-            staged_paths.push(path.clone());
-        }
+        let staged_paths = vec![toml_path.clone(), dir.join(store::STORE_DIR)];
         commit_registry_paths(
             &dir,
             msg,
@@ -714,15 +419,7 @@ pub(crate) async fn publish_to_registry_directory(
                     "nar_hash": image.store.nar_hash.as_str(),
                     "nar_size": image.store.nar_size,
                     "delivery": &image.delivery,
-                    "sb_signer_cert_sha256": image.sb.signer_cert_sha256,
-                    "sbat": image.sb.sbat.iter().map(|item| serde_json::json!({
-                        "component": item.component,
-                        "generation": item.generation,
-                    })).collect::<Vec<_>>(),
-                    "expected_pcr11": image.sb.expected_pcr11,
-                    "ukis": image.sb.ukis,
-                    "recovery_ukis": image.sb.recovery_ukis,
-                    "recovery_bundle": image.sb.recovery_bundle,
+                    "artifact_contract": &image.delivery.artifact_contract,
                 })
             })
             .collect::<Vec<_>>();
@@ -742,24 +439,6 @@ pub(crate) async fn publish_to_registry_directory(
                 "unchanged": store_report.unchanged,
                 "content_addressed": store_report.content_addressed,
             },
-            "expose_artifact": expose_artifact_info.as_ref().map(|artifact| serde_json::json!({
-                "store_path": artifact.path.as_str(),
-                "nar_hash": artifact.nar_hash.as_str(),
-                "nar_size": artifact.nar_size,
-            })),
-            "expose_artifact_graph": expose_store_report.as_ref().map(|report| serde_json::json!({
-                "created": report.created,
-                "blessed": report.blessed,
-                "unchanged": report.unchanged,
-                "content_addressed": report.content_addressed,
-            })),
-            "provenance": provenance_artifact.as_ref().map(|artifact| artifact.path.as_str()),
-            "transparency_log": transparency_log_path.as_ref().map(|path| {
-                path.strip_prefix(&dir)
-                    .unwrap_or(path)
-                    .display()
-                    .to_string()
-            }),
             "references": info.references,
             "source": source,
             "sysroot": sysroot,
@@ -805,19 +484,9 @@ pub(crate) async fn publish_canonical_release_entry(
     homepage: Option<&str>,
     license: &str,
     maintainer: &str,
-    configuration: Option<&crate::registry::release::RegistryReleaseConfiguration>,
     provenance_signer: &mut dyn ProvenanceSigner,
     printer: &Printer,
 ) -> Result<()> {
-    let config_dependencies = configuration
-        .map(|configuration| {
-            configuration
-                .dependency_outputs
-                .iter()
-                .map(|(name, path)| format!("{name}={path}"))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
     publish_to_registry_directory(
         config,
         dir,
@@ -838,11 +507,6 @@ pub(crate) async fn publish_canonical_release_entry(
         &[],
         &[],
         &[],
-        None,
-        configuration.map(|configuration| configuration.module_store_path.as_str()),
-        configuration.map(|configuration| configuration.evaluation_base_store_path.as_str()),
-        None,
-        &config_dependencies,
         false,
         false,
         true,
@@ -885,7 +549,7 @@ pub(crate) fn publish_canonical_named_output(
     validate_store_path_release_policy(&info)?;
     resolve_publish_platform(&info.path, Some(platform))?;
 
-    let _publish_lock = RegistryPublishLock::acquire(dir)?;
+    let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
     let letter = first_letter(package);
     let toml_path = dir
         .join("packages")
@@ -895,16 +559,6 @@ pub(crate) fn publish_canonical_named_output(
         .with_context(|| format!("reading primary package entry {}", toml_path.display()))?;
     let new_content =
         record_named_output(&content, package, version, platform, output, store_path)?;
-
-    if crate::dry_run::active() {
-        printer.info(&format!(
-            "Would record named output '{output}' of {package} {version} ({platform})"
-        ));
-        printer.kv("Would write", &toml_path.display().to_string());
-        printer.info("Dry run: nothing was written.");
-        return Ok(());
-    }
-
     fs::write(&toml_path, new_content)
         .with_context(|| format!("writing supplemental output to {}", toml_path.display()))?;
 
@@ -912,6 +566,280 @@ pub(crate) fn publish_canonical_named_output(
     write_store_files(dir, &info.path, content_addressed, false, printer).with_context(|| {
         format!("writing store/ realisation graph for named output {store_path}")
     })?;
+    Ok(())
+}
+
+/// Publishes and signs the canonical RFC-0022 signed package ability publication output.
+///
+/// The operation decodes `package.json` canonically, binds it to the exact
+/// primary package coordinate, inventories every distinct artifact's complete
+/// Nix closure, signs a dedicated provenance statement, and records both the
+/// named output and fail-closed feature gates.
+///
+/// # Errors
+///
+/// Returns an error when the primary coordinate is absent, any store or
+/// manifest identity disagrees, closure introspection is incomplete, signing
+/// fails, or registry metadata/store-graph authoring fails.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn publish_package_contract(
+    dir: &Path,
+    registry: &str,
+    store_path: &str,
+    package: &str,
+    version: &str,
+    platform: &str,
+    selectors: &PackageContractSelectorRegistry,
+    provenance_signer: &mut dyn ProvenanceSigner,
+    printer: &Printer,
+) -> Result<()> {
+    validate_registry_name(registry)?;
+    validate_package_name(package)?;
+    ensure_writable_registry_clone(registry, dir)?;
+    validate_external_provenance_signer(dir, provenance_signer)?;
+
+    let projection = introspect_store_path(store_path)?;
+    validate_store_path_release_policy(&projection)?;
+    resolve_publish_platform(&projection.path, Some(platform))?;
+    if !projection.references.is_empty() {
+        bail!("package contract document must be reference-free");
+    }
+    let projection_bytes = crate::package_contract::read_package_manifest(&projection.path)?;
+
+    let letter = first_letter(package);
+    let toml_path = dir
+        .join("packages")
+        .join(letter)
+        .join(format!("{package}.toml"));
+    let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
+    let content = fs::read_to_string(&toml_path)
+        .with_context(|| format!("reading primary package entry {}", toml_path.display()))?;
+    let parsed = parse_package_file(&content)?;
+    let mut versions = parsed
+        .versions
+        .iter()
+        .filter(|candidate| candidate.version == version);
+    let version_entry = versions
+        .next()
+        .with_context(|| format!("package {package} is missing version {version}"))?;
+    if versions.next().is_some() {
+        bail!("package {package} repeats version {version}");
+    }
+    let platform_entry = version_entry
+        .platforms
+        .get(platform)
+        .with_context(|| format!("package {package} {version} is missing platform {platform}"))?;
+    let primary_path = &platform_entry.store_path;
+    let primary = introspect_store_path(primary_path)?;
+    validate_store_path_release_policy(&primary)?;
+    let primary_nar_hash = canonical_nar_hash(&primary.nar_hash)?;
+    let payload = resolve_store_artifact(&primary.path)?;
+    let source_info = introspect_store_path(&platform_entry.source_drv)?;
+    validate_store_path_release_policy(&source_info)?;
+    let source = resolve_store_artifact(&platform_entry.source_drv)?;
+    let (package_document, interface_bytes, selector_bindings) = resolve_release_projection(
+        &projection.path,
+        package,
+        version,
+        platform,
+        &primary.path,
+        &platform_entry.source_drv,
+        selectors,
+    )?;
+    let manifest_bytes = aos_ability_model::encode_canonical(&package_document)?;
+    let checked = aos_ability_validate::validate_ability_contract(
+        aos_ability_validate::AbilityContractData::PackageSource {
+            manifest: &manifest_bytes,
+            retained_interfaces: &interface_bytes,
+        },
+    )
+    .context("validating the resolved package contract")?;
+    let aos_ability_validate::CheckedAbilityContract::PackageSource(checked) = checked else {
+        bail!("resolved package contract returned another contract family");
+    };
+    let ability_reference = aos_doc_model::PackageAbilityReference::from_checked_contract(&checked)
+        .context("deriving the signed package reference from the checked contract")?;
+    let documentation = publish_package_documentation(
+        package,
+        version,
+        platform,
+        &parsed.package.description,
+        parsed.package.homepage.as_deref(),
+        &parsed.package.license,
+        &primary,
+        Some(&source_info),
+        ability_reference,
+    )?;
+    let documentation_attestation = bind_documentation_provenance(
+        publish_documentation_attestation_meta(package, version, platform, &primary)?,
+        package,
+        platform,
+        &documentation.metadata,
+    )?;
+    let documentation_provenance = publish_documentation_provenance_artifact(
+        registry,
+        package,
+        version,
+        platform,
+        &primary,
+        Some(&source_info),
+        &documentation.metadata,
+        &documentation_attestation,
+        provenance_signer,
+    )
+    .await?;
+
+    let package_digest = package_document.content_digest()?;
+    let mut contract = PackageContractMeta {
+        document: PackageContractDocumentMeta {
+            store_path: projection.path.clone(),
+            nar_hash: canonical_nar_hash(&projection.nar_hash)?,
+            nar_size: projection.nar_size,
+            document_sha256: Sha256Digest::of_bytes(&projection_bytes).to_string(),
+            document_size: projection_bytes.len() as u64,
+            references: Vec::new(),
+        },
+        payload: payload.retention,
+        source: source.retention,
+        selectors: selector_bindings,
+        provenance: "provenance/pending.contract.intoto.jsonl".to_string(),
+    };
+    let retention_digest = contract_retention_digest(&contract)?;
+    contract.provenance = format!(
+        "provenance/{}/{package}/{platform}/{}-{}.contract.intoto.jsonl",
+        first_letter(package),
+        package_digest.hex(),
+        retention_digest.hex()
+    );
+    crate::package_contract::validate_package_contract_meta(&contract)?;
+
+    let coordinate = PackageContractCoordinate {
+        name: package,
+        version,
+        platform,
+        store_path: &primary.path,
+        nar_hash: &primary_nar_hash,
+    };
+    let statement =
+        ability_provenance_statement(&coordinate, &contract, registry, provenance_signer.key_id())?;
+    let provenance_jsonl =
+        sign_statement_dsse_jsonl_external(&statement, provenance_signer).await?;
+    let content = record_package_documentation(
+        &content,
+        package,
+        version,
+        platform,
+        &documentation.metadata,
+        &documentation_attestation,
+    )?;
+    let new_content = record_package_contract(
+        &content,
+        package,
+        version,
+        platform,
+        &contract,
+        &package_document,
+    )?;
+
+    fs::write(&toml_path, new_content)
+        .with_context(|| format!("writing package contract to {}", toml_path.display()))?;
+    let provenance_path = dir.join(&contract.provenance);
+    let provenance_parent = provenance_path.parent().with_context(|| {
+        format!(
+            "package contract provenance path has no parent: {}",
+            provenance_path.display()
+        )
+    })?;
+    fs::create_dir_all(provenance_parent).with_context(|| {
+        format!(
+            "creating package contract provenance directory {}",
+            provenance_parent.display()
+        )
+    })?;
+    fs::write(&provenance_path, &provenance_jsonl).with_context(|| {
+        format!(
+            "writing package contract provenance {}",
+            provenance_path.display()
+        )
+    })?;
+    let documentation_provenance_path = dir.join(&documentation_provenance.path);
+    let documentation_provenance_parent =
+        documentation_provenance_path.parent().with_context(|| {
+            format!(
+                "package reference provenance path has no parent: {}",
+                documentation_provenance_path.display()
+            )
+        })?;
+    fs::create_dir_all(documentation_provenance_parent).with_context(|| {
+        format!(
+            "creating package reference provenance directory {}",
+            documentation_provenance_parent.display()
+        )
+    })?;
+    fs::write(
+        &documentation_provenance_path,
+        &documentation_provenance.jsonl,
+    )
+    .with_context(|| {
+        format!(
+            "writing package reference provenance {}",
+            documentation_provenance_path.display()
+        )
+    })?;
+    append_package_contract_transparency_log(
+        dir,
+        package,
+        version,
+        platform,
+        &package_digest.to_string(),
+        &retention_digest.to_string(),
+        &contract.provenance,
+        provenance_jsonl.as_bytes(),
+    )?;
+
+    let content_addressed = registry_content_addressed(dir);
+    write_store_files(
+        dir,
+        &documentation.info.path,
+        content_addressed,
+        false,
+        printer,
+    )
+    .with_context(|| {
+        format!(
+            "writing store/ realisation graph for package reference {}",
+            documentation.info.path
+        )
+    })?;
+    append_package_provenance_transparency_log(
+        dir,
+        package,
+        version,
+        platform,
+        &primary,
+        Some(&source_info),
+        &documentation_provenance,
+        &documentation_provenance_path,
+    )?;
+    write_store_files(dir, &projection.path, content_addressed, false, printer).with_context(
+        || format!("writing store/ realisation graph for package contract {store_path}"),
+    )?;
+    let mut retained_paths = BTreeSet::new();
+    for artifact in std::iter::once(&contract.payload)
+        .chain(std::iter::once(&contract.source))
+        .chain(contract.selectors.iter().map(|selector| &selector.artifact))
+    {
+        if !retained_paths.insert(&artifact.store_path) {
+            continue;
+        }
+        write_store_files(dir, &artifact.store_path, content_addressed, false, printer)
+            .with_context(|| {
+                format!(
+                    "writing store/ realisation graph for package contract artifact {}",
+                    artifact.store_path
+                )
+            })?;
+    }
     Ok(())
 }
 
@@ -958,78 +886,6 @@ pub(in crate::registry_ops) fn validate_release_publish_signing_identity(
         bail!(
             "releasing a store path requires --key-id so package provenance is tied to keys.toml"
         );
-    }
-    Ok(())
-}
-
-fn apply_publish_sb_policy(
-    images: &mut [PublishedImage],
-    catalog: Option<&SbCertsToml>,
-    has_db_cert: bool,
-    require_signed_ukis: bool,
-) -> Result<()> {
-    for image in images {
-        if require_signed_ukis {
-            if image.sb.signer_cert_sha256.is_none()
-                || image
-                    .sb
-                    .ukis
-                    .iter()
-                    .any(|uki| uki.sb_signer_cert_sha256.is_none())
-            {
-                bail!(
-                    "registry [registry] require_signed_ukis = true refuses unsigned UKIs in '{}' image",
-                    image.format
-                );
-            }
-            if catalog.is_none() {
-                bail!(
-                    "registry [registry] require_signed_ukis = true requires a committed sb-certs.toml policy"
-                );
-            }
-            if !has_db_cert {
-                bail!(
-                    "registry [registry] require_signed_ukis = true requires the matching registry sb-certs/db.pem for publish-time verification"
-                );
-            }
-        }
-
-        let signers = image
-            .sb
-            .signer_cert_sha256
-            .iter()
-            .map(String::as_str)
-            .chain(
-                image
-                    .sb
-                    .ukis
-                    .iter()
-                    .filter_map(|uki| uki.sb_signer_cert_sha256.as_deref()),
-            );
-        let signers = signers.chain(
-            image
-                .sb
-                .recovery_ukis
-                .iter()
-                .map(|uki| uki.sb_signer_cert_sha256.as_str()),
-        );
-        for signer in signers {
-            if let Some(catalog) = catalog {
-                if !catalog.accepts_signer(signer) {
-                    bail!(
-                        "image UKI signer {signer} is not active in the committed sb-certs.toml policy"
-                    );
-                }
-                if !has_db_cert {
-                    bail!(
-                        "committed Secure Boot policy requires the matching registry db.pem for publish-time verification"
-                    );
-                }
-            }
-        }
-        if image.sb.signer_cert_sha256.is_some() && catalog.is_some() {
-            image.delivery.uki.verification = ImageVerificationState::PolicyVerified;
-        }
     }
     Ok(())
 }

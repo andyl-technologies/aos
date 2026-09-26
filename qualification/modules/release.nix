@@ -57,7 +57,11 @@ in {
               environment = types.environments.export target.environment;
             })
           cfg.targets);
-          requirements = named "id" cfg.requirements;
+          requirements = named "id" (builtins.mapAttrs (_: requirement:
+            if requirement.matrix_spec == null
+            then removeAttrs requirement ["matrix_spec"]
+            else requirement)
+          cfg.requirements);
           package_rules = named "name" (builtins.mapAttrs (
               _: rule:
                 if rule.execution == null

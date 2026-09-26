@@ -10,6 +10,9 @@ use crate::registry_ops::channels::{
 };
 use crate::registry_ops::config::{configured_registry_names, resolve_registry_name};
 use crate::registry_ops::git::{commit_registry, git, refresh_registry_object_store};
+use crate::registry_ops::package_contract_transparency::{
+    PACKAGE_CONTRACT_TRANSPARENCY_LOG, next_package_contract_publication_sequence,
+};
 use crate::registry_ops::provenance::{
     PACKAGE_PROVENANCE_TRANSPARENCY_LOG, read_package_provenance_transparency_log_state,
 };
@@ -384,16 +387,20 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
             let dir = config.scope.registries_path().join(&registry_name);
             let mut roster = load_committed_roster(&dir)?;
             let roster_before = roster.clone();
-            let provenance_before_sequence = read_package_provenance_transparency_log_state(
+            let legacy_provenance_before_sequence = read_package_provenance_transparency_log_state(
                 &dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG),
             )?
             .0;
+            let contract_before_sequence = next_package_contract_publication_sequence(
+                &dir.join(PACKAGE_CONTRACT_TRANSPARENCY_LOG),
+            )?;
             let vouching_id = retire_roster_key(
                 &mut roster,
                 id,
                 reason.as_deref(),
                 vouched_by,
-                provenance_before_sequence,
+                legacy_provenance_before_sequence,
+                contract_before_sequence,
             )?;
             // The vouching survivor signs the retirement by default; the
             // key resolution runs against the pre-retire roster, where the
@@ -1073,6 +1080,7 @@ fn retire_roster_key(
     reason: Option<&str>,
     vouched_by: &Option<String>,
     provenance_before_sequence: u64,
+    package_contract_before_sequence: u64,
 ) -> Result<String> {
     validate_roster_key_id(id)?;
     let Some(position) = roster.active.iter().position(|entry| entry.id == id) else {
@@ -1111,7 +1119,14 @@ fn retire_roster_key(
     };
 
     let retired_key = roster.active.remove(position).key;
-    upsert_revoked_key(roster, id, retired_key, provenance_before_sequence, reason);
+    upsert_revoked_key(
+        roster,
+        id,
+        retired_key,
+        provenance_before_sequence,
+        package_contract_before_sequence,
+        reason,
+    );
     Ok(vouching_id)
 }
 
@@ -1122,18 +1137,21 @@ fn upsert_revoked_key(
     id: &str,
     key: String,
     provenance_before_sequence: u64,
+    package_contract_before_sequence: u64,
     reason: Option<&str>,
 ) {
     let reason = reason.map(str::to_string);
     if let Some(entry) = roster.revoked.iter_mut().find(|entry| entry.id == id) {
         entry.key = Some(key);
         entry.provenance_before_sequence = Some(provenance_before_sequence);
+        entry.package_contract_before_sequence = Some(package_contract_before_sequence);
         entry.reason = reason;
     } else {
         roster.revoked.push(RevokedKey {
             id: id.to_string(),
             key: Some(key),
             provenance_before_sequence: Some(provenance_before_sequence),
+            package_contract_before_sequence: Some(package_contract_before_sequence),
             reason,
         });
     }

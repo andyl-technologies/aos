@@ -7,6 +7,7 @@
 //! the non-Nix commands (`serve`, `token`, `package`, `cache`,
 //! `completions`) take only what they need.
 
+pub mod ability;
 pub mod build;
 pub mod cache;
 pub mod completions;
@@ -20,9 +21,9 @@ pub(crate) mod hub_auth;
 pub(crate) mod hub_container;
 pub mod hub_cutover_verify;
 pub mod image;
+pub(crate) mod input;
 pub mod lint;
 pub mod maintain;
-pub mod metadata;
 pub mod prefetch;
 pub mod profile;
 pub mod release;

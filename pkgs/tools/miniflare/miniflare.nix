@@ -112,7 +112,69 @@
   targetEsbuild = esbuild;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "miniflare";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Wrangler reads the configuration and emits declarations for the Worker module.";
+        "files" = {
+          "worker.js" = "export default { fetch() { return new Response(\"answer=42\"); } };\n";
+          "wrangler.toml" = "name = \"qualification\"\nmain = \"worker.js\"\ncompatibility_date = \"2024-09-09\"\n";
+        };
+        "input" = "A local module Worker configuration and source file.";
+        "operation" = "Generate project TypeScript declarations through the bundled Wrangler CLI.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import os, pathlib, subprocess\nhome = pathlib.Path(\"home\")\nhome.mkdir()\nenvironment = os.environ.copy()\nenvironment.update({\"CI\": \"1\", \"HOME\": str(home.resolve()), \"WRANGLER_SEND_METRICS\": \"false\"})\nresult = subprocess.run([\"@out@/bin/wrangler\", \"types\", \"output.d.ts\", \"--include-runtime\", \"false\"], capture_output=True, text=True, env=environment)\nassert result.returncode == 0, (result.stdout, result.stderr)\ndeclarations = pathlib.Path(\"output.d.ts\").read_text()\nassert 'mainModule: typeof import(\"./worker\")' in declarations\nprint(\"miniflare operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "miniflare operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Wrangler rejects the invalid TOML before writing declarations.";
+        "files" = {
+          "worker.js" = "export default {};\n";
+          "wrangler.toml" = "name = [\n";
+        };
+        "input" = "A Wrangler configuration containing an unterminated TOML array.";
+        "operation" = "Attempt project type generation from the malformed configuration.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport os, pathlib, subprocess\nhome = pathlib.Path(\"home\")\nhome.mkdir()\nenvironment = os.environ.copy()\nenvironment.update({\"CI\": \"1\", \"HOME\": str(home.resolve()), \"WRANGLER_SEND_METRICS\": \"false\"})\nresult = subprocess.run([\"@out@/bin/wrangler\", \"types\", \"invalid.d.ts\", \"--include-runtime\", \"false\"], capture_output=True, text=True, env=environment)\nassert result.returncode != 0 and \"Invalid TOML document\" in (result.stdout + result.stderr)\nassert not pathlib.Path(\"invalid.d.ts\").exists()\n\nsys.stderr.write(\"miniflare rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "miniflare rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     # No upstream source archive: the package content is the vendored
@@ -468,7 +530,6 @@ in
       blake3Wasm.src
       esbuild.src
     ];
-
     meta = {
       description = "Cloudflare wrangler + miniflare local Workers test tooling (vendored npm closure)";
       homepage = "https://miniflare.dev/";

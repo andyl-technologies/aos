@@ -48,10 +48,11 @@ are *specified here* so the tests are written before the code:
 
 - **On-host eval → manifest** (`fleet`): agent receives literal-Nix user-data →
   evaluates → emits manifest; **eval twice ⇒ byte-identical** (determinism gate);
-  manifest has the expected `etc`/`units`/`jobScripts`/`inputs` shape.
+  manifest has the expected `etc`/`jobScripts`/`inputs` shape.
 - **Resolve↔eval fixpoint** (`checks.eval` + `fleet`): a host.nix enabling a
-  package whose config module isn't present pulls the **config output first**,
-  re-evals, converges; a missing provider fails legibly; a cycle dumps the trace.
+  package resolves and authenticates its `PackageDocument.package_module`
+  artifact, re-evaluates, and converges; a missing provider fails legibly; a
+  cycle dumps the trace.
 - **`module_abi` gate** (`checks.eval`): a config module with an incompatible
   `module_abi_compat` is **refused pre-eval**, fail-closed, old gen stays live.
 - **Two-axis generations** (`fleet`): config rollback is a pointer switch
@@ -64,7 +65,7 @@ are *specified here* so the tests are written before the code:
 - **systemd-repart substrate** (`fleet`): explicit `systemctl status
   systemd-repart-*` + idempotency (carve+grow on fresh VM, **dry-run-only on
   reboot**) + the destructive-op state-probe guards run once.
-- **`aos metadata` agent** (`checks` + `fleet`): per-platform fetch over recorded
+- **Metadata providers** (`checks` + `fleet`): per-platform fetch over recorded
   fixtures (offline channels first), exact host.nix/hash retention, platform-mode
   authorization, signed-mode initrd verification against public anchors,
   first-boot typed storage-plan validation/rendering, facts → `host.facts.*`,
@@ -79,8 +80,8 @@ are *specified here* so the tests are written before the code:
   partition sizes remain unchanged.
 - **Conscription / capability-scoped contribution** (`checks.eval`): a foreign
   `enable` write is rejected at resolve time (its paths are not a subset of the
-  installed owner's contributable surface in `SystemRoots`); a contribution to an
-  owner-declared contributable sub-path is allowed; provenance from the
+  installed owner's extensible surface in `SystemRoots`); a contribution to an
+  owner-declared extensible sub-path is allowed; provenance from the
   authenticated source
   (forged `_file` does not earn operator priority — review M-forgeable-file).
 

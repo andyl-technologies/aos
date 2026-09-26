@@ -1,0 +1,183 @@
+##! Pure K3s composition for one authorized Kubernetes object-set controller.
+{
+  config,
+  lib,
+  packageName,
+  ...
+}: let
+  controllerAlias = "kubernetes-object-set";
+  objectSetAlias = "kubernetes-objects";
+  controllerDeclaration = config.aos.abilities.interfaces."${packageName}:${controllerAlias}";
+  aggregationSlot = controllerDeclaration.aggregation.key;
+  controllerIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration controllerDeclaration
+  );
+  controller = config.aos.abilities.implementations."${packageName}:${controllerAlias}";
+  realizationSchema =
+    lib.abilities.singletonSchemaDiscriminator
+    "K3s object controller realization"
+    controller.desiredType;
+  effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
+  emptyResult = {
+    requests = {};
+    outputs = {};
+    resourceFragments = {};
+  };
+  bindingFor = bindings: requestName: let
+    matches = builtins.filter (
+      binding: binding.request == requestName
+    ) (builtins.attrValues bindings);
+    binding =
+      if builtins.length matches == 1
+      then builtins.head matches
+      else throw "a Kubernetes object request must have exactly one selected binding";
+  in
+    if binding.slot == aggregationSlot
+    then binding
+    else throw "the K3s provider accepts only its canonical 'objects' aggregate slot";
+  resourceReference = instance: {
+    interface = controllerIdentity;
+    resource = {
+      provider = instance.id;
+      key = aggregationSlot;
+    };
+    operations = ["observe"];
+    lifetime = "instance";
+  };
+  requestOutput = instance: let
+    reference = resourceReference instance;
+  in {
+    resource = reference;
+    cluster-resource = reference;
+    kubeconfig-resource = reference;
+  };
+  entriesFor = context:
+    map (
+      requestName: {
+        inherit requestName;
+        request = context.requests.${requestName};
+        binding = bindingFor context.bindings requestName;
+      }
+    ) (builtins.attrNames context.requests);
+  outputsFor = instance: entries:
+    builtins.listToAttrs (
+      map (entry: {
+        name = entry.requestName;
+        value = requestOutput instance;
+      })
+      entries
+    );
+  exactlyOne = context: entries:
+    if builtins.length entries == 1
+    then builtins.head entries
+    else throw "${context} requires exactly one request for the aggregate object set";
+  validateObjectSet = entry: let
+    package = lib.abilities.packageForDeclarationAuthority entry.request.authority;
+  in
+    if package == null
+    then throw "a Kubernetes object set must retain its authenticated package owner"
+    else entry.request.parameters;
+  objectSetKey = requestName:
+    lib.abilities.identityKeyFor "aos.kubernetes.object-set-request/v1" {
+      request = requestName;
+    };
+  provideBase = context: let
+    entry = exactlyOne "Kubernetes cluster base" (entriesFor context);
+  in
+    emptyResult
+    // {
+      outputs = outputsFor context.instance [entry];
+      resourceFragments.${aggregationSlot} = {
+        kind = controllerIdentity.name;
+        lifetime = "instance";
+        value = entry.request.parameters;
+      };
+    };
+  provideObjectSet = context: let
+    entries = entriesFor context;
+    objectSets = builtins.listToAttrs (
+      map (entry: {
+        name = objectSetKey entry.requestName;
+        value = validateObjectSet entry;
+      })
+      entries
+    );
+  in
+    emptyResult
+    // {
+      outputs = outputsFor context.instance entries;
+      resourceFragments = lib.optionalAttrs (entries != []) {
+        ${aggregationSlot} = {
+          kind = controllerIdentity.name;
+          lifetime = "instance";
+          value.object_sets = objectSets;
+        };
+      };
+    };
+  effectRequest = key: resource: {
+    requirement = "effects";
+    scope = [key];
+    slot = key;
+    parameters = resource.value;
+  };
+  compose = {resources, ...}: let
+    resource = resources.${aggregationSlot} or (throw "K3s did not receive its canonical object-set resource");
+    objects = lib.concatMap (entry: entry.objects) (builtins.attrValues (resource.value.object_sets or {}));
+    identities =
+      map (
+        object: builtins.toJSON [object.api_version object.kind object.namespace object.name]
+      )
+      objects;
+  in
+    if builtins.length identities != builtins.length (lib.unique identities)
+    then throw "Kubernetes object sets contain a duplicate API identity"
+    else {
+      requests = builtins.mapAttrs effectRequest resources;
+      outputs = {};
+      realizations.${aggregationSlot} = {
+        schema = realizationSchema;
+        kubeconfig = "/etc/rancher/k3s/k3s.yaml";
+      };
+    };
+  transition = context:
+    lib.abilities.resourceControllerTransition {
+      inherit context;
+      terminalInterface = effectsInterface;
+      actions = {
+        create = {
+          method = "apply";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        update = {
+          method = "apply";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        unchanged = null;
+        remove = {
+          method = "release";
+          phase = "converging";
+          access = "exclusive-write";
+        };
+        reconcile-stopped = {
+          method = "apply";
+          phase = "recovering";
+          access = "exclusive-write";
+        };
+        reconcile-divergent = {
+          method = "apply";
+          phase = "recovering";
+          access = "exclusive-write";
+        };
+      };
+    };
+in {
+  config.aos.abilities.implementations = {
+    ${controllerAlias} = {
+      provide = provideBase;
+      inherit compose transition;
+    };
+    ${objectSetAlias}.provide = provideObjectSet;
+  };
+}

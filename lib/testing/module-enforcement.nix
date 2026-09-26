@@ -1,131 +1,14 @@
-# lib/testing/module-enforcement.nix — Regression guard for Phase 1-3
-# lib additions: assertion/warning enforcement + mkEnableOption +
-# mkPackageOption + types.pathInStore.
+# lib/testing/module-enforcement.nix — Focused module-engine regression checks.
 #
-# Assertion enforcement lives at `system.build.toplevel` construction
-# (Option B in the missing-features plan): a broken config is still
-# inspectable via `config.*`, only building the toplevel fails. This
-# test confirms both behaviours — that `builtins.tryEval` on the
-# toplevel name catches the throw, and that reading unrelated config
-# paths from the same broken system succeeds.
-#
-# mkEnableOption / mkPackageOption / types.pathInStore are covered by
-# synthetic `lib.evalModules` invocations that exercise their defaults,
-# merging, and type checks.
+# These synthetic evaluations exercise option types, merging, ownership,
+# and authenticated package imports without constructing an entire system.
+# Production image contracts are exercised by image qualification.
 #
 # Runs via `nix-build -A checks.module-enforcement`.
 {
   pkgs,
   lib,
 }: let
-  aos = import ../../. {system = pkgs.stdenv.buildPlatform.system;};
-  imagePlatformChecks = import ./image-platform.nix;
-
-  # --- Assertion enforcement ------------------------------------------
-  #
-  # Build a broken server system with a failing assertion. The config
-  # itself must still be inspectable (Option B semantics).
-  brokenSystem = aos.mkSystem {
-    modules = [
-      ../../systems/server.nix
-      {
-        assertions = [
-          {
-            assertion = false;
-            message = "REGRESSION-TEST: a deliberately failing assertion";
-          }
-        ];
-      }
-    ];
-  };
-
-  # Can we still read arbitrary config paths from the broken system?
-  brokenConfigStillReadable = brokenSystem.config.aos.users.users.root.home == "/root";
-
-  # Does forcing `system.build.toplevel.name` actually fire the throw?
-  # `builtins.tryEval` catches it — if the throw is missing, the
-  # regression is silently broken.
-  brokenTryBuild = builtins.tryEval brokenSystem.config.system.build.toplevel.name;
-  brokenBuildThrows = !brokenTryBuild.success;
-
-  # Control: a well-formed system with passing assertions builds fine.
-  healthySystem = aos.mkSystem {
-    modules = [
-      ../../systems/server.nix
-      {
-        assertions = [
-          {
-            assertion = true;
-            message = "REGRESSION-TEST: this passes";
-          }
-        ];
-      }
-    ];
-  };
-  healthyTryBuild = builtins.tryEval healthySystem.config.system.build.toplevel.name;
-  healthyBuildSucceeds = healthyTryBuild.success;
-  imageBudgetCheckWired = healthySystem.config.system.build.checks ? image-budget;
-  serverRootPartitionHasHeadroom =
-    healthySystem.config.aos.image.rootPartitionMiB
-    == 1024
-    && healthySystem.config.aos.image.budgets.maxRootMiB == 640;
-
-  overriddenRootPartitionSystem = aos.mkSystem {
-    modules = [
-      ../../systems/server.nix
-      {aos.image.rootPartitionMiB = 1536;}
-    ];
-  };
-  rootPartitionOverridePropagates =
-    overriddenRootPartitionSystem.config.aos.image.rootPartitionMiB
-    == 1536
-    && overriddenRootPartitionSystem.config.aos.boot.storage.zfs.rootSlotSizeMiB == 1536;
-
-  undersizedRootPartitionSystem = aos.mkSystem {
-    modules = [
-      ../../systems/server.nix
-      {aos.image.rootPartitionMiB = 511;}
-    ];
-  };
-  undersizedRootPartitionRejected =
-    !(
-      builtins.tryEval undersizedRootPartitionSystem.config.system.build.toplevel.name
-    )
-    .success;
-
-  # The ESP budget is also its storage geometry. Reject a contract that cannot
-  # hold two maximum-sized UKIs before any image derivation is realized.
-  undersizedEspSystem = aos.mkSystem {
-    modules = [
-      ../../systems/server.nix
-      {aos.image.budgets.maxEspMiB = lib.mkForce 351;}
-    ];
-  };
-  undersizedEspRejected =
-    !(
-      builtins.tryEval undersizedEspSystem.config.system.build.toplevel.name
-    )
-    .success;
-
-  # A ZFS installer must not allocate zvols smaller than payloads admitted by
-  # the image contract.
-  undersizedZfsSlotSystem = aos.mkSystem {
-    modules = [
-      ../../systems/server.nix
-      {
-        aos.boot.storage = {
-          backend = "zfs-zvol";
-          zfs.rootSlotSizeMiB = lib.mkForce 511;
-        };
-      }
-    ];
-  };
-  undersizedZfsSlotRejected =
-    !(
-      builtins.tryEval undersizedZfsSlotSystem.config.system.build.toplevel.name
-    )
-    .success;
-
   # --- mkEnableOption -------------------------------------------------
   enableExplicitlySet =
     (lib.evalModules {
@@ -188,12 +71,314 @@
   pathInStoreRejectsRelative = !lib.types.pathInStore.check "not-a-path";
   pathInStoreRejectsNumber = !lib.types.pathInStore.check 42;
 
-  # --- Contributable option surface -----------------------------------
+  # --- types.addCheck -------------------------------------------------
   #
-  # An owner marks the curated extension points `contributable = true` and
+  # The additional predicate applies to the final merged value. Cover
+  # scalar, submodule, and list merges because each has distinct merge
+  # behavior in the module engine.
+  addCheckDeclaration = {lib, ...}: {
+    options.checked = {
+      scalar = lib.mkOption {
+        type = lib.types.addCheck lib.types.int (value: value > 0);
+      };
+      record = lib.mkOption {
+        type = lib.types.addCheck (lib.types.submodule {
+          options = {
+            lower = lib.mkOption {type = lib.types.int;};
+            upper = lib.mkOption {type = lib.types.int;};
+          };
+        }) (value: value.lower < value.upper);
+      };
+      values = lib.mkOption {
+        type =
+          lib.types.addCheck (lib.types.listOf lib.types.int) (values:
+            values == [1 2]);
+      };
+    };
+  };
+  addCheckEvaluation = modules:
+    lib.evalModules {
+      modules = [addCheckDeclaration] ++ modules;
+      inherit lib;
+    };
+  validAddCheckEvaluation = addCheckEvaluation [
+    {checked.scalar = 1;}
+    {checked.record.lower = 1;}
+    {checked.record.upper = 2;}
+    {checked.values = [1];}
+    {checked.values = [2];}
+  ];
+  addCheckScalarMerged = validAddCheckEvaluation.config.checked.scalar == 1;
+  addCheckSubmoduleMerged =
+    validAddCheckEvaluation.config.checked.record.lower
+    == 1
+    && validAddCheckEvaluation.config.checked.record.upper == 2;
+  addCheckListMerged = validAddCheckEvaluation.config.checked.values == [1 2];
+  addCheckScalarRejected =
+    !(builtins.tryEval (addCheckEvaluation [{checked.scalar = 0;}]).config.checked.scalar).success;
+  addCheckSubmoduleRejected =
+    !(
+      builtins.tryEval
+      (addCheckEvaluation [
+        {checked.record.lower = 2;}
+        {checked.record.upper = 1;}
+      ])
+      .config
+      .checked
+      .record
+    )
+    .success;
+  addCheckListRejected =
+    !(
+      builtins.tryEval
+      (addCheckEvaluation [{checked.values = [1];}])
+      .config
+      .checked
+      .values
+    )
+    .success;
+
+  # --- types.submodule public value ----------------------------------
+  submoduleVisibilityDeclaration = {lib, ...}: {
+    options = {
+      strictRecord = lib.mkOption {
+        type = lib.types.submodule {
+          _module.strict = true;
+          options.value = lib.mkOption {type = lib.types.str;};
+        };
+      };
+      freeformRecord = lib.mkOption {
+        type = lib.types.submodule {
+          freeformType = lib.types.attrs;
+          options.declared = lib.mkOption {type = lib.types.str;};
+        };
+      };
+      nestedRecord = lib.mkOption {
+        type = lib.types.submodule {
+          options.inner = lib.mkOption {
+            type = lib.types.submodule {
+              options.value = lib.mkOption {type = lib.types.str;};
+            };
+          };
+        };
+      };
+    };
+  };
+  submoduleVisibilityEvaluation = lib.evalModules {
+    modules = [
+      submoduleVisibilityDeclaration
+      {
+        strictRecord.value = "strict";
+        freeformRecord = {
+          declared = "declared";
+          extra = "freeform";
+        };
+        nestedRecord.inner.value = "nested";
+      }
+    ];
+    inherit lib;
+  };
+  strictSubmodulePublic =
+    submoduleVisibilityEvaluation.config.strictRecord
+    == {value = "strict";};
+  freeformSubmodulePublic =
+    submoduleVisibilityEvaluation.config.freeformRecord
+    == {
+      declared = "declared";
+      extra = "freeform";
+    };
+  nestedSubmodulePublic =
+    submoduleVisibilityEvaluation.config.nestedRecord
+    == {inner = {value = "nested";};};
+  strictSubmoduleRejectsUndeclared =
+    !(
+      builtins.tryEval
+      (lib.evalModules {
+        modules = [
+          submoduleVisibilityDeclaration
+          {
+            strictRecord = {
+              value = "strict";
+              extra = "forbidden";
+            };
+          }
+        ];
+        inherit lib;
+      })
+      .config
+      .strictRecord
+    )
+    .success;
+
+  composedServiceEvaluation = lib.evalModules {
+    inherit lib;
+    modules = [
+      {
+        options.services = lib.mkOption {
+          type = lib.types.attrsOf (lib.types.submodule {
+            config._module.strict = true;
+            options.command = lib.mkOption {type = lib.types.str;};
+          });
+          default = {};
+        };
+        config.services.web.command = "serve";
+      }
+      {
+        options.services = lib.mkOption {
+          type = lib.types.attrsOf (lib.types.submodule {
+            options.order.after = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [];
+            };
+          });
+          default = {};
+        };
+        config.services.web.order.after = ["database"];
+      }
+    ];
+  };
+  composedServiceOptions =
+    composedServiceEvaluation.config.services.web
+    == {
+      command = "serve";
+      order.after = ["database"];
+    };
+  composedServiceRejectsUnknown =
+    !(builtins.tryEval
+      (composedServiceEvaluation.extendModules {
+        modules = [{services.web.unknown = true;}];
+      })
+      .config
+      .services
+      .web)
+    .success;
+  deferredServiceFeatureEvaluation = lib.evalModules {
+    inherit lib;
+    modules = [
+      ({config, ...}: {
+        options.serviceFeatures = lib.mkOption {
+          type = lib.types.listOf lib.types.deferredModule;
+          default = [];
+        };
+        options.services = lib.mkOption {
+          type = lib.types.attrsOf (lib.types.submodule (
+            [{config._module.strict = true;}]
+            ++ config.serviceFeatures
+          ));
+          default = {};
+        };
+      })
+      {
+        serviceFeatures = [
+          {options.command = lib.mkOption {type = lib.types.str;};}
+          {
+            options.order.after = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [];
+            };
+          }
+        ];
+        services.web = {
+          command = "serve";
+          order.after = ["database"];
+        };
+      }
+    ];
+  };
+  deferredServiceFeaturesCompose =
+    deferredServiceFeatureEvaluation.config.services.web
+    == {
+      command = "serve";
+      order.after = ["database"];
+    };
+  serviceModuleEvaluation = lib.evalModules {
+    inherit lib;
+    modules = [
+      ../../modules/abilities/_service.nix
+      ({config, ...}: {
+        options.aos.services = lib.mkOption {
+          type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+            options =
+              if name == "first"
+              then {
+                enable = lib.mkOption {
+                  type = lib.types.bool;
+                  default = false;
+                };
+              }
+              else if name == "second"
+              then {
+                command = lib.mkOption {
+                  type = lib.types.str;
+                  default = "idle";
+                  description = "The second service command.";
+                };
+              }
+              else {};
+          }));
+          default = {};
+        };
+        config = lib.mkMerge [
+          {aos.services.first = {};}
+          {aos.services.second = {};}
+          (lib.mkIf config.aos.services.first.enable {
+            aos.services.second.command = "run";
+          })
+        ];
+      })
+      {
+        options.aos.services = lib.mkOption {
+          type = lib.types.lazyAttrsOf (lib.types.submodule {
+            options.extensions.start.command = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+            };
+          });
+          default = {};
+        };
+        config.aos.services.second.extensions.start.command = "start";
+      }
+      {
+        options.aos.services = lib.mkOption {
+          type = lib.types.lazyAttrsOf (lib.types.submodule ({config, ...}: {
+            options.extensions.order.after = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [];
+            };
+            config.extensions.order.after =
+              lib.mkIf
+              (config.extensions.start.command == "start")
+              ["first"];
+          }));
+          default = {};
+        };
+      }
+    ];
+  };
+  serviceModulesAvoidSiblingCycle =
+    serviceModuleEvaluation.config.aos.services.second.command == "idle";
+  serviceModulesCompose =
+    serviceModuleEvaluation.config.aos.services.second.extensions
+    == {
+      start.command = "start";
+      order.after = ["first"];
+    };
+  serviceModulesProjectNestedOptions =
+    builtins.any
+    (declaration:
+      declaration.pathStr
+      == "command"
+      && declaration.description == "The second service command.")
+    (lib.submoduleOptionDeclarations
+      serviceModuleEvaluation.options.aos.services.type._elementType
+      ["aos" "services" "second"]);
+
+  # --- Extensible option surface -----------------------------------
+  #
+  # An owner marks the curated extension points `extensible = true` and
   # leaves `enable` / globals owner-only (the default). The marker is a pure
   # declaration field — it must not perturb the merged value — and is
-  # surfaced via `result._optionDecls` / `lib.contributableSurface`.
+  # surfaced via `result._optionDecls` / `lib.extensibleSurface`.
   f3bEval = lib.evalModules {
     modules = [
       ({lib, ...}: {
@@ -211,15 +396,15 @@
             };
           });
           default = {};
-          contributable = true;
+          extensible = true;
         };
       })
       {config.nginx.enable = true;}
     ];
     lib = lib;
   };
-  f3bSurfacePaths = builtins.map (d: d.pathStr) (lib.contributableSurface f3bEval);
-  # exactly the marked extension point is contributable
+  f3bSurfacePaths = builtins.map (d: d.pathStr) (lib.extensibleSurface f3bEval);
+  # exactly the marked extension point is extensible
   f3bSurfaceIsVirtualHosts = f3bSurfacePaths == ["nginx.virtualHosts"];
   # the marker did not change the merged value
   f3bValueUnperturbed = f3bEval.config.nginx.enable == true;
@@ -243,7 +428,7 @@
     }
     && f3bEnableDocumentation.visibility == "public"
     && !f3bEnableDocumentation.readOnly
-    && !f3bEnableDocumentation.contributable;
+    && !f3bEnableDocumentation.extensible;
 
   packageDiagnosticsEval = lib.evalModules {
     modules = [
@@ -261,10 +446,6 @@
     packageModules = [
       {
         name = "diagnostic-fixture";
-        authorization = {
-          owns = [];
-          contributes = {};
-        };
         module.config = {
           assertions = [
             {
@@ -286,7 +467,7 @@
   # --- Operator priority-75 band --------------------------------------
   #
   # A bare def from a resolver-supplied `operatorModules` member is lifted to
-  # tier 75 and beats a normal package contribution (tier 100), regardless of
+  # tier 75 and beats a normal package definition (tier 100), regardless of
   # module order. With no `operatorModules` the lift never fires (no-op).
   opDecl = {lib, ...}: {
     options.svc.x = lib.mkOption {
@@ -366,6 +547,7 @@
             artifacts = lib.mkOption {
               type = lib.types.attrsOf lib.types.str;
               default = {};
+              extensible = true;
             };
             observedOwner = lib.mkOption {type = lib.types.str;};
           };
@@ -377,10 +559,6 @@
       packageModules = [
         {
           name = "redis";
-          authorization = {
-            owns = ["artifacts"];
-            contributes = {};
-          };
           module = {config.artifacts."pkg.conf" = "value";};
         }
       ];
@@ -414,14 +592,11 @@
         };
       });
       default = {};
+      extensible = true;
     };
   };
   packageRecord = module: {
     name = "redis";
-    authorization = {
-      owns = ["tree" "artifacts" "rules"];
-      contributes = {nginx = ["virtualHosts"];};
-    };
     inherit module;
   };
   nestedPriorityEval = lib.evalModules {
@@ -477,6 +652,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
+            extensible = true;
           };
           options.observed = lib.mkOption {type = lib.types.str;};
         })
@@ -505,6 +681,7 @@
             options.nginx.enable = lib.mkOption {
               type = lib.types.bool;
               default = false;
+              extensible = true;
             };
           })
         ];
@@ -529,16 +706,13 @@
                 };
               });
               default = {};
+              extensible = true;
             };
           })
         ];
         packageModules = [
           {
             name = "redis";
-            authorization = {
-              owns = [];
-              contributes.systemd = ["services"];
-            };
             module.config.systemd.services.victim.enable = true;
           }
         ];
@@ -571,12 +745,27 @@
       .left
     ))
     .success;
-  foreignPackageDeclarationRejected =
+  uniquePackageDeclarationAccepted =
+    (lib.evalModules {
+      modules = [];
+      packageModules = [
+        (packageRecord ({lib, ...}: {
+          options.redis.value = lib.mkOption {type = lib.types.str;};
+          config.redis.value = "owned";
+        }))
+      ];
+      inherit lib;
+    })
+    .config
+    .redis
+    .value
+    == "owned";
+  duplicatePackageDeclarationRejected =
     !(builtins.tryEval (
-      (lib.evalModules {
+      builtins.deepSeq (lib.evalModules {
         modules = [
           ({lib, ...}: {
-            options.nginx.enable = lib.mkOption {
+            options.nginx.foreignDefault = lib.mkOption {
               type = lib.types.bool;
               default = false;
             };
@@ -592,9 +781,7 @@
         ];
         inherit lib;
       })
-      .config
-      .nginx
-      .enable
+      true
     ))
     .success;
   allowedContributionAccepted =
@@ -604,6 +791,7 @@
           options.nginx.virtualHosts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
+            extensible = true;
           };
         })
       ];
@@ -615,6 +803,33 @@
     .virtualHosts
     .demo
     == "ok";
+  nonExtensibleDefinitionRejected =
+    !(builtins.tryEval (
+      builtins.deepSeq (lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.nginx.workerProcesses = lib.mkOption {
+              type = lib.types.int;
+              default = 1;
+            };
+          })
+        ];
+        packageModules = [(packageRecord {config.nginx.workerProcesses = 8;})];
+        inherit lib;
+      })
+      true
+    ))
+    .success;
+  undeclaredPackageWriteRejected =
+    !(builtins.tryEval (
+      builtins.deepSeq (lib.evalModules {
+        modules = [];
+        packageModules = [(packageRecord {config.undeclared.value = true;})];
+        inherit lib;
+      })
+      true
+    ))
+    .success;
   mkOrderOwnershipPeeled =
     (lib.evalModules {
       modules = [
@@ -622,6 +837,7 @@
           options.rules = lib.mkOption {
             type = lib.types.listOf lib.types.str;
             default = [];
+            extensible = true;
           };
           options.observed = lib.mkOption {type = lib.types.str;};
         })
@@ -649,6 +865,7 @@
               };
             });
             default = {};
+            extensible = true;
           };
           options.observedOwners = lib.mkOption {type = lib.types.listOf lib.types.str;};
         })
@@ -658,10 +875,6 @@
         (packageRecord {config.artifacts.mixed.left = "left";})
         {
           name = "other";
-          authorization = {
-            owns = ["artifacts"];
-            contributes = {};
-          };
           module.config.artifacts.mixed.right = "right";
         }
       ];
@@ -671,6 +884,37 @@
     .observedOwners
     == ["redis" "other"];
 
+  packageValuesAreAtomicForDependencyOwnership = let
+    packageLikeValue = {
+      outPath = "/nix/store/00000000000000000000000000000000-package";
+      internal = throw "dependency ownership traversed package internals";
+    };
+  in
+    (lib.evalModules {
+      modules = [
+        ({lib, ...}: {
+          options = {
+            artifacts = lib.mkOption {
+              type = lib.types.attrsOf (lib.types.submodule {
+                options.package = lib.mkOption {type = lib.types.package;};
+              });
+              default = {};
+              extensible = true;
+            };
+            observedOwners = lib.mkOption {type = lib.types.listOf lib.types.str;};
+          };
+          config.artifacts.inert.package = packageLikeValue;
+        })
+        ({provenance, ...}: {
+          config.observedOwners = provenance.dependencyOwnersOfAttr ["artifacts"] "inert";
+        })
+      ];
+      inherit lib;
+    })
+    .config
+    .observedOwners
+    == ["@base"];
+
   packageDefaultDependencyOwner =
     (lib.evalModules {
       modules = [
@@ -679,6 +923,7 @@
             artifacts = lib.mkOption {
               type = lib.types.attrsOf lib.types.str;
               default = {};
+              extensible = true;
             };
             observed = lib.mkOption {type = lib.types.str;};
           };
@@ -689,10 +934,6 @@
       packageModules = [
         {
           name = "provider";
-          authorization = {
-            owns = [];
-            contributes = {};
-          };
           module = {lib, ...}: {
             options.provider.value = lib.mkOption {
               type = lib.types.str;
@@ -714,10 +955,6 @@
         packageModules = [
           {
             name = "provider";
-            authorization = {
-              owns = [];
-              contributes = {};
-            };
             module = {lib, ...}: {
               options.provider.value = lib.mkOption {type = lib.types.str;};
               config.provider.value = "private";
@@ -725,10 +962,6 @@
           }
           {
             name = "consumer";
-            authorization = {
-              owns = [];
-              contributes = {};
-            };
             module = {
               lib,
               config,
@@ -754,6 +987,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
+            extensible = true;
           };
           options.observed = lib.mkOption {type = lib.types.str;};
         })
@@ -784,6 +1018,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
+            extensible = true;
           };
         })
       ];
@@ -802,6 +1037,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
+            extensible = true;
           };
         })
       ];
@@ -845,6 +1081,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
+            extensible = true;
           };
           options.observed = lib.mkOption {type = lib.types.str;};
         })
@@ -864,6 +1101,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
+            extensible = true;
           };
         })
       ];
@@ -1036,48 +1274,39 @@
     ))
     .success;
 
-  # --- mkPackageRoot ({pkg}.* mount) ----------------------------------
-  #
-  # Mount a package module under its own root name; the root name is injected
-  # as the submodule `name`, and an un-configured root is inert (defaults).
-  pkgRootEval = lib.evalModules {
-    modules =
-      (lib.mountPackageModules {
-        redis = {name, ...}: {
-          options.enable = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-          };
-          options.rootName = lib.mkOption {
-            type = lib.types.str;
-            default = name;
-          };
-        };
-      })
-      ++ [{config.redis.enable = true;}];
-    lib = lib;
-  };
-  pkgRootNameInjected = pkgRootEval.config.redis.rootName == "redis";
-  pkgRootConfigurable = pkgRootEval.config.redis.enable == true;
-
   # --- Authenticated package import roots -----------------------------
+  authenticatedFixtureRecord = {
+    name,
+    source,
+    dependencies ? {},
+  }: let
+    configRoot = builtins.path {
+      path = source;
+      name = "${name}-module";
+    };
+    moduleSelector = builtins.toJSON {
+      package = name;
+      output = "module";
+    };
+  in {
+    inherit name configRoot;
+    module = "${configRoot}/module.nix";
+    outputs = {
+      self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-${name}";
+      dependencies =
+        dependencies
+        // {${moduleSelector} = builtins.toString configRoot;};
+    };
+  };
+
   confinedPackageImport =
     (lib.evalModules {
       modules = [];
       packageModules = [
-        {
+        (authenticatedFixtureRecord {
           name = "import-fixture";
-          authorization = {
-            owns = ["importConfinement"];
-            contributes = {};
-          };
-          configRoot = ./fixtures/package-import-confined;
-          module = ./fixtures/package-import-confined/module.nix;
-          outputs = {
-            self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
-            dependencies = {};
-          };
-        }
+          source = ./fixtures/package-import-confined;
+        })
       ];
       lib = lib;
     })
@@ -1085,51 +1314,15 @@
     .importConfinement
     .value
     == "confined";
-  escapedPackageImportRejected =
-    !(builtins.tryEval (builtins.deepSeq (
-        (lib.evalModules {
-          modules = [];
-          packageModules = [
-            {
-              name = "import-fixture";
-              authorization = {
-                owns = ["importConfinement"];
-                contributes = {};
-              };
-              configRoot = ./fixtures/package-import-escaped;
-              module = ./fixtures/package-import-escaped/module.nix;
-              outputs = {
-                self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
-                dependencies = {};
-              };
-            }
-          ];
-          lib = lib;
-        })
-        .config
-        .importConfinement
-        .value
-      )
-      true))
-    .success;
   evaluatedPackageImportRejected =
     !(builtins.tryEval (builtins.deepSeq (
         (lib.evalModules {
           modules = [];
           packageModules = [
-            {
+            (authenticatedFixtureRecord {
               name = "import-fixture";
-              authorization = {
-                owns = ["importConfinement"];
-                contributes = {};
-              };
-              configRoot = ./fixtures/package-import-evaluated;
-              module = ./fixtures/package-import-evaluated/module.nix;
-              outputs = {
-                self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
-                dependencies = {};
-              };
-            }
+              source = ./fixtures/package-import-evaluated;
+            })
           ];
           lib = lib;
         })
@@ -1144,19 +1337,10 @@
         (lib.evalModules {
           modules = [];
           packageModules = [
-            {
+            (authenticatedFixtureRecord {
               name = "import-fixture";
-              authorization = {
-                owns = ["importConfinement"];
-                contributes = {};
-              };
-              configRoot = ./fixtures/package-import-string-escape;
-              module = ./fixtures/package-import-string-escape/module.nix;
-              outputs = {
-                self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
-                dependencies = {};
-              };
-            }
+              source = ./fixtures/package-import-string-escape;
+            })
           ];
           lib = lib;
         })
@@ -1171,19 +1355,11 @@
       (lib.evalModules {
         modules = [];
         packageModules = [
-          {
+          (authenticatedFixtureRecord {
             name = "output-fixture";
-            authorization = {
-              owns = ["outputConfinement"];
-              contributes = {};
-            };
-            configRoot = ./fixtures/package-output-unlisted;
-            module = ./fixtures/package-output-unlisted/module.nix;
-            outputs = {
-              self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-output-fixture";
-              dependencies.allowed = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-allowed";
-            };
-          }
+            source = ./fixtures/package-output-unlisted;
+            dependencies.allowed = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-allowed";
+          })
         ];
         lib = lib;
       })
@@ -1197,46 +1373,6 @@
     builtins.foldl' (result: check:
       lib.throwIfNot check.ok check.message result)
     true [
-      {
-        ok = brokenConfigStillReadable;
-        message = "broken config should remain inspectable";
-      }
-      {
-        ok = brokenBuildThrows;
-        message = "broken build must throw";
-      }
-      {
-        ok = healthyBuildSucceeds;
-        message = "healthy build must succeed";
-      }
-      {
-        ok = imageBudgetCheckWired;
-        message = "per-image budget check must be exposed";
-      }
-      {
-        ok = imagePlatformChecks;
-        message = "cross images must retain target identity and native construction tools";
-      }
-      {
-        ok = serverRootPartitionHasHeadroom;
-        message = "server root partition must retain headroom above its declared artifact budget";
-      }
-      {
-        ok = rootPartitionOverridePropagates;
-        message = "root partition override must propagate to default ZFS slot capacity";
-      }
-      {
-        ok = undersizedRootPartitionRejected;
-        message = "root partition smaller than its artifact budget must throw";
-      }
-      {
-        ok = undersizedEspRejected;
-        message = "undersized image ESP contract must throw";
-      }
-      {
-        ok = undersizedZfsSlotRejected;
-        message = "undersized ZFS image slot must throw";
-      }
       {
         ok = enableExplicitlySet;
         message = "mkEnableOption explicit value";
@@ -1258,8 +1394,36 @@
         message = "pathInStore validation";
       }
       {
+        ok =
+          addCheckScalarMerged
+          && addCheckSubmoduleMerged
+          && addCheckListMerged
+          && addCheckScalarRejected
+          && addCheckSubmoduleRejected
+          && addCheckListRejected;
+        message = "addCheck validates merged scalar, submodule, and list values";
+      }
+      {
+        ok =
+          strictSubmodulePublic
+          && freeformSubmodulePublic
+          && nestedSubmodulePublic
+          && strictSubmoduleRejectsUndeclared;
+        message = "submodule hides engine metadata and preserves strict/freeform/nested semantics";
+      }
+      {
+        ok =
+          composedServiceOptions
+          && composedServiceRejectsUnknown
+          && deferredServiceFeaturesCompose
+          && serviceModulesAvoidSiblingCycle
+          && serviceModulesCompose
+          && serviceModulesProjectNestedOptions;
+        message = "feature modules compose one strict named submodule";
+      }
+      {
         ok = f3bSurfaceIsVirtualHosts && f3bValueUnperturbed && f3bBoolTypeSig == "boolean" && f3bDocumentationIsStructured;
-        message = "contributable typed documentation surface";
+        message = "extensible typed documentation surface";
       }
       {
         ok = packageEngineDiagnosticsAccepted;
@@ -1286,7 +1450,12 @@
         message = "imported forged _file provenance";
       }
       {
-        ok = foreignEnableRejected && nestedForeignEnableRejected && allowedContributionAccepted;
+        ok =
+          foreignEnableRejected
+          && nestedForeignEnableRejected
+          && allowedContributionAccepted
+          && nonExtensibleDefinitionRejected
+          && undeclaredPackageWriteRejected;
         message = "actual package write authorization";
       }
       {
@@ -1294,8 +1463,8 @@
         message = "package _module.args authorization";
       }
       {
-        ok = foreignPackageDeclarationRejected;
-        message = "package option declaration authorization";
+        ok = uniquePackageDeclarationAccepted && duplicatePackageDeclarationRejected;
+        message = "package option declaration ownership";
       }
       {
         ok = mkOrderOwnershipPeeled;
@@ -1304,6 +1473,10 @@
       {
         ok = mixedDependencyOwnersDetected;
         message = "mixed artifact dependency owners";
+      }
+      {
+        ok = packageValuesAreAtomicForDependencyOwnership;
+        message = "package values are atomic for dependency ownership";
       }
       {
         ok = packageDefaultDependencyOwner;
@@ -1326,11 +1499,7 @@
         message = "uniqEnum semantics";
       }
       {
-        ok = pkgRootNameInjected && pkgRootConfigurable;
-        message = "package root mount";
-      }
-      {
-        ok = confinedPackageImport && escapedPackageImportRejected && evaluatedPackageImportRejected && lexicalStringPackageImportRejected;
+        ok = confinedPackageImport && evaluatedPackageImportRejected && lexicalStringPackageImportRejected;
         message = "authenticated package import-root confinement";
       }
       {
@@ -1350,21 +1519,19 @@ in
           set -eu
           : ${builtins.toString evalAssertions}
           echo "==> module-enforcement regression check"
-          echo "  assertion enforcement — broken config still inspectable: OK"
-          echo "  assertion enforcement — broken build throws: OK"
-          echo "  assertion enforcement — healthy build succeeds: OK"
           echo "  mkEnableOption — explicit value: OK"
           echo "  mkEnableOption — defaults to false: OK"
           echo "  mkPackageOption — default from pkgs: OK"
           echo "  types.pathInStore — accepts store paths: OK"
           echo "  types.pathInStore — rejects host paths: OK"
           echo "  types.pathInStore — rejects non-paths: OK"
-          echo "  contributable surface exposed, marker inert: OK"
+          echo "  types.addCheck — validates merged scalar/submodule/list values: OK"
+          echo "  types.submodule — hides engine metadata and preserves merge semantics: OK"
+          echo "  extensible surface exposed, marker inert: OK"
           echo "  operator tier-75 beats package, mkForce beats operator: OK"
           echo "  no operatorModules means no priority lift: OK"
           echo "  package provenance cannot forge operator priority: OK"
           echo "  types.uniqEnum agree/conflict: OK"
-          echo "  mkPackageRoot mount and name injection: OK"
           mkdir -p "$out"
           echo PASS > "$out/result"
         '';

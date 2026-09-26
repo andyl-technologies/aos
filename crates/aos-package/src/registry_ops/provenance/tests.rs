@@ -3,186 +3,23 @@
 use super::{
     PACKAGE_PROVENANCE_TRANSPARENCY_LOG, PackageProvenanceTransparencyLogEntry,
     append_package_provenance_transparency_log, bind_documentation_provenance,
-    publish_provenance_artifact, publish_provenance_ref,
-    read_package_provenance_transparency_log_state,
+    publish_provenance_ref, read_package_provenance_transparency_log_state,
 };
-use crate::registry_ops::attestation::package_nar_root_digest;
 use crate::registry_ops::git::{commit_registry_paths, git};
-use crate::registry_ops::mac::PublishExposeManifest;
 use crate::registry_ops::provenance::staged::validate_staged_package_provenance_transparency_log;
 use crate::registry_ops::provenance::statement::package_provenance_transparency_entry_hash;
-use crate::registry_ops::store_paths::StorePathInfo;
+use crate::registry_ops::sha256_hex;
 use crate::registry_ops::test_support::{
-    TEST_PROVENANCE_REGISTRY, init_test_transparency_repo, sample_transparency_provenance,
-    sign_test_provenance_statement, signed_provenance_statement, test_provenance_signer,
-    verity_expose_manifest, write_sample_package_toml, write_sample_provenance_artifact,
+    init_test_transparency_repo, sample_transparency_provenance, sign_test_provenance_statement,
+    signed_provenance_statement, write_sample_package_toml, write_sample_provenance_artifact,
     write_sample_store_record,
 };
-use crate::registry_ops::uki::sha256_hex;
-use crate::types::{AttestationMeta, DocumentationArtifactMeta, ExposeMeta, PermissionsMeta};
+use crate::types::{AttestationMeta, DocumentationArtifactMeta};
 use anyhow::Result;
 use serde_json::Value;
 use std::fs;
 use std::io::Write as _;
 use tempfile::TempDir;
-
-#[test]
-fn publish_provenance_artifact_binds_nar_manifest_measurement_and_source() {
-    let info = StorePathInfo {
-        path: "/nix/store/abc123-webapp-1.0.0".into(),
-        nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-        nar_size: 1048576,
-        references: vec![],
-        closure_size: 5242880,
-    };
-    let source = StorePathInfo {
-        path: "/nix/store/srcdrv-webapp-1.0.0.drv".into(),
-        nar_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
-        nar_size: 4096,
-        references: vec![],
-        closure_size: 4096,
-    };
-    let root_hash = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-    let manifest = verity_expose_manifest(root_hash);
-    let manifest_digest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
-    let measurement = crate::package_attestation::package_measurement_digest(
-        "webapp",
-        "1.0.0",
-        root_hash,
-        manifest_digest,
-    );
-    let expected_provenance =
-        publish_provenance_ref("webapp", "x86_64-linux", &measurement).unwrap();
-
-    let signer = test_provenance_signer();
-    let artifact = publish_provenance_artifact(
-        TEST_PROVENANCE_REGISTRY,
-        "webapp",
-        "1.0.0",
-        "x86_64-linux",
-        &info,
-        Some(&source),
-        &manifest,
-        manifest_digest,
-        &signer.signer,
-    )
-    .unwrap()
-    .expect("provenance artifact");
-
-    assert_eq!(artifact.path, expected_provenance);
-    assert!(artifact.path.contains("/x86_64-linux/"));
-    let statement = signed_provenance_statement(&artifact);
-    assert_eq!(statement["_type"], "https://in-toto.io/Statement/v1");
-    assert_eq!(statement["predicateType"], "https://slsa.dev/provenance/v1");
-    assert_eq!(
-        statement["subject"][0]["name"].as_str(),
-        Some(info.path.as_str())
-    );
-    assert_eq!(
-        statement["subject"][0]["digest"]["sha256"],
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    );
-    assert_eq!(
-        statement["subject"][1]["digest"]["sha256"],
-        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-    );
-    assert_eq!(
-        statement["subject"][2]["digest"]["sha256"],
-        measurement.trim_start_matches("sha256:")
-    );
-    assert_eq!(
-        statement["predicate"]["buildDefinition"]["externalParameters"]["root_digest"].as_str(),
-        Some(root_hash)
-    );
-    assert_eq!(
-        statement["predicate"]["buildDefinition"]["externalParameters"]["root_hash"].as_str(),
-        Some(root_hash)
-    );
-    assert_eq!(
-        statement["predicate"]["buildDefinition"]["externalParameters"]["provenance"].as_str(),
-        Some(expected_provenance.as_str())
-    );
-    let expected_source_uri = format!("nix:{}", source.path);
-    assert_eq!(
-        statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["uri"].as_str(),
-        Some(expected_source_uri.as_str())
-    );
-    assert_eq!(
-        statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"]["sha256"]
-            .as_str(),
-        Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-    );
-}
-
-#[test]
-fn publish_provenance_artifact_binds_non_verity_root_digest() {
-    let info = StorePathInfo {
-        path: "/nix/store/abc123-webapp-1.0.0".into(),
-        nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-        nar_size: 1048576,
-        references: vec![],
-        closure_size: 5242880,
-    };
-    let manifest = PublishExposeManifest {
-        expose: ExposeMeta {
-            target: "aos-pkg-webapp.target".into(),
-            units: vec!["webapp.service".into()],
-            images: Vec::new(),
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        },
-        permissions: PermissionsMeta::default(),
-        mac: None,
-        _kernel: None,
-        _firewall: None,
-        _confinement: None,
-    };
-    let manifest_digest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
-    let expected_root_digest = package_nar_root_digest(&info.nar_hash);
-    let measurement = crate::package_attestation::package_measurement_digest(
-        "webapp",
-        "1.0.0",
-        &expected_root_digest,
-        manifest_digest,
-    );
-
-    let signer = test_provenance_signer();
-    let artifact = publish_provenance_artifact(
-        TEST_PROVENANCE_REGISTRY,
-        "webapp",
-        "1.0.0",
-        "x86_64-linux",
-        &info,
-        None,
-        &manifest,
-        manifest_digest,
-        &signer.signer,
-    )
-    .unwrap()
-    .expect("provenance artifact");
-
-    assert_eq!(artifact.attestation.root_hash, None);
-    assert_eq!(artifact.attestation.root_hash_sig, None);
-    assert_eq!(
-        artifact.attestation.root_digest.as_deref(),
-        Some(expected_root_digest.as_str())
-    );
-    assert_eq!(
-        artifact.attestation.measurement.as_deref(),
-        Some(measurement.as_str())
-    );
-    let statement = signed_provenance_statement(&artifact);
-    let params = &statement["predicate"]["buildDefinition"]["externalParameters"];
-    assert_eq!(
-        params["root_digest"].as_str(),
-        Some(expected_root_digest.as_str())
-    );
-    assert!(params.get("root_hash").is_none());
-    assert!(params.get("root_hash_sig").is_none());
-}
-
 #[test]
 fn publish_provenance_paths_are_platform_scoped() {
     let measurement = crate::package_attestation::package_measurement_digest(
@@ -225,7 +62,6 @@ fn documented_provenance_paths_change_with_the_documentation_nar() {
         document_size: 384,
         semantic_schema_sha256:
             "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string(),
-        system_module_nar_hash: None,
         references: vec![],
     };
 
@@ -276,63 +112,6 @@ fn publish_provenance_ref_rejects_malformed_measurements() {
         .is_err()
     );
 }
-
-#[test]
-fn publish_provenance_artifact_preserves_sri_nar_hashes_as_nix_digests() {
-    let package_nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-    let source_nar_hash = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
-    let info = StorePathInfo {
-        path: "/nix/store/abc123-webapp-1.0.0".into(),
-        nar_hash: package_nar_hash.into(),
-        nar_size: 1048576,
-        references: vec![],
-        closure_size: 5242880,
-    };
-    let source = StorePathInfo {
-        path: "/nix/store/srcdrv-webapp-1.0.0.drv".into(),
-        nar_hash: source_nar_hash.into(),
-        nar_size: 4096,
-        references: vec![],
-        closure_size: 4096,
-    };
-    let root_hash = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-    let manifest = verity_expose_manifest(root_hash);
-    let manifest_digest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
-
-    let signer = test_provenance_signer();
-    let artifact = publish_provenance_artifact(
-        TEST_PROVENANCE_REGISTRY,
-        "webapp",
-        "1.0.0",
-        "x86_64-linux",
-        &info,
-        Some(&source),
-        &manifest,
-        manifest_digest,
-        &signer.signer,
-    )
-    .unwrap()
-    .expect("provenance artifact");
-
-    let statement = signed_provenance_statement(&artifact);
-    assert_eq!(
-        statement["subject"][0]["digest"]["nix:narHash"].as_str(),
-        Some(package_nar_hash)
-    );
-    assert!(statement["subject"][0]["digest"].get("sha256").is_none());
-    assert_eq!(
-        statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"]
-            ["nix:narHash"]
-            .as_str(),
-        Some(source_nar_hash)
-    );
-    assert!(
-        statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"]
-            .get("sha256")
-            .is_none()
-    );
-}
-
 #[test]
 fn append_package_provenance_transparency_log_is_idempotent() {
     let tmp = TempDir::new().unwrap();
@@ -670,7 +449,7 @@ fn validate_staged_package_provenance_transparency_log_rejects_statement_body_mi
 }
 
 #[test]
-fn validate_staged_package_provenance_transparency_log_rejects_manifest_measurement_mismatch() {
+fn validate_staged_package_provenance_transparency_log_rejects_binding_measurement_mismatch() {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("repo");
     fs::create_dir(&repo).unwrap();
@@ -693,14 +472,14 @@ fn validate_staged_package_provenance_transparency_log_rejects_manifest_measurem
         .get_mut("subject")
         .and_then(Value::as_array_mut)
         .unwrap();
-    let manifest_subject = subjects
+    let binding_subject = subjects
         .iter_mut()
         .find(|subject| {
             subject.get("name").and_then(Value::as_str)
-                == Some("aos:permissions-manifest:webapp:1.0.0:x86_64-linux")
+                == Some("aos:package-runtime-binding:webapp:1.0.0:x86_64-linux")
         })
         .unwrap();
-    manifest_subject["digest"]["sha256"] = Value::String("e".repeat(64));
+    binding_subject["digest"]["sha256"] = Value::String("e".repeat(64));
     let statement_jsonl = sign_test_provenance_statement(&statement);
     fs::write(&provenance_path, &statement_jsonl).unwrap();
 
@@ -727,7 +506,7 @@ fn validate_staged_package_provenance_transparency_log_rejects_manifest_measurem
 
     let err = validate_staged_package_provenance_transparency_log(&repo).unwrap_err();
 
-    assert!(format!("{err:#}").contains("measurement does not match permissions manifest"));
+    assert!(format!("{err:#}").contains("measurement does not match runtime binding digest"));
 }
 
 #[test]

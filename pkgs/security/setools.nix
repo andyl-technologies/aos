@@ -1,5 +1,6 @@
 ##! SETools — SELinux policy analysis tools
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -13,7 +14,65 @@
   version = "4.7.1";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "setools";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The API returns the inclusive numeric range from 16 through 18.";
+        "files" = {};
+        "input" = "The extended-permission range 0x10-0x12.";
+        "operation" = "Parse the range through SETools' public extended-permission utility API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import glob, sys\nlocations = glob.glob(\"@out@/lib/python*/site-packages\")\nassert len(locations) == 1\nsys.path.insert(0, locations[0])\nimport setools\nassert setools.xperm_str_to_tuple_ranges(\"0x10-0x12\") == [(16, 18)]\nprint(\"setools operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "setools operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "SETools rejects the malformed policy image with its policy-loading exception.";
+        "files" = {
+          "invalid.policy" = "bad";
+        };
+        "input" = "A three-byte file presented as a compiled SELinux policy.";
+        "operation" = "Open the malformed policy through SETools' public SELinuxPolicy API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport glob, sys\nsys.path.insert(0, glob.glob(\"@out@/lib/python*/site-packages\")[0])\nimport setools\ntry:\n    setools.SELinuxPolicy(\"invalid.policy\")\nexcept Exception:\n    pass\nelse:\n    raise RuntimeError(\"SETools accepted a malformed policy\")\n\nsys.stderr.write(\"setools rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "setools rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

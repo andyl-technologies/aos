@@ -1,5 +1,6 @@
 ##! moreutils — Additional Unix command-line tools
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -17,7 +18,62 @@
   modulePath = builtins.concatStringsSep " " (map (module: "${module}/lib/perl5") modules);
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "moreutils";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [
+          {
+            "path" = "answer.txt";
+            "text" = "answer=42\n";
+          }
+        ];
+        "expected" = "sponge writes the exact input after reaching end of stream.";
+        "files" = {};
+        "input" = "A fixed byte stream and an output pathname.";
+        "operation" = "Consume the stream into the file through sponge.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/sponge"
+              "answer.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "answer=42\n";
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "sponge rejects the inaccessible destination with a non-success status.";
+        "files" = {};
+        "input" = "An output pathname beneath a directory that does not exist.";
+        "operation" = "Attempt to write the stream through sponge.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/sponge"
+              "missing-directory/answer.txt"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdin" = "answer=42\n";
+          }
+        ];
+      };
+    };
+
     inherit version;
     src = fetchurl {
       urls = ["https://deb.debian.org/debian/pool/main/m/moreutils/moreutils_${version}.orig.tar.xz"];

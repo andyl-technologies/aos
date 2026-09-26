@@ -1,5 +1,6 @@
 ##! flex — Fast lexical analyzer generator
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -9,7 +10,94 @@
   version = "2.6.4";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "flex";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The scanner emits the expected token classes and values.";
+        "files" = {
+          "scanner.l" = "%option noyywrap\n%{\n#include <stdio.h>\n%}\n%%\n[0-9]+       { printf(\"integer:%s\\n\", yytext); }\n[[:alpha:]]+ { printf(\"word:%s\\n\", yytext); }\n[[:space:]]+ ;\n.            { return 2; }\n%%\nint main(void) { return yylex(); }\n";
+        };
+        "input" = "A scanner recognizing decimal integers and words.";
+        "operation" = "Generate and compile the scanner, then tokenize a fixed input.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/flex"
+              "-o"
+              "scanner.c"
+              "scanner.l"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@cc@"
+              "scanner.c"
+              "-o"
+              "scanner"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/scanner"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "alpha 42\n";
+            "stdout" = {
+              "exact" = "word:alpha\ninteger:42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Flex rejects the malformed rule with status 1.";
+        "files" = {
+          "invalid.l" = "%option noyywrap\n%%\n[abc { return 0; }\n%%\n";
+        };
+        "input" = "A scanner specification with an unterminated character class.";
+        "operation" = "Ask Flex to generate a scanner from the malformed rule.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/flex"
+              "-o"
+              "invalid.c"
+              "invalid.l"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

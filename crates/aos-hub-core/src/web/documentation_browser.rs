@@ -266,7 +266,7 @@ async fn load_document(
     registry_id: i64,
     release: &str,
     entry: &crate::db::DocumentationTreeEntry,
-) -> Result<aos_doc_model::PackageDocumentation, Rendered> {
+) -> Result<aos_doc_model::PackageDocumentationProjection, Rendered> {
     let locator = match svc
         .db
         .package_documentation_locator_at_release(

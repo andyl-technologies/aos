@@ -2,9 +2,9 @@
 ##!
 ##! Declares `aos.boot.secureBoot`. When enabled it does two things:
 ##!
-##!  1. Exposes the db signing key/cert that the image builder
-##!     (`modules/image/_builder.nix`) reads to Authenticode-sign the UKI
-##!     and sd-boot. Signing is OFF by default, so the base image stays
+##!  1. Exposes the db signing key/cert that the selected package image
+##!     builder reads to sign its boot artifacts. Signing is OFF by default,
+##!     so the base image stays
 ##!     byte-reproducible and carries no key — SB material is a
 ##!     deployment overlay (RFC-0006 key-custody.md).
 ##!
@@ -139,7 +139,7 @@
   # sealing of /var reads it pre-switch-root. The initrd copies a fixed
   # package set, not the whole toplevel closure, so the measured-boot branch
   # registers a minimal image-fixed artifact and adds it via
-  # aos.boot.initrd.extraPackages. The frozen artifact path keeps this module
+  # aos.boot.initrd.packageRoots. The frozen artifact path keeps this module
   # evaluable on-host without exposing a derivation builder.
   pcrKeyForInitrd = config.aos.config.artifacts.pcr-public-key;
 in {
@@ -315,9 +315,9 @@ in {
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = ''
-          Path to the PCR-policy public key (PEM). Embedded in the UKI's
-          `.pcrpkey` section and used by `systemd-cryptenroll
-          --tpm2-public-key` to seal `/var`. Required with pcrPrivateKey.
+          Path to the PCR-policy public key (PEM). The selected boot and
+          persistent-state providers publish and enforce this policy.
+          Required with pcrPrivateKey.
         '';
       };
 
@@ -445,8 +445,8 @@ in {
       # First-boot recovery seeding authenticates the ESP copy before it
       # records any retention evidence. The initrd copies an explicit package
       # closure, so both PE verification tools must be named here.
-      aos.boot.initrd.extraPackages = lib.mkIf config.aos.boot.recovery.enable [
-        pkgs.pe-tools
+      aos.boot.initrd.packageRoots = lib.mkIf config.aos.boot.recovery.enable [
+        pkgs.binutils
         pkgs.sbsigntools
       ];
     })
@@ -471,10 +471,10 @@ in {
         }
       ];
 
-      # Swap in the lockdown kernel. The base sets system.build.kernel
-      # with normal priority, so mkForce is required to replace it. The
-      # initrd and UKI are built from this kernel's (signed) modules.
-      system.build.kernel = lib.mkForce lockdownKernel;
+      # Select the package variant through the same kernel-provider input as
+      # every other system. Its native module then projects the exact artifact
+      # into the checked ability fixed point used by the initrd and image.
+      aos.kernel.packageRoot = lib.mkForce lockdownKernel;
 
       # Belt-and-suspenders cmdline: lockdown auto-engages under SB but
       # this pins the mode; module.sig_enforce reinforces MODULE_SIG_FORCE.
@@ -507,7 +507,10 @@ in {
             ];
           };
 
-      aos.boot.secureBoot.measuredBoot._effectivePcrPublicKey = "${pcrKeyForInitrd}/pcr.pem";
+      aos.boot.secureBoot.measuredBoot._effectivePcrPublicKey =
+        if cfg.measuredBoot.enable
+        then "${pcrKeyForInitrd}/pcr.pem"
+        else null;
 
       assertions = [
         {
@@ -529,189 +532,27 @@ in {
       ];
 
       # Ship the PCR public key into the initrd for first-boot sealing.
-      aos.boot.initrd.extraPackages = [pcrKeyForInitrd];
-      environment.systemPackages = [pkgs.aos-var-policy-migrate];
+      aos.boot.initrd.nonPackageRuntimeArtifacts = [
+        (builtins.toString pcrKeyForInitrd)
+      ];
       environment.etc."aos/pcr-sign.pem".source = "${pcrKeyForInitrd}/pcr.pem";
+    })
 
-      # First boot: LUKS2-format /var and enroll a TPM2 token sealed to
-      # the signed PCR policy (PCR 11, signature-flexible) plus PCRs 7 and
-      # 12 pinned by value, and a recovery key escrowed off the volume.
-      # Later boots: unlock via the TPM2 token, no passphrase. Ordered
-      # after aos-repart (which creates the partition) and before
-      # mount-var (which mounts /dev/mapper/var).
-      boot.initrd.systemd.services."aos-var-crypt" = lib.mkIf (!(config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState)) {
-        description = "Encrypt and TPM2-seal /var (measured boot)";
-        requiredBy = ["initrd-fs.target"];
-        requires =
-          ["aos-boot-identity-guard.service"]
-          ++ lib.optional config.aos.security.verity.enable "aos-verity-root-verify.service";
-        before = ["mount-var.service" "initrd-fs.target"];
-        # Only ORDER after the disk carver (aos-repart), don't Require it: on a
-        # reboot (var already provisioned) repart is a no-op. No
-        # ConditionPathExists on the var device either — for a crypto_LUKS
-        # partition udev surfaces /dev/disk/by-partlabel/var late, which would
-        # condition-skip this whole unit on the unlock boot; the script waits
-        # for it instead.
-        after =
-          [
-            "aos-boot-identity-guard.service"
-            "aos-repart.service"
-            "systemd-udev-settle.service"
-          ]
-          ++ lib.optional config.aos.security.verity.enable "aos-verity-root-verify.service";
-        unitConfig.ConditionKernelCommandLine = "!aos.recovery=1";
-        environment.PATH = lib.mkForce (lib.concatStringsSep ":" [
-          "${pkgs.coreutils}/bin"
-          "${pkgs.util-linux}/bin"
-          "${pkgs.util-linux}/sbin"
-          "${pkgs.cryptsetup}/bin"
-          "${pkgs.cryptsetup}/sbin"
-        ]);
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          # Surface the script's diagnostics on the console/journal — the
-          # TPM2 unlock path is subtle and a silent failure would only show
-          # up as an initrd emergency drop.
-          StandardOutput = "journal+console";
-          StandardError = "journal+console";
-        };
-        script = ''
-          set -euo pipefail
-          dev=/dev/disk/by-partlabel/var
-          pub=${pcrKeyForInitrd}/pcr.pem
-          enroll=${pkgs.systemd}/bin/systemd-cryptenroll
-          csetup=${pkgs.systemd}/lib/systemd/systemd-cryptsetup
-          cs=${pkgs.cryptsetup}/sbin/cryptsetup
-          mkfs=${pkgs.e2fsprogs}/sbin/mkfs.ext4
-          sbvar=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
-          # Log to /dev/kmsg — the console (ttyS0) is contended by the
-          # initrd debug shell whose escape sequences corrupt the serial.
-          klog() { echo "aos-var-crypt: $*" > /dev/kmsg 2>/dev/null || echo "aos-var-crypt: $*" >&2; }
-
-          # Make the systemd-tpm2 LUKS2 token plugin findable. cryptsetup
-          # dlopens external token plugins by absolute path from its
-          # configured tokens dir (/run/cryptsetup/tokens — see
-          # cryptsetup.nix), but the systemd-tpm2 plugin ships in systemd's
-          # store path. Symlink systemd's plugin dir into that search path
-          # so systemd-cryptsetup can use the TPM2 token to unlock /var.
-          mkdir -p /run/cryptsetup
-          ln -sfn ${pkgs.systemd}/lib/cryptsetup /run/cryptsetup/tokens
-
-          # Wait for the var partition to surface — udev is slow to process a
-          # crypto_LUKS partition on the unlock boot, and there is no
-          # ConditionPathExists guarding this unit, so poll (up to ~30s).
-          i=0
-          while [ ! -e "$dev" ] && [ "$i" -lt 60 ]; do i=$((i + 1)); sleep 0.5; done
-          if [ ! -e "$dev" ]; then
-            klog "$dev absent after wait; skipping"
-            exit 0
-          fi
-          klog "device ready: isLuks=$("$cs" isLuks "$dev" && echo Y || echo N)"
-
-          if "$cs" isLuks "$dev"; then
-            # Already sealed: unlock via the signed TPM2 policy. A signed
-            # (public-key) policy needs the PCR *signature* at unlock time;
-            # sd-stub materializes the UKI's .pcrsig at
-            # /run/systemd/tpm2-pcr-signature.json — pass it explicitly. If
-            # the unseal fails (SB-state or appended-input PCR mismatch, or
-            # an unsigned UKI), /var stays locked and recovery is required —
-            # the intended security property. `headless` makes
-            # systemd-cryptsetup FAIL rather than fall back to an
-            # interactive passphrase prompt (which would wedge the boot);
-            # `timeout` bounds it either way.
-            if [ ! -e /dev/mapper/var ]; then
-              sig=""
-              for p in /run/systemd/tpm2-pcr-signature.json \
-                       /.extra/tpm2-pcr-signature.json \
-                       /run/credentials/@system/tpm2-pcr-signature.json; do
-                if [ -r "$p" ]; then sig="$p"; break; fi
-              done
-              klog "unlocking /var via TPM2 (signature=''${sig:-<none>})"
-              opts="tpm2-device=auto,headless"
-              [ -n "$sig" ] && opts="tpm2-device=auto,tpm2-signature=$sig,headless"
-              rc=0
-              timeout 60 "$csetup" attach var "$dev" - "$opts" || rc=$?
-              if [ "$rc" -ne 0 ]; then
-                klog "TPM2 unlock failed (rc=$rc) — /var stays sealed, recovery key required"
-              fi
-            fi
-            exit 0
-          fi
-
-          # Not yet LUKS. Sealing binds PCR 7 (Secure Boot state) and PCR 12
-          # (boot inputs) by value, so it must happen during a clean boot with
-          # SB *enforcing* — otherwise the seal captures an unusable state.
-          # Read SecureBoot from efivarfs (mount it if the initrd has not yet).
-          mount -t efivarfs none /sys/firmware/efi/efivars 2>/dev/null || true
-          sb=0
-          if [ -r "$sbvar" ]; then
-            sb=$(od -An -tu1 -j4 -N1 "$sbvar" | tr -d ' ' || echo 0)
-          fi
-
-          if [ "$sb" != "1" ]; then
-            # Pre-enrollment boot (Setup Mode): SB not enforcing yet. Bring
-            # up a temporary PLAIN ext4 /var so the system reaches
-            # multi-user and an operator/test can enroll PK/KEK/db; the
-            # first enforcing boot below replaces it with the sealed volume.
-            # The measured-boot repart plan initially leaves /var raw. Format
-            # it once and preserve it across further Setup Mode boots so key
-            # enrollment can complete without repeated formatting. This
-            # plaintext state remains disposable: the first enforcing boot
-            # replaces it with the sealed volume below.
-            fs_type=$(${pkgs.util-linux}/sbin/blkid -p -s TYPE -o value "$dev" 2>/dev/null || true)
-            case "$fs_type" in
-              "")
-                klog "SB not enforcing yet — formatting plain ext4 /var (sealed once enforcing)"
-                "$mkfs" -q -L var "$dev"
-                ;;
-              ext4)
-                klog "SB not enforcing yet — preserving existing plain ext4 /var"
-                ;;
-              *)
-                klog "SB not enforcing yet — refusing unexpected /var filesystem type: $fs_type"
-                exit 1
-                ;;
-            esac
-            exit 0
-          fi
-
-          # First enforcing boot: format with a throwaway key, seal to the
-          # signed PCR policy (PCR 11) + pinned PCRs 7 and 12, add a recovery
-          # key, then drop the bootstrap keyslot so only the TPM/recovery paths
-          # remain.
-          keyf=$(mktemp)
-          dd if=/dev/urandom of="$keyf" bs=512 count=1 status=none
-          "$cs" luksFormat --type luks2 --batch-mode "$dev" "$keyf"
-          "$cs" open "$dev" var --key-file "$keyf"
-          "$mkfs" -q -L var /dev/mapper/var
-          "$enroll" --unlock-key-file="$keyf" \
-            --tpm2-device=auto \
-            --tpm2-public-key="$pub" \
-            --tpm2-public-key-pcrs=${cfg.measuredBoot.signedPcrs} \
-            --tpm2-pcrs=${cfg.measuredBoot.pinnedPcrs} \
-            "$dev"
-          # Recovery key — MUST be escrowed off-machine (deployment
-          # decision); written to the /run tmpfs, never to /var. This is
-          # NOT masked: if recovery enrollment fails we must abort BEFORE
-          # wiping the bootstrap slot, otherwise a later TPM unseal failure
-          # (legit firmware/SB or boot-input change → pinned PCR mismatch) would brick /var
-          # with no way in. `set -e` propagates a failure here.
-          # Command substitution removes systemd-cryptenroll's presentation
-          # newline. cryptsetup treats every byte in a key file as key
-          # material, so retaining that newline would make direct exact-slot
-          # recovery verification disagree with systemd's password reader.
-          recovery_key=$("$enroll" --unlock-key-file="$keyf" --recovery-key "$dev")
-          printf '%s' "$recovery_key" > ${cfg.measuredBoot.recoveryKeyPath}
-          unset recovery_key
-          chmod 600 ${cfg.measuredBoot.recoveryKeyPath}
-          # Drop the throwaway bootstrap keyslot by TYPE (a plain
-          # passphrase/keyfile slot), not by a guessed slot number — the
-          # TPM2 and recovery slots carry their own systemd token types and
-          # are left intact.
-          "$enroll" --unlock-key-file="$keyf" --wipe-slot=password "$dev"
-          shred -u "$keyf" 2>/dev/null || rm -f "$keyf"
-        '';
+    # Keep the complete conditional on a selection-stage storage option. The
+    # resulting stage module does not depend on package-owned host options
+    # that are absent from the smaller selection and initrd option trees.
+    (lib.mkIf (cfg.measuredBoot.enable && config.aos.boot.storage.backend != "zfs-zvol") {
+      aos.abilities.stages.initrd = {
+        modules = [
+          {
+            aos.security.measuredVar = {
+              enable = true;
+              pcrPublicKey = "${pcrKeyForInitrd}/pcr.pem";
+              inherit (cfg.measuredBoot) signedPcrs pinnedPcrs recoveryKeyPath;
+              requireVerity = config.aos.security.verity.enable;
+            };
+          }
+        ];
       };
     })
   ];

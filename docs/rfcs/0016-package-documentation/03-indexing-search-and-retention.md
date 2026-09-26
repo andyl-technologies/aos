@@ -66,7 +66,7 @@ package_documentation_artifacts
 option_search_documents
   documentation_artifact_id, option_ordinal, display_path, package_name,
   type_kind, type_signature, owner_package, owner_root, interface_abi,
-  visibility, contributable, deprecated, activation_kind, summary_text
+  visibility, extensible, deprecated, activation_kind, summary_text
 
 option_search_terms
   documentation_artifact_id, option_ordinal, term, field, weight, position
@@ -102,11 +102,11 @@ backend without FTS remains fully functional.
 Queries support exact and fuzzy text plus structured filters:
 
 - package, version, platform, registry, release, or channel;
-- result kind: package, option, service, credential contract, capability, or
-  conceptual section;
-- option type and owner root/package;
+- result kind: package, option, interface, implementation, requirement,
+  guarantee, deployment resource, or conceptual section;
+- option type and package;
 - public/internal visibility permitted to the caller;
-- contributable, deprecated, required, or activation effect;
+- extensible, deprecated, or required;
 - changed relative to another exact document.
 
 Highlight ranges index plain result text. Hub never returns or stores
@@ -138,15 +138,15 @@ The implementation must simultaneously close the adjacent omission for signed
 companion objects:
 
 ```text
-config_module
+contract
 expose_artifact
 ```
 
 The complete release artifact set therefore includes at least runtime output,
-source derivation, config module, expose artifact, documentation, image, and
-other signed delivery artifacts. A release snapshot must not retain a package
-payload while collecting the configuration, exposure, or documentation objects
-needed to use and understand it.
+source derivation, the package ability contract, expose artifact, documentation,
+image, and other signed delivery artifacts. A release snapshot must not retain
+a package payload while collecting the contract, exposure, or documentation
+objects needed to use and understand it.
 
 ## Hub/cache retention and GC
 

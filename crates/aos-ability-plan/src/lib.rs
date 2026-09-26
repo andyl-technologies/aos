@@ -1,0 +1,60 @@
+//! Deterministic provider resolution and pure recursive ability composition.
+//!
+//! [`resolution`] validates authenticated candidate policy, preserves explicit
+//! selections and exact pins, and returns checked bindings with a replayable
+//! decision trace. [`composition`] repeatedly invokes exact pure provider entry
+//! points until the request and binding state reaches a bounded fixed point.
+//! [`transition`] invokes selected provider transition constructors and returns
+//! a completely validated finite effect graph.
+//! This crate performs no downloads, resource acquisition, or runtime effects.
+
+pub mod composition;
+pub mod resolution;
+pub mod snapshot;
+pub mod source_stage;
+pub mod transition;
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
+pub use composition::{
+    CompositionContext, CompositionError, CompositionEvaluation, CompositionEvaluationResult,
+    CompositionEvaluator, CompositionFragment, CompositionLimits, CompositionOutcome,
+    CompositionPass, EvaluationError, RecursiveComposer, SourceEvaluationRequest, child_request_id,
+};
+pub use resolution::{
+    BindingCandidate, CandidateOrder, CandidateRejection, CandidateSelection,
+    EnabledProviderSelection, ExistingProviderPin, ResolutionDecision, ResolutionError,
+    ResolutionLimits, ResolutionOutcome, ResolutionPolicyDocument, Resolver,
+};
+pub use snapshot::{
+    PLANNING_SNAPSHOT_MAX_BYTES, PLANNING_SNAPSHOT_SCHEMA, PlanningReplayInputs, PlanningSnapshot,
+    PlanningSnapshotError, ResolutionSnapshot, VerifiedPlanningSnapshot,
+};
+pub use source_stage::{
+    CheckedSourceStageAdmission, SOURCE_STAGE_ADMISSION_SCHEMA, SOURCE_STAGE_BUNDLE_MAX_BYTES,
+    SOURCE_STAGE_BUNDLE_SCHEMA, SourceStageAdmission, SourceStageAdmissionError,
+    SourceStageBinding, SourceStageBundle, SourceStageBundleError,
+    SourceStageCompositionRequirement, SourceStageDeclarationProvenance,
+    SourceStageExecutionObserver, SourceStageFixedPoint, SourceStageImplementation,
+    SourceStageInstance, SourceStageOutput, SourceStageRequest, SourceStageRequirementReference,
+    SourceStageResolvedResource, SourceStageStaticContract, SourceStageTransitionProvenance,
+    ValidatedSourceStageTemplate,
+};
+pub use transition::{
+    AuthorizedTransitionBinding, RUNTIME_OBSERVATIONS_SCHEMA, ResourceChange, ResourceChangeKind,
+    RuntimeResourceHealth, RuntimeResourceObservation, RuntimeResourceState, ScopedDesiredState,
+    ScopedObservations, SourceTransitionPlan, SourceTransitionTemplate, TRANSITION_CONTEXT_SCHEMA,
+    TRANSITION_FRAGMENT_SCHEMA, TRANSITION_SNAPSHOT_MAX_BYTES, TRANSITION_SNAPSHOT_SCHEMA,
+    TransitionBindingAuthority, TransitionContext, TransitionError, TransitionEvaluation,
+    TransitionEvaluationResult, TransitionExport, TransitionExportKind, TransitionFragment,
+    TransitionHandoff, TransitionImport, TransitionImportDirection, TransitionInputs,
+    TransitionLimits, TransitionLink, TransitionPlanner, TransitionReconciliation,
+    TransitionReplayInputs, TransitionSnapshot, TransitionSnapshotError, VerifiedTransitionPlan,
+};
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod transition_tests;

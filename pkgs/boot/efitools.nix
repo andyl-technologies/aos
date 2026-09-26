@@ -14,6 +14,7 @@
 ##! and signed `.auth` blobs; in the guest the test agent runs
 ##! efi-updatevar / efi-readvar to enroll and verify.
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -33,7 +34,75 @@
   hostTools = "cert-to-efi-sig-list sign-efi-sig-list efi-updatevar efi-readvar cert-to-efi-hash-list hash-to-efi-sig-list sig-list-to-certs";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "efitools";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Efitools preserves the exact certificate through the ESL round trip.";
+        "files" = {
+          "certificate.pem" = "-----BEGIN CERTIFICATE-----\nMIICBDCCAW2gAwIBAgIUBpo7pnZgiu6BFkoZHAmIw523kQ0wDQYJKoZIhvcNAQEL\nBQAwFDESMBAGA1UEAwwJQU9TLVByb2JlMB4XDTI2MDkwODE4MTYwNloXDTM2MDkw\nNTE4MTYwNlowFDESMBAGA1UEAwwJQU9TLVByb2JlMIGfMA0GCSqGSIb3DQEBAQUA\nA4GNADCBiQKBgQDsf9H4+29Z0TBKfDviaHpzKyIddD0ft2CJjol2uiB9fa/EjshK\nYZ/tAQ+g2clVLsOotDsMvoCF5qxQBOmLpWU+d3Mm8cDjQemhsUofGvRQ0oDhBEO9\nygfHoxTtgG+4NbmxftXuDZiA79t7lfl3KBxRwT5ychOkhOwxSjcLwKbV+wIDAQAB\no1MwUTAdBgNVHQ4EFgQUD/NZzf0/C8lsVXxhdwMTGnv2XRowHwYDVR0jBBgwFoAU\nD/NZzf0/C8lsVXxhdwMTGnv2XRowDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0B\nAQsFAAOBgQAQTRLXhUH8Io0qtbCmgqcajHBEgeQKV4pPLBeN1GCQFu+4AIvM9Rjo\nsGYYcv1gaqIJHJSe5fgFKnZFhC+eGqY4pP8HqBac7cRyS8Stj453UKwJtHuy/nie\nIPASYzJSUrk84YRHhkFTw7ZR388UUFbbh26TaH6OCa/g0njP2+gQDg==\n-----END CERTIFICATE-----\n";
+        };
+        "input" = "A fixed X.509 certificate and a fixed EFI signature-owner GUID.";
+        "operation" = "Encode the certificate as an EFI signature list, extract it, and compare the DER bytes.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/cert-to-efi-sig-list"
+              "-g"
+              "11111111-2222-3333-4444-555555555555"
+              "certificate.pem"
+              "certificate.esl"
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@out@/bin/sig-list-to-certs"
+              "certificate.esl"
+              "recovered"
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, ssl\nexpected = ssl.PEM_cert_to_DER_cert(pathlib.Path(\"certificate.pem\").read_text())\nassert pathlib.Path(\"recovered-0.der\").read_bytes() == expected\nprint(\"efitools round trip passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "efitools round trip passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Efitools rejects the incomplete request and prints its usage diagnostic.";
+        "files" = {};
+        "input" = "An extraction request with neither an ESL path nor an output basename.";
+        "operation" = "Invoke the EFI signature-list extractor without its required arguments.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/sig-list-to-certs"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

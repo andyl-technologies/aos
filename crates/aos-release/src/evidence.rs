@@ -13,10 +13,6 @@ use crate::platform::{MatrixCell, Platform};
 pub const QUALIFICATION_REPORT_V1: &str = "aos.release.qualification-report/v1";
 /// Schema for one platform executor request over public staging objects.
 pub const QUALIFICATION_EXECUTOR_REQUEST_V1: &str = "aos.release.qualification-executor-request/v1";
-/// Schema for a shared-contract execution case over public staging objects.
-pub const QUALIFICATION_EXECUTOR_REQUEST_V2: &str = "aos.release.qualification-executor-request/v2";
-/// Schema for an execution case with authenticated retained predecessor objects.
-pub const QUALIFICATION_EXECUTOR_REQUEST_V3: &str = "aos.release.qualification-executor-request/v3";
 /// Schema for one platform executor's canonical response.
 pub const QUALIFICATION_EXECUTOR_RESPONSE_V1: &str =
     "aos.release.qualification-executor-response/v1";
@@ -77,7 +73,7 @@ pub struct QualificationRetainedBundleV1 {
 pub struct QualificationExecutorRequestV1 {
     /// Exact request schema identifier.
     pub schema_version: String,
-    /// Applicable shared-contract execution case, absent only in v1 requests.
+    /// Applicable shared-contract execution case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qualification_case: Option<crate::qualification_evidence::QualificationCase>,
     /// Canonical registry identity.
@@ -113,16 +109,11 @@ impl QualificationExecutorRequestV1 {
     /// Returns an error for malformed identity, ordering, subject, URL, or
     /// nonce fields.
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V1
-            && self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V2
-            && self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V3
-        {
+        if self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V1 {
             bail!("unsupported qualification executor request schema");
         }
         if let Some(case) = &self.qualification_case {
-            if (self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V2
-                && self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V3)
-                || case.requirement_id != self.policy_id
+            if case.requirement_id != self.policy_id
                 || case.policy_digest != self.policy_digest
                 || case.subjects != self.subjects
                 || case
@@ -131,8 +122,6 @@ impl QualificationExecutorRequestV1 {
             {
                 bail!("qualification request differs from its exact execution case");
             }
-        } else if self.schema_version != QUALIFICATION_EXECUTOR_REQUEST_V1 {
-            bail!("v2 qualification request lacks an execution case");
         }
         require_identifier(&self.registry, "qualification registry")?;
         require_identifier(&self.release_id, "qualification release id")?;
@@ -176,19 +165,15 @@ impl QualificationExecutorRequestV1 {
             .qualification_case
             .as_ref()
             .and_then(|case| case.predecessor.as_ref());
-        if self.schema_version == QUALIFICATION_EXECUTOR_REQUEST_V3 {
-            match (case_predecessor, &self.retained_predecessor) {
-                (Some(_), Some(retained)) => retained.validate(&self.subjects)?,
-                (Some(_), None) => {
-                    bail!("qualification update request lacks its exact predecessor bundle")
-                }
-                (None, Some(_)) => {
-                    bail!("qualification request has a predecessor bundle without an update case")
-                }
-                (None, None) => {}
+        match (case_predecessor, &self.retained_predecessor) {
+            (Some(_), Some(retained)) => retained.validate(&self.subjects)?,
+            (Some(_), None) => {
+                bail!("qualification update request lacks its exact predecessor bundle")
             }
-        } else if self.retained_predecessor.is_some() {
-            bail!("archived qualification request schema cannot carry a predecessor bundle");
+            (None, Some(_)) => {
+                bail!("qualification request has a predecessor bundle without an update case")
+            }
+            (None, None) => {}
         }
         Ok(())
     }
@@ -635,8 +620,8 @@ mod tests {
                 platform,
                 decision: MatrixCell::Artifact {
                     artifact: PlannedArtifactSet {
-                        configuration: None,
                         artifacts: Vec::new(),
+                        package_contract: None,
                     },
                 },
             })
@@ -689,6 +674,7 @@ mod tests {
                 kind: ArtifactKind::PackageNar,
                 platform: Some(platform),
                 system_variant: None,
+                image: None,
                 path: BundlePath::parse(format!("packages/{platform}.nar")).unwrap(),
                 size_bytes: 1,
                 sha256: digest(platform.as_str()),
@@ -717,7 +703,7 @@ mod tests {
                         platform: cell.platform,
                         decision: MatrixCell::Artifact {
                             artifact: FinalArtifactSet {
-                                configuration: None,
+                                package_contract: None,
                                 artifact_ids: vec![artifact_id(cell.platform)],
                             },
                         },
@@ -872,6 +858,11 @@ mod tests {
         let mut missing = request.clone();
         missing.subjects = vec!["package/not-present".to_owned()];
         assert!(missing.validate().is_err());
+
+        let mut removed_executor_draft = request.clone();
+        removed_executor_draft.schema_version =
+            "aos.release.qualification-executor-request/v2".to_owned();
+        assert!(removed_executor_draft.validate().is_err());
 
         let mut mutable_url = request;
         mutable_url.objects[0].url.push_str("?token=secret");

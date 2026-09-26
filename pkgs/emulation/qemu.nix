@@ -27,6 +27,7 @@
   stdenv,
   buildPackages,
   pname ? "qemu",
+  qualification ? null,
   enablePlugins ? false,
   applyCruciblePatches ? false,
   enableLinuxUser ? pname == "qemu" && stdenv.hostPlatform.isLinux,
@@ -346,6 +347,83 @@ in
   assert _testArtifactPolicy == null;
   assert _testMutationPolicy == null;
     mkDerivation {
+      platformSupport =
+        if pname == "qemu"
+        then {
+        build = [{abi = ["gnu"]; os = ["linux"];}];
+        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        role = "public-package";
+      }
+        else {
+        build = [{abi = ["gnu"]; os = ["linux"];}];
+        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+        target = [];
+        role = "public-package";
+      };
+    qualification.packageProbe =
+      if qualification != null
+      then qualification.packageProbe
+      else lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "qemu-img reports the two images as identical.";
+        "files" = {
+          "left.raw" = "AOS raw image payload\n";
+          "right.raw" = "AOS raw image payload\n";
+        };
+        "input" = "Two raw disk-image byte streams with identical contents.";
+        "operation" = "Compare the images byte for byte through qemu-img's raw-image reader.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/qemu-img"
+              "compare"
+              "-f"
+              "raw"
+              "-F"
+              "raw"
+              "left.raw"
+              "right.raw"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "Images are identical.\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "qemu-img identifies the content mismatch and returns its comparison status.";
+        "files" = {
+          "left.raw" = "answer=41\n";
+          "right.raw" = "answer=42\n";
+        };
+        "input" = "Two raw disk-image byte streams that differ in one value.";
+        "operation" = "Compare the mismatched images through qemu-img.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/qemu-img"
+              "compare"
+              "-f"
+              "raw"
+              "-F"
+              "raw"
+              "left.raw"
+              "right.raw"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
       inherit pname;
       inherit version;
 
