@@ -11,6 +11,42 @@
   carrier = pkgs.aosMountExecutableCarrierForKernel pkgs.linux;
   stage0Fixture = import ./_selinux-stage0-fixture.nix {inherit lib pkgs;};
   carrierRoot = "/run/aos/mount-executable-carrier";
+  qualificationCredentials = "/run/aos/mount-carrier-qualification";
+  credentialFixture = pkgs.mkCargoPackage {
+    pname = "aos-mount-carrier-credential-fixture";
+    version = "0.1.0";
+    src = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
+    cargoDeps = pkgs.aos-sandbox-mountd.passthru.cargoDeps;
+    cargoRoot = "crates";
+    buildType = "debug";
+    cargoBuildCommands = [
+      "test --no-run --lib --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --features aos-sandbox-broker-session-security/kernel-tests"
+    ];
+    doCheck = false;
+    installBins = false;
+    buildDeps = [pkgs.protobuf];
+    runtimeDeps = [];
+    cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
+    postBuild = ''
+      mkdir -p credential-fixture
+      count=0
+      artifact_dir="''${CARGO_TARGET_DIR:-target}/debug/deps"
+      for candidate in "$artifact_dir"/aos_sandbox_broker_session_security-*; do
+        if [ -f "$candidate" ] && [ -x "$candidate" ]; then
+          install -m 0755 "$candidate" credential-fixture/mount-carrier-credential-fixture
+          count=$((count + 1))
+        fi
+      done
+      if [ "$count" -ne 1 ]; then
+        echo "expected exactly one Mount credential fixture, found $count" >&2
+        exit 1
+      fi
+    '';
+    postInstall = ''
+      mkdir -p "$out/bin"
+      install -m 0755 credential-fixture/mount-carrier-credential-fixture "$out/bin/"
+    '';
+  };
   qualificationStage0 = pkgs.aosSelinuxStage0With {
     admissionUnit = "";
     mountExecutableCarrier = carrier;
@@ -26,7 +62,7 @@
     mountCarrierFirstLauncher = true;
   };
 
-  systemFor = stage0: let
+  systemFor = stage0: enableMountUnit: let
     system = systems.server-secureboot-lockdown.extendModules {
       modules = [
         (stage0Fixture stage0)
@@ -39,7 +75,25 @@
           aos.image.budgets.maxDownloadMiB = 1536;
           aos.image.budgets.maxRuntimeClosureMiB = 1024;
           boot.initrd.systemd.mountExecutableCarrier = carrier;
-          environment.systemPackages = [pkgs.attr pkgs.cryptsetup pkgs.util-linux];
+          aos.sandbox.mountBroker = lib.mkIf enableMountUnit {
+            enable = true;
+            useExecutableCarrier = true;
+            credentials = {
+              brokerPlanPolicy = "mount-carrier-plan-policy";
+              brokerPlanPublicKey = "mount-carrier-plan-public-key";
+              brokerRevocationScope = "mount-carrier-revocation-scope";
+              ownershipLeasePolicy = "mount-carrier-lease-policy";
+              ownershipLeasePublicKey = "mount-carrier-lease-public-key";
+              nodeId = "mount-carrier-node-id";
+              journalMacKey = "mount-carrier-journal-mac-key";
+              brokerSessionManifest = "mount-carrier-session-manifest";
+              brokerSessionHelloKey = "mount-carrier-session-hello-key";
+              brokerSessionOutcomeKey = "mount-carrier-session-outcome-key";
+            };
+          };
+          environment.systemPackages =
+            lib.optional enableMountUnit credentialFixture
+            ++ [pkgs.attr pkgs.cryptsetup pkgs.util-linux];
         }
       ];
     };
@@ -54,6 +108,7 @@
       && cfg.aos.image.budgets.maxUkiMiB == 288
       && cfg.aos.image.budgets.maxDownloadMiB == 1536
       && cfg.aos.image.budgets.maxRuntimeClosureMiB == 1024
+      && (!enableMountUnit || cfg.aos.sandbox.mountBroker.useExecutableCarrier)
       && builtins.elem "selinux=1" cfg.aos.boot.kernelParams
       && builtins.elem "enforcing=1" cfg.aos.boot.kernelParams
       && builtins.elem "aos.selinux.root_handoff=1" cfg.aos.boot.kernelParams
@@ -66,13 +121,13 @@ in {
 
   machines = {
     retained = {
-      system = systemFor qualificationStage0;
+      system = systemFor qualificationStage0 true;
       bootMode = "image";
       imageDiskMiB = 16384;
       firmwareVars = "${enrolledFirmwareVars}/enroller-OVMF_VARS.fd";
     };
     wrongHash = {
-      system = systemFor wrongHashStage0;
+      system = systemFor wrongHashStage0 false;
       bootMode = "image";
       imageDiskMiB = 16384;
       firmwareVars = "${enrolledFirmwareVars}/enroller-OVMF_VARS.fd";
@@ -83,6 +138,67 @@ in {
   testScript = ''
     import time
     from pathlib import Path
+
+    mount_unit = "aos-sandbox-mountd.service"
+    carrier_daemon = "${carrierRoot}/daemon"
+    credential_root = "${qualificationCredentials}"
+
+    def install_mount_credentials():
+        selected = retained.succeed(
+            "${credentialFixture}/bin/mount-carrier-credential-fixture "
+            "--ignored --list "
+            "handshake::qualification_credentials::"
+            "provision_controller_broker_credentials_after_boot"
+        )
+        assert (
+            "handshake::qualification_credentials::"
+            "provision_controller_broker_credentials_after_boot: test"
+        ) in selected, selected
+
+        output = retained.succeed(
+            f"AOS_BSA_QUALIFICATION_ROOT={credential_root} "
+            "${credentialFixture}/bin/mount-carrier-credential-fixture "
+            "--ignored --exact "
+            "handshake::qualification_credentials::"
+            "provision_controller_broker_credentials_after_boot "
+            "--test-threads=1 --nocapture"
+        )
+        assert "CONTROLLER_BROKER_CREDENTIALS_STAGED" in output, output
+
+        source = f"{credential_root}/mount-authority"
+        session = f"{credential_root}/sessions/mount/broker"
+        retained.succeed("install -d -m 0700 /run/credentials/@system")
+        for installed, original in (
+            ("mount-carrier-plan-policy", f"{source}/broker-plan-policy.cbor"),
+            ("mount-carrier-plan-public-key", f"{source}/broker-plan-public-key"),
+            ("mount-carrier-revocation-scope", f"{source}/broker-revocation-scope"),
+            ("mount-carrier-lease-policy", f"{source}/ownership-lease-policy.cbor"),
+            ("mount-carrier-lease-public-key", f"{source}/ownership-lease-public-key"),
+            ("mount-carrier-node-id", f"{source}/node-id"),
+            ("mount-carrier-journal-mac-key", f"{source}/journal-mac-key"),
+            ("mount-carrier-session-manifest", f"{session}/broker-session-manifest"),
+            ("mount-carrier-session-hello-key", f"{session}/broker-hello-signing-key"),
+            ("mount-carrier-session-outcome-key", f"{session}/broker-outcome-signing-key"),
+        ):
+            retained.succeed(
+                f"install -m 0400 {original} /run/credentials/@system/{installed}"
+            )
+
+    def assert_mount_unit_uses_carrier():
+        retained.succeed(f"systemctl start {mount_unit}", timeout=60)
+        retained.wait_for_unit(mount_unit)
+        pid = retained.succeed(
+            f"systemctl show -P MainPID {mount_unit}"
+        ).strip()
+        assert pid.isdecimal() and int(pid) > 1, pid
+
+        daemon = retained.succeed(f"stat -c '%d:%i' {carrier_daemon}").strip()
+        running = retained.succeed(f"stat -Lc '%d:%i' /proc/{pid}/exe").strip()
+        store = retained.succeed(
+            "stat -c '%d:%i' ${pkgs.aos-sandbox-mountd}/bin/aos-sandbox-mountd"
+        ).strip()
+        assert running == daemon and running != store, (running, daemon, store)
+        return pid, daemon
 
     def assert_carrier_pid_one():
         retained.wait_for_unit("multi-user.target")
@@ -126,13 +242,25 @@ in {
         return launcher, stable_artifact
 
     first_boot_device_inode, first_boot_artifact = assert_carrier_pid_one()
+    install_mount_credentials()
+    first_mount_pid, first_mount_inode = assert_mount_unit_uses_carrier()
+    retained.succeed(f"systemctl restart {mount_unit}", timeout=60)
+    restarted_pid, restarted_inode = assert_mount_unit_uses_carrier()
+    assert restarted_pid != first_mount_pid, (first_mount_pid, restarted_pid)
+    assert restarted_inode == first_mount_inode, (first_mount_inode, restarted_inode)
+
     retained.succeed("systemctl daemon-reexec")
     retained.wait_for_unit("multi-user.target")
     assert retained.succeed("stat -Lc '%d:%i' /proc/1/exe").strip() == first_boot_device_inode
+    _, reexec_inode = assert_mount_unit_uses_carrier()
+    assert reexec_inode == first_mount_inode, (first_mount_inode, reexec_inode)
 
     retained.reboot(timeout=600)
     second_boot_device_inode, second_boot_artifact = assert_carrier_pid_one()
+    install_mount_credentials()
+    _, second_mount_inode = assert_mount_unit_uses_carrier()
     print("carrier raw device:inode across boots:", first_boot_device_inode, second_boot_device_inode)
+    print("Mount daemon raw device:inode across boots:", first_mount_inode, second_mount_inode)
     assert first_boot_artifact == second_boot_artifact, (
         first_boot_artifact, second_boot_artifact
     )
