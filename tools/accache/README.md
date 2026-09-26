@@ -302,6 +302,10 @@ profile paths; each profile revision produces different object bytes.
 Four Rust native-archive oracle cases cover joined and separated `-L` and `-l`
 flags. Replacing an AOS-built `libnative.a` changes the resulting rlib; both
 caches miss on the archive edit and warm-hit on a repeated compilation.
+Rust extern cases mutate an rlib absent from the consumer's dep-info. Explicit
+`--extern dep=path` forms miss on that edit and warm-hit in both caches. Bare
+`--extern dep` with `-Lcrate=.` remains direct passthrough because the pinned
+frontend rejects extern arguments without an explicit path.
 The dataflow-sanitizer ABI-list case changes a file absent from rustc's dep-info.
 Pinned sccache replays the old object, while accache misses and names the
 changed list before producing the new object.
