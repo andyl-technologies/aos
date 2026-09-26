@@ -373,6 +373,16 @@ pub(super) fn configure(
             }
         }
     }
+    if !clang && let Some(prefix) = environment.get("GCC_EXEC_PREFIX") {
+        // GCC searches this prefix for as and other compiler subprograms
+        // before COMPILER_PATH. GCC also derives libexec search paths two
+        // levels above the prefix, so the prefix itself is insufficient.
+        compiler_prefix_inputs(invocation, prefix)?;
+        let libexec = Path::new(prefix).join("../../libexec/gcc");
+        if libexec.is_dir() {
+            invocation.recursive_dirs.insert(libexec.canonicalize()?);
+        }
+    }
     for pair in preprocessing.windows(2) {
         if matches!(
             pair[0].as_str(),
