@@ -59,6 +59,7 @@ struct fingerprint_component_summary {
 };
 
 static FILE *trace_file;
+static char trace_buffer[256 * 1024];
 static uint64_t cadence = 100000;
 static uint64_t next_sample = 100000;
 static uint64_t stop_at;
@@ -1286,6 +1287,15 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
   trace_file = fopen(out_path, "w");
   if (trace_file == NULL) {
     qemu_plugin_outs("crucible-qemu-trace-plugin: failed to open trace file\n");
+    return -1;
+  }
+
+  /* Explicit sample and 256-handoff flushes retain the existing visibility
+   * bound while a larger stdio buffer amortizes writes between them. */
+  if (setvbuf(trace_file, trace_buffer, _IOFBF, sizeof(trace_buffer)) != 0) {
+    fclose(trace_file);
+    trace_file = NULL;
+    qemu_plugin_outs("crucible-qemu-trace-plugin: failed to buffer trace file\n");
     return -1;
   }
 
