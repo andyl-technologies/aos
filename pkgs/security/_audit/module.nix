@@ -215,7 +215,7 @@
       wants = [];
       prerequisites = [
         (retainedBy "audit-rules-file")
-        (resultOf "auditd" "resource")
+        (resultOf "auditd-lifecycle" "resource")
       ];
     };
     isolation = {

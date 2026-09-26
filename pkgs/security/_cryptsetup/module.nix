@@ -22,7 +22,9 @@
   mapping = producer "encrypted-swap-mapping" storageInterfaces.encryptedMapping {
     name = cfg.mappingName;
     enabled = true;
-    source = resultOf "swap-device" "device-node";
+    # The observed device node is attempt-scoped; the mapping retains the
+    # configured stable path and verifies it again when opening the device.
+    source = cfg.device;
     cipher = cfg.cipher;
     key_size_bits = cfg.keySizeBits;
     key.kind = "ephemeral-random";

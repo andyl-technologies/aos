@@ -5,6 +5,10 @@
   normalizePackageOutputSelectors,
   normalizeRequirement,
   lifetime,
+  interfaceIdentity,
+  interfaceDocumentFromDeclaration,
+  requestOutputDescriptor,
+  semanticInterface,
 }: let
   normalizeOwnedValue = owner: value:
     if owner == null
@@ -14,6 +18,23 @@
     if (declaration.authority.kind or null) == "package"
     then declaration.authority.package
     else null;
+  guaranteeFor = reference:
+    if builtins.hasAttr reference abilities.guarantees
+    then guaranteeIdentity abilities.guarantees.${reference}
+    else throw "source-stage output references absent guarantee '${reference}'";
+  semanticInterfaces = builtins.mapAttrs (_: candidate:
+    semanticInterface {
+      interface = candidate;
+      inherit guaranteeFor;
+    })
+  abilities.interfaces;
+  interfacesByIdentity =
+    builtins.foldl' (indexed: candidate: let
+      identity = builtins.toJSON (interfaceIdentity (interfaceDocumentFromDeclaration candidate));
+    in
+      indexed // {${identity} = (indexed.${identity} or []) ++ [candidate];})
+    {}
+    (builtins.attrValues semanticInterfaces);
   implementationReference = context: declaration: let
     implementation =
       abilities.implementations.${declaration}
@@ -54,21 +75,52 @@
       then {}
       else {inherit package;}
     );
+  outputDescriptorFor = requestName: outputName: let
+    binding = bindingsByRequest.${requestName}
+      or (throw "source-stage output '${requestName}.${outputName}' needs one selected binding");
+    implementation = abilities.implementations.${binding.implementation}
+      or (throw "source-stage output selects absent implementation '${binding.implementation}'");
+    interface =
+      if builtins.isString implementation.interface
+      then semanticInterfaces.${implementation.interface}
+        or (throw "source-stage output selects absent interface '${implementation.interface}'")
+      else let
+        identity = builtins.toJSON implementation.interface;
+        matchingInterfaces = interfacesByIdentity.${identity} or [];
+      in
+        if builtins.length matchingInterfaces == 1
+        then builtins.head matchingInterfaces
+        else throw "source-stage output '${requestName}.${outputName}' has no exact interface declaration";
+    request = abilities.requests.${requestName}
+      or abilities.compositionRequests.${requestName}
+      or (throw "source-stage output '${requestName}.${outputName}' has no exact request");
+    requirement = abilities.requirementTemplates.${request.requirement}
+      or (abilities.compositionRequirements.${request.requirement}.requirement
+        or (throw "source-stage output '${requestName}.${outputName}' has no exact requirement"));
+  in
+    requestOutputDescriptor {
+      inherit interface outputName;
+      methods = requirement.methods;
+      context = "source-stage output '${requestName}.${outputName}'";
+    };
   resolveRequestValue = requestName: recipientLifetime: trail: value:
     if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
     then let
       reference = "${value.request}.${value.output}";
+      descriptor = outputDescriptorFor value.request value.output;
       outputs = projectedOutputs.${value.request} or {};
       output = outputs.${value.output} or null;
     in
       if builtins.attrNames value != ["_type" "output" "request"]
       then throw "source-stage request '${requestName}' has a malformed output reference"
+      else if !lifetime.outlivesOrEquals descriptor.lifetime recipientLifetime
+      then throw "source-stage request '${requestName}' outlives output '${reference}'"
+      else if descriptor.phase == "runtime"
+      then value
+      else if descriptor.phase != "planning"
+      then throw "source-stage request '${requestName}' references unsupported output phase '${reference}'"
       else if output == null
       then throw "source-stage request '${requestName}' references absent planning output '${reference}'"
-      else if output.phase != "planning"
-      then throw "source-stage request '${requestName}' references non-planning output '${reference}'"
-      else if !lifetime.outlivesOrEquals output.lifetime recipientLifetime
-      then throw "source-stage request '${requestName}' outlives output '${reference}'"
       else if builtins.elem reference trail
       then throw "source-stage request '${requestName}' has an output cycle through '${reference}'"
       else resolveRequestValue requestName recipientLifetime (trail ++ [reference]) output.value

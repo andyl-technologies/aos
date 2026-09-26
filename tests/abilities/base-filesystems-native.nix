@@ -79,7 +79,7 @@
 in
   assert requests."cryptsetup:swap-device".parameters.device == "/dev/disk/by-partlabel/swap";
   assert requests."cryptsetup:encrypted-swap-mapping".parameters.source
-  == resultOf "cryptsetup:swap-device" "device-node";
+  == requests."cryptsetup:swap-device".parameters.device;
   assert requests."cryptsetup:encrypted-swap-format".parameters.policy == "always";
   assert requests."cryptsetup:encrypted-swap-format".parameters.source
   == resultOf "cryptsetup:encrypted-swap-mapping" "mapped-device";

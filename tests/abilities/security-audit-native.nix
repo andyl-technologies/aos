@@ -13,6 +13,7 @@
   requests = config.aos.abilities.requests;
   daemon = requests."audit:auditd-lifecycle".parameters;
   loader = requests."audit:audit-rules-lifecycle".parameters;
+  loaderDependencies = requests."audit:audit-rules-dependencies".parameters;
 in
   assert config.aos.kernel.commandLineParts.audit == ["audit=1"];
   assert config.aos.abilities.runtimeChecks."audit:audit".description == "Audit policy checks";
@@ -33,6 +34,7 @@ in
   assert loader.service == "audit-rules";
   assert loader.execution_model == "oneshot";
   assert loader.remain_after_exit;
+  assert builtins.elem (lib.abilities.resultOf "audit:auditd-lifecycle" "resource") loaderDependencies.prerequisites;
   assert requests."audit:auditd-configuration-file".parameters.destination
   == "/etc/audit/auditd.conf";
   assert requests."audit:audit-rules-file".parameters.destination

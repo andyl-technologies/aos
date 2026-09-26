@@ -21,6 +21,10 @@
   packageOutputSelectors = import ./package-output-selectors.nix {inherit diagnostics;};
   packageOutputSelectorsFor = limits:
     import ./package-output-selectors.nix {inherit diagnostics limits;};
+  requestOutputDescriptor = args:
+    import ./request-output-descriptor.nix args;
+  semanticInterface = args:
+    import ./semantic-interface.nix args;
   packageProjectionFor = {
     lib,
     abilities,
@@ -29,6 +33,7 @@
   sourceStageFixedPoint = abilities:
     import ./source-stage-fixed-point.nix {
       inherit abilities guaranteeIdentity normalizeRequirement lifetime;
+      inherit interfaceIdentity interfaceDocumentFromDeclaration requestOutputDescriptor semanticInterface;
       inherit (packageOutputSelectors) normalizePackageOutputSelectors;
     };
   packageAbilitiesFromProjection = projection: {
@@ -823,6 +828,8 @@ in rec {
     packageOutputSelectorsFor
     packageProjectionFor
     sourceStageFixedPoint
+    requestOutputDescriptor
+    semanticInterface
     lifetime
     packageAbilitiesFromProjection
     packageForDeclarationAuthority

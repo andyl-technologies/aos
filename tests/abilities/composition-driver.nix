@@ -392,6 +392,11 @@ args @ {lib, ...}: let
   deferredRuntimeDesired =
     builtins.head
     (builtins.attrValues deferredRuntimeReference.config.aos.abilities.desiredResources);
+  deferredRuntimeFixedPoint =
+    lib.abilities.sourceStageFixedPoint deferredRuntimeReference.config.aos.abilities;
+  deferredRuntimeResource =
+    builtins.head (builtins.filter (resource: resource.controller != null)
+      (builtins.attrValues deferredRuntimeFixedPoint.resolvedResources));
   shortRuntimeReference = evaluate {
     providerAdditions = [
       {
@@ -743,6 +748,8 @@ in
       request = "consumer:lifecycle";
       output = "runtime-marker";
     };
+    assert deferredRuntimeResource.realization.runtime_marker
+    == deferredRuntimeDesired.realization.runtime_marker;
     assert rejects shortRuntimeReference.config.aos.abilities.desiredResources;
     assert observerSelection.config.aos.abilities.resolvedExecutionObserver
     == {

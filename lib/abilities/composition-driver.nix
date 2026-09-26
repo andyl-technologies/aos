@@ -40,12 +40,8 @@
   semanticRequirement = requirement:
     requirement // {guarantees = builtins.map guaranteeFor requirement.guarantees;};
   semanticInterface = interface:
-    interface
-    // {
-      guarantees = builtins.map guaranteeFor interface.guarantees;
-      methods = builtins.mapAttrs (_: method:
-        method // {guarantees = builtins.map guaranteeFor method.guarantees;})
-      interface.methods;
+    lib.abilities.semanticInterface {
+      inherit interface guaranteeFor;
     };
   semanticImplementation = implementation:
     implementation
@@ -525,20 +521,13 @@
       if builtins.length selected == 1
       then builtins.head selected
       else fail "resultOf '${requestName}.${outputName}' must name one selected request";
-    aggregateDescriptor = entry.interface.outputs.${outputName} or null;
-    methodDescriptors = builtins.concatMap (methodName:
-      lib.optional
-      (builtins.hasAttr outputName entry.interface.methods.${methodName}.outputs)
-      entry.interface.methods.${methodName}.outputs.${outputName})
-    (requestedMethods entry);
-    candidates =
-      if aggregateDescriptor != null
-      then [aggregateDescriptor]
-      else methodDescriptors;
   in
-    if builtins.length candidates != 1
-    then fail "resultOf '${requestName}.${outputName}' must name one exact authorized output"
-    else builtins.head candidates;
+    lib.abilities.requestOutputDescriptor {
+      interface = entry.interface;
+      methods = requestedMethods entry;
+      inherit outputName;
+      context = "resultOf '${requestName}.${outputName}'";
+    };
   planningOutputFor = requestName: outputName: let
     matching = builtins.concatLists (builtins.map (group:
       if
