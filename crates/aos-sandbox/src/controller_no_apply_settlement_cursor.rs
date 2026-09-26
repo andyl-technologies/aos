@@ -24,7 +24,8 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodRequestV1,
-    AuthenticatedBrokerMethodResultV1,
+    AuthenticatedBrokerMethodResultV1, AuthenticatedBrokerOutcomeDirectionV1,
+    AuthenticatedBrokerRequestDirectionV1,
 };
 use aos_sandbox_protocol::host_execution_no_apply::{
     HostExecutionNoApplyRecordV1, HostNoApplySettlementPhaseV2,
@@ -255,12 +256,16 @@ impl ControllerNoApplySettlementCursorV1 {
         archive_head: ObjectDigest,
         signed_terminal_outcome: ObjectDigest,
     ) -> bool {
+        let fields = self.marker.fields();
         self.execution == source.execution()
             && self.operation == source.create_operation()
             && self.source_digest == source.record_digest()
             && self.marker == marker
             && self.archive_head == archive_head
             && self.signed_terminal_outcome == signed_terminal_outcome
+            && fields.original_request_id == source.request_id()
+            && fields.assignment_digest == *source.assignment_digest().as_bytes()
+            && fields.host_boot_id == source.host_boot_id()
     }
 
     fn matches_preliminary(self, bytes: &[u8]) -> bool {
@@ -542,7 +547,10 @@ pub fn observe_controller_no_apply_preliminary_v1(
     if current != cursor || !cursor.matches_preliminary(preliminary) {
         return Err(ControllerNoApplySettlementCursorErrorV1::NotCurrent);
     }
-    if outcome.request().authorization().is_some() {
+    if outcome.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+        || outcome.request().direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
+        || outcome.request().authorization().is_some()
+    {
         return Err(ControllerNoApplySettlementCursorErrorV1::NotCurrent);
     }
     let observation_method = match outcome.method() {
@@ -950,6 +958,28 @@ mod tests {
             .is_err()
         );
         validate_all_controller_no_apply_cursors_v1(&reopened).unwrap();
+
+        for field in 0..3_u8 {
+            let mut foreign = retained;
+            let mut fields = foreign.marker.fields();
+            match field {
+                0 => fields.original_request_id = [26; 16],
+                1 => fields.assignment_digest = [27; 32],
+                _ => fields.host_boot_id = [28; 16],
+            }
+            foreign.marker = HostExecutionNoApplyRecordV1::new(fields).unwrap();
+            let replacement = JournalTransaction::new(
+                [32 + field; 16],
+                vec![JournalRecord::put(
+                    RecordNamespace::ControllerNoApplySettlementCursor,
+                    source.execution().as_bytes().to_vec(),
+                    foreign.encode(),
+                )],
+            )
+            .unwrap();
+            reopened.commit(&replacement).unwrap();
+            assert!(validate_all_controller_no_apply_cursors_v1(&reopened).is_err());
+        }
 
         let mut corrupt = retained.encode();
         corrupt[76] ^= 1;
