@@ -7,6 +7,8 @@ use crucible_campaign::{
 };
 use crucible_core::NetworkFaultSelectable;
 
+mod resource_audit;
+
 const ATTEMPT_WAIT: Duration = Duration::from_secs(600);
 // This is a cap on completed scheduler quanta across the packaged campaign,
 // independent of the exact logical ticks or retired instructions in each RUN.
@@ -152,16 +154,30 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     let genesis = json_string(&generated, "configuration")?;
     let discovery_attempt = initial_discovery_attempt(&lineage, &policy)?;
     let discovery_attempt_id = discovery_attempt.to_string();
-    let discovery = wait_for_public_attempt(
+    let stop_resource_sampling = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sampling_signal = std::sync::Arc::clone(&stop_resource_sampling);
+    let service_pid = service.child.id();
+    let resource_sampler = std::thread::spawn(move || {
+        resource_audit::wait_for_envoy_hot_fork_resources(service_pid, &sampling_signal)
+    });
+    let discovery_result = wait_for_public_attempt(
         &fixture,
         &mut service,
         discovery_attempt,
         Duration::from_secs(900),
-    )?;
+    );
+    stop_resource_sampling.store(true, std::sync::atomic::Ordering::Release);
+    let resource_audit = resource_sampler
+        .join()
+        .map_err(|_| "Envoy resource sampler panicked")??;
+    let discovery = discovery_result?;
     assert_eq!(discovery["attempt"]["configuration"], genesis);
     assert_eq!(discovery["observation"]["stop"], "reached:next-choice");
     let materialization = guest_choice::capture_materialization_events(&service)?;
     guest_choice::assert_materialization_tier(&materialization, discovery_attempt_id, "HotFork")?;
+    resource_audit.verify_source_dirty_growth()?;
+    println!("envoy_five_node_hot_fork_resource_audit={resource_audit:?}");
+    println!("envoy_five_node_hot_fork_resource_isolation_authenticated=true");
     println!("envoy_five_node_hot_fork_authenticated=true");
     println!("envoy_five_node_baseline={discovery}");
 
@@ -186,7 +202,10 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         &progress.configuration,
     )?;
     service.stop()?;
-    service = start_packaged_network_service(&fixture, &authority, None)?;
+    resource_audit.verify_process_cleanup()?;
+    let rejected_hot_fork_deployment = product_rejected_hot_fork_deployment(&fixture)?;
+    service =
+        start_packaged_network_service(&fixture, &authority, Some(&rejected_hot_fork_deployment))?;
     let requeried_recovery = guest_choice::wait_for_choice(
         &fixture,
         "recovery.response",
@@ -209,6 +228,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         json_string(&response["attempt"], "id")?,
         "ThinReplay",
     )?;
+    println!("envoy_five_node_hot_fork_resource_rejection_authenticated=true");
     require_network_effect(
         &[&disruption, &response],
         "availability",
@@ -1043,10 +1063,31 @@ pub(super) fn component_authority(fixture: &FlightFixture) -> Result<PathBuf, Bo
 }
 
 fn product_hot_fork_deployment(fixture: &FlightFixture) -> Result<PathBuf, Box<dyn Error>> {
-    let deployment = fixture
-        ._temporary
-        .path()
-        .join("envoy-hot-fork-executor.toml");
+    product_hot_fork_deployment_with_template_limit(
+        fixture,
+        "envoy-hot-fork-executor.toml",
+        4_294_967_296,
+    )
+}
+
+fn product_rejected_hot_fork_deployment(
+    fixture: &FlightFixture,
+) -> Result<PathBuf, Box<dyn Error>> {
+    // A complete five-guest source cannot fit one byte. The packaged owner
+    // must reject retention and execute the recorded choice through fallback.
+    product_hot_fork_deployment_with_template_limit(
+        fixture,
+        "envoy-rejected-hot-fork-executor.toml",
+        1,
+    )
+}
+
+fn product_hot_fork_deployment_with_template_limit(
+    fixture: &FlightFixture,
+    name: &str,
+    maximum_template_bytes: u64,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let deployment = fixture._temporary.path().join(name);
     let authored = fs::read_to_string(required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?)?;
 
     // One five-guest 512 MiB source plus one child must fit the product VM's
@@ -1054,7 +1095,7 @@ fn product_hot_fork_deployment(fixture: &FlightFixture) -> Result<PathBuf, Box<d
     fs::write(
         &deployment,
         format!(
-            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = 4294967296\nmaximum_expected_private_dirty_bytes = 4294967296\nmaximum_processes = 16\nmaximum_virtual_cpus = 10\nmaximum_descriptors = 16384\nmaximum_overlays = 16\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
+            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = {maximum_template_bytes}\nmaximum_expected_private_dirty_bytes = 4294967296\nmaximum_processes = 16\nmaximum_virtual_cpus = 10\nmaximum_descriptors = 16384\nmaximum_overlays = 16\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
         ),
     )?;
     fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))?;
