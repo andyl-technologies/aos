@@ -141,6 +141,18 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         required_features: &[],
     },
     GateTargetSpec {
+        gate: "gate:campaign-metadata-million",
+        package: "crucible-daemon",
+        test_target: "gate_campaign_metadata_million",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-performance",
+        package: "crucible-daemon",
+        test_target: "gate_campaign_metadata_million",
+        required_features: &[],
+    },
+    GateTargetSpec {
         gate: "gate:campaign-model",
         package: "crucible-campaign",
         test_target: "gate_campaign_model",
