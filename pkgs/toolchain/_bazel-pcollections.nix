@@ -1,29 +1,31 @@
-##! PCollections 4.0.1 built from source without its published precompiled module.
+##! PCollections 4.0.1 built from individually pinned source files.
 {
   mkDerivation,
-  fetchgit,
+  fetchurl,
   buildPackages,
 }: let
   version = "4.0.1";
   buildJdk = buildPackages.openjdk-17;
-  source = fetchgit {
-    url = "https://github.com/hrldcpr/pcollections.git";
-    ref = "v${version}";
-    rev = "0028f87c26fdd62bfaeb9c9f030b4f288103aaa4";
-    hash = "sha256-GF8jZ2VGYodHaRSxyJW964M3ONKoGCq/UNZAdE3Ij6M=";
-    git = buildPackages.git-minimal;
-    caCertificates = buildPackages.ca-certificates;
-    coreutils = buildPackages.coreutils;
-    sparsePatterns = [
-      "/src/main/"
-      "/LICENSE"
-    ];
-  };
+  revision = "0028f87c26fdd62bfaeb9c9f030b4f288103aaa4";
+  sourceFiles = import ./_bazel-pcollections-sources.nix;
+  sources = builtins.map (file:
+    file
+    // {
+      src = fetchurl {
+        urls = ["https://raw.githubusercontent.com/hrldcpr/pcollections/${revision}/${file.path}"];
+        inherit (file) hash;
+      };
+    })
+  sourceFiles;
+  unpackSources = builtins.concatStringsSep "\n" (builtins.map (file: ''
+      install -Dm644 ${file.src} "source/${file.path}"
+    '')
+    sources);
 in
   mkDerivation {
     pname = "bazel-pcollections";
     inherit version;
-    src = source;
+    src = (builtins.head sources).src;
 
     buildDeps = [
       buildJdk
@@ -34,9 +36,13 @@ in
 
     phases = [
       {
+        name = "unpack";
+        script = unpackSources;
+      }
+      {
         name = "audit-source";
         script = ''
-          python3 - "$src" <<'PY'
+          python3 - source <<'PY'
           from pathlib import Path
           import sys
 
@@ -59,13 +65,38 @@ in
           export PATH="$JAVA_HOME/bin:$PATH"
 
           mkdir -p classes
-          find "$src/src/main/java" -name '*.java' -print | sort > java-sources
+          find source/src/main/java -name '*.java' \
+            ! -name module-info.java -print | sort > java-sources
           javac --release 17 -proc:none -encoding UTF-8 \
             -d classes @java-sources
 
-          if test -d "$src/src/main/resources"; then
-            cp -R "$src/src/main/resources/." classes/
+          if test -d source/src/main/resources; then
+            cp -R source/src/main/resources/. classes/
           fi
+        '';
+      }
+      {
+        name = "check";
+        script = ''
+          cat > PCollectionsSourceSmoke.java <<'JAVA'
+          import org.pcollections.HashTreePMap;
+          import org.pcollections.PMap;
+
+          final class PCollectionsSourceSmoke {
+              public static void main(String[] args) {
+                  PMap<String, Integer> original = HashTreePMap.empty();
+                  PMap<String, Integer> updated = original.plus("value", 7);
+                  if (!original.isEmpty() || updated.get("value") != 7) {
+                      throw new AssertionError("Persistent map update failed");
+                  }
+              }
+          }
+          JAVA
+
+          mkdir -p check-classes
+          javac --release 17 -proc:none -cp classes \
+            -d check-classes PCollectionsSourceSmoke.java
+          java -cp classes:check-classes PCollectionsSourceSmoke
         '';
       }
       {
@@ -74,7 +105,7 @@ in
           mkdir -p "$out/share/java" "$out/share/licenses/pcollections"
           jar --create --file "$out/share/java/pcollections-${version}.jar" \
             --no-manifest --date=1980-01-01T00:00:02Z -C classes .
-          cp "$src/LICENSE" "$out/share/licenses/pcollections/LICENSE"
+          cp source/LICENSE "$out/share/licenses/pcollections/LICENSE"
         '';
       }
     ];
