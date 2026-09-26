@@ -120,7 +120,7 @@ the requirements):
   Under single-threaded round-robin all N vCPUs are driven serially on one host
   thread, so guest progress and the vCPU-switch interleaving remain a pure
   function of icount. The round-robin switch boundary MUST be pinned to a fixed,
-  content-addressed `rr_switch_quantum` expressed in node-icount and MUST NOT use
+  content-addressed `rr_switch_quantum` expressed in retired instructions and MUST NOT use
   QEMU's adaptive / realtime round-robin default ([QEMU-43]); the host MUST refuse
   a configuration that selects `thread=multi` or leaves `rr_switch_quantum`
   unpinned. *Gate:* `gate:layer0-determinism`, `gate:single-vm-fingerprint`.
@@ -131,7 +131,7 @@ the requirements):
   accelerator is the single-threaded TCG-derived sim accelerator: it MUST reject
   stock `tcg` and `thread=multi` (MTTCG) loudly and MUST accept `-smp N` only in
   conjunction with `-accel sim,thread=single`. The host MUST set the round-robin switch boundary
-  to the scenario's content-addressed `rr_switch_quantum` (in node-icount) via
+  to the scenario's content-addressed `rr_switch_quantum` (in retired instructions) via
   the atomic-patch flag (`rr_switch_quantum`, 11/[PATCH-44]), MUST
   reject a configuration that leaves the quantum at QEMU's adaptive/realtime
   default, and MUST fold N and the pinned `rr_switch_quantum` into the scenario
@@ -218,7 +218,7 @@ qemu-system-x86_64 \
   -accel sim,thread=single -icount shift=0,sleep=off,align=off
   # QEMU-4/5: fixed picosecond-tick sim clock, single-threaded RR-TCG.
   -smp N                               # QEMU-5  N vCPUs under single-threaded RR
-  # rr_switch_quantum pinned to node-icount via the atomic-patch flag (QEMU-43,
+  # rr_switch_quantum pinned to retired instructions via the atomic-patch flag (QEMU-43,
   # rr_switch_quantum, 11), NEVER QEMU's adaptive/realtime rr_quantum
   -cpu <model-no-rdrand>               # QEMU-6  fixed model, no host entropy
   -machine <fixed>  -m <fixed>         # QEMU-7  fixed machine/reset/memory
@@ -987,13 +987,13 @@ determinism contract (04).
 - [x] **T-QEMU-15** Extend the launch-config builder and validator for
   multi-vCPU single-threaded round-robin: emit `-accel sim,thread=single` with
   `-smp N`, set the round-robin switch boundary to the scenario's
-  content-addressed `rr_switch_quantum` (node-icount) via the atomic-patch flag
+  content-addressed `rr_switch_quantum` (retired instructions) via the atomic-patch flag
   (`rr_switch_quantum`, 11), reject `thread=multi` and an unpinned
   quantum loudly, and fold N + the pinned `rr_switch_quantum` into the scenario
   content hash. — satisfies [QEMU-5], [QEMU-43]; spec §10.2.
   **Completed:** `DeterministicLaunchProfile` now accepts `smp_vcpus >= 1`,
   emits `-accel sim,thread=single` with `-smp N`, pins the
-  `rr_switch_quantum` node-icount boundary in `-icount`, and folds both
+  `rr_switch_quantum` boundary in retired instructions via `-icount`, and folds both
   `smp_vcpus=N` and `rr_switch_quantum` plus the ascending vCPU rotation into
   scenario material. The pre-spawn validator rejects MTTCG and unpinned or zero
   RR quantum before QEMU is spawned, while requiring the canonical

@@ -94,6 +94,11 @@
             --target-dir "$TMPDIR/target" \
             -p crucible-qemu \
             --example crucible-qemu-production-plugin-flight
+          cargo test --frozen --offline \
+            --manifest-path crates/Cargo.toml \
+            --target-dir "$TMPDIR/target" \
+            -p crucible-qemu --lib \
+            supervision::runtime_determinism_trace::tests
           cargo test --frozen --offline --release --no-run \
             --message-format=json-render-diagnostics \
             --manifest-path crates/Cargo.toml \
@@ -179,14 +184,20 @@
       fingerprint_flight_variants=reference,host-preempted \
       vcpu_count=4 \
       rr_switch_quantum=4096 \
-      sample_count=4 \
-      sample_target_icounts=2000000,2000001,4000000,8000000 \
+      sample_count=5 \
+      sample_target_picoseconds=2000000,2000001,2000051,4000000,8000000 \
       sample_stream_restart_identical=true \
-      on_demand_worker_acknowledgements=12 \
+      on_demand_worker_acknowledgements=14 \
       on_demand_boundary_stream_bit_identical=true \
-      instruction_exact_window_lower_icount=2000000 \
-      instruction_exact_window_upper_icount=2000001 \
-      instruction_exact_window_width=1 \
+      instruction_exact_window_lower_picoseconds=2000001 \
+      instruction_exact_window_upper_picoseconds=2000051 \
+      instruction_exact_window_width_picoseconds=50 \
+      fractional_phase_window_lower_picoseconds=2000000 \
+      fractional_phase_window_upper_picoseconds=2000001 \
+      fractional_phase_no_retirement=true \
+      fractional_phase_timer_projection_changed=true \
+      fractional_phase_fingerprint_changed=true \
+      instruction_exact_raw_retirement_successor=true \
       instruction_exact_rr_successor=true \
       instruction_exact_state_projection_changed=true \
       instruction_exact_fingerprint_changed=true \
@@ -210,7 +221,7 @@
       hot_fork_preparation_order=block-recovery-settled,draining,prepared \
       component_failures=0 \
       per_vcpu_register_files_present=true \
-      aggregate_icount_equals_target=true; do
+      sample_logical_picoseconds_equal_target=true; do
       test "$(${pkgs.grep}/bin/grep -Fxc "$evidence" "$result")" -eq 1
     done
     for numeric_evidence in \

@@ -476,7 +476,7 @@ impl QemuNodeContinuationCheckpoint {
             logical_icount: reader.u64("logical icount")?,
             raw_icount: reader.u64("raw icount")?,
         };
-        if logical_time_calibration.raw_icount > logical_time_calibration.logical_icount {
+        if logical_time_calibration.offset().is_err() {
             return Err(QemuNodeCheckpointCodecError::LogicalTime);
         }
         let console_observation_boundary = VirtualTime {

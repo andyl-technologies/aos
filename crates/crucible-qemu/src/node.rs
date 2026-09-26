@@ -237,16 +237,16 @@ pub struct QemuNodeEmittedFrame {
 /// The node's current idle observation from shared memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct QemuNodeIdleState {
-    /// Current retired-instruction count observed for the node.
+    /// Current logical picosecond coordinate observed for the node.
     pub current_icount: Icount,
-    /// The next instruction-count deadline that can wake the idle node.
+    /// The next logical picosecond deadline that can wake the idle node.
     pub next_deadline: Option<Icount>,
 }
 
 /// Plugin logical-time calibration observed at one coherent shared-memory boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct QemuLogicalTimeCalibration {
-    /// Scheduler-visible logical instruction count.
+    /// Scheduler-visible logical picoseconds.
     pub logical_icount: u64,
     /// QEMU VMState-owned raw retired-instruction count.
     pub raw_icount: u64,
@@ -256,20 +256,30 @@ pub struct QemuLogicalTimeCalibration {
 pub type QemuVirtualTimerFireWitness = crucible_shmem::VirtualTimerFireWitness;
 
 impl QemuLogicalTimeCalibration {
-    /// Returns the idle-jump offset applied over QEMU's raw icount.
+    /// Returns the picosecond bias over QEMU's scaled raw instruction count.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeChannelError`] when raw icount is ahead of logical time.
+    /// Returns [`QemuNodeChannelError`] when the scaled raw count overflows or
+    /// exceeds logical time.
     pub fn offset(self) -> Result<u64, QemuNodeChannelError> {
+        let raw_picoseconds = self
+            .raw_icount
+            .checked_mul(crucible::SIM_TICKS_PER_INSTRUCTION)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "read logical-time calibration",
+                    format!("raw icount {} overflows picoseconds", self.raw_icount),
+                )
+            })?;
         self.logical_icount
-            .checked_sub(self.raw_icount)
+            .checked_sub(raw_picoseconds)
             .ok_or_else(|| {
                 QemuNodeChannelError::new(
                     "read logical-time calibration",
                     format!(
-                        "raw icount {} is ahead of logical icount {}",
-                        self.raw_icount, self.logical_icount
+                        "scaled raw icount {raw_picoseconds} is ahead of logical picoseconds {}",
+                        self.logical_icount
                     ),
                 )
             })

@@ -26,7 +26,7 @@
     failuresFor "crates/crucible-qemu/src/launch.rs" qemuLaunch [
       {
         label = "guest-visible time source policy material";
-        needle = "\"guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time\".to_owned(),";
+        needle = "\"guest_time_sources=rtc,tsc,timer-devices:logical-picosecond-virtual-time-with-ns-projections\".to_owned(),";
       }
       {
         label = "fixed guest time epoch material";
@@ -56,7 +56,7 @@
     ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" qemuTest [
       {
         label = "launch material guest time assertion";
-        needle = "guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time";
+        needle = "guest_time_sources=rtc,tsc,timer-devices:logical-picosecond-virtual-time-with-ns-projections";
       }
       {
         label = "launch material time-control assertion";
@@ -226,8 +226,8 @@ in
               "gate=gate:layer0-determinism" \
               "rtc=base=2026-01-01T00:00:00,clock=vm" \
               "virtual_time_ns=floor(sim_tick/1000)" \
-              "tsc_source=icount" \
-              "guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time" \
+              "tsc_source=logical-picoseconds-div-250" \
+              "guest_time_sources=rtc,tsc,timer-devices:logical-picosecond-virtual-time-with-ns-projections" \
               "guest_time_epoch=fixed-rtc-epoch" \
               "time_control_owner=crucible-qemu-plugin" \
               "time_control_acquire=registration-before-first-visible-instruction" \
@@ -255,7 +255,7 @@ in
             status=partial
             evidence_scope=launch-policy-callback-core-model-and-atomic-package
             gate=gate:layer0-determinism
-            guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time
+            guest_time_sources=rtc,tsc,timer-devices:logical-picosecond-virtual-time-with-ns-projections
             guest_time_epoch=fixed-rtc-epoch
             time_control_owner=crucible-qemu-plugin
             time_control_acquire=registration-before-first-visible-instruction

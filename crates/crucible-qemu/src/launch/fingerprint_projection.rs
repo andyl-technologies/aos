@@ -120,8 +120,14 @@ macro_rules! versioned_row {
 }
 
 const X86_APIC: ProjectionRow = versioned_row!("apic", 0, "apic", 3, VOLATILE, "x86-apic", 3);
-const UI_INPUT_QUEUE: ProjectionRow =
-    row!("ui-input-queue", 0, "ui-input-queue", 1, DEVICE, "ui-input-queue");
+const UI_INPUT_QUEUE: ProjectionRow = row!(
+    "ui-input-queue",
+    0,
+    "ui-input-queue",
+    1,
+    DEVICE,
+    "ui-input-queue"
+);
 const TIMER: ProjectionRow = versioned_row!("timer", 0, "timer", 2, VOLATILE, "cpu-timers", 5);
 const CPU_COMMON: ProjectionRow = row!("cpu_common", 0, "cpu_common", 1, VOLATILE, "cpu-common");
 const X86_CPU: ProjectionRow = versioned_row!("cpu", 0, "cpu", 12, VOLATILE, "x86-cpu", 2);

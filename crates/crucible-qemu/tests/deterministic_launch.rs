@@ -367,12 +367,12 @@ fn multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed() {
     assert!(material.contains("vcpu_topology=fixed-at-genesis"));
     assert!(material.contains("runtime_cpu_hotplug=forbidden"));
     assert!(material.contains("rr_switch_quantum=8192"));
-    assert!(material.contains("rr_switch_quantum_units=node-icount"));
+    assert!(material.contains("rr_switch_quantum_units=retired-instructions"));
     assert!(material.contains("rr_vcpu_rotation=ascending-vcpu-id"));
     assert!(material.contains("per_vcpu_cpu_model=uniform"));
-    assert!(material.contains("per_vcpu_tsc_source=node-icount"));
+    assert!(material.contains("per_vcpu_tsc_source=logical-picoseconds-div-250"));
     assert!(material.contains("per_vcpu_rng_source=scenario-seed-and-run-seed"));
-    assert!(material.contains("per_vcpu_rng_timing_axis=node-icount"));
+    assert!(material.contains("per_vcpu_rng_timing_axis=raw-retirement-rr-order"));
     assert!(material.contains("secondary_vcpu_bringup=rr-sim-tcg-icount-deterministic"));
 
     let different_vcpu_count = deterministic(
@@ -1158,14 +1158,14 @@ fn launch_hash_material_records_every_determinism_field() {
         "sim_ticks_per_ns=1000",
         "sim_ticks_per_instruction=50",
         "rr_switch_quantum=4096",
-        "rr_switch_quantum_units=node-icount",
+        "rr_switch_quantum_units=retired-instructions",
         "rr_vcpu_rotation=ascending-vcpu-id",
         "virtual_time_ns=floor(sim_tick/1000)",
         "per_vcpu_cpu_model=uniform",
-        "per_vcpu_tsc_source=node-icount",
+        "per_vcpu_tsc_source=logical-picoseconds-div-250",
         "rtc_epoch_utc=2026-01-01T00:00:00",
         "rtc_clock=vm",
-        "guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time",
+        "guest_time_sources=rtc,tsc,timer-devices:logical-picosecond-virtual-time-with-ns-projections",
         "guest_time_epoch=fixed-rtc-epoch",
         "time_control_owner=crucible-qemu-plugin",
         "time_control_acquire=registration-before-first-visible-instruction",
@@ -1190,7 +1190,7 @@ fn launch_hash_material_records_every_determinism_field() {
         "guest_entropy_rng_device=virtio-rng-pci,rng=crucible-rng0",
         "guest_entropy_host_sources=disabled",
         "per_vcpu_rng_source=scenario-seed-and-run-seed",
-        "per_vcpu_rng_timing_axis=node-icount",
+        "per_vcpu_rng_timing_axis=raw-retirement-rr-order",
         "secondary_vcpu_bringup=rr-sim-tcg-icount-deterministic",
         "kernel_cmdline=console=ttyS0 reboot=k panic=1 quiet",
     ] {

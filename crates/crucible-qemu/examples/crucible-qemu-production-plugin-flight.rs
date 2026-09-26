@@ -48,9 +48,17 @@ const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
 const DISK_BYTES: u64 = 1024 * 1024 * 1024;
 const RR_SWITCH_QUANTUM: u64 = 4096;
 const FLIGHT_TICKS_PER_INSTRUCTION: u64 = crucible::SIM_TICKS_PER_INSTRUCTION;
-const TARGETS: [u64; 4] = [2_000_000, 2_000_001, 4_000_000, 8_000_000];
-const INSTRUCTION_EXACT_LOWER_TARGET: u64 = 2_000_000;
-const INSTRUCTION_EXACT_UPPER_TARGET: u64 = INSTRUCTION_EXACT_LOWER_TARGET + 1;
+const FRACTIONAL_PHASE_LOWER_TARGET: u64 = 2_000_000;
+const INSTRUCTION_EXACT_LOWER_TARGET: u64 = FRACTIONAL_PHASE_LOWER_TARGET + 1;
+const INSTRUCTION_EXACT_UPPER_TARGET: u64 =
+    INSTRUCTION_EXACT_LOWER_TARGET + FLIGHT_TICKS_PER_INSTRUCTION;
+const TARGETS: [u64; 5] = [
+    FRACTIONAL_PHASE_LOWER_TARGET,
+    INSTRUCTION_EXACT_LOWER_TARGET,
+    INSTRUCTION_EXACT_UPPER_TARGET,
+    4_000_000,
+    8_000_000,
+];
 // The selectable request is the authenticated readiness boundary. Give QEMU's
 // signed virtual-picosecond API its full positive domain so a machine-specific
 // boot instruction count cannot become a second readiness condition; the
@@ -210,19 +218,25 @@ fn run() -> Result<(), Box<dyn Error>> {
     println!("vcpu_count=4");
     println!("rr_switch_quantum={RR_SWITCH_QUANTUM}");
     println!("sample_count={}", reference.boundaries.len());
-    println!("sample_target_icounts=2000000,2000001,4000000,8000000");
+    println!("sample_target_picoseconds=2000000,2000001,2000051,4000000,8000000");
     println!("sample_stream_restart_identical=true");
     println!("on_demand_worker_acknowledgements={on_demand_acknowledgements}");
     println!("on_demand_boundary_stream_bit_identical=true");
     println!(
-        "instruction_exact_window_lower_icount={}",
+        "instruction_exact_window_lower_picoseconds={}",
         instruction_exact.lower_target
     );
     println!(
-        "instruction_exact_window_upper_icount={}",
+        "instruction_exact_window_upper_picoseconds={}",
         instruction_exact.upper_target
     );
-    println!("instruction_exact_window_width=1");
+    println!("instruction_exact_window_width_picoseconds={FLIGHT_TICKS_PER_INSTRUCTION}");
+    println!("fractional_phase_window_lower_picoseconds={FRACTIONAL_PHASE_LOWER_TARGET}");
+    println!("fractional_phase_window_upper_picoseconds={INSTRUCTION_EXACT_LOWER_TARGET}");
+    println!("fractional_phase_no_retirement=true");
+    println!("fractional_phase_timer_projection_changed=true");
+    println!("fractional_phase_fingerprint_changed=true");
+    println!("instruction_exact_raw_retirement_successor=true");
     println!(
         "instruction_exact_lower_rr_vcpu={}",
         instruction_exact.lower_rr_vcpu
@@ -322,7 +336,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     print_block_recovery_evidence(block_recovery_hot_fork);
     println!("component_failures=0");
     println!("per_vcpu_register_files_present=true");
-    println!("aggregate_icount_equals_target=true");
+    println!("sample_logical_picoseconds_equal_target=true");
     Ok(())
 }
 
@@ -397,6 +411,7 @@ struct BoundaryEvidence {
     outcome: AdvanceOutcome,
     fingerprint: ExecutionFingerprint,
     sample: FingerprintSample,
+    calibration: QemuLogicalTimeCalibration,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -492,6 +507,12 @@ fn compare_boundaries(
                 left.target
             ));
         }
+        if left.calibration != right.calibration {
+            return Err(format!(
+                "{variant}: boundary {index} window ({lower_bound},{}]: logical/raw calibration differs",
+                left.target
+            ));
+        }
     }
     Ok(())
 }
@@ -507,13 +528,42 @@ fn instruction_exact_evidence(
         .iter()
         .find(|boundary| boundary.target == INSTRUCTION_EXACT_UPPER_TARGET)
         .ok_or_else(|| String::from("instruction-exact upper boundary is absent"))?;
+    let fractional_lower = boundaries
+        .iter()
+        .find(|boundary| boundary.target == FRACTIONAL_PHASE_LOWER_TARGET)
+        .ok_or_else(|| String::from("fractional-phase lower boundary is absent"))?;
 
-    if upper.target != lower.target + 1
+    if upper.target != lower.target + FLIGHT_TICKS_PER_INSTRUCTION
         || lower.sample.sample_icount != lower.target
+        || fractional_lower.sample.sample_icount != fractional_lower.target
         || upper.sample.sample_icount != upper.target
+        || lower.calibration.logical_icount != lower.target
+        || upper.calibration.logical_icount != upper.target
+        || fractional_lower.calibration.logical_icount != fractional_lower.target
     {
         return Err(format!(
             "instruction-exact samples do not bind adjacent requested coordinates: lower={lower:?}, upper={upper:?}"
+        ));
+    }
+    let fractional_differences = sample_differences(&fractional_lower.sample, &lower.sample);
+    let mut expected_fractional_sample = fractional_lower.sample;
+    expected_fractional_sample.sample_icount = lower.target;
+    expected_fractional_sample.device_state_digest = lower.sample.device_state_digest;
+    if lower.target != fractional_lower.target + 1
+        || fractional_differences.len() != 2
+        || fractional_differences[0] != "sample_icount"
+        || fractional_differences[1] != "device_state_digest"
+        || lower.sample != expected_fractional_sample
+        || lower.calibration.raw_icount != fractional_lower.calibration.raw_icount
+        || lower.fingerprint == fractional_lower.fingerprint
+    {
+        return Err(format!(
+            "fractional-phase sample changed retired state or omitted timer projection: lower={fractional_lower:?}, upper={lower:?}, changed_components={fractional_differences:?}"
+        ));
+    }
+    if Some(upper.calibration.raw_icount) != lower.calibration.raw_icount.checked_add(1) {
+        return Err(format!(
+            "instruction-exact samples do not advance raw retirement by one: lower={lower:?}, upper={upper:?}"
         ));
     }
     if lower.sample.rr_switch_quantum != RR_SWITCH_QUANTUM
@@ -585,13 +635,13 @@ fn validate_instruction_exact_shape_stability(
     if lower.vcpu_count != upper.vcpu_count
         || lower.component_failures != upper.component_failures
         || lower.ram_bytes != upper.ram_bytes
-        || lower.ram_digest != upper.ram_digest
         || lower.device_state_bytes != upper.device_state_bytes
         || lower.device_state_sections != upper.device_state_sections
         || lower.device_state_schema_digest != upper.device_state_schema_digest
     {
-        return Err(String::from(
-            "adjacent instruction samples changed invariant fingerprint shape or RAM state",
+        return Err(format!(
+            "adjacent instruction samples changed invariant fingerprint shape: {:?}",
+            sample_differences(lower, upper)
         ));
     }
 
@@ -713,7 +763,14 @@ fn compare_runtime_determinism_diagnostics(
             return format!("baselines=[{baselines}]; {reference_name}_trace_error={error}");
         }
     };
-    let reference_suffix = post_final_busy_boundary(&reference_records);
+    let reference_boundary = match final_busy_raw_boundary(&reference.baseline) {
+        Ok(raw) => raw,
+        Err(error) => return format!("baselines=[{baselines}]; {reference_name}_{error}"),
+    };
+    let reference_suffix = post_final_busy_boundary(&reference_records, reference_boundary);
+    if reference_suffix.is_empty() {
+        return format!("baselines=[{baselines}]; {reference_name}_post_8m_trace_empty");
+    }
     let mut comparisons = Vec::with_capacity(variants.len() - 1);
     let mut identical = true;
 
@@ -726,7 +783,20 @@ fn compare_runtime_determinism_diagnostics(
                 continue;
             }
         };
-        let candidate_suffix = post_final_busy_boundary(&candidate_records);
+        let candidate_boundary = match final_busy_raw_boundary(&candidate.baseline) {
+            Ok(raw) => raw,
+            Err(error) => {
+                identical = false;
+                comparisons.push(format!("{candidate_name}_{error}"));
+                continue;
+            }
+        };
+        let candidate_suffix = post_final_busy_boundary(&candidate_records, candidate_boundary);
+        if candidate_suffix.is_empty() {
+            identical = false;
+            comparisons.push(format!("{candidate_name}_post_8m_trace_empty"));
+            continue;
+        }
         let common = reference_suffix.len().min(candidate_suffix.len());
         let first_difference = (0..common).find(|&index| {
             normalized_runtime_record(reference_suffix[index])
@@ -788,13 +858,36 @@ fn describe_runtime_baseline(baseline: &RuntimeDeterminismBaseline) -> String {
     )
 }
 
+fn final_busy_raw_boundary(baseline: &RuntimeDeterminismBaseline) -> Result<u64, String> {
+    let calibration = baseline
+        .calibration
+        .as_ref()
+        .map_err(|error| format!("boundary_calibration_error={error}"))?;
+    if calibration.logical_icount != TARGETS[TARGETS.len() - 1] {
+        return Err(format!(
+            "boundary_logical_picoseconds={} expected={}",
+            calibration.logical_icount,
+            TARGETS[TARGETS.len() - 1]
+        ));
+    }
+    Ok(calibration.raw_icount)
+}
+
 fn post_final_busy_boundary(
     records: &[QemuRuntimeDeterminismTraceRecord],
+    raw_boundary: u64,
 ) -> Vec<QemuRuntimeDeterminismTraceRecord> {
     records
         .iter()
         .copied()
-        .filter(|record| record.raw_icount() >= TARGETS[TARGETS.len() - 1])
+        .filter(|record| {
+            let virtual_ps = match record {
+                QemuRuntimeDeterminismTraceRecord::Idle(record) => record.virtual_ps,
+                QemuRuntimeDeterminismTraceRecord::Timer(record) => record.current_ps,
+            };
+            record.raw_icount() >= raw_boundary
+                && virtual_ps >= TARGETS[TARGETS.len() - 1] as i64
+        })
         .collect()
 }
 
@@ -849,12 +942,12 @@ fn run_once(
     let mut boundaries = Vec::with_capacity(TARGETS.len());
 
     for (index, target) in TARGETS.into_iter().enumerate() {
-        if index == 2
+        if target == 4_000_000
             && let Some(evidence) = &preemption
         {
             node.enable_bounded_scheduler_preemption(evidence.claim()?);
         }
-        if index == 2 {
+        if target == 4_000_000 {
             let at = aligned_preemption_tick(&mut node, 3_000_000, target)?;
             install_preemption(
                 &mut node,
@@ -864,7 +957,7 @@ fn run_once(
                 },
                 at,
             )?;
-        } else if index == 3 {
+        } else if target == 8_000_000 {
             let at = aligned_preemption_tick(&mut node, 6_000_000, target)?;
             install_preemption(
                 &mut node,
@@ -905,11 +998,19 @@ fn run_once(
         let fingerprint = node.execution_fingerprint()?;
         let sample = node.fingerprint_sample()?;
         validate_sample(sample, target)?;
+        let calibration = node.logical_time_calibration()?;
+        if calibration.logical_icount != target {
+            return Err(format!(
+                "logical/raw calibration did not bind busy target {target}: {calibration:?}"
+            )
+            .into());
+        }
         boundaries.push(BoundaryEvidence {
             target,
             outcome,
             fingerprint,
             sample,
+            calibration,
         });
     }
     if let Some(evidence) = preemption {
@@ -1033,7 +1134,6 @@ fn node_state_failure(
     let timer_witness = node
         .virtual_timer_fire_witness()
         .map_err(|error| error.to_string());
-
     format!(
         "production flight failed during {phase}: source={source}; \
          idle_state={idle_state:?}; calibration={calibration:?}; \

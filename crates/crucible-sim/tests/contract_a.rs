@@ -246,7 +246,10 @@ fn contract_a_time_trajectory_preserves_exact_ticks_and_guest_nanoseconds() {
         .collect::<Vec<_>>();
     assert_eq!(run.time_trajectory, expected);
     assert_eq!(run.time_fingerprint.ticks_per_ns, CONTRACT_A_TICKS_PER_NS);
-    assert_eq!(run.time_fingerprint.ticks_per_instruction, CONTRACT_A_TICKS_PER_INSTRUCTION);
+    assert_eq!(
+        run.time_fingerprint.ticks_per_instruction,
+        CONTRACT_A_TICKS_PER_INSTRUCTION
+    );
     assert_eq!(run.time_fingerprint.final_icount, 21);
     assert_eq!(run.time_fingerprint.final_virtual_time_ticks, 1_050);
     assert_eq!(run.time_fingerprint.final_virtual_time_ns, 1);
@@ -553,7 +556,7 @@ fn contract_a_multi_vcpu_fingerprint_changes_when_register_file_changes() {
 }
 
 #[test]
-fn contract_a_rr_switch_quantum_is_content_addressed_node_icount_units() {
+fn contract_a_rr_switch_quantum_is_content_addressed_retired_instructions() {
     let quantum_two = match ContractAConfig::new(image_digest(), "console=ttyS0", 11, 3, 2) {
         Ok(config) => config,
         Err(error) => panic!("test Contract A config should be valid: {error}"),

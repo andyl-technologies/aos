@@ -518,7 +518,7 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
     ) -> Result<QemuLogicalTimeCalibration, QemuNodeChannelError> {
         Ok(QemuLogicalTimeCalibration {
             logical_icount: 11,
-            raw_icount: 11,
+            raw_icount: 0,
         })
     }
 

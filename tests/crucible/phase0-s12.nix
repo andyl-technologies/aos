@@ -119,7 +119,7 @@ in
           decision_doc="rfc-docs/31-decision-register.md"
           require_fixed "$decision_doc" "RISK-4 / RISK-5 / T-RISK-1"
           require_fixed "$decision_doc" "checks.crucible.phase7.productionRustPluginFlight"
-          require_fixed "$decision_doc" "\`sample_target_icounts=2000000,2000001,4000000,8000000\`"
+          require_fixed "$decision_doc" "\`sample_target_picoseconds=2000000,2000001,2000051,4000000,8000000\`"
           require_fixed "$decision_doc" "RISK-25 / T-RISK-17"
           require_fixed "$decision_doc" "checks.crucible.phase0.s11MultiVcpuFingerprint"
           require_fixed "$decision_doc" "\`s11_result_status=PASS\`"

@@ -477,7 +477,7 @@
     grep -Fxq 'realized_parallelism=2' ${hostParallelResult}
     grep -Fxq 'state_identity=bit-identical' ${hostParallelResult}
     grep -Fxq PASS ${fingerprintResult}
-    grep -Fxq 'authenticated_on_demand_requests_acknowledged=24' \
+    grep -Fxq 'authenticated_on_demand_requests_acknowledged=14' \
       ${fingerprintResult}
     grep -Fxq 'on_demand_boundary_stream_bit_identical=true' \
       ${fingerprintResult}

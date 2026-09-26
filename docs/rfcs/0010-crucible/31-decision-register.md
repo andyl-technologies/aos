@@ -583,7 +583,7 @@ genuinely unresolved and is tracked as a spike in
 - **Decision:** Multi-vCPU determinism is achieved with the **single-threaded,
   TCG-derived sim accelerator** (`-accel sim,thread=single`): all vCPUs run on one host
   thread, and the round-robin switch boundary is a fixed, content-addressed
-  `rr_switch_quantum` measured in node-icount. The same source-elimination
+  `rr_switch_quantum` measured in retired instructions. The same source-elimination
   contract that makes a single-vCPU guest bit-identical is extended over all N
   vCPUs and the round-robin cursor. **MTTCG is rejected.** This supersedes the
   multi-vCPU-out-of-scope clause of D-4 (whose MTTCG rejection stands).
@@ -1106,7 +1106,7 @@ genuinely unresolved and is tracked as a spike in
 ### D-34 — S11-validated default `rr_switch_quantum` 4096
 
 - **Status:** Superseded by D-36
-- **Fallback choice:** Use `rr_switch_quantum = 4096` node-icount for the
+- **Fallback choice:** Use `rr_switch_quantum = 4096` retired instructions for the
   default-only deterministic interleaving. The modeled S13 overhead sweep found
   4096 to be the smallest candidate above its provisional throughput floor, and
   S11 then validated that quantum across two 4-billion-instruction sim-mode
@@ -1361,10 +1361,10 @@ becomes a new `Decided` entry referencing the one it supersedes).
   selected `rr_switch_quantum=4096` after the five-candidate live
   commanded-preemption/throughput sweep. D-36 records the final rationale.
 
-### D-36 — Shipped `rr_switch_quantum` is 4096 node-icount
+### D-36 — Shipped `rr_switch_quantum` is 4096 retired instructions
 
 - **Status:** Decided
-- **Decision:** Use `rr_switch_quantum=4096` node-icount as the shipped default.
+- **Decision:** Use `rr_switch_quantum=4096` retired instructions as the shipped default.
   The explorer may still override the quantum per branch, and every override
   remains content-addressed and deterministic.
 - **Rationale:** S13 swept `1024,2048,4096,8192,16384`. The deterministic
@@ -1567,16 +1567,19 @@ register.
   - **Check:** `checks.crucible.phase7.productionRustPluginFlight`, paired with
     `checks.crucible.phase2.qemuFingerprintProjectionManifest`.
   - **Result:** `scenario=production-diskless-smp4`, `vcpus=4`,
-    `sample_target_icounts=2000000,2000001,4000000,8000000`,
+    `sample_target_picoseconds=2000000,2000001,2000051,4000000,8000000`,
     `host_adversary=bounded-scheduler-preemption`,
     `rust_plugin_loaded=true`, `sample_stream_restart_identical=true`,
     `on_demand_boundary_stream_bit_identical=true`,
     `per_vcpu_register_files_present=true`,
-    `aggregate_icount_equals_target=true`,
+    `sample_logical_picoseconds_equal_target=true`,
     `instruction_exact_localization=one-instruction-window`,
     `instruction_exact_rr_successor=true`,
     `instruction_exact_state_projection_changed=true`, and
     `component_failures=0`.
+    The `2000000` to `2000001` picosecond sample changes the timer projection
+    without retiring an instruction; the `2000001` to `2000051` span proves
+    one raw retired instruction and its RR successor.
   - **Scope:** validates the loaded production Rust plugin and current
     schema-v4 provider projection.
 

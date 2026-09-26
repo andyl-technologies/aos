@@ -54,13 +54,16 @@ in
             diskless_multiboot_runs=2 \
             fingerprint_flight_variants=reference,host-preempted \
             vcpu_count=4 \
-            sample_count=4 \
-            sample_target_icounts=2000000,2000001,4000000,8000000 \
+            sample_count=5 \
+            sample_target_picoseconds=2000000,2000001,2000051,4000000,8000000 \
             sample_stream_restart_identical=true \
             on_demand_boundary_stream_bit_identical=true \
-            instruction_exact_window_lower_icount=2000000 \
-            instruction_exact_window_upper_icount=2000001 \
-            instruction_exact_window_width=1 \
+            instruction_exact_window_lower_picoseconds=2000001 \
+            instruction_exact_window_upper_picoseconds=2000051 \
+            instruction_exact_window_width_picoseconds=50 \
+            fractional_phase_no_retirement=true \
+            fractional_phase_timer_projection_changed=true \
+            instruction_exact_raw_retirement_successor=true \
             instruction_exact_rr_successor=true \
             instruction_exact_state_projection_changed=true \
             instruction_exact_fingerprint_changed=true \
@@ -68,7 +71,7 @@ in
             bounded_scheduler_preemption_applied=true \
             component_failures=0 \
             per_vcpu_register_files_present=true \
-            aggregate_icount_equals_target=true
+            sample_logical_picoseconds_equal_target=true
           do
             grep -Fxq "$line" "$flight"
           done
@@ -91,16 +94,20 @@ in
           projection_source=checks.crucible.phase2.qemuFingerprintProjectionManifest
           scenario=production-diskless-smp4
           host_adversary=bounded-scheduler-preemption
-          samples=4
-          sample_target_icounts=2000000,2000001,4000000,8000000
+          samples=5
+          sample_target_picoseconds=2000000,2000001,2000051,4000000,8000000
           execution_fingerprint=production-FingerprintSample-provider-projection
           sampling_axis=aggregate-node-icount
           observation_mode=loaded-rust-plugin
           restart_stream_identity=true
           mismatch_policy=first-mismatch-is-failure
           mismatch_localization=one-instruction-window
-          instruction_exact_window=2000000,2000001
+          instruction_exact_window_picoseconds=2000001,2000051
+          fractional_phase_window_picoseconds=2000000,2000001
+          fractional_phase_no_retirement=true
+          fractional_phase_timer_projection_changed=true
           instruction_exact_rr_cursor=authenticated-owner-and-position
+          instruction_exact_raw_retirement_successor=true
           instruction_exact_state_projection=owning-vcpu-register-digest
           RESULT
 

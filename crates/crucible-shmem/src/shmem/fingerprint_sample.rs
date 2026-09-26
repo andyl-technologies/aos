@@ -81,23 +81,24 @@ pub struct FingerprintSampleVcpu {
     /// sets this to zero deliberately (see the `out_retired_instruction_count = 0`
     /// stamp in `crucible-qemu-11.1.1.patch`). A reader must not treat a
     /// zero here as a broken counter: per-vCPU progress lives in the round-robin
-    /// cursor (`current_vcpu`, `position_in_quantum`), and the node clock is the
-    /// aggregate icount stamped on the sample.
+    /// cursor (`current_vcpu`, `position_in_quantum`), and the node clock's
+    /// logical picosecond coordinate is stamped on the sample.
     pub retired_instruction_count: u64,
 }
 
 /// A tear-free snapshot of one node's fingerprint sample.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FingerprintSample {
-    /// Aggregate icount at which every component below was sampled.
+    /// Aggregate logical picoseconds at which every component below was sampled.
+    /// The field name is retained by the versioned shared-memory protocol.
     pub sample_icount: u64,
     /// Number of tracked vCPUs; entries beyond this are unpopulated.
     pub vcpu_count: u32,
     /// Round-robin cursor's current vCPU index.
     pub rr_current_vcpu: u32,
-    /// Round-robin cursor position within the switch quantum.
+    /// Round-robin cursor position in retired instructions within the switch quantum.
     pub rr_position_in_quantum: u64,
-    /// Pinned round-robin switch quantum in node-icount units.
+    /// Pinned round-robin switch quantum in retired instructions.
     pub rr_switch_quantum: u64,
     /// Bitset of components whose plugin-side capture failed (0 on success).
     pub component_failures: u32,

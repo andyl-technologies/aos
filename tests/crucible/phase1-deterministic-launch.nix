@@ -307,7 +307,7 @@
     }
     {
       label = "RR switch quantum units in hash material";
-      needle = "\"rr_switch_quantum_units=node-icount\".to_owned(),";
+      needle = "\"rr_switch_quantum_units=retired-instructions\".to_owned(),";
     }
     {
       label = "RR vCPU rotation in hash material";
@@ -319,7 +319,7 @@
     }
     {
       label = "guest-visible time source policy in hash material";
-      needle = "\"guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time\".to_owned(),";
+      needle = "\"guest_time_sources=rtc,tsc,timer-devices:logical-picosecond-virtual-time-with-ns-projections\".to_owned(),";
     }
     {
       label = "fixed guest time epoch in hash material";
@@ -692,7 +692,7 @@ in
             sim_ticks_per_ns=1000
             sim_ticks_per_instruction=50
             rr_switch_quantum=4096
-            rr_switch_quantum_units=node-icount
+            rr_switch_quantum_units=retired-instructions
             rr_vcpu_rotation=ascending-vcpu-id
             rtc=base=2026-01-01T00:00:00,clock=vm
             timers=virtual-clock-driven
@@ -706,8 +706,8 @@ in
             guest_entropy_rng_device=virtio-rng-pci,rng=crucible-rng0,bus=pcie.0,addr=0x1
             guest_entropy_host_sources=disabled
             virtual_time_ns=floor(sim_tick/1000)
-            tsc_source=icount
-            guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time
+            tsc_source=logical-picoseconds-div-250
+            guest_time_sources=rtc,tsc,timer-devices:logical-picosecond-virtual-time-with-ns-projections
             guest_time_epoch=fixed-rtc-epoch
             time_control_owner=crucible-qemu-plugin
             time_control_acquire=registration-before-first-visible-instruction

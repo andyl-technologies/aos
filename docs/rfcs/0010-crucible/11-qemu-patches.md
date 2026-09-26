@@ -242,7 +242,7 @@ stages. The short description states the reason the mechanism exists.
 - crucible-det-glib-prng ........ seed global GRand (1-line) D    DET-21, E9
 - crucible-det-getrandom ........ deterministic guest-rng   D    DET-21, DET-19, E9
 - crucible-net-deterministic .... icount-timed RX delivery  D    DET-11, DET-13, E18
-- rr_switch_quantum .... RR switch @ node-icount    D    PATCH-44, DET-1, QEMU-43
+- rr_switch_quantum .... RR switch @ retired instructions    D    PATCH-44, DET-1, QEMU-43
 - crucible-det-ipi .............. deterministic IPI/SIPI/INIT D    PATCH-45, DET-1, INV-7
 - crucible-aarch64-det-ipi-adapter AArch64 IPI delivery adapter D  DET-4, PLUG-14, GHC-4
 - crucible-det-virtio-ioeventfd . sync virtio-rng vq dispatch D    DET-1, E7
@@ -559,7 +559,7 @@ stages. The short description states the reason the mechanism exists.
   satisfies [NG-6], [INV-7].
 
 - **[PATCH-44]** The atomic patch MUST make the single-threaded round-robin TCG
-  vCPU-switch boundary a fixed `rr_switch_quantum` expressed in node-icount in
+  vCPU-switch boundary a fixed `rr_switch_quantum` expressed in retired instructions in
   sim mode, with an ascending vCPU rotation, so multi-vCPU instruction
   interleaving is a pure function of icount and not of the adaptive/realtime
   `rr_quantum`; out of sim mode the round-robin quantum MUST be upstream-adaptive

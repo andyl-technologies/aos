@@ -493,8 +493,8 @@ pub struct QemuCampaignMarkerBoundaryDiagnostic {
     pub post_raw: u64,
     /// Logical tick observed after the marker instruction.
     pub observed_tick: u64,
-    /// Logical-time offset applied to the raw count.
-    pub logical_offset: u64,
+    /// Picosecond bias applied after scaling the raw count.
+    pub logical_offset_picoseconds: u64,
     /// Raw coordinate carried by the marker event.
     pub marker_event_raw: u64,
     /// Raw retired count paired with the physical VMStop publication.
@@ -507,13 +507,13 @@ impl std::fmt::Display for QemuCampaignMarkerBoundaryDiagnostic {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V1 node={} marker={} pre_raw={} post_raw={} observed_tick={} logical_offset={} marker_event_raw={} physical_stop_raw={} physical_stop_tick={}",
+            "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V2 node={} marker={} pre_raw={} post_raw={} observed_tick={} logical_offset_picoseconds={} marker_event_raw={} physical_stop_raw={} physical_stop_tick={}",
             self.node.name,
             self.marker,
             self.pre_raw,
             self.post_raw,
             self.observed_tick,
-            self.logical_offset,
+            self.logical_offset_picoseconds,
             self.marker_event_raw,
             self.physical_stop_raw,
             self.physical_stop_tick,
@@ -560,7 +560,7 @@ fn campaign_marker_parked_at(
                 .ok_or_else(|| BackendError::Rejected {
                     message: format!("QEMU node `{}` marker retired count overflowed", node.name),
                 })?;
-        let logical_offset = calibration
+        let logical_offset_picoseconds = calibration
             .offset()
             .map_err(|source| BackendError::Rejected {
                 message: format!(
@@ -568,22 +568,22 @@ fn campaign_marker_parked_at(
                     node.name, marker.name,
                 ),
             })?;
-        let observed_tick =
-            post_raw
-                .checked_add(logical_offset)
-                .ok_or_else(|| BackendError::Rejected {
-                    message: format!(
-                        "QEMU node `{}` campaign marker `{}` logical coordinate overflowed",
-                        node.name, marker.name,
-                    ),
-                })?;
+        let observed_tick = post_raw
+            .checked_mul(crucible::SIM_TICKS_PER_INSTRUCTION)
+            .and_then(|raw_picoseconds| raw_picoseconds.checked_add(logical_offset_picoseconds))
+            .ok_or_else(|| BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` campaign marker `{}` logical coordinate overflowed",
+                    node.name, marker.name,
+                ),
+            })?;
         let diagnostic = QemuCampaignMarkerBoundaryDiagnostic {
             node: node.clone(),
             marker: marker.name.clone(),
             pre_raw: retired_icount.retired,
             post_raw,
             observed_tick,
-            logical_offset,
+            logical_offset_picoseconds,
             marker_event_raw: retired_icount.retired,
             physical_stop_raw: calibration.raw_icount,
             physical_stop_tick: physical_icount.retired,
@@ -624,9 +624,9 @@ mod campaign_marker_parking_tests {
             node.clone(),
             MarkerId::from_name("fault.transport.ready"),
         );
-        let stopped_at = Icount { retired: 42 };
+        let stopped_at = Icount { retired: 2_100 };
         let calibration = QemuLogicalTimeCalibration {
-            logical_icount: 42,
+            logical_icount: 2_100,
             raw_icount: 42,
         };
 
@@ -635,13 +635,13 @@ mod campaign_marker_parking_tests {
             Ok(Some(QemuParkedCampaignMarker {
                 marker: "fault.transport.ready".to_owned(),
                 marker_icount: marker_at,
-                physical_raw_icount: stopped_at,
+                physical_raw_icount: Icount { retired: 42 },
                 physical_icount: stopped_at,
             }))
         );
-        let projected_stop = Icount { retired: 100 };
+        let projected_stop = Icount { retired: 2_158 };
         let projected_calibration = QemuLogicalTimeCalibration {
-            logical_icount: 100,
+            logical_icount: 2_158,
             raw_icount: 42,
         };
         assert_eq!(
@@ -654,13 +654,13 @@ mod campaign_marker_parking_tests {
             Ok(Some(QemuParkedCampaignMarker {
                 marker: "fault.transport.ready".to_owned(),
                 marker_icount: marker_at,
-                physical_raw_icount: stopped_at,
+                physical_raw_icount: Icount { retired: 42 },
                 physical_icount: projected_stop,
             }))
         );
 
         let mismatched_calibration = QemuLogicalTimeCalibration {
-            logical_icount: 100,
+            logical_icount: 2_158,
             raw_icount: 43,
         };
         let error = match campaign_marker_parked_at(
@@ -675,10 +675,10 @@ mod campaign_marker_parking_tests {
             }
         };
         assert!(error.to_string().contains(
-            "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V1 node=west marker=fault.transport.ready pre_raw=41 post_raw=42 observed_tick=99 logical_offset=57 marker_event_raw=41 physical_stop_raw=43 physical_stop_tick=100"
+            "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V2 node=west marker=fault.transport.ready pre_raw=41 post_raw=42 observed_tick=2108 logical_offset_picoseconds=8 marker_event_raw=41 physical_stop_raw=43 physical_stop_tick=2158"
         ));
         let mismatched_logical_calibration = QemuLogicalTimeCalibration {
-            logical_icount: 101,
+            logical_icount: 2_159,
             raw_icount: 42,
         };
         assert!(

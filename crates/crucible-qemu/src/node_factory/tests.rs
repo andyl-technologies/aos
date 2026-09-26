@@ -178,7 +178,7 @@ fn exact_ram_restore_rejects_a_foreign_host_checkpoint_before_qmp_stop()
         last_observed_time: checkpoint.virtual_time,
         logical_time_calibration: crate::QemuLogicalTimeCalibration {
             logical_icount: checkpoint.virtual_time.ticks,
-            raw_icount: checkpoint.virtual_time.ticks,
+            raw_icount: checkpoint.virtual_time.ticks / crucible::SIM_TICKS_PER_INSTRUCTION,
         },
         console_observation_boundary: checkpoint.virtual_time,
         pending_preemption: None,

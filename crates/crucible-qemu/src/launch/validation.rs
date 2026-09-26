@@ -45,7 +45,7 @@ pub enum LaunchProfileError {
     #[error("launch profile requires at least one vCPU")]
     SmpVcpuCountZero,
     /// The round-robin vCPU switch quantum was zero.
-    #[error("RR switch quantum must be a non-zero node-icount value")]
+    #[error("RR switch quantum must be a non-zero retired-instruction count")]
     RrSwitchQuantumZero,
     /// The round-robin vCPU switch quantum exceeded the patched QEMU limit.
     #[error("RR switch quantum {quantum} exceeds maximum {MAX_RR_SWITCH_QUANTUM}")]
