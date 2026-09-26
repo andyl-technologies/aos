@@ -4,7 +4,8 @@
 //! is deliberately supplied by an internal caller: no deployment credential,
 //! Host audience, effect handoff, or AOSRBM01 publisher consumes it yet.
 //! Cold verification replays the complete runtime-authority namespace and
-//! requires the original journal sequence and exact current head.
+//! requires the original journal sequence and exact current head at the fixed
+//! Controller root.
 //!
 //! ```text
 //! AOSRCR01 || version:u16be=1 || reserved[6]=0
@@ -15,6 +16,10 @@
 //! || binding_revision:u64be || binding_digest[32]
 //! || current_head_sha256[32] || signature[64]
 //! ```
+
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
 use aos_sandbox_core::SandboxId;
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
@@ -31,6 +36,14 @@ const VERSION: u16 = 1;
 const SIGNED_BYTES: usize = 208;
 const RECEIPT_BYTES: usize = SIGNED_BYTES + 64;
 const SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.controller-runtime-currentness.v1\0";
+const CONTROLLER_ROOT: &str = "/var/lib/aos/sandboxd";
+const CONTROLLER_JOURNAL: &str = "controller.journal";
+
+enum ControllerRoot {
+    Production,
+    #[cfg(test)]
+    Test(PathBuf),
+}
 
 /// Reports a malformed, stale, or unauthenticated closed Controller receipt.
 #[derive(Debug, thiserror::Error)]
@@ -69,11 +82,50 @@ impl ControllerRuntimeCurrentnessReceiptV1 {
         signer_generation: u64,
         signer: &SigningKey,
     ) -> Result<Self, ControllerRuntimeCurrentnessReceiptErrorV1> {
+        Self::issue_at_root(
+            journal,
+            sandbox,
+            signer_generation,
+            signer,
+            &ControllerRoot::Production,
+        )
+    }
+
+    /// Signs from a private test-owned root using the same fixed journal name.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a replaced test root or journal and the production method's
+    /// invalid currentness and signing inputs.
+    #[cfg(test)]
+    pub(crate) fn issue_at_uid_for_test(
+        journal: &mut Journal,
+        root: &Path,
+        sandbox: SandboxId,
+        signer_generation: u64,
+        signer: &SigningKey,
+    ) -> Result<Self, ControllerRuntimeCurrentnessReceiptErrorV1> {
+        Self::issue_at_root(
+            journal,
+            sandbox,
+            signer_generation,
+            signer,
+            &ControllerRoot::Test(root.to_path_buf()),
+        )
+    }
+
+    fn issue_at_root(
+        journal: &mut Journal,
+        sandbox: SandboxId,
+        signer_generation: u64,
+        signer: &SigningKey,
+        root: &ControllerRoot,
+    ) -> Result<Self, ControllerRuntimeCurrentnessReceiptErrorV1> {
         if signer_generation == 0 {
             return Err(ControllerRuntimeCurrentnessReceiptErrorV1::Malformed);
         }
 
-        let signed = current_cut(journal, sandbox, signer_generation)?;
+        let signed = current_cut(journal, sandbox, signer_generation, root)?;
         let mut message = Vec::with_capacity(SIGNATURE_DOMAIN.len() + SIGNED_BYTES);
         message.extend_from_slice(SIGNATURE_DOMAIN);
         message.extend_from_slice(&signed);
@@ -81,6 +133,7 @@ impl ControllerRuntimeCurrentnessReceiptV1 {
         let mut bytes = [0; RECEIPT_BYTES];
         bytes[..SIGNED_BYTES].copy_from_slice(&signed);
         bytes[SIGNED_BYTES..].copy_from_slice(&signer.sign(&message).to_bytes());
+        validate_root(journal, root)?;
         Ok(Self { bytes })
     }
 
@@ -121,6 +174,42 @@ impl ControllerRuntimeCurrentnessReceiptV1 {
         pinned_generation: u64,
         pinned_verifier: &VerifyingKey,
     ) -> Result<(), ControllerRuntimeCurrentnessReceiptErrorV1> {
+        self.verify_replayed_at_root(
+            journal,
+            pinned_generation,
+            pinned_verifier,
+            &ControllerRoot::Production,
+        )
+    }
+
+    /// Replays a receipt against one private test-owned Controller root.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed test custody or any signature or current-head mismatch.
+    #[cfg(test)]
+    pub(crate) fn verify_replayed_at_uid_for_test(
+        &self,
+        journal: &mut Journal,
+        root: &Path,
+        pinned_generation: u64,
+        pinned_verifier: &VerifyingKey,
+    ) -> Result<(), ControllerRuntimeCurrentnessReceiptErrorV1> {
+        self.verify_replayed_at_root(
+            journal,
+            pinned_generation,
+            pinned_verifier,
+            &ControllerRoot::Test(root.to_path_buf()),
+        )
+    }
+
+    fn verify_replayed_at_root(
+        &self,
+        journal: &mut Journal,
+        pinned_generation: u64,
+        pinned_verifier: &VerifyingKey,
+        root: &ControllerRoot,
+    ) -> Result<(), ControllerRuntimeCurrentnessReceiptErrorV1> {
         if pinned_generation == 0 || read_u64(&self.bytes, 16) != pinned_generation {
             return Err(ControllerRuntimeCurrentnessReceiptErrorV1::Stale);
         }
@@ -142,10 +231,12 @@ impl ControllerRuntimeCurrentnessReceiptV1 {
             journal,
             SandboxId::from_bytes(sandbox_bytes),
             pinned_generation,
+            root,
         )?;
         if self.bytes[..SIGNED_BYTES] != current {
             return Err(ControllerRuntimeCurrentnessReceiptErrorV1::Stale);
         }
+        validate_root(journal, root)?;
         Ok(())
     }
 
@@ -159,7 +250,9 @@ fn current_cut(
     journal: &mut Journal,
     sandbox: SandboxId,
     signer_generation: u64,
+    root: &ControllerRoot,
 ) -> Result<[u8; SIGNED_BYTES], ControllerRuntimeCurrentnessReceiptErrorV1> {
+    validate_root(journal, root)?;
     let binding = RuntimeAuthorityStore::load(journal, RuntimeAuthorityLimits::default())?
         .current(sandbox)?
         .filter(|binding| binding.state() == RuntimeAuthorityStateV1::Bound)
@@ -167,15 +260,14 @@ fn current_cut(
     let manifest = binding.manifest().manifest();
 
     // Controller shares one protected writer across namespaces. Its exclusive
-    // borrow and retained-name check fence this structural read; the sequence
-    // is deliberately diagnostic and grants no effect authority.
-    journal.validate_held_protected_names()?;
+    // borrow and fixed-root check fence this structural read; the sequence is
+    // deliberately diagnostic and grants no effect authority.
     let sequence = journal.snapshot_sequence();
     let head = journal
         .get(RecordNamespace::RuntimeAuthority, &current_key(sandbox))
         .ok_or(ControllerRuntimeCurrentnessReceiptErrorV1::Stale)?;
     let head_digest = Sha256::digest(head);
-    journal.validate_held_protected_names()?;
+    validate_root(journal, root)?;
     if journal.snapshot_sequence() != sequence {
         return Err(ControllerRuntimeCurrentnessReceiptErrorV1::Stale);
     }
@@ -199,6 +291,30 @@ fn current_cut(
     signed
         .try_into()
         .map_err(|_| ControllerRuntimeCurrentnessReceiptErrorV1::Malformed)
+}
+
+fn validate_root(
+    journal: &Journal,
+    root: &ControllerRoot,
+) -> Result<(), ControllerRuntimeCurrentnessReceiptErrorV1> {
+    let owner_uid = journal.protected_owner_uid()?;
+    match root {
+        ControllerRoot::Production => journal.require_protected_named_location(
+            Path::new(CONTROLLER_ROOT),
+            CONTROLLER_JOURNAL,
+            owner_uid,
+            crate::controller_service::journal::production_journal_limits(),
+        )?,
+        #[cfg(test)]
+        ControllerRoot::Test(directory) => journal
+            .require_protected_named_location_at_uid_for_test(
+                directory,
+                CONTROLLER_JOURNAL,
+                owner_uid,
+                crate::JournalLimits::default(),
+            )?,
+    }
+    Ok(())
 }
 
 fn read_u64(bytes: &[u8; RECEIPT_BYTES], offset: usize) -> u64 {
