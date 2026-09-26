@@ -66,7 +66,19 @@ def run_suite(root):
     subprocess.run([cmake, "--build", str(build)], env=env, check=True,
                    capture_output=True, timeout=120)
     warm = stats()
-    assert warm.get("hit", 0) - cold.get("hit", 0) >= 2, (cold, warm)
+    if warm.get("hit", 0) - cold.get("hit", 0) < 2:
+        # A miss here is safe but defeats the launcher's purpose. Include
+        # provenance so a rare miss can be diagnosed from the Nix build log.
+        application_events = []
+        for path in sorted((root / "state/events").glob("*.json")):
+            event = json.loads(path.read_text())
+            if any(arg.endswith(("/source.c", "/source.cc"))
+                   for arg in event["command"]):
+                application_events.append({key: event[key] for key in
+                                           ("timestamp_ms", "outcome", "reason", "action",
+                                            "changes", "command")})
+        application_events.sort(key=lambda event: event["timestamp_ms"])
+        raise AssertionError((cold, warm, application_events))
     assert object_bytes() == original
 
     header.write_text("#define VALUE 73\n")
