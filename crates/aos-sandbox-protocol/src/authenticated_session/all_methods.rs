@@ -27,9 +27,12 @@ use crate::mount_catalog::{
     decode_mount_catalog_preparation, decode_mount_catalog_preparation_response,
 };
 use crate::mount_scope::{decode_mount_scope_request, decode_mount_scope_response};
+use crate::mount_scope_identity::decode_mount_scope_identity_response_v1;
 use crate::mount_source_acquisition::decode_mount_source_acquisition_inventory_response_with_maximum;
 use crate::payload_scope::{decode_payload_scope_request, decode_payload_scope_response};
-use crate::semantics::mount_scope::canonical_mount_scope_semantics_v1;
+use crate::semantics::mount_scope::{
+    canonical_mount_scope_identity_semantics_v1, canonical_mount_scope_semantics_v1,
+};
 use crate::semantics::payload_scope::canonical_payload_scope_semantics_v1;
 use crate::semantics::{
     CanonicalNetworkSemanticsV1, CanonicalStorageGuestRootSemanticsV1,
@@ -236,6 +239,8 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     HostObservePayloadScope,
     /// Host mount-scope acquisition.
     HostObserveMountScope,
+    /// Host namespace-identity readback with its own signed purpose.
+    HostObserveMountScopeIdentity,
     /// Storage-only Host physical consumer-cgroup readback.
     HostObserveConsumerCgroup,
     /// Mount catalog preparation.
@@ -378,6 +383,9 @@ pub const fn authenticated_broker_method_adapter_v1(
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE => {
             AuthenticatedBrokerMethodSemanticsV1::HostObserveMountScope
         }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
+            AuthenticatedBrokerMethodSemanticsV1::HostObserveMountScopeIdentity
+        }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => {
             AuthenticatedBrokerMethodSemanticsV1::HostObserveConsumerCgroup
         }
@@ -468,10 +476,9 @@ pub const fn authenticated_broker_method_adapter_v1(
         BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => {
             AuthenticatedBrokerMethodSemanticsV1::HostQueryNoApplySettlement
         }
-        // Neither provisional method admits traffic until its independent
-        // issuer, producer, and cross-owner proof are implemented together.
+        // These provisional mutations remain closed until their independent
+        // issuers and cross-owner currentness joins exist.
         BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
-        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
         | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT => return None,
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
@@ -1242,6 +1249,7 @@ enum RequestOutcomeContextV1 {
     HostQuery(crate::ValidatedQueryRuntimeEffectRequestV1),
     PayloadScope(crate::payload_scope::ValidatedPayloadScopeRequest),
     MountScope(crate::mount_scope::ValidatedMountScopeRequest),
+    MountScopeIdentity(crate::mount_scope::ValidatedMountScopeRequest),
     HostConsumerCgroup(crate::host_consumer_cgroup::ValidatedConsumerCgroupRequestV1),
     MountAcquireSource(crate::ValidatedAcquireMountSourceRequest),
     MountReleaseSource(crate::ValidatedReleaseMountSourceAcquisitionRequest),
@@ -1368,6 +1376,16 @@ fn validate_request_semantics(
                 .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?;
             (
                 AuthenticatedBrokerMethodSemanticsV1::HostObserveMountScope,
+                *request.header(),
+                Some(*semantics.commitment().digest().as_bytes()),
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
+            let request = decode_mount_scope_request(body, peer, policy, now)?;
+            let semantics = canonical_mount_scope_identity_semantics_v1(&request)
+                .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostObserveMountScopeIdentity,
                 *request.header(),
                 Some(*semantics.commitment().digest().as_bytes()),
             )
@@ -1658,7 +1676,6 @@ fn validate_request_semantics(
             )
         }
         BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
-        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
         | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
@@ -1696,6 +1713,11 @@ fn validate_request_semantics(
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE => {
             RequestOutcomeContextV1::MountScope(decode_mount_scope_request(
+                body, peer, policy, now,
+            )?)
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
+            RequestOutcomeContextV1::MountScopeIdentity(decode_mount_scope_request(
                 body, peer, policy, now,
             )?)
         }
@@ -1972,6 +1994,13 @@ fn validate_success_semantics(
             };
             decode_mount_scope_response(body, original)?;
         }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
+            let RequestOutcomeContextV1::MountScopeIdentity(original) = &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            decode_mount_scope_identity_response_v1(body, original)?;
+        }
         BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => {
             let RequestOutcomeContextV1::MountPrepareCatalog(original) = &request.outcome_context
             else {
@@ -2196,7 +2225,6 @@ fn validate_success_semantics(
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
         BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
-        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
         | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);

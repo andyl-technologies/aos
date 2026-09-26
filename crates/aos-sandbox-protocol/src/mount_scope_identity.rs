@@ -274,6 +274,8 @@ mod tests {
         assert_eq!(decoded.user_namespace().device(), 10);
         assert_eq!(decoded.user_namespace().inode(), 11);
         assert!(decode_mount_scope_response(&bytes, &request).is_err());
+        let legacy = encode_mount_scope_response(&request, b"init.scope").unwrap();
+        assert!(decode_mount_scope_identity_response_v1(&legacy, &request).is_err());
     }
 
     #[test]

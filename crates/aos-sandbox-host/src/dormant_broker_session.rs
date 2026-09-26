@@ -860,6 +860,18 @@ where
                         .await?
                         .into_parts()
                 }
+                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
+                    let request = decode_mount_scope_request(request_body, peer, policy, now)?;
+                    if request.header().request_id() != &request_id
+                        || request.header().protocol_version() != protocol_version
+                    {
+                        return Err(DormantHostBrokerCallErrorV1::StaleKernel);
+                    }
+                    self.broker
+                        .prepare_mount_scope_identity(artifacts, &request, request_body, &mut clock)
+                        .await?
+                        .into_parts()
+                }
                 _ => return Err(DormantHostBrokerCallErrorV1::StaleKernel),
             };
             let response_body_digest: [u8; 32] = Sha256::digest(&response).into();
@@ -1110,6 +1122,21 @@ where
                     }
                     self.broker
                         .reopen_mount_scope_for_terminal_replay(&request, &mut clock)
+                        .await?
+                }
+                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
+                    let request = decode_mount_scope_request_for_protected_replay(
+                        request_body,
+                        peer,
+                        policy,
+                    )?;
+                    if request.header().request_id() != &request_id
+                        || request.header().protocol_version() != protocol_version
+                    {
+                        return Err(DormantHostBrokerCallErrorV1::StaleKernel);
+                    }
+                    self.broker
+                        .reopen_mount_scope_identity_for_terminal_replay(&request, &mut clock)
                         .await?
                 }
                 _ => return Err(DormantHostBrokerCallErrorV1::StaleKernel),

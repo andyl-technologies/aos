@@ -79,6 +79,7 @@ mod handoff;
 mod handshake;
 mod host_consumer_cgroup_transfer;
 mod host_execution_handoff;
+mod host_mount_scope_identity_transfer;
 mod lifecycle_domain_effect;
 mod lifecycle_host_inventory;
 pub mod manifest;
@@ -157,13 +158,13 @@ pub use dormant_handshake::{
     DormantCommittedBrokerDescriptorResponseV1, DormantControllerClientHandshakeProgressV1,
     DormantControllerClientHandshakeV1, DormantHostCatalogPublicationRecoveryProgressV1,
     DormantHostCatalogPublicationRetryV1, DormantHostCatalogPublicationUnknownV1,
-    DormantHostConsumerCgroupResponseProgressV1, DormantHostScopeTerminalFinalizationV1,
-    DormantMountSourceBrokerRecoveryProgressV1, DormantMountSourceBrokerRecoveryV1,
-    DormantOutstandingBrokerRequestV1, DormantPreparedBrokerDescriptorRequestV1,
-    DormantPreparedBrokerRequestV1, DormantReadyBrokerDescriptorTerminalReplayV1,
-    DormantReceivedBrokerDescriptorRequestV1, DormantReceivedBrokerRequestV1,
-    DormantUnconfirmedBrokerDescriptorRequestV1, DormantUnconfirmedBrokerRequestV1,
-    DormantUnconfirmedReceivedBrokerRequestV1,
+    DormantHostConsumerCgroupResponseProgressV1, DormantHostMountScopeIdentityResponseProgressV1,
+    DormantHostScopeTerminalFinalizationV1, DormantMountSourceBrokerRecoveryProgressV1,
+    DormantMountSourceBrokerRecoveryV1, DormantOutstandingBrokerRequestV1,
+    DormantPreparedBrokerDescriptorRequestV1, DormantPreparedBrokerRequestV1,
+    DormantReadyBrokerDescriptorTerminalReplayV1, DormantReceivedBrokerDescriptorRequestV1,
+    DormantReceivedBrokerRequestV1, DormantUnconfirmedBrokerDescriptorRequestV1,
+    DormantUnconfirmedBrokerRequestV1, DormantUnconfirmedReceivedBrokerRequestV1,
 };
 pub use endpoint::{
     BrokerSessionProcessExecutionIdV1, FreshBrokerHelloNonceV1, FreshClientHelloNonceV1,
@@ -186,6 +187,10 @@ pub use host_consumer_cgroup_transfer::{
     ProtectedHostStorageConsumerJoinErrorV1, ProtectedHostStorageConsumerJoinV1,
 };
 pub use host_execution_handoff::HostExecutionHandoffErrorV1;
+pub use host_mount_scope_identity_transfer::{
+    ProtectedHostMountScopeCurrentV1, ProtectedHostMountScopeIdentityTransferV1,
+    ProtectedHostMountScopeIdentityV1,
+};
 pub use lifecycle_domain_effect::{
     DormantLifecycleDomainEffectOwnerV1, DormantLifecycleDomainEffectProgressV1,
     DormantLifecycleDomainEffectRecoveryV1,

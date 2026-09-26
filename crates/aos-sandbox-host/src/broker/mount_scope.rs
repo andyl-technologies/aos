@@ -60,13 +60,12 @@ impl<C: HostCatalog, S: HostStateStore, W: HostWorker + Sync> HostBroker<C, S, W
                 clock().map_err(|_| BrokerAdmissionError::FenceRejected)
             })?;
 
+        self.recover_completed_runtime_scope(identity).await?;
         self.refresh_payload_scope(identity).await?;
         let pins = self
             .payload_pin(&identity)
             .ok_or(HostError::UnknownHandle)?;
-        if &pins.scope_handle != request.payload_scope_handle() {
-            return Err(HostError::UnknownHandle);
-        }
+        require_exact_scope_handle(request.payload_scope_handle(), &pins.scope_handle)?;
         pins.recheck_kernel()?;
 
         let mount = pins.payload.mount().identity();
@@ -147,9 +146,7 @@ impl<C: HostCatalog, S: HostStateStore, W: HostWorker + Sync> HostBroker<C, S, W
 
         // Refresh may discover a replacement after reboot. It must never make
         // an old signed exact-scope query authorize that new payload.
-        if &pins.scope_handle != request.payload_scope_handle() {
-            return Err(HostError::UnknownHandle);
-        }
+        require_exact_scope_handle(request.payload_scope_handle(), &pins.scope_handle)?;
         pins.recheck_kernel()?;
 
         let body =
@@ -189,6 +186,35 @@ impl<C: HostCatalog, S: HostStateStore, W: HostWorker + Sync> HostBroker<C, S, W
     where
         T: FnMut() -> Result<RawPairedClockSample> + Send,
     {
+        self.reopen_mount_scope_terminal(request, clock, false)
+            .await
+    }
+
+    /// Reopens the exact method-45 body and FDs without minting a new grant.
+    ///
+    /// Cold recovery can remint the volatile scope handle. An old terminal
+    /// replay then fails closed; durable same-handle lineage is a separate
+    /// prerequisite for replay across a Host process restart.
+    pub(crate) async fn reopen_mount_scope_identity_for_terminal_replay<T>(
+        &mut self,
+        request: &ValidatedMountScopeRequest,
+        clock: &mut T,
+    ) -> Result<(Vec<u8>, Vec<OwnedFd>)>
+    where
+        T: FnMut() -> Result<RawPairedClockSample> + Send,
+    {
+        self.reopen_mount_scope_terminal(request, clock, true).await
+    }
+
+    async fn reopen_mount_scope_terminal<T>(
+        &mut self,
+        request: &ValidatedMountScopeRequest,
+        clock: &mut T,
+        include_identity: bool,
+    ) -> Result<(Vec<u8>, Vec<OwnedFd>)>
+    where
+        T: FnMut() -> Result<RawPairedClockSample> + Send,
+    {
         let fence = request.fence();
         let identity = self.checked_scope_runtime(fence)?;
         let expected_assignment = fence
@@ -201,18 +227,31 @@ impl<C: HostCatalog, S: HostStateStore, W: HostWorker + Sync> HostBroker<C, S, W
                 "mount scope replay does not match installed authority",
             ));
         }
-        let _before_readback = clock()?;
+        let observed = clock()?;
 
+        if include_identity {
+            self.recover_completed_runtime_scope(identity).await?;
+        }
         self.refresh_payload_scope(identity).await?;
         let pins = self
             .payload_pin(&identity)
             .ok_or(HostError::UnknownHandle)?;
-        if &pins.scope_handle != request.payload_scope_handle() {
-            return Err(HostError::UnknownHandle);
-        }
+        require_exact_scope_handle(request.payload_scope_handle(), &pins.scope_handle)?;
         pins.recheck_kernel()?;
-        let body =
-            encode_mount_scope_response(request, pins.payload.relative_cgroup_hint().as_bytes())?;
+        let body = if include_identity {
+            let mount = pins.payload.mount().identity();
+            let user = pins.payload.user().identity();
+            encode_mount_scope_identity_response_v1(
+                request,
+                pins.payload.relative_cgroup_hint().as_bytes(),
+                &observed.host_boot_id(),
+                &pins.invocation_id,
+                HostNamespaceIdentityV1::new(mount.device, mount.inode)?,
+                HostNamespaceIdentityV1::new(user.device, user.inode)?,
+            )?
+        } else {
+            encode_mount_scope_response(request, pins.payload.relative_cgroup_hint().as_bytes())?
+        };
         ensure_response_bound(&body, request.header().maximum_response_bytes())?;
         let descriptors = [
             duplicate(pins.payload.pidfd().as_fd())?,
@@ -221,6 +260,17 @@ impl<C: HostCatalog, S: HostStateStore, W: HostWorker + Sync> HostBroker<C, S, W
             duplicate(pins.payload.mount().as_fd())?,
             duplicate(pins.payload.user().as_fd())?,
         ];
+        if include_identity {
+            verify_identity_readback(
+                request,
+                &body,
+                &observed.host_boot_id(),
+                &pins.invocation_id,
+                &pins.scope_handle,
+                descriptors[3].as_fd(),
+                descriptors[4].as_fd(),
+            )?;
+        }
         pins.recheck_kernel()?;
         let _after_readback = clock()?;
         let current_after = self.authority.open_fence(fence.sandbox_id(), &prior)?;
@@ -242,6 +292,15 @@ fn duplicate(descriptor: BorrowedFd<'_>) -> Result<OwnedFd> {
             operation: "clone retained mount-scope descriptor",
             source,
         })
+}
+
+fn require_exact_scope_handle(requested: &[u8; 32], retained: &[u8; 32]) -> Result<()> {
+    // A cold recovery may remint a volatile scope handle. It must not turn an
+    // old signed request or terminal replay into authority for those new pins.
+    if requested != retained {
+        return Err(HostError::UnknownHandle);
+    }
+    Ok(())
 }
 
 fn verify_identity_readback(
@@ -419,5 +478,17 @@ mod tests {
             mutate(&mut changed);
             assert!(check(&changed.encode_to_vec(), mount.as_fd(), user.as_fd()).is_err());
         }
+    }
+
+    #[test]
+    fn reminted_scope_handle_cannot_reopen_an_old_signed_query() {
+        let old_signed_handle = [5; 32];
+        let recovered_new_handle = [6; 32];
+
+        assert!(require_exact_scope_handle(&old_signed_handle, &old_signed_handle).is_ok());
+        assert!(matches!(
+            require_exact_scope_handle(&old_signed_handle, &recovered_new_handle),
+            Err(HostError::UnknownHandle)
+        ));
     }
 }

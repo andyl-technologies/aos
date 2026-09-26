@@ -649,6 +649,7 @@ pub(crate) fn validate_decoded_request_envelope(
         method,
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
     ) && !descriptors.is_empty())
         || descriptors
             .iter()
@@ -1613,21 +1614,36 @@ fn encode_response_envelope(
     };
     let bytes = envelope.encode_to_vec();
     let authenticated_cleared_budget = minimum_bytes < MINIMUM_RESPONSE_BYTES;
+    if request.method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+        && !authenticated_cleared_budget
+    {
+        return Err(ProtocolValidationError::MethodMismatch);
+    }
     if authenticated_cleared_budget
         && bytes.len() > usize::try_from(maximum_bytes).unwrap_or(usize::MAX)
     {
         return Err(ProtocolValidationError::ResponseTooLarge);
     }
     let semantic_response_bound = maximum_bytes.max(MINIMUM_RESPONSE_BYTES);
-    decode_response_envelope(
-        &bytes,
-        request_id,
-        request.method,
-        &request.descriptors,
-        response_descriptor_roles.len(),
-        semantic_response_bound,
-        semantic_response_bound,
-    )?;
+    if request.method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 {
+        validate_decoded_response_envelope(
+            envelope,
+            request_id,
+            request.method,
+            &request.descriptors,
+            response_descriptor_roles.len(),
+        )?;
+    } else {
+        decode_response_envelope(
+            &bytes,
+            request_id,
+            request.method,
+            &request.descriptors,
+            response_descriptor_roles.len(),
+            semantic_response_bound,
+            semantic_response_bound,
+        )?;
+    }
     if bytes.len() > usize::try_from(maximum_bytes).unwrap_or(usize::MAX) {
         return Err(ProtocolValidationError::ResponseTooLarge);
     }
@@ -1685,6 +1701,9 @@ pub fn decode_response_envelope(
         return Err(ProtocolValidationError::UnknownFields);
     }
     reject_legacy_authentication_field(&envelope.signed_session_outcome)?;
+    if expected_method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 {
+        return Err(ProtocolValidationError::MethodMismatch);
+    }
     validate_decoded_response_envelope(
         envelope,
         expected_request_id,
@@ -1727,11 +1746,16 @@ pub(crate) fn validate_decoded_response_envelope(
         expected_method,
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
     ) {
         let expected_roles: &[BrokerDescriptorRole] = if error.is_some() {
             &[]
-        } else if expected_method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE {
+        } else if matches!(
+            expected_method,
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+        ) {
             &crate::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES
         } else if expected_method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP {
             &crate::host_consumer_cgroup::CONSUMER_CGROUP_DESCRIPTOR_ROLES_V1
@@ -2286,7 +2310,7 @@ mod tests {
             crate::authenticated_session::all_methods::authenticated_broker_method_adapter_v1(
                 method
             )
-            .is_none()
+            .is_some()
         );
 
         let envelope = BrokerRequestEnvelope {
@@ -2297,6 +2321,56 @@ mod tests {
         assert_eq!(
             decode_request_envelope(&envelope.encode_to_vec(), ProtocolId::HostBroker, 0),
             Err(ProtocolValidationError::MethodMismatch)
+        );
+    }
+
+    #[test]
+    fn authenticated_identity_response_has_exact_five_roles_but_no_legacy_decoder() {
+        let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1;
+        let roles = crate::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES;
+        let request = ValidatedBrokerRequestEnvelope {
+            method,
+            body: vec![1],
+            descriptors: vec![],
+            authorization: None,
+        };
+        let packet = encode_authenticated_success_response_envelope(
+            &[1; 16],
+            &request,
+            vec![1],
+            &roles,
+            &[],
+            0,
+            8192,
+        )
+        .unwrap();
+        assert!(decode_response_envelope(&packet, &[1; 16], method, &[], 5, 8192, 8192).is_err());
+
+        let response = BrokerResponseEnvelope::decode_from_slice(&packet).unwrap();
+        assert!(
+            validate_decoded_response_envelope(response.clone(), &[1; 16], method, &[], 5).is_ok()
+        );
+        for wrong_roles in [
+            Vec::new(),
+            roles[..4].to_vec(),
+            vec![roles[1], roles[0], roles[2], roles[3], roles[4]],
+        ] {
+            let mut changed = response.clone();
+            changed.descriptors = descriptor_entries(&wrong_roles).unwrap();
+            assert!(
+                validate_decoded_response_envelope(
+                    changed,
+                    &[1; 16],
+                    method,
+                    &[],
+                    wrong_roles.len(),
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            encode_success_response_envelope(&[1; 16], &request, vec![1], &roles, &[], 8192)
+                .is_err()
         );
     }
 

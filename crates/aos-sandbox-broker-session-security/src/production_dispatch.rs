@@ -590,7 +590,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 .map_err(ProductionHostBrokerDispatchFailureV1::Ordinary)
             }
             BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
-            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE => {
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
                 let Some(artifacts) = request.authorization_artifacts().cloned() else {
                     return Err(ProductionHostBrokerDispatchFailureV1::Ordinary(
                         before_effect_currentness(request),
