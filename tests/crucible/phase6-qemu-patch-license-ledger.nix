@@ -19,6 +19,7 @@
     "LGPL-2.1-or-later"
     "MIT"
     "MIT OR Apache-2.0"
+    "BSD-3-Clause"
   ];
 
   # Walks the atomic patch's diff headers. A `new file mode` line announces that the

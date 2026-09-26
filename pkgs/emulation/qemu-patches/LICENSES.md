@@ -54,6 +54,11 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-hot-fork-child.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-idle-wait.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-mos6522-clock.c` | MIT | Explicit SPDX identifier |
+| `net/slirp-time.h` | MIT | Explicit SPDX identifier |
+| `target/xtensa/timer.h` | BSD-3-Clause | Explicit SPDX identifier |
+| `tests/unit/test-crucible-i3c-timer.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-slirp-time.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-xtensa-timer.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `util/crucible-hot-fork-child.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `system/crucible-hot-fork-plugin-child.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/system/crucible-hot-fork-coordinator.h` | GPL-2.0-or-later | Explicit SPDX identifier |

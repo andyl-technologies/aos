@@ -2874,10 +2874,14 @@ in
                   ("virtio fingerprint omits host avail-ring caches",
                    virtio_projection_queue,
                    r"shadow_avail_(?:idx|wrap_counter)", 0),
-                  ("virtio providers advertise the current core layout",
+                  ("virtio providers retain the v3 core layout",
                    virtio_providers,
-                   r'\.schema = "crucible\.qemu\.virtio-(?:net|blk|9p|console|crucible-accelerator)\.v3",\s*'
-                   r"\.version = 3,", 5),
+                   r'\.schema = "crucible\.qemu\.virtio-(?:blk|9p|console|crucible-accelerator)\.v3",\s*'
+                   r"\.version = 3,", 4),
+                  ("virtio-net advertises the RSC-aware provider layout",
+                   virtio_providers,
+                   r'\.schema = "crucible\.qemu\.virtio-net\.v5",\s*'
+                   r"\.version = 5,", 1),
                   ("virtio RNG fingerprints exact picosecond timer expiry",
                    virtio_providers,
                    r'\.schema = "crucible\.qemu\.virtio-rng\.v5",\s*'
