@@ -37,7 +37,6 @@
 //! ```
 //!
 //! ```text
-//! AOSRBV01 || manifest_fsverity_sha256[32]
 //! AOSRBM01 || peer[296] || currentness[176] || capabilities[52]
 //! || host_evidence[152] || plan_catalog[216] || manifest_digest[32]
 //! ```
@@ -81,11 +80,6 @@ use aos_sandbox_protocol::host_storage_output_readback::ValidatedHostStorageOutp
 use ed25519_dalek::{Signature, VerifyingKey};
 use rand::{TryRngCore as _, rngs::OsRng};
 use sha2::{Digest as _, Sha256};
-
-#[cfg(target_os = "linux")]
-use aos_sandbox_linux::immutable_file::{FsVerityDigest, FsVerityMapping, FsVerityPublicationRoot};
-#[cfg(target_os = "linux")]
-use aos_sandbox_linux::path::BeneathRoot;
 
 use super::agent_checkpoint::{AgentCheckpointCandidateV1, AgentCheckpointError};
 use super::agent_reducer::{
@@ -133,6 +127,8 @@ use super::store::{
     ProtectedHostOutputReservationV1,
 };
 
+#[cfg(all(test, target_os = "linux"))]
+mod bootstrap_closed_tests;
 pub mod bootstrap_proof;
 pub(crate) mod host_currentness_fence;
 mod settlement_admission;
@@ -146,15 +142,7 @@ pub use host_currentness_fence::HostEffectFenceRecoveryClaimV1;
 use host_currentness_fence::{load_host_currentness_fence_v1, validate_host_currentness_pair_v1};
 
 const HOST_STATE_ROOT: &str = "/var/lib/aos/sandbox-host";
-#[cfg(target_os = "linux")]
-const BOOTSTRAP_ROOT: &str = "/var/lib/aos/sandbox-host/bootstrap";
-#[cfg(target_os = "linux")]
-const BOOTSTRAP_MANIFEST_NAME: &str = "runtime-owner.records";
-#[cfg(target_os = "linux")]
-const BOOTSTRAP_VERITY_NAME: &str = "runtime-owner.records.verity";
 const BOOTSTRAP_MANIFEST_MAGIC: &[u8; 8] = b"AOSRBM01";
-#[cfg(target_os = "linux")]
-const BOOTSTRAP_VERITY_MAGIC: &[u8; 8] = b"AOSRBV01";
 const PEER_JOURNAL_NAME: &str = "runtime-agent-peer.journal";
 const EXECUTION_JOURNAL_NAME: &str = "runtime-execution.journal";
 const AGENT_JOURNAL_NAME: &str = "runtime-agent-state.journal";
@@ -348,12 +336,6 @@ struct RuntimeOwnerPeerRecordsV1 {
     plan_catalog: Vec<u8>,
 }
 
-/// Private one-shot authority issued only by the fixed authenticated manifest.
-#[cfg(target_os = "linux")]
-struct FixedRuntimeBootstrapAuthorityV1 {
-    records: RuntimeOwnerPeerRecordsV1,
-}
-
 #[derive(Clone, Copy)]
 struct LifecycleHeadV1 {
     next_lifecycle_sequence: u64,
@@ -524,25 +506,21 @@ pub struct DormantRuntimeExecutionOwnerV1 {
 }
 
 impl DormantRuntimeExecutionOwnerV1 {
-    /// Bootstraps the empty fixed owner from its immutable authenticated manifest.
+    /// Rejects legacy fixed bootstrap until independent currentness is available.
     ///
-    /// This source-only entry point accepts no key, path, capability, plan, or
-    /// currentness scalar. The private one-shot authority is minted only after
-    /// protected-root and fs-verity validation of the fixed manifest, and it is
-    /// consumed by exactly one initial journal transaction.
+    /// The old manifest-sidecar path could not authenticate a Controller cut or
+    /// an externally monotonic deployment floor. The signed proof codec is
+    /// dormant; no production caller may write initial peer records from it
+    /// until a protected Controller currentness owner and journal replay join
+    /// are implemented.
     ///
     /// # Errors
     ///
-    /// Returns [`DormantRuntimeExecutionOwnerErrorV1`] when the manifest/root
-    /// is unavailable or unauthenticated, bootstrap was already consumed, or
-    /// exact atomic append recovery cannot classify the initial transaction.
+    /// Always returns
+    /// [`DormantRuntimeExecutionOwnerErrorV1::BootstrapProofRequired`].
     #[cfg(target_os = "linux")]
     pub fn bootstrap_fixed() -> Result<Self, DormantRuntimeExecutionOwnerErrorV1> {
-        let authority = open_fixed_runtime_bootstrap_authority()?;
-        let provisioner = DormantRuntimeExecutionProvisionerV1::open()?;
-        let transition = provisioner.provision_records(authority.records, false)?;
-        resolve_fixed_bootstrap_transition(transition)?;
-        Self::open()
+        Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapProofRequired)
     }
 
     /// Opens the fixed root-owned journals without activating runtime dispatch.
@@ -4868,118 +4846,6 @@ fn hash_parts(domain: &[u8], parts: &[&[u8]]) -> ObjectDigest {
     ObjectDigest::from_bytes(digest.finalize().into())
 }
 
-#[cfg(target_os = "linux")]
-fn open_fixed_runtime_bootstrap_authority()
--> Result<FixedRuntimeBootstrapAuthorityV1, DormantRuntimeExecutionOwnerErrorV1> {
-    let protected_root =
-        FsVerityPublicationRoot::from_protected_absolute_path(Path::new(BOOTSTRAP_ROOT))?;
-    let root = rustix::fs::open(
-        BOOTSTRAP_ROOT,
-        rustix::fs::OFlags::RDONLY
-            | rustix::fs::OFlags::DIRECTORY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )?;
-    let root_stat = rustix::fs::fstat(&root)?;
-    if root_stat.st_dev != protected_root.device() || root_stat.st_ino != protected_root.inode() {
-        return Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapManifest);
-    }
-    let root = BeneathRoot::from_owned(rustix::io::dup(&root)?)?;
-    let expected_verity = read_fixed_runtime_bootstrap_verity(&root)?;
-    let records = FsVerityMapping::run_beneath(
-        &root,
-        Path::new(BOOTSTRAP_MANIFEST_NAME),
-        FsVerityDigest::Sha256(expected_verity),
-        BOOTSTRAP_MANIFEST_BYTES as u64,
-        BOOTSTRAP_MANIFEST_BYTES as u64,
-        decode_fixed_runtime_bootstrap_manifest,
-    )??;
-    if read_fixed_runtime_bootstrap_verity(&root)? != expected_verity {
-        return Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapManifest);
-    }
-    protected_root.recheck_protected_path()?;
-    Ok(FixedRuntimeBootstrapAuthorityV1 { records })
-}
-
-#[cfg(target_os = "linux")]
-fn read_fixed_runtime_bootstrap_verity(
-    root: &BeneathRoot,
-) -> Result<[u8; 32], DormantRuntimeExecutionOwnerErrorV1> {
-    let verity = root
-        .open_regular(Path::new(BOOTSTRAP_VERITY_NAME))?
-        .read_bounded(40)?;
-    if verity.len() != 40 || &verity[..8] != BOOTSTRAP_VERITY_MAGIC {
-        return Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapManifest);
-    }
-    verity[8..]
-        .try_into()
-        .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::BootstrapManifest)
-}
-
-#[cfg(target_os = "linux")]
-fn decode_fixed_runtime_bootstrap_manifest(
-    bytes: &[u8],
-    _identity: aos_sandbox_linux::immutable_file::ImmutableFileIdentity<'_>,
-) -> Result<RuntimeOwnerPeerRecordsV1, DormantRuntimeExecutionOwnerErrorV1> {
-    if bytes.len() != BOOTSTRAP_MANIFEST_BYTES || &bytes[..8] != BOOTSTRAP_MANIFEST_MAGIC {
-        return Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapManifest);
-    }
-    let checksum_offset = BOOTSTRAP_MANIFEST_BYTES - 32;
-    if digest(&bytes[..checksum_offset]).as_bytes() != &bytes[checksum_offset..] {
-        return Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapManifest);
-    }
-
-    let mut cursor = 8;
-    let peer = bytes[cursor..cursor + PEER_BYTES].to_vec();
-    cursor += PEER_BYTES;
-    let currentness = bytes[cursor..cursor + CURRENTNESS_BYTES].to_vec();
-    cursor += CURRENTNESS_BYTES;
-    let capabilities = bytes[cursor..cursor + CAPABILITIES_BYTES].to_vec();
-    cursor += CAPABILITIES_BYTES;
-    let host_evidence = bytes[cursor..cursor + HOST_EVIDENCE_BYTES].to_vec();
-    cursor += HOST_EVIDENCE_BYTES;
-    let plan_catalog = bytes[cursor..cursor + PLAN_CATALOG_BYTES].to_vec();
-    cursor += PLAN_CATALOG_BYTES;
-    if cursor != checksum_offset {
-        return Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapManifest);
-    }
-
-    Ok(RuntimeOwnerPeerRecordsV1 {
-        peer,
-        currentness,
-        capabilities,
-        host_evidence,
-        plan_catalog,
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn resolve_fixed_bootstrap_transition(
-    transition: DormantRuntimeExecutionProvisioningTransitionV1,
-) -> Result<(), DormantRuntimeExecutionOwnerErrorV1> {
-    let recovery = match transition {
-        DormantRuntimeExecutionProvisioningTransitionV1::Committed(_) => return Ok(()),
-        DormantRuntimeExecutionProvisioningTransitionV1::RecoveryRequired(recovery) => recovery,
-    };
-    let retry = match recovery.recover()? {
-        DormantRuntimeExecutionProvisioningRecoveryOutcomeV1::Committed(_) => return Ok(()),
-        DormantRuntimeExecutionProvisioningRecoveryOutcomeV1::Absent(retry) => retry,
-    };
-    let provisioner = DormantRuntimeExecutionProvisionerV1::open()?;
-    let retried = provisioner.provision_records(retry.records, false)?;
-    let recovery = match retried {
-        DormantRuntimeExecutionProvisioningTransitionV1::Committed(_) => return Ok(()),
-        DormantRuntimeExecutionProvisioningTransitionV1::RecoveryRequired(recovery) => recovery,
-    };
-    match recovery.recover()? {
-        DormantRuntimeExecutionProvisioningRecoveryOutcomeV1::Committed(_) => Ok(()),
-        DormantRuntimeExecutionProvisioningRecoveryOutcomeV1::Absent(_) => {
-            Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapOutcomeUnknown)
-        }
-    }
-}
-
 fn digest(bytes: &[u8]) -> ObjectDigest {
     ObjectDigest::from_bytes(Sha256::digest(bytes).into())
 }
@@ -5025,6 +4891,9 @@ fn same_owner_and_accepted_output_v2(
 /// Reports fixed-root runtime execution ownership and replay failure.
 #[derive(Debug, thiserror::Error)]
 pub enum DormantRuntimeExecutionOwnerErrorV1 {
+    /// Independent signed proof and Controller currentness are not joined.
+    #[error("runtime execution bootstrap requires independent signed proof and currentness")]
+    BootstrapProofRequired,
     /// The fixed immutable bootstrap manifest/root is absent or unauthenticated.
     #[cfg(target_os = "linux")]
     #[error("runtime execution bootstrap manifest is invalid")]

@@ -18,16 +18,16 @@ pub struct DormantRuntimeBackendCompositionV1 {
 }
 
 impl DormantRuntimeBackendCompositionV1 {
-    /// Performs one dormant fixed-manifest bootstrap without activating Host.
+    /// Rejects dormant fixed bootstrap until signed deployment evidence is joined.
     ///
-    /// The protected manifest path, fs-verity measurement sidecar, keys,
-    /// capabilities, and runtime plan are fixed inside the owner boundary. No
-    /// caller-selected provisioning value or retry capability crosses this API.
+    /// The legacy manifest-sidecar bootstrap is closed because it cannot bind
+    /// the independent Controller cut or deployment rollback floor. This
+    /// wrapper retains the future entry point without activating Host.
     ///
     /// # Errors
     ///
-    /// Returns [`DormantRuntimeBackendCompositionErrorV1`] when protected
-    /// manifest authentication, one-shot provisioning, or exact recovery fails.
+    /// Always returns [`DormantRuntimeBackendCompositionErrorV1`] with the
+    /// owner's bootstrap-proof-required cause.
     #[cfg(target_os = "linux")]
     pub fn bootstrap_fixed() -> Result<Self, DormantRuntimeBackendCompositionErrorV1> {
         Ok(Self {
