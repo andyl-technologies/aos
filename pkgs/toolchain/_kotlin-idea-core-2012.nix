@@ -7,6 +7,8 @@
 }: let
   version = "2012-05-23";
   buildJdk = buildPackages.openjdk-8;
+  # The 2012 class reader understands JDK 7 bytecode.
+  probeJdk = buildPackages.openjdk-7;
   seed = import ./_kotlin-bootstrap-2011.nix {
     inherit mkDerivation fetchgit fetchurl buildPackages;
   };
@@ -64,6 +66,7 @@ in
 
     buildDeps = [
       buildJdk
+      probeJdk
       buildPackages.python3
       buildPackages.coreutils
       seed
@@ -151,6 +154,31 @@ in
           file_manager.write_text(
               source.replace(original, "if (vFile == null || vFile.isDirectory()) return null;")
           )
+
+          local_file = Path(
+              "idea/platform/core-impl/src/com/intellij/openapi/vfs/local/CoreLocalVirtualFile.java"
+          )
+          source = local_file.read_text()
+          # BOM detection requires mark/reset on local file streams.
+          original = "new FileInputStream(myIoFile), this"
+          if source.count(original) != 1:
+              raise SystemExit("IntelliJ local VFS stream patch did not match")
+          local_file.write_text(source.replace(
+              original, "new BufferedInputStream(new FileInputStream(myIoFile)), this"
+          ))
+
+          jar_system = Path(
+              "idea/platform/core-impl/src/com/intellij/openapi/vfs/impl/jar/CoreJarFileSystem.java"
+          )
+          source = jar_system.read_text()
+          for original, replacement in (
+              ("import com.intellij.openapi.vfs.StandardFileSystems;\n", ""),
+              ("StandardFileSystems.JAR_PROTOCOL", '"jar"'),
+          ):
+              if source.count(original) != 1:
+                  raise SystemExit("IntelliJ JAR VFS protocol patch did not match")
+              source = source.replace(original, replacement)
+          jar_system.write_text(source)
           PY
         '';
       }
@@ -226,10 +254,23 @@ in
           idea/platform/util-rt/src/com/intellij/util/ArrayUtilRt.java
           idea/java/java-psi-api/src/com/intellij/psi/augment/PsiAugmentProvider.java
           idea/platform/core-impl/src/com/intellij/psi/impl/file/impl/FileManagerImpl.java
+          idea/java/java-psi-impl/src/com/intellij/psi/impl/compiled/DefaultClsStubBuilderFactory.java
+          idea/platform/core-impl/src/com/intellij/openapi/vfs/local/CoreLocalVirtualFile.java
+          idea/platform/core-impl/src/com/intellij/openapi/vfs/impl/jar/CoreJarFileSystem.java
+          idea/platform/core-impl/src/com/intellij/openapi/vfs/impl/jar/CoreJarHandler.java
+          idea/platform/core-impl/src/com/intellij/openapi/vfs/impl/jar/CoreJarVirtualFile.java
+          idea/platform/core-impl/src/com/intellij/openapi/vfs/impl/jar/JarHandlerBase.java
+          idea/platform/util/src/com/intellij/openapi/util/io/FileAttributes.java
           FILES
 
           javac -encoding UTF-8 -source 7 -target 7 -proc:none \
             -cp "$classpath" -sourcepath "" -d classes/idea @java-files
+
+          mkdir -p classes/idea/messages
+          cp idea/java/java-psi-api/src/messages/JavaCoreBundle.properties \
+            classes/idea/messages/
+          cp idea/java/java-psi-impl/src/messages/JavaErrorMessages.properties \
+            classes/idea/messages/
         '';
       }
       {
@@ -240,7 +281,13 @@ in
           import com.intellij.core.JavaCoreProjectEnvironment;
           import com.intellij.openapi.Disposable;
           import com.intellij.openapi.util.Disposer;
+          import com.intellij.openapi.vfs.VirtualFile;
           import com.intellij.openapi.vfs.VirtualFileManager;
+          import com.intellij.psi.JavaPsiFacade;
+          import com.intellij.psi.PsiClass;
+          import com.intellij.psi.search.GlobalSearchScope;
+          import java.io.File;
+          import java.util.ResourceBundle;
 
           public final class IdeaCoreCheck {
               public static void main(String[] args) {
@@ -253,6 +300,21 @@ in
                   if (project.getProject() == null || VirtualFileManager.getInstance() == null) {
                       throw new AssertionError("Headless IntelliJ environment did not initialize");
                   }
+
+                  File runtime = new File("${probeJdk}/jre/lib/rt.jar");
+                  VirtualFile jar = application.getJarFileSystem().findFileByPath(runtime + "!/");
+                  if (jar == null || jar.findFileByRelativePath("java/lang/Object.class") == null) {
+                      throw new AssertionError("JDK classes are missing from the JAR VFS");
+                  }
+
+                  project.addToClasspath(runtime);
+                  PsiClass objectClass = JavaPsiFacade.getInstance(project.getProject()).findClass(
+                      "java.lang.Object", GlobalSearchScope.allScope(project.getProject()));
+                  if (objectClass == null) {
+                      throw new AssertionError("The headless PSI could not read a JDK class");
+                  }
+
+                  ResourceBundle.getBundle("messages.JavaCoreBundle");
 
                   Disposer.dispose(owner);
               }
