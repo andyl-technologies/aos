@@ -221,15 +221,15 @@ exploration_constant = "7/5"
 novelty_weight = "1/4"
 
 [[objectives]]
-name = "recovery_time_us"
+name = "recovery_time_us.elapsed_virtual_time"
 direction = "minimize"
 
 [[objectives]]
-name = "traffic_loss_packets"
+name = "traffic_loss_packets.modeled_drop_count"
 direction = "minimize"
 
 [[objectives]]
-name = "control_plane_cpu_us"
+name = "control_plane_cpu_us.router_a_instruction_work"
 direction = "minimize"
 
 [selection]

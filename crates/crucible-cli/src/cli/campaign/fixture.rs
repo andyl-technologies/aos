@@ -568,10 +568,12 @@ fn worked_network_policy(
         ChoicePolicy::new("fault.network", group, true)
             .map_err(|error| fixture_error(format!("build network fault group policy: {error}")))?,
     );
+    // The evaluator publishes each numeric aggregate under its full
+    // measurement and metric identity.
     let objectives = [
-        "recovery_time_us",
-        "traffic_loss_packets",
-        "control_plane_cpu_us",
+        "recovery_time_us.elapsed_virtual_time",
+        "traffic_loss_packets.modeled_drop_count",
+        "control_plane_cpu_us.router_a_instruction_work",
     ]
     .into_iter()
     .map(|measurement| {

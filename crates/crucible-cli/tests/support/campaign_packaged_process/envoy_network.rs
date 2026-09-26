@@ -992,17 +992,17 @@ kind = "exhaustive"
 maximum_cardinality = 32
 
 [[objectives]]
-measurement = "recovery_time_us"
+measurement = "recovery_time_us.elapsed_virtual_time"
 goal = "minimize"
 weight_micros = 1000000
 
 [[objectives]]
-measurement = "traffic_loss_packets"
+measurement = "traffic_loss_packets.modeled_drop_count"
 goal = "minimize"
 weight_micros = 1000000
 
 [[objectives]]
-measurement = "control_plane_cpu_us"
+measurement = "control_plane_cpu_us.router_a_instruction_work"
 goal = "minimize"
 weight_micros = 1000000
 
