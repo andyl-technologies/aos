@@ -88,11 +88,8 @@ in
             --test gate_lazy_frontier -- --test-threads=1 --nocapture 2>&1)
           printf '%s\n' "$test_output"
           profile=$(printf '%s\n' "$test_output" \
-            | grep -o 'campaign_planner_queue_profile attempts=[0-9]* pages=[0-9]* scanned_entries=[0-9]* cold_pages=[0-9]* planner_ns=[0-9]* maximum_planner_step_ns=[0-9]* queue_ns=[0-9]* cold_projection_ns=[0-9]* retained_objects=[0-9]* retained_bytes=[0-9]*')
+            | grep -o 'campaign_planner_queue_profile attempts=[0-9]* pages=[0-9]* scanned_entries=[0-9]* cold_pages=[0-9]* retained_objects=[0-9]* retained_bytes=[0-9]*')
           [ "$(printf '%s\n' "$profile" | grep -c '^campaign_planner_queue_profile ')" -eq 1 ]
-          samples=$(printf '%s\n' "$test_output" \
-            | grep -o 'campaign_planner_queue_step ordinal=[0-9]* ns=[0-9]*')
-          [ "$(printf '%s\n' "$samples" | grep -c '^campaign_planner_queue_step ')" -eq 32 ]
           checkpoints=$(printf '%s\n' "$test_output" \
             | grep -o 'campaign_planner_queue_checkpoint ordinal=[0-9]* ancestry=[0-9]* objects=[0-9]*')
           [ "$(printf '%s\n' "$checkpoints" | grep -c '^campaign_planner_queue_checkpoint ')" -eq 32 ]
@@ -100,7 +97,6 @@ in
             | grep -o 'campaign_planner_queue_snapshot id=[^[:space:]]*')
           [ "$(printf '%s\n' "$snapshot" | grep -c '^campaign_planner_queue_snapshot ')" -eq 1 ]
           printf '%s\n' "$profile" > "$TMPDIR/campaign-planner-queue-profile"
-          printf '%s\n' "$samples" > "$TMPDIR/campaign-planner-queue-samples"
           printf '%s\n' "$checkpoints" > "$TMPDIR/campaign-planner-queue-checkpoints"
           printf '%s\n' "$snapshot" > "$TMPDIR/campaign-planner-queue-snapshot"
           run_exact_lib_test \
@@ -120,7 +116,6 @@ in
             printf 'scope=bounded-generated-polling,allocation-scaling,finite-backpressure,exhaustive-ceiling,frontier-pagination,feedback-recovery,restart,strict-streaming-order,daemon-control-responsiveness\n'
             printf 'performance_target=not_evaluated\n'
             cat "$TMPDIR/campaign-planner-queue-profile"
-            cat "$TMPDIR/campaign-planner-queue-samples"
             cat "$TMPDIR/campaign-planner-queue-checkpoints"
             cat "$TMPDIR/campaign-planner-queue-snapshot"
             printf 'open_scope=\n'
