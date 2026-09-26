@@ -1,5 +1,6 @@
 ##! doxygen — Source documentation generator.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -14,6 +15,15 @@
     urls = ["https://github.com/doxygen/doxygen/releases/download/Release_1_18_0/doxygen-${version}.src.tar.gz"];
     hash = "0m6krlnqw731mr28cjnpm4iv5xy7km0rwaibbb4vwnvqlrqfvpm1";
   };
+  doxyfile = input: output: ''
+    PROJECT_NAME = AOS Probe
+    INPUT = ${input}
+    OUTPUT_DIRECTORY = ${output}
+    GENERATE_HTML = YES
+    GENERATE_LATEX = NO
+    QUIET = YES
+    WARN_AS_ERROR = YES
+  '';
 in
   mkDerivation {
     platformSupport = {
@@ -39,6 +49,62 @@ in
       role = "public-package";
     };
     pname = "doxygen";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A documented C header and a minimal Doxygen configuration.";
+        operation = "Generate HTML API documentation with the installed Doxygen executable.";
+        expected = "The generated header page contains the function documentation.";
+        files = {
+          "Doxyfile" = doxyfile "probe.h" "docs";
+          "probe.h" = ''
+            /** @file probe.h
+             *  @brief AOS documentation qualification fixture.
+             */
+            /// Returns a stable number.
+            int aos_probe(void);
+          '';
+        };
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/doxygen" "Doxyfile"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                from pathlib import Path
+
+                page = Path("@work@/docs/html/probe_8h.html").read_text()
+                assert "Returns a stable number" in page
+                print("doxygen generated API documentation")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "doxygen generated API documentation\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "A Doxygen configuration referencing a source file that does not exist.";
+        operation = "Generate documentation with missing input and warnings treated as errors.";
+        expected = "Doxygen rejects the missing source file.";
+        files."InvalidDoxyfile" = doxyfile "missing.h" "invalid-docs";
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/doxygen" "InvalidDoxyfile"];
+            exit_code = 1;
+            observes_rejection = true;
+          }
+        ];
+      };
+    };
     inherit version src;
 
     buildDeps = [buildPackages.cmake buildPackages.gnumake buildPackages.flex buildPackages.bison buildPackages.python3 buildPackages.libxml2];
