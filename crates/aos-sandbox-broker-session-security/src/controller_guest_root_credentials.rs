@@ -4,13 +4,11 @@
 //! systemd from the AOS-built template output. No public request or Storage
 //! response may choose a package path or substitute either digest.
 
-use std::fs::File;
-use std::io::Read as _;
-use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 use aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1;
-use rustix::fs::{CWD, Mode, OFlags, openat};
+
+use crate::fixed_role_credential::read_optional_fixed_role_credential_v1;
 
 const PACKAGE_BINDING: &str = "guest-root-package-binding-v1";
 const ROOT_TREE_DIGEST: &str = "guest-root-tree-digest-v1";
@@ -54,38 +52,13 @@ fn read_digest_line(
     directory: &Path,
     name: &str,
 ) -> Result<Option<[u8; 32]>, ControllerGuestRootCredentialErrorV1> {
-    let path = directory.join(name);
-    let descriptor = match openat(
-        CWD,
-        &path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-        Mode::empty(),
-    ) {
-        Ok(descriptor) => descriptor,
-        Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(_) => return Err(ControllerGuestRootCredentialErrorV1),
+    let Some(line) =
+        read_optional_fixed_role_credential_v1(directory, name, HEX_LINE_BYTES as u64, true)
+            .map_err(|_| ControllerGuestRootCredentialErrorV1)?
+    else {
+        return Ok(None);
     };
-    let mut file = File::from(descriptor);
-    let metadata = file
-        .metadata()
-        .map_err(|_| ControllerGuestRootCredentialErrorV1)?;
-    if !metadata.is_file()
-        || metadata.len() != HEX_LINE_BYTES as u64
-        || metadata.nlink() != 1
-        || metadata.mode() & 0o077 != 0
-    {
-        return Err(ControllerGuestRootCredentialErrorV1);
-    }
-    let mut line = [0_u8; HEX_LINE_BYTES];
-    file.read_exact(&mut line)
-        .map_err(|_| ControllerGuestRootCredentialErrorV1)?;
-    let mut trailing = [0_u8; 1];
-    if file
-        .read(&mut trailing)
-        .map_err(|_| ControllerGuestRootCredentialErrorV1)?
-        != 0
-        || line[64] != b'\n'
-    {
+    if line[64] != b'\n' {
         return Err(ControllerGuestRootCredentialErrorV1);
     }
     let mut digest = [0_u8; 32];

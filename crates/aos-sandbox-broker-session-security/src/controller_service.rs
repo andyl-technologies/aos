@@ -28,8 +28,7 @@
 //! durable controller journal execute through their exact authenticated broker
 //! sessions without manufacturing replacement identity.
 
-use std::fs::File;
-use std::io::{IoSlice, Read};
+use std::io::IoSlice;
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -58,7 +57,6 @@ use connectrpc::{
     ConnectError, Encodable, ErrorCode, RequestContext, Response, ServiceRequest, ServiceResult,
 };
 use futures::Stream;
-use rustix::fs::{Mode, OFlags, open};
 use rustix::net::{
     AddressFamily, SendAncillaryBuffer, SendFlags, SocketAddrUnix, SocketFlags, SocketType,
     sendmsg_addr, socket_with,
@@ -72,6 +70,9 @@ use crate::controller_hold_credential::validate_process_controller_hold_credenti
 use crate::controller_ownership::{ControllerOwnershipConfigurationV1, sample_ownership_clock};
 use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_publication::{ControllerHostPublication, ControllerHostPublicationError};
+use crate::fixed_role_credential::{
+    CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
+};
 use aos_sandbox::cache_residency::{
     CacheOwnerLimitsV1, CacheReplayControllerBootstrapOwnerV1, CacheResidencyProtectedOwnerV1,
     DormantCacheOwnerV1,
@@ -1948,44 +1949,15 @@ fn read_node_id() -> Result<[u8; 16], ControllerRuntimeError> {
 fn read_cache_replay_bundle() -> Result<Option<Vec<u8>>, ControllerRuntimeError> {
     let directory = std::env::var_os("CREDENTIALS_DIRECTORY")
         .ok_or(ControllerRuntimeError::InvalidCacheReplayBundle)?;
-    let path = Path::new(&directory).join(CACHE_REPLAY_BUNDLE_CREDENTIAL);
-    let descriptor = match open(
-        &path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-        Mode::empty(),
-    ) {
-        Ok(descriptor) => descriptor,
-        Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(_) => return Err(ControllerRuntimeError::InvalidCacheReplayBundle),
-    };
-    let mut file = File::from(descriptor);
-    let metadata = file
-        .metadata()
-        .map_err(|_| ControllerRuntimeError::InvalidCacheReplayBundle)?;
-    let size = usize::try_from(metadata.len())
-        .map_err(|_| ControllerRuntimeError::InvalidCacheReplayBundle)?;
-    let current_uid = rustix::process::geteuid().as_raw();
-    if !metadata.is_file()
-        || (metadata.uid() != 0 && metadata.uid() != current_uid)
-        || metadata.nlink() != 1
-        || metadata.mode() & 0o077 != 0
-        || size == 0
-        || size > MAXIMUM_CACHE_REPLAY_BUNDLE_BYTES
-    {
-        return Err(ControllerRuntimeError::InvalidCacheReplayBundle);
-    }
-    let mut bytes = vec![0; size];
-    file.read_exact(&mut bytes)
-        .map_err(|_| ControllerRuntimeError::InvalidCacheReplayBundle)?;
-    let mut trailing = [0];
-    if file
-        .read(&mut trailing)
-        .map_err(|_| ControllerRuntimeError::InvalidCacheReplayBundle)?
-        != 0
-    {
-        return Err(ControllerRuntimeError::InvalidCacheReplayBundle);
-    }
-    Ok(Some(bytes))
+    read_optional_bounded_role_credential_v1(
+        Path::new(&directory),
+        CACHE_REPLAY_BUNDLE_CREDENTIAL,
+        1,
+        MAXIMUM_CACHE_REPLAY_BUNDLE_BYTES,
+        true,
+        CredentialOwnerPolicyV1::RootOrCurrent,
+    )
+    .map_err(|_| ControllerRuntimeError::InvalidCacheReplayBundle)
 }
 
 fn bind_diagnostic_socket(

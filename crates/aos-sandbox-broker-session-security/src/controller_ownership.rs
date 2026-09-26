@@ -6,9 +6,6 @@
 //! partial or inconsistent credentials fail startup. No public request can
 //! supply a socket path, authority generation, trust policy, or secret.
 
-use std::fs::File;
-use std::io::Read as _;
-use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 use std::time::Duration;
 
@@ -20,9 +17,11 @@ use aos_sandbox_core::{
     RawClockProvenance, RawPairedClockSample, SignaturePurpose, descriptor_for_bytes,
 };
 use aos_sandbox_linux::boot::KernelBootId;
-use rustix::fs::{Mode, OFlags, open};
 use zeroize::Zeroizing;
 
+use crate::fixed_role_credential::{
+    CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
+};
 use crate::ownership_authority_client::LocalOwnershipAuthorityClientV1;
 
 const SOCKET_PATH: &str = "/run/aos/sandbox-ownership/control.sock";
@@ -143,42 +142,15 @@ fn read_credential(
     name: &str,
     maximum_bytes: usize,
 ) -> Result<Option<Vec<u8>>, ControllerOwnershipCredentialErrorV1> {
-    let descriptor = match open(
-        &directory.join(name),
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-        Mode::empty(),
-    ) {
-        Ok(descriptor) => descriptor,
-        Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(_) => return Err(ControllerOwnershipCredentialErrorV1),
-    };
-    let mut file = File::from(descriptor);
-    let metadata = file
-        .metadata()
-        .map_err(|_| ControllerOwnershipCredentialErrorV1)?;
-    let size = usize::try_from(metadata.len()).map_err(|_| ControllerOwnershipCredentialErrorV1)?;
-    let uid = rustix::process::geteuid().as_raw();
-    if !metadata.is_file()
-        || (metadata.uid() != 0 && metadata.uid() != uid)
-        || metadata.nlink() != 1
-        || metadata.mode() & 0o077 != 0
-        || size == 0
-        || size > maximum_bytes
-    {
-        return Err(ControllerOwnershipCredentialErrorV1);
-    }
-    let mut bytes = vec![0; size];
-    file.read_exact(&mut bytes)
-        .map_err(|_| ControllerOwnershipCredentialErrorV1)?;
-    let mut trailing = [0];
-    if file
-        .read(&mut trailing)
-        .map_err(|_| ControllerOwnershipCredentialErrorV1)?
-        != 0
-    {
-        return Err(ControllerOwnershipCredentialErrorV1);
-    }
-    Ok(Some(bytes))
+    read_optional_bounded_role_credential_v1(
+        directory,
+        name,
+        1,
+        maximum_bytes,
+        true,
+        CredentialOwnerPolicyV1::RootOrCurrent,
+    )
+    .map_err(|_| ControllerOwnershipCredentialErrorV1)
 }
 
 /// Samples paired host clocks without accepting clock facts from a caller.
