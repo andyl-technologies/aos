@@ -71,6 +71,18 @@ def fixtures(gcc, clang, rustc):
                           base + flags + ["-frandom-seed=" + name + "-" + suffix], c_sources,
                           {"value.h": "#define VALUE 73\n"})
 
+        bypass_modes = [
+            ("syntax-only", ["-fsyntax-only"]),
+            ("save-temps", ["-save-temps=obj"]),
+        ]
+        if name == "clang":
+            bypass_modes.append(("long-save-temps", ["--save-temps=obj"]))
+        for suffix, flags in bypass_modes:
+            # These accepted driver modes have no ordinary single-object
+            # cache contract. Both wrappers must leave every side file intact.
+            yield Fixture(name + "-" + suffix, compiler,
+                          base + flags, c_sources, cacheable=False)
+
         # A dependency request forwarded directly to CPP writes a second
         # output. The cache's own dependency probe must not write that output
         # before the compile, and a warm hit must restore it with the object.
@@ -79,6 +91,9 @@ def fixtures(gcc, clang, rustc):
             yield Fixture(name + "-" + suffix, compiler, base + [flag], c_sources,
                           {"value.h": "#define VALUE 73\n"})
         if name == "gcc":
+            yield Fixture("gcc-callgraph-info", compiler,
+                          base + ["-fcallgraph-info=su"], c_sources,
+                          cacheable=False)
             yield Fixture("gcc-wp-mixed-md", compiler,
                           base + ["-Wp,-DUNUSED=1,-MD,forwarded.d"], c_sources,
                           {"value.h": "#define VALUE 73\n"})
@@ -100,6 +115,9 @@ def fixtures(gcc, clang, rustc):
                               base + ["-pipe", *flags, "-frandom-seed=" + suffix], c_sources,
                               {"value.h": "#define VALUE 73\n"})
         else:
+            yield Fixture("clang-compilation-database", compiler,
+                          base + ["-MJ", "compile.json"], c_sources,
+                          cacheable=False)
             yield Fixture("clang-wp-mixed-md", compiler,
                           base + ["-Wp,-MD,forwarded.d,-DUNUSED=1",
                                   "-frandom-seed=clang-wp-mixed-md"], c_sources,
