@@ -11,6 +11,7 @@ in
       authoritativeAttr = "checks.crucible.phase7.gates.campaignContinuity";
       inherit authority;
       name = "native-campaign-continuity";
+      sqliteRequired = true;
       cargoBuildCommands = [
         "test --frozen --offline --no-run -p crucible-cas --test gate_campaign_continuity"
       ];

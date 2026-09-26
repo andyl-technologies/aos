@@ -11,6 +11,7 @@ in
       authoritativeAttr = "checks.crucible.phase4.gates.campaignStatistics";
       inherit authority;
       name = "native-campaign-statistics";
+      sqliteRequired = true;
       cargoBuildCommands = [
         "test --frozen --offline --no-run -p crucible-campaign --lib --test gate_campaign_statistics"
       ];
