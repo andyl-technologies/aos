@@ -925,3 +925,6 @@ fn finite_request_deduplicates_a_generated_attempt_on_a_huge_domain() -> Result<
 
 #[path = "gate_lazy_frontier/scale.rs"]
 mod scale;
+
+#[path = "gate_lazy_frontier/cold_validation.rs"]
+mod cold_validation;

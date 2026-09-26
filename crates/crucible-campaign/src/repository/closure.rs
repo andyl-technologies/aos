@@ -290,7 +290,8 @@ impl CampaignRepository {
                     return Ok((depth, projected, content_id, derived_branch));
                 }
                 (Some(parent), Some(transition)) => {
-                    let transition_fact = self.read_fact(transition.content_id())?;
+                    let (transition_fact, validated_planner_step) =
+                        self.read_fact_with_planner_step(transition.content_id())?;
                     let parent_snapshot = self.read_snapshot(parent.content_id())?;
                     let budget_fact = transition_fact.clone();
                     match transition_fact {
@@ -449,7 +450,16 @@ impl CampaignRepository {
                             )?;
                         }
                         CampaignFact::PlannerAdvanced(step) => {
-                            self.validate_planner_step_successor(&parent_snapshot, &loaded, step)?;
+                            let validated_step =
+                                validated_planner_step.as_ref().ok_or_else(|| {
+                                    integrity("planner-step-transition-fact-was-not-validated")
+                                })?;
+                            self.validate_planner_step_successor(
+                                &parent_snapshot,
+                                &loaded,
+                                step,
+                                validated_step,
+                            )?;
                         }
                         CampaignFact::ObservationCredited(observation) => {
                             self.validate_credited_observation_successor(
@@ -1217,6 +1227,7 @@ impl CampaignRepository {
         parent: &LoadedSnapshot,
         child: &LoadedSnapshot,
         step_id: PlannerStepId,
+        validated_step: &(PlannerStep, PlannerRequest),
     ) -> Result<(), CampaignRepositoryError> {
         if child.snapshot.lineage() != parent.snapshot.lineage()
             || child.snapshot.active_policy() != parent.snapshot.active_policy()
@@ -1236,8 +1247,14 @@ impl CampaignRepository {
         }
 
         let step_content = step_id.content_id();
-        let step = self.read_planner_step(step_content)?;
-        let request = self.read_planner_request(step.request().content_id())?;
+        let (step, request) = validated_step;
+        if step.id()?.content_id() != step_content
+            || request.id()?.content_id() != step.request().content_id()
+        {
+            return Err(integrity(
+                "planner-step-transition-validated-record-mismatch",
+            ));
+        }
         self.validate_builtin_planner_step(&request, &step)?;
         if request.expected_snapshot()
             != CampaignSnapshotId::from_content_id(parent.envelope.content_id())?

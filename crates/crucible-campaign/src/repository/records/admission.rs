@@ -376,6 +376,14 @@ impl CampaignRepository {
         &self,
         id: ContentId,
     ) -> Result<PlannerStep, CampaignRepositoryError> {
+        self.read_planner_step_with_request(id)
+            .map(|(step, _)| step)
+    }
+
+    pub(in crate::repository) fn read_planner_step_with_request(
+        &self,
+        id: ContentId,
+    ) -> Result<(PlannerStep, PlannerRequest), CampaignRepositoryError> {
         let envelope = self.require_record_kind(id, crate::CampaignRecordKind::PlannerStep)?;
         let step = PlannerStep::from_canonical_bytes(envelope.body())?;
         if step.id()?.content_id() != id {
@@ -437,7 +445,7 @@ impl CampaignRepository {
                 return Err(integrity("planner-step-parent-state-discontinuity"));
             }
         }
-        Ok(step)
+        Ok((step, request))
     }
 
     pub(in crate::repository) fn read_expansion_state(
