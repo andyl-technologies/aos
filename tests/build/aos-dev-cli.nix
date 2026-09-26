@@ -6,8 +6,11 @@ pkgs.mkDerivation {
   buildDeps = [
     pkgs.bash
     pkgs.coreutils
+    pkgs.findutils
+    pkgs.gawk
     pkgs.grep
     pkgs.sed
+    pkgs.util-linux
   ];
   phases = [
     {
