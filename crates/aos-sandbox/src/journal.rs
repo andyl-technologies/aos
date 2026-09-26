@@ -51,7 +51,7 @@ pub use capacity_reservation::{
     GlobalCapacityReservationRequestV1, GlobalCapacityReservationV1,
     PreparedGlobalCapacityReservationV1,
 };
-pub use controller_policy_hold::ControllerPolicyHoldV1;
+pub use controller_policy_hold::{ControllerPolicyEffectAckV1, ControllerPolicyHoldV1};
 pub use source_domain_policy_hold::SourceDomainPolicyHoldV1;
 mod mount_source_consumption;
 pub use mount_source_consumption::{

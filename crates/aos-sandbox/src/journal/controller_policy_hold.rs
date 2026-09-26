@@ -4,11 +4,16 @@
 //! AOSCTH01 | version=1 | phase=held|released | reserved[5]=0 |
 //! operation[16] | sandbox[16] | source[32] | binding[32] | epoch[8] |
 //! SHA-256[32]
+//! AOSCTA01 | version=1 | state=acknowledged-no-Apply | reserved[5]=0 |
+//! operation[16] | sandbox[16] | source[32] | binding[32] | epoch[8] |
+//! accepted-generation[8] | effect-transaction[16] | Root-proof-digest[32] |
+//! SHA-256[32]
 //! ```
 //!
-//! This record freezes every Controller journal mutation, including after a
-//! crash and reopen. It does not freeze source-domain or Cache owners and does
-//! not authorize public Create, policy publication, or an effect.
+//! The hold freezes ordinary Controller mutations across crash and reopen.
+//! Only exact private no-Apply acknowledgment and release transitions can
+//! write while held. Neither freezes other owners nor authorizes public Create,
+//! policy publication, or Apply.
 
 use std::collections::BTreeMap;
 
@@ -22,6 +27,163 @@ const MAGIC: &[u8; 8] = b"AOSCTH01";
 const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.controller-policy-hold.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.controller-policy-hold-transaction.v1\0";
 const RECORD_BYTES: usize = 152;
+const ACK_KEY: &[u8] = b"\0aos-controller-policy-effect-ack-v1\0";
+const ACK_MAGIC: &[u8; 8] = b"AOSCTA01";
+const ACK_CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.controller-policy-effect-ack.v1\0";
+const ACK_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.controller-policy-effect-ack-transaction.v1\0";
+const ACK_RECORD_BYTES: usize = 208;
+
+/// Records that Controller durably received one exact qualified Root decision.
+///
+/// This is an effect handoff acknowledgment, not an Apply-capable effect. The
+/// Controller remains frozen until a separately authenticated Root ACK and
+/// ordered all-owner release are implemented.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ControllerPolicyEffectAckV1 {
+    hold: ControllerPolicyHoldV1,
+    accepted_generation: u64,
+    effect_transaction: [u8; 16],
+    root_proof: ObjectDigest,
+}
+
+impl ControllerPolicyEffectAckV1 {
+    /// Constructs an exact no-Apply acknowledgment for a held Create.
+    ///
+    /// # Errors
+    ///
+    /// Rejects released custody, a zero generation or transaction, or an
+    /// absent Root signer-proof commitment.
+    pub fn new(
+        hold: ControllerPolicyHoldV1,
+        accepted_generation: u64,
+        effect_transaction: [u8; 16],
+        root_proof: ObjectDigest,
+    ) -> Result<Self, JournalError> {
+        let ack = Self {
+            hold,
+            accepted_generation,
+            effect_transaction,
+            root_proof,
+        };
+        ack.validate()?;
+        Ok(ack)
+    }
+
+    /// Returns the exact held Controller claim.
+    #[must_use]
+    pub const fn hold(self) -> ControllerPolicyHoldV1 {
+        self.hold
+    }
+
+    /// Returns the accepted public Create generation.
+    #[must_use]
+    pub const fn accepted_generation(self) -> u64 {
+        self.accepted_generation
+    }
+
+    /// Returns the Root-bound effect transaction identity.
+    #[must_use]
+    pub const fn effect_transaction(self) -> [u8; 16] {
+        self.effect_transaction
+    }
+
+    /// Returns the digest of Root's canonical qualified signer-proof record.
+    #[must_use]
+    pub const fn root_proof(self) -> ObjectDigest {
+        self.root_proof
+    }
+
+    fn validate(self) -> Result<(), JournalError> {
+        self.hold.validate()?;
+        if !self.hold.held
+            || self.accepted_generation == 0
+            || self.effect_transaction == [0; 16]
+            || self.root_proof.as_bytes() == &[0; 32]
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
+    fn encode(self) -> Result<[u8; ACK_RECORD_BYTES], JournalError> {
+        self.validate()?;
+        let mut bytes = [0; ACK_RECORD_BYTES];
+        bytes[..8].copy_from_slice(ACK_MAGIC);
+        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        bytes[10] = 1;
+        bytes[16..32].copy_from_slice(self.hold.operation.as_bytes());
+        bytes[32..48].copy_from_slice(self.hold.sandbox.as_bytes());
+        bytes[48..80].copy_from_slice(self.hold.source.as_bytes());
+        bytes[80..112].copy_from_slice(self.hold.binding.as_bytes());
+        bytes[112..120].copy_from_slice(&self.hold.epoch.to_be_bytes());
+        bytes[120..128].copy_from_slice(&self.accepted_generation.to_be_bytes());
+        bytes[128..144].copy_from_slice(&self.effect_transaction);
+        bytes[144..176].copy_from_slice(self.root_proof.as_bytes());
+        let checksum = Sha256::new()
+            .chain_update(ACK_CHECKSUM_DOMAIN)
+            .chain_update(&bytes[..176])
+            .finalize();
+        bytes[176..].copy_from_slice(&checksum);
+        Ok(bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
+        if bytes.len() != ACK_RECORD_BYTES
+            || bytes.get(..8) != Some(ACK_MAGIC.as_slice())
+            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
+            || bytes[10] != 1
+            || bytes[11..16] != [0; 5]
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let ack = Self {
+            hold: ControllerPolicyHoldV1::new(
+                OperationId::from_bytes(
+                    bytes[16..32]
+                        .try_into()
+                        .map_err(|_| JournalError::ProtectedBoundary)?,
+                ),
+                SandboxId::from_bytes(
+                    bytes[32..48]
+                        .try_into()
+                        .map_err(|_| JournalError::ProtectedBoundary)?,
+                ),
+                ObjectDigest::from_bytes(
+                    bytes[48..80]
+                        .try_into()
+                        .map_err(|_| JournalError::ProtectedBoundary)?,
+                ),
+                ObjectDigest::from_bytes(
+                    bytes[80..112]
+                        .try_into()
+                        .map_err(|_| JournalError::ProtectedBoundary)?,
+                ),
+                u64::from_be_bytes(
+                    bytes[112..120]
+                        .try_into()
+                        .map_err(|_| JournalError::ProtectedBoundary)?,
+                ),
+            )?,
+            accepted_generation: u64::from_be_bytes(
+                bytes[120..128]
+                    .try_into()
+                    .map_err(|_| JournalError::ProtectedBoundary)?,
+            ),
+            effect_transaction: bytes[128..144]
+                .try_into()
+                .map_err(|_| JournalError::ProtectedBoundary)?,
+            root_proof: ObjectDigest::from_bytes(
+                bytes[144..176]
+                    .try_into()
+                    .map_err(|_| JournalError::ProtectedBoundary)?,
+            ),
+        };
+        if ack.encode()?.as_slice() != bytes {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(ack)
+    }
+}
 
 /// Identifies one exact, nonauthorizing Controller policy hold.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -173,22 +335,32 @@ impl ControllerPolicyHoldV1 {
 fn current(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<Option<ControllerPolicyHoldV1>, JournalError> {
-    let mut records = state
+    let mut hold = None;
+    let mut ack = None;
+    for ((_, key), value) in state
         .range((RecordNamespace::ControllerPolicyHold, Vec::new())..)
-        .take_while(|((namespace, _), _)| *namespace == RecordNamespace::ControllerPolicyHold);
-    let record = records.next();
-    if records.next().is_some() {
+        .take_while(|((namespace, _), _)| *namespace == RecordNamespace::ControllerPolicyHold)
+    {
+        match key.as_slice() {
+            KEY if hold.is_none() => hold = Some(ControllerPolicyHoldV1::decode(value)?),
+            ACK_KEY if ack.is_none() => ack = Some(ControllerPolicyEffectAckV1::decode(value)?),
+            _ => return Err(JournalError::ProtectedBoundary),
+        }
+    }
+    if ack.is_some_and(|ack| hold != Some(ack.hold)) {
         return Err(JournalError::ProtectedBoundary);
     }
-    match record {
-        Some(((namespace, key), value))
-            if *namespace == RecordNamespace::ControllerPolicyHold && key.as_slice() == KEY =>
-        {
-            ControllerPolicyHoldV1::decode(value).map(Some)
-        }
-        Some(_) => Err(JournalError::ProtectedBoundary),
-        None => Ok(None),
-    }
+    Ok(hold)
+}
+
+fn current_ack(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+) -> Result<Option<ControllerPolicyEffectAckV1>, JournalError> {
+    current(state)?;
+    state
+        .get(&(RecordNamespace::ControllerPolicyHold, ACK_KEY.to_vec()))
+        .map(|bytes| ControllerPolicyEffectAckV1::decode(bytes))
+        .transpose()
 }
 
 pub(super) fn require_no_mutation(
@@ -234,6 +406,25 @@ fn transaction(hold: ControllerPolicyHoldV1) -> Result<JournalTransaction, Journ
     )
 }
 
+fn ack_transaction(ack: ControllerPolicyEffectAckV1) -> Result<JournalTransaction, JournalError> {
+    let bytes = ack.encode()?;
+    let digest = Sha256::new()
+        .chain_update(ACK_TRANSACTION_DOMAIN)
+        .chain_update(bytes)
+        .finalize();
+    let id = digest[..16]
+        .try_into()
+        .map_err(|_| JournalError::ProtectedBoundary)?;
+    JournalTransaction::new(
+        id,
+        vec![JournalRecord::put(
+            RecordNamespace::ControllerPolicyHold,
+            ACK_KEY.to_vec(),
+            bytes.to_vec(),
+        )],
+    )
+}
+
 fn ensure_controller(journal: &Journal) -> Result<(), JournalError> {
     journal.ensure_protected_authority()?;
     if journal
@@ -262,18 +453,27 @@ impl Journal {
         hold: ControllerPolicyHoldV1,
     ) -> Result<(), JournalError> {
         ensure_controller(self)?;
-        if !hold.is_held() || current(&self.state)?.is_some_and(ControllerPolicyHoldV1::is_held) {
+        if !hold.is_held()
+            || current(&self.state)?.is_some_and(ControllerPolicyHoldV1::is_held)
+            || current_ack(&self.state)?.is_some()
+        {
             return Err(JournalError::ProtectedBoundary);
         }
         let acquire = transaction(hold)?;
+        let ack = ack_transaction(ControllerPolicyEffectAckV1::new(
+            hold,
+            1,
+            [1; 16],
+            ObjectDigest::from_bytes([1; 32]),
+        )?)?;
         let release = transaction(ControllerPolicyHoldV1 {
             held: false,
             ..hold
         })?;
         // All later Controller commits are fenced, so this reserves the
-        // bounded journal room needed for exact cold release.
+        // bounded journal room for one effect ACK and exact cold release.
         self.preflight_transactions_with_capacity_scope(
-            &[acquire.clone(), release],
+            &[acquire.clone(), ack, release],
             None,
             false,
             true,
@@ -299,12 +499,61 @@ impl Journal {
         current(&self.state)
     }
 
+    /// Reads the durable no-Apply Controller acknowledgment under its writer.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected or malformed Controller custody.
+    pub fn controller_policy_effect_ack_v1(
+        &self,
+    ) -> Result<Option<ControllerPolicyEffectAckV1>, JournalError> {
+        ensure_controller(self)?;
+        current_ack(&self.state)
+    }
+
+    /// Durably acknowledges one qualified Root decision while Controller stays held.
+    ///
+    /// The caller must retain the all-owner cut through authenticated Root
+    /// replay and this write. A replay of the identical acknowledgment is
+    /// accepted; a changed generation, transaction, or proof fails closed.
+    /// This method never issues Apply or releases the hold.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale or malformed claims, conflicting prior acknowledgment,
+    /// exhausted journal capacity, or failed durable write/readback.
+    pub fn acknowledge_controller_policy_effect_v1(
+        &mut self,
+        ack: ControllerPolicyEffectAckV1,
+    ) -> Result<(), JournalError> {
+        ensure_controller(self)?;
+        ack.validate()?;
+        if current(&self.state)? != Some(ack.hold) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        match current_ack(&self.state)? {
+            Some(prior) if prior == ack => return Ok(()),
+            Some(_) => return Err(JournalError::ProtectedBoundary),
+            None => {}
+        }
+        self.commit_with_capacity_scope(&ack_transaction(ack)?, None, false, true)?;
+        if current_ack(&self.state)? != Some(ack) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
     pub(crate) fn release_controller_policy_hold_after_root_readback_v1(
         &mut self,
         expected: ControllerPolicyHoldV1,
     ) -> Result<(), JournalError> {
         ensure_controller(self)?;
-        if !expected.held || current(&self.state)? != Some(expected) {
+        // A qualified effect ACK needs the later Root ACK and ordered release;
+        // this older inert path has no evidence of either.
+        if !expected.held
+            || current(&self.state)? != Some(expected)
+            || current_ack(&self.state)?.is_some()
+        {
             return Err(JournalError::ProtectedBoundary);
         }
         let released = ControllerPolicyHoldV1 {
@@ -384,6 +633,147 @@ mod tests {
             )],
         )
         .expect("ordinary transaction")
+    }
+
+    fn acknowledgement(hold: ControllerPolicyHoldV1) -> ControllerPolicyEffectAckV1 {
+        ControllerPolicyEffectAckV1::new(hold, 11, [12; 16], ObjectDigest::from_bytes([13; 32]))
+            .expect("canonical no-Apply acknowledgment")
+    }
+
+    #[test]
+    fn qualified_ack_survives_crash_and_rejects_stale_generation_or_proof() {
+        let directory = TestDirectory::new();
+        let expected = hold();
+        let ack = acknowledgement(expected);
+        let mut controller = directory.open();
+
+        assert!(
+            controller
+                .acknowledge_controller_policy_effect_v1(ack)
+                .is_err()
+        );
+        controller
+            .acquire_controller_policy_hold_v1(expected)
+            .unwrap();
+        controller
+            .acknowledge_controller_policy_effect_v1(ack)
+            .unwrap();
+        assert_eq!(controller.records(RecordNamespace::Effect).count(), 0);
+        drop(controller);
+
+        let mut reopened = directory.open();
+        assert_eq!(
+            reopened.controller_policy_effect_ack_v1().unwrap(),
+            Some(ack)
+        );
+        reopened
+            .acknowledge_controller_policy_effect_v1(ack)
+            .unwrap();
+        assert!(
+            reopened
+                .acknowledge_controller_policy_effect_v1(
+                    ControllerPolicyEffectAckV1::new(
+                        expected,
+                        12,
+                        ack.effect_transaction(),
+                        ack.root_proof()
+                    )
+                    .unwrap()
+                )
+                .is_err()
+        );
+        assert!(
+            reopened
+                .acknowledge_controller_policy_effect_v1(
+                    ControllerPolicyEffectAckV1::new(
+                        expected,
+                        11,
+                        ack.effect_transaction(),
+                        ObjectDigest::from_bytes([14; 32])
+                    )
+                    .unwrap()
+                )
+                .is_err()
+        );
+        assert!(
+            reopened
+                .acknowledge_controller_policy_effect_v1(
+                    ControllerPolicyEffectAckV1::new(expected, 11, [15; 16], ack.root_proof())
+                        .unwrap()
+                )
+                .is_err()
+        );
+        assert!(reopened.commit(&ordinary_transaction()).is_err());
+        assert_eq!(reopened.records(RecordNamespace::Effect).count(), 0);
+        assert_eq!(
+            reopened.controller_policy_effect_ack_v1().unwrap(),
+            Some(ack)
+        );
+        assert!(
+            reopened
+                .release_controller_policy_hold_after_root_readback_v1(expected)
+                .is_err()
+        );
+        assert_eq!(
+            reopened.controller_policy_effect_ack_v1().unwrap(),
+            Some(ack)
+        );
+        assert_eq!(
+            reopened.controller_policy_hold_v1().unwrap(),
+            Some(expected)
+        );
+        assert!(reopened.commit(&ordinary_transaction()).is_err());
+        assert!(
+            reopened
+                .acquire_controller_policy_hold_v1(expected)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn released_hold_with_ack_is_not_valid_cold_state() {
+        let expected = hold();
+        let ack = acknowledgement(expected);
+        let released = ControllerPolicyHoldV1 {
+            held: false,
+            ..expected
+        };
+        let mut state = BTreeMap::new();
+        state.insert(
+            (RecordNamespace::ControllerPolicyHold, KEY.to_vec()),
+            released.encode().unwrap().to_vec(),
+        );
+        state.insert(
+            (RecordNamespace::ControllerPolicyHold, ACK_KEY.to_vec()),
+            ack.encode().unwrap().to_vec(),
+        );
+
+        assert!(current(&state).is_err());
+        assert!(current_ack(&state).is_err());
+    }
+
+    #[test]
+    fn acknowledgment_format_rejects_corruption_and_released_claim() {
+        let ack = acknowledgement(hold());
+        let mut encoded = ack.encode().unwrap();
+        assert_eq!(ControllerPolicyEffectAckV1::decode(&encoded).unwrap(), ack);
+        encoded[120] ^= 1;
+        assert!(ControllerPolicyEffectAckV1::decode(&encoded).is_err());
+        encoded = ack.encode().unwrap();
+        encoded[10] = 2;
+        assert!(ControllerPolicyEffectAckV1::decode(&encoded).is_err());
+        assert!(
+            ControllerPolicyEffectAckV1::new(
+                ControllerPolicyHoldV1 {
+                    held: false,
+                    ..hold()
+                },
+                11,
+                [12; 16],
+                ObjectDigest::from_bytes([13; 32]),
+            )
+            .is_err()
+        );
     }
 
     #[test]

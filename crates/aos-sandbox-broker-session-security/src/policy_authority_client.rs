@@ -31,6 +31,8 @@
 //! AOSPHF4C | client_nonce[16] | stage_nonce[16] | cut[32] | issue_epoch[8]
 //! AOSPHF4S | client_nonce[16] | Cache AOSCRB02[412] | EOF
 //! AOSPBC04 | client_nonce[16] | binding[32] | epoch[8]
+//! AOSPHQ5R | client_nonce[16] | reserved[8] | binding[32] | epoch[8] | EOF
+//! AOSPHR5R | client_nonce[16] | binding[32] | epoch[8] | disposition[1] | AOSPCB02[664] | qualified-proof-SHA256[32] | EOF
 //! ```
 
 use std::{
@@ -88,9 +90,9 @@ pub const POLICY_BINDING_COMPLETE_MAGIC_V4: &[u8; 8] = b"AOSPHC04";
 /// Acknowledges the exact completed response before the root releases custody.
 pub const POLICY_BINDING_TERMINAL_ACK_MAGIC_V4: &[u8; 8] = b"AOSPHT04";
 /// Requests exact historical Q04 decision replay without admitting a new CAS.
-pub const POLICY_BINDING_REPLAY_QUERY_MAGIC_V4: &[u8; 8] = b"AOSPHQ4R";
+pub const POLICY_BINDING_REPLAY_QUERY_MAGIC_V5: &[u8; 8] = b"AOSPHQ5R";
 /// Frames Root's protected, non-authorizing Q04 decision readback.
-pub const POLICY_BINDING_REPLAY_REPLY_MAGIC_V4: &[u8; 8] = b"AOSPHR4R";
+pub const POLICY_BINDING_REPLAY_REPLY_MAGIC_V5: &[u8; 8] = b"AOSPHR5R";
 /// Requests a durably staged Q04 Root base before other owner writers lock.
 pub const POLICY_BINDING_STAGE_QUERY_MAGIC_V4: &[u8; 8] = b"AOSPHQ4B";
 /// Frames the authenticated, nonauthorizing staged Root base and challenge.
@@ -123,7 +125,7 @@ const MAXIMUM_EXPLICIT_RECEIPT_BYTES: usize =
 const CLOSED_BINDING_FRAME_BYTES: usize = 8 + 16 + 32 + 8;
 const CLOSED_BINDING_BASE_BYTES: usize = 8 + 16 + 32 + 8 + 8 + 8;
 const CLOSED_BINDING_REPLAY_REPLY_BYTES: usize =
-    8 + 16 + 32 + 8 + 1 + CLOSED_POLICY_BINDING_BYTES_V2;
+    8 + 16 + 32 + 8 + 1 + CLOSED_POLICY_BINDING_BYTES_V2 + 32;
 const CLOSED_BINDING_STAGE_REPLY_BYTES: usize = 8 + 16 + 16 + 32 + 8 + 8 + 8 + 16 + 8;
 const CLOSED_BINDING_PREVIEW_REPLY_BYTES: usize = 8 + 16 + 32 + 8 + 16 + 32 + 32;
 const CLOSED_BINDING_FLIGHT_CHALLENGE_BYTES: usize = 8 + 16 + 16 + 32 + 8;
@@ -199,22 +201,27 @@ impl ClosedPolicyBindingClientObservationV4 {
 ///
 /// The caller must hold Controller, Source, protected Cache, and physical Cache
 /// custody before Root's replay writer is acquired last. A committed reply
-/// includes the exact protected proposal for held-claim comparison; absence
-/// includes none. The result remains inert and cannot publish or release holds.
+/// includes the exact protected proposal for held-claim comparison; a
+/// qualified held decision also includes its canonical Root signer-proof
+/// digest. Absence includes neither. The result remains non-authorizing.
 ///
 /// # Errors
 ///
 /// Rejects zero or substituted claims, an unexpected Root peer, transport
 /// loss, malformed or trailing reply bytes, or an unknown Root decision.
-pub fn recover_closed_policy_binding_decision_v4(
+pub fn recover_closed_policy_binding_decision_v5(
     binding: ObjectDigest,
     epoch: u64,
-) -> io::Result<(ClosedPolicyBindingDecisionV2, Option<Vec<u8>>)> {
+) -> io::Result<(
+    ClosedPolicyBindingDecisionV2,
+    Option<Vec<u8>>,
+    Option<ObjectDigest>,
+)> {
     if binding.as_bytes() == &[0; 32] || epoch == 0 {
         return Err(invalid_receipt());
     }
     let (mut stream, nonce) = connect_policy_query(
-        POLICY_BINDING_REPLAY_QUERY_MAGIC_V4,
+        POLICY_BINDING_REPLAY_QUERY_MAGIC_V5,
         Duration::from_secs(35),
     )?;
     stream.write_all(binding.as_bytes())?;
@@ -643,8 +650,12 @@ fn decode_closed_binding_replay_reply(
     nonce: [u8; 16],
     binding: ObjectDigest,
     epoch: u64,
-) -> io::Result<(ClosedPolicyBindingDecisionV2, Option<Vec<u8>>)> {
-    if &reply[..8] != POLICY_BINDING_REPLAY_REPLY_MAGIC_V4
+) -> io::Result<(
+    ClosedPolicyBindingDecisionV2,
+    Option<Vec<u8>>,
+    Option<ObjectDigest>,
+)> {
+    if &reply[..8] != POLICY_BINDING_REPLAY_REPLY_MAGIC_V5
         || reply[8..24] != nonce
         || reply[24..56] != *binding.as_bytes()
         || reply[56..64] != epoch.to_be_bytes()
@@ -653,19 +664,30 @@ fn decode_closed_binding_replay_reply(
     }
     let observation = ClosedPolicyRootCasObservationV2::from_replayed_fields(binding, epoch)
         .map_err(io::Error::other)?;
-    let proposed = &reply[65..];
+    let proposed = &reply[65..65 + CLOSED_POLICY_BINDING_BYTES_V2];
+    let proof = &reply[65 + CLOSED_POLICY_BINDING_BYTES_V2..];
     match reply[64] {
-        0 if proposed.iter().all(|byte| *byte == 0) => {
-            Ok((ClosedPolicyBindingDecisionV2::Absent, None))
+        0 if proposed.iter().all(|byte| *byte == 0) && proof.iter().all(|byte| *byte == 0) => {
+            Ok((ClosedPolicyBindingDecisionV2::Absent, None, None))
         }
-        1 | 2 | 3 if closed_policy_binding_digest_v2(proposed).ok() == Some(binding) => {
+        1 | 2 | 3
+            if closed_policy_binding_digest_v2(proposed).ok() == Some(binding)
+                && (reply[64] == 3) == proof.iter().any(|byte| *byte != 0) =>
+        {
             let decision = match reply[64] {
                 1 => ClosedPolicyBindingDecisionV2::CommittedHeld(observation),
                 2 => ClosedPolicyBindingDecisionV2::CommittedReleased(observation),
                 3 => ClosedPolicyBindingDecisionV2::CommittedQualifiedHeld(observation),
                 _ => return Err(invalid_receipt()),
             };
-            Ok((decision, Some(proposed.to_vec())))
+            let proof = if reply[64] == 3 {
+                Some(ObjectDigest::from_bytes(
+                    proof.try_into().map_err(|_| invalid_receipt())?,
+                ))
+            } else {
+                None
+            };
+            Ok((decision, Some(proposed.to_vec()), proof))
         }
         _ => Err(invalid_receipt()),
     }
@@ -1308,17 +1330,17 @@ mod tests {
     use super::{
         CLOSED_BINDING_BASE_BYTES, CLOSED_BINDING_FRAME_BYTES, CLOSED_BINDING_PREVIEW_REPLY_BYTES,
         CLOSED_BINDING_REPLAY_REPLY_BYTES, CLOSED_BINDING_STAGE_REPLY_BYTES,
-        EXPLICIT_PROJECT_PACKET_BYTES, MAXIMUM_EXPLICIT_RECEIPT_BYTES, MAXIMUM_INPUT_BYTES,
-        MAXIMUM_PROJECT_INPUT_BYTES, MAXIMUM_RECEIPT_BYTES, ObjectDigest, PACKET_BYTES,
-        POLICY_BINDING_BASE_MAGIC_V4, POLICY_BINDING_COMMITTED_MAGIC_V4,
-        POLICY_BINDING_COMPLETE_MAGIC_V4, POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4,
-        POLICY_BINDING_PREVIEW_REPLY_MAGIC_V4, POLICY_BINDING_QUERY_MAGIC_V4,
-        POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_BINDING_REPLAY_QUERY_MAGIC_V4,
-        POLICY_BINDING_REPLAY_REPLY_MAGIC_V4, POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
-        POLICY_BINDING_STAGE_REPLY_MAGIC_V4, POLICY_BINDING_TERMINAL_ACK_MAGIC_V4,
-        POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
-        POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2, PROJECT_PACKET_BYTES,
-        acknowledge_closed_binding_completion_v4, decode_closed_binding_base,
+        CLOSED_POLICY_BINDING_BYTES_V2, EXPLICIT_PROJECT_PACKET_BYTES,
+        MAXIMUM_EXPLICIT_RECEIPT_BYTES, MAXIMUM_INPUT_BYTES, MAXIMUM_PROJECT_INPUT_BYTES,
+        MAXIMUM_RECEIPT_BYTES, ObjectDigest, PACKET_BYTES, POLICY_BINDING_BASE_MAGIC_V4,
+        POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_COMPLETE_MAGIC_V4,
+        POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4, POLICY_BINDING_PREVIEW_REPLY_MAGIC_V4,
+        POLICY_BINDING_QUERY_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4,
+        POLICY_BINDING_REPLAY_QUERY_MAGIC_V5, POLICY_BINDING_REPLAY_REPLY_MAGIC_V5,
+        POLICY_BINDING_STAGE_QUERY_MAGIC_V4, POLICY_BINDING_STAGE_REPLY_MAGIC_V4,
+        POLICY_BINDING_TERMINAL_ACK_MAGIC_V4, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3,
+        POLICY_HEAD_LEASE_QUERY_MAGIC_V3, POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
+        PROJECT_PACKET_BYTES, acknowledge_closed_binding_completion_v4, decode_closed_binding_base,
         decode_closed_binding_preview_reply, decode_closed_binding_replay_reply,
         decode_closed_binding_stage_reply, decode_explicit_receipt_v4, decode_receipt,
         parse_receipt_frame, policy_query_request, validate_closed_binding_frame,
@@ -1332,7 +1354,7 @@ mod tests {
             POLICY_HEAD_QUERY_MAGIC_V2,
             POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
             POLICY_BINDING_QUERY_MAGIC_V4,
-            POLICY_BINDING_REPLAY_QUERY_MAGIC_V4,
+            POLICY_BINDING_REPLAY_QUERY_MAGIC_V5,
             POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
             POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4,
             super::POLICY_BINDING_FLIGHT_QUERY_MAGIC_V4,
@@ -1350,7 +1372,7 @@ mod tests {
         let binding = ObjectDigest::from_bytes([8; 32]);
         let epoch = 9_u64;
         let mut reply = [0; CLOSED_BINDING_REPLAY_REPLY_BYTES];
-        reply[..8].copy_from_slice(POLICY_BINDING_REPLAY_REPLY_MAGIC_V4);
+        reply[..8].copy_from_slice(POLICY_BINDING_REPLAY_REPLY_MAGIC_V5);
         reply[8..24].copy_from_slice(&nonce);
         reply[24..56].copy_from_slice(binding.as_bytes());
         reply[56..64].copy_from_slice(&epoch.to_be_bytes());
@@ -1358,7 +1380,7 @@ mod tests {
 
         assert!(matches!(
             decode_closed_binding_replay_reply(&reply, nonce, binding, epoch),
-            Ok((ClosedPolicyBindingDecisionV2::Absent, None))
+            Ok((ClosedPolicyBindingDecisionV2::Absent, None, None))
         ));
         assert!(decode_closed_binding_replay_reply(&reply, [3; 16], binding, epoch).is_err());
         assert!(
@@ -1377,6 +1399,10 @@ mod tests {
         reply[64] = 1;
         assert!(decode_closed_binding_replay_reply(&reply, nonce, binding, epoch).is_err());
         reply[64] = 3;
+        assert!(decode_closed_binding_replay_reply(&reply, nonce, binding, epoch).is_err());
+        reply[65 + CLOSED_POLICY_BINDING_BYTES_V2] = 1;
+        assert!(decode_closed_binding_replay_reply(&reply, nonce, binding, epoch).is_err());
+        reply[64] = 0;
         assert!(decode_closed_binding_replay_reply(&reply, nonce, binding, epoch).is_err());
         reply[..8].copy_from_slice(b"AOSPHR04");
         assert!(decode_closed_binding_replay_reply(&reply, nonce, binding, epoch).is_err());

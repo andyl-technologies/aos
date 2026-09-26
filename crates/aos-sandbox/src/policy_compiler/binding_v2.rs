@@ -374,6 +374,42 @@ pub enum ClosedPolicyBindingDecisionV2 {
     CommittedReleased(ClosedPolicyRootCasObservationV2),
 }
 
+/// Identifies the exact accepted Create and effect transaction fixed by AOSPCB02.
+///
+/// This is a non-authorizing claim until the held Root decision and signer
+/// proof are read back under the all-owner barrier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClosedPolicyEffectHandoffV2 {
+    /// The accepted Create operation.
+    pub operation: OperationId,
+    /// The target sandbox.
+    pub sandbox: SandboxId,
+    /// The accepted operation generation.
+    pub accepted_generation: u64,
+    /// The reserved effect transaction identity.
+    pub effect_transaction: [u8; 16],
+    /// The Root handoff epoch.
+    pub epoch: u64,
+}
+
+/// Decodes the effect handoff fields from one canonical closed Root proposal.
+///
+/// # Errors
+///
+/// Rejects a malformed or noncanonical AOSPCB02 proposal.
+pub fn closed_policy_effect_handoff_v2(
+    proposed: &[u8],
+) -> Result<ClosedPolicyEffectHandoffV2, PolicyCompilerJournalErrorV1> {
+    let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
+    Ok(ClosedPolicyEffectHandoffV2 {
+        operation: binding.operation,
+        sandbox: binding.sandbox,
+        accepted_generation: binding.accepted_generation,
+        effect_transaction: binding.effect_transaction,
+        epoch: binding.handoff_epoch,
+    })
+}
+
 /// Records a Cache-only comparison made under the root writer.
 ///
 /// This is deliberately not an all-owner cut: root has not independently
@@ -1347,13 +1383,15 @@ impl ClosedPolicyRootSessionV2<'_> {
 
     /// Releases an inert Q04 custody record after its exact response ACK.
     ///
-    /// This does not authorize publication or effects. The Q04 exchange has
-    /// no effect handoff, so a successful ACK may retire this local guard.
-    /// A lost ACK leaves it held for explicit cold resolution.
+    /// This does not authorize publication or effects. Only an unqualified
+    /// Q04 exchange has no effect handoff; a qualified signer-proof decision
+    /// cannot retire this guard through the inert route. A lost ACK leaves it
+    /// held for explicit cold resolution.
     ///
     /// # Errors
     ///
-    /// Rejects a stale binding or epoch, absent hold, or failed durable write.
+    /// Rejects a stale binding or epoch, absent hold, qualified signer proof,
+    /// or failed durable write.
     pub fn release_inert_hold(
         &mut self,
         committed: ClosedPolicyRootCasObservationV2,
@@ -1367,6 +1405,7 @@ impl ClosedPolicyRootSessionV2<'_> {
             || held.epoch != committed.root_generation
             || held.issuer_owner != self.identity.issuer_owner
             || self.postcommit.is_none()
+            || self.authority.get(&proof_key(held.binding))?.is_some()
         {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
@@ -1755,8 +1794,9 @@ pub fn read_fixed_inert_closed_policy_binding_hold_v1()
 /// The caller must retain Controller, Source, and Cache custody before this
 /// function acquires the Root writer last. A committed decision carries the
 /// exact protected proposal bytes for cross-owner comparison after restart;
-/// an absent decision carries no proposal. Neither can release another owner's
-/// hold or authorize Create.
+/// only a qualified held decision carries the digest of its canonical Root
+/// signer-proof record. An absent decision carries neither. These observations
+/// cannot release another owner's hold or authorize Create.
 ///
 /// # Errors
 ///
@@ -1766,21 +1806,46 @@ pub fn read_fixed_inert_closed_policy_binding_hold_v1()
 pub fn recover_fixed_closed_policy_binding_decision_v2(
     binding: ObjectDigest,
     epoch: u64,
-) -> Result<(ClosedPolicyBindingDecisionV2, Option<Vec<u8>>), PolicyCompilerJournalErrorV1> {
+) -> Result<
+    (
+        ClosedPolicyBindingDecisionV2,
+        Option<Vec<u8>>,
+        Option<ObjectDigest>,
+    ),
+    PolicyCompilerJournalErrorV1,
+> {
     let (mut journal, _) = Journal::open_protected_at(
         Path::new(PROTECTED_POLICY_ROOT),
         POLICY_AUTHORITY_JOURNAL,
         policy_authority_journal_limits(),
     )?;
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
-    recover_closed_binding_decision_from_authority(&authority, binding, epoch)
+    recover_closed_binding_decision_with_proof_from_authority(&authority, binding, epoch)
 }
 
+#[cfg(test)]
 fn recover_closed_binding_decision_from_authority(
     authority: &ProtectedJournalAuthority<'_>,
     binding: ObjectDigest,
     epoch: u64,
 ) -> Result<(ClosedPolicyBindingDecisionV2, Option<Vec<u8>>), PolicyCompilerJournalErrorV1> {
+    let (decision, proposed, _) =
+        recover_closed_binding_decision_with_proof_from_authority(authority, binding, epoch)?;
+    Ok((decision, proposed))
+}
+
+fn recover_closed_binding_decision_with_proof_from_authority(
+    authority: &ProtectedJournalAuthority<'_>,
+    binding: ObjectDigest,
+    epoch: u64,
+) -> Result<
+    (
+        ClosedPolicyBindingDecisionV2,
+        Option<Vec<u8>>,
+        Option<ObjectDigest>,
+    ),
+    PolicyCompilerJournalErrorV1,
+> {
     if binding.as_bytes() == &[0; 32] || epoch == 0 {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
@@ -1793,7 +1858,7 @@ fn recover_closed_binding_decision_from_authority(
         if authority.get(&key)?.is_some() || hold.is_some_and(|prior| prior.held) {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
-        return Ok((ClosedPolicyBindingDecisionV2::Absent, None));
+        return Ok((ClosedPolicyBindingDecisionV2::Absent, None, None));
     }
     if epoch.checked_add(1) != Some(next_epoch) || head != binding {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
@@ -1815,10 +1880,8 @@ fn recover_closed_binding_decision_from_authority(
         root_generation: epoch,
         handoff_epoch: epoch,
     };
-    let proof = authority
-        .get(&proof_key(binding))?
-        .map(RootQualifiedProofV1::decode)
-        .transpose()?;
+    let proof_bytes = authority.get(&proof_key(binding))?;
+    let proof = proof_bytes.map(RootQualifiedProofV1::decode).transpose()?;
     if proof.is_some_and(|proof| proof.binding != binding || proof.epoch != epoch) {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
@@ -1850,20 +1913,28 @@ fn recover_closed_binding_decision_from_authority(
     } else {
         ClosedPolicyBindingDecisionV2::CommittedReleased(observation)
     };
-    Ok((decision, Some(encoded.to_vec())))
+    let proof_digest = if matches!(
+        decision,
+        ClosedPolicyBindingDecisionV2::CommittedQualifiedHeld(_)
+    ) {
+        proof_bytes.map(|bytes| ObjectDigest::from_bytes(Sha256::digest(bytes).into()))
+    } else {
+        None
+    };
+    Ok((decision, Some(encoded.to_vec()), proof_digest))
 }
 
 /// Resolves a cold, inert Q04 hold after independent offline review.
 ///
-/// The current Q04 service has no effect handoff. Its root owner may therefore
-/// retire an exact abandoned hold before admitting another closed proposal.
-/// This must not be used as an effect-success claim or reused if Q04 gains an
-/// effect handoff. The caller must run as the privileged root owner.
+/// An unqualified Q04 hold has no effect handoff and may be retired after
+/// independent offline review. A qualified signer-proof decision is ineligible:
+/// Controller may already have acknowledged it and Root needs an authenticated
+/// effect ACK before ordered release. The caller must run as the root owner.
 ///
 /// # Errors
 ///
-/// Rejects a different head or epoch, a previously released hold, malformed
-/// history, or failed durable release/readback.
+/// Rejects a different head or epoch, a previously released or qualified hold,
+/// malformed history, or failed durable release/readback.
 pub fn release_fixed_inert_closed_policy_binding_hold_v1(
     binding: ObjectDigest,
     epoch: u64,
@@ -1877,7 +1948,11 @@ pub fn release_fixed_inert_closed_policy_binding_hold_v1(
     let (head, next_epoch, count) = current_root_binding_chain(&authority)?;
     let held = current_hold(&authority, head, next_epoch, count)?
         .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-    if !held.held || held.binding != binding || held.epoch != epoch {
+    if !held.held
+        || held.binding != binding
+        || held.epoch != epoch
+        || authority.get(&proof_key(binding))?.is_some()
+    {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
     release_hold(&mut authority, held)?;
@@ -3211,6 +3286,7 @@ mod tests {
             )
             .expect("same-cut qualified CAS");
         assert_eq!(committed.binding(), source_hold.binding());
+        assert!(session.release_inert_hold(committed).is_err());
         drop(session);
         drop(root);
 
@@ -3230,17 +3306,25 @@ mod tests {
             .expect("retained hold");
         assert!(hold.held);
         assert_eq!(hold.binding, committed.binding());
-        let (decision, recorded) = recover_closed_binding_decision_from_authority(
-            &authority,
-            committed.binding(),
-            committed.handoff_epoch(),
-        )
-        .expect("exact cold Root replay");
+        let (decision, recorded, proof_digest) =
+            recover_closed_binding_decision_with_proof_from_authority(
+                &authority,
+                committed.binding(),
+                committed.handoff_epoch(),
+            )
+            .expect("exact cold Root replay");
         assert_eq!(
             decision,
             ClosedPolicyBindingDecisionV2::CommittedQualifiedHeld(committed)
         );
         assert_eq!(recorded.as_deref(), Some(proposed.as_slice()));
+        assert_eq!(
+            proof_digest,
+            authority
+                .get(&proof_key(committed.binding()))
+                .unwrap()
+                .map(|bytes| { ObjectDigest::from_bytes(Sha256::digest(bytes).into()) })
+        );
         let proof = RootQualifiedProofV1::decode(
             authority
                 .get(&proof_key(committed.binding()))

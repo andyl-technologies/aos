@@ -74,8 +74,8 @@ use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_BINDING_FLIGHT_REPLY_MAGIC_V4, POLICY_BINDING_FLIGHT_SUBMIT_MAGIC_V4,
     POLICY_BINDING_HELD_MARKER_V4, POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4,
     POLICY_BINDING_PREVIEW_REPLY_MAGIC_V4, POLICY_BINDING_QUERY_MAGIC_V4,
-    POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_BINDING_REPLAY_QUERY_MAGIC_V4,
-    POLICY_BINDING_REPLAY_REPLY_MAGIC_V4, POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
+    POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_BINDING_REPLAY_QUERY_MAGIC_V5,
+    POLICY_BINDING_REPLAY_REPLY_MAGIC_V5, POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
     POLICY_BINDING_STAGE_REPLY_MAGIC_V4, POLICY_BINDING_SUBMIT_MAGIC_V4,
     POLICY_BINDING_TERMINAL_ACK_MAGIC_V4, POLICY_HEAD_LEASE_ACK_MAGIC_V3,
     POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
@@ -762,7 +762,7 @@ fn read_head_request(
                 HeadRequestMode::ClosedBinding
             }
         }
-        Some(magic) if magic == POLICY_BINDING_REPLAY_QUERY_MAGIC_V4 => {
+        Some(magic) if magic == POLICY_BINDING_REPLAY_QUERY_MAGIC_V5 => {
             HeadRequestMode::ClosedBindingReplay
         }
         Some(magic) if magic == POLICY_BINDING_STAGE_QUERY_MAGIC_V4 => {
@@ -1637,7 +1637,8 @@ fn serve_closed_binding_replay(
     }
     let binding = ObjectDigest::from_bytes(claim[..32].try_into()?);
     let epoch = u64::from_be_bytes(claim[32..40].try_into()?);
-    let (decision, proposed) = recover_fixed_closed_policy_binding_decision_v2(binding, epoch)?;
+    let (decision, proposed, proof) =
+        recover_fixed_closed_policy_binding_decision_v2(binding, epoch)?;
     let disposition = match decision {
         ClosedPolicyBindingDecisionV2::Absent => 0,
         ClosedPolicyBindingDecisionV2::CommittedHeld(_) => 1,
@@ -1646,8 +1647,8 @@ fn serve_closed_binding_replay(
     };
 
     let mut reply =
-        [0; 8 + 16 + CLOSED_BINDING_REPLAY_CLAIM_BYTES + 1 + CLOSED_POLICY_BINDING_BYTES_V2];
-    reply[..8].copy_from_slice(POLICY_BINDING_REPLAY_REPLY_MAGIC_V4);
+        [0; 8 + 16 + CLOSED_BINDING_REPLAY_CLAIM_BYTES + 1 + CLOSED_POLICY_BINDING_BYTES_V2 + 32];
+    reply[..8].copy_from_slice(POLICY_BINDING_REPLAY_REPLY_MAGIC_V5);
     reply[8..24].copy_from_slice(nonce);
     reply[24..64].copy_from_slice(&claim);
     reply[64] = disposition;
@@ -1657,7 +1658,15 @@ fn serve_closed_binding_replay(
                 io::Error::new(io::ErrorKind::InvalidData, "invalid Q04 decision record").into(),
             );
         }
-        reply[65..].copy_from_slice(&proposed);
+        reply[65..65 + CLOSED_POLICY_BINDING_BYTES_V2].copy_from_slice(&proposed);
+    }
+    if let Some(proof) = proof {
+        if disposition != 3 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "unexpected Q04 proof").into());
+        }
+        reply[65 + CLOSED_POLICY_BINDING_BYTES_V2..].copy_from_slice(proof.as_bytes());
+    } else if disposition == 3 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "missing Q04 proof").into());
     }
     stream.write_all(&reply)?;
     Ok(())
@@ -2161,7 +2170,7 @@ mod tests {
     fn q04_replay_header_bypasses_only_the_unresolved_hold_gate() {
         let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
         let mut request = [0_u8; REQUEST_BYTES];
-        request[..8].copy_from_slice(POLICY_BINDING_REPLAY_QUERY_MAGIC_V4);
+        request[..8].copy_from_slice(POLICY_BINDING_REPLAY_QUERY_MAGIC_V5);
         request[8..24].copy_from_slice(&[1; 16]);
         client.write_all(&request).expect("Q04 replay request");
 

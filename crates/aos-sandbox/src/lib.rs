@@ -219,16 +219,16 @@ pub use host_catalog_reconciliation::{
     HostCatalogReconciliationV1,
 };
 pub use journal::{
-    CommitResult, ControllerPolicyHoldV1, FixedSourceProviderJournalHandoffV1,
-    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
-    GlobalCapacityReservationRequestV1, GlobalCapacityReservationV1, IdempotencyKey,
-    IdempotencyOutcome, Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction,
-    MountManagerStartupPolicyReceiptV1, MountSourceAcquisitionJournalAuthorityV2,
-    MountSourceConsumptionCommitReceipt, MountSourceConsumptionCompanionProjectionV2,
-    MountSourceConsumptionJournalAuthorityV1, MountSourceConsumptionPreflight,
-    MountSourceMigrationJournalAuthorityV2, PreparedGlobalCapacityReservationV1,
-    ProtectedJournalAuthority, ProtectedJournalPreflight, ProtectedJournalSnapshot,
-    RecordNamespace, RecoveryReport,
+    CommitResult, ControllerPolicyEffectAckV1, ControllerPolicyHoldV1,
+    FixedSourceProviderJournalHandoffV1, GlobalCapacityReservationPurposeV1,
+    GlobalCapacityReservationRecoveryBindingV1, GlobalCapacityReservationRequestV1,
+    GlobalCapacityReservationV1, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
+    JournalLimits, JournalRecord, JournalTransaction, MountManagerStartupPolicyReceiptV1,
+    MountSourceAcquisitionJournalAuthorityV2, MountSourceConsumptionCommitReceipt,
+    MountSourceConsumptionCompanionProjectionV2, MountSourceConsumptionJournalAuthorityV1,
+    MountSourceConsumptionPreflight, MountSourceMigrationJournalAuthorityV2,
+    PreparedGlobalCapacityReservationV1, ProtectedJournalAuthority, ProtectedJournalPreflight,
+    ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
 };
 pub use lifecycle_authority::{
     AtomicStorageLifecyclePublicationErrorV1, compile_atomic_storage_lifecycle_template_v1,
