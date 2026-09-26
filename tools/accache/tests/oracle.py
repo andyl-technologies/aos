@@ -3567,6 +3567,75 @@ def check_clang_module_file(root, env, accache, sccache, clang, hits, named):
     return results
 
 
+def check_clang_module_map_input(root, env, accache, sccache, clang, hits):
+    """Track an explicit module map and preserve invalid-map errors."""
+    fixture = "clang-module-map-input"
+    work = root / fixture
+    work.mkdir()
+    (work / "source.c").write_text("int answer(void) { return 42; }\n")
+    module_map = work / "module.modulemap"
+    object_file = work / "source.o"
+    depfile = work / "source.d"
+    args = [clang, "-c", "source.c", "-o", "source.o", "-MD", "-MF", "source.d",
+            "-fmodule-map-file=module.modulemap", "-fdiagnostics-color=never"]
+
+    def compile_object(wrapper):
+        object_file.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        artifacts = {path.name: path.read_bytes()
+                     for path in [object_file, depfile] if path.exists()}
+        return completed.returncode, completed.stdout, completed.stderr, artifacts
+
+    results = []
+    for revision, contents in enumerate(["module Empty { }\n",
+                                         "module Empty { }\n// revised\n"]):
+        module_map.write_text(contents)
+        direct = compile_object([])
+        assert direct[0] == 0 and set(direct[3]) == {"source.o", "source.d"}, direct
+        assert b"module.modulemap" in direct[3]["source.d"], direct[3]["source.d"]
+
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() == before_hits, (fixture, "sccache ignored the module map edit")
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() > before_hits, (fixture, "sccache did not warm-hit")
+
+        assert compile_object([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", (fixture, revision, cold)
+        if revision:
+            assert any("module.modulemap" in change for change in cold["changes"]), cold
+        assert compile_object([accache]) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", (fixture, revision, warm)
+        results.append({"fixture": fixture, "revision": revision,
+                        "oracle_hit": True, "accache": "hit",
+                        "artifacts": ["source.o", "source.d"]})
+
+    module_map.write_text("this is invalid\n")
+    direct = compile_object([])
+    assert direct[0] != 0 and "source.o" not in direct[3], direct
+    before_hits = hits()
+    oracle = compile_object([sccache])
+    assert oracle[:3] == direct[:3] and "source.o" not in oracle[3], oracle
+    assert hits() == before_hits, (fixture, "sccache reused a valid module map")
+
+    assert compile_object([accache]) == direct
+    event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+    assert (event["outcome"] == "bypass"
+            and "dependency discovery failed" in event["reason"]), event
+    results.append({"fixture": fixture, "revision": 2,
+                    "oracle_hit": False, "accache": "bypass",
+                    "oracle_missing_artifacts": sorted(set(direct[3]) - set(oracle[3])),
+                    "artifacts": sorted(direct[3])})
+
+    print("PASS oracle", fixture, "input and invalid-map passthrough", flush=True)
+    return results
+
+
 def check_c_unhashed_pipe(root, env, accache, sccache, gcc, clang, hits):
     """Reuse an object when only the frontend's unhashed -pipe flag changes."""
     results = []
@@ -5334,6 +5403,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
         for named in [True, False]:
             results.extend(check_clang_module_file(root, env, accache,
                                                    sccache, clang, hits, named))
+        results.extend(check_clang_module_map_input(root, env, accache,
+                                                   sccache, clang, hits))
         results.extend(check_c_unhashed_pipe(root, env, accache,
                                             sccache, gcc, clang, hits))
         results.append(check_clang_unsupported_parallel_jobs(
