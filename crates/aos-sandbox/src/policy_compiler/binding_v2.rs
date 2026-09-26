@@ -1613,13 +1613,13 @@ impl ClosedPolicyRootSessionV2<'_> {
     /// Releases an inert Q04 custody record after its exact response ACK.
     ///
     /// This does not authorize publication or effects. Only an unqualified
-    /// Q04 exchange has no effect handoff; a qualified signer-proof decision
+    /// Q04 exchange has no effect handoff; a qualified signer or V8 held proof
     /// cannot retire this guard through the inert route. A lost ACK leaves it
     /// held for explicit cold resolution.
     ///
     /// # Errors
     ///
-    /// Rejects a stale binding or epoch, absent hold, qualified signer proof,
+    /// Rejects a stale binding or epoch, absent hold, retained handoff proof,
     /// or failed durable write.
     pub fn release_inert_hold(
         &mut self,
@@ -1634,11 +1634,7 @@ impl ClosedPolicyRootSessionV2<'_> {
             || held.epoch != committed.root_generation
             || held.issuer_owner != self.identity.issuer_owner
             || self.postcommit.is_none()
-            || self.authority.get(&proof_key(held.binding))?.is_some()
-            || self
-                .authority
-                .get(&held_cas_proof_key(held.binding))?
-                .is_some()
+            || root_hold_has_handoff_proof(&self.authority, held.binding)?
         {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
@@ -2329,13 +2325,14 @@ fn recover_closed_binding_decision_with_proof_from_authority(
 /// Resolves a cold, inert Q04 hold after independent offline review.
 ///
 /// An unqualified Q04 hold has no effect handoff and may be retired after
-/// independent offline review. A qualified signer-proof decision is ineligible:
-/// Controller may already have acknowledged it and Root needs an authenticated
-/// effect ACK before ordered release. The caller must run as the root owner.
+/// independent offline review. A qualified signer proof or V8 AOSPCP02 held
+/// proof is ineligible: Controller may already have acknowledged it, and Root
+/// needs a versioned authenticated effect ACK before ordered release. The
+/// caller must run as the root owner.
 ///
 /// # Errors
 ///
-/// Rejects a different head or epoch, a previously released or qualified hold,
+/// Rejects a different head or epoch, a previously released or proven hold,
 /// malformed history, or failed durable release/readback.
 pub fn release_fixed_inert_closed_policy_binding_hold_v1(
     binding: ObjectDigest,
@@ -2347,19 +2344,35 @@ pub fn release_fixed_inert_closed_policy_binding_hold_v1(
         policy_authority_journal_limits(),
     )?;
     let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    release_inert_hold_after_exact_root_readback(&mut authority, binding, epoch)
+}
+
+fn release_inert_hold_after_exact_root_readback(
+    authority: &mut ProtectedJournalAuthority<'_>,
+    binding: ObjectDigest,
+    epoch: u64,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
     let (head, next_epoch, count) = current_root_binding_chain(&authority)?;
     let held = current_hold(&authority, head, next_epoch, count)?
         .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
     if !held.held
         || held.binding != binding
         || held.epoch != epoch
-        || authority.get(&proof_key(binding))?.is_some()
+        || root_hold_has_handoff_proof(&authority, binding)?
     {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
-    release_hold(&mut authority, held)?;
+    release_hold(authority, held)?;
     current_root_binding_chain(&authority)?;
     Ok(())
+}
+
+fn root_hold_has_handoff_proof(
+    authority: &ProtectedJournalAuthority<'_>,
+    binding: ObjectDigest,
+) -> Result<bool, PolicyCompilerJournalErrorV1> {
+    Ok(authority.get(&proof_key(binding))?.is_some()
+        || authority.get(&held_cas_proof_key(binding))?.is_some())
 }
 
 /// Releases one Controller freeze only after exact root cold readback.
@@ -4325,6 +4338,61 @@ mod tests {
         assert!(release_hold(&mut authority, held).is_err());
         assert!(current_root_binding_chain(&authority).is_ok());
         assert!(ensure_root_binding_unheld(&authority).is_ok());
+    }
+
+    #[test]
+    fn inert_root_recovery_cannot_release_a_v8_held_proof() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let binding = cas_fixture();
+        let proposed = binding.encode().expect("binding proposal");
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("Root writer");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        let committed = session
+            .commit_closed_binding(&proposed)
+            .expect("closed held CAS");
+        drop(session);
+
+        let mut authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("recovery writer");
+        authority
+            .commit(
+                &JournalTransaction::new(
+                    [71; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        held_cas_proof_key(committed.binding()),
+                        vec![1],
+                    )],
+                )
+                .expect("proof transaction"),
+            )
+            .expect("protected V8 proof marker");
+        assert!(
+            release_inert_hold_after_exact_root_readback(
+                &mut authority,
+                committed.binding(),
+                committed.handoff_epoch(),
+            )
+            .is_err(),
+            "the old offline release cannot consume AOSPCP02 custody"
+        );
+        let (head, next_epoch, count) =
+            current_root_binding_chain(&authority).expect("held Root chain");
+        assert!(
+            current_hold(&authority, head, next_epoch, count)
+                .expect("Root hold")
+                .is_some_and(|hold| hold.held)
+        );
     }
 
     #[test]
