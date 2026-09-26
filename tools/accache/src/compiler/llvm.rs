@@ -83,6 +83,7 @@ pub(super) fn classify(argument: &str) -> OptionEffect<'_> {
         "rewrite-map-file=",
         "sample-profile-file=",
         "sample-profile-inline-replay=",
+        "sample-profile-remapping-file=",
         "summary-file=",
         "use-ctx-profile=",
         "wholeprogramdevirt-read-summary=",
