@@ -19,9 +19,9 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use aos_sandbox::controller_execution_preissue::ControllerExecutionReserveSourceV1;
 use aos_sandbox::runtime_execution::{
-    DormantRuntimeExecutionClaimV1, PreparedHostSettlementPreliminaryV1,
-    ProtectedHostNoApplySettlementHistoryV1, VerifiedHostOutputReserveSourceV1,
-    verify_host_output_reserve_source_v1,
+    DormantRuntimeExecutionClaimV1, HostEffectFenceRecoveryClaimV1,
+    PreparedHostSettlementPreliminaryV1, ProtectedHostNoApplySettlementHistoryV1,
+    VerifiedHostOutputReserveSourceV1, verify_host_output_reserve_source_v1,
 };
 use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1,
@@ -1410,6 +1410,135 @@ where
             return Err(HostError::Fence("Host preliminary readback changed"));
         }
         Ok(Some(readback))
+    }
+
+    /// Completes an Effect-first HostState hold from the original signed request.
+    ///
+    /// This recovery-only path is deliberately absent from public dispatch.
+    /// It proves the original method-37 source and completed method-39 HostState
+    /// handoff again before appending the nonauthorizing HostState half. It
+    /// requires the original live signed session, Host boot, and deadline;
+    /// a lost or expired session stays quarantined. It does not verify
+    /// Controller archive currentness or release either fence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign or expired signed method-42 request, changed Host
+    /// custody, a different preliminary stage, or an outcome-unknown append.
+    pub fn recover_effect_first_hoststate_hold_v1(
+        &self,
+        claim: &mut HostEffectFenceRecoveryClaimV1<'_>,
+        authenticated: &AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<()> {
+        if authenticated.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            || authenticated.method() != BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+            || authenticated.authorization().is_some()
+        {
+            return Err(HostError::Fence("Host fence recovery is not authenticated"));
+        }
+        let sample = crate::service::trusted_paired_clock_sample()?;
+        if sample.host_boot_id() != claim.host_verifier().boot_id() {
+            return Err(HostError::Fence("Host fence recovery boot is stale"));
+        }
+        let request = decode_host_no_apply_settlement_request_v2(
+            authenticated.exact_body(),
+            authenticated.peer(),
+            authenticated.peer_policy(),
+            sample.boottime_nanoseconds(),
+        )?;
+        if request.phase() != HostNoApplySettlementPhaseV2::Preliminary
+            || request.coordinate() != HostNoApplyControllerCoordinateV2::Preliminary
+        {
+            return Err(HostError::Fence("Host fence recovery is not preliminary"));
+        }
+        let original = request.original();
+        let source =
+            ControllerExecutionArgumentAttemptV1::decode_canonical(original.canonical_attempt())
+                .map_err(|_| HostError::Fence("original Host settlement source is invalid"))?;
+        let handoff = self.verified_completed_no_apply_handoff_for_recovery_v1(
+            claim,
+            &source,
+            original.original_session_binding(),
+            original.original_signed_request_digest(),
+        )?;
+        claim
+            .complete_hoststate_hold_v1(
+                &source,
+                original.original_session_binding(),
+                original.original_signed_request_digest(),
+                handoff.handoff_digest(),
+                request.archive_head(),
+                request.signed_terminal_outcome(),
+                authenticated.session_binding(),
+                request.challenge(),
+            )
+            .map_err(|_| HostError::Fence("Host fence recovery append needs cold readback"))?;
+        let durable = self.store.load()?;
+        durable.validate_authenticated(&self.authority)?;
+        if durable != self.state {
+            return Err(HostError::Fence("HostState changed during fence recovery"));
+        }
+        Ok(())
+    }
+
+    fn verified_completed_no_apply_handoff_for_recovery_v1(
+        &self,
+        claim: &HostEffectFenceRecoveryClaimV1<'_>,
+        source: &ControllerExecutionArgumentAttemptV1,
+        original_session_binding: [u8; 32],
+        original_signed_request_digest: [u8; 32],
+    ) -> Result<VerifiedHostNoApplyHandoffV1> {
+        self.ensure_healthy()?;
+        let durable = self.store.load()?;
+        durable.validate_authenticated(&self.authority)?;
+        if durable != self.state {
+            return Err(HostError::Fence(
+                "HostState changed during no-Apply recovery",
+            ));
+        }
+        let current = claim.currentness().runtime().currentness();
+        let assignment = BrokerAssignment::new(
+            current.sandbox(),
+            current.incarnation(),
+            current.assignment_epoch(),
+            current.desired_generation(),
+            current.assignment_digest(),
+        )
+        .map_err(|_| HostError::Fence("protected runtime assignment is invalid"))?;
+        let runtime_handle = claim.currentness().runtime().handle();
+        if source.host_boot_id() != claim.host_verifier().boot_id() {
+            return Err(HostError::Fence("Host no-Apply boot identity changed"));
+        }
+        let original = self
+            .original_argument_intent_from_state(&durable, source, assignment, runtime_handle)
+            .map_err(|_| HostError::Fence("original Host argument handoff changed"))?;
+        if !original
+            .matches_original_session(original_session_binding, original_signed_request_digest)
+        {
+            return Err(HostError::Fence("original Host argument session changed"));
+        }
+        let marker = claim
+            .query_host_no_apply_v1(
+                source,
+                original_session_binding,
+                original_signed_request_digest,
+            )
+            .map_err(|_| HostError::Fence("protected no-Apply marker is stale"))?
+            .ok_or(HostError::Fence("Host no-Apply marker is missing"))?;
+        let handoff_digest = durable.completed_no_apply_handoff_digest(
+            &self.authority,
+            source,
+            marker,
+            assignment,
+            runtime_handle,
+        )?;
+        claim
+            .revalidate()
+            .map_err(|_| HostError::Fence("protected no-Apply recovery claim changed"))?;
+        Ok(VerifiedHostNoApplyHandoffV1 {
+            marker,
+            handoff_digest,
+        })
     }
 
     /// Rejoins one historical stage to current Host marker and handoff custody.
