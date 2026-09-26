@@ -134,6 +134,8 @@ in {
         type = lib.types.listOf lib.types.package;
         default = [];
         apply = lib.uniqueBy builtins.toString;
+        # Derivations are image-composition inputs, not portable runtime values.
+        internal = true;
         description = ''
           Packages selected from the evaluated system profile for the default
           container. The backend adds its runtime core and AOS CLI roots.
