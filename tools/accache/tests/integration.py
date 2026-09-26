@@ -83,7 +83,7 @@ def run_suite(root):
         invoke(compiler, args, "hit")
 
     # GCC 16 can add diagnostic file sinks that the pinned sccache argument
-    # table does not describe. Preserve those files through direct execution.
+    # table does not describe. Restore their reports on a cache hit.
     (work / "source.c").write_text("int diagnostic(void) { return 42; }\n")
     (work / "reports").mkdir()
     sarif = work / "reports/source.c.c.sarif"
@@ -124,11 +124,32 @@ def run_suite(root):
         report = work / f"{option}.sarif"
         diagnostic_args = ["-c", "source.c", "-o", f"{option}.o",
                            f"-fdiagnostics-{option}-output=sarif:file={report}"]
-        invoke(gcc, diagnostic_args, "bypass")
-        assert report.is_file(), report
+        invoke(gcc, diagnostic_args)
+        report_bytes = report.read_bytes()
         report.unlink()
-        invoke(gcc, diagnostic_args, "bypass")
-        assert report.is_file(), report
+        (work / f"{option}.o").unlink()
+        invoke(gcc, diagnostic_args, "hit")
+        assert report.read_bytes() == report_bytes
+
+    html_report = work / "reports/diagnostic.html"
+    html_args = ["-c", "source.c", "-o", "reports/diagnostic.o",
+                 f"-fdiagnostics-add-output=experimental-html:file={html_report}"]
+    invoke(gcc, html_args)
+    html_bytes = html_report.read_bytes()
+    html_report.unlink()
+    (work / "reports/diagnostic.o").unlink()
+    invoke(gcc, html_args, "hit")
+    assert html_report.read_bytes() == html_bytes
+
+    diagram_report = work / "reports/diagrams.html"
+    diagram_args = ["-c", "source.c", "-o", "reports/diagrams.o",
+                    "-fdiagnostics-add-output=experimental-html:"
+                    f"show-state-diagrams=yes,file={diagram_report}"]
+    invoke(gcc, diagram_args, "bypass")
+    assert diagram_report.is_file(), diagram_report
+    diagram_report.unlink()
+    invoke(gcc, diagram_args, "bypass")
+    assert diagram_report.is_file(), diagram_report
 
     (work / "library.rs").write_text('pub const VALUE: &str = env!("VALUE");\npub const TEXT: &str = include_str!("message.txt");\n')
     (work / "message.txt").write_text("one")

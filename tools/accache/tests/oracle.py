@@ -84,6 +84,13 @@ def fixtures(gcc, clang, rustc):
             yield Fixture("gcc-statistics-dump", compiler,
                           base + ["-O2", "-fdump-statistics-stats"], c_sources,
                           {"value.h": "#define VALUE 73\n"})
+            yield Fixture("gcc-debug-dumps", compiler,
+                          base + ["-da"], c_sources,
+                          {"value.h": "#define VALUE 73\n"})
+            yield Fixture("gcc-joined-debug-dumps", compiler,
+                          base + ["-dumpbase=custom"], c_sources)
+            yield Fixture("gcc-debug-assembly", compiler,
+                          base + ["-dA"], c_sources)
             for stream in ["stdout", "stderr"]:
                 yield Fixture(f"gcc-tree-dump-{stream}", compiler,
                               base + [f"-fdump-tree-original={stream}"], c_sources,
@@ -107,6 +114,37 @@ def fixtures(gcc, clang, rustc):
                            "-fdiagnostics-format=sarif-file"],
                           c_sources | {"objects/.keep": ""},
                           nondeterministic_outputs={"objects/source.c.c.sarif"})
+            yield Fixture("gcc-add-sarif-output", compiler,
+                          base + ["-fdiagnostics-add-output=sarif:file=added.sarif"],
+                          c_sources, {"value.h": "#define VALUE 73\n"},
+                          nondeterministic_outputs={"added.sarif"})
+            yield Fixture("gcc-add-default-sarif", compiler,
+                          base + ["-fdiagnostics-add-output=sarif"], c_sources,
+                          {"value.h": "#define VALUE 73\n"},
+                          nondeterministic_outputs={"source.c.sarif"})
+            yield Fixture("gcc-set-sarif-output", compiler,
+                          base + ["-fdiagnostics-set-output=sarif:file=set.sarif"],
+                          c_sources, nondeterministic_outputs={"set.sarif"})
+            yield Fixture("gcc-sarif-output-parameters", compiler,
+                          base + ["-fdiagnostics-set-output=sarif:version=2.1,file=parameters.sarif"],
+                          c_sources, nondeterministic_outputs={"parameters.sarif"})
+            yield Fixture("gcc-multiple-sarif-outputs", compiler,
+                          base + ["-fdiagnostics-add-output=sarif:file=added.sarif",
+                                  "-fdiagnostics-set-output=sarif:file=set.sarif"],
+                          c_sources, nondeterministic_outputs={"added.sarif", "set.sarif"})
+            yield Fixture("gcc-sarif-then-text", compiler,
+                          base + ["-fdiagnostics-format=sarif-file",
+                                  "-fdiagnostics-format=text"],
+                          c_sources, nondeterministic_outputs={"source.c.sarif"})
+            yield Fixture("gcc-html-output", compiler,
+                          base + ["-fdiagnostics-add-output=experimental-html"],
+                          c_sources, nondeterministic_outputs={"source.c.html"})
+            yield Fixture("gcc-html-output-options", compiler,
+                          base + ["-fdiagnostics-set-output=experimental-html:css=no,javascript=no,file=report.html"],
+                          c_sources, nondeterministic_outputs={"report.html"})
+            yield Fixture("gcc-text-output-options", compiler,
+                          base + ["-Wall", "-fdiagnostics-add-output=text:color=no,show-nesting=no,cfgs=no"],
+                          {"source.c": "int answer(void) { int unused = 1; return 42; }\n"})
         else:
             yield Fixture("clang-serialized-diagnostics", compiler,
                           base + ["--serialize-diagnostics", "source.dia"], c_sources,
@@ -244,6 +282,47 @@ def snapshot(work):
     """Observe file contents and executable bits without relying on a parser."""
     return {str(path.relative_to(work)): (path.read_bytes(), bool(path.stat().st_mode & 0o111))
             for path in work.rglob("*") if path.is_file()}
+
+
+def check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits):
+    """Keep GCC's separate dump naming flags in the pinned frontend's bypass path."""
+    results = []
+    cases = [
+        ("dumpbase", ["-dumpbase", "custom"], "custom.*.original"),
+        ("dumpdir", ["-dumpdir", "prefix-"], "prefix-source.c.*.original"),
+    ]
+    for name, flags, pattern in cases:
+        work = root / f"gcc-custom-{name}"
+        work.mkdir()
+        (work / "source.c").write_text("int answer(void) { return 42; }\n")
+        args = [gcc, "-c", "source.c", "-o", "source.o", "-fdump-tree-original", *flags]
+
+        def compile_object(wrapper):
+            for path in [work / "source.o", *work.glob(pattern)]:
+                path.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (name, wrapper, completed.stderr)
+            reports = list(work.glob(pattern))
+            assert len(reports) == 1, (name, reports)
+            return (work / "source.o").read_bytes(), reports[0].read_bytes()
+
+        direct = compile_object([])
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert compile_object([sccache]) == direct
+        assert hits() == before_hits, (name, "pinned sccache unexpectedly cached")
+
+        for _ in range(2):
+            assert compile_object([accache]) == direct
+            event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert event["outcome"] == "bypass", (name, event)
+
+        results.append({"fixture": f"gcc-custom-{name}", "revision": 0,
+                        "oracle_hit": False, "accache": "bypass",
+                        "artifacts": ["source.o", next(work.glob(pattern)).name]})
+        print("PASS oracle GCC custom", name, "passthrough", flush=True)
+    return results
 
 
 def check_saved_temporaries(root, env, accache, sccache, rustc, hits):
@@ -761,20 +840,28 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                if key != "source.d"})
                     assert "source.d" not in actual[3], "oracle defect changed; remove this exception"
                 missing_oracle_side_files = {
-                    "gcc-aux-info": "source.aux",
-                    "gcc-explicit-tree-dump": "report.txt",
-                    "gcc-opt-report": "report.txt",
-                    "gcc-sarif-report": "source.c.sarif",
-                    "gcc-sarif-nested-output": "objects/source.c.c.sarif",
-                    "clang-serialized-diagnostics": "source.dia",
+                    "gcc-aux-info": {"source.aux"},
+                    "gcc-explicit-tree-dump": {"report.txt"},
+                    "gcc-opt-report": {"report.txt"},
+                    "gcc-sarif-report": {"source.c.sarif"},
+                    "gcc-sarif-nested-output": {"objects/source.c.c.sarif"},
+                    "gcc-add-sarif-output": {"added.sarif"},
+                    "gcc-add-default-sarif": {"source.c.sarif"},
+                    "gcc-set-sarif-output": {"set.sarif"},
+                    "gcc-sarif-output-parameters": {"parameters.sarif"},
+                    "gcc-multiple-sarif-outputs": {"added.sarif", "set.sarif"},
+                    "gcc-sarif-then-text": {"source.c.sarif"},
+                    "gcc-html-output": {"source.c.html"},
+                    "gcc-html-output-options": {"report.html"},
+                    "clang-serialized-diagnostics": {"source.dia"},
                 }
-                if (side_file := missing_oracle_side_files.get(fixture.name)) and label == "sccache warm vs direct":
+                if (side_files := missing_oracle_side_files.get(fixture.name)) and label == "sccache warm vs direct":
                     # These accepted flags produce files that pinned sccache
                     # omits from its action result. Accache must restore them.
-                    assert side_file in expected[3]
+                    assert side_files.issubset(expected[3])
                     expected = (*expected[:3], {key: value for key, value in expected[3].items()
-                                               if key != side_file})
-                    assert side_file not in actual[3], (
+                                               if key not in side_files})
+                    assert side_files.isdisjoint(actual[3]), (
                         "oracle defect changed; remove this exception")
                 if fixture.name == "gcc-sarif-nested-output" and label.startswith("sccache "):
                     # The pinned oracle's preprocessing probe writes a SARIF
@@ -787,13 +874,16 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     actual = (*actual[:3], {key: value for key, value in actual[3].items()
                                            if key != "source.c.sarif"})
                 if fixture.name in {"gcc-tree-dump", "gcc-multiple-dumps",
-                                    "gcc-tree-all-dumps", "gcc-statistics-dump"} and label == "sccache warm vs direct":
+                                    "gcc-tree-all-dumps", "gcc-statistics-dump",
+                                    "gcc-debug-dumps", "gcc-joined-debug-dumps"} and label == "sccache warm vs direct":
                     dump_files = {path for path in expected[3]
                                   if path.startswith("source.c.")}
                     expected_count = {"gcc-tree-dump": 1, "gcc-multiple-dumps": 2,
                                       "gcc-statistics-dump": 1}
-                    if fixture.name == "gcc-tree-all-dumps":
-                        assert len(dump_files) >= 100, ("unexpected GCC dump files", expected[3])
+                    if fixture.name in {"gcc-tree-all-dumps", "gcc-debug-dumps",
+                                        "gcc-joined-debug-dumps"}:
+                        minimum = 100 if fixture.name == "gcc-tree-all-dumps" else 60
+                        assert len(dump_files) >= minimum, ("unexpected GCC dump files", expected[3])
                     else:
                         assert len(dump_files) == expected_count[fixture.name], (
                             "unexpected GCC dump files", expected[3])
@@ -853,9 +943,14 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                 oracle_hit = hits() > before_hits
                 if fixture.name in {"gcc-tree-dump", "gcc-multiple-dumps",
                                     "gcc-tree-all-dumps", "gcc-statistics-dump",
+                                    "gcc-debug-dumps", "gcc-joined-debug-dumps",
                                     "gcc-explicit-tree-dump",
                                     "gcc-opt-report", "gcc-sarif-report",
-                                    "gcc-sarif-nested-output"}:
+                                    "gcc-sarif-nested-output", "gcc-add-sarif-output",
+                                    "gcc-add-default-sarif", "gcc-set-sarif-output",
+                                    "gcc-sarif-output-parameters", "gcc-multiple-sarif-outputs",
+                                    "gcc-sarif-then-text", "gcc-html-output",
+                                    "gcc-html-output-options"}:
                     assert oracle_hit, (fixture.name, "sccache report omission was not a hit")
 
                 accache_cold = invoke([accache])
@@ -884,6 +979,7 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                 "artifacts": sorted(baseline[3])})
             print("PASS oracle", fixture.name, flush=True)
 
+        results.extend(check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits))
         results.append(check_saved_temporaries(root, env, accache, sccache, rustc, hits))
         results.append(check_assembler_include_invalidation(root, env, accache,
                                                             sccache, gcc, hits))
