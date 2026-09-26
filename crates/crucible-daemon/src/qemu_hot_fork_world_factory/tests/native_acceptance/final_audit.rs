@@ -138,7 +138,10 @@ fn audit_content_store(root: &Path) -> (usize, u64) {
         {
             let object = entry.expect("read content-store object");
             let name = object.file_name().into_string().expect("UTF-8 object name");
-            let key = ContentHash::from_hex(&name).expect("64-character content hash");
+            let digest = blake3::Hash::from_hex(&name).expect("64-character content hash");
+            let key = ContentHash {
+                bytes: *digest.as_bytes(),
+            };
             assert!(
                 object
                     .file_type()
