@@ -242,6 +242,7 @@ const fn store_node_kind(kind: StoreNodeKind) -> &'static str {
     match kind {
         StoreNodeKind::Memory => "memory",
         StoreNodeKind::Directory => "directory",
+        StoreNodeKind::Sqlite => "sqlite",
         StoreNodeKind::CompressedDirectory => "compressed-directory",
         StoreNodeKind::EncryptedDirectory => "encrypted-directory",
         StoreNodeKind::CompressedEncryptedDirectory => "compressed-encrypted-directory",

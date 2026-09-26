@@ -35,6 +35,7 @@ use super::s3::{
     S3BlobBackend, S3BlobBackendConfig, S3MultipartCleanupAdmin, StoreGraphS3Clients,
     StoreS3EndpointId, validate_configuration as validate_s3_configuration,
 };
+use super::sqlite::SqliteBlobBackend;
 use super::write_back::{
     StoreGraphWriteBackFence, WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackStore,
 };
@@ -142,6 +143,11 @@ pub enum StoreNodeSpec {
     /// Crash-safe loose-object directory leaf.
     Directory {
         /// Trusted operator-owned filesystem root.
+        root: PathBuf,
+    },
+    /// Durable SQLite immutable-object leaf.
+    Sqlite {
+        /// Trusted operator-owned database directory.
         root: PathBuf,
     },
     /// Crash-safe compressed loose-object directory leaf.
@@ -286,6 +292,7 @@ impl StoreNodeSpec {
         match self {
             Self::Memory { .. }
             | Self::Directory { .. }
+            | Self::Sqlite { .. }
             | Self::CompressedDirectory { .. }
             | Self::EncryptedDirectory { .. }
             | Self::CompressedEncryptedDirectory { .. }
@@ -314,6 +321,7 @@ impl StoreNodeSpec {
         match self {
             Self::Memory { .. } => StoreNodeKind::Memory,
             Self::Directory { .. } => StoreNodeKind::Directory,
+            Self::Sqlite { .. } => StoreNodeKind::Sqlite,
             Self::CompressedDirectory { .. } => StoreNodeKind::CompressedDirectory,
             Self::EncryptedDirectory { .. } => StoreNodeKind::EncryptedDirectory,
             Self::CompressedEncryptedDirectory { .. } => {
@@ -355,6 +363,8 @@ pub enum StoreNodeKind {
     Memory,
     /// Durable directory leaf.
     Directory,
+    /// Durable SQLite immutable-object leaf.
+    Sqlite,
     /// Durable compressed directory leaf.
     CompressedDirectory,
     /// Durable authenticated encrypted directory leaf.
@@ -1619,6 +1629,7 @@ fn validate_administrative_paths(config: &StoreGraphConfig) -> Result<(), StoreE
         .iter()
         .filter_map(|(id, node)| match node {
             StoreNodeSpec::Directory { root } => Some((id, root, false)),
+            StoreNodeSpec::Sqlite { root } => Some((id, root, true)),
             StoreNodeSpec::CompressedDirectory { root, .. } => Some((id, root, true)),
             StoreNodeSpec::EncryptedDirectory { root, .. } => Some((id, root, true)),
             StoreNodeSpec::CompressedEncryptedDirectory { root, .. } => Some((id, root, true)),
@@ -1677,6 +1688,7 @@ fn validate_quota_ownership(config: &StoreGraphConfig) -> Result<(), StoreError>
             config.nodes.get(child),
             Some(
                 StoreNodeSpec::Directory { .. }
+                    | StoreNodeSpec::Sqlite { .. }
                     | StoreNodeSpec::CompressedDirectory { .. }
                     | StoreNodeSpec::EncryptedDirectory { .. }
                     | StoreNodeSpec::CompressedEncryptedDirectory { .. }
@@ -1713,6 +1725,7 @@ fn physical_leaf_root<'a>(
 ) -> Option<&'a std::path::Path> {
     match nodes.get(id)? {
         StoreNodeSpec::Directory { root }
+        | StoreNodeSpec::Sqlite { root }
         | StoreNodeSpec::CompressedDirectory { root, .. }
         | StoreNodeSpec::EncryptedDirectory { root, .. }
         | StoreNodeSpec::CompressedEncryptedDirectory { root, .. }
@@ -1878,6 +1891,7 @@ fn derive_physical_retention(
         match node {
             StoreNodeSpec::Memory { .. }
             | StoreNodeSpec::Directory { .. }
+            | StoreNodeSpec::Sqlite { .. }
             | StoreNodeSpec::CompressedDirectory { .. }
             | StoreNodeSpec::EncryptedDirectory { .. }
             | StoreNodeSpec::CompressedEncryptedDirectory { .. }
@@ -1950,6 +1964,7 @@ fn validate_demands(config: &StoreGraphConfig) -> Result<(), StoreError> {
         match node {
             StoreNodeSpec::Memory { .. }
             | StoreNodeSpec::Directory { .. }
+            | StoreNodeSpec::Sqlite { .. }
             | StoreNodeSpec::CompressedDirectory { .. }
             | StoreNodeSpec::EncryptedDirectory { .. }
             | StoreNodeSpec::CompressedEncryptedDirectory { .. }
@@ -2081,6 +2096,11 @@ fn instantiate(
         }
         StoreNodeSpec::Directory { root } => {
             let leaf = Arc::new(DirectoryBlobBackend::new(id.as_str(), root.clone()));
+            state.physical.insert(id.clone(), leaf.clone());
+            leaf
+        }
+        StoreNodeSpec::Sqlite { root } => {
+            let leaf = Arc::new(SqliteBlobBackend::open(id.as_str(), root.clone())?);
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }

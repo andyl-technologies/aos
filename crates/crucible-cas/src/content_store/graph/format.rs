@@ -36,6 +36,10 @@ pub(super) fn canonical_graph_configuration(
                 bytes.push(2);
                 encode_path(&mut bytes, root)?;
             }
+            StoreNodeSpec::Sqlite { root } => {
+                bytes.push(20);
+                encode_path(&mut bytes, root)?;
+            }
             StoreNodeSpec::CompressedDirectory {
                 root,
                 maximum_logical_object_bytes,

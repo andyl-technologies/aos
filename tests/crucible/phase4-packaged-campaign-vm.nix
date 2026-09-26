@@ -28,6 +28,7 @@
   campaignFlightArtifacts = pkgs.mkCargoArtifacts {
     pname = "crucible-packaged-campaign-flight-artifacts";
     version = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     src = pkgs.mkCargoDummySource {
       srcRoot = ../../crates;
       name = "crucible-packaged-campaign-flight-dummy-source";
@@ -41,13 +42,14 @@
     cargoRoot = "crates";
     cargoBuildCommands = campaignFlightBuildCommands;
 
-    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf];
-    runtimeDeps = [pkgs.openssl];
+    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf pkgs.sqlite];
+    runtimeDeps = [pkgs.openssl pkgs.sqlite];
   };
   gateway = pkgs.crucible.passthru.debugGateway;
   flight = pkgs.mkCargoPackage {
     pname = "crucible-packaged-campaign-flight";
     version = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     src = source;
 
     inherit cargoDeps;
@@ -59,8 +61,8 @@
     installBins = false;
     doCheck = false;
 
-    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf];
-    runtimeDeps = [pkgs.openssl];
+    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf pkgs.sqlite];
+    runtimeDeps = [pkgs.openssl pkgs.sqlite];
 
     postInstall = ''
       artifacts="$NIX_BUILD_TOP/cargo-build-messages.jsonl"

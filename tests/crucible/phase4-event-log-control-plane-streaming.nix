@@ -247,12 +247,17 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase4-event-log-control-plane-streaming";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
+
+        pkgs.pkg-config
+        pkgs.sqlite
       ];
 
       phases = [
