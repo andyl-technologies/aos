@@ -99,10 +99,10 @@ impl AttachmentDesiredMutationV1 {
 
     /// Constructs a v2 desired mutation with an explicit presentation choice.
     ///
-    /// V2 may encode either FUSE or Native, allowing a future controller to
-    /// return to Native without downgrading a previously v2 history. FUSE
-    /// remains non-dispatchable until a separate authenticated Mount profile
-    /// exists.
+    /// V2 may encode either FUSE or Native. The selected family is immutable
+    /// for one AttachmentId: changing it requires a new attachment identity
+    /// until a separately authenticated migration and cleanup path exists.
+    /// FUSE remains non-dispatchable.
     ///
     /// # Errors
     ///
@@ -557,6 +557,7 @@ impl History {
                     if previous.intent.desired_generation().get().checked_add(1)
                         == Some(*generation)
                         && previous.version <= record.version
+                        && previous.intent.presentation() == record.intent.presentation()
                         && previous.presence != AttachmentDesiredPresenceV1::Released
                         && record.expected_previous
                             == Some(ObjectDigest::from_bytes(previous.digest))
@@ -629,6 +630,7 @@ impl History {
         if proposed.expected_previous != Some(ObjectDigest::from_bytes(current.digest))
             || current.presence == AttachmentDesiredPresenceV1::Released
             || proposed.version < current.version
+            || proposed.intent.presentation() != current.intent.presentation()
             || proposed.intent.desired_generation().get()
                 != current
                     .intent
@@ -1235,7 +1237,7 @@ mod tests {
         commit_without_target(&mut journal, &first);
 
         let second = v2_mutation(
-            fuse_intent(1, 2, 2),
+            intent(1, 2, 2),
             Some(ObjectDigest::from_bytes(first.record.digest)),
         );
         commit_without_target(&mut journal, &second);
@@ -1278,6 +1280,76 @@ mod tests {
             validate_namespace(&journal),
             Err(AttachmentDesiredStateError::CorruptState)
         ));
+    }
+
+    #[test]
+    fn presentation_family_change_fails_commit_and_durable_replay() {
+        for (first_intent, successor_intent) in [
+            (intent(1, 2, 1), fuse_intent(1, 2, 2)),
+            (fuse_intent(1, 2, 1), intent(1, 2, 2)),
+        ] {
+            let (_directory, mut journal) = journal();
+            let first = if first_intent.presentation() == AttachmentPresentation::Native {
+                mutation(AttachmentDesiredPresenceV1::Present, first_intent, None)
+            } else {
+                v2_mutation(first_intent, None)
+            };
+            commit_without_target(&mut journal, &first);
+            ensure_view_revisions(&mut journal, 2);
+
+            let successor = v2_mutation(
+                successor_intent,
+                Some(ObjectDigest::from_bytes(first.record.digest)),
+            );
+            assert!(matches!(
+                History::load(&journal)
+                    .unwrap()
+                    .validate_mutation(&successor),
+                Err(AttachmentDesiredStateError::Conflict)
+            ));
+            assert_eq!(
+                get(&journal, first.attachment_id())
+                    .unwrap()
+                    .unwrap()
+                    .intent()
+                    .presentation(),
+                first.record.intent.presentation()
+            );
+
+            journal
+                .commit(&successor.record.transaction().unwrap())
+                .unwrap();
+            assert!(matches!(
+                validate_namespace(&journal),
+                Err(AttachmentDesiredStateError::CorruptState)
+            ));
+        }
+    }
+
+    #[test]
+    fn native_v2_release_remains_committable() {
+        let (_directory, mut journal) = journal();
+        let first = mutation(AttachmentDesiredPresenceV1::Present, intent(1, 2, 1), None);
+        commit_without_target(&mut journal, &first);
+
+        let release = AttachmentDesiredMutationV1::new_v2(
+            AttachmentDesiredPresenceV1::Released,
+            intent(1, 2, 2),
+            OperationId::from_bytes([13; 16]),
+            ObjectDigest::from_bytes([12; 32]),
+            Some(ObjectDigest::from_bytes(first.record.digest)),
+        )
+        .unwrap();
+        assert_eq!(
+            commit_without_target(&mut journal, &release),
+            AttachmentDesiredCommitOutcomeV1::Recorded
+        );
+        let current = get(&journal, first.attachment_id()).unwrap().unwrap();
+        assert_eq!(current.presence(), AttachmentDesiredPresenceV1::Released);
+        assert_eq!(
+            current.intent().presentation(),
+            AttachmentPresentation::Native
+        );
     }
 
     #[test]
