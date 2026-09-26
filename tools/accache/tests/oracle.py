@@ -3739,6 +3739,77 @@ def check_clang_llvm_file_inputs(root, env, accache, sccache, clang, hits):
     return results
 
 
+def check_llvm_manifest_contracts(root, env, accache, sccache, clang, rustc, hits):
+    """Exercise recipe-declared LLVM effects through both compiler frontends."""
+    results = []
+    for language, compiler in [("clang", clang), ("rust", rustc)]:
+        for kind in ["flag", "scalar", "file-input"]:
+            fixture = language + "-llvm-manifest-" + kind
+            work = root / fixture
+            work.mkdir()
+            (work / "target").mkdir()
+            extension = "c" if language == "clang" else "rs"
+            source = work / ("source." + extension)
+            source.write_text(
+                "int answer(int x) { return x * 3 + 2; }\n" if language == "clang"
+                else "pub fn answer(x: i32) -> i32 { x * 3 + 2 }\n")
+            input_file = work / "hotpatch.txt"
+            object_file = work / ("target/source.o" if language == "clang"
+                                  else "target/libexample.rlib")
+            depfile = work / ("target/source.d" if language == "clang"
+                             else "target/example.d")
+
+            def compile_object(wrapper, option):
+                object_file.unlink(missing_ok=True)
+                depfile.unlink(missing_ok=True)
+                if language == "clang":
+                    args = [compiler, "-O2", "-c", source.name, "-o",
+                            str(object_file.relative_to(work)), "-MD", "-MF",
+                            str(depfile.relative_to(work)), "-mllvm", option]
+                else:
+                    args = [compiler, "--crate-name=example", "--crate-type=rlib",
+                            "--emit=link,dep-info", "--out-dir=target",
+                            "-Copt-level=2", "-Cllvm-args=" + option,
+                            source.name]
+                completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                           capture_output=True, timeout=120)
+                assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+                return (completed.stdout, completed.stderr,
+                        object_file.read_bytes(), depfile.read_bytes())
+
+            revisions = ["answer\n", "other\n"] if kind == "file-input" else [""]
+            for revision, contents in enumerate(revisions):
+                if kind == "file-input":
+                    input_file.write_text(contents)
+                    option = "--ms-secure-hotpatch-functions-file=hotpatch.txt"
+                elif kind == "scalar":
+                    option = "--inlinehint-threshold=15"
+                else:
+                    option = "--enable-loopinterchange"
+
+                direct = compile_object([], option)
+                oracle_cold = compile_object([sccache], option)
+                before_hits = hits()
+                assert compile_object([sccache], option)[2:] == oracle_cold[2:]
+                assert hits() > before_hits, (fixture, "sccache did not warm-hit")
+
+                assert compile_object([accache], option) == direct
+                cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+                assert cold["outcome"] == "miss", (fixture, revision, cold)
+                if revision:
+                    assert any("hotpatch.txt" in change for change in cold["changes"]), cold
+                assert compile_object([accache], option) == direct
+                warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+                assert warm["outcome"] == "hit", (fixture, revision, warm)
+                results.append({"fixture": fixture, "revision": revision,
+                                "oracle_hit": True, "accache": "hit",
+                                "artifacts": [str(object_file.relative_to(work)),
+                                              str(depfile.relative_to(work))]})
+
+            print("PASS oracle", fixture, "manifest contract", flush=True)
+    return results
+
+
 def check_llvm_scalar_tuning(root, env, accache, sccache, clang, rustc, hits):
     """Cache pure LLVM tuning flags in both supported compiler frontends."""
     results = []
@@ -5180,6 +5251,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
             root, env, accache, sccache, clang, hits))
         results.extend(check_clang_llvm_file_inputs(root, env, accache,
                                                     sccache, clang, hits))
+        results.extend(check_llvm_manifest_contracts(root, env, accache,
+                                                     sccache, clang, rustc, hits))
         results.extend(check_llvm_scalar_tuning(root, env, accache,
                                                 sccache, clang, rustc, hits))
         results.extend(check_clang_llvm_path_lists(root, env, accache,

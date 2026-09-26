@@ -449,11 +449,12 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         ++ (args.propagatedDeps or []);
       cacheDir = sharedAccacheDir;
       stateDir = sharedAccacheStateDir;
+      llvmOptions = args.accacheLlvmOptions or {};
     };
     lowerArgs =
       # `configModule` is an mkDerivation-level arg consumed here, not passed
       # down to the raw builder (mirrors how `expose` is handled).
-      (builtins.removeAttrs args ["configModule" "sharedBuildCache" "cacheCCompilers"])
+      (builtins.removeAttrs args ["configModule" "sharedBuildCache" "cacheCCompilers" "accacheLlvmOptions"])
       // lib.optionalAttrs cacheCCompilers (builtins.removeAttrs cCompilerCacheEnvironment ["RUSTC_WRAPPER"])
       // {
         meta =
@@ -906,6 +907,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         ++ (args.runtimeDeps or []);
       cacheDir = sharedAccacheDir;
       stateDir = sharedAccacheStateDir;
+      llvmOptions = args.accacheLlvmOptions or {};
     };
     cargoBuildOnlyReferences =
       [args.cargoDeps cargoBuildTool]

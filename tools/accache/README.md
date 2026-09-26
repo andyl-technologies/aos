@@ -188,6 +188,29 @@ permits other file reads and side outputs. Unrecognized `-Cllvm-args` options
 automatically pass through to rustc until their effects have an audited cache
 contract; `accache explain` records the bypass reason.
 
+Application recipes can declare an LLVM option in `accacheLlvmOptions`, which
+`mkDerivation` and `mkCargoPackage` pass into the Nix-generated compiler
+manifest. Each entry maps an option name without leading dashes to `flag`,
+`scalar`, `file_input`, or `file_output`. The first two declare that the option
+has no extra file effects; its original value remains in the action key.
+`file_input` fingerprints a path omitted from the ordinary depfile.
+`file_output` captures and restores one deterministic file that the compiler
+replaces on every successful invocation. For example:
+
+```nix
+accacheLlvmOptions = {
+  "enable-loopinterchange" = "flag";
+  "inlinehint-threshold" = "scalar";
+  "ms-secure-hotpatch-functions-file" = "file_input";
+};
+```
+
+These contracts require a recipe author to check the exact option's file
+effects for the pinned LLVM version. Known invocation-report options still
+bypass, even if a recipe declares them. Unknown options also bypass. The
+manifest participates in the action identity, so changing a contract cannot
+reuse an earlier action under different assumptions.
+
 Clang's `-mllvm` options use the same classification. Identified file inputs
 are fingerprinted, so editing a function-attribute CSV invalidates an object;
 report and unknown options run directly through Clang. The oracle covers both

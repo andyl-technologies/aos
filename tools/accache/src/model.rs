@@ -37,6 +37,23 @@ pub struct Manifest {
     /// Trees whose full contents cover reads by compiler extensions.
     #[serde(default)]
     pub read_roots: Vec<String>,
+    /// Audited effects of LLVM options outside accache's built-in contracts.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub llvm_options: BTreeMap<String, LlvmOptionKind>,
+}
+
+/// Describes the value and file effects of a package-declared LLVM option.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LlvmOptionKind {
+    /// A value-free optimization switch with no additional file effects.
+    Flag,
+    /// An optimization value accepted as `name=value` or `name value`.
+    Scalar,
+    /// A path to one compiler input absent from the ordinary depfile.
+    FileInput,
+    /// A deterministic file replaced by each successful compilation.
+    FileOutput,
 }
 
 /// Identifies one immutable path in a realized Nix closure.
@@ -77,6 +94,15 @@ impl Manifest {
                     .iter()
                     .any(|entry| Path::new(compiler).starts_with(&entry.path)),
                 "compiler absent from declared closure: {compiler}"
+            );
+        }
+        for name in manifest.llvm_options.keys() {
+            ensure!(
+                !name.is_empty()
+                    && !name.starts_with('-')
+                    && !name.contains('=')
+                    && !name.chars().any(char::is_whitespace),
+                "invalid LLVM option contract name: {name}"
             );
         }
         Ok(manifest)
