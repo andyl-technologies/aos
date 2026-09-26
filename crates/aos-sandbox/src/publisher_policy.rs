@@ -60,6 +60,7 @@ const MAXIMUM_DEPTH: usize = 64;
 
 mod model;
 mod project_authorization_source_v2;
+mod project_authorization_store_v2;
 pub use model::{
     PreparedPublisherPolicyRevisionV1, PublisherControllerHeadV1, PublisherPolicyError,
     PublisherPolicyLimits, PublisherProjectCacheDomainHeadV1, PublisherProjectRevocationHeadV1,

@@ -32,14 +32,16 @@ const MAGIC: &[u8; 8] = b"AOSPSC02";
 const KEY_MAGIC: &[u8; 8] = b"AOSPAK02";
 const VERSION: u16 = 2;
 const BODY_BYTES: usize = 160;
-const PACKET_BYTES: usize = BODY_BYTES + 64;
+pub(super) const PACKET_BYTES: usize = BODY_BYTES + 64;
 const KEY_BYTES: usize = ROLE_CREDENTIAL_BYTES;
 const SIGNING_DOMAIN: &[u8] =
     b"aos.sandbox.publisher-project-authorization-source.v2\0/var/lib/aos/sandboxd/controller.journal\0";
 const KEY_DOMAIN: &[u8] = b"aos.sandbox.publisher-project-authorization-verifier.v2\0";
-const HEAD_DOMAIN: &[u8] = b"aos.sandbox.publisher-project-authorization.current-head.v2\0";
-const REVISION_DOMAIN: &[u8] = b"aos.sandbox.publisher-project-authorization.current-revision.v2\0";
-const PACKET_DOMAIN: &[u8] = b"aos.sandbox.publisher-project-authorization.packet.v2\0";
+pub(super) const HEAD_DOMAIN: &[u8] =
+    b"aos.sandbox.publisher-project-authorization.current-head.v2\0";
+pub(super) const REVISION_DOMAIN: &[u8] =
+    b"aos.sandbox.publisher-project-authorization.current-revision.v2\0";
+pub(super) const PACKET_DOMAIN: &[u8] = b"aos.sandbox.publisher-project-authorization.packet.v2\0";
 
 /// Reports an invalid or stale signed project authorization source.
 #[derive(Debug, Error)]
@@ -148,7 +150,10 @@ impl ProjectAuthorizationSourceExpectedV2 {
 pub struct VerifiedPublisherProjectAuthorizationSourceV2 {
     project: ProjectId,
     limits: TreeLimitsV1,
+    issuer_generation: u64,
     publisher_generation: u64,
+    publisher_head_digest: ObjectDigest,
+    publisher_revision_digest: ObjectDigest,
     request_id: [u8; 16],
     epoch: u64,
     packet_digest: ObjectDigest,
@@ -167,10 +172,28 @@ impl VerifiedPublisherProjectAuthorizationSourceV2 {
         self.limits
     }
 
+    /// Returns the independently pinned administrative issuer generation.
+    #[must_use]
+    pub const fn issuer_generation(self) -> u64 {
+        self.issuer_generation
+    }
+
     /// Returns the matched protected publisher generation.
     #[must_use]
     pub const fn publisher_generation(self) -> u64 {
         self.publisher_generation
+    }
+
+    /// Returns the signed digest of the exact protected AOSPOLH1 pointer.
+    #[must_use]
+    pub const fn publisher_head_digest(self) -> ObjectDigest {
+        self.publisher_head_digest
+    }
+
+    /// Returns the signed digest of the selected protected AOSPOLR1 revision.
+    #[must_use]
+    pub const fn publisher_revision_digest(self) -> ObjectDigest {
+        self.publisher_revision_digest
     }
 
     /// Returns the signed original request identity.
@@ -192,6 +215,64 @@ impl VerifiedPublisherProjectAuthorizationSourceV2 {
     }
 }
 
+/// Parses packet claims without treating them as authenticated authority.
+pub(super) struct UnverifiedProjectAuthorizationClaimsV2 {
+    pub(super) project: ProjectId,
+    pub(super) limits: TreeLimitsV1,
+    pub(super) issuer_generation: u64,
+    pub(super) publisher_generation: u64,
+    pub(super) publisher_head_digest: ObjectDigest,
+    pub(super) publisher_revision_digest: ObjectDigest,
+    pub(super) request_id: [u8; 16],
+    pub(super) epoch: u64,
+}
+
+pub(super) fn parse_unverified_project_authorization_claims_v2(
+    bytes: &[u8],
+) -> Result<UnverifiedProjectAuthorizationClaimsV2, ProjectAuthorizationSourceErrorV2> {
+    if bytes.len() != PACKET_BYTES {
+        return Err(ProjectAuthorizationSourceErrorV2::NonCanonical);
+    }
+    let body = &bytes[..BODY_BYTES];
+    if body[..8] != MAGIC[..]
+        || take::<2>(body, 8)? != VERSION.to_be_bytes()
+        || take::<2>(body, 10)? != [0; 2]
+    {
+        return Err(ProjectAuthorizationSourceErrorV2::NonCanonical);
+    }
+    let limits = TreeLimitsV1::new(
+        read_limit(body, 132)?,
+        read_limit(body, 136)?,
+        read_limit(body, 140)?,
+        read_limit(body, 144)?,
+        read_limit(body, 148)?,
+        read_limit(body, 152)?,
+        read_limit(body, 156)?,
+    )
+    .map_err(|_| ProjectAuthorizationSourceErrorV2::NonCanonical)?;
+    let claims = UnverifiedProjectAuthorizationClaimsV2 {
+        project: ProjectId::from_bytes(take::<16>(body, 20)?),
+        limits,
+        issuer_generation: u64::from_be_bytes(take::<8>(body, 12)?),
+        publisher_generation: u64::from_be_bytes(take::<8>(body, 36)?),
+        publisher_head_digest: ObjectDigest::from_bytes(take::<32>(body, 44)?),
+        publisher_revision_digest: ObjectDigest::from_bytes(take::<32>(body, 76)?),
+        request_id: take::<16>(body, 108)?,
+        epoch: u64::from_be_bytes(take::<8>(body, 124)?),
+    };
+    if claims.project.as_bytes() == &[0; 16]
+        || claims.request_id == [0; 16]
+        || claims.issuer_generation == 0
+        || claims.publisher_generation == 0
+        || claims.publisher_head_digest.as_bytes() == &[0; 32]
+        || claims.publisher_revision_digest.as_bytes() == &[0; 32]
+        || claims.epoch == 0
+    {
+        return Err(ProjectAuthorizationSourceErrorV2::NonCanonical);
+    }
+    Ok(claims)
+}
+
 /// Verifies a V2 source against its pin and actual protected publisher head.
 ///
 /// The packet binds both the `AOSPOLH1` current pointer and the selected
@@ -211,17 +292,9 @@ pub fn verify_current_project_authorization_source_v2(
     issuer: &PinnedPublisherProjectAuthorizationIssuerV2,
     expected: ProjectAuthorizationSourceExpectedV2,
 ) -> Result<VerifiedPublisherProjectAuthorizationSourceV2, ProjectAuthorizationSourceErrorV2> {
-    if bytes.len() != PACKET_BYTES {
-        return Err(ProjectAuthorizationSourceErrorV2::NonCanonical);
-    }
+    let claims = parse_unverified_project_authorization_claims_v2(bytes)?;
     let body = &bytes[..BODY_BYTES];
-    if body[..8] != MAGIC[..]
-        || take::<2>(body, 8)? != VERSION.to_be_bytes()
-        || take::<2>(body, 10)? != [0; 2]
-    {
-        return Err(ProjectAuthorizationSourceErrorV2::NonCanonical);
-    }
-    if u64::from_be_bytes(take::<8>(body, 12)?) != issuer.generation {
+    if claims.issuer_generation != issuer.generation {
         return Err(ProjectAuthorizationSourceErrorV2::Stale);
     }
     let signature = Signature::from_bytes(&take::<64>(bytes, BODY_BYTES)?);
@@ -230,67 +303,50 @@ pub fn verify_current_project_authorization_source_v2(
         .verify_strict(&signing_preimage(body), &signature)
         .map_err(|_| ProjectAuthorizationSourceErrorV2::Signature)?;
 
-    let project = ProjectId::from_bytes(take::<16>(body, 20)?);
-    let publisher_generation = u64::from_be_bytes(take::<8>(body, 36)?);
-    let publisher_head = ObjectDigest::from_bytes(take::<32>(body, 44)?);
-    let publisher_revision = ObjectDigest::from_bytes(take::<32>(body, 76)?);
-    let request_id = take::<16>(body, 108)?;
-    let epoch = u64::from_be_bytes(take::<8>(body, 124)?);
-    let limits = TreeLimitsV1::new(
-        read_limit(body, 132)?,
-        read_limit(body, 136)?,
-        read_limit(body, 140)?,
-        read_limit(body, 144)?,
-        read_limit(body, 148)?,
-        read_limit(body, 152)?,
-        read_limit(body, 156)?,
-    )
-    .map_err(|_| ProjectAuthorizationSourceErrorV2::NonCanonical)?;
-    if project != expected.project
-        || request_id != expected.request_id
-        || publisher_generation == 0
-        || publisher_head.as_bytes() == &[0; 32]
-        || publisher_revision.as_bytes() == &[0; 32]
-        || epoch == 0
-        || epoch <= expected.last_epoch
+    if claims.project != expected.project
+        || claims.request_id != expected.request_id
+        || claims.epoch <= expected.last_epoch
     {
         return Err(ProjectAuthorizationSourceErrorV2::Stale);
     }
 
     let current = store
-        .current_policy(project)?
+        .current_policy(claims.project)?
         .ok_or(ProjectAuthorizationSourceErrorV2::Stale)?;
     let head = store
         .journal
         .get(
             RecordNamespace::PublisherPolicy,
-            &policy_current_key(project),
+            &policy_current_key(claims.project),
         )
         .ok_or(ProjectAuthorizationSourceErrorV2::Stale)?;
     let revision = store
         .journal
         .get(
             RecordNamespace::PublisherPolicy,
-            &policy_revision_key(project, current.generation()),
+            &policy_revision_key(claims.project, current.generation()),
         )
         .ok_or(ProjectAuthorizationSourceErrorV2::Stale)?;
-    if current.generation() != publisher_generation
-        || commitment(HEAD_DOMAIN, head) != publisher_head
-        || commitment(REVISION_DOMAIN, revision) != publisher_revision
+    if current.generation() != claims.publisher_generation
+        || commitment(HEAD_DOMAIN, head) != claims.publisher_head_digest
+        || commitment(REVISION_DOMAIN, revision) != claims.publisher_revision_digest
     {
         return Err(ProjectAuthorizationSourceErrorV2::Stale);
     }
     Ok(VerifiedPublisherProjectAuthorizationSourceV2 {
-        project,
-        limits,
-        publisher_generation,
-        request_id,
-        epoch,
+        project: claims.project,
+        limits: claims.limits,
+        issuer_generation: claims.issuer_generation,
+        publisher_generation: claims.publisher_generation,
+        publisher_head_digest: claims.publisher_head_digest,
+        publisher_revision_digest: claims.publisher_revision_digest,
+        request_id: claims.request_id,
+        epoch: claims.epoch,
         packet_digest: commitment(PACKET_DOMAIN, bytes),
     })
 }
 
-fn commitment(domain: &[u8], bytes: &[u8]) -> ObjectDigest {
+pub(super) fn commitment(domain: &[u8], bytes: &[u8]) -> ObjectDigest {
     ObjectDigest::from_bytes(
         Sha256::new()
             .chain_update(domain)
