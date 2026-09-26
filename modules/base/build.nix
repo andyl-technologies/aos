@@ -558,6 +558,10 @@ in {
                   ln -sfn ${config.system.build.kernel} $out/kernel
                   ln -sfn ${config.system.build.initrd} $out/initrd
                   ln -sfn ${config.aos.config.evalAtBoot.baseLib} $out/base-lib
+                  # Stage entry needs the checked host template and its exact
+                  # static contract from the same immutable image closure.
+                  ln -sfn ${config.system.build.staticAbilityContract} $out/host-static-ability-contract
+                  ln -sfn ${config.system.build.hostSourceStageBundle} $out/host-source-stage
                   ${lib.optionalString (config.aos.apm.drainScript != null) ''
                     ln -sfn ${config.aos.apm.drainScript} $out/drain
                   ''}

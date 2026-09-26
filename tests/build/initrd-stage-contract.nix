@@ -420,6 +420,13 @@ in
               "$initrd_abilities"
             root_toplevel=$(resolve_archived_store_path root-tree/nix.lower \
               "$(readlink root-tree/aos-toplevel)")
+            host_source_stage=$(resolve_archived_store_path root-tree/nix.lower \
+              "$(readlink "$root_toplevel/host-source-stage")")
+            host_static_contract=$(resolve_archived_store_path root-tree/nix.lower \
+              "$(readlink "$root_toplevel/host-static-ability-contract")")
+            cmp "$host_source_stage/source-stage-bundle.json" \
+              ${system.config.system.build.hostSourceStageBundle}/source-stage-bundle.json
+            cmp "$host_static_contract/contract.json" "$host_abilities"
             root_system_units=$(resolve_archived_store_path root-tree/nix.lower \
               "$(readlink "$root_toplevel/systemd-units")")
             receiver_unit="$root_system_units/aos-ability-host-receiver.service"
