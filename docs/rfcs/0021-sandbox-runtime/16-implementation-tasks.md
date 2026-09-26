@@ -9276,6 +9276,17 @@ environment, Host, physical ZFS, or an effect handoff. Create and Observe stay
 closed pending the ordered all-owner barrier, versioned large-spec handoff,
 and durable reconciler child Operation/Effect adoption protocol.
 
+A closed Storage-only callback can now challenge the exact accepted-output
+AOSEOR03 row digest and journal head with a nonzero nonce while retaining the
+protected output writer through the callback and its final revalidation. Its
+typed response binds the nonce and complete accepted-output fields to the
+MAC-verified row, including zero-byte Stream/PTY rows; it does not reserve a
+row, inspect a capture dataset, or survive as a lease after the callback.
+No production original-reserve verifier can yet mint AOSEOR03, and no
+bidirectional held session retains Storage alongside the earlier Controller,
+environment, and Host writers through settlement. Public Create, Observe, and
+Host Apply remain closed.
+
 Host can now query this exact row after a completed, current ReserveOutput and
 an explicitly supplied v2 claim expectation, then authenticate and retain the
 AOSEOQ01/AOSEORQ1 exchange in its local state for historical replay. It

@@ -21,7 +21,12 @@ use std::path::{Component, Path, PathBuf};
 use rustix::fs::{FileType, Mode, OFlags, ResolveFlags, fstat, open, openat2};
 use zeroize::Zeroizing;
 
-use crate::execution_output::{ExecutionOutputLedgerKeyV1, ExecutionOutputLedgerV1};
+use aos_sandbox::runtime_execution::ProtectedAcceptedExecutionOutputV2;
+
+use crate::execution_output::{
+    ExecutionOutputLedgerKeyV1, ExecutionOutputLedgerV1, StorageHeldOutputRequestV1,
+    StorageHeldOutputResponseV1,
+};
 use crate::operator_recovery_credentials::{
     FileIdentity, PinnedCredential, open_directory, read_credential,
 };
@@ -136,6 +141,32 @@ impl StorageExecutionOutputCustodyV1 {
     /// Borrows the authenticated, exclusively held output ledger for a readback.
     pub(crate) const fn ledger(&self) -> &ExecutionOutputLedgerV1 {
         &self.ledger
+    }
+
+    /// Runs a closed Storage readback while its physical journal writer is held.
+    ///
+    /// The callback may inspect other owner cuts, but this API does not hold
+    /// those owners or expose a cross-process session. No output reservation,
+    /// dataset, or Host effect is created. Credential and writer custody are
+    /// checked again even when the callback returns an error value.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed credentials, journal names, row, or head, or an exact
+    /// accepted-output/challenge mismatch.
+    pub fn with_held_accepted_output_for_barrier<T>(
+        &self,
+        state_root: &Path,
+        accepted: &ProtectedAcceptedExecutionOutputV2,
+        request: StorageHeldOutputRequestV1,
+        inspect: impl for<'held> FnOnce(StorageHeldOutputResponseV1<'held>) -> T,
+    ) -> Result<T, StorageServiceError> {
+        self.recheck(state_root)?;
+        let result = self
+            .ledger
+            .with_held_accepted_output_for_barrier(accepted, request, inspect);
+        self.recheck(state_root)?;
+        result.map_err(|_| invalid("held output row or writer changed"))
     }
 
     /// Loads an externally provisioned credential and existing output ledger.
