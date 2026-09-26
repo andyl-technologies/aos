@@ -104,6 +104,12 @@
   nettyDnsProxyRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelNettyDnsProxy119;
   };
+  log4jCoreRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelLog4jCore;
+  };
+  velocityRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelVelocity;
+  };
   protobufJava = helperScope.bazelProtobufJava;
   protobufJavaUtil = helperScope.bazelProtobufJavaUtil;
   grpcJavaPlugin =
@@ -179,6 +185,8 @@ in
     passthru.offlineModernAnnotationRepositories = modernAnnotationRepositories;
     passthru.offlineGuavaModernRepositories = guavaModernRepositories;
     passthru.offlineNettyDnsProxyRepositories = nettyDnsProxyRepositories;
+    passthru.offlineLog4jCoreRepositories = log4jCoreRepositories;
+    passthru.offlineVelocityRepositories = velocityRepositories;
     passthru.offlineRepositories =
       mavenSourceRepositories
       // googleHttpRepositories
@@ -189,6 +197,8 @@ in
       // modernAnnotationRepositories
       // guavaModernRepositories
       // nettyDnsProxyRepositories
+      // log4jCoreRepositories
+      // velocityRepositories
       // {platforms = helperScope.bazelPlatformsSource;}
       // helperScope.bazelAsyncProfilerRepositories
       // helperScope.bazelNetty119.repositories
