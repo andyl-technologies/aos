@@ -436,9 +436,10 @@ def check_rust_profile_use(root, env, accache, sccache, rustc, clang, hits):
     return results
 
 
-def check_unpacked_split_debug(root, env, accache, sccache, rustc, hits):
+def check_unpacked_split_debug(root, env, accache, sccache, rustc, hits, crate_type):
     """Restore every rustc .dwo file omitted by pinned sccache warm hits."""
-    work = root / "rust-unpacked-split-debug"
+    fixture = f"rust-{crate_type}-unpacked-split-debug"
+    work = root / fixture
     work.mkdir()
     target = work / "target"
     target.mkdir()
@@ -450,7 +451,7 @@ def check_unpacked_split_debug(root, env, accache, sccache, rustc, hits):
         modules + '\npub fn answer() -> (&\'static str, u32) { '
         f'(include_str!("value.txt"), {terms})' + ' }\n')
     value = work / "value.txt"
-    args = [rustc, "--crate-name=example", "--crate-type=rlib",
+    args = [rustc, "--crate-name=example", f"--crate-type={crate_type}",
             "--emit=link,dep-info", "--out-dir=target", "library.rs",
             "-Cdebuginfo=2", "-Csplit-debuginfo=unpacked",
             "-Cextra-filename=-oracle", "-Ccodegen-units=4"]
@@ -469,7 +470,9 @@ def check_unpacked_split_debug(root, env, accache, sccache, rustc, hits):
         value.write_text(content)
         direct = compile_library([])
         dwo = {name for name in direct[2] if name.endswith(".dwo")}
-        assert len(dwo) > 1, "multiple codegen units produced fewer than two .dwo files"
+        assert dwo, "unpacked split debug produced no .dwo files"
+        if crate_type == "rlib":
+            assert len(dwo) > 1, "rlib codegen units produced fewer than two .dwo files"
         assert compile_library([sccache]) == direct
         before_hits = hits()
         oracle_warm = compile_library([sccache])
@@ -490,12 +493,12 @@ def check_unpacked_split_debug(root, env, accache, sccache, rustc, hits):
         assert warm["outcome"] == "hit", warm
         assert all(any(Path(path).name == name for path in warm["artifacts"])
                    for name in dwo), warm
-        results.append({"fixture": "rust-unpacked-split-debug", "revision": revision,
+        results.append({"fixture": fixture, "revision": revision,
                         "oracle_hit": True, "accache": "hit",
                         "oracle_missing_artifacts": sorted("target/" + name for name in dwo),
                         "artifacts": sorted("target/" + name for name in direct[2])})
 
-    print("PASS oracle Rust unpacked split debug restoration", flush=True)
+    print("PASS oracle Rust", crate_type, "unpacked split debug restoration", flush=True)
     return results
 
 
@@ -663,8 +666,9 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                clang, hits))
         results.extend(check_rust_profile_use(root, env, accache, sccache,
                                               rustc, clang, hits))
-        results.extend(check_unpacked_split_debug(root, env, accache, sccache,
-                                                  rustc, hits))
+        for crate_type in ["rlib", "staticlib"]:
+            results.extend(check_unpacked_split_debug(root, env, accache, sccache,
+                                                      rustc, hits, crate_type))
 
         report = json.dumps({"fixtures": results, "sccache_stats": stats()}, sort_keys=True)
         if destination := os.environ.get("ACCACHE_ORACLE_REPORT"):

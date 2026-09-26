@@ -194,10 +194,10 @@ bytes must match direct rustc and pinned sccache on cold and warm runs.
 The frontend check also requires incremental Rust to bypass caching.
 An oracle case verifies that sccache's warm `-Csave-temps=yes` hit omits
 bitcode files while accache runs rustc and preserves them on both invocations.
-Another case checks four `.dwo` files from unpacked Rust split debug output:
-pinned sccache omits them on a warm hit, while accache restores their bytes and
-lists them in the action provenance. Their changing CGU names are discovered
-after compilation within the declared output directory.
+Unpacked Rust split debug cases check four rlib `.dwo` files and one staticlib
+`.dwo` file: pinned sccache omits them on warm hits, while accache restores
+their bytes and lists them in action provenance. Their changing CGU names are
+discovered after compilation within the declared output directory.
 Another oracle case changes a GNU assembler `.include` under a `.S` file:
 pinned sccache incorrectly replays the old object, while accache reports the
 changed include in its miss explanation and returns the new compiler output.
