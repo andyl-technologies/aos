@@ -330,6 +330,35 @@ const CAMPAIGN_ENVOY_NETWORK_NIX_SOURCES: &[&str] = &[
     "tests/crucible/phase9-campaign-envoy-network-vm.nix",
 ];
 
+const CAMPAIGN_ENVOY_KNOWN_FINDING_SELECTORS: &[ExactSelector] = &[ExactSelector {
+    source: "crates/crucible-cli/tests/support/campaign_packaged_process/envoy_known_finding.rs",
+    name: "packaged::envoy_known_finding::public_five_node_envoy_network_retains_known_failure",
+}];
+
+const CAMPAIGN_ENVOY_KNOWN_FINDING_NIX_SOURCES: &[&str] = &[
+    "tests/crucible/phase4-packaged-campaign-vm.nix",
+    "tests/crucible/phase9-campaign-known-finding-vm.nix",
+];
+
+const CAMPAIGN_ENVOY_PRODUCT_SELECTORS: &[ExactSelector] = &[
+    ExactSelector {
+        source: "crates/crucible-cli/tests/support/campaign_packaged_process/envoy_network.rs",
+        name: "packaged::envoy_network::public_five_node_envoy_network_reaches_measured_failover",
+    },
+    ExactSelector {
+        source: "crates/crucible-cli/tests/support/campaign_packaged_process/envoy_known_finding.rs",
+        name: "packaged::envoy_known_finding::public_five_node_envoy_network_retains_known_failure",
+    },
+];
+
+const CAMPAIGN_ENVOY_PRODUCT_NIX_SOURCES: &[&str] = &[
+    "tests/crucible/phase4-packaged-campaign-vm.nix",
+    "tests/crucible/phase4-packaged-campaign-envoy-network-vm.nix",
+    "tests/crucible/phase9-campaign-envoy-network-vm.nix",
+    "tests/crucible/phase9-campaign-known-finding-vm.nix",
+    "tests/crucible/phase9-campaign-envoy-product-lifecycle.nix",
+];
+
 /// Canonical RFC-0020 campaign gate catalog.
 pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     automated(
@@ -378,6 +407,32 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         "checks.crucible.phase5.gates.campaignColdContinuity",
     ),
     automated(
+        "gate:campaign-envoy-known-finding",
+        "crucible-cli",
+        &[CampaignGateTarget {
+            package: "crucible-cli",
+            kind: CampaignGateTargetKind::IntegrationExact {
+                test_target: "campaign_store_process",
+                selectors: CAMPAIGN_ENVOY_KNOWN_FINDING_SELECTORS,
+                nix_sources: CAMPAIGN_ENVOY_KNOWN_FINDING_NIX_SOURCES,
+                runner: "campaign-store-process-flight",
+                evidence: &[
+                    "gate=gate:campaign-envoy-known-finding",
+                    "envoy_known_finding_measured_objective=true",
+                    "envoy_known_finding_rank_filtered=true",
+                    "envoy_known_finding_fresh_packaged_replay=true",
+                    "public_product_finding_debug_authenticated=true",
+                    "product_branch_steering_authenticated=true",
+                    "envoy_product_retention_and_cleanup_authenticated=true",
+                    "envoy_known_finding_authenticated=true",
+                    "evidence_retained=true",
+                ],
+                ignored: true,
+            },
+        }],
+        "checks.crucible.phase9.gates.campaignKnownFindingVm",
+    ),
+    automated(
         "gate:campaign-envoy-network-five-vm",
         "crucible-cli",
         &[CampaignGateTarget {
@@ -402,6 +457,29 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
             },
         }],
         "checks.crucible.phase9.gates.campaignEnvoyNetworkVm",
+    ),
+    automated(
+        "gate:campaign-envoy-product-lifecycle",
+        "crucible-cli",
+        &[CampaignGateTarget {
+            package: "crucible-cli",
+            kind: CampaignGateTargetKind::IntegrationExact {
+                test_target: "campaign_store_process",
+                selectors: CAMPAIGN_ENVOY_PRODUCT_SELECTORS,
+                nix_sources: CAMPAIGN_ENVOY_PRODUCT_NIX_SOURCES,
+                runner: "campaign-store-process-flight",
+                evidence: &[
+                    "gate=gate:campaign-envoy-product-lifecycle",
+                    "five_vm_failover_and_recovery_authenticated=true",
+                    "finding_to_debug_authenticated=true",
+                    "branch_steering_authenticated=true",
+                    "retention_and_cleanup_authenticated=true",
+                    "evidence_retained=true",
+                ],
+                ignored: true,
+            },
+        }],
+        "checks.crucible.phase9.gates.campaignEnvoyProductLifecycle",
     ),
     automated(
         "gate:campaign-gate-matrix",

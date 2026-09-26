@@ -1196,6 +1196,7 @@ in rec {
         "checks.crucible.phase9.gates.campaignOperationalContinuity" = phase9.gates.campaignOperationalContinuity;
         "checks.crucible.phase9.gates.campaignEnvoyNetworkVm" = phase9.gates.campaignEnvoyNetworkVm;
         "checks.crucible.phase9.gates.campaignKnownFindingVm" = phase9.gates.campaignKnownFindingVm;
+        "checks.crucible.phase9.gates.campaignEnvoyProductLifecycle" = phase9.gates.campaignEnvoyProductLifecycle;
       };
       # The release aggregate depends on this traceability gate through the
       # required-claims aggregate. Check its declaration without forcing the
@@ -3053,6 +3054,9 @@ in rec {
       campaignKnownFindingVm = import ./phase9-campaign-known-finding-vm.nix {
         inherit pkgs lib;
       };
+      campaignEnvoyProductLifecycle = import ./phase9-campaign-envoy-product-lifecycle.nix {
+        inherit pkgs lib;
+      };
       campaignOperationalContinuity = import ./phase9-campaign-operational-continuity.nix {
         inherit pkgs lib;
         campaignStoreComposition = phase5.gates.campaignStoreComposition.rawGate;
@@ -3111,6 +3115,8 @@ in rec {
           campaignFindingSignalVm
           campaignFindingForkWriteVm
           campaignEnvoyNetworkVm
+          campaignKnownFindingVm
+          campaignEnvoyProductLifecycle
         ];
         requiredClaims = [
           {
@@ -3338,6 +3344,31 @@ in rec {
               "envoy_five_node_exact_restore_authenticated=true"
               "envoy_five_node_retention_authenticated=true"
               "envoy_five_node_graceful_completion_authenticated=true"
+              "evidence_retained=true"
+            ];
+          }
+          {
+            gate = "gate:campaign-envoy-known-finding";
+            result = campaignKnownFindingVm;
+            requiredLines = [
+              "gate=gate:campaign-envoy-known-finding"
+              "measured_objective_authenticated=true"
+              "failed_candidate_filtered=true"
+              "fresh_packaged_replay_authenticated=true"
+              "product_finding_debug_authenticated=true"
+              "product_retention_and_cleanup_authenticated=true"
+              "evidence_retained=true"
+            ];
+          }
+          {
+            gate = "gate:campaign-envoy-product-lifecycle";
+            result = campaignEnvoyProductLifecycle;
+            requiredLines = [
+              "gate=gate:campaign-envoy-product-lifecycle"
+              "five_vm_failover_and_recovery_authenticated=true"
+              "finding_to_debug_authenticated=true"
+              "branch_steering_authenticated=true"
+              "retention_and_cleanup_authenticated=true"
               "evidence_retained=true"
             ];
           }
