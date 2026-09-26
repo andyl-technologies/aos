@@ -4,8 +4,60 @@
   fetchurl,
   buildPackages,
   stdenv,
+  lib,
 }: let
   version = "1.6.0";
+  probeSource = ''
+    #include <stdint.h>
+    #include <stdio.h>
+    #include <string.h>
+    #include <webp/decode.h>
+    #include <webp/encode.h>
+
+    int main(int argc, char **argv) {
+        int width = 0;
+        int height = 0;
+
+        if (argc > 1 && strcmp(argv[1], "invalid") == 0) {
+            const uint8_t malformed[] = {0, 1, 2, 3};
+            uint8_t *decoded = WebPDecodeRGBA(malformed, sizeof(malformed), &width, &height);
+            if (decoded != NULL) {
+                WebPFree(decoded);
+                return 1;
+            }
+            puts("libwebp rejected malformed image");
+            return 0;
+        }
+
+        const uint8_t pixels[] = {255, 0, 0, 255};
+        uint8_t *encoded = NULL;
+        size_t size = WebPEncodeLosslessRGBA(pixels, 1, 1, 4, &encoded);
+        if (size == 0) return 1;
+
+        uint8_t *decoded = WebPDecodeRGBA(encoded, size, &width, &height);
+        int failed = decoded == NULL || width != 1 || height != 1;
+        if (!failed) failed = memcmp(pixels, decoded, sizeof(pixels)) != 0;
+        WebPFree(decoded);
+        WebPFree(encoded);
+        if (failed) return 1;
+
+        puts("libwebp roundtrip passed");
+        return 0;
+    }
+  '';
+  compileProbe = {
+    argv = [
+      "@cc@"
+      "-I@out@/include"
+      "-L@out@/lib"
+      "-Wl,-rpath,@out@/lib"
+      "@work@/probe.c"
+      "-lwebp"
+      "-o"
+      "@work@/probe"
+    ];
+    exit_code = 0;
+  };
 in
   mkDerivation {
     platformSupport = {
@@ -31,6 +83,41 @@ in
       role = "public-package";
     };
     pname = "libwebp";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A one-pixel RGBA image.";
+        operation = "Compile against the installed WebP library and round-trip the image.";
+        expected = "Lossless encoding and decoding preserve the pixel.";
+        files."probe.c" = probeSource;
+        artifacts = [];
+        steps = [
+          compileProbe
+          {
+            argv = ["@work@/probe"];
+            exit_code = 0;
+            stdout.exact = "libwebp roundtrip passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "Four malformed bytes instead of a WebP image.";
+        operation = "Decode the malformed image through the installed library.";
+        expected = "The decoder returns no image.";
+        files."probe.c" = probeSource;
+        artifacts = [];
+        steps = [
+          compileProbe
+          {
+            argv = ["@work@/probe" "invalid"];
+            exit_code = 0;
+            observes_rejection = true;
+            stdout.exact = "libwebp rejected malformed image\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-${version}.tar.gz"];
