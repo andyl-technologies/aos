@@ -671,6 +671,7 @@
     dependencySearchDeps ? null,
     buildDependencySearchDeps ? null,
     phases ? defaultPhases,
+    passBuildScriptAsFile ? false,
     meta ? {},
     storeDir ? "/nix/store",
     system ? defaultSystem,
@@ -871,6 +872,10 @@
 
     builder = phasesToScript allPhases shell useStructuredAttrs;
 
+    # Linux limits each exec argument to 128 KiB. Keep the choice explicit:
+    # measuring every script here can force target dependencies too early.
+    largeBuilder = passBuildScriptAsFile;
+
     # Extra args to pass through to builtins.derivation
     extraArgs = builtins.removeAttrs args [
       "name"
@@ -883,6 +888,7 @@
       "dependencySearchDeps"
       "buildDependencySearchDeps"
       "phases"
+      "passBuildScriptAsFile"
       "meta"
       "storeDir"
       "system"
@@ -1027,10 +1033,10 @@
           {
             inherit name system;
             builder = shell;
-            args = [
-              "-c"
-              builder
-            ];
+            args =
+              if largeBuilder
+              then ["-c" ''exec "${shell}" "$__aosBuildScriptPath"'']
+              else ["-c" builder];
             inherit outputs;
 
             # Source
@@ -1133,6 +1139,14 @@
             else {}
           )
           // extraArgs
+          // (
+            if largeBuilder
+            then {
+              __aosBuildScript = builder;
+              passAsFile = (args.passAsFile or []) ++ ["__aosBuildScript"];
+            }
+            else {}
+          )
         )
       )
     );
