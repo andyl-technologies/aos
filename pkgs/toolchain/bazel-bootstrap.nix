@@ -71,7 +71,8 @@
       else helperScope.bazelSource
     else bootstrapSource;
   mavenJars =
-    if bootstrapVersion == "9.2.0"
+    # Bazel 8+ must deserialize its lockfile with the source-built newer Gson.
+    if builtins.compareVersions bootstrapVersion "8.0.0" >= 0
     then callHelper ./_bazel-maven-bootstrap.nix {includeModernLibraries = true;}
     else helperScope.bazelMavenBootstrap;
   protobufJava = helperScope.bazelProtobufJava;
