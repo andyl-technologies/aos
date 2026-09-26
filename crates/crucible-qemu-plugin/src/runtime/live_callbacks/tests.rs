@@ -1,5 +1,6 @@
 //! Live QEMU callback integration tests.
 
+use super::preemption::{logical_preemption_ceiling_to_raw, logical_preemption_deadline_to_raw};
 use super::*;
 
 use std::cell::Cell;
@@ -9,9 +10,10 @@ use std::io::Write as _;
 use std::os::fd::{FromRawFd as _, IntoRawFd as _};
 use std::sync::atomic::AtomicU8;
 
+use crate::PreemptionWindow;
 use crucible_shmem::{
     KIND_VM, RegionConfig, RegionHeader, RegionLayout, STATUS_IDLE, STATUS_RUNNING,
-    authorize_advance_ceiling,
+    SchedulerPreemptionKind, authorize_advance_ceiling,
 };
 
 mod block_wait;
