@@ -4187,6 +4187,8 @@ def check_rust_llvm_file_inputs(root, env, accache, sccache, rustc, hits):
          "functions.txt", ["!answer\n!!1\n", "!other\n!!1\n"], 0, False),
         ("rust-llvm-list-separated", "--basic-block-sections=functions.txt",
          "functions.txt", ["!answer\n!!1\n", "!other\n!!1\n"], 0, True),
+        ("rust-llvm-list-value-separated", "--basic-block-sections functions.txt",
+         "functions.txt", ["!answer\n!!1\n", "!other\n!!1\n"], 0, False),
         ("rust-llvm-attrs-joined", "--forceattrs-csv-path=attrs.csv",
          "attrs.csv", ["answer,noinline\n", "answer,optnone\n"], 2, False),
         ("rust-llvm-attrs-separated", "--forceattrs-csv-path=attrs.csv",

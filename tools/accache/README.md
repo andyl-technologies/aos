@@ -198,6 +198,8 @@ settings and check distinct direct, sccache, and accache objects for Clang and
 Rust. Their `name=value` and separate `name value` forms are covered. LLVM
 file-input options also accept a separate value; accache fingerprints that
 path across Clang's repeated `-mllvm` and Rust's `-Cllvm-args` forwarding.
+Rust's `basic-block-sections` also distinguishes literal modes from a
+separately named section-list file.
 LLVM's `chr-function-list` and
 `chr-module-list` read named files outside the depfile. Accache fingerprints
 those files and explains an edit as a miss, even when the selected test source
