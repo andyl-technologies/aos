@@ -76,7 +76,7 @@ struct StoredFuseWorkerReservationV1 {
     reservation: FuseWorkerReservationV1,
 }
 
-/// Reconstructs bounded physical-connection generation heads from Mount's journal.
+/// Reconstructs bounded first-generation physical reservations from Mount's journal.
 #[derive(Debug)]
 pub(crate) struct FuseWorkerReservationTableV1 {
     current_kernel_boot_id: [u8; 16],
@@ -85,7 +85,7 @@ pub(crate) struct FuseWorkerReservationTableV1 {
 }
 
 impl FuseWorkerReservationTableV1 {
-    /// Replays every reserved key and rejects gaps, aliases, or unknown versions.
+    /// Replays every reserved key and rejects successors, aliases, or unknown versions.
     pub(crate) fn recover(journal: &Journal, current_kernel_boot_id: [u8; 16]) -> Result<Self> {
         if current_kernel_boot_id == [0; 16] {
             return Err(state_error(
@@ -164,8 +164,7 @@ impl FuseWorkerReservationTableV1 {
 
         if self.rows.values().any(|row| {
             row.worker_instance_id == reservation.worker_instance_id
-                || (row.state == FuseWorkerReservationStateV1::Reserved
-                    && row.assignment.sandbox_id == reservation.assignment.sandbox_id
+                || (row.assignment.sandbox_id == reservation.assignment.sandbox_id
                     && row.assignment.incarnation_id == reservation.assignment.incarnation_id
                     && row.destination_slot_id == reservation.destination_slot_id)
         }) {
@@ -181,45 +180,32 @@ impl FuseWorkerReservationTableV1 {
         ))
     }
 
+    /// Iterates every historical reservation, including untrusted terminal claims.
+    pub(crate) fn rows(&self) -> impl Iterator<Item = &FuseWorkerReservationV1> {
+        self.rows.values()
+    }
+
     fn validate_table(&self) -> Result<()> {
         let mut worker_instances = BTreeSet::new();
-        let mut active_slots = BTreeSet::new();
-        let mut last_attachment = None;
-        let mut last_generation = 0u64;
-        let mut last_was_terminal = true;
+        let mut claimed_slots = BTreeSet::new();
 
         for row in self.rows.values() {
             row.validate()?;
+            // Materialized journal rows do not prove a prior authenticated
+            // terminal transition, so no successor can be recovered yet.
+            if row.connection_generation != 1 {
+                return Err(state_error("FUSE connection generation is not first"));
+            }
             if !worker_instances.insert(row.worker_instance_id) {
                 return Err(state_error(
                     "FUSE worker instance appears in multiple reservations",
                 ));
             }
-            if last_attachment != Some(row.attachment_id) {
-                last_attachment = Some(row.attachment_id);
-                last_generation = 0;
-                last_was_terminal = true;
-            }
-            if !last_was_terminal
-                || last_generation.checked_add(1) != Some(row.connection_generation)
-            {
-                return Err(state_error(
-                    "FUSE reservation history is gapped or overlaps",
-                ));
-            }
-            last_generation = row.connection_generation;
-            last_was_terminal = matches!(
-                row.state,
-                FuseWorkerReservationStateV1::TeardownVerified { .. }
-            );
-
-            if row.state == FuseWorkerReservationStateV1::Reserved
-                && !active_slots.insert((
-                    row.assignment.sandbox_id,
-                    row.assignment.incarnation_id,
-                    row.destination_slot_id,
-                ))
-            {
+            if !claimed_slots.insert((
+                row.assignment.sandbox_id,
+                row.assignment.incarnation_id,
+                row.destination_slot_id,
+            )) {
                 return Err(state_error(
                     "FUSE destination slot has multiple reservations",
                 ));
@@ -248,6 +234,7 @@ impl FuseWorkerReservationV1 {
             || self.user_namespace_device == 0
             || self.user_namespace_inode == 0
             || self.user_namespace_generation == 0
+            || self.user_namespace_generation != self.assignment.namespace_generation
             || self.presentation_plan_digest == [0; 32]
             || self.policy_digest == [0; 32]
             || self.lease_identity == [0; 16]
@@ -424,8 +411,8 @@ mod tests {
         assert!(table.prepare_reservation(&reservation(1, 2)).is_err());
         assert!(table.prepare_reservation(&reservation(1, 3)).is_err());
 
-        // Recovery understands future contiguous history, but this dormant
-        // module cannot issue it from a terminal digest it has not verified.
+        // A materialized terminal row cannot prove the prior transition, so
+        // recovery itself rejects a forged successor history.
         commit(
             &mut journal,
             3,
@@ -435,7 +422,7 @@ mod tests {
                 encode_value(&reservation(1, 2)).unwrap(),
             )],
         );
-        assert!(FuseWorkerReservationTableV1::recover(&journal, BOOT).is_ok());
+        assert!(FuseWorkerReservationTableV1::recover(&journal, BOOT).is_err());
     }
 
     #[test]
@@ -533,5 +520,32 @@ mod tests {
         let mut slot_alias = reservation(2, 1);
         slot_alias.destination_slot_id = [1; 16];
         assert!(table.prepare_reservation(&slot_alias).is_err());
+
+        let mut terminal = reservation(1, 1);
+        terminal.state = FuseWorkerReservationStateV1::TeardownVerified {
+            evidence_digest: [20; 32],
+        };
+        commit(
+            &mut journal,
+            2,
+            vec![JournalRecord::put(
+                RecordNamespace::Operation,
+                encode_key(terminal.attachment_id, 1),
+                encode_value(&terminal).unwrap(),
+            )],
+        );
+        let table = FuseWorkerReservationTableV1::recover(&journal, BOOT).unwrap();
+        assert!(table.prepare_reservation(&slot_alias).is_err());
+        slot_alias.assignment.namespace_generation = 9;
+        slot_alias.user_namespace_generation = 9;
+        assert!(table.prepare_reservation(&slot_alias).is_err());
+
+        let mut wrong_namespace_generation = reservation(3, 1);
+        wrong_namespace_generation.user_namespace_generation = 9;
+        assert!(
+            table
+                .prepare_reservation(&wrong_namespace_generation)
+                .is_err()
+        );
     }
 }
