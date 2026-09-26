@@ -1,8 +1,10 @@
+#include <errno.h>
 #include <glib.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <qemu-plugin.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +16,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 #define FNV1A64_OFFSET 1469598103934665603ULL
 #define FNV1A64_PRIME 1099511628211ULL
 #define MAX_TRACKED_VCPUS 8U
+#define S5_OBSERVATION_ENABLE_MARKER 0xc0100504U
 #define S5_MARKER 0xc0100505U
 
 enum payload_kind {
@@ -46,6 +49,13 @@ struct canonical_register_reader {
 };
 
 static FILE *out_file;
+static qemu_plugin_id_t plugin_id;
+static uint64_t activation_vaddr;
+static atomic_bool measured_callbacks_active = false;
+static atomic_uint_fast64_t dormant_tb_translations = 0;
+static atomic_uint_fast64_t activation_marker_callbacks = 0;
+static atomic_uint_fast64_t reset_completion_callbacks = 0;
+static atomic_uint_fast64_t activation_errors = 0;
 static bool read_enabled = true;
 static unsigned int expected_markers = 3;
 static unsigned int tracked_vcpus = 1;
@@ -161,7 +171,7 @@ buffer_matches_kind(uint64_t kind, const GByteArray *buffer)
 }
 
 static bool
-decode_marker(const struct traced_insn *insn)
+decode_marker(const struct traced_insn *insn, uint32_t expected_marker)
 {
   uint32_t marker = 0;
 
@@ -177,7 +187,7 @@ decode_marker(const struct traced_insn *insn)
            ((uint32_t)insn->bytes[5] << 8U) |
            ((uint32_t)insn->bytes[6] << 16U) |
            ((uint32_t)insn->bytes[7] << 24U);
-  return marker == S5_MARKER;
+  return marker == expected_marker;
 }
 
 static bool
@@ -419,6 +429,14 @@ record_final_sample(bool pause_sample)
   }
   const uint64_t capture_failures =
       digest_status != 0 || material.ram_bytes == 0 || material.device_bytes == 0;
+  const uint64_t activation_count = atomic_load_explicit(
+      &activation_marker_callbacks, memory_order_relaxed);
+  const uint64_t reset_count = atomic_load_explicit(
+      &reset_completion_callbacks, memory_order_relaxed);
+  const uint64_t activation_error_count =
+      atomic_load_explicit(&activation_errors, memory_order_relaxed);
+  const bool measured_active =
+      atomic_load_explicit(&measured_callbacks_active, memory_order_acquire);
   const uint64_t ram_hash = fnv1a_bytes(FNV1A64_OFFSET, ram_digest, 32);
   uint64_t state_hash = FNV1A64_OFFSET;
 
@@ -433,6 +451,11 @@ record_final_sample(bool pause_sample)
       ",\"pause_sample\":%s"
       ",\"retired\":%" PRIu64
       ",\"markers\":%" PRIu64
+      ",\"activation_marker_callbacks\":%" PRIu64
+      ",\"reset_completion_callbacks\":%" PRIu64
+      ",\"activation_errors\":%" PRIu64
+      ",\"measured_callbacks_active\":%s"
+      ",\"dormant_tb_translations\":%" PRIuFAST64
       ",\"read_enabled\":%s"
       ",\"read_attempts\":%" PRIu64
       ",\"read_successes\":%" PRIu64
@@ -455,6 +478,11 @@ record_final_sample(bool pause_sample)
       pause_sample ? "true" : "false",
       retired,
       marker_count,
+      activation_count,
+      reset_count,
+      activation_error_count,
+      measured_active ? "true" : "false",
+      atomic_load_explicit(&dormant_tb_translations, memory_order_relaxed),
       read_enabled ? "true" : "false",
       read_attempts,
       read_successes,
@@ -644,6 +672,24 @@ on_insn(unsigned int vcpu_index, void *userdata)
   stream_hash = fnv1a_u64(stream_hash, (uint64_t)insn->size);
   stream_hash = fnv1a_bytes(stream_hash, insn->bytes, insn->size);
 
+  /* Keep long pre-marker boots diagnosable without logging every callback. */
+  if (retired >= (1ULL << 20) && (retired & (retired - 1)) == 0) {
+    fprintf(
+        out_file,
+        "{\"diagnostic\":\"instruction-progress\""
+        ",\"callback_retired\":%" PRIu64
+        ",\"observed_raw_icount\":%" PRIu64
+        ",\"observed_tick_ps\":%" PRId64
+        ",\"vcpu\":%u"
+        ",\"vaddr\":\"%016" PRIx64 "\"}\n",
+        retired,
+        qemu_plugin_icount_raw(),
+        qemu_plugin_sim_tick_observed(),
+        vcpu_index,
+        insn->vaddr);
+    fflush(out_file);
+  }
+
   if (insn->marker) {
     /* Aggregate register reads are admitted at the next exact boundary. */
     if (marker_pending) {
@@ -658,7 +704,7 @@ on_insn(unsigned int vcpu_index, void *userdata)
 }
 
 static void
-on_tb_translate(struct qemu_plugin_tb *tb, void *userdata)
+on_measured_tb_translate(struct qemu_plugin_tb *tb, void *userdata)
 {
   (void)userdata;
   const size_t count = qemu_plugin_tb_n_insns(tb);
@@ -677,7 +723,7 @@ on_tb_translate(struct qemu_plugin_tb *tb, void *userdata)
       insn->size = sizeof(insn->bytes);
     }
     insn->size = qemu_plugin_insn_data(qinsn, insn->bytes, insn->size);
-    insn->marker = decode_marker(insn);
+    insn->marker = decode_marker(insn, S5_MARKER);
 
     qemu_plugin_register_vcpu_insn_exec_cb(
         qinsn, on_insn, QEMU_PLUGIN_CB_R_REGS, insn);
@@ -696,12 +742,82 @@ on_plugin_exit(void *userdata)
   }
 }
 
+static void
+on_reset_complete(void *userdata)
+{
+  (void)userdata;
+
+  const uint64_t previous = atomic_fetch_add_explicit(
+      &reset_completion_callbacks, 1, memory_order_relaxed);
+  const uint64_t activation_count = atomic_load_explicit(
+      &activation_marker_callbacks, memory_order_acquire);
+  if (previous != 0 || activation_count != 1 ||
+      atomic_load_explicit(&measured_callbacks_active, memory_order_relaxed)) {
+    atomic_fetch_add_explicit(&activation_errors, 1, memory_order_relaxed);
+    return;
+  }
+
+  qemu_plugin_register_vcpu_tb_trans_cb(
+      plugin_id, on_measured_tb_translate, NULL);
+  qemu_plugin_register_sim_shmem_observer_cb(
+      on_pause_boundary, next_pause_boundary, NULL);
+  qemu_plugin_register_control_boundary_cb(on_control_boundary, NULL);
+  qemu_plugin_register_atexit_cb(plugin_id, on_plugin_exit, NULL);
+  atomic_store_explicit(&measured_callbacks_active, true, memory_order_release);
+}
+
+static void
+on_activation_marker(unsigned int vcpu_index, void *userdata)
+{
+  (void)vcpu_index;
+  (void)userdata;
+
+  const uint64_t previous = atomic_fetch_add_explicit(
+      &activation_marker_callbacks, 1, memory_order_acq_rel);
+  if (previous != 0) {
+    atomic_fetch_add_explicit(&activation_errors, 1, memory_order_relaxed);
+    return;
+  }
+
+  qemu_plugin_reset(plugin_id, on_reset_complete, NULL);
+}
+
+static void
+on_dormant_tb_translate(struct qemu_plugin_tb *tb, void *userdata)
+{
+  (void)userdata;
+
+  atomic_fetch_add_explicit(&dormant_tb_translations, 1, memory_order_relaxed);
+  if (atomic_load_explicit(&activation_marker_callbacks, memory_order_acquire) != 0 ||
+      qemu_plugin_tb_vaddr(tb) != activation_vaddr) {
+    return;
+  }
+
+  struct qemu_plugin_insn *qinsn = qemu_plugin_tb_get_insn(tb, 0);
+  struct traced_insn insn = {0};
+
+  insn.size = qemu_plugin_insn_size(qinsn);
+  if (insn.size > sizeof(insn.bytes)) {
+    insn.size = sizeof(insn.bytes);
+  }
+  insn.size = qemu_plugin_insn_data(qinsn, insn.bytes, insn.size);
+  if (!decode_marker(&insn, S5_OBSERVATION_ENABLE_MARKER)) {
+    atomic_fetch_add_explicit(&activation_errors, 1, memory_order_relaxed);
+    return;
+  }
+
+  qemu_plugin_register_vcpu_insn_exec_cb(
+      qinsn, on_activation_marker, QEMU_PLUGIN_CB_NO_REGS, NULL);
+}
+
 static bool
 parse_u64(const char *text, uint64_t *out)
 {
   char *end = NULL;
-  unsigned long long value = strtoull(text, &end, 10);
-  if (end == text || *end != '\0') {
+
+  errno = 0;
+  unsigned long long value = strtoull(text, &end, 0);
+  if (errno == ERANGE || text[0] == '\0' || end == text || *end != '\0') {
     return false;
   }
   *out = (uint64_t)value;
@@ -719,6 +835,7 @@ QEMU_PLUGIN_EXPORT int
 qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char **argv)
 {
   const char *out_path = NULL;
+  bool have_activation_vaddr = false;
 
   if (info != NULL && info->system.smp_vcpus > 0) {
     tracked_vcpus = (unsigned int)info->system.smp_vcpus;
@@ -744,6 +861,17 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
         return -1;
       }
       tracked_vcpus = (unsigned int)parsed;
+    } else if (strncmp(argv[i], "activate-vaddr=", 15) == 0) {
+      have_activation_vaddr =
+          parse_u64(argv[i] + 15, &activation_vaddr) && activation_vaddr != 0;
+      if (!have_activation_vaddr) {
+        qemu_plugin_outs(
+            "phase0-s5-virtual-memory-plugin: invalid activate-vaddr=<address>\n");
+        return -1;
+      }
+    } else {
+      qemu_plugin_outs("phase0-s5-virtual-memory-plugin: unknown option\n");
+      return -1;
     }
   }
 
@@ -755,6 +883,11 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
     qemu_plugin_outs("phase0-s5-virtual-memory-plugin: missing out=<path>\n");
     return -1;
   }
+  if (!have_activation_vaddr) {
+    qemu_plugin_outs(
+        "phase0-s5-virtual-memory-plugin: missing activate-vaddr=<address>\n");
+    return -1;
+  }
 
   out_file = fopen(out_path, "w");
   if (out_file == NULL) {
@@ -762,7 +895,8 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
     return -1;
   }
 
-  qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate, NULL);
+  plugin_id = id;
+  qemu_plugin_register_vcpu_tb_trans_cb(id, on_dormant_tb_translate, NULL);
   qemu_plugin_register_sim_shmem_observer_cb(
       on_pause_boundary, next_pause_boundary, NULL);
   qemu_plugin_register_control_boundary_cb(on_control_boundary, NULL);
