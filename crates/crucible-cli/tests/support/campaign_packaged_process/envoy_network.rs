@@ -14,9 +14,9 @@ const ENVOY_QUANTUM_BUDGET: &str = "250000";
 const WITHDRAW_THEN_RELEARN: [u8; 32] = [0x22; 32];
 const RETAIN_AND_PROBE: [u8; 32] = [0x11; 32];
 
-struct FlightProgress {
-    parent: String,
-    configuration: String,
+pub(super) struct FlightProgress {
+    pub(super) parent: String,
+    pub(super) configuration: String,
 }
 
 #[test]
@@ -87,7 +87,9 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     importer.stop()?;
 
     let authority = component_authority(&fixture)?;
-    let mut service = start_packaged_network_service(&fixture, &authority)?;
+    let hot_fork_deployment = product_hot_fork_deployment(&fixture)?;
+    let mut service =
+        start_packaged_network_service(&fixture, &authority, Some(&hot_fork_deployment))?;
     let initial = campaign_status(&fixture)?;
     run_json(
         connected_campaign(&fixture)
@@ -118,6 +120,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
 
     let genesis = json_string(&generated, "configuration")?;
     let discovery_attempt = initial_discovery_attempt(&lineage, &policy)?;
+    let discovery_attempt_id = discovery_attempt.to_string();
     let discovery = wait_for_public_attempt(
         &fixture,
         &mut service,
@@ -126,6 +129,9 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     )?;
     assert_eq!(discovery["attempt"]["configuration"], genesis);
     assert_eq!(discovery["observation"]["stop"], "reached:next-choice");
+    let materialization = guest_choice::capture_materialization_events(&service)?;
+    guest_choice::assert_materialization_tier(&materialization, discovery_attempt_id, "HotFork")?;
+    println!("envoy_five_node_hot_fork_authenticated=true");
     println!("envoy_five_node_baseline={discovery}");
 
     let mut progress = FlightProgress {
@@ -149,7 +155,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         &progress.configuration,
     )?;
     service.stop()?;
-    service = start_packaged_network_service(&fixture, &authority)?;
+    service = start_packaged_network_service(&fixture, &authority, None)?;
     let requeried_recovery = guest_choice::wait_for_choice(
         &fixture,
         "recovery.response",
@@ -165,6 +171,12 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         &recovery,
         "next-choice",
         0x74,
+    )?;
+    let materialization = guest_choice::capture_materialization_events(&service)?;
+    guest_choice::assert_materialization_tier(
+        &materialization,
+        json_string(&response["attempt"], "id")?,
+        "ThinReplay",
     )?;
     require_network_effect(
         &[&disruption, &response],
@@ -206,15 +218,62 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     println!("envoy_five_node_completion={completion}");
 
     prove_pending_recovery_exact_replay(&fixture, &mut service, &disruption, &requeried_recovery)?;
+    println!("envoy_five_node_thin_replay_authenticated=true");
     println!("envoy_five_node_failover_and_recovery_authenticated=true");
 
-    let status = campaign_status(&fixture)?;
-    assert_eq!(status["state"], "running");
+    retain_and_complete_product_campaign(&fixture, &completion)?;
     service.stop()?;
+    println!("envoy_five_node_graceful_completion_authenticated=true");
     Ok(())
 }
 
-fn group_argument(value: ChoiceValue) -> String {
+fn retain_and_complete_product_campaign(
+    fixture: &FlightFixture,
+    completion: &Value,
+) -> Result<(), Box<dyn Error>> {
+    let configuration = json_string(&completion["observation"], "child")?;
+    let running = campaign_status(fixture)?;
+    assert_eq!(running["state"], "running");
+    let pinned = run_json(
+        connected_campaign(fixture).args([
+            "pin",
+            CAMPAIGN,
+            &configuration,
+            "--expected",
+            &json_string(&running, "snapshot")?,
+            "--command",
+            &"79".repeat(32),
+            "--tier",
+            "thin",
+            "--reason",
+            "retain measured Envoy recovery",
+        ]),
+        "retain measured Envoy recovery through public campaign service",
+    )?;
+    assert_eq!(pinned["operation"], "pin");
+    let pinned_head = campaign_status(fixture)?;
+    assert_eq!(pinned_head["snapshot"], pinned["new_snapshot"]);
+
+    let completed = run_json(
+        connected_campaign(fixture).args([
+            "stop",
+            CAMPAIGN,
+            "--expected",
+            &json_string(&pinned_head, "snapshot")?,
+            "--command",
+            &"7a".repeat(32),
+        ]),
+        "complete measured Envoy campaign through public campaign service",
+    )?;
+    assert_eq!(completed["operation"], "stop");
+    let completed_head = campaign_status(fixture)?;
+    assert_eq!(completed_head["snapshot"], completed["new_snapshot"]);
+    assert_eq!(completed_head["state"], "completed");
+    println!("envoy_five_node_retention_authenticated=true");
+    Ok(())
+}
+
+pub(super) fn group_argument(value: ChoiceValue) -> String {
     assert!(matches!(value, ChoiceValue::Group(_)));
     format!("group:{}", hex::encode(value.canonical_bytes()))
 }
@@ -235,7 +294,7 @@ fn typed_fault_group_argument_uses_cli_canonical_encoding() -> Result<(), Box<dy
     Ok(())
 }
 
-fn recovery_argument(
+pub(super) fn recovery_argument(
     scenario: &ScenarioDefForm,
     strategy: [u8; 32],
 ) -> Result<String, Box<dyn Error>> {
@@ -267,7 +326,7 @@ fn recovery_argument(
     )))
 }
 
-fn choose(
+pub(super) fn choose(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     progress: &mut FlightProgress,
@@ -289,7 +348,7 @@ fn choose(
     )
 }
 
-fn choose_known(
+pub(super) fn choose_known(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     progress: &mut FlightProgress,
@@ -376,6 +435,7 @@ fn prove_pending_recovery_exact_replay(
     assert_eq!(selected["operation"], "select-capture");
     assert_eq!(selected["request"], request);
     let continuation = AttemptId::parse(&json_string(&selected, "attempt")?)?;
+    let continuation_id = continuation.to_string();
     let restored = wait_for_public_completed_attempt(fixture, service, continuation)?;
     assert_eq!(restored["attempt"]["start"], "after-attempt");
     assert_eq!(restored["attempt"]["origin"], attempt);
@@ -391,6 +451,9 @@ fn prove_pending_recovery_exact_replay(
     require_semantic_marker(&restored, "fault.transport.primary-probed", "router-a")?;
     require_semantic_marker(&restored, "fault.transport.signaled", "router-a")?;
     require_semantic_marker(&restored, "campaign.complete", "traffic-west")?;
+    let materialization = guest_choice::capture_materialization_events(service)?;
+    guest_choice::assert_materialization_tier(&materialization, continuation_id, "ExactRestore")?;
+    println!("envoy_five_node_exact_restore_authenticated=true");
     println!("envoy_five_node_pending_choice_exact_replay={restored}");
     Ok(())
 }
@@ -470,7 +533,7 @@ fn wait_for_public_completed_attempt(
     })
 }
 
-fn initial_discovery_attempt(
+pub(super) fn initial_discovery_attempt(
     lineage_path: &Path,
     policy_path: &Path,
 ) -> Result<AttemptId, Box<dyn Error>> {
@@ -530,7 +593,7 @@ fn explain_public_attempt(
     parse_json_output(output, "explain public Envoy attempt").map(Some)
 }
 
-fn wait_for_public_attempt(
+pub(super) fn wait_for_public_attempt(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     attempt: AttemptId,
@@ -673,7 +736,7 @@ fn initial_discovery_diagnostics(
     )
 }
 
-fn wait_for_request_attempt(
+pub(super) fn wait_for_request_attempt(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     request: &str,
@@ -872,7 +935,7 @@ fn require_measured_backup_route(explanation: &Value) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-fn compile_bounded_policy(
+pub(super) fn compile_bounded_policy(
     fixture: &FlightFixture,
     generated: &Value,
 ) -> Result<PathBuf, Box<dyn Error>> {
@@ -897,6 +960,21 @@ admit_scenario_defaults = false
 kind = "exhaustive"
 maximum_cardinality = 32
 
+[[objectives]]
+measurement = "recovery_time_us"
+goal = "minimize"
+weight_micros = 1000000
+
+[[objectives]]
+measurement = "traffic_loss_packets"
+goal = "minimize"
+weight_micros = 1000000
+
+[[objectives]]
+measurement = "control_plane_cpu_us"
+goal = "minimize"
+weight_micros = 1000000
+
 [fairness]
 breadth_first_percent = 0
 novelty_reserve = 0
@@ -920,7 +998,7 @@ exact_user_pins = true
     Ok(output)
 }
 
-fn component_authority(fixture: &FlightFixture) -> Result<PathBuf, Box<dyn Error>> {
+pub(super) fn component_authority(fixture: &FlightFixture) -> Result<PathBuf, Box<dyn Error>> {
     let authority = fixture
         ._temporary
         .path()
@@ -933,11 +1011,36 @@ fn component_authority(fixture: &FlightFixture) -> Result<PathBuf, Box<dyn Error
     Ok(authority)
 }
 
-fn start_packaged_network_service(
+fn product_hot_fork_deployment(fixture: &FlightFixture) -> Result<PathBuf, Box<dyn Error>> {
+    let deployment = fixture
+        ._temporary
+        .path()
+        .join("envoy-hot-fork-executor.toml");
+    let authored = fs::read_to_string(required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?)?;
+
+    // One five-guest 512 MiB source plus one child must fit the product VM's
+    // aggregate slot and hot-template resource ceilings.
+    fs::write(
+        &deployment,
+        format!(
+            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = 4294967296\nmaximum_expected_private_dirty_bytes = 4294967296\nmaximum_processes = 16\nmaximum_virtual_cpus = 10\nmaximum_descriptors = 16384\nmaximum_overlays = 16\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
+        ),
+    )?;
+    fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))?;
+    Ok(deployment)
+}
+
+pub(super) fn start_packaged_network_service(
     fixture: &FlightFixture,
     authority: &Path,
+    hot_fork_deployment: Option<&Path>,
 ) -> Result<CampaignServiceChild, Box<dyn Error>> {
+    let deployment = match hot_fork_deployment {
+        Some(path) => path.to_path_buf(),
+        None => required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?,
+    };
     let mut invocation = fixture.service_command(None);
+    invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "256");
     invocation
         .arg("--qemu")
         .arg(required_path("CRUCIBLE_FLIGHT_QEMU")?)
@@ -954,7 +1057,7 @@ fn start_packaged_network_service(
         ])
         .arg(authority)
         .arg("--campaign-packaged-executor")
-        .arg(required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?)
+        .arg(deployment)
         .arg("--campaign-executor-socket")
         .arg(fixture._temporary.path().join("envoy-executor.sock"));
     // Capturing baked genesis copies the RAM and disk of all five guests
