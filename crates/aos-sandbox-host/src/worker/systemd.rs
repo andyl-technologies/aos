@@ -1226,7 +1226,7 @@ fn runtime_proof_snapshot(
     runtime_proof_snapshot_with_workspace_mount_id(workspace_mount_id, supervisor, payload)
 }
 
-fn runtime_proof_snapshot_with_workspace_mount_id(
+pub(crate) fn runtime_proof_snapshot_with_workspace_mount_id(
     workspace_mount_id: u64,
     supervisor: &PinnedLeader,
     payload: &PinnedPayloadLeader,

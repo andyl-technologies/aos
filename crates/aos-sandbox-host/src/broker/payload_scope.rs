@@ -101,6 +101,7 @@ where
 
         self.recover_completed_runtime_scope(identity).await?;
         self.refresh_payload_scope(identity).await?;
+        self.retain_durable_scope_handle(identity)?;
         let pins = self
             .payload_pin(&identity)
             .ok_or(HostError::UnknownHandle)?;

@@ -37,6 +37,7 @@ use crate::state::transition::{
 use crate::{HostError, Result};
 
 use self::shifted_payload_inspection::VerifiedShiftedPayloadInspectionV1;
+pub(crate) use self::systemd::runtime_proof_snapshot_with_workspace_mount_id;
 use self::systemd::{open_payload_root, read_nested_pid};
 
 #[cfg(test)]

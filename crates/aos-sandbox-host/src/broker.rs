@@ -109,7 +109,7 @@ use crate::state::{
 use crate::worker::{
     CompletedRuntimeProof, GuardianObservation, GuardianObservedState, HostRuntimeIdentity,
     HostWorker, ObservedRuntimeState, PinnedLeader, PinnedPayloadLeader, WorkerObservation,
-    WorkerOperation,
+    WorkerOperation, runtime_proof_snapshot_with_workspace_mount_id,
 };
 use crate::{HostError, Result};
 
@@ -2762,6 +2762,10 @@ where
             || supervisor.handle() != retained.supervisor.handle()
             || !payload.has_same_cgroup(&retained.payload)
             || payload.relative_cgroup_hint() != retained.payload.relative_cgroup_hint()
+            || payload.mount().identity() != retained.payload.mount().identity()
+            || payload.user().identity() != retained.payload.user().identity()
+            || payload.network().identity() != retained.payload.network().identity()
+            || payload.pid().identity() != retained.payload.pid().identity()
             || payload
                 .pidfd()
                 .info()
@@ -2788,6 +2792,46 @@ where
         Ok(())
     }
 
+    /// Commits a Host-authenticated scope name before any response exposes it.
+    ///
+    /// The caller must hold a current completed Guardian scope; no historical
+    /// request or non-Guardian observation may persist a recoverable handle.
+    pub(crate) fn retain_durable_scope_handle(
+        &mut self,
+        identity: HostRuntimeIdentity,
+    ) -> Result<()> {
+        let lineage = match self.state.completed_guardian_lineage(
+            identity.sandbox_id(),
+            identity.incarnation_id(),
+            &self.authority,
+        )? {
+            GuardianLineage::Absent | GuardianLineage::Shadowed => {
+                return Err(HostError::UnknownHandle);
+            }
+            GuardianLineage::Complete(lineage) => lineage,
+        };
+        let pins = self
+            .payload_pin(&identity)
+            .ok_or(HostError::UnknownHandle)?;
+        pins.recheck_kernel()?;
+        let observed = runtime_proof_snapshot_with_workspace_mount_id(
+            lineage.worker_proof.workspace_mount_id,
+            &pins.supervisor,
+            &pins.payload,
+        )?;
+        if observed != lineage.worker_proof || pins.invocation_id != lineage.payload_invocation {
+            return Err(HostError::Worker(
+                "payload scope differs from its completed launch proof".to_owned(),
+            ));
+        }
+        let handle = pins.scope_handle;
+        let mut proposed = self.state.clone();
+        if proposed.retain_scope_handle(&identity, &lineage, handle, &self.authority)? {
+            self.commit_state(&proposed)?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn recover_completed_runtime_scope(
         &mut self,
         identity: HostRuntimeIdentity,
@@ -2810,7 +2854,29 @@ where
         // Authenticate lineage before the fast path so a scope query cannot
         // race a newly admitted lifecycle transition.
         if retained_pins_are_current {
+            if let Some(saved) = self.state.current_scope_handle(&identity, &lineage)?
+                && self
+                    .runtime_pins
+                    .get(&identity)
+                    .is_none_or(|pins| pins.scope_handle != saved)
+            {
+                return Err(HostError::State(
+                    "volatile and durable payload scope handles disagree".to_owned(),
+                ));
+            }
             return Ok(());
+        }
+        let saved_handle = self.state.current_scope_handle(&identity, &lineage)?;
+        if let Some(saved) = saved_handle
+            && self.runtime_pins.iter().any(|(prior, pins)| {
+                prior.sandbox_id() == identity.sandbox_id()
+                    && prior.incarnation_id() == identity.incarnation_id()
+                    && pins.scope_handle != saved
+            })
+        {
+            return Err(HostError::State(
+                "volatile and durable payload scope handles disagree".to_owned(),
+            ));
         }
         let recovered = self
             .worker
@@ -2830,17 +2896,16 @@ where
                 "completed runtime recovery contradicted durable exact evidence".to_owned(),
             ));
         }
-        self.retain_runtime_observation(identity, recovered.verification.observation)
-            .and_then(|()| {
-                self.runtime_pins
-                    .contains_key(&identity)
-                    .then_some(())
-                    .ok_or_else(|| {
-                        HostError::Worker(
-                            "completed runtime recovery omitted retained payload pins".to_owned(),
-                        )
-                    })
-            })
+        self.retain_runtime_observation(identity, recovered.verification.observation)?;
+        let pins = self.runtime_pins.get_mut(&identity).ok_or_else(|| {
+            HostError::Worker("completed runtime recovery omitted retained payload pins".to_owned())
+        })?;
+        if let Some(handle) = saved_handle {
+            // The worker has compared its fresh complete proof with the
+            // authenticated launch snapshot before this name is restored.
+            pins.scope_handle = handle;
+        }
+        Ok(())
     }
 
     pub(crate) fn payload_pin(

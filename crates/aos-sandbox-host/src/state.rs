@@ -7,7 +7,9 @@
 //! ```
 //!
 //! Version 1 records authenticated Guardian-launch, composite-Stop, direct
-//! lifecycle executions, and optional Host-local output observations.
+//! lifecycle executions, and optional Host-local output observations and
+//! authenticated payload-scope handle lineage. Older V1 bodies omit those
+//! optional fields; absence never reconstructs an old handle from a request.
 //! JSON is an internal node-local format, not a portable or wire contract.
 //! Unknown fields, checksum failures, overlong bodies, duplicate identities,
 //! and invalid pending/completed records fail closed during startup.
@@ -44,10 +46,12 @@ use crate::{HostError, Result};
 
 mod existing_output;
 mod no_apply_handoff;
+mod scope_handle;
 pub(crate) mod transition;
 
 use existing_output::DurableExistingOutputObservation;
 pub(crate) use no_apply_handoff::host_execution_receipt_digest;
+use scope_handle::DurableScopeHandle;
 pub(crate) use transition::HostAction;
 use transition::{DurableExecution, ExecutionContext, HostExecutionHandoffRecord};
 
@@ -121,6 +125,7 @@ pub struct HostState {
     requests: BTreeMap<[u8; 16], RequestRecord>,
     observation_sequences: BTreeMap<[u8; 16], u64>,
     scope_replays: BTreeMap<[u8; 32], DurableScopeReplay>,
+    scope_handles: BTreeMap<[u8; 16], DurableScopeHandle>,
     existing_output_observations: BTreeMap<[u8; 16], DurableExistingOutputObservation>,
 }
 
@@ -215,6 +220,8 @@ struct StateWire {
     observation_sequences: Vec<ObservationSequence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     scope_replays: Vec<DurableScopeReplay>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    scope_handles: Vec<DurableScopeHandle>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     existing_output_observations: Vec<DurableExistingOutputObservation>,
 }
@@ -340,6 +347,7 @@ impl HostState {
                 ));
             }
         }
+        self.validate_scope_handles(authority)?;
         for (request_id, observation) in &self.existing_output_observations {
             if request_id != &observation.host_request_id {
                 return Err(HostError::State(
@@ -1677,6 +1685,7 @@ impl HostState {
                 })
                 .collect(),
             scope_replays: self.scope_replays.values().cloned().collect(),
+            scope_handles: self.scope_handles.values().cloned().collect(),
             existing_output_observations: self
                 .existing_output_observations
                 .values()
@@ -1697,6 +1706,11 @@ impl HostState {
         if wire.scope_replays.len() > MAXIMUM_REQUESTS {
             return Err(HostError::State(
                 "durable Host scope replay table exceeds its fixed bound".to_owned(),
+            ));
+        }
+        if wire.scope_handles.len() > MAXIMUM_REQUESTS {
+            return Err(HostError::State(
+                "durable Host scope handle table exceeds its fixed bound".to_owned(),
             ));
         }
         if wire.existing_output_observations.len() > MAXIMUM_REQUESTS {
@@ -1737,6 +1751,18 @@ impl HostState {
             if state.scope_replays.insert(replay.locator, replay).is_some() {
                 return Err(HostError::State(
                     "duplicate durable Host scope replay locator".to_owned(),
+                ));
+            }
+        }
+        for handle in wire.scope_handles {
+            handle.validate_shape()?;
+            if state
+                .scope_handles
+                .insert(handle.source_request_id(), handle)
+                .is_some()
+            {
+                return Err(HostError::State(
+                    "duplicate durable Host scope handle lineage".to_owned(),
                 ));
             }
         }
@@ -4176,6 +4202,145 @@ mod tests {
                 .unwrap(),
             GuardianLineage::Complete(frozen)
         );
+    }
+
+    #[test]
+    fn scope_handle_survives_reopen_only_with_authenticated_launch_lineage() {
+        let fixture = AdmissionFixture::new();
+        let authority = fixture.authority();
+        let mut state = HostState::default();
+        append_completed_guardian(&mut state, &fixture, &authority, &guardian_request(103));
+        let old_wire = state.encode().unwrap();
+        assert!(
+            HostState::decode(&old_wire)
+                .unwrap()
+                .scope_handles
+                .is_empty()
+        );
+
+        let GuardianLineage::Complete(lineage) = state
+            .completed_guardian_lineage(&[104; 16], &[105; 16], &authority)
+            .unwrap()
+        else {
+            panic!("completed Guardian launch is required");
+        };
+        let identity = HostRuntimeIdentity::new([104; 16], [105; 16], 1, 1, [106; 32]);
+        let handle = [201; 32];
+        assert!(
+            state
+                .retain_scope_handle(&identity, &lineage, handle, &authority)
+                .unwrap()
+        );
+        assert!(
+            !state
+                .retain_scope_handle(&identity, &lineage, handle, &authority)
+                .unwrap()
+        );
+        assert!(
+            state
+                .retain_scope_handle(&identity, &lineage, [202; 32], &authority)
+                .is_err()
+        );
+
+        let mut reopened = HostState::decode(&state.encode().unwrap()).unwrap();
+        reopened.validate_authenticated(&authority).unwrap();
+        let freeze = lifecycle_request(
+            104,
+            RuntimeAction::RUNTIME_ACTION_FREEZE,
+            [105; 16],
+            1,
+            2,
+            [107; 32],
+        );
+        append_completed_lifecycle(
+            &mut reopened,
+            &fixture,
+            &authority,
+            &freeze,
+            HostAction::Freeze,
+        );
+        let GuardianLineage::Complete(frozen) = reopened
+            .completed_guardian_lineage(&[104; 16], &[105; 16], &authority)
+            .unwrap()
+        else {
+            panic!("same-epoch Freeze must preserve the launch lineage");
+        };
+        let frozen_identity = HostRuntimeIdentity::new([104; 16], [105; 16], 1, 2, [107; 32]);
+        assert_eq!(
+            reopened
+                .current_scope_handle(&frozen_identity, &frozen)
+                .unwrap(),
+            Some(handle)
+        );
+        let mut stripped = reopened.clone();
+        stripped.scope_handles.clear();
+        let stripped = HostState::decode(&stripped.encode().unwrap()).unwrap();
+        assert_eq!(
+            stripped
+                .current_scope_handle(&frozen_identity, &frozen)
+                .unwrap(),
+            None
+        );
+
+        let mut changed_proof = frozen;
+        changed_proof.worker_proof.user_namespace.inode += 1;
+        assert!(
+            reopened
+                .current_scope_handle(&frozen_identity, &changed_proof)
+                .is_err()
+        );
+        let mut changed_boot = frozen;
+        changed_boot.worker_proof.host_boot_id[0] ^= 1;
+        assert!(
+            reopened
+                .current_scope_handle(&frozen_identity, &changed_boot)
+                .is_err()
+        );
+        let mut changed_handle = reopened.clone();
+        changed_handle
+            .scope_handles
+            .get_mut(&lineage.source_request_id)
+            .unwrap()
+            .binding
+            .handle[0] ^= 1;
+        assert!(changed_handle.validate_authenticated(&authority).is_err());
+        let mut signed_wrong_proof = reopened.clone();
+        let wrong_record = signed_wrong_proof
+            .scope_handles
+            .get_mut(&lineage.source_request_id)
+            .unwrap();
+        wrong_record.binding.worker_proof.user_namespace.inode += 1;
+        wrong_record.authentication = authority
+            .seal_execution_record(&lineage.source_request_id, &wrong_record.binding.encode())
+            .unwrap();
+        assert!(
+            signed_wrong_proof
+                .validate_authenticated(&authority)
+                .is_err()
+        );
+        let mut signed_wrong_unit = reopened.clone();
+        let wrong_unit = signed_wrong_unit
+            .scope_handles
+            .get_mut(&lineage.source_request_id)
+            .unwrap();
+        wrong_unit.binding.unit_binding[0] ^= 1;
+        wrong_unit.authentication = authority
+            .seal_execution_record(&lineage.source_request_id, &wrong_unit.binding.encode())
+            .unwrap();
+        assert!(
+            signed_wrong_unit
+                .validate_authenticated(&authority)
+                .is_err()
+        );
+        let mut wrong_purpose = reopened;
+        wrong_purpose
+            .scope_handles
+            .get_mut(&lineage.source_request_id)
+            .unwrap()
+            .authentication = authority
+            .seal_execution_record(&lineage.source_request_id, b"unrelated Host record")
+            .unwrap();
+        assert!(wrong_purpose.validate_authenticated(&authority).is_err());
     }
 
     #[test]

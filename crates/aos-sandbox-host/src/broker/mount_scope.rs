@@ -62,6 +62,7 @@ impl<C: HostCatalog, S: HostStateStore, W: HostWorker + Sync> HostBroker<C, S, W
 
         self.recover_completed_runtime_scope(identity).await?;
         self.refresh_payload_scope(identity).await?;
+        self.retain_durable_scope_handle(identity)?;
         let pins = self
             .payload_pin(&identity)
             .ok_or(HostError::UnknownHandle)?;
