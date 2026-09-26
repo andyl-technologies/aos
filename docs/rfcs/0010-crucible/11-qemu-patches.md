@@ -42,11 +42,12 @@ read is [`13-shmem-abi.md`](13-shmem-abi.md); the guest↔host channel that the
 doorbell discussion (§11.7) coordinates with is
 [`16-guest-host-channel.md`](16-guest-host-channel.md).
 
-The single most important property of this entire file is **inertness**: every
-mechanism here is dead code unless simulation mode is explicitly activated, so the
-*same* AOS QEMU source built and shipped for production use is behaviorally
-identical to upstream ([INV-7], [DET-36]). The atomic patch is what makes
-"determinism is opt-in, production QEMU is untouched" true at the source level.
+The single most important property of this file is **inertness** of simulation
+control when simulation mode is off. The picosecond timer representation also
+serves ordinary TCG and persists its exact fractional phase in versioned
+VMState data. Outside that representation, the same AOS
+QEMU source is checked against pinned upstream for the sim-off corpus ([INV-7],
+[DET-36]); the gate does not claim universal ordinary-TCG timing identity.
 
 ## 11.1 Governing principles
 
@@ -55,46 +56,59 @@ The atomic patch is held to four governing principles. Sections 11.4 through
 
 ### 11.1.1 Inertness (the load-bearing principle)
 
-- **[PATCH-1]** The atomic patch MUST be **inert unless simulation mode
-  is active**. "Active" means the plugin (`crucible-qemu-plugin`,
+- **[PATCH-1]** Simulation control in the atomic patch MUST be **inert unless
+  simulation mode is active**. "Active" means the plugin (`crucible-qemu-plugin`,
   [`12-qemu-plugin.md`](12-qemu-plugin.md)) is loaded, the `sim` TCG accelerator
   is selected via `-accel sim`, and any mechanism-specific capability such as
   time-control ownership has also been acquired. Accelerator selection and
   `qemu_plugin_request_time_control` are complementary requirements, not
   equivalent activation paths. The same
   AOS QEMU binary, built from the same patched source but launched without sim
-  mode, MUST be behaviorally identical to upstream QEMU of the pinned version.
+  mode, MUST preserve upstream behavior for simulation control and the checked
+  corpus, subject to the ordinary-TCG picosecond timer representation below.
+  Ordinary TCG MUST retain its picosecond timer state in versioned exact-phase
+  VMState data and restore it correctly. The pinned Q35 corpus has one PIT
+  exact-phase subsection and MUST retain byte-identical legacy VMState. Timer
+  timing and migration layouts outside that corpus are not asserted to match
+  upstream byte-for-byte.
   *Gate:* `gate:qemu-inert`. *Spec:* §11.1.1; satisfies [INV-7], [DET-36].
 
 - **[PATCH-2]** The gate for the atomic patch's non-sim behavior MUST be a *checked*
   property, not a reviewed claim: `gate:qemu-inert` runs a corpus of
   upstream-equivalent invocations (boot, run, migrate, QMP introspection) against
   both the unpatched pinned QEMU and the AOS-patched QEMU *with sim mode off*, and
-  MUST observe byte-identical guest-visible behavior (same instruction streams
-  under plain `-icount`, same device enumeration, same migration streams). The
-  patched QEMU may expose an explicitly enumerated Crucible host-control command
+  MUST observe byte-identical guest-visible outputs for the checked workload
+  under plain `-icount` and the same device enumeration. The pinned Q35
+  migration check MUST compare every legacy byte while permitting only the
+  framed, versioned PIT exact-phase subsection and matching VMState description.
+  Same-binary repeated streams and patched restore/resave MUST be
+  byte-identical, including a nonzero fractional PIT phase. The patched QEMU
+  may expose an explicitly enumerated Crucible host-control command
   when its versioned lifecycle protocol requires one, but the gate MUST prove
   that command fails closed without sim mode, leaves the VM stopped in its
   original run state, and is the complete QMP command-set delta. An integration change that
-  perturbs any guest-visible or upstream management behavior out of sim mode
-  fails the gate. *Gate:*
+  perturbs checked guest-visible output or upstream management behavior out of
+  sim mode fails the gate. *Gate:*
   `gate:qemu-inert`. *Spec:* §11.1.1; satisfies [INV-7], [DET-36].
 
-- **[PATCH-3]** Inertness MUST be achieved structurally, by one of three
-  permitted mechanisms, never by a runtime heuristic that "usually" stays off:
+- **[PATCH-3]** Simulation-control inertness MUST be achieved structurally, by
+  one of three permitted mechanisms, never by a runtime heuristic that
+  "usually" stays off:
   (a) **new files** compiled into a new accelerator (`tcg-accel-ops-sim.c`) or new
   device (`block/crucible-shmem.c`) that is only instantiated when the sim
   accelerator / device is selected; (b) a **branch gated on a sim predicate** —
   `qemu_plugin_has_time_control()`, `use_icount == ICOUNT_PRECISE`, or a registered
   plugin callback being non-NULL — whose else-branch is verbatim upstream behavior;
   or (c) a **new plugin-API export** that does nothing unless a plugin calls it.
-  The atomic patch MUST NOT alter an upstream code path that runs in the non-sim
+  Outside the versioned picosecond timer representation specified in [PATCH-1],
+  the atomic patch MUST NOT alter an upstream code path that runs in the non-sim
   configuration. *Gate:* `gate:qemu-inert`. *Spec:* §11.1.1; satisfies [INV-7].
 
 The three mechanisms map cleanly onto the capability categories: determinism
 mechanisms (§11.4) use (b); the sim-mode accelerator and devices (§11.5, §11.6)
-use (a); the plugin API (§11.5) uses (c). The atomic patch may not use a fourth,
-looser mechanism.
+use (a); the plugin API (§11.5) uses (c). The ordinary-TCG picosecond timer
+representation is governed separately by the exact-phase migration check in
+[PATCH-2]; it does not relax simulation-control inertness.
 
 ### 11.1.2 Component micro-tests
 
@@ -107,10 +121,10 @@ looser mechanism.
   the new API or device path and assert its documented contract. *Gate:*
   `gate:patch-microtests`. *Spec:* §11.1.2; satisfies [DET-37], forward-ref 24.
 
-- **[PATCH-5]** The component suite MUST also assert the atomic patch's **inertness**
-  (it is a determinism/capability change in sim mode *and* a no-op out of sim
-  mode), so that the pair "takes effect in sim mode / inert out of sim mode" of
-  [DET-37] is checked by the patch's own test, not only by the aggregate
+- **[PATCH-5]** The component suite MUST also assert simulation-control
+  **inertness** (the control change takes effect in sim mode and is a no-op out
+  of sim mode), so that the pair "takes effect in sim mode / inert out of sim
+  mode" of [DET-37] is checked by the patch's own test, not only by the aggregate
   `gate:qemu-inert`. *Gate:* `gate:patch-microtests`, `gate:qemu-inert`. *Spec:*
   §11.1.2; satisfies [DET-37], [INV-7].
 
