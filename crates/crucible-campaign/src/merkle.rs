@@ -780,6 +780,56 @@ impl MerkleMap {
         prior: ContentId,
         upserts: &BTreeMap<CampaignHash, ContentId>,
     ) -> Result<ContentId, CampaignStoreError> {
+        self.overlay_after_upserts(prior, upserts)
+            .map(|(root, _overlay)| root)
+    }
+
+    /// Publishes only nodes reachable from the canonical final batch root.
+    ///
+    /// Intermediate overlay roots are never authoritative. Children are stored
+    /// before their parents, and an interrupted publication leaves only
+    /// unreferenced immutable objects; the caller still owns the ref CAS.
+    pub(crate) fn insert_many(
+        &self,
+        prior: ContentId,
+        upserts: &BTreeMap<CampaignHash, ContentId>,
+    ) -> Result<MerkleMapRoot, CampaignStoreError> {
+        let (root, overlay) = self.overlay_after_upserts(prior, upserts)?;
+        let entry_count = self.read_overlay_node(root, 0, &overlay)?.entry_count;
+        let mut stack = vec![(root, false)];
+        let mut visited = BTreeSet::new();
+
+        while let Some((id, ready)) = stack.pop() {
+            let Some(node) = overlay.get(&id) else {
+                continue;
+            };
+            if ready {
+                if self.persist_node(node)? != id {
+                    return Err(invalid("batch-node-publication-id-mismatch"));
+                }
+                continue;
+            }
+            if !visited.insert(id) {
+                continue;
+            }
+            stack.push((id, true));
+            stack.extend(node.entries.values().filter_map(|entry| match entry {
+                MerkleEntry::Node { content_id, .. } => Some((*content_id, false)),
+                MerkleEntry::Leaf { .. } => None,
+            }));
+        }
+
+        Ok(MerkleMapRoot {
+            content_id: root,
+            entry_count,
+        })
+    }
+
+    fn overlay_after_upserts(
+        &self,
+        prior: ContentId,
+        upserts: &BTreeMap<CampaignHash, ContentId>,
+    ) -> Result<(ContentId, BTreeMap<ContentId, MerkleNode>), CampaignStoreError> {
         let mut overlay = BTreeMap::new();
         let mut current = prior;
         for (key, value) in upserts {
@@ -788,7 +838,7 @@ impl MerkleMap {
                 .insert_overlay_node(current, node, *key, *value, &mut overlay)?
                 .content_id;
         }
-        Ok(current)
+        Ok((current, overlay))
     }
 
     fn insert_overlay_node(
@@ -1437,7 +1487,50 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
-    use crucible_cas::content_store::MemoryBlobBackend;
+    use crucible_cas::content_store::{
+        BackendCapabilities, BlobStoreAdmin, ByteRange, ImmutableBlobBackend, MemoryBlobBackend,
+        PutReceipt, StoreError,
+    };
+    use std::sync::Mutex;
+
+    struct FailAfterPutBackend {
+        inner: Arc<MemoryBlobBackend>,
+        remaining: Mutex<Option<usize>>,
+    }
+
+    impl ImmutableBlobBackend for FailAfterPutBackend {
+        fn name(&self) -> &str {
+            self.inner.name()
+        }
+
+        fn capabilities(&self) -> BackendCapabilities {
+            self.inner.capabilities()
+        }
+
+        fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+            self.inner.contains(id)
+        }
+
+        fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+            self.inner.read(id, range)
+        }
+
+        fn put_if_absent(
+            &self,
+            id: ContentId,
+            source: &BlobHandle,
+        ) -> Result<PutReceipt, StoreError> {
+            let mut remaining = self.remaining.lock().expect("put failure lock");
+            if let Some(allowed) = remaining.as_mut() {
+                if *allowed == 0 {
+                    return Err(StoreError::Quota);
+                }
+                *allowed -= 1;
+            }
+            drop(remaining);
+            self.inner.put_if_absent(id, source)
+        }
+    }
 
     fn hash(byte: u8) -> CampaignHash {
         let mut bytes = [0_u8; 32];
@@ -1519,6 +1612,109 @@ mod tests {
         assert_eq!(
             backend.object_count().expect("object count after overlay"),
             objects_before
+        );
+    }
+
+    #[test]
+    fn batch_publication_keeps_only_the_final_canonical_trie() {
+        let upserts = BTreeMap::from([
+            (hash(0x10), value("first")),
+            (hash(0x1f), value("second")),
+            (hash(0xa0), value("third")),
+        ]);
+        let (sequential_backend, sequential_map) = map();
+        let (batch_backend, batch_map) = map();
+        for backend in [&sequential_backend, &batch_backend] {
+            for name in ["first", "second", "third"] {
+                backend
+                    .put_if_absent(
+                        value(name),
+                        &BlobHandle::from_bytes(name.as_bytes().to_vec()),
+                    )
+                    .expect("store value");
+            }
+        }
+
+        let mut sequential = sequential_map.empty().expect("empty sequential root");
+        let batch_prior = batch_map.empty().expect("empty batch root");
+        for (key, content) in &upserts {
+            sequential = sequential_map
+                .insert(sequential.content_id(), *key, *content)
+                .expect("sequential insert");
+        }
+        let batch = batch_map
+            .insert_many(batch_prior.content_id(), &upserts)
+            .expect("batch insert");
+
+        assert_eq!(batch, sequential);
+        assert_eq!(
+            batch_map
+                .verify_closure(batch.content_id())
+                .expect("cold closure"),
+            batch
+        );
+        assert!(
+            batch_backend.object_count().expect("batch objects")
+                < sequential_backend
+                    .object_count()
+                    .expect("sequential objects")
+        );
+
+        let root_node = batch_map
+            .read_node(batch.content_id(), 0)
+            .expect("final root");
+        let MerkleEntry::Node { content_id, .. } = root_node.entries.get(&1).expect("child branch")
+        else {
+            panic!("expected nested child branch");
+        };
+        batch_backend
+            .acquire_inventory_fence()
+            .expect("inventory fence")
+            .delete_candidate(*content_id)
+            .expect("remove final child");
+        let reopened = MerkleMap::new(batch_backend);
+        assert!(matches!(
+            reopened.verify_closure(batch.content_id()),
+            Err(CampaignStoreError::Store(StoreError::NotFound { id })) if id == *content_id
+        ));
+    }
+
+    #[test]
+    fn failed_batch_publication_never_returns_an_incomplete_root() {
+        let inner = Arc::new(MemoryBlobBackend::new(
+            "batch-failure-test",
+            16 * 1024 * 1024,
+        ));
+        let backend = Arc::new(FailAfterPutBackend {
+            inner: inner.clone(),
+            remaining: Mutex::new(None),
+        });
+        let map = MerkleMap::new(backend.clone());
+        let prior = map.empty().expect("empty root");
+        let upserts = BTreeMap::from([
+            (hash(0x10), value("first")),
+            (hash(0x1f), value("second")),
+            (hash(0xa0), value("third")),
+        ]);
+        let final_root = map
+            .root_after_upserts(prior.content_id(), &upserts)
+            .expect("expected root");
+        let objects_before = inner.object_count().expect("objects before failure");
+        *backend.remaining.lock().expect("put failure lock") = Some(1);
+
+        assert!(matches!(
+            map.insert_many(prior.content_id(), &upserts),
+            Err(CampaignStoreError::Store(StoreError::Quota))
+        ));
+        assert_eq!(
+            inner.object_count().expect("partial objects"),
+            objects_before + 1
+        );
+        assert!(!inner.contains(final_root).expect("final root absent"));
+        assert_eq!(
+            map.verify_closure(prior.content_id())
+                .expect("prior closure"),
+            prior
         );
     }
 
