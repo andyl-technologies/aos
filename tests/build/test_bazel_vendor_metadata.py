@@ -37,7 +37,10 @@ class BazelVendorMetadataTests(unittest.TestCase):
                         },
                         "example.group:native": {
                             "version": "3.0",
-                            "shasums": {"linux-x86_64": "pinned-source-hash"},
+                            "shasums": {
+                                "linux-x86_64": "pinned-source-hash",
+                                "windows-x86_64": "pinned-source-hash",
+                            },
                         },
                     },
                     "dependencies": {"example.group:first": ["example.group:second"]},
@@ -54,6 +57,7 @@ class BazelVendorMetadataTests(unittest.TestCase):
         self.add_jar("example.group:first", "1.2.0")
         self.add_jar("example.group:second", "2.0")
         self.add_jar("example.group:native", "3.0", "linux-x86_64")
+        self.add_jar("example.group:native", "3.0", "windows-x86_64")
 
         output = generator.generate(self.lock, self.maven, partial=False)
 
@@ -61,6 +65,7 @@ class BazelVendorMetadataTests(unittest.TestCase):
         self.assertIn('name = "example_group_first"', output)
         self.assertIn('deps = [":example_group_second"]', output)
         self.assertIn('name = "example_group_native_linux_x86_64_file"', output)
+        self.assertIn('name = "example_group_native_windows_x86_64_file"', output)
         self.assertIn('name = "example_group_first_1_2_0"', output)
         self.assertIn('name = "srcs"', output)
 
@@ -72,8 +77,44 @@ class BazelVendorMetadataTests(unittest.TestCase):
             generator.generate(self.lock, self.maven, partial=False)
 
         output = generator.generate(self.lock, self.maven, partial=True)
-        self.assertIn("NOT FOR RELEASE: 1 locked JAR is absent", output)
+        self.assertIn("NOT FOR RELEASE: 2 locked JARs are absent", output)
         self.assertNotIn('name = "example_group_native_linux_x86_64"', output)
+
+    def test_eligible_platforms_require_every_selected_classifier(self):
+        self.add_jar("example.group:first", "1.2.0")
+        self.add_jar("example.group:second", "2.0")
+        self.add_jar("example.group:native", "3.0", "linux-x86_64")
+
+        output = generator.generate(
+            self.lock, self.maven, partial=False, eligible_platforms=frozenset({"linux"})
+        )
+
+        self.assertNotIn("NOT FOR RELEASE", output)
+        self.assertIn('name = "example_group_native_linux_x86_64_file"', output)
+        self.assertNotIn('name = "example_group_native_windows_x86_64"', output)
+
+        native_jar = self.maven / generator.jar_path(
+            "example.group:native", "3.0", "linux-x86_64"
+        )
+        native_jar.unlink()
+        with self.assertRaisesRegex(ValueError, "example.group:native:linux-x86_64"):
+            generator.generate(
+                self.lock,
+                self.maven,
+                partial=False,
+                eligible_platforms=frozenset({"linux"}),
+            )
+
+        self.lock.write_text(
+            self.lock.read_text().replace("linux-x86_64", "unsupported-x86_64")
+        )
+        with self.assertRaisesRegex(ValueError, "Unknown Maven classifier platform"):
+            generator.generate(
+                self.lock,
+                self.maven,
+                partial=False,
+                eligible_platforms=frozenset({"linux"}),
+            )
 
 
 if __name__ == "__main__":
