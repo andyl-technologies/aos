@@ -80,6 +80,7 @@ mod handshake;
 mod host_consumer_cgroup_transfer;
 mod host_execution_handoff;
 mod host_mount_scope_identity_transfer;
+mod storage_host_output_readback;
 mod lifecycle_domain_effect;
 mod lifecycle_host_inventory;
 pub mod manifest;
@@ -190,6 +191,9 @@ pub use host_execution_handoff::HostExecutionHandoffErrorV1;
 pub use host_mount_scope_identity_transfer::{
     ProtectedHostMountScopeCurrentV1, ProtectedHostMountScopeIdentityTransferV1,
     ProtectedHostMountScopeIdentityV1,
+};
+pub use storage_host_output_readback::{
+    ProtectedHostStorageOutputCurrentV1, ProtectedHostStorageOutputReadbackV1,
 };
 pub use lifecycle_domain_effect::{
     DormantLifecycleDomainEffectOwnerV1, DormantLifecycleDomainEffectProgressV1,

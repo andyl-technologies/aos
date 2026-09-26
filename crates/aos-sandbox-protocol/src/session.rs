@@ -1239,6 +1239,7 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
@@ -1292,9 +1293,13 @@ fn validate_role_methods(
                         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
                 )
             }),
-            Audience::AUDIENCE_STORAGE_BROKER => methods
-                .iter()
-                .all(|method| *method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP),
+            Audience::AUDIENCE_STORAGE_BROKER => methods.iter().all(|method| {
+                matches!(
+                    method,
+                    BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
+                        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
+                )
+            }),
             _ => false,
         };
     if valid {
@@ -1328,6 +1333,7 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
         | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
@@ -1885,6 +1891,7 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
                 | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
                 | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE

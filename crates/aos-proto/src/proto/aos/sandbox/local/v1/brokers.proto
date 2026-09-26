@@ -115,6 +115,8 @@ enum BrokerMethod {
   BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT = 46;
   // Closed read-only historical query of the original Storage reserve attempt.
   BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT = 47;
+  // Closed Storage-audience Host readback of the original output claim.
+  BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT = 48;
 }
 
 // FUSE 3.0 Controller intent candidate. These fields become authority only
@@ -407,6 +409,27 @@ message QueryStorageExecutionOutputRequestV1 {
   bytes canonical_original_reserve_request = 2;
   bytes original_signed_plan_digest = 3; // Exact 32-byte digest.
   bytes original_semantic_request_digest = 4; // Exact 32-byte grant digest.
+}
+
+// A separate Host-audience Controller grant must bind this complete request.
+// The Storage peer cannot substitute an AOSCST01 attempt or reuse method 36.
+message ObserveHostStorageOutputRequestV1 {
+  RequestHeader header = 1;
+  bytes canonical_original_storage_reserve_request = 2;
+  bytes original_storage_signed_plan_digest = 3; // Exact 32-byte digest.
+  bytes original_storage_semantic_digest = 4; // Exact 32-byte grant digest.
+  bytes controller_storage_attempt_digest = 5; // Exact AOSCST01 digest.
+}
+
+// Host must cold-read AOSEOR02 and AOSHOP01 under its current assignment and
+// protected journal before signing this response in the same broker session.
+message ObserveHostStorageOutputResponseV1 {
+  bytes canonical_host_output_reservation = 1; // Exact committed Host output reservation body.
+  bytes controller_storage_attempt_digest = 2;
+  AssignmentFence current_host_assignment = 3;
+  bytes host_boot_id = 4; // Exact 16-byte Host boot identity.
+  uint64 protected_host_journal_head_sequence = 5;
+  bytes protected_host_journal_head_digest = 6;
 }
 
 // AOSSCG01 is a structural, 512-byte Storage capture source. It embeds the

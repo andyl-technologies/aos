@@ -14,10 +14,14 @@
 //! ```
 
 use aos_proto::aos::sandbox::local::v1::{
-    QueryStorageExecutionOutputRequestV1, RequestHeader, ReserveStorageExecutionOutputRequestV1,
+    ObserveHostStorageOutputRequestV1, QueryStorageExecutionOutputRequestV1, RequestHeader,
+    ReserveStorageExecutionOutputRequestV1,
 };
 use aos_sandbox_core::{
     BrokerAudience, ExecutionId, ObjectDigest, OperationId, ProtocolId, ProtocolVersion,
+};
+use aos_sandbox_protocol::host_storage_output_readback::{
+    ValidatedHostStorageOutputReadbackRequestV1, host_storage_output_readback_grant_v1,
 };
 use aos_sandbox_protocol::storage_output_reserve::{
     StorageOutputReserveRecordsV1, ValidatedStorageOutputQueryRequestV1,
@@ -94,6 +98,59 @@ impl ControllerStorageOutputReserveAttemptV1 {
     #[must_use]
     pub const fn semantic_digest(&self) -> ObjectDigest {
         self.semantic_digest
+    }
+
+    /// Returns the deterministic digest of the protected AOSCST01 record.
+    #[must_use]
+    pub const fn record_digest(&self) -> ObjectDigest {
+        self.record_digest
+    }
+
+    /// Builds a nonauthorizing Host readback body from this frozen attempt.
+    ///
+    /// A separate Controller-signed Host plan, Storage session, and protected
+    /// Host reply remain required. The fresh request never replaces method 46.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a reused request ID or malformed Storage-audience Host header.
+    pub fn host_readback_body(
+        &self,
+        header: RequestHeader,
+    ) -> Result<Vec<u8>, ControllerStorageOutputReserveAttemptErrorV1> {
+        let request_id: [u8; 16] = header
+            .request_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?;
+        let body = ObserveHostStorageOutputRequestV1 {
+            header: Some(header).into(),
+            canonical_original_storage_reserve_request: self.canonical_body.clone(),
+            original_storage_signed_plan_digest: self.signed_plan_digest.as_bytes().to_vec(),
+            original_storage_semantic_digest: self.semantic_digest.as_bytes().to_vec(),
+            controller_storage_attempt_digest: self.record_digest.as_bytes().to_vec(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let (_, records, _) = inspect_original(&self.canonical_body)?;
+        host_storage_output_readback_grant_v1(records.assignment(), request_id, &body)
+            .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?;
+        Ok(body)
+    }
+
+    /// Checks every original field of a parsed Host readback request.
+    #[must_use]
+    pub fn matches_host_readback(
+        &self,
+        readback: &ValidatedHostStorageOutputReadbackRequestV1,
+    ) -> bool {
+        readback.original_storage_request_id() == self.original_request_id
+            && readback.original_body() == self.canonical_body
+            && readback.original_storage_plan_digest() == self.signed_plan_digest
+            && readback.original_storage_semantic_digest() == self.semantic_digest
+            && readback.controller_storage_attempt_digest() == self.record_digest
+            && readback.records().host_locator().execution() == self.execution
+            && readback.records().host_locator().create_operation() == self.create_operation
     }
 
     /// Builds a nonauthorizing cold-query body from the retained original.
@@ -373,6 +430,7 @@ mod tests {
     use aos_sandbox_core::{
         AssignmentEpoch, BrokerAssignment, DesiredGeneration, IncarnationId, SandboxId,
     };
+    use aos_sandbox_protocol::host_storage_output_readback::decode_host_storage_output_readback_request_v1;
     use aos_sandbox_protocol::semantics::host_output_reserve_grant_v1;
     use aos_sandbox_protocol::storage_output_reserve::decode_storage_output_query_request_v1;
     use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
@@ -560,6 +618,42 @@ mod tests {
         )
         .unwrap();
         assert!(!recovered.matches_query(&changed));
+        let readback_body = recovered
+            .host_readback_body(RequestHeader {
+                protocol_major: 1,
+                request_id: vec![20; 16],
+                audience: Audience::AUDIENCE_STORAGE_BROKER.into(),
+                deadline_boottime_nanoseconds: 1_100,
+                maximum_response_bytes: 4_096,
+                ..Default::default()
+            })
+            .unwrap();
+        let readback = decode_host_storage_output_readback_request_v1(
+            &readback_body,
+            peer,
+            PeerPolicy {
+                audience: Audience::AUDIENCE_STORAGE_BROKER,
+                ..policy
+            },
+            1_000,
+        )
+        .unwrap();
+        assert!(recovered.matches_host_readback(&readback));
+        assert_eq!(
+            readback.controller_storage_attempt_digest(),
+            recovered.record_digest()
+        );
+        assert!(
+            recovered
+                .host_readback_body(RequestHeader {
+                    protocol_major: 1,
+                    request_id: vec![18; 16],
+                    audience: Audience::AUDIENCE_STORAGE_BROKER.into(),
+                    deadline_boottime_nanoseconds: 1_100,
+                    ..Default::default()
+                })
+                .is_err()
+        );
         assert!(
             recovered
                 .query_body(RequestHeader {

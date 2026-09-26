@@ -81,7 +81,7 @@ const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDis
 ///
 /// Registration is not production advertisement. Closed provisional carriers
 /// remain excluded until their protected issuers and Host owners are joined.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 45] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 46] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -127,6 +127,7 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 45] = [
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1,
     BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT,
     BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT,
+    BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -161,6 +162,7 @@ pub fn authenticated_broker_methods_for_role_v1(
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
                     | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
                     | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+                    | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
             )
         })
         .filter(|method| {
@@ -424,7 +426,8 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
         | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
-        | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT => BrokerSessionProtocolV1::Host,
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT => BrokerSessionProtocolV1::Host,
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
@@ -479,6 +482,7 @@ pub const fn authenticated_broker_method_profile_v1(
     } else if matches!(
         method,
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
     ) {
         Audience::AUDIENCE_STORAGE_BROKER
     } else {
@@ -498,6 +502,7 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
             | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
@@ -1635,6 +1640,36 @@ mod tests {
                 &[method],
             ),
             Err(BrokerSessionNegotiationError::FeatureCondition)
+        );
+    }
+
+    #[test]
+    fn storage_output_host_readback_has_its_own_closed_signed_role() {
+        let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT;
+        let profile = authenticated_broker_method_profile_v1(method).unwrap();
+        assert_eq!(profile.protocol(), BrokerSessionProtocolV1::Host);
+        assert_eq!(profile.audience(), Audience::AUDIENCE_STORAGE_BROKER);
+        assert_eq!(
+            profile.authorization(),
+            BrokerSessionAuthorizationPresenceV1::Required
+        );
+        assert_eq!(profile.required_features(), &SIGNED_PLAN_LEASE_FEATURES);
+        assert!(profile.request_descriptor_roles().is_empty());
+        assert!(profile.success_response_descriptor_roles().is_empty());
+        assert!(
+            authenticated_broker_methods_for_role_v1(
+                BrokerSessionProtocolV1::Host,
+                Audience::AUDIENCE_STORAGE_BROKER,
+            )
+            .is_empty()
+        );
+        assert!(
+            production_broker_client_hello_v1(
+                BrokerSessionProtocolV1::Host,
+                Audience::AUDIENCE_STORAGE_BROKER,
+                RESPONSE_MAXIMUM,
+            )
+            .is_err()
         );
     }
 }

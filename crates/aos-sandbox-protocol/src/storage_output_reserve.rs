@@ -473,7 +473,7 @@ fn invalid() -> ProtocolValidationError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use aos_proto::aos::sandbox::local::v1::{Audience, RequestHeader};
     use aos_sandbox_core::{AssignmentEpoch, DesiredGeneration, IncarnationId, SandboxId};
 
@@ -487,7 +487,7 @@ mod tests {
         bytes[digest_start..digest_start + 32].copy_from_slice(&digest);
     }
 
-    fn fixture() -> (ReserveStorageExecutionOutputRequestV1, BrokerAssignment) {
+    pub(crate) fn fixture() -> (ReserveStorageExecutionOutputRequestV1, BrokerAssignment) {
         let mut source = [0_u8; 688];
         source[..8].copy_from_slice(b"AOSCIR01");
         source[8..16].copy_from_slice(b"AOSCIP01");

@@ -261,6 +261,8 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     HostReserveExecutionOutput,
     /// Read-only exact original Host output reservation query.
     HostQueryExecutionOutput,
+    /// Storage-audience Host output readback of one protected Controller attempt.
+    HostObserveStorageOutput,
     /// Signed, one-shot Controller attempt for a fresh Host-owned Guest readback.
     HostObserveExecutionArgument,
     /// Read-only historical query of the original Host argument attempt.
@@ -415,6 +417,9 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT => {
             AuthenticatedBrokerMethodSemanticsV1::HostQueryExecutionOutput
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT => {
+            AuthenticatedBrokerMethodSemanticsV1::HostObserveStorageOutput
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
             AuthenticatedBrokerMethodSemanticsV1::HostObserveExecutionArgument
@@ -1264,6 +1269,9 @@ enum RequestOutcomeContextV1 {
     HostExecutionQuery(crate::ValidatedHostExecutionQueryV1),
     HostOutputReserve(crate::host_output::ValidatedHostOutputReserveRequestV1),
     HostOutputQuery(crate::host_output::ValidatedHostOutputQueryRequestV1),
+    HostStorageOutput(
+        crate::host_storage_output_readback::ValidatedHostStorageOutputReadbackRequestV1,
+    ),
     HostArgumentObserve(crate::host_execution_argument::ValidatedHostExecutionArgumentRequestV1),
     HostArgumentQuery(crate::host_execution_argument::ValidatedHostExecutionArgumentRequestV1),
     HostNoApply(crate::host_execution_no_apply::ValidatedHostExecutionNoApplyRequestV1),
@@ -1474,6 +1482,19 @@ fn validate_request_semantics(
                 AuthenticatedBrokerMethodSemanticsV1::HostQueryExecutionOutput,
                 *request.header(),
                 None,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT => {
+            let request = crate::host_storage_output_readback::decode_host_storage_output_readback_request_v1(body, peer, policy, now)?;
+            let grant = crate::host_storage_output_readback::host_storage_output_readback_grant_v1(
+                request.records().assignment(),
+                *request.header().request_id(),
+                body,
+            )?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostObserveStorageOutput,
+                *request.header(),
+                Some(*grant.argument_commitment().digest().as_bytes()),
             )
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
@@ -1796,6 +1817,11 @@ fn validate_request_semantics(
                 crate::host_output::decode_host_output_query_request_v1(body, peer, policy, now)?,
             )
         }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT => {
+            RequestOutcomeContextV1::HostStorageOutput(
+                crate::host_storage_output_readback::decode_host_storage_output_readback_request_v1(body, peer, policy, now)?,
+            )
+        }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
             RequestOutcomeContextV1::HostArgumentObserve(
                 crate::host_execution_argument::decode_host_execution_argument_observe_request_v1(
@@ -2084,6 +2110,15 @@ fn validate_success_semantics(
                 body,
                 original.locator(),
                 true,
+            )?;
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT => {
+            let RequestOutcomeContextV1::HostStorageOutput(original) = &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::host_storage_output_readback::decode_host_storage_output_readback_response_v1(
+                body, original,
             )?;
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => {

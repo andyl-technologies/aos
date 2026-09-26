@@ -185,6 +185,8 @@ pub enum BrokerVerb {
     StorageReserveExecutionOutput,
     /// Queries the exact original logical execution-output reserve attempt.
     StorageQueryExecutionOutput,
+    /// Reads the original Host output claim for Storage under a fresh session.
+    HostObserveStorageOutput,
     /// Reads one exact prior execution-output capture attempt without reissuing it.
     StorageQueryExecutionCapture,
     /// Reads a current Storage-owned capture candidate without reserving an effect.
@@ -268,6 +270,7 @@ impl BrokerVerb {
             52 => Ok(Self::HostQueryNoApply),
             53 => Ok(Self::StorageReserveExecutionOutput),
             54 => Ok(Self::StorageQueryExecutionOutput),
+            55 => Ok(Self::HostObserveStorageOutput),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -330,6 +333,7 @@ impl BrokerVerb {
             Self::HostQueryNoApply => 52,
             Self::StorageReserveExecutionOutput => 53,
             Self::StorageQueryExecutionOutput => 54,
+            Self::HostObserveStorageOutput => 55,
         }
     }
 
@@ -355,6 +359,7 @@ impl BrokerVerb {
             | Self::HostInstallAttachGate
             | Self::HostQueryAttachGateReadiness
             | Self::HostQueryAttachGateRoute => BrokerAudience::Host,
+            Self::HostObserveStorageOutput => BrokerAudience::Host,
             Self::MountCreate
             | Self::MountInstall
             | Self::MountReplace
@@ -406,6 +411,7 @@ impl BrokerVerb {
             | Self::HostQueryExecutionArgument
             | Self::HostTerminalNoApply
             | Self::HostQueryNoApply
+            | Self::HostObserveStorageOutput
             | Self::HostInstallAttachGate
             | Self::HostQueryAttachGateReadiness
             | Self::HostQueryAttachGateRoute
@@ -1629,6 +1635,7 @@ mod tests {
             (52, BrokerVerb::HostQueryNoApply),
             (53, BrokerVerb::StorageReserveExecutionOutput),
             (54, BrokerVerb::StorageQueryExecutionOutput),
+            (55, BrokerVerb::HostObserveStorageOutput),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1637,7 +1644,7 @@ mod tests {
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(55),
+            BrokerVerb::from_code(56),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(
@@ -1764,6 +1771,7 @@ mod tests {
             BrokerVerb::StorageReserveExecutionCapture,
             BrokerVerb::StorageReserveExecutionOutput,
             BrokerVerb::StorageQueryExecutionOutput,
+            BrokerVerb::HostObserveStorageOutput,
             BrokerVerb::StorageQueryExecutionCapture,
             BrokerVerb::StorageCaptureCandidateReadback,
             BrokerVerb::NetworkPrepare,

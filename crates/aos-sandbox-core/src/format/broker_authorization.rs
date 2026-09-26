@@ -466,6 +466,7 @@ mod tests {
             BrokerVerb::StorageReserveExecutionCapture,
             BrokerVerb::StorageReserveExecutionOutput,
             BrokerVerb::StorageQueryExecutionOutput,
+            BrokerVerb::HostObserveStorageOutput,
             BrokerVerb::StorageQueryExecutionCapture,
             BrokerVerb::StorageCaptureCandidateReadback,
             BrokerVerb::NetworkPrepare,
@@ -509,6 +510,7 @@ mod tests {
                 | BrokerVerb::StorageReserveExecutionCapture
                 | BrokerVerb::StorageReserveExecutionOutput
                 | BrokerVerb::StorageQueryExecutionOutput
+                | BrokerVerb::HostObserveStorageOutput
                 | BrokerVerb::StorageQueryExecutionCapture
                 | BrokerVerb::StorageCaptureCandidateReadback
                 | BrokerVerb::NetworkPrepare
