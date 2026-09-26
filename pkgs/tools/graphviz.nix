@@ -1,5 +1,6 @@
 ##! Graph layout engines and rendering tools.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -43,6 +44,56 @@ in
       role = "public-package";
     };
     pname = "graphviz";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A directed graph containing source and target nodes.";
+        operation = "Render the graph to SVG with the installed dot engine.";
+        expected = "The SVG contains both node labels.";
+        files."probe.dot" = "digraph probe { source -> target }\n";
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/dot" "-Tsvg" "probe.dot" "-o" "probe.svg"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                from pathlib import Path
+
+                svg = Path("probe.svg").read_text()
+                assert "<svg" in svg
+                assert "<title>source</title>" in svg
+                assert "<title>target</title>" in svg
+                print("graphviz rendered directed graph")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "graphviz rendered directed graph\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "A directed graph with a missing edge target.";
+        operation = "Parse the invalid DOT source.";
+        expected = "Dot rejects the syntax error.";
+        files."broken.dot" = "digraph probe { source -> }\n";
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/dot" "-Tsvg" "broken.dot" "-o" "broken.svg"];
+            exit_code = 1;
+            observes_rejection = true;
+            stdout.exact = "";
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://gitlab.com/api/v4/projects/4207231/packages/generic/graphviz-releases/${version}/graphviz-${version}.tar.xz"];
