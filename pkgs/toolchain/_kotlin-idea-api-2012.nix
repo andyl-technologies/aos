@@ -118,6 +118,7 @@ in
 
           cat > java-files <<'FILES'
           idea/platform/util/src/com/intellij/openapi/util/Ref.java
+          idea/platform/util/src/com/intellij/openapi/util/NullableLazyValue.java
           idea/platform/util/src/com/intellij/util/containers/OrderedSet.java
           idea/platform/annotations/src/org/intellij/lang/annotations/MagicConstant.java
           idea/java/java-psi-impl/src/com/intellij/psi/impl/java/stubs/PsiNameValuePairStub.java
@@ -137,6 +138,7 @@ in
           idea/java/java-psi-impl/src/com/intellij/psi/impl/java/stubs/StubPsiFactory.java
           idea/java/java-psi-api/src/com/intellij/psi/JavaRecursiveElementVisitor.java
           idea/java/java-psi-impl/src/com/intellij/psi/impl/java/stubs/PsiMethodStub.java
+          idea/java/java-psi-impl/src/com/intellij/psi/impl/light/LightTypeParameterListBuilder.java
           FILES
 
           javac -encoding UTF-8 -source 7 -target 7 -proc:none \
