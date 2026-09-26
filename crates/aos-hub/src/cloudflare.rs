@@ -352,9 +352,15 @@ pub fn render_hybrid_wrangler_toml(cfg: &HybridDeployConfig) -> Result<String> {
          \n[[durable_objects.bindings]]\n\
          name = \"HYBRID_OBJECT_GUARD\"\n\
          class_name = \"HybridObjectGuard\"\n\
+         \n[[durable_objects.bindings]]\n\
+         name = \"HYBRID_BINDING_STATE\"\n\
+         class_name = \"HybridBindingState\"\n\
          \n[[migrations]]\n\
          tag = \"hybrid-object-guard-v1\"\n\
          new_sqlite_classes = [\"HybridObjectGuard\"]\n\
+         \n[[migrations]]\n\
+         tag = \"hybrid-binding-state-v1\"\n\
+         new_sqlite_classes = [\"HybridBindingState\"]\n\
          \n[observability]\n\
          enabled = true\n\
          head_sampling_rate = 1.0\n",
@@ -1870,6 +1876,14 @@ mod tests {
         assert_eq!(
             parsed["migrations"][0]["new_sqlite_classes"][0].as_str(),
             Some("HybridObjectGuard")
+        );
+        assert_eq!(
+            parsed["durable_objects"]["bindings"][1]["name"].as_str(),
+            Some("HYBRID_BINDING_STATE")
+        );
+        assert_eq!(
+            parsed["migrations"][1]["new_sqlite_classes"][0].as_str(),
+            Some("HybridBindingState")
         );
         assert!(parsed.get("queues").is_none());
         assert!(parsed.get("kv_namespaces").is_none());

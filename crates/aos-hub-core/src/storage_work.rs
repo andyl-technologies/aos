@@ -65,7 +65,9 @@ pub struct StorageCapabilities {
 mod binding_snapshot;
 
 pub use binding_snapshot::{
-    StorageBindingSnapshot, StorageCredentialReference, StorageCredentialSelector,
+    StorageBindingAcknowledgement, StorageBindingControl, StorageBindingPublication,
+    StorageBindingSnapshot, StorageCredentialMaterial, StorageCredentialReference,
+    StorageCredentialSelector, MAX_BINDING_CONTROL_BYTES, STORAGE_BINDING_CONTROL_PATH,
 };
 
 /// One frozen staged object consumed by an OCI blob composition.
@@ -1261,6 +1263,63 @@ mod tests {
             generation: 2,
         });
         assert!(snapshot.authorizes(&plan, "deployment-1", now + 1).is_ok());
+    }
+
+    #[test]
+    fn binding_publication_checks_each_secret_fingerprint() {
+        use base64::Engine as _;
+
+        let value = b"access-key:secret-key:us-west-1";
+        let mut snapshot = binding_snapshot(100);
+        snapshot.credentials[0].fingerprint = hex::encode(Sha256::digest(value));
+        let publication = StorageBindingPublication {
+            snapshot,
+            materials: vec![StorageCredentialMaterial {
+                selector: StorageCredentialSelector {
+                    purpose: "read".into(),
+                    generation: 4,
+                },
+                value_base64: base64::engine::general_purpose::STANDARD.encode(value),
+            }],
+        };
+        assert!(publication.validate("deployment-1", 101).is_ok());
+
+        let mut tampered = binding_snapshot(100);
+        tampered.credentials[0].fingerprint = hex::encode(Sha256::digest(value));
+        let publication = StorageBindingPublication {
+            snapshot: tampered,
+            materials: vec![StorageCredentialMaterial {
+                selector: StorageCredentialSelector {
+                    purpose: "read".into(),
+                    generation: 4,
+                },
+                value_base64: base64::engine::general_purpose::STANDARD.encode(b"wrong-secret"),
+            }],
+        };
+        assert_eq!(
+            publication.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidSnapshot)
+        );
+    }
+
+    #[test]
+    fn binding_revocation_has_an_exact_revision_and_short_lifetime() {
+        let mut control = StorageBindingControl::Revoke {
+            deployment_id: "deployment-1".into(),
+            binding_id: 3,
+            revision: "a".repeat(64),
+            issued_at: 100,
+            expires_at: 130,
+        };
+        assert!(control.validate("deployment-1", 101).is_ok());
+
+        if let StorageBindingControl::Revoke { expires_at, .. } = &mut control {
+            *expires_at = 200;
+        }
+        assert_eq!(
+            control.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidTime)
+        );
     }
 
     #[test]

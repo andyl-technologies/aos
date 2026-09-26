@@ -6,10 +6,24 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use zeroize::{Zeroize as _, Zeroizing};
 
 use super::{valid_relative_path, valid_sha256_hex, StorageWorkError, StorageWorkPlan};
 
 const MAX_SNAPSHOT_LIFETIME_SECONDS: i64 = 60 * 60;
+
+/// Internal Worker route for binding publication and revocation.
+pub const STORAGE_BINDING_CONTROL_PATH: &str = "/_internal/storage/v1/bindings";
+/// Maximum body size for one signed binding control request.
+pub const MAX_BINDING_CONTROL_BYTES: usize = 64 * 1024;
+
+/// Executor acknowledgement of one exact published or revoked revision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageBindingAcknowledgement {
+    /// Exact content revision named by the control request.
+    pub revision: String,
+}
 
 /// One immutable, nonsecret credential revision available to a storage executor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +47,141 @@ pub struct StorageCredentialSelector {
     pub purpose: String,
     /// Purpose-local generation admitted by the binding snapshot.
     pub generation: i64,
+}
+
+/// One resolved provider secret, confined to an authenticated control request.
+///
+/// The value is standard-base64 encoded for the bounded JSON wire format. It
+/// never appears in a work plan or semantic result, and its owned string is
+/// zeroed when this value is dropped.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageCredentialMaterial {
+    /// Exact purpose and generation admitted by the paired snapshot.
+    pub selector: StorageCredentialSelector,
+    /// Standard-base64 provider credential bytes.
+    pub value_base64: String,
+}
+
+impl Drop for StorageCredentialMaterial {
+    fn drop(&mut self) {
+        self.value_base64.zeroize();
+    }
+}
+
+/// One nonsecret snapshot paired with its separately resolved credentials.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageBindingPublication {
+    /// Frozen provider coordinates and immutable credential references.
+    pub snapshot: StorageBindingSnapshot,
+    /// Resolved values ordered by credential purpose.
+    pub materials: Vec<StorageCredentialMaterial>,
+}
+
+impl StorageBindingPublication {
+    /// Checks every supplied secret against the exact snapshot fingerprint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale snapshot, missing or extra purpose,
+    /// malformed base64 value, oversized secret, or fingerprint mismatch.
+    pub fn validate(&self, deployment_id: &str, now: i64) -> Result<(), StorageWorkError> {
+        use base64::Engine as _;
+
+        self.snapshot.validate(deployment_id, now)?;
+        if self.materials.len() != self.snapshot.credentials.len() {
+            return Err(StorageWorkError::InvalidSnapshot);
+        }
+        for (material, reference) in self.materials.iter().zip(&self.snapshot.credentials) {
+            if material.selector.purpose != reference.purpose
+                || material.selector.generation != reference.generation
+                || material.value_base64.len() > 5_464
+            {
+                return Err(StorageWorkError::InvalidSnapshot);
+            }
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(&material.value_base64)
+                .map_err(|_| StorageWorkError::InvalidSnapshot)?;
+            let decoded = Zeroizing::new(decoded);
+            if decoded.is_empty()
+                || decoded.len() > 4 * 1024
+                || hex::encode(Sha256::digest(decoded.as_slice())) != reference.fingerprint
+            {
+                return Err(StorageWorkError::InvalidSnapshot);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Signed Native instruction to publish or revoke one external binding.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StorageBindingControl {
+    /// Publishes an exact immutable snapshot and its provider credentials.
+    Publish {
+        /// Snapshot and purpose-scoped secret values.
+        publication: StorageBindingPublication,
+    },
+    /// Rejects future plans for an exact active snapshot.
+    Revoke {
+        /// Deployment identity shared with the Worker.
+        deployment_id: String,
+        /// Binding whose active snapshot is withdrawn.
+        binding_id: i64,
+        /// Exact snapshot revision expected to be active.
+        revision: String,
+        /// Unix time when Native issued this revocation.
+        issued_at: i64,
+        /// Unix time after which this instruction is invalid.
+        expires_at: i64,
+    },
+}
+
+impl StorageBindingControl {
+    /// Validates the bounded, signed control body before it reaches storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed publication, mismatched deployment,
+    /// or stale revocation instruction.
+    pub fn validate(&self, deployment_id: &str, now: i64) -> Result<(), StorageWorkError> {
+        match self {
+            Self::Publish { publication } => publication.validate(deployment_id, now),
+            Self::Revoke {
+                deployment_id: actual,
+                binding_id,
+                revision,
+                issued_at,
+                expires_at,
+            } => {
+                if actual != deployment_id {
+                    return Err(StorageWorkError::DeploymentMismatch);
+                }
+                if *binding_id <= 0 || !valid_sha256_hex(revision) {
+                    return Err(StorageWorkError::InvalidSnapshot);
+                }
+                if *issued_at > now.saturating_add(5)
+                    || *expires_at < now
+                    || *expires_at < *issued_at
+                    || expires_at.saturating_sub(*issued_at) > 30
+                {
+                    return Err(StorageWorkError::InvalidTime);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Returns the one binding identity used to select its Durable Object.
+    #[must_use]
+    pub fn binding_id(&self) -> i64 {
+        match self {
+            Self::Publish { publication } => publication.snapshot.binding_id,
+            Self::Revoke { binding_id, .. } => *binding_id,
+        }
+    }
 }
 
 /// Frozen external S3-compatible binding coordinates published by Native.
@@ -230,6 +379,27 @@ impl StorageBindingSnapshot {
     /// Returns an error if JSON serialization fails.
     pub fn revision(&self) -> Result<String, serde_json::Error> {
         let body = serde_json::to_vec(self)?;
+        Ok(hex::encode(Sha256::digest(body)))
+    }
+
+    /// Returns the fingerprint of binding coordinates, excluding credentials and time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JSON serialization fails.
+    pub fn binding_spec_revision(&self) -> Result<String, serde_json::Error> {
+        let body = serde_json::to_vec(&(
+            &self.binding_stable_id,
+            &self.binding_kind,
+            &self.object_bucket,
+            &self.object_prefix,
+            &self.endpoint_scheme,
+            &self.endpoint_host_kind,
+            &self.endpoint_host_bytes,
+            &self.endpoint_port,
+            &self.signing_region,
+            &self.access_mode,
+        ))?;
         Ok(hex::encode(Sha256::digest(body)))
     }
 

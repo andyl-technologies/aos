@@ -10,21 +10,25 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context as _, Result};
 use aos_hub_core::db::{
-    BindingRecord, BindingWriteRevisionRecord, Database, OciUploadChunkRecord,
-    SurfacePlacementRecord,
+    BindingCredentialRevisionRecord, BindingRecord, BindingWriteRevisionRecord, Database,
+    OciUploadChunkRecord, SurfacePlacementRecord,
 };
 use aos_hub_core::fetch::{
     DocumentationInspection, StreamedRead, SurfaceDeliveryHead, SurfaceFetch,
     SurfaceInventoryHashChunk, SurfaceListPage, SurfaceListedEvidence, SurfaceObjectEvidence,
     SurfaceProvider,
 };
+use aos_hub_core::secret_version::{verify_secret_fingerprint, SecretVersionResolver};
 use aos_hub_core::storage_work::{
-    StorageCapabilities, StorageGitObjectProjection, StorageOciChunkSource, StorageWorkKey,
+    StorageBindingAcknowledgement, StorageBindingControl, StorageBindingPublication,
+    StorageBindingSnapshot, StorageCapabilities, StorageCredentialMaterial,
+    StorageCredentialSelector, StorageGitObjectProjection, StorageOciChunkSource, StorageWorkKey,
     StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
-    MAX_DOCUMENTATION_ROWS, MAX_GIT_INSPECTION_BATCH, MAX_GIT_INSPECTION_CONTENT_BYTES,
-    MAX_METADATA_BYTES, MAX_OCI_HASH_RANGE_BYTES, MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES,
-    MAX_VERIFY_SOURCE_BYTES, STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
-    STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
+    MAX_BINDING_CONTROL_BYTES, MAX_DOCUMENTATION_ROWS, MAX_GIT_INSPECTION_BATCH,
+    MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_OCI_HASH_RANGE_BYTES,
+    MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_BINDING_CONTROL_PATH,
+    STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH, STORAGE_WORK_PATH,
+    STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceDeleteOutcome,
@@ -36,6 +40,7 @@ use base64::Engine as _;
 use futures_util::{StreamExt as _, TryStreamExt as _};
 use sha2::Digest as _;
 use tokio::sync::Semaphore;
+use zeroize::Zeroizing;
 
 // Limit each index walk's simultaneous cross-cloud inspection requests.
 const MAX_PARALLEL_GIT_INSPECTION_BATCHES: usize = 8;
@@ -48,6 +53,7 @@ const MAX_IN_FLIGHT_STORAGE_PLANS: usize = 4;
 pub struct RemoteStorageWorkClient {
     endpoint: String,
     capabilities_endpoint: String,
+    binding_control_endpoint: String,
     deployment_id: String,
     key: StorageWorkKey,
     http: reqwest::Client,
@@ -82,6 +88,11 @@ impl RemoteStorageWorkClient {
             origin.origin().ascii_serialization(),
             STORAGE_CAPABILITIES_PATH
         );
+        let binding_control_endpoint = format!(
+            "{}{}",
+            origin.origin().ascii_serialization(),
+            STORAGE_BINDING_CONTROL_PATH
+        );
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30))
@@ -90,6 +101,7 @@ impl RemoteStorageWorkClient {
         Ok(Self {
             endpoint,
             capabilities_endpoint,
+            binding_control_endpoint,
             deployment_id,
             key: StorageWorkKey::new(key)?,
             http,
@@ -122,6 +134,117 @@ impl RemoteStorageWorkClient {
         let capabilities: StorageCapabilities =
             serde_json::from_slice(&body).context("decoding storage Worker capabilities")?;
         validate_capabilities(&self.deployment_id, &capabilities)
+    }
+
+    /// Publishes one frozen external binding and its exact credential heads.
+    ///
+    /// Only bounded control bytes cross from Native to Worker. The returned
+    /// snapshot revision may be named in plans after the Worker acknowledges
+    /// durable publication; no provider object body passes through Native.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid binding coordinates, an unresolved or
+    /// mismatched credential, Worker rejection, or transport failure.
+    pub async fn publish_binding_snapshot(
+        &self,
+        binding: &BindingRecord,
+        credentials: &[BindingCredentialRevisionRecord],
+        resolver: &dyn SecretVersionResolver,
+        now: i64,
+    ) -> Result<StorageBindingSnapshot> {
+        let snapshot = StorageBindingSnapshot::from_binding(
+            self.deployment_id.clone(),
+            binding,
+            credentials,
+            now,
+            now.checked_add(60 * 60)
+                .context("binding snapshot expiry overflowed")?,
+        )?;
+        let mut materials = Vec::with_capacity(snapshot.credentials.len());
+        for reference in &snapshot.credentials {
+            let secret = resolver.resolve(&reference.secret_version_ref).await?;
+            verify_secret_fingerprint(&secret, &reference.fingerprint)?;
+            materials.push(StorageCredentialMaterial {
+                selector: StorageCredentialSelector {
+                    purpose: reference.purpose.clone(),
+                    generation: reference.generation,
+                },
+                value_base64: base64::engine::general_purpose::STANDARD
+                    .encode(secret.expose_bytes()),
+            });
+        }
+        let control = StorageBindingControl::Publish {
+            publication: StorageBindingPublication {
+                snapshot: snapshot.clone(),
+                materials,
+            },
+        };
+        control.validate(&self.deployment_id, now)?;
+        let expected_revision = snapshot.revision()?;
+        self.send_binding_control(&control, &expected_revision)
+            .await?;
+        Ok(snapshot)
+    }
+
+    /// Withdraws one exact external binding revision from the Worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the signed revocation is stale, the Worker does
+    /// not acknowledge the exact revision, or the control channel fails.
+    pub async fn revoke_binding_snapshot(
+        &self,
+        binding_id: i64,
+        revision: &str,
+        now: i64,
+    ) -> Result<()> {
+        let control = StorageBindingControl::Revoke {
+            deployment_id: self.deployment_id.clone(),
+            binding_id,
+            revision: revision.to_owned(),
+            issued_at: now,
+            expires_at: now
+                .checked_add(30)
+                .context("binding revocation expiry overflowed")?,
+        };
+        control.validate(&self.deployment_id, now)?;
+        self.send_binding_control(&control, revision).await
+    }
+
+    async fn send_binding_control(
+        &self,
+        control: &StorageBindingControl,
+        expected_revision: &str,
+    ) -> Result<()> {
+        let body = Zeroizing::new(serde_json::to_vec(control)?);
+        anyhow::ensure!(
+            body.len() <= MAX_BINDING_CONTROL_BYTES,
+            "binding control body exceeds its limit"
+        );
+        let signature = self.key.sign_body(body.as_slice())?;
+        let response = self
+            .http
+            .post(&self.binding_control_endpoint)
+            .header("content-type", "application/json")
+            .header(STORAGE_WORK_SIGNATURE_HEADER, signature)
+            .body(body.to_vec())
+            .send()
+            .await
+            .context("sending binding control to storage Worker")?;
+        anyhow::ensure!(
+            response.status() == reqwest::StatusCode::OK,
+            "storage Worker rejected binding control with HTTP {}",
+            response.status()
+        );
+        let response_body = read_bounded_response(response, 4096).await?;
+        let acknowledgement: StorageBindingAcknowledgement =
+            serde_json::from_slice(&response_body).context("decoding binding acknowledgement")?;
+        anyhow::ensure!(
+            acknowledgement.revision == expected_revision,
+            "storage Worker acknowledged another binding revision"
+        );
+        Ok(())
     }
 
     /// Builds one short-lived plan from the selected SQL placement and binding.

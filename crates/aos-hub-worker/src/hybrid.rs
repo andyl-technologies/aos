@@ -20,7 +20,8 @@ use aos_hub_core::hybrid_ingress::{
     HYBRID_UPLOAD_PHASE_HEADER, MAX_HYBRID_OCI_CHUNK_BYTES, MAX_HYBRID_PUBLICATION_PLACEMENTS,
 };
 use aos_hub_core::storage_work::{
-    StorageCapabilities, StorageWorkKey, MAX_PLAN_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES,
+    StorageBindingControl, StorageCapabilities, StorageWorkKey, MAX_BINDING_CONTROL_BYTES,
+    MAX_PLAN_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_BINDING_CONTROL_PATH,
     STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH, STORAGE_WORK_PATH,
     STORAGE_WORK_SIGNATURE_HEADER,
 };
@@ -81,6 +82,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     }
     if path == STORAGE_CAPABILITIES_PATH {
         return storage_capabilities(request, env).await;
+    }
+    if path == STORAGE_BINDING_CONTROL_PATH {
+        return control_storage_binding(request, env).await;
     }
     if path.starts_with("/_internal/storage/") {
         return Response::error("not found", 404);
@@ -848,6 +852,51 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
     Ok(Response::from_json(&capabilities)?.with_headers(headers))
 }
 
+async fn control_storage_binding(mut request: Request, env: &Env) -> Result<Response> {
+    if request.method() != worker::Method::Post {
+        return Response::error("method not allowed", 405);
+    }
+    let Some(signature) = request.headers().get(STORAGE_WORK_SIGNATURE_HEADER)? else {
+        return Response::error("binding control signature is required", 401);
+    };
+    let Some(body) = read_bounded_body(&mut request, MAX_BINDING_CONTROL_BYTES).await? else {
+        return Response::error("binding control body is too large", 413);
+    };
+    let key = StorageWorkKey::new(env.secret("HUB_STORAGE_WORK_KEY")?.to_string())
+        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+    if key.verify_body(&signature, &body).is_err() {
+        return Response::error("binding control signature is invalid", 401);
+    }
+    let Ok(control) = serde_json::from_slice::<StorageBindingControl>(&body) else {
+        return Response::error("binding control body is invalid", 400);
+    };
+    let deployment_id = env.var("HUB_DEPLOYMENT_ID")?.to_string();
+    if control
+        .validate(&deployment_id, aos_hub_core::clock::now_unix_secs())
+        .is_err()
+    {
+        return Response::error("binding control is not authorized", 400);
+    }
+
+    let acknowledgement =
+        match crate::hybrid_binding::apply_control(env, control.binding_id(), &body).await {
+            Ok(acknowledgement) => acknowledgement,
+            Err(error) => {
+                worker::console_error!("hybrid_binding_control_failed: {error:#}");
+                return Response::error("binding state is unavailable", 503);
+            }
+        };
+    worker::console_log!(
+        "hybrid_binding_control_complete binding={} revision={} body_bytes={}",
+        control.binding_id(),
+        acknowledgement.revision,
+        body.len(),
+    );
+    let headers = Headers::new();
+    headers.set("cache-control", "private, no-store")?;
+    Ok(Response::from_json(&acknowledgement)?.with_headers(headers))
+}
+
 async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Response> {
     if request.method() != worker::Method::Post {
         return Response::error("method not allowed", 405);
@@ -871,6 +920,16 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
         Err(_) => return Response::error("storage work plan is not authorized", 401),
     };
     let operation_kind = plan.operation.kind();
+
+    if plan.binding_kind != "deployment_r2" {
+        if crate::hybrid_binding::resolve_for_plan(env, &plan)
+            .await
+            .is_err()
+        {
+            return Response::error("binding snapshot is unavailable", 409);
+        }
+        return Response::error("external storage operation is unavailable", 501);
+    }
 
     let result = match crate::surface::execute_r2_storage_work(env, &plan).await {
         Ok(result) => result,

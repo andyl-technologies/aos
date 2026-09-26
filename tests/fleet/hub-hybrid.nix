@@ -136,9 +136,17 @@
     name = "HYBRID_OBJECT_GUARD"
     class_name = "HybridObjectGuard"
 
+    [[durable_objects.bindings]]
+    name = "HYBRID_BINDING_STATE"
+    class_name = "HybridBindingState"
+
     [[migrations]]
     tag = "hybrid-object-guard-v1"
     new_sqlite_classes = ["HybridObjectGuard"]
+
+    [[migrations]]
+    tag = "hybrid-binding-state-v1"
+    new_sqlite_classes = ["HybridBindingState"]
   '';
   workerSecrets = writeFixture "hub-hybrid-fleet-dev-vars" ''
     HUB_HYBRID_INGRESS_KEY=hybrid-fleet-ingress-key-with-at-least-thirty-two-bytes
@@ -352,6 +360,112 @@ in {
           timeout=60,
       ).strip()
       assert duplicate_signature_status == "401", duplicate_signature_status
+
+      def post_binding_control(control):
+          control_body, control_signature = sign_storage_plan(control)
+          status = client.succeed(
+              f"{CURL} -sS -o /tmp/hybrid-binding-control.response -w '%{{http_code}}' "
+              "-X POST -H 'content-type: application/json' "
+              f"-H 'x-aos-storage-work-signature: {control_signature}' "
+              f"--data-binary {shlex.quote(control_body.decode())} "
+              "https://aos.andyl.org/_internal/storage/v1/bindings",
+              timeout=60,
+          ).strip()
+          return status, client.succeed("cat /tmp/hybrid-binding-control.response")
+
+      unsigned_binding_status = client.succeed(
+          f"{CURL} -sS -o /dev/null -w '%{{http_code}}' -X POST "
+          "-H 'content-type: application/json' --data '{}' "
+          "https://aos.andyl.org/_internal/storage/v1/bindings",
+          timeout=60,
+      ).strip()
+      assert unsigned_binding_status == "401", unsigned_binding_status
+
+      binding_secret = b"fleet-external-test:credential:us-west-1"
+      binding_issued_at = int(time.time())
+      binding_snapshot = {
+          "version": 1,
+          "deployment_id": "fleet-hybrid-v1",
+          "binding_id": 98765,
+          "binding_resource_version": 1,
+          "binding_stable_id": "fleet-external-binding-1",
+          "binding_kind": "s3",
+          "object_bucket": "fleet-s3",
+          "object_prefix": "tenant",
+          "endpoint_scheme": "https",
+          "endpoint_host_kind": "dns",
+          "endpoint_host_bytes": list(b"s3.example.test"),
+          "endpoint_port": 443,
+          "signing_region": "us-west-1",
+          "access_mode": "private",
+          "credentials": [{
+              "purpose": "read",
+              "generation": 1,
+              "secret_version_ref": "secret://fleet/external/read/v1",
+              "fingerprint": hashlib.sha256(binding_secret).hexdigest(),
+          }],
+          "issued_at": binding_issued_at,
+          "expires_at": binding_issued_at + 300,
+      }
+      publish_binding = {
+          "kind": "publish",
+          "publication": {
+              "snapshot": binding_snapshot,
+              "materials": [{
+                  "selector": {"purpose": "read", "generation": 1},
+                  "value_base64": base64.b64encode(binding_secret).decode(),
+              }],
+          },
+      }
+      publish_status, publish_response = post_binding_control(publish_binding)
+      assert publish_status == "200", (publish_status, publish_response)
+      published_revision = json.loads(publish_response)["revision"]
+      assert len(published_revision) == 64, published_revision
+
+      def external_binding_plan_status(revision):
+          issued_at = int(time.time())
+          external_plan = {
+              "version": 1,
+              "plan_id": "f" * 32,
+              "deployment_id": "fleet-hybrid-v1",
+              "issued_at": issued_at,
+              "expires_at": issued_at + 30,
+              "placement_id": 1,
+              "placement_resource_version": 1,
+              "binding_id": 98765,
+              "binding_resource_version": 1,
+              "binding_kind": "s3",
+              "binding_snapshot_revision": revision,
+              "credential_references": [{"purpose": "read", "generation": 1}],
+              "placement_prefix": "registry",
+              "operation": {"kind": "head", "path": "absent-object"},
+          }
+          plan_body, plan_signature = sign_storage_plan(external_plan)
+          return client.succeed(
+              f"{CURL} -sS -o /dev/null -w '%{{http_code}}' -X POST "
+              "-H 'content-type: application/json' "
+              f"-H 'x-aos-storage-work-signature: {plan_signature}' "
+              f"--data-binary {shlex.quote(plan_body.decode())} "
+              "https://aos.andyl.org/_internal/storage/v1/execute",
+              timeout=60,
+          ).strip()
+
+      assert external_binding_plan_status(published_revision) == "501"
+      revoke_issued_at = max(binding_issued_at + 1, int(time.time()))
+      revoke_binding = {
+          "kind": "revoke",
+          "deployment_id": "fleet-hybrid-v1",
+          "binding_id": 98765,
+          "revision": published_revision,
+          "issued_at": revoke_issued_at,
+          "expires_at": revoke_issued_at + 30,
+      }
+      revoke_status, revoke_response = post_binding_control(revoke_binding)
+      assert revoke_status == "200", (revoke_status, revoke_response)
+      assert external_binding_plan_status(published_revision) == "409"
+      replay_status, _ = post_binding_control(publish_binding)
+      assert replay_status == "503", replay_status
+      print("hybrid binding publication, revocation, and replay fence: passed")
 
       now = int(time.time())
       plan = {
