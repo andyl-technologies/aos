@@ -356,6 +356,75 @@ def check_clang_profile_use(root, env, accache, sccache, clang, hits):
     return results
 
 
+def check_rust_profile_use(root, env, accache, sccache, rustc, clang, hits):
+    """Track rustc's profile input across cold and warm library actions."""
+    work = root / "rust-profile-use"
+    work.mkdir()
+    (work / "target").mkdir()
+    (work / "source.rs").write_text(
+        "pub fn branch(x: u32) -> u32 { if x > 100 { x * 3 } else { x + 1 } }\n"
+        "fn main() { println!(\"{}\", branch(std::env::args().len() as u32)); }\n")
+    profdata = str(Path(clang).with_name("llvm-profdata"))
+    profiles = []
+    for name, arguments in [("low", []), ("high", ["x"] * 150)]:
+        raw_dir = work / name
+        raw_dir.mkdir()
+        subprocess.run([rustc, "source.rs", "--crate-name=example",
+                        "-Cprofile-generate=" + str(raw_dir), "-o", "program"],
+                       cwd=work, env=env, check=True, capture_output=True)
+        subprocess.run([str(work / "program"), *arguments], cwd=work,
+                       env=env, check=True, capture_output=True, timeout=120)
+        raw_files = list(raw_dir.glob("*.profraw"))
+        assert raw_files, "rustc produced no raw profile"
+        merged = work / (name + ".profdata")
+        subprocess.run([profdata, "merge", "-o", str(merged),
+                        *map(str, raw_files)], cwd=work, env=env,
+                       check=True, capture_output=True)
+        profiles.append(merged.read_bytes())
+    assert profiles[0] != profiles[1], "Rust profile runs produced identical data"
+
+    output = work / "target/libexample.rlib"
+    depfile = work / "target/example.d"
+    profile_file = work / "profile.profdata"
+    args = [rustc, "source.rs", "--crate-name=example", "--crate-type=rlib",
+            "--emit=link,dep-info", "--out-dir=target", "-Cprofile-use=profile.profdata"]
+
+    def compile_library(wrapper):
+        output.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        return (completed.stdout, completed.stderr, output.read_bytes(),
+                depfile.read_bytes())
+
+    results = []
+    for revision, profile in enumerate(profiles):
+        profile_file.write_bytes(profile)
+        direct = compile_library([])
+        before_cold_hits = hits()
+        assert compile_library([sccache]) == direct
+        assert hits() == before_cold_hits, "sccache ignored the changed Rust profile"
+        before_hits = hits()
+        assert compile_library([sccache]) == direct
+        assert hits() > before_hits, "sccache did not hit the Rust profile action"
+
+        assert compile_library([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", cold
+        if revision:
+            assert any("profile.profdata" in item for item in cold["changes"]), cold
+        assert compile_library([accache]) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", warm
+        results.append({"fixture": "rust-profile-use", "revision": revision,
+                        "oracle_hit": True, "accache": "hit",
+                        "artifacts": ["target/example.d", "target/libexample.rlib"]})
+
+    print("PASS oracle Rust profile input invalidation", flush=True)
+    return results
+
+
 def run_suite(root, accache, sccache, gcc, clang, rustc):
     root = Path(root)
     # Keep socket names short even under long Nix build-directory names.
@@ -518,6 +587,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                             sccache, gcc, hits))
         results.extend(check_clang_profile_use(root, env, accache, sccache,
                                                clang, hits))
+        results.extend(check_rust_profile_use(root, env, accache, sccache,
+                                              rustc, clang, hits))
 
         report = json.dumps({"fixtures": results, "sccache_stats": stats()}, sort_keys=True)
         if destination := os.environ.get("ACCACHE_ORACLE_REPORT"):
