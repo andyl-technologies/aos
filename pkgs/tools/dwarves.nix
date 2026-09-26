@@ -18,6 +18,7 @@ in
   mkDerivation {
     pname = "dwarves";
     inherit version;
+    cacheCCompilers = true;
 
     src = fetchurl {
       urls = [

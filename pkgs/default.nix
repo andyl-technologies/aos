@@ -12,14 +12,18 @@
   sharedBazelCacheDir ? null,
   sharedRustTargetDir ? null,
   sharedRustIncremental ? false,
+  sharedAccacheDir ? null,
+  sharedAccacheStateDir ? null,
   ordinaryToolchainPackages ? null,
-}: let
+}:
+assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   anySharedCache =
     sharedGoCacheDir
     != null
     || sharedBazelCacheDir != null
     || sharedRustTargetDir != null
-    || sharedRustIncremental;
+    || sharedRustIncremental
+    || sharedAccacheDir != null;
   fetchurl = lib.fetchurl;
   fetchgit = lib.fetchgit;
   mkUpstream = import ./build-support/_upstream.nix {
@@ -422,10 +426,36 @@
         then crossFixupPhase
         else phase
     ) (args.phases or []);
+    # CMake application recipes opt in explicitly. Injecting launchers into
+    # every package would change bootstrap and language-toolchain identities.
+    cacheCCompilers =
+      sharedAccacheDir
+      != null
+      && sharedAccacheStateDir != null
+      && (args.cacheCCompilers or false)
+      && (args.sharedBuildCache or true)
+      && !isToolchainName packageName;
+    cCompilerCacheEnvironment = mkAccacheEnvironment {
+      compilers = {
+        "${builtins.unsafeDiscardStringContext (toString stdenv.cc)}/bin/cc" = "c";
+        "${builtins.unsafeDiscardStringContext (toString stdenv.cc)}/bin/gcc" = "c";
+        "${builtins.unsafeDiscardStringContext (toString stdenv.cc)}/bin/c++" = "c";
+        "${builtins.unsafeDiscardStringContext (toString stdenv.cc)}/bin/g++" = "c";
+      };
+      roots =
+        [stdenv.cc]
+        ++ builtins.map spliceBuildDependency (args.buildDeps or [])
+        ++ (args.runtimeDeps or [])
+        ++ (args.propagatedDeps or []);
+      cacheDir = sharedAccacheDir;
+      stateDir = sharedAccacheStateDir;
+      llvmOptions = args.accacheLlvmOptions or {};
+    };
     lowerArgs =
       # `configModule` is an mkDerivation-level arg consumed here, not passed
       # down to the raw builder (mirrors how `expose` is handled).
-      (builtins.removeAttrs args ["configModule" "sharedBuildCache"])
+      (builtins.removeAttrs args ["configModule" "sharedBuildCache" "cacheCCompilers" "accacheLlvmOptions"])
+      // lib.optionalAttrs cacheCCompilers (builtins.removeAttrs cCompilerCacheEnvironment ["RUSTC_WRAPPER"])
       // {
         meta =
           (args.meta or {})
@@ -586,6 +616,18 @@
         extraLibPaths = args.extraLibPaths or [];
       }
     );
+
+  # Explicit application opt-in for C/C++ builders. mkCargoPackage uses the
+  # same manifest primitive below; toolchain packages never acquire a wrapper.
+  mkAccacheEnvironment = import ./build-support/_accache.nix {
+    inherit lib;
+    mkDerivation = rawMkDerivation;
+    jq = resolvedBuildPackages.jq;
+    accache =
+      if ordinaryToolchainPackages != null
+      then ordinaryToolchainPackages.accache
+      else resolvedBuildPackages.accache;
+  };
 
   # Attrs that mkCargoPackage consumes (not passed to mkDerivation)
   cargoSpecificAttrs = [
@@ -850,6 +892,23 @@
       if sharedCargoTarget
       then null
       else inheritedArtifacts;
+    cacheRustActions =
+      sharedAccacheDir
+      != null
+      && sharedAccacheStateDir != null
+      && (args.sharedBuildCache or true)
+      && !isToolchainName (args.pname or args.name or "")
+      && (args.pname or "") != "accache";
+    rustActionEnvironment = mkAccacheEnvironment {
+      compilers = {"${builtins.unsafeDiscardStringContext (toString cargoBuildTool)}/bin/rustc" = "rust";};
+      roots =
+        [cargoBuildTool]
+        ++ builtins.map spliceBuildDependency (args.buildDeps or [])
+        ++ (args.runtimeDeps or []);
+      cacheDir = sharedAccacheDir;
+      stateDir = sharedAccacheStateDir;
+      llvmOptions = args.accacheLlvmOptions or {};
+    };
     cargoBuildOnlyReferences =
       [args.cargoDeps cargoBuildTool]
       ++ lib.optional stdenv.isCross cargoBuildToolchain
@@ -888,6 +947,7 @@
         mkDerivation (
           restArgs
           // cargoBuildToolchainEnv
+          // lib.optionalAttrs cacheRustActions rustActionEnvironment
           // lib.optionalAttrs sharedCargoTarget {
             CARGO_TARGET_DIR = cargoTargetDir;
           }
@@ -1575,6 +1635,7 @@
       inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream lib packageNames allPackageNames;
       inherit maintenanceInventory;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
+      inherit mkAccacheEnvironment;
       inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
       inherit (cargoArtifactsSupport) mkCargoDummySource;
       inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;
