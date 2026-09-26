@@ -2643,6 +2643,64 @@ def check_rust_llvm_file_inputs(root, env, accache, sccache, rustc, hits):
     return results
 
 
+def check_rust_llvm_report_passthrough(root, env, accache, sccache, rustc, hits):
+    """Keep LLVM pass dumps live rather than replaying only the rlib."""
+    work = root / "rust-llvm-ir-dump"
+    work.mkdir()
+    (work / "target").mkdir()
+    (work / "dumps").mkdir()
+    (work / "source.rs").write_text(
+        '#[no_mangle] pub extern "C" fn answer(x: i32) -> i32 {\n'
+        '    if x > 0 { x * 3 } else { x + 7 }\n'
+        '}\n')
+    args = [rustc, "--crate-name=example", "--crate-type=rlib",
+            "--emit=link,dep-info", "--out-dir=target", "-Copt-level=2",
+            "-Cllvm-args=--print-after=instcombine --ir-dump-directory=dumps",
+            "source.rs"]
+
+    def compile_library(wrapper):
+        for name in ["target/libexample.rlib", "target/example.d"]:
+            (work / name).unlink(missing_ok=True)
+        for path in (work / "dumps").iterdir():
+            path.unlink()
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        artifacts = {name: value for name, value in snapshot(work).items()
+                     if name != "source.rs"}
+        return completed, artifacts
+
+    direct, expected = compile_library([])
+    dump_files = {name for name in expected if name.startswith("dumps/")}
+    assert direct.returncode == 0 and len(dump_files) >= 5, (
+        direct.returncode, direct.stderr, sorted(expected))
+    assert {"target/libexample.rlib", "target/example.d"} <= set(expected)
+
+    oracle_snapshots = []
+    for _ in range(2):
+        before_hits = hits()
+        oracle, artifacts = compile_library([sccache])
+        assert oracle.returncode == 0, (oracle.returncode, oracle.stderr)
+        assert artifacts["target/libexample.rlib"] == expected["target/libexample.rlib"]
+        oracle_snapshots.append((artifacts, hits() > before_hits))
+
+    for attempt in range(2):
+        actual, artifacts = compile_library([accache])
+        assert (actual.returncode, actual.stdout, actual.stderr, artifacts) == (
+            direct.returncode, direct.stdout, direct.stderr, expected), (
+                attempt, actual.returncode, actual.stderr,
+                sorted(artifacts), sorted(expected))
+        event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert (event["outcome"] == "bypass"
+                and "invocation report" in event["reason"]), event
+
+    oracle_missing = sorted(dump_files - set(oracle_snapshots[-1][0]))
+    print("PASS oracle rust-llvm-ir-dump passthrough", flush=True)
+    return {"fixture": "rust-llvm-ir-dump", "revision": 0,
+            "oracle_hit": oracle_snapshots[-1][1], "accache": "bypass",
+            "oracle_missing_artifacts": oracle_missing,
+            "artifacts": sorted(expected)}
+
+
 def check_rust_profile_use(root, env, accache, sccache, rustc, clang, hits):
     """Track rustc's profile input across cold and warm library actions."""
     work = root / "rust-profile-use"
@@ -3270,6 +3328,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                               sccache, rustc, clang, hits))
         results.extend(check_rust_llvm_file_inputs(root, env, accache,
                                                    sccache, rustc, hits))
+        results.append(check_rust_llvm_report_passthrough(root, env, accache,
+                                                          sccache, rustc, hits))
         results.extend(check_rust_profile_use(root, env, accache, sccache,
                                               rustc, clang, hits))
         results.extend(check_rust_sample_profile_use(root, env, accache,

@@ -135,8 +135,13 @@ are fingerprinted separately because rustc omits them from dep-info. Four
 oracle families cover joined and separated `-C` with a section list and a
 function-attribute CSV. Editing either changes the rlib: pinned sccache
 replays the stale rlib, while accache misses and names the edited file.
-LLVM's internal option surface also permits other file reads and side outputs;
-disable accache for any such option not covered by this adapter.
+The adapter also fingerprints other identified LLVM file-input switches.
+LLVM report and dump switches bypass caching so each invocation writes its
+own files. An oracle with `--print-after=instcombine` and
+`--ir-dump-directory=dumps` checks all 13 IR files on two accache calls;
+pinned sccache warm-hits but omits them. LLVM's internal option surface also
+permits other file reads and side outputs; disable accache for any such option
+not covered by this adapter.
 Unstable Rust modes that write profiling data, MIR or NLL dumps, monomorphization
 statistics, closure reports, metrics, LLVM traces, codegen statistics,
 optimization remarks, or live timing reports bypass the cache so each
