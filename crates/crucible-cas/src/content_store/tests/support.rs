@@ -221,10 +221,7 @@ pub(super) fn assert_bounded_ref_scan_contract(refs: &dyn MutableRefBackend) {
 pub(super) fn object_path(root: &Path, id: ContentId) -> PathBuf {
     let encoded = id.encode();
     let digest = encoded.rsplit_once('.').expect("digest separator").1;
-    root.join(id.kind().as_str())
-        .join(id.schema_version().to_string())
-        .join(&digest[..2])
-        .join(digest)
+    root.join("objects").join(&digest[..2]).join(encoded)
 }
 
 pub(super) fn node_id(value: &str) -> StoreNodeId {

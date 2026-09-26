@@ -3,7 +3,7 @@
 //! Loose objects and administrative inventory state use this on-disk layout:
 //!
 //! ```text
-//! <blob-root>/<kind>/<schema-version>/<digest-prefix>/<digest>
+//! <blob-root>/objects/<digest-prefix>/<kind>.<schema-version>.<digest>
 //! <blob-root>/.inventory-admin/lock
 //! <blob-root>/.inventory-admin/state-v1
 //! <ref-root>/refs/<validated RefName>
@@ -56,6 +56,7 @@ const CORRUPT_TIER_COPY_TRIGGER: &str = "crucible.destructive-recovery.corrupt-t
 static CORRUPT_TIER_COPY_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
 const INVENTORY_ADMIN_DIRECTORY: &str = ".inventory-admin";
+const OBJECT_DIRECTORY: &str = "objects";
 const INVENTORY_LOCK_FILE: &str = "lock";
 const INVENTORY_STATE_FILE: &str = "state-v1";
 const INVENTORY_STATE_DOMAIN: &str = "crucible.content-store.directory-inventory-state.v1";
@@ -86,12 +87,13 @@ impl DirectoryBlobBackend {
     }
 
     pub(super) fn object_path(&self, id: ContentId) -> PathBuf {
+        // Share one bounded shard fanout across kinds and schemas. The full ID
+        // filename keeps distinct logical objects separate within each shard.
         let digest = encode_digest(id.digest());
         self.root
-            .join(id.kind().as_str())
-            .join(id.schema_version().to_string())
+            .join(OBJECT_DIRECTORY)
             .join(&digest[..2])
-            .join(digest)
+            .join(id.encode())
     }
 
     fn read_handle(
@@ -507,81 +509,73 @@ fn visit_directory_inventory(
     visitor: &mut dyn FnMut(BlobInventoryRecord) -> Result<(), StoreError>,
     inventory: &mut InventoryCounter,
 ) -> Result<(), StoreError> {
-    for kind_entry in read_directory_entries(root, "read-inventory-root")? {
-        let kind_entry = inventory_directory_entry(kind_entry, root, "read-inventory-root")?;
-        let kind_path = kind_entry.path();
-        let kind_name = path_name(&kind_path)?;
-        if kind_name == INVENTORY_ADMIN_DIRECTORY {
-            require_directory(&kind_path)?;
-            continue;
-        }
-        let kind = ObjectKind::parse(kind_name).ok_or(StoreError::InvalidComposition {
-            reason: "inventory contains an unknown object-kind directory",
+    visit_directory_objects(root, &mut |object_path, id| {
+        let metadata = fs::symlink_metadata(object_path).map_err(|source| StoreError::Io {
+            operation: "inspect-inventory-object",
+            path: object_path.to_path_buf(),
+            source,
         })?;
-        require_directory(&kind_path)?;
+        if !metadata.file_type().is_file() {
+            return Err(StoreError::InvalidComposition {
+                reason: "inventory object is not a regular file",
+            });
+        }
+        let record = BlobInventoryRecord::new(id, metadata.len());
+        inventory.push(record)?;
+        visitor(record)
+    })
+}
 
-        for version_entry in read_directory_entries(&kind_path, "read-inventory-kind")? {
-            let version_entry =
-                inventory_directory_entry(version_entry, &kind_path, "read-inventory-kind")?;
-            let version_path = version_entry.path();
-            require_directory(&version_path)?;
-            let version_name = path_name(&version_path)?;
-            let version = version_name
-                .parse::<u32>()
-                .ok()
-                .filter(|version| version.to_string() == version_name)
-                .ok_or(StoreError::InvalidComposition {
-                    reason: "inventory contains a noncanonical schema-version directory",
-                })?;
-
-            for prefix_entry in read_directory_entries(&version_path, "read-inventory-version")? {
-                let prefix_entry = inventory_directory_entry(
-                    prefix_entry,
-                    &version_path,
-                    "read-inventory-version",
-                )?;
-                let prefix_path = prefix_entry.path();
-                require_directory(&prefix_path)?;
-                let prefix = path_name(&prefix_path)?;
-                if prefix.len() != 2 || !prefix.bytes().all(is_lower_hex) {
-                    return Err(StoreError::InvalidComposition {
-                        reason: "inventory contains a noncanonical digest-prefix directory",
-                    });
-                }
-
-                for object_entry in read_directory_entries(&prefix_path, "read-inventory-prefix")? {
-                    let object_entry = inventory_directory_entry(
-                        object_entry,
-                        &prefix_path,
-                        "read-inventory-prefix",
+pub(super) fn visit_directory_objects(
+    root: &Path,
+    visitor: &mut dyn FnMut(&Path, ContentId) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    for root_entry in read_directory_entries(root, "read-inventory-root")? {
+        let root_entry = inventory_directory_entry(root_entry, root, "read-inventory-root")?;
+        let root_path = root_entry.path();
+        match path_name(&root_path)? {
+            INVENTORY_ADMIN_DIRECTORY => {
+                require_directory(&root_path)?;
+            }
+            OBJECT_DIRECTORY => {
+                require_directory(&root_path)?;
+                for prefix_entry in read_directory_entries(&root_path, "read-inventory-objects")? {
+                    let prefix_entry = inventory_directory_entry(
+                        prefix_entry,
+                        &root_path,
+                        "read-inventory-objects",
                     )?;
-                    let object_path = object_entry.path();
-                    let metadata =
-                        fs::symlink_metadata(&object_path).map_err(|source| StoreError::Io {
-                            operation: "inspect-inventory-object",
-                            path: object_path.clone(),
-                            source,
-                        })?;
-                    if !metadata.file_type().is_file() {
+                    let prefix_path = prefix_entry.path();
+                    require_directory(&prefix_path)?;
+                    let prefix = path_name(&prefix_path)?;
+                    if prefix.len() != 2 || !prefix.bytes().all(is_lower_hex) {
                         return Err(StoreError::InvalidComposition {
-                            reason: "inventory object is not a regular file",
+                            reason: "inventory contains a noncanonical digest-prefix directory",
                         });
                     }
-                    let digest = path_name(&object_path)?;
-                    if digest.len() != 64
-                        || !digest.bytes().all(is_lower_hex)
-                        || !digest.starts_with(prefix)
+                    for object_entry in
+                        read_directory_entries(&prefix_path, "read-inventory-prefix")?
                     {
-                        return Err(StoreError::InvalidComposition {
-                            reason: "inventory contains a noncanonical object digest",
-                        });
+                        let object_entry = inventory_directory_entry(
+                            object_entry,
+                            &prefix_path,
+                            "read-inventory-prefix",
+                        )?;
+                        let object_path = object_entry.path();
+                        let id = ContentId::parse(path_name(&object_path)?)?;
+                        if !encode_digest(id.digest()).starts_with(prefix) {
+                            return Err(StoreError::InvalidComposition {
+                                reason: "inventory object is in the wrong digest-prefix directory",
+                            });
+                        }
+                        visitor(&object_path, id)?;
                     }
-                    let id =
-                        ContentId::parse(&format!("{}.{}.{}", kind.as_str(), version, digest))?;
-                    let record = BlobInventoryRecord::new(id, metadata.len());
-                    inventory.push(record)?;
-                    visitor(record)?;
                 }
+            }
+            _ => {
+                return Err(StoreError::InvalidComposition {
+                    reason: "inventory contains an unknown root directory",
+                });
             }
         }
     }

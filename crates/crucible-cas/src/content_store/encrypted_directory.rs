@@ -59,8 +59,7 @@ use super::admin::{
 };
 use super::directory::{
     DirectoryBlobBackend, DirectoryInventoryState, create_dir_all_durable, directory_receipt,
-    inventory_directory_entry, is_lower_hex, path_name, read_directory_entries, require_directory,
-    sync_directory,
+    sync_directory, visit_directory_objects,
 };
 use super::*;
 
@@ -1285,88 +1284,19 @@ fn visit_encrypted_inventory(
     visitor: &mut dyn FnMut(BlobInventoryRecord) -> Result<(), StoreError>,
     inventory: &mut InventoryCounter,
 ) -> Result<(), StoreError> {
-    let root = backend.root();
-    for kind_entry in read_directory_entries(root, "read-encrypted-inventory-root")? {
-        let kind_entry =
-            inventory_directory_entry(kind_entry, root, "read-encrypted-inventory-root")?;
-        let kind_path = kind_entry.path();
-        let kind_name = path_name(&kind_path)?;
-        if kind_name == ".inventory-admin" {
-            require_directory(&kind_path)?;
-            continue;
-        }
-        let kind = ObjectKind::parse(kind_name).ok_or(StoreError::InvalidComposition {
-            reason: "encrypted inventory contains an unknown object-kind directory",
-        })?;
-        require_directory(&kind_path)?;
-        for version_entry in read_directory_entries(&kind_path, "read-encrypted-inventory-kind")? {
-            let version_entry = inventory_directory_entry(
-                version_entry,
-                &kind_path,
-                "read-encrypted-inventory-kind",
-            )?;
-            let version_path = version_entry.path();
-            require_directory(&version_path)?;
-            let version_name = path_name(&version_path)?;
-            let version = version_name
-                .parse::<u32>()
-                .ok()
-                .filter(|version| version.to_string() == version_name)
-                .ok_or(StoreError::InvalidComposition {
-                    reason: "encrypted inventory contains a noncanonical schema version",
-                })?;
-            for prefix_entry in
-                read_directory_entries(&version_path, "read-encrypted-inventory-version")?
-            {
-                let prefix_entry = inventory_directory_entry(
-                    prefix_entry,
-                    &version_path,
-                    "read-encrypted-inventory-version",
-                )?;
-                let prefix_path = prefix_entry.path();
-                require_directory(&prefix_path)?;
-                let prefix = path_name(&prefix_path)?;
-                if prefix.len() != 2 || !prefix.bytes().all(is_lower_hex) {
-                    return Err(StoreError::InvalidComposition {
-                        reason: "encrypted inventory has a noncanonical digest prefix",
-                    });
-                }
-                for object_entry in
-                    read_directory_entries(&prefix_path, "read-encrypted-inventory-prefix")?
-                {
-                    let object_entry = inventory_directory_entry(
-                        object_entry,
-                        &prefix_path,
-                        "read-encrypted-inventory-prefix",
-                    )?;
-                    let object_path = object_entry.path();
-                    let digest = path_name(&object_path)?;
-                    if digest.len() != 64
-                        || !digest.bytes().all(is_lower_hex)
-                        || !digest.starts_with(prefix)
-                    {
-                        return Err(StoreError::InvalidComposition {
-                            reason: "encrypted inventory has a noncanonical object digest",
-                        });
-                    }
-                    let id =
-                        ContentId::parse(&format!("{}.{}.{}", kind.as_str(), version, digest))?;
-                    let (_, header) = open_encrypted_object(
-                        &object_path,
-                        id,
-                        backend.maximum_logical_object_bytes,
-                        backend.key_id_binding,
-                        backend.encoding,
-                        backend.key.bytes(),
-                    )?;
-                    let record = BlobInventoryRecord::new(id, header.logical_length);
-                    inventory.push(record)?;
-                    visitor(record)?;
-                }
-            }
-        }
-    }
-    Ok(())
+    visit_directory_objects(backend.root(), &mut |path, id| {
+        let (_, header) = open_encrypted_object(
+            path,
+            id,
+            backend.maximum_logical_object_bytes,
+            backend.key_id_binding,
+            backend.encoding,
+            backend.key.bytes(),
+        )?;
+        let record = BlobInventoryRecord::new(id, header.logical_length);
+        inventory.push(record)?;
+        visitor(record)
+    })
 }
 
 fn key_id_binding(id: &StoreEncryptionKeyId) -> Result<[u8; 32], StoreError> {

@@ -3,6 +3,45 @@
 use super::*;
 
 #[test]
+fn directory_shards_preserve_full_identity_and_reject_misplaced_objects() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = temp.path().join("blobs");
+    let digest = "0".repeat(64);
+    let fact = ContentId::parse(&format!("{}.1.{digest}", ObjectKind::CampaignFact.as_str()))
+        .expect("fact identity");
+    let observation = ContentId::parse(&format!("{}.1.{digest}", ObjectKind::Observation.as_str()))
+        .expect("observation identity");
+    let next_schema =
+        ContentId::parse(&format!("{}.2.{digest}", ObjectKind::CampaignFact.as_str()))
+            .expect("next schema identity");
+    assert_ne!(object_path(&root, fact), object_path(&root, observation));
+    assert_ne!(object_path(&root, fact), object_path(&root, next_schema));
+    assert_eq!(
+        object_path(&root, fact).parent(),
+        object_path(&root, observation).parent()
+    );
+
+    let store = DirectoryBlobBackend::new("flat-shard", &root);
+    let bytes = b"authenticated object";
+    let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
+    put_bytes(&store, id, bytes).expect("put object");
+    let source = object_path(&root, id);
+    let wrong_shard = if id.digest()[0] == 0 { "ff" } else { "00" };
+    let destination = root.join("objects").join(wrong_shard).join(id.encode());
+    fs::create_dir_all(destination.parent().expect("destination parent"))
+        .expect("create wrong shard");
+    fs::rename(source, destination).expect("misplace object");
+
+    let mut fence = store.acquire_inventory_fence().expect("inventory fence");
+    assert!(matches!(
+        fence.visit_inventory(&mut |_| Ok(())),
+        Err(StoreError::InvalidComposition {
+            reason: "inventory object is in the wrong digest-prefix directory"
+        })
+    ));
+}
+
+#[test]
 fn compressed_directory_streams_plaintext_identity_ranges_and_inventory_across_restart() {
     let temp = TempDir::new().expect("temporary directory");
     let root = temp.path().join("compressed");
@@ -945,7 +984,7 @@ fn directory_administration_is_persistent_fenced_and_fail_closed() {
     assert!(matches!(
         malformed_fence.visit_inventory(&mut |_| Ok(())),
         Err(StoreError::InvalidComposition {
-            reason: "inventory contains an unknown object-kind directory"
+            reason: "inventory contains an unknown root directory"
         })
     ));
     drop(malformed_fence);
