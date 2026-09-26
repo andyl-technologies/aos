@@ -9,7 +9,13 @@
 //! Environment exclusions affect execution as well as hashing. Ignoring a
 //! value while still letting the compiler read it would permit false hits.
 
-use std::{collections::BTreeMap, env, fs, io::Read, path::Path, process::Command};
+use std::{
+    collections::BTreeMap,
+    env, fs,
+    io::Read,
+    path::{Component, Path},
+    process::Command,
+};
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -117,6 +123,34 @@ pub struct DynamicOutputs {
     pub prefix: String,
     /// Filename suffix produced by the selected compiler mode.
     pub suffix: String,
+    /// Names of compiler-owned subdirectories containing saved intermediates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nested_prefixes: Vec<String>,
+}
+
+impl DynamicOutputs {
+    /// Accepts a relative file path within the declared compiler output scope.
+    pub fn accepts(&self, relative: &Path) -> bool {
+        let mut components = relative.components();
+        let Some(Component::Normal(first)) = components.next() else {
+            return false;
+        };
+        let Some(first) = first.to_str() else {
+            return false;
+        };
+
+        let remaining: Vec<_> = components.collect();
+        if remaining.is_empty() {
+            return first.starts_with(&self.prefix) && first.ends_with(&self.suffix);
+        }
+
+        self.nested_prefixes
+            .iter()
+            .any(|prefix| first.starts_with(prefix))
+            && remaining
+                .iter()
+                .all(|component| matches!(component, Component::Normal(_)))
+    }
 }
 
 impl Identity {

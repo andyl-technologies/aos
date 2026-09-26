@@ -8,6 +8,8 @@ mod c;
 mod dependencies;
 mod rust;
 
+pub(crate) use rust::bypass_output_directory;
+
 use crate::{
     backend::safe_output,
     model::{DynamicOutputs, Manifest, command, fingerprint, hash},
@@ -32,6 +34,15 @@ struct OutputStamp {
     ctime: (i64, i64),
 }
 
+fn output_stamp(metadata: &fs::Metadata) -> OutputStamp {
+    OutputStamp {
+        inode: metadata.ino(),
+        size: metadata.len(),
+        mtime: (metadata.mtime(), metadata.mtime_nsec()),
+        ctime: (metadata.ctime(), metadata.ctime_nsec()),
+    }
+}
+
 /// Holds discovered outputs and the probes needed to recompute action inputs.
 pub struct Invocation {
     /// Versioned frontend and discovery adapter name.
@@ -44,6 +55,10 @@ pub struct Invocation {
     pub execution_args: Option<Vec<String>>,
     /// Bounded compiler-generated side files whose names require compilation.
     pub dynamic_outputs: Option<DynamicOutputs>,
+    /// Rust's selected output directory, shared by all compiler calls in a Cargo target.
+    pub rust_output_directory: Option<String>,
+    /// Saved Rust intermediates require exclusive access to that directory.
+    pub rust_save_temps: bool,
     dynamic_before: BTreeMap<String, OutputStamp>,
     scan_args: Option<Vec<String>>,
     assembly_scan_args: Option<Vec<String>>,
@@ -78,6 +93,8 @@ pub fn classify(
         optional_outputs: BTreeSet::new(),
         execution_args: None,
         dynamic_outputs: None,
+        rust_output_directory: None,
+        rust_save_temps: false,
         dynamic_before: BTreeMap::new(),
         scan_args: None,
         assembly_scan_args: None,
@@ -162,21 +179,46 @@ impl Invocation {
         let mut files = BTreeMap::new();
         for entry in fs::read_dir(&dynamic.directory)? {
             let entry = entry?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.starts_with(&dynamic.prefix) || !name.ends_with(&dynamic.suffix) {
-                continue;
-            }
+            let relative = PathBuf::from(entry.file_name());
             let metadata = fs::symlink_metadata(entry.path())?;
-            ensure!(metadata.is_file(), "dynamic output is not a regular file");
-            files.insert(
-                entry.path().to_string_lossy().into_owned(),
-                OutputStamp {
-                    inode: metadata.ino(),
-                    size: metadata.len(),
-                    mtime: (metadata.mtime(), metadata.mtime_nsec()),
-                    ctime: (metadata.ctime(), metadata.ctime_nsec()),
-                },
-            );
+            if dynamic.accepts(&relative) {
+                ensure!(metadata.is_file(), "dynamic output is not a regular file");
+                files.insert(
+                    entry.path().to_string_lossy().into_owned(),
+                    output_stamp(&metadata),
+                );
+            } else if metadata.is_dir()
+                && dynamic
+                    .nested_prefixes
+                    .iter()
+                    .any(|prefix| relative.to_string_lossy().starts_with(prefix))
+            {
+                let mut directories = vec![entry.path()];
+                while let Some(directory) = directories.pop() {
+                    for child in fs::read_dir(directory)? {
+                        let child = child?;
+                        let metadata = fs::symlink_metadata(child.path())?;
+                        if metadata.is_dir() {
+                            directories.push(child.path());
+                        } else {
+                            ensure!(
+                                metadata.is_file(),
+                                "nested dynamic output is not a regular file"
+                            );
+                            let relative =
+                                child.path().strip_prefix(&dynamic.directory)?.to_owned();
+                            ensure!(
+                                dynamic.accepts(&relative),
+                                "dynamic output escaped its scope"
+                            );
+                            files.insert(
+                                child.path().to_string_lossy().into_owned(),
+                                output_stamp(&metadata),
+                            );
+                        }
+                    }
+                }
+            }
         }
         Ok(files)
     }
@@ -215,14 +257,14 @@ impl Invocation {
         let Some(parent) = path.parent() else {
             return Ok(false);
         };
-        if parent.canonicalize()? != Path::new(&dynamic.directory) {
+        let parent = parent.canonicalize()?;
+        let Ok(relative_parent) = parent.strip_prefix(&dynamic.directory) else {
             return Ok(false);
-        }
+        };
         let Some(name) = path.file_name() else {
             return Ok(false);
         };
-        let name = name.to_string_lossy();
-        Ok(name.starts_with(&dynamic.prefix) && name.ends_with(&dynamic.suffix))
+        Ok(dynamic.accepts(&relative_parent.join(name)))
     }
 
     fn output(&mut self, path: &Path, optional: bool) -> Result<()> {

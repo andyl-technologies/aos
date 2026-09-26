@@ -4,7 +4,11 @@ use super::{Invocation, parsed, strings};
 use crate::model::{DynamicOutputs, Manifest, command};
 use accache_frontend::compiler::rust;
 use anyhow::{Result, ensure};
-use std::{collections::BTreeMap, ffi::OsString, path::Path};
+use std::{
+    collections::BTreeMap,
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 pub(super) fn configure(
     invocation: &mut Invocation,
@@ -19,13 +23,10 @@ pub(super) fn configure(
         &std::env::current_dir()?,
         &arguments,
     ))?;
-    // save-temps writes bitcode, object, and randomly named metadata files.
-    // A shared target can have concurrent writers, so a directory snapshot
-    // cannot safely attribute these files to this action for replay.
-    ensure!(
-        !saves_temporary_outputs(&expanded),
-        "save-temps side outputs cannot be attributed in a shared target"
-    );
+    let saves_temps = saves_temporary_outputs(&expanded);
+    let output_directory = parsed.output_dir.canonicalize()?;
+    invocation.rust_output_directory = Some(output_directory.to_string_lossy().into_owned());
+    invocation.rust_save_temps = saves_temps;
     let mut print_args = invocation
         .execution_args
         .as_deref()
@@ -48,26 +49,29 @@ pub(super) fn configure(
             invocation.output(&parsed.output_dir.join(name.with_extension("rmeta")), false)?;
         }
     }
-    if parsed.emit.contains("link") && unpacked_split_debug(&expanded) {
-        // rustc does not list .dwo files in --print=file-names. Their leading
-        // stem follows the reported library name, while the CGU hash varies.
+    if saves_temps || (parsed.emit.contains("link") && unpacked_split_debug(&expanded)) {
+        // rustc does not list saved bitcode, object, metadata, or .dwo files
+        // in --print=file-names. Their leading stem follows the library name;
+        // random metadata directories are captured separately under the
+        // exclusive Rust output-directory lock.
         let library = printed_names
             .lines()
             .find(|name| name.ends_with(".rlib") || name.ends_with(".a"))
-            .ok_or_else(|| anyhow::anyhow!("unpacked debug has no library output name"))?;
+            .ok_or_else(|| anyhow::anyhow!("Rust side files have no library output name"))?;
         let stem = Path::new(library)
             .file_stem()
             .and_then(|stem| stem.to_str())
             .and_then(|stem| stem.strip_prefix("lib"))
             .ok_or_else(|| anyhow::anyhow!("unexpected Rust library output name"))?;
         invocation.dynamic_outputs = Some(DynamicOutputs {
-            directory: parsed
-                .output_dir
-                .canonicalize()?
-                .to_string_lossy()
-                .into_owned(),
+            directory: output_directory.to_string_lossy().into_owned(),
             prefix: format!("{stem}."),
-            suffix: ".dwo".into(),
+            suffix: if saves_temps { "" } else { ".dwo" }.into(),
+            nested_prefixes: if saves_temps {
+                vec!["rmeta".into(), "rustc".into()]
+            } else {
+                Vec::new()
+            },
         });
     }
     for extra in [parsed.dep_info.as_ref(), parsed.gcno.as_ref()]
@@ -128,6 +132,41 @@ pub(super) fn configure(
     ));
     invocation.scan_args = Some(scan);
     Ok(())
+}
+
+/// Finds the target-directory lock for a Rust invocation that the frontend
+/// cannot cache, including incremental compilations and final links.
+///
+/// # Errors
+/// Returns an error when a response file or the selected output directory
+/// cannot be read or represented by the cache.
+pub(crate) fn bypass_output_directory(args: &[String]) -> Result<(String, bool)> {
+    let cwd = std::env::current_dir()?;
+    let arguments: Vec<_> = args.iter().map(OsString::from).collect();
+    let expanded = strings(rust::ExpandResponseFile::new(&cwd, &arguments))?;
+    let mut output_directory = cwd;
+
+    let mut index = 0;
+    while index < expanded.len() {
+        let argument = &expanded[index];
+        if argument == "--out-dir" {
+            index += 1;
+            if let Some(value) = expanded.get(index) {
+                output_directory = PathBuf::from(value);
+            }
+        } else if let Some(value) = argument.strip_prefix("--out-dir=") {
+            output_directory = PathBuf::from(value);
+        }
+        index += 1;
+    }
+
+    Ok((
+        output_directory
+            .canonicalize()?
+            .to_string_lossy()
+            .into_owned(),
+        saves_temporary_outputs(&expanded),
+    ))
 }
 
 fn saves_temporary_outputs(args: &[String]) -> bool {

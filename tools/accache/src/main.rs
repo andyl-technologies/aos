@@ -123,12 +123,37 @@ fn run() -> Result<i32> {
         Ok(prepared) => execute(&backend, args, prepared, start),
         Err(error) => {
             let mut event = Event::new("bypass", format!("{error:#}"));
+            // A bypassed rustc still creates temporary metadata directories
+            // while it runs. Coordinate it with cacheable save-temps actions.
+            let _rust_lock = match bypass_rust_lock(&backend, compiler, args) {
+                Ok(lock) => lock,
+                Err(lock_error) => {
+                    eprintln!("accache: Rust output lock unavailable: {lock_error:#}");
+                    None
+                }
+            };
             let status = passthrough(compiler, args)?;
             event.duration_ms = start.elapsed().as_millis();
             record(&backend, &event);
             Ok(status)
         }
     }
+}
+
+fn bypass_rust_lock(
+    backend: &Backend,
+    compiler: &str,
+    args: &[String],
+) -> Result<Option<std::fs::File>> {
+    let manifest = Manifest::read(&PathBuf::from(
+        env::var_os("ACCACHE_MANIFEST").context("ACCACHE_MANIFEST is unset")?,
+    ))?;
+    let resolved = resolve_compiler(compiler)?;
+    if manifest.compilers.get(&resolved).map(String::as_str) != Some("rust") {
+        return Ok(None);
+    }
+    let (directory, saves_temps) = compiler::bypass_output_directory(args)?;
+    Ok(Some(backend.lock_rust_directory(&directory, saves_temps)?))
 }
 
 struct Prepared {
@@ -270,13 +295,22 @@ fn execute(backend: &Backend, args: &[String], prepared: Prepared, start: Instan
     // package build. This finer lock also coordinates accache clients that
     // share an output stem, including clients outside Cargo. Take the output
     // snapshot only after acquiring it, before any restore or compilation.
-    let scope_lock = invocation
-        .dynamic_outputs
-        .as_ref()
-        .map(|scope| backend.lock_scope(scope))
-        .transpose();
-    let scope_lock = match scope_lock {
-        Ok(lock) => lock,
+    let locks = (|| -> Result<_> {
+        let directory_lock = invocation
+            .rust_output_directory
+            .as_deref()
+            .map(|directory| backend.lock_rust_directory(directory, invocation.rust_save_temps))
+            .transpose()?;
+        let scope_lock = invocation
+            .dynamic_outputs
+            .as_ref()
+            .map(|scope| backend.lock_scope(scope))
+            .transpose()?;
+        invocation.capture_dynamic_before()?;
+        Ok((directory_lock, scope_lock))
+    })();
+    let (_directory_lock, _scope_lock) = match locks {
+        Ok(locks) => locks,
         Err(error) => {
             event.outcome = "bypass".into();
             event.reason = format!("dynamic output scope unavailable: {error:#}");
@@ -286,15 +320,6 @@ fn execute(backend: &Backend, args: &[String], prepared: Prepared, start: Instan
             return Ok(status);
         }
     };
-    let _scope_lock = scope_lock;
-    if let Err(error) = invocation.capture_dynamic_before() {
-        event.outcome = "bypass".into();
-        event.reason = format!("dynamic output scope unavailable: {error:#}");
-        let status = passthrough(compiler, args)?;
-        event.duration_ms = start.elapsed().as_millis();
-        record(backend, &event);
-        return Ok(status);
-    }
     // Keep the descriptor alive until publishing finishes. Independent actions
     // never share a lock, and another process always rechecks after acquiring it.
     let lock = backend.lock(&action);

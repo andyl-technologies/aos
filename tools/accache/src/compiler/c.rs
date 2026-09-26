@@ -134,6 +134,7 @@ pub(super) fn configure(
                     directory: directory.to_string_lossy().into_owned(),
                     prefix: format!("{prefix}."),
                     suffix: String::new(),
+                    nested_prefixes: Vec::new(),
                 });
             }
         }

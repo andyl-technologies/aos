@@ -110,7 +110,8 @@ files, coverage notes, preprocessed source, assembly, PCH, explicit Clang
 modules, serialized Clang diagnostics, GCC SARIF and plain HTML diagnostic
 reports with default or explicit file names, numbered GCC tree, RTL, IPA, and
 language dumps (including joined `-d` debug dumps), and nonincremental Rust
-rlib/staticlib, metadata, dep-info, and unpacked split debug `.dwo` files.
+rlib/staticlib, metadata, dep-info, unpacked split debug `.dwo` files, and
+`-Csave-temps=yes` bitcode, object, and saved metadata files.
 Rust extern/native dependencies and proc macro consumers are covered by the
 input contract above.
 
@@ -118,12 +119,16 @@ Incremental Rust, executable/proc-macro compilation, ordinary linking, and
 upstream parser exclusions bypass. Frontend parsing compatibility is not a
 claim of support for every compiler/version/platform, nor for arbitrary new
 side-effect flags. This package targets the AOS Linux compiler toolchains.
-Rust `-Csave-temps=yes` also bypasses: it creates bitcode, object, and randomly
-named metadata files. In a shared target directory, a directory snapshot cannot
-safely attribute those files to one action when compilers run concurrently.
-Pinned sccache accepts this flag but its warm hit drops those files. Accache
-preserves them by running rustc for each invocation. `-Csave-temps=no` remains
-cacheable. GCC dumps and SARIF reports using separate `-dumpbase` or `-dumpdir`
+Rust `-Csave-temps=yes` stores files inside randomly named `rmeta*` and `rustc*`
+directories as well as top-level bitcode and object files. All wrapped Rust
+compilers using one accache state directory take a shared lock for their output
+directory; save-temps actions take it exclusively while discovering and
+publishing their files. This preserves the complete file output set on warm
+hits, including with unpacked split debug. Pinned sccache accepts the flag but
+omits those files on warm hits. Compiler processes outside this wrapper do not
+participate in the lock, so do not mix them with cached save-temps actions in
+one output directory. Empty rustc temporary directories are not cache artifacts.
+GCC dumps and SARIF reports using separate `-dumpbase` or `-dumpdir`
 options bypass, as they do in the pinned sccache frontend. The joined
 `-dumpbase=foo` spelling instead acts as `-d` debug letters; its dumps are
 tracked. GCC 16's documented
@@ -140,6 +145,7 @@ and optimization reports are cached with their requested output files.
 cache/ac/<first-two-hex>/<sha256>     REAPI ActionResult
 cache/cas/<first-two-hex>/<sha256>    content-addressed blobs
 state/locks/<action>                 per-action OS file lock
+state/locks/rust-dir-<sha256>        shared/exclusive Rust output-directory lock
 state/events/<unique>.json          immutable invocation provenance
 state/latest/<slot>                 prior identity for explanations
 ```
@@ -216,7 +222,10 @@ mode, multiple codegen units, and `--cfg` with `--check-cfg`; output names and
 bytes must match direct rustc and pinned sccache on cold and warm runs.
 The frontend check also requires incremental Rust to bypass caching.
 An oracle case verifies that sccache's warm `-Csave-temps=yes` hit omits
-bitcode files while accache runs rustc and preserves them on both invocations.
+bitcode and saved metadata files while accache restores the complete file set
+from a warm hit. Frontend checks also cover save-temps with metadata-only,
+staticlib, and unpacked split debug output, plus concurrent writers sharing a
+Rust target directory.
 Unpacked Rust split debug cases check four rlib `.dwo` files and one staticlib
 `.dwo` file: pinned sccache omits them on warm hits, while accache restores
 their bytes and lists them in action provenance. Their changing CGU names are
