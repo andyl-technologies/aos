@@ -50,6 +50,15 @@ pub(super) fn configure(
         .extra_inputs
         .extend(parsed.extra_hash_files.iter().cloned());
     let expanded = strings(gcc::ExpandIncludeFile::new(&cwd, &arguments))?;
+    if clang
+        && expanded.iter().enumerate().any(|(index, argument)| {
+            argument == "-dependency-file" && (index == 0 || expanded[index - 1] != "-Xclang")
+        })
+    {
+        // Clang's driver warns that this cc1 option is unused. The pinned
+        // frontend nevertheless expects its named file and fails on publish.
+        ensure!(false, "Clang driver ignores -dependency-file");
+    }
     // GCC accepts report options through sccache's generic argument path.
     // The pinned frontend omits their files, so discover those destinations
     // before allowing an action to be stored.
@@ -260,8 +269,56 @@ pub(super) fn configure(
     // Diagnostics and auxiliary outputs from the probe belong to its private
     // temporary directory, never to the caller's final output destinations.
     let mut index = 0;
+    let mut assembler_depfile = false;
     while index < common.len() {
         let arg = &common[index];
+        if arg == "-Xassembler" && common.get(index + 1).is_some_and(|next| next == "--MD") {
+            ensure!(
+                parsed.uses_external_assembler && !assembler_depfile,
+                "assembler dependency output cannot be tracked"
+            );
+            ensure!(
+                common
+                    .get(index + 2)
+                    .is_some_and(|next| next == "-Xassembler"),
+                "assembler dependency output has no filename"
+            );
+            let path = common
+                .get(index + 3)
+                .ok_or_else(|| anyhow::anyhow!("assembler dependency output has no filename"))?;
+            invocation.output(Path::new(path), false)?;
+            assembler_depfile = true;
+            index += 4;
+            continue;
+        }
+        if let Some(payload) = arg.strip_prefix("-Wa,") {
+            let mut fields = payload.split(',');
+            let mut preserved = Vec::new();
+            let mut output = None;
+            while let Some(field) = fields.next() {
+                if field == "--MD" {
+                    ensure!(output.is_none(), "multiple assembler dependency outputs");
+                    output = Some(fields.next().ok_or_else(|| {
+                        anyhow::anyhow!("assembler dependency output has no filename")
+                    })?);
+                } else {
+                    preserved.push(field);
+                }
+            }
+            if let Some(path) = output {
+                ensure!(
+                    parsed.uses_external_assembler && !assembler_depfile && !path.is_empty(),
+                    "assembler dependency output cannot be tracked"
+                );
+                invocation.output(Path::new(path), false)?;
+                assembler_depfile = true;
+                if !preserved.is_empty() {
+                    scan.push(format!("-Wa,{}", preserved.join(",")));
+                }
+                index += 1;
+                continue;
+            }
+        }
         if matches!(
             arg.as_str(),
             "--serialize-diagnostics" | "-serialize-diagnostics" | "-aux-info"
@@ -411,6 +468,7 @@ fn probe_preprocessor_args(
         if let Some(payload) = argument.strip_prefix("-Wp,") {
             let mut fields = payload.split(',');
             let mut preserved = Vec::new();
+            let mut writes_depfile = false;
             while let Some(field) = fields.next() {
                 match field {
                     "-MD" | "-MMD" => {
@@ -422,6 +480,7 @@ fn probe_preprocessor_args(
                             "-Wp dependency output has no filename"
                         );
                         forwarded_depfile = Some(filename);
+                        writes_depfile = true;
                     }
                     "-M" | "-MM" | "-MF" | "-MG" => {
                         anyhow::bail!("untracked -Wp dependency output option")
@@ -429,6 +488,10 @@ fn probe_preprocessor_args(
                     _ => preserved.push(field),
                 }
             }
+            ensure!(
+                !clang || !writes_depfile || preserved.is_empty(),
+                "Clang mixed -Wp dependency output cannot be tracked"
+            );
             if !preserved.is_empty() {
                 // Other forwarded CPP options still affect dependency
                 // discovery. Remove only the caller-visible depfile request.

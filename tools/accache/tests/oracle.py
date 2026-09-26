@@ -53,6 +53,7 @@ def fixtures(gcc, clang, rustc):
             ("profile-arcs", ["-fprofile-arcs"]),
             ("profile-generation", ["-fprofile-generate"]),
             ("depfile", ["-MD", "-MF", "source.d", "-MT", "custom-target"]),
+            ("quoted-dep-target", ["-MD", "-MF", "source.d", "-MQ", "custom target"]),
             ("default-depfile", ["-MMD", "-MP"]),
             ("include", ["-include", "value.h", "-I.", "-isystem", "."]),
             ("defines", ["-DUNUSED=123", "-UUNUSED", "-fPIC", "-fvisibility=hidden"]),
@@ -76,9 +77,43 @@ def fixtures(gcc, clang, rustc):
             yield Fixture(name + "-" + suffix, compiler, base + [flag], c_sources,
                           {"value.h": "#define VALUE 73\n"})
         if name == "gcc":
+            yield Fixture("gcc-wp-mixed-md", compiler,
+                          base + ["-Wp,-DUNUSED=1,-MD,forwarded.d"], c_sources,
+                          {"value.h": "#define VALUE 73\n"})
             yield Fixture("gcc-xpreprocessor-md", compiler,
                           base + ["-Xpreprocessor", "-MD", "-Xpreprocessor", "forwarded.d"],
                           c_sources, {"value.h": "#define VALUE 73\n"})
+            yield Fixture("gcc-xpreprocessor-mmd", compiler,
+                          base + ["-Xpreprocessor", "-MMD", "-Xpreprocessor", "forwarded.d"],
+                          c_sources, {"value.h": "#define VALUE 73\n"})
+            for suffix, flags in [
+                ("wa-depfile", ["-Wa,--MD,asm.d"]),
+                ("wa-mixed-depfile", ["-Wa,--noexecstack,--MD,asm.d"]),
+                ("xassembler-depfile", ["-Xassembler", "--MD", "-Xassembler", "asm.d"]),
+            ]:
+                yield Fixture("gcc-" + suffix, compiler,
+                              base + ["-pipe", *flags, "-frandom-seed=" + suffix], c_sources,
+                              {"value.h": "#define VALUE 73\n"})
+        else:
+            yield Fixture("clang-wp-mixed-md", compiler,
+                          base + ["-Wp,-MD,forwarded.d,-DUNUSED=1",
+                                  "-frandom-seed=clang-wp-mixed-md"], c_sources,
+                          {"value.h": "#define VALUE 73\n"}, cacheable=False)
+            yield Fixture("clang-external-assembler-depfile", compiler,
+                          base + ["-pipe", "-fno-integrated-as", "-Wa,--MD,asm.d",
+                                  "-frandom-seed=external-assembler-depfile"], c_sources,
+                          {"value.h": "#define VALUE 73\n"},
+                          nondeterministic_outputs={"asm.d"})
+        yield Fixture(name + "-imacros", compiler,
+                      base + ["-imacros", "macros.h"],
+                      {"source.c": "int answer(void) { return VALUE; }\n",
+                       "macros.h": "#define VALUE 42\n"},
+                      {"macros.h": "#define VALUE 73\n"})
+        yield Fixture(name + "-iquote", compiler,
+                      base + ["-iquote", "headers"],
+                      {"source.c": c_sources["source.c"],
+                       "headers/value.h": c_sources["value.h"]},
+                      {"headers/value.h": "#define VALUE 73\n"})
 
         yield Fixture(name + "-stack-usage", compiler,
                       base + ["-fstack-usage"], c_sources,
@@ -370,6 +405,53 @@ def snapshot(work):
     """Observe file contents and executable bits without relying on a parser."""
     return {str(path.relative_to(work)): (path.read_bytes(), bool(path.stat().st_mode & 0o111))
             for path in work.rglob("*") if path.is_file()}
+
+
+def check_clang_driver_dependency_file(root, env, accache, sccache, clang):
+    """Bypass a driver-ignored cc1 option that makes pinned sccache fail."""
+    work = root / "clang-driver-dependency-file"
+    work.mkdir()
+    (work / "source.c").write_text('#include "value.h"\nint answer(void) { return VALUE; }\n')
+    args = [clang, "-c", "source.c", "-o", "source.o", "-MD",
+            "-dependency-file", "unused.d", "-frandom-seed=clang-driver-dependency-file"]
+    sources = {"source.c", "value.h"}
+    results = []
+
+    def compile_object(wrapper):
+        for name in ["source.o", "source.d", "unused.d"]:
+            (work / name).unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        artifacts = {name: value for name, value in snapshot(work).items()
+                     if name not in sources}
+        return completed, artifacts
+
+    for revision, value in enumerate([42, 73]):
+        (work / "value.h").write_text(f"#define VALUE {value}\n")
+        direct, expected = compile_object([])
+        assert direct.returncode == 0 and set(expected) == {"source.o", "source.d"}, (
+            revision, direct.stderr, expected)
+
+        oracle, _ = compile_object([sccache])
+        assert oracle.returncode != 0 and b"failed to zip up compiler outputs" in oracle.stderr, (
+            revision, oracle.returncode, oracle.stderr)
+
+        for attempt in range(2):
+            actual, artifacts = compile_object([accache])
+            assert (actual.returncode, actual.stdout, actual.stderr, artifacts) == (
+                direct.returncode, direct.stdout, direct.stderr, expected), (
+                    revision, attempt, actual.stderr, artifacts)
+            event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert (event["outcome"] == "bypass"
+                    and "Clang driver ignores -dependency-file" in event["reason"]), event
+
+        results.append({"fixture": "clang-driver-dependency-file", "revision": revision,
+                        "oracle_hit": False, "accache": "bypass",
+                        "oracle_error": "failed to zip up compiler outputs",
+                        "artifacts": sorted(expected)})
+
+    print("PASS oracle clang-driver-dependency-file passthrough", flush=True)
+    return results
 
 
 def check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits):
@@ -1066,6 +1148,10 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     "gcc-html-state-diagrams": {"state.html"},
                     "gcc-html-graph-details": {"details.html"},
                     "clang-serialized-diagnostics": {"source.dia"},
+                    "gcc-wa-depfile": {"asm.d"},
+                    "gcc-wa-mixed-depfile": {"asm.d"},
+                    "gcc-xassembler-depfile": {"asm.d"},
+                    "clang-external-assembler-depfile": {"asm.d"},
                 }
                 if (side_files := missing_oracle_side_files.get(fixture.name)) and label == "sccache warm vs direct":
                     # These accepted flags produce files that pinned sccache
@@ -1243,12 +1329,18 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                         assert (warm_event["outcome"] == "bypass"
                                 and reason in warm_event["reason"]), (
                             fixture.name, warm_event)
+                    if fixture.name == "clang-wp-mixed-md":
+                        assert (warm_event["outcome"] == "bypass"
+                                and "Clang mixed -Wp dependency output" in warm_event["reason"]), (
+                            fixture.name, warm_event)
                 results.append({"fixture": fixture.name, "revision": revision,
                                 "oracle_hit": oracle_hit, "accache": warm_event["outcome"],
                                 "oracle_missing_artifacts": sorted(set(baseline[3]) - set(oracle_warm[3])),
                                 "artifacts": sorted(baseline[3])})
             print("PASS oracle", fixture.name, flush=True)
 
+        results.extend(check_clang_driver_dependency_file(root, env, accache,
+                                                          sccache, clang))
         results.extend(check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits))
         results.extend(check_ada_specs(root, env, accache, sccache, gcc, hits))
         results.extend(check_gcc_timing_passthrough(root, env, accache,
