@@ -21,6 +21,7 @@
   sed,
   util-linux,
   qemu-crucible-source,
+  sqlite,
   gdb,
   openssh,
   buildPackages,
@@ -127,11 +128,12 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     PROTOC = "${buildProtobuf}/bin/protoc";
   };
   controllerArtifactContract = {
     family = "crucible-apache-host-release-and-test";
-    nativeInputs = map toString [buildRustDev buildPkgConfig openssl buildProtobuf];
+    nativeInputs = map toString [buildRustDev buildPkgConfig openssl sqlite buildProtobuf];
     licenseScope = "Apache-2.0";
   };
   controllerArtifacts = mkCargoArtifacts {
@@ -147,9 +149,9 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags} --features crucible-cli/test-double"
     ];
     buildDeps =
-      [buildRustDev buildPkgConfig openssl buildProtobuf]
+      [buildRustDev buildPkgConfig openssl sqlite buildProtobuf]
       ++ lib.optionals stdenv.isCross [buildPackages.crucible-controller];
-    runtimeDeps = [openssl];
+    runtimeDeps = [openssl sqlite];
   };
   debugGatewayArtifactContract = {
     family = "crucible-gpl-debug-gateway-release-and-test";
@@ -202,8 +204,8 @@
     cargoFlags = packageFlags;
     cargoTestFlags = "${packageFlags} --features crucible-cli/test-double";
     doCheck = true;
-    buildDeps = [buildRustDev buildPkgConfig openssl buildProtobuf];
-    runtimeDeps = [openssl];
+    buildDeps = [buildRustDev buildPkgConfig openssl sqlite buildProtobuf];
+    runtimeDeps = [openssl sqlite];
     # The controller is the Apache side of a process boundary. Fail the build
     # if any QEMU-side implementation, guest kernel, or fixture enters either
     # its direct references or its runtime closure.
@@ -214,6 +216,7 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
 
     # The source root includes root guidance, docs/, pkgs/tools/crucible/, and
     # tests/crucible/ so harness lints can read RFC-0010 and AOS check wiring,

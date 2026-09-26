@@ -2288,6 +2288,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "blake3",
+ "rusqlite",
  "rustix 1.1.4",
  "tempfile",
  "thiserror 2.0.18",
