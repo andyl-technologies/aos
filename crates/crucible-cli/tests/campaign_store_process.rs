@@ -28,7 +28,7 @@ use crucible_campaign::{
 };
 use crucible_cas::content_store::{
     BlobHandle, CompressedDirectoryBlobBackend, ContentId, DirectoryBlobBackend,
-    ImmutableBlobBackend, ObjectKind, StoreGraph, StoreGraphKeyring,
+    ImmutableBlobBackend, ObjectKind, PackedBlobBackend, StoreGraph, StoreGraphKeyring,
     StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders,
     StoreGraphS3Clients, StoreNodeId, StoreNodeSpec, StoreObjectProfilePolicyId,
     WriteBackRetentionAdmin,
