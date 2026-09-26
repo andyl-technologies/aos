@@ -628,7 +628,8 @@ impl CampaignRepository {
             "observation-accounting-index-reused",
         )?;
 
-        let prior_candidate_view = super::projection::CandidateViewRoots::from_roots(roots);
+        let prior_candidate_view = super::projection::CandidateViewRoots::from_roots(roots)
+            .with_request_admissions(self.parent_budget_ledger(parent)?.request_admissions());
 
         let mut remaining_updates = MAX_FEEDBACK_FRONTIER_UPDATES;
         let mut frontier_updates = Vec::new();

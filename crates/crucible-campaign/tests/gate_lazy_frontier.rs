@@ -38,7 +38,7 @@ use crucible_campaign::{
     SelectionOrigin, StopCondition, StopOutcome, SubmitCampaignBranchRequest,
     SupervisedPlannerExecution, WorkerSlotId,
 };
-use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
+use crucible_cas::content_store::{BlobStoreAdmin, MemoryBlobBackend, MemoryRefBackend};
 
 struct CountingAllocator;
 

@@ -94,7 +94,7 @@ struct MixtureComponentState {
     weight: u64,
 }
 
-struct ContinuationProgress {
+pub(in crate::repository) struct ContinuationProgress {
     profile: CandidateSourceProfile,
     proposed: u64,
     pending: bool,
@@ -162,24 +162,24 @@ pub(super) struct CandidateViewRoots {
     observations: ContentId,
     corpus: ContentId,
     accounting: ContentId,
+    progress_basis: ContinuationProgressBasis,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum ContinuationProgressBasis {
+    Unavailable,
+    Indexed(ContentId),
+    UnpublishedAccounting,
 }
 
 impl CandidateViewRoots {
-    pub(super) const fn from_planning_view(view: &CampaignPlanningView) -> Self {
-        Self {
-            exploration: view.exploration(),
-            observations: view.observations(),
-            corpus: view.corpus(),
-            accounting: view.accounting(),
-        }
-    }
-
     pub(super) const fn from_roots(roots: crate::CampaignRoots) -> Self {
         Self {
             exploration: roots.exploration,
             observations: roots.observations,
             corpus: roots.corpus,
             accounting: roots.accounting,
+            progress_basis: ContinuationProgressBasis::Unavailable,
         }
     }
 
@@ -194,7 +194,18 @@ impl CandidateViewRoots {
             observations,
             corpus,
             accounting,
+            progress_basis: ContinuationProgressBasis::Unavailable,
         }
+    }
+
+    pub(super) const fn with_request_admissions(mut self, root: ContentId) -> Self {
+        self.progress_basis = ContinuationProgressBasis::Indexed(root);
+        self
+    }
+
+    pub(super) const fn with_unpublished_accounting(mut self) -> Self {
+        self.progress_basis = ContinuationProgressBasis::UnpublishedAccounting;
+        self
     }
 }
 
@@ -1900,7 +1911,8 @@ impl CampaignRepository {
         feedback_projection: Option<&crate::BranchPuctProjection>,
     ) -> Result<(ContinuationProjection, Option<Proposal>), CampaignRepositoryError> {
         let observations = snapshot.snapshot.roots().observations;
-        let candidate_view = CandidateViewRoots::from_roots(snapshot.snapshot.roots());
+        let candidate_view = CandidateViewRoots::from_roots(snapshot.snapshot.roots())
+            .with_request_admissions(self.parent_budget_ledger(snapshot)?.request_admissions());
         let projection = self.planner_continuation_projection(snapshot, position)?;
         let request = match cache.requests.get(&position.source()) {
             Some(request) => Arc::clone(request),

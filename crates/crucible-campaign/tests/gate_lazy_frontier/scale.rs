@@ -3,6 +3,162 @@
 use super::*;
 
 #[test]
+fn proposal_head_tracks_pending_and_out_of_order_admission() -> Result<(), Box<dyn Error>> {
+    let fixture = GateFixture::new(
+        "proposal-head-pending",
+        CampaignMode::Strict,
+        tree_search_explorer()?,
+        &BTreeMap::new(),
+    )?;
+    let campaign = "proposal-head-pending";
+    let head = fixture.create_funded_running(campaign, &BTreeMap::new(), 3)?;
+    let (domain, alternatives) = discrete_domain(campaign, 3)?;
+    let request = request_for_source(
+        &fixture,
+        &domain,
+        ChoiceValue::Discrete(alternatives[0]),
+        CandidateSource::finite(
+            alternatives
+                .iter()
+                .copied()
+                .map(ChoiceValue::Discrete)
+                .collect(),
+        )?,
+        BranchRequestCause::Operator(command_id(campaign, "request")),
+        campaign,
+        BranchBudget::new(3, 3)?,
+    )?;
+    let requested = discover_and_submit(&fixture, campaign, head.snapshot_id(), &request)?;
+
+    let first = proposal(
+        &fixture,
+        &fixture.repository,
+        campaign,
+        &request,
+        ChoiceValue::Discrete(alternatives[0]),
+        1,
+    )?;
+    let first_issued =
+        fixture
+            .repository
+            .issue_proposal(campaign, requested.new_snapshot, &first)?;
+    let second = proposal(
+        &fixture,
+        &fixture.repository,
+        campaign,
+        &request,
+        ChoiceValue::Discrete(alternatives[1]),
+        2,
+    )?;
+    let second_issued =
+        fixture
+            .repository
+            .issue_proposal(campaign, first_issued.new_snapshot, &second)?;
+    let request_id = request.id()?;
+
+    let state = fixture.repository.project_finite_expansion(
+        second_issued.new_snapshot,
+        request.branch_point(),
+        None,
+        16,
+    )?;
+    assert_eq!(
+        fixture
+            .repository
+            .load_expansion_state(state)?
+            .continuations()
+            .get(&request_id),
+        Some(&ContinuationState::Open)
+    );
+
+    let (selection, path, attempt) = branch_attempt(&fixture.repository, &request, &second)?;
+    let admitted = fixture.repository.admit_proposal(
+        campaign,
+        second_issued.new_snapshot,
+        second_issued.proposal,
+        &selection,
+        &path,
+        &attempt,
+    )?;
+    let reopened = CampaignRepository::with_component_authorities(
+        fixture.blobs.clone(),
+        fixture.refs.clone(),
+        fixture.planner_authority.clone(),
+        fixture.debugger_authority.clone(),
+    )?;
+    let state = reopened.project_finite_expansion(
+        admitted.new_snapshot,
+        request.branch_point(),
+        None,
+        16,
+    )?;
+    assert_eq!(
+        reopened
+            .load_expansion_state(state)?
+            .continuations()
+            .get(&request_id),
+        Some(&ContinuationState::Open),
+        "the first pending proposal must remain pending after the second admits"
+    );
+
+    let (selection, path, attempt) = branch_attempt(&reopened, &request, &first)?;
+    let fully_admitted = reopened.admit_proposal(
+        campaign,
+        admitted.new_snapshot,
+        first_issued.proposal,
+        &selection,
+        &path,
+        &attempt,
+    )?;
+    let ready = reopened.project_finite_expansion(
+        fully_admitted.new_snapshot,
+        request.branch_point(),
+        None,
+        16,
+    )?;
+    assert_eq!(
+        reopened
+            .load_expansion_state(ready)?
+            .continuations()
+            .get(&request_id),
+        Some(&ContinuationState::Ready)
+    );
+    let cold = CampaignRepository::with_component_authorities(
+        fixture.blobs.clone(),
+        fixture.refs.clone(),
+        fixture.planner_authority.clone(),
+        fixture.debugger_authority.clone(),
+    )?;
+    let cold_ready = cold.project_finite_expansion(
+        fully_admitted.new_snapshot,
+        request.branch_point(),
+        None,
+        16,
+    )?;
+    assert_eq!(
+        cold.load_expansion_state(cold_ready)?
+            .continuations()
+            .get(&request_id),
+        Some(&ContinuationState::Ready)
+    );
+
+    // A fresh repository must authenticate the full history even though the
+    // latest-head projection can use the indexed ordinal and admission count.
+    fixture
+        .blobs
+        .acquire_inventory_fence()?
+        .delete_candidate(first.id()?.content_id())?;
+    let damaged = CampaignRepository::with_component_authorities(
+        fixture.blobs.clone(),
+        fixture.refs.clone(),
+        fixture.planner_authority.clone(),
+        fixture.debugger_authority.clone(),
+    )?;
+    assert!(damaged.head(campaign).is_err());
+    Ok(())
+}
+
+#[test]
 fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
     const ATTEMPTS: usize = 32;
     const SCAN_LIMIT: usize = 7;

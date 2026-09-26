@@ -1065,6 +1065,10 @@ impl CampaignRepository {
             (proposal_key, proposal_content),
             (ordinal_key, proposal_content),
             (value_key, proposal_content),
+            (
+                proposal_head_key(proposal_record.request()),
+                proposal_content,
+            ),
         ]);
         let frontier_index = self
             .merkle
@@ -1072,7 +1076,8 @@ impl CampaignRepository {
             .ok_or_else(|| integrity("current-campaign-frontier-index-is-missing"))?;
         let request = self.read_branch_request(proposal_record.request().content_id())?;
         let prior_state = self.continuation_state(
-            super::projection::CandidateViewRoots::from_roots(prior_roots),
+            super::projection::CandidateViewRoots::from_roots(prior_roots)
+                .with_request_admissions(self.parent_budget_ledger(parent)?.request_admissions()),
             proposal_record.request(),
             &request,
         )?;
@@ -1176,7 +1181,8 @@ impl CampaignRepository {
         let proposal_record = self.read_proposal(proposal.content_id())?;
         let request = self.read_branch_request(proposal_record.request().content_id())?;
         let prior_state = self.continuation_state(
-            super::projection::CandidateViewRoots::from_roots(prior_roots),
+            super::projection::CandidateViewRoots::from_roots(prior_roots)
+                .with_request_admissions(self.parent_budget_ledger(parent)?.request_admissions()),
             proposal_record.request(),
             &request,
         )?;
@@ -1187,12 +1193,15 @@ impl CampaignRepository {
             prior_state,
         )?;
         let next_state = self.continuation_state(
+            // The child ledger is not trusted until budget-successor replay.
+            // Scan this accounting view before accepting its frontier delta.
             super::projection::CandidateViewRoots::new(
                 prior_roots.exploration,
                 next_roots.observations,
                 next_roots.corpus,
                 next_roots.accounting,
-            ),
+            )
+            .with_unpublished_accounting(),
             proposal_record.request(),
             &request,
         )?;
