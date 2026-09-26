@@ -127,15 +127,18 @@ def placeholders(work: pathlib.Path, outputs: dict[str, str]) -> dict[str, str]:
     values = {
         "@work@": str(work),
         "@profile@": os.environ["AOS_QUALIFICATION_PACKAGE_PROFILE"],
-        "@bash@": os.environ["AOS_QUALIFICATION_BASH"],
-        "@cc@": os.environ["AOS_QUALIFICATION_CC"],
-        "@cxx@": os.environ["AOS_QUALIFICATION_CXX"],
-        "@perl@": os.environ["AOS_QUALIFICATION_PERL"],
         "@python@": os.environ["AOS_QUALIFICATION_PYTHON"],
     }
-    rustc = os.environ.get("AOS_QUALIFICATION_RUSTC")
-    if rustc:
-        values["@rustc@"] = rustc
+    for marker, variable in (
+        ("@bash@", "AOS_QUALIFICATION_BASH"),
+        ("@cc@", "AOS_QUALIFICATION_CC"),
+        ("@cxx@", "AOS_QUALIFICATION_CXX"),
+        ("@perl@", "AOS_QUALIFICATION_PERL"),
+        ("@rustc@", "AOS_QUALIFICATION_RUSTC"),
+    ):
+        executable = os.environ.get(variable)
+        if executable:
+            values[marker] = executable
     for name, path in outputs.items():
         values[f"@output:{name}@"] = path
         store_hash = pathlib.Path(path).name.split("-", 1)[0]
