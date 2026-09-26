@@ -67,6 +67,8 @@
           ExecStart = runFixture clientTest;
           User = "root";
           Group = "root";
+          StateDirectory = "aos/sandbox-storage";
+          StateDirectoryMode = "0700";
           Slice = "aos-control.slice";
           StandardOutput = "append:/run/aos-held-client-output";
           StandardError = "append:/run/aos-held-client-output";

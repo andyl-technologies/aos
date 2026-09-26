@@ -341,6 +341,7 @@ pub struct StorageBrokerRuntime {
     workspaces: Option<ValidatedPendingStorageWorkspaceCatalogV1>,
     configuration_binding: ObjectDigest,
     broker_instance_id: [u8; 16],
+    held_reader_state_directory: Option<PathBuf>,
     pin_contract: ZfsHelperContract,
     pin_io: Box<dyn WorkspacePinRuntimeIo + Send>,
     helper: StorageMutationHelper<Box<dyn ZfsProcessBackend + Send>>,
@@ -411,6 +412,9 @@ impl StorageBrokerRuntime {
         // second physical hold observation and the final protected journal cut.
         let mut reader = crate::process::SystemdHeldSnapshotReaderV1::new(
             crate::process::open_cgroup_root().map_err(|_| StorageRuntimeError::Recovery)?,
+            self.held_reader_state_directory
+                .as_deref()
+                .ok_or(StorageRuntimeError::Recovery)?,
         )
         .map_err(|_| StorageRuntimeError::Recovery)?;
         let measured_tree = match reader.measure(
@@ -1018,6 +1022,7 @@ impl StorageBrokerRuntime {
             workspaces: Some(workspaces),
             configuration_binding,
             broker_instance_id,
+            held_reader_state_directory: Some(state_directory.to_path_buf()),
             pin_contract: contract.clone(),
             pin_io: Box::new(pin_io),
             helper: StorageMutationHelper::new(
@@ -1072,6 +1077,7 @@ impl StorageBrokerRuntime {
             workspaces: Some(workspaces),
             configuration_binding,
             broker_instance_id: random_challenge()?,
+            held_reader_state_directory: None,
             pin_contract,
             pin_io: Box::new(pin_io),
             helper: helper.into_boxed(),
@@ -1116,6 +1122,7 @@ impl StorageBrokerRuntime {
             workspaces: Some(workspaces),
             configuration_binding,
             broker_instance_id: random_challenge()?,
+            held_reader_state_directory: None,
             pin_contract,
             pin_io,
             helper,

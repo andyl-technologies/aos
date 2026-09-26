@@ -25,11 +25,14 @@ use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::cgroup::{CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketSocket};
-use rustix::fs::{Mode, OFlags, StatVfsMountFlags};
+use rustix::fs::{
+    AtFlags, FileType, Mode, OFlags, StatVfsMountFlags, fstat, fsync, openat, unlinkat,
+};
 use sha2::{Digest as _, Sha256};
 
 use crate::ResolvedSnapshot;
 use crate::held_snapshot_tree::measure_bound_detached_snapshot;
+use crate::live_export_key::open_protected_directory;
 
 use super::{
     Deadline, ZfsWorkerError, current_cgroup_path, decode_ack, decode_ready_frame, encode_ack,
@@ -55,6 +58,7 @@ const RESULT_BYTES: usize = 158;
 const MAXIMUM_REQUEST_BYTES: usize = 1024;
 const MAXIMUM_READY_BYTES: usize = 512;
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(45);
+const LAUNCH_FENCE_NAME: &str = "held-snapshot-reader.launch";
 
 /// Retains a measured byte identity and mount identity, without authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,18 +75,142 @@ pub(crate) struct HeldSnapshotReaderObservationV1 {
     pub(crate) mounted_snapshot_guid: u64,
 }
 
+/// A single durable marker covers activation before systemd creates a cgroup.
+struct HeldReaderLaunchFence {
+    directory: OwnedFd,
+    device: u64,
+    inode: u64,
+    owner_uid: u32,
+}
+
+/// Pins the claimed inode until quiescence allows exact-name retirement.
+struct ClaimedReaderLaunch<'a> {
+    fence: &'a HeldReaderLaunchFence,
+    marker: OwnedFd,
+    device: u64,
+    inode: u64,
+}
+
+impl HeldReaderLaunchFence {
+    fn open(path: &Path) -> Result<Self, ZfsWorkerError> {
+        let anchor = open_protected_directory(path, 0).map_err(|_| ZfsWorkerError::Authority)?;
+        let anchored = fstat(&anchor)?;
+        let directory = openat(
+            &anchor,
+            ".",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let readable = fstat(&directory)?;
+        if (anchored.st_dev, anchored.st_ino) != (readable.st_dev, readable.st_ino) {
+            return Err(ZfsWorkerError::Authority);
+        }
+        Ok(Self {
+            directory,
+            device: readable.st_dev,
+            inode: readable.st_ino,
+            owner_uid: 0,
+        })
+    }
+
+    fn claim(&self) -> Result<ClaimedReaderLaunch<'_>, ZfsWorkerError> {
+        self.claim_with_sync(|descriptor| fsync(descriptor))
+    }
+
+    fn claim_with_sync<F>(&self, mut sync: F) -> Result<ClaimedReaderLaunch<'_>, ZfsWorkerError>
+    where
+        F: FnMut(&OwnedFd) -> Result<(), rustix::io::Errno>,
+    {
+        self.validate_directory()?;
+        let marker = openat(
+            &self.directory,
+            LAUNCH_FENCE_NAME,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(|error| {
+            if error == rustix::io::Errno::EXIST {
+                ZfsWorkerError::Quiescence("an earlier reader launch is unresolved".to_owned())
+            } else {
+                error.into()
+            }
+        })?;
+        let identity = fstat(&marker)?;
+        if FileType::from_raw_mode(identity.st_mode) != FileType::RegularFile
+            || identity.st_uid != self.owner_uid
+            || identity.st_nlink != 1
+            || identity.st_mode & 0o7777 != 0o600
+        {
+            return Err(ZfsWorkerError::Authority);
+        }
+        sync(&marker)?;
+        sync(&self.directory)?;
+        self.validate_directory()?;
+        Ok(ClaimedReaderLaunch {
+            fence: self,
+            marker,
+            device: identity.st_dev,
+            inode: identity.st_ino,
+        })
+    }
+
+    fn validate_directory(&self) -> Result<(), ZfsWorkerError> {
+        let identity = fstat(&self.directory)?;
+        if (identity.st_dev, identity.st_ino) != (self.device, self.inode)
+            || identity.st_uid != self.owner_uid
+            || identity.st_mode & 0o7777 != 0o700
+        {
+            return Err(ZfsWorkerError::Authority);
+        }
+        Ok(())
+    }
+}
+
+impl ClaimedReaderLaunch<'_> {
+    fn retire(self) -> Result<(), ZfsWorkerError> {
+        self.fence.validate_directory()?;
+        let held = fstat(&self.marker)?;
+        if (held.st_dev, held.st_ino) != (self.device, self.inode) {
+            return Err(ZfsWorkerError::Authority);
+        }
+        let marker = openat(
+            &self.fence.directory,
+            LAUNCH_FENCE_NAME,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let identity = fstat(&marker)?;
+        if (identity.st_dev, identity.st_ino) != (self.device, self.inode)
+            || FileType::from_raw_mode(identity.st_mode) != FileType::RegularFile
+            || identity.st_uid != self.fence.owner_uid
+            || identity.st_nlink != 1
+            || identity.st_mode & 0o7777 != 0o600
+        {
+            return Err(ZfsWorkerError::Authority);
+        }
+        unlinkat(&self.fence.directory, LAUNCH_FENCE_NAME, AtFlags::empty())?;
+        fsync(&self.fence.directory)?;
+        Ok(())
+    }
+}
+
 /// Authenticates the fixed one-shot reader and proves its whole-unit exit.
 pub(crate) struct SystemdHeldSnapshotReaderV1 {
     manager: RetainedCgroupAnchor,
     worker_parent: RetainedCgroupAnchor,
+    launch_fence: HeldReaderLaunchFence,
     fail_stopped: bool,
 }
 
 impl SystemdHeldSnapshotReaderV1 {
-    pub(crate) fn new(cgroup_root: CgroupV2Root) -> Result<Self, ZfsWorkerError> {
+    pub(crate) fn new(
+        cgroup_root: CgroupV2Root,
+        state_directory: &Path,
+    ) -> Result<Self, ZfsWorkerError> {
         Ok(Self {
             manager: cgroup_root.resolve(Path::new("init.scope"))?,
             worker_parent: cgroup_root.resolve(Path::new("aos.slice/aos-control.slice"))?,
+            launch_fence: HeldReaderLaunchFence::open(state_directory)?,
             fail_stopped: false,
         })
     }
@@ -105,6 +233,13 @@ impl SystemdHeldSnapshotReaderV1 {
         let request = encode_request(snapshot, expected_pool_guid, protected_cut_digest, nonce)?;
         let request_digest = digest_request(&request);
         let deadline = Deadline::after(EXCHANGE_TIMEOUT);
+        // The directory entry is durable before connect can queue an activation.
+        // A restarted Storage cannot infer absence from an unmaterialized cgroup;
+        // an unresolved entry permanently closes dispatch until explicit repair.
+        let launch = self
+            .launch_fence
+            .claim()
+            .or_else(|error| fail_stop_unproved_setup(&mut self.fail_stopped, error, None))?;
         // Peer pinning inside connect can fail after the kernel has accepted
         // the connection and systemd has begun starting a reader.
         let mut socket = SeqpacketSocket::connect(Path::new(SOCKET_PATH))
@@ -152,10 +287,17 @@ impl SystemdHeldSnapshotReaderV1 {
                 if wait_for_worker_quiescence(&reader_subject, &population, Duration::from_secs(1))
                     .is_ok()
                 {
+                    launch.retire().or_else(|error| {
+                        fail_stop_unproved_setup(&mut self.fail_stopped, error, None)
+                    })?;
                     return Ok(measured);
                 }
                 if quiesce_worker(&reader_subject, &reader_cgroup, &population).is_err() {
                     self.fail_stopped = true;
+                } else {
+                    launch.retire().or_else(|error| {
+                        fail_stop_unproved_setup(&mut self.fail_stopped, error, None)
+                    })?;
                 }
                 Err(ZfsWorkerError::Quiescence(
                     "held snapshot reader did not exit cleanly".to_owned(),
@@ -168,16 +310,17 @@ impl SystemdHeldSnapshotReaderV1 {
                         "held snapshot reader cancellation was not proved".to_owned(),
                     ));
                 }
+                launch.retire().or_else(|error| {
+                    fail_stop_unproved_setup(&mut self.fail_stopped, error, None)
+                })?;
                 Err(error)
             }
         }
     }
 
     fn prove_prior_readers_empty(&self) -> Result<(), ZfsWorkerError> {
-        // This checks materialized prior units. An accepted activation may
-        // not have a cgroup yet, including during a Storage restart. Positive
-        // production admission must stay closed until a durable launch fence
-        // or supervisor ordering covers that interval.
+        // This catches populated readers not represented by the launch fence.
+        // The durable fence below covers accepted but unmaterialized activations.
         let directory = format!("/proc/self/fd/{}", self.worker_parent.as_fd().as_raw_fd());
         let mut reader_count = 0;
         for entry in fs::read_dir(directory)? {
@@ -529,8 +672,122 @@ fn decode_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
 
     use crate::{ManagedDatasetRoot, ResolvedDataset, StorageDomainsV1};
+
+    fn private_test_state() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        directory
+    }
+
+    fn test_launch_fence(path: &Path) -> HeldReaderLaunchFence {
+        let directory = rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        let identity = fstat(&directory).unwrap();
+        HeldReaderLaunchFence {
+            directory,
+            device: identity.st_dev,
+            inode: identity.st_ino,
+            owner_uid: identity.st_uid,
+        }
+    }
+
+    #[test]
+    fn launch_claim_survives_storage_restart_before_reader_materializes() {
+        let state = private_test_state();
+        let prior = test_launch_fence(state.path());
+        let accepted_but_unmaterialized = prior.claim().unwrap();
+        drop(accepted_but_unmaterialized);
+        assert!(matches!(prior.claim(), Err(ZfsWorkerError::Quiescence(_))));
+        drop(prior);
+
+        let restarted = test_launch_fence(state.path());
+        assert!(matches!(
+            restarted.claim(),
+            Err(ZfsWorkerError::Quiescence(_))
+        ));
+        assert!(state.path().join(LAUNCH_FENCE_NAME).exists());
+    }
+
+    #[test]
+    fn incomplete_launch_claim_remains_closed_after_restart() {
+        let state = private_test_state();
+        // A crash between exclusive create and either fsync can leave this
+        // exact empty marker. Its presence alone must close admission.
+        std::fs::File::create(state.path().join(LAUNCH_FENCE_NAME)).unwrap();
+
+        let current = test_launch_fence(state.path());
+        assert!(matches!(
+            current.claim(),
+            Err(ZfsWorkerError::Quiescence(_))
+        ));
+        drop(current);
+
+        let restarted = test_launch_fence(state.path());
+        assert!(matches!(
+            restarted.claim(),
+            Err(ZfsWorkerError::Quiescence(_))
+        ));
+    }
+
+    #[test]
+    fn failed_launch_sync_leaves_restart_fenced() {
+        for failed_sync in [1, 2] {
+            let state = private_test_state();
+            let prior = test_launch_fence(state.path());
+            let mut syncs = 0;
+            let result = prior.claim_with_sync(|descriptor| {
+                syncs += 1;
+                if syncs == failed_sync {
+                    Err(rustix::io::Errno::IO)
+                } else {
+                    fsync(descriptor)
+                }
+            });
+            assert!(result.is_err());
+            assert!(matches!(prior.claim(), Err(ZfsWorkerError::Quiescence(_))));
+            drop(prior);
+
+            let restarted = test_launch_fence(state.path());
+            assert!(matches!(
+                restarted.claim(),
+                Err(ZfsWorkerError::Quiescence(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn launch_claim_retires_only_its_own_marker() {
+        let state = private_test_state();
+        let fence = test_launch_fence(state.path());
+        let claim = fence.claim().unwrap();
+        let marker = state.path().join(LAUNCH_FENCE_NAME);
+        let replacement = state.path().join("replacement");
+        std::fs::File::create(&replacement).unwrap();
+        std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::rename(replacement, &marker).unwrap();
+
+        assert!(matches!(claim.retire(), Err(ZfsWorkerError::Authority)));
+        assert!(marker.exists());
+        assert!(matches!(fence.claim(), Err(ZfsWorkerError::Quiescence(_))));
+    }
+
+    #[test]
+    fn proved_reader_exit_releases_launch_claim_for_next_attempt() {
+        let state = private_test_state();
+        let fence = test_launch_fence(state.path());
+        let claim = fence.claim().unwrap();
+        claim.retire().unwrap();
+
+        let next = test_launch_fence(state.path());
+        assert!(next.claim().is_ok());
+    }
 
     #[test]
     fn rejects_ambiguous_snapshot_names() {
@@ -767,7 +1024,11 @@ mod tests {
 
         // This fixture supplies a nonzero request binding, not a protected
         // Storage journal cut or any SourceRoot authority.
-        let mut reader = SystemdHeldSnapshotReaderV1::new(open_cgroup_root().unwrap()).unwrap();
+        let mut reader = SystemdHeldSnapshotReaderV1::new(
+            open_cgroup_root().unwrap(),
+            Path::new("/var/lib/aos/sandbox-storage"),
+        )
+        .unwrap();
         let observation = reader.measure(
             &snapshot,
             expected_pool_guid,

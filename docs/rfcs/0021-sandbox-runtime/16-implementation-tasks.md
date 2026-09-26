@@ -8656,8 +8656,19 @@ It applies read-only, nodev, nosuid, and noexec attributes before reading, and
 returns only a request-bound digest and mount identity. Storage's dormant held
 readback keeps its sole journal cut while it observes the GUID and hold and
 measures the bytes. A successful path observes the GUID and hold again after
-reader quiescence and rechecks the protected catalog and policy heads. The
-reader has no receipt key or descriptor-transfer path. A scoped OpenZFS 2.4.4
+reader quiescence and rechecks the protected catalog and policy heads.
+
+Storage writes and fsyncs a single exclusive launch marker in its root-owned,
+mode-0700 StateDirectory before connecting to the reader socket. A restart
+that finds the marker refuses another reader launch even if systemd has not
+yet created the first reader's cgroup. Storage removes and fsyncs the marker
+only after an authenticated reader and its whole unit are proved quiescent.
+An ambiguous connect, crash, or failed durability operation leaves reader
+admission closed; offline recovery needs independent proof that no accepted
+activation can still run. This trades availability after an uncertain launch
+for the absence of overlapping reader attempts.
+
+The reader has no receipt key or descriptor-transfer path. A scoped OpenZFS 2.4.4
 patch for the pinned Linux 7.2 kernel now binds the mounted superblock's UUID
 to the immutable pool and snapshot GUIDs. The reader checks `FS_IOC_GETFSUUID` on a
 readable descriptor of the detached root before and after the complete byte
