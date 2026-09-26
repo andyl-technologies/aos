@@ -193,9 +193,9 @@ bitcode files while accache runs rustc and preserves them on both invocations.
 Another oracle case changes a GNU assembler `.include` under a `.S` file:
 pinned sccache incorrectly replays the old object, while accache reports the
 changed include in its miss explanation and returns the new compiler output.
-The Clang profile case generates two real instrumentation profiles and requires
-a miss naming the changed `.profdata` file, followed by a warm hit for each
-profile.
+Clang and Rust profile cases generate two real instrumentation profiles each
+and require a miss naming the changed `.profdata` file, followed by a warm hit
+for each profile.
 
 The suite asserts several pinned sccache output omissions: implicit `.d` files
 on warm `-MMD` hits without `-MF`, GCC `-aux-info` files, Clang serialized
