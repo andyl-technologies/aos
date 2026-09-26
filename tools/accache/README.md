@@ -117,6 +117,10 @@ nonincremental rlib/staticlib, metadata, dep-info, unpacked split debug
 `.dwo` files, and `-Csave-temps=yes` bitcode, object, and saved metadata files.
 Rust extern/native dependencies and proc macro consumers are covered by the
 input contract above.
+GNU assembler `--MD` output forwarded through `-Wa` or `-Xassembler` is
+tracked for GCC and Clang with an external assembler. Clang's generated
+assembly path can make that depfile nondeterministic; a warm hit restores the
+exact cold artifact.
 
 Incremental Rust, executable/proc-macro compilation, ordinary linking, and
 upstream parser exclusions bypass. Frontend parsing compatibility is not a
@@ -124,6 +128,10 @@ claim of support for every compiler/version/platform, nor for arbitrary new
 side-effect flags. This package targets the AOS Linux compiler toolchains.
 Rust `--emit` forms that name individual output paths bypass as in the pinned
 sccache frontend; the compiler still writes those requested files normally.
+Clang's driver-level `-dependency-file` option also bypasses: the driver ignores
+it while pinned sccache expects a file at that path and fails during publication.
+Clang `-Wp` requests that mix a dependency output with other forwarded CPP
+options bypass because the driver does not consistently use the forwarded path.
 Rust `-Csave-temps=yes` stores files inside randomly named `rmeta*` and `rustc*`
 directories as well as top-level bitcode and object files. All wrapped Rust
 compilers using one accache state directory take a shared lock for their output
