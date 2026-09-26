@@ -73,6 +73,8 @@ pub(super) async fn send_download_chunk(
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test failures identify the exact runtime or reader step.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
