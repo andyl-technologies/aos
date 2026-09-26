@@ -457,7 +457,7 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
             "crucible-harness",
             "campaign_release_acceptance",
         )],
-        "checks.crucible.phase9.gates.campaignReleaseAcceptanceContract",
+        "checks.crucible.phase9.gates.campaignReleaseAcceptance",
     ),
     automated(
         "gate:campaign-statistics",

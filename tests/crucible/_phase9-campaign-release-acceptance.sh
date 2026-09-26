@@ -130,6 +130,46 @@ verify_e2e_evidence() {
     printf '%s\t%s\n' "$(digest_file "$result")" "$(digest_file "$manifest")"
 }
 
+verify_e2e_binding() {
+    fleet_gate=$1
+    crucible_package=$2
+    release_env=$3
+    scenario=$4
+    qemu_binary=$5
+    plugin=$6
+    kernel=$7
+    root_image=$8
+    manifest="$fleet_gate/evidence/manifest.env"
+
+    for source in "$scenario" "$qemu_binary" "$plugin" "$kernel" "$root_image"; do
+        require_file "$source"
+    done
+    require_file "$release_env"
+
+    test "$(field crucible_package_identity "$manifest")" = "${crucible_package##*/}" \
+        || fail "e2e evidence names another Crucible package"
+    test "$(field qemu_path "$release_env")" = "$qemu_binary" \
+        || fail "release manifest names another QEMU binary"
+    test "$(field plugin_path "$release_env")" = "$plugin" \
+        || fail "release manifest names another plugin"
+
+    qemu_identity="${qemu_binary%/bin/*}/share/aos/crucible/qemu-build-identity.env"
+    require_file "$qemu_identity"
+    for binding in \
+        "scenario_sha256:$scenario" \
+        "qemu_binary_sha256:$qemu_binary" \
+        "qemu_identity_sha256:$qemu_identity" \
+        "plugin_sha256:$plugin" \
+        "kernel_sha256:$kernel" \
+        "root_image_sha256:$root_image"
+    do
+        key=${binding%%:*}
+        source=${binding#*:}
+        test "$(field "$key" "$manifest")" = "$(digest_file "$source")" \
+            || fail "e2e evidence $key differs from its built input"
+    done
+}
+
 verify_required_gates() {
     required_gates=$1
     expected_gates=$2
@@ -200,7 +240,13 @@ if test "$#" -eq 2 && test "$1" = --probe-e2e-evidence; then
     exit 0
 fi
 
-test "$#" -eq 10 || fail "expected ten release-acceptance inputs"
+if test "$#" -eq 9 && test "$1" = --probe-e2e-binding; then
+    verify_e2e_evidence "$2" >/dev/null
+    verify_e2e_binding "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+    exit 0
+fi
+
+test "$#" -eq 15 || fail "expected fifteen release-acceptance inputs"
 
 e2e_determinism=$1
 gate_matrix=$2
@@ -211,16 +257,26 @@ required_gates=$6
 crucible_package=$7
 release_manifest=$8
 release_acceptance_contract=$9
-output=${10}
+e2e_scenario=${10}
+e2e_qemu_binary=${11}
+e2e_plugin=${12}
+e2e_kernel=${13}
+e2e_root_image=${14}
+output=${15}
 
 verify_release_manifest "$crucible_package" "$release_manifest"
 require_file "$release_acceptance_contract/result"
 test "$(sed -n '1p' "$release_acceptance_contract/result")" = CONTRACT_VALIDATED \
     || fail "release acceptance contract validator did not succeed"
 test "$(field gate "$release_acceptance_contract/result")" \
-    = gate:campaign-release-acceptance \
+    = gate:campaign-release-acceptance-contract \
     || fail "release acceptance contract validator names another gate"
 e2e_digests=$(verify_e2e_evidence "$e2e_determinism")
+verify_e2e_binding \
+    "$e2e_determinism" "$crucible_package" \
+    "$crucible_package/share/aos/crucible/release-manifest.env" \
+    "$e2e_scenario" "$e2e_qemu_binary" "$e2e_plugin" \
+    "$e2e_kernel" "$e2e_root_image"
 e2e_sha256=$(printf '%s\n' "$e2e_digests" | cut -f1)
 e2e_manifest_sha256=$(printf '%s\n' "$e2e_digests" | cut -f2)
 matrix_sha256=$(require_gate_result "$gate_matrix" gate:campaign-gate-matrix)

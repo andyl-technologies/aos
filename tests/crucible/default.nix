@@ -1192,8 +1192,11 @@ in rec {
         "checks.crucible.phase9.gates.campaignGateMatrix" = phase9.gates.campaignGateMatrix;
         "checks.crucible.phase9.gates.campaignOperationalContinuity" = phase9.gates.campaignOperationalContinuity;
         "checks.crucible.phase9.gates.campaignEnvoyNetworkVm" = phase9.gates.campaignEnvoyNetworkVm;
-        "checks.crucible.phase9.gates.campaignReleaseAcceptanceContract" = phase9.gates.campaignReleaseAcceptanceContract;
       };
+      # The release aggregate depends on this traceability gate through the
+      # required-claims aggregate. Check its declaration without forcing the
+      # derivation here, which would create an evaluation cycle.
+      deferredTargetNames = ["checks.crucible.phase9.gates.campaignReleaseAcceptance"];
     };
     gates = rec {
       replayOracle = greenBeforeAdvance {
@@ -3319,6 +3322,15 @@ in rec {
         cruciblePackage = pkgs.crucible;
         releaseManifest = phase7.crucibleReleaseManifest;
         releaseAcceptanceContract = campaignReleaseAcceptanceContract;
+        e2eScenario = "${pkgs.writeTextFile {
+          name = "crucible-e2e-determinism-scenario";
+          text = builtins.readFile ./fixtures/e2e-determinism.scenario.toml;
+          destination = "/share/crucible/e2e-determinism.scenario.toml";
+        }}/share/crucible/e2e-determinism.scenario.toml";
+        e2eQemuBinary = "${pkgs.qemu-crucible}/bin/qemu-system-x86_64";
+        e2ePlugin = "${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so";
+        e2eKernel = "${pkgs.linux-crucible}/boot/vmlinuz-${pkgs.linux-crucible.version}";
+        e2eRootImage = "${import ./_nginx-curl-http-200-guest.nix {inherit pkgs;}}/root.ext4";
       };
     };
   };
