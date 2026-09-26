@@ -277,6 +277,9 @@ GCC `-time[=file]` and GCC/Clang `-ftime-report` bypass caching because their
 timing output is invocation specific; Clang's `-ftime-report=per-pass` and
 `-ftime-report=per-pass-run` forms also bypass. The `-time=file` form appends
 to an existing file.
+Clang time traces, optimization-record files, and `-save-stats` outputs also
+bypass under the pinned frontend. The oracle checks their side files after
+direct, sccache, and accache invocations, including repeated calls.
 GCC `-fdump-analyzer-stderr` also bypasses because its trace contains process
 addresses that change between compiler invocations.
 

@@ -1120,6 +1120,54 @@ def check_c_timing_passthrough(root, env, accache, sccache, gcc, clang, hits):
     return results
 
 
+def check_clang_auxiliary_file_passthrough(root, env, accache, sccache, clang, hits):
+    """Preserve compiler side files excluded by the pinned Clang frontend."""
+    results = []
+    for fixture, flag, side_name in [
+        ("clang-time-trace-default", "-ftime-trace", "source.json"),
+        ("clang-time-trace-named", "-ftime-trace=trace.json", "trace.json"),
+        ("clang-optimization-record-file", "-foptimization-record-file=remarks.yaml",
+         "remarks.yaml"),
+        ("clang-save-stats", "-save-stats", "source.stats"),
+        ("clang-save-stats-obj", "-save-stats=obj", "source.stats"),
+        ("clang-long-save-stats", "--save-stats", "source.stats"),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "source.c").write_text("int answer(void) { return 42; }\n")
+        args = [clang, "-c", "source.c", "-o", "source.o", flag]
+        object_file = work / "source.o"
+        side_file = work / side_name
+
+        def compile_object(wrapper):
+            object_file.unlink(missing_ok=True)
+            side_file.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            assert side_file.is_file() and side_file.stat().st_size > 0, (
+                fixture, wrapper, "missing compiler side file")
+            return completed.stdout, completed.stderr, object_file.read_bytes()
+
+        direct = compile_object([])
+        before_hits = hits()
+        assert compile_object([sccache]) == direct, (fixture, "sccache cold")
+        assert compile_object([sccache]) == direct, (fixture, "sccache repeat")
+        assert hits() == before_hits, (fixture, "sccache cached a side file")
+
+        for _ in range(2):
+            assert compile_object([accache]) == direct, (fixture, "accache")
+            event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert event["outcome"] == "bypass", (fixture, event)
+
+        results.append({"fixture": fixture, "revision": 0,
+                        "oracle_hit": False, "accache": "bypass",
+                        "oracle_missing_artifacts": [],
+                        "artifacts": ["source.o", side_name]})
+        print("PASS oracle", fixture, "side-file passthrough", flush=True)
+    return results
+
+
 def check_gcc_analyzer_stderr_passthrough(root, env, accache, sccache, gcc, hits):
     """Keep GCC analyzer traces live because they include process addresses."""
     work = root / "gcc-analyzer-stderr"
@@ -4879,6 +4927,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                                                 sccache, gcc, hits))
         results.extend(check_c_timing_passthrough(root, env, accache,
                                                   sccache, gcc, clang, hits))
+        results.extend(check_clang_auxiliary_file_passthrough(
+            root, env, accache, sccache, clang, hits))
         results.append(check_gcc_analyzer_stderr_passthrough(root, env,
                                                              accache, sccache, gcc, hits))
         results.append(check_saved_temporaries(root, env, accache, sccache, rustc, hits))
