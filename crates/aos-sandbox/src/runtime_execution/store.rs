@@ -43,8 +43,8 @@ use crate::execution_output_reservation::{
 use crate::execution_parent_resource::ExecutionParentResourceSourceV1;
 use crate::journal::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1,
-    GlobalCapacityReservationV1, Journal, JournalError, JournalRecord, JournalTransaction,
-    ProtectedJournalAuthority, ProtectedJournalSnapshot, RecordNamespace,
+    GlobalCapacityReservationV1, HostExecutionFenceV1, Journal, JournalError, JournalRecord,
+    JournalTransaction, ProtectedJournalAuthority, ProtectedJournalSnapshot, RecordNamespace,
 };
 
 use super::argument_observation::{ArgumentObservationRecordV1, KEY_PREFIX as ARGUMENT_KEY_PREFIX};
@@ -65,10 +65,12 @@ mod output_budget;
 mod output_correlation;
 mod settlement_store;
 
+use crate::journal::host_execution_fence::KEY as HOST_FENCE_KEY;
 use output_budget::{OutputBudget, decode_output_claim, reserve_output_bytes};
 use output_correlation::{
     HostOutputCorrelationV1, KEY_PREFIX as HOST_OUTPUT_KEY_PREFIX, host_output_key,
 };
+use settlement_store::host_settlement_cut_from_authority_v1;
 
 const ADMISSION_KEY_PREFIX: u8 = b'a';
 const ADMISSION_IDEMPOTENCY_KEY_PREFIX: u8 = b'i';
@@ -78,7 +80,7 @@ const NO_APPLY_KEY_PREFIX: u8 = b'n';
 const SEQUENCE_KEY_PREFIX: u8 = b's';
 const TERMINAL_KEY_PREFIX: u8 = b't';
 const AGENT_OUTCOME_KEY_PREFIX: u8 = b'u';
-const STORE_MARKER_KEY: &[u8] = b"runtime-execution-owner-v1";
+const STORE_MARKER_KEY: &[u8] = crate::journal::host_execution_fence::RUNTIME_OWNER_MARKER_KEY;
 const ADMISSION_AUTHORITY_KEY: &[u8] = b"runtime-execution-admission-authority-v1";
 const ADMISSION_AUTHORITY_MAGIC: &[u8; 8] = b"AOSRAA01";
 const OUTPUT_FORMAT_KEY: &[u8] = b"runtime-execution-output-v2";
@@ -2122,6 +2124,7 @@ fn agent_outcome_key(operation: &[u8; 16]) -> Vec<u8> {
 
 fn owned_key(key: &[u8]) -> bool {
     key == STORE_MARKER_KEY
+        || key == HOST_FENCE_KEY
         || key == ADMISSION_AUTHORITY_KEY
         || key == OUTPUT_FORMAT_KEY
         || output_record_key(key)
@@ -2191,6 +2194,7 @@ fn validate_runtime_execution_replay(
     let mut effects = BTreeMap::new();
     let mut no_apply = BTreeMap::new();
     let mut no_apply_settlement = BTreeMap::<[u8; 16], [Option<HostSettlementRecordV1>; 3]>::new();
+    let mut host_fence = None;
     let mut routes = BTreeMap::new();
     let mut agent_outcomes = BTreeMap::new();
     let mut sequence_heads = BTreeMap::new();
@@ -2209,6 +2213,15 @@ fn validate_runtime_execution_replay(
                 return Err(JournalRuntimeExecutionError::ForeignStore);
             }
             marker_seen = true;
+            continue;
+        }
+        if key == HOST_FENCE_KEY {
+            if host_fence
+                .replace(HostExecutionFenceV1::decode(value)?)
+                .is_some()
+            {
+                return Err(JournalRuntimeExecutionError::CorruptRecord);
+            }
             continue;
         }
         if key == ADMISSION_AUTHORITY_KEY {
@@ -2461,7 +2474,7 @@ fn validate_runtime_execution_replay(
             return Err(JournalRuntimeExecutionError::CorruptRecord);
         }
     }
-    for (execution, stages) in no_apply_settlement {
+    for (&execution, stages) in &no_apply_settlement {
         let marker = no_apply
             .get(&execution)
             .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
@@ -2473,6 +2486,28 @@ fn validate_runtime_execution_replay(
             protected_sequence,
         )
         .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+    }
+    if let Some(fence) = host_fence {
+        let stages = no_apply_settlement
+            .get(fence.execution.as_bytes())
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        let preliminary = stages[0].ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        if fence.store_binding != store_binding
+            || stages[1].is_some()
+            || stages[2].is_some()
+            || preliminary.digest() != fence.preliminary_digest
+            || preliminary.commit_sequence > fence.pre_fence_epoch
+            || fence.commit_sequence.checked_add(1) != Some(protected_sequence)
+            || predicted_commit_sequence(fence.pre_fence_epoch, 1)? != fence.commit_sequence
+            || host_settlement_cut_from_authority_v1(
+                authority,
+                store_binding,
+                fence.pre_fence_epoch,
+                true,
+            )? != fence.pre_fence_cut
+        {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
     }
     if admissions.len() != idempotency.len() || admissions.len() != resources.len() {
         return Err(JournalRuntimeExecutionError::CorruptRecord);
@@ -3724,6 +3759,272 @@ mod output_v2_tests {
         ));
         drop(store);
         drop(journal);
+
+        // Clone the preliminary-only history so the existing stage-chain
+        // tests can continue independently of this permanent fence.
+        for name in [
+            "fenced.journal",
+            "forged-fence.journal",
+            "orphan-fence.journal",
+        ] {
+            std::fs::copy(
+                directory.path().join("execution.journal"),
+                directory.path().join(name),
+            )
+            .expect("copy preliminary history");
+            std::fs::set_permissions(
+                directory.path().join(name),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .expect("private copied journal");
+        }
+
+        let (mut fenced_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "fenced.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("protected fence journal");
+        let mut fenced =
+            JournalRuntimeExecutionStoreV1::claim(&mut fenced_journal, binding, peer())
+                .expect("preliminary replay");
+        assert!(matches!(
+            fenced.acquire_host_execution_fence_v1(preliminary, marker_epoch, marker_cut),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        assert!(matches!(
+            fenced.acquire_host_execution_fence_v1(
+                preliminary.with_test_marker_digest(ObjectDigest::from_bytes([99; 32])),
+                preliminary_cut.0,
+                preliminary_cut.1,
+            ),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        let held = fenced
+            .acquire_host_execution_fence_v1(preliminary, preliminary_cut.0, preliminary_cut.1)
+            .expect("acquire Host fence");
+        let competing = JournalTransaction::new(
+            [91; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                b"competing-effect".to_vec(),
+                vec![1],
+            )],
+        )
+        .expect("competing mutation");
+        assert!(matches!(
+            fenced
+                .authority
+                .preflight_transactions(std::slice::from_ref(&competing)),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        assert!(matches!(
+            fenced.authority.commit(&competing),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        for (index, record) in [
+            JournalRecord::delete(RecordNamespace::Effect, HOST_FENCE_KEY.to_vec()),
+            JournalRecord::put(
+                RecordNamespace::Effect,
+                HOST_FENCE_KEY.to_vec(),
+                held.encode().expect("canonical fence").to_vec(),
+            ),
+            JournalRecord::delete(
+                RecordNamespace::Effect,
+                lease_key(preliminary.execution, HostSettlementStageV1::Preliminary),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let transaction = JournalTransaction::new([93 + index as u8; 16], vec![record])
+                .expect("competing replacement or deletion");
+            assert!(matches!(
+                fenced.authority.commit(&transaction),
+                Err(JournalError::ProtectedBoundary)
+            ));
+        }
+        drop(fenced);
+        assert!(matches!(
+            fenced_journal.compact(),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        assert!(matches!(
+            fenced_journal.commit(&competing),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        drop(fenced_journal);
+
+        let (mut cold_fence, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "fenced.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold fenced journal");
+        let mut recovered_fence =
+            JournalRuntimeExecutionStoreV1::claim(&mut cold_fence, binding, peer())
+                .expect("cold fenced owner replay");
+        assert_eq!(
+            recovered_fence
+                .load_host_execution_fence_v1()
+                .expect("fence readback"),
+            Some(held)
+        );
+        assert!(matches!(
+            recovered_fence.authority.commit(&competing),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        drop(recovered_fence);
+        drop(cold_fence);
+
+        let (mut forged_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "forged-fence.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("forged journal");
+        let mut forged =
+            JournalRuntimeExecutionStoreV1::claim(&mut forged_journal, binding, peer())
+                .expect("unfenced replay");
+        for (index, invalid) in [
+            HostExecutionFenceV1 {
+                preliminary_digest: ObjectDigest::from_bytes([87; 32]),
+                ..held
+            },
+            HostExecutionFenceV1 {
+                store_binding: ObjectDigest::from_bytes([86; 32]),
+                ..held
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let bytes = invalid.encode().expect("canonical invalid fence");
+            let transaction = JournalTransaction::new(
+                [98 + index as u8; 16],
+                vec![JournalRecord::put(
+                    RecordNamespace::Effect,
+                    HOST_FENCE_KEY.to_vec(),
+                    bytes.to_vec(),
+                )],
+            )
+            .expect("invalid fence transaction");
+            assert!(matches!(
+                forged
+                    .authority
+                    .acquire_host_execution_fence_v1(invalid, &transaction),
+                Err(JournalError::ProtectedBoundary)
+            ));
+        }
+        let false_fence = HostExecutionFenceV1 {
+            pre_fence_cut: ObjectDigest::from_bytes([88; 32]),
+            ..held
+        };
+        let false_bytes = false_fence.encode().expect("false fence bytes");
+        let false_transaction = JournalTransaction::new(
+            [92; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                HOST_FENCE_KEY.to_vec(),
+                false_bytes.to_vec(),
+            )],
+        )
+        .expect("false fence transaction");
+        assert!(matches!(
+            forged.authority.commit(&false_transaction),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        assert!(matches!(
+            forged
+                .authority
+                .acquire_host_execution_fence_v1(false_fence, &false_transaction),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        forged
+            .authority
+            .inject_host_execution_fence_for_test(&false_transaction)
+            .expect("inject false cut for cold replay");
+        drop(forged);
+        drop(forged_journal);
+        let (mut forged_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "forged-fence.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold false fence journal");
+        assert!(matches!(
+            JournalRuntimeExecutionStoreV1::claim(&mut forged_journal, binding, peer()),
+            Err(JournalRuntimeExecutionError::CorruptRecord)
+        ));
+
+        let (mut orphan_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "orphan-fence.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("orphan journal");
+        let mut orphan =
+            JournalRuntimeExecutionStoreV1::claim(&mut orphan_journal, binding, peer())
+                .expect("preliminary still present");
+        let remove_stage = JournalTransaction::new(
+            [96; 16],
+            vec![JournalRecord::delete(
+                RecordNamespace::Effect,
+                lease_key(preliminary.execution, HostSettlementStageV1::Preliminary),
+            )],
+        )
+        .expect("stage removal");
+        orphan
+            .authority
+            .commit(&remove_stage)
+            .expect("raw stage removal before fence");
+        let (orphan_epoch, orphan_cut) = orphan
+            .protected_host_settlement_cut_v1()
+            .expect("orphan cut");
+        let orphan_fence = HostExecutionFenceV1 {
+            pre_fence_epoch: orphan_epoch,
+            pre_fence_cut: orphan_cut,
+            commit_sequence: predicted_commit_sequence(orphan_epoch, 1).expect("fence sequence"),
+            ..held
+        };
+        let orphan_bytes = orphan_fence.encode().expect("canonical orphan fence");
+        let orphan_transaction = JournalTransaction::new(
+            [97; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                HOST_FENCE_KEY.to_vec(),
+                orphan_bytes.to_vec(),
+            )],
+        )
+        .expect("orphan fence transaction");
+        assert!(matches!(
+            orphan
+                .authority
+                .acquire_host_execution_fence_v1(orphan_fence, &orphan_transaction),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        orphan
+            .authority
+            .inject_host_execution_fence_for_test(&orphan_transaction)
+            .expect("inject orphan stage for cold replay");
+        drop(orphan);
+        drop(orphan_journal);
+        let (mut orphan_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "orphan-fence.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold orphan fence journal");
+        assert!(matches!(
+            JournalRuntimeExecutionStoreV1::claim(&mut orphan_journal, binding, peer()),
+            Err(JournalRuntimeExecutionError::CorruptRecord)
+        ));
 
         let (mut reopened, _) = Journal::open_protected_at_uid(
             directory.path(),

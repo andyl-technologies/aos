@@ -42,6 +42,7 @@ pub(crate) use mount_manager_startup::{
 mod cache_policy_hold;
 mod capacity_reservation;
 mod controller_policy_hold;
+pub(crate) mod host_execution_fence;
 mod source_domain_challenge;
 mod source_domain_policy_hold;
 pub use cache_policy_hold::CachePolicyHoldV1;
@@ -53,6 +54,7 @@ pub use capacity_reservation::{
     PreparedGlobalCapacityReservationV1,
 };
 pub use controller_policy_hold::{ControllerPolicyEffectAckV1, ControllerPolicyHoldV1};
+pub(crate) use host_execution_fence::HostExecutionFenceV1;
 pub use source_domain_challenge::SourceDomainChallengeV1;
 pub(crate) use source_domain_challenge::replay_source_domain_challenge_v1;
 pub use source_domain_policy_hold::SourceDomainPolicyHoldV1;
@@ -1997,13 +1999,13 @@ impl Journal {
     /// # Errors
     ///
     /// Returns [`JournalError`] for invalid records, duplicate keys, exceeded
-    /// bounds, exhausted sequence space, a retained closed policy owner hold,
-    /// or an append/sync failure.
+    /// bounds, exhausted sequence space, a retained closed owner hold or Host
+    /// Effect fence, or an append/sync failure.
     pub fn commit(
         &mut self,
         transaction: &JournalTransaction,
     ) -> Result<CommitResult, JournalError> {
-        self.commit_with_capacity_scope(transaction, None, false, false)
+        self.commit_with_capacity_scope(transaction, None, false, false, false)
     }
 
     fn commit_with_capacity_scope(
@@ -2012,8 +2014,14 @@ impl Journal {
         settling_reservation: Option<[u8; 32]>,
         allow_capacity_records: bool,
         allow_policy_hold_transition: bool,
+        allow_host_fence_acquisition: bool,
     ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
+        host_execution_fence::require_no_mutation(
+            &self.state,
+            transaction,
+            allow_host_fence_acquisition,
+        )?;
         if !allow_policy_hold_transition {
             controller_policy_hold::require_no_mutation(&self.state, transaction)?;
             source_domain_policy_hold::require_no_mutation(&self.state, transaction)?;
@@ -2119,9 +2127,9 @@ impl Journal {
     /// # Errors
     ///
     /// Returns [`JournalError`] if the handle is poisoned, metadata cannot be
-    /// read, a closed policy owner hold is retained, or any transaction in the
-    /// ordered sequence would fail a commit bound or conflict with preceding
-    /// durable or simulated state.
+    /// read, a closed policy owner hold or Host Effect fence is retained, or
+    /// any transaction in the ordered sequence would fail a commit bound or
+    /// conflict with preceding durable or simulated state.
     pub fn preflight_transactions(
         &self,
         transactions: &[JournalTransaction],
@@ -2148,6 +2156,7 @@ impl Journal {
         let mut expected_length = self.file.metadata()?.len();
 
         for transaction in transactions {
+            host_execution_fence::require_no_mutation(&state, transaction, false)?;
             if !allow_policy_hold_transition {
                 controller_policy_hold::require_no_mutation(&state, transaction)?;
                 source_domain_policy_hold::require_no_mutation(&state, transaction)?;
@@ -2222,9 +2231,11 @@ impl Journal {
     ///
     /// Returns [`JournalError`] when the compacted state exceeds transaction
     /// bounds or any temporary-file, sync, rename, directory-sync, reopen, or
-    /// validation operation fails, or while a closed policy owner hold is held.
+    /// validation operation fails, or while a closed policy owner hold or Host
+    /// Effect fence is held.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        host_execution_fence::require_no_compaction(&self.state)?;
         controller_policy_hold::require_no_compaction(&self.state)?;
         source_domain_policy_hold::require_no_compaction(&self.state)?;
         let _cache_policy_guard = cache_policy_hold::mutation_guard(self)?;
@@ -2770,6 +2781,95 @@ impl ProtectedJournalAuthority<'_> {
         self.journal.ensure_protected_authority()?;
         self.validate_transaction_namespace(transaction)?;
         self.journal.commit(transaction)
+    }
+
+    /// Acquires the nonauthorizing Host Effect fence from an exact owner cut.
+    ///
+    /// The caller must rejoin its preliminary stage and pre-fence digest under
+    /// this writer claim. This narrow exception admits only the one fence row;
+    /// no ordinary or policy-hold transaction can mutate a held Effect journal.
+    pub(crate) fn acquire_host_execution_fence_v1(
+        &mut self,
+        fence: HostExecutionFenceV1,
+        transaction: &JournalTransaction,
+    ) -> Result<CommitResult, JournalError> {
+        use crate::runtime_execution::no_apply_settlement::{
+            HostSettlementRecordV1, HostSettlementStageV1, lease_key,
+        };
+
+        let purpose = self.validate_capacity_authority()?;
+        let snapshot_sequence = self.journal.snapshot_sequence();
+        let fence_bytes = fence.encode()?;
+        let exact_transaction = matches!(transaction.records(), [record]
+            if record.namespace() == RecordNamespace::Effect
+                && record.key() == host_execution_fence::KEY
+                && record.value() == Some(fence_bytes.as_slice()));
+        if purpose != GlobalCapacityReservationPurposeV1::RuntimeExecution
+            || !exact_transaction
+            || fence.pre_fence_epoch != snapshot_sequence
+            || fence.commit_sequence
+                != snapshot_sequence
+                    .checked_add(2)
+                    .ok_or(JournalError::SequenceExhausted)?
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+
+        let preliminary_key = lease_key(fence.execution, HostSettlementStageV1::Preliminary);
+        let preliminary = self
+            .journal
+            .get(RecordNamespace::Effect, &preliminary_key)
+            .ok_or(JournalError::ProtectedBoundary)
+            .and_then(|bytes| {
+                HostSettlementRecordV1::decode_canonical(bytes)
+                    .map_err(|_| JournalError::ProtectedBoundary)
+            })?;
+        let measured_cut = host_execution_fence::effect_cut_v1(
+            self.journal.records(RecordNamespace::Effect),
+            fence.store_binding,
+            fence.pre_fence_epoch,
+            false,
+        )?;
+        let owner_matches = self.journal.get(
+            RecordNamespace::Effect,
+            host_execution_fence::RUNTIME_OWNER_MARKER_KEY,
+        ) == Some(fence.store_binding.as_bytes());
+        let later_stages_absent = [
+            HostSettlementStageV1::FloorSealed,
+            HostSettlementStageV1::AckRetained,
+        ]
+        .into_iter()
+        .all(|stage| {
+            self.journal
+                .get(RecordNamespace::Effect, &lease_key(fence.execution, stage))
+                .is_none()
+        });
+        if !owner_matches
+            || preliminary.stage != HostSettlementStageV1::Preliminary
+            || preliminary.execution != fence.execution
+            || preliminary.digest() != fence.preliminary_digest
+            || preliminary.commit_sequence > fence.pre_fence_epoch
+            || !later_stages_absent
+            || measured_cut != fence.pre_fence_cut
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        self.journal
+            .commit_with_capacity_scope(transaction, None, false, false, true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_host_execution_fence_for_test(
+        &mut self,
+        transaction: &JournalTransaction,
+    ) -> Result<CommitResult, JournalError> {
+        if self.validate_capacity_authority()?
+            != GlobalCapacityReservationPurposeV1::RuntimeExecution
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        self.journal
+            .commit_with_capacity_scope(transaction, None, false, false, true)
     }
 
     /// Prepares capacity reservation bound to this protected owner namespace.

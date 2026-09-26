@@ -9,8 +9,7 @@
 //! the cross-owner caller must retain those checks while the owner lock is held.
 
 use super::*;
-
-const HOST_SETTLEMENT_CUT_DOMAIN: &[u8] = b"aos.sandbox.host-settlement-protected-cut.v1\0";
+use crate::journal::host_execution_fence::{KEY as HOST_FENCE_KEY, effect_cut_v1};
 
 impl JournalRuntimeExecutionStoreV1<'_> {
     /// Runs one bounded action while the protected Host writer remains held.
@@ -46,36 +45,102 @@ impl JournalRuntimeExecutionStoreV1<'_> {
     pub(crate) fn protected_host_settlement_cut_v1(
         &self,
     ) -> Result<(u64, ObjectDigest), JournalRuntimeExecutionError> {
-        let snapshot = self.authority.snapshot()?;
-        let mut hash = Sha256::new()
-            .chain_update(HOST_SETTLEMENT_CUT_DOMAIN)
-            .chain_update([RecordNamespace::Effect as u8])
-            .chain_update(self.store_binding.as_bytes())
-            .chain_update(snapshot.sequence().to_be_bytes());
-        let mut count = 0_u64;
-
-        for (key, value) in self.authority.records()? {
-            let key_len = u64::try_from(key.len())
-                .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
-            let value_len = u64::try_from(value.len())
-                .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
-            hash.update(key_len.to_be_bytes());
-            hash.update(key);
-            hash.update(value_len.to_be_bytes());
-            hash.update(value);
-            count = count
-                .checked_add(1)
-                .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
-        }
-        hash.update(count.to_be_bytes());
-        self.authority.validate_snapshot_for_effect(&snapshot)?;
-
-        Ok((
-            snapshot.sequence(),
-            ObjectDigest::from_bytes(hash.finalize().into()),
-        ))
+        let sequence = self.authority.snapshot()?.sequence();
+        let cut = host_settlement_cut_from_authority_v1(
+            &self.authority,
+            self.store_binding,
+            sequence,
+            false,
+        )?;
+        Ok((sequence, cut))
     }
 
+    /// Acquires a permanent, nonauthorizing Effect writer quarantine.
+    ///
+    /// The preliminary record and marker have already been validated by the
+    /// owner. This method rechecks their exact protected bytes and the full
+    /// pre-fence Effect cut before the only permitted fence append.
+    #[allow(dead_code, reason = "cross-owner continuation remains closed")]
+    pub(crate) fn acquire_host_execution_fence_v1(
+        &mut self,
+        preliminary: HostSettlementRecordV1,
+        expected_epoch: u64,
+        expected_cut: ObjectDigest,
+    ) -> Result<HostExecutionFenceV1, JournalRuntimeExecutionError> {
+        if preliminary.stage != HostSettlementStageV1::Preliminary
+            || self.protected_host_settlement_cut_v1()? != (expected_epoch, expected_cut)
+            || self.load_host_settlement_history_v1(preliminary.execution)?
+                != [Some(preliminary), None, None]
+            || self.authority.get(HOST_FENCE_KEY)?.is_some()
+        {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+
+        let fence = HostExecutionFenceV1 {
+            store_binding: self.store_binding,
+            execution: preliminary.execution,
+            preliminary_digest: preliminary.digest(),
+            pre_fence_epoch: expected_epoch,
+            pre_fence_cut: expected_cut,
+            commit_sequence: predicted_commit_sequence(expected_epoch, 1)?,
+        };
+        let bytes = fence.encode()?;
+        let transaction = JournalTransaction::new(
+            transaction_id(
+                b"host-execution-fence",
+                ObjectDigest::from_bytes(Sha256::digest(bytes).into()),
+            ),
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                HOST_FENCE_KEY.to_vec(),
+                bytes.to_vec(),
+            )],
+        )?;
+
+        // An append error is outcome-unknown; never retry under the old cut.
+        let committed = self
+            .authority
+            .acquire_host_execution_fence_v1(fence, &transaction)
+            .map_err(|_| JournalRuntimeExecutionError::SettlementOutcomeUnknown)?;
+        if committed.commit_sequence != fence.commit_sequence
+            || self
+                .authority
+                .get(HOST_FENCE_KEY)
+                .map_err(|_| JournalRuntimeExecutionError::SettlementOutcomeUnknown)?
+                != Some(bytes.as_slice())
+        {
+            return Err(JournalRuntimeExecutionError::SettlementOutcomeUnknown);
+        }
+        Ok(fence)
+    }
+
+    /// Returns a held fence only after checking its canonical protected bytes.
+    #[allow(dead_code, reason = "cross-owner recovery remains closed")]
+    pub(crate) fn load_host_execution_fence_v1(
+        &self,
+    ) -> Result<Option<HostExecutionFenceV1>, JournalRuntimeExecutionError> {
+        self.authority
+            .get(HOST_FENCE_KEY)?
+            .map(|bytes| HostExecutionFenceV1::decode(bytes).map_err(Into::into))
+            .transpose()
+    }
+}
+
+/// Recomputes the same canonical Effect cut, excluding only the fence row when
+/// validating the pre-acquisition coordinate on a cold replay.
+pub(super) fn host_settlement_cut_from_authority_v1(
+    authority: &ProtectedJournalAuthority<'_>,
+    store_binding: ObjectDigest,
+    sequence: u64,
+    exclude_fence: bool,
+) -> Result<ObjectDigest, JournalRuntimeExecutionError> {
+    let snapshot = authority.snapshot()?;
+    let cut = effect_cut_v1(authority.records()?, store_binding, sequence, exclude_fence)?;
+    authority.validate_snapshot_for_effect(&snapshot)?;
+    Ok(cut)
+}
+
+impl JournalRuntimeExecutionStoreV1<'_> {
     /// Predicts the one-record settlement append from the exact measured cut.
     pub(crate) fn next_host_settlement_sequence_v1(
         &self,

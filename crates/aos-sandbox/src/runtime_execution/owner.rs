@@ -103,8 +103,8 @@ use crate::execution_output_reservation::{
 };
 use crate::execution_parent_resource::ExecutionParentResourceSourceV1;
 use crate::journal::{
-    GlobalCapacityReservationPurposeV1, Journal, JournalError, JournalLimits, JournalRecord,
-    JournalTransaction, ProtectedJournalAuthority, RecordNamespace,
+    GlobalCapacityReservationPurposeV1, HostExecutionFenceV1, Journal, JournalError, JournalLimits,
+    JournalRecord, JournalTransaction, ProtectedJournalAuthority, RecordNamespace,
 };
 use crate::sandbox_spec_state;
 
@@ -2816,6 +2816,54 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         }
         self.validate_current()?;
         Ok(Some(preliminary.encode_canonical()))
+    }
+
+    /// Quarantines Host Effect after rejoining one exact preliminary request.
+    ///
+    /// This retains the HostState and Effect writer claims through the append.
+    /// H/T remain Controller assertions until an independently authenticated
+    /// two-owner continuation proves their current archive custody. The fence
+    /// is permanent in this version and grants no Floor seal or Apply.
+    ///
+    /// # Errors
+    ///
+    /// Rejects foreign original-request or handoff identities, stale Host
+    /// currentness or Effect cut, a non-preliminary history, or uncertain
+    /// durability. An outcome-unknown append requires cold exact readback.
+    #[allow(dead_code, reason = "two-owner continuation remains closed")]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn acquire_host_execution_fence_v1(
+        &mut self,
+        source: &ControllerExecutionArgumentAttemptV1,
+        original_session_binding: [u8; 32],
+        original_signed_request_digest: [u8; 32],
+        handoff_digest: ObjectDigest,
+        original_h_head: ObjectDigest,
+        signed_terminal_outcome: ObjectDigest,
+        settlement_session_binding: [u8; 32],
+        challenge: [u8; 16],
+    ) -> Result<HostExecutionFenceV1, DormantRuntimeExecutionOwnerErrorV1> {
+        let bytes = self
+            .match_host_settlement_preliminary_v1(
+                source,
+                original_session_binding,
+                original_signed_request_digest,
+                handoff_digest,
+                original_h_head,
+                signed_terminal_outcome,
+                settlement_session_binding,
+                challenge,
+            )?
+            .ok_or(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness)?;
+        let preliminary = HostSettlementRecordV1::decode_canonical(&bytes)
+            .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        let cut = self.protected_host_settlement_cut_v1()?;
+        let fence =
+            self.execution
+                .acquire_host_execution_fence_v1(preliminary, cut.epoch, cut.digest)?;
+        self.validate_current()
+            .map_err(|_| JournalRuntimeExecutionError::SettlementOutcomeUnknown)?;
+        Ok(fence)
     }
 
     /// Rejects an argument execution with a protected terminal no-Apply marker.

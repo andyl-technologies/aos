@@ -489,7 +489,7 @@ impl Journal {
             false,
             true,
         )?;
-        self.commit_with_capacity_scope(&acquire, None, false, true)?;
+        self.commit_with_capacity_scope(&acquire, None, false, true, false)?;
         if current(&self.state)? != Some(hold) {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -547,7 +547,7 @@ impl Journal {
             Some(_) => return Err(JournalError::ProtectedBoundary),
             None => {}
         }
-        self.commit_with_capacity_scope(&ack_transaction(ack)?, None, false, true)?;
+        self.commit_with_capacity_scope(&ack_transaction(ack)?, None, false, true, false)?;
         if current_ack(&self.state)? != Some(ack) {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -572,7 +572,7 @@ impl Journal {
             ..expected
         };
         let transaction = transaction(released)?;
-        self.commit_with_capacity_scope(&transaction, None, false, true)?;
+        self.commit_with_capacity_scope(&transaction, None, false, true, false)?;
         if current(&self.state)? != Some(released) {
             return Err(JournalError::ProtectedBoundary);
         }

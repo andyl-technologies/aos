@@ -248,7 +248,7 @@ impl Journal {
             false,
             true,
         )?;
-        self.commit_with_capacity_scope(&transaction, None, false, true)?;
+        self.commit_with_capacity_scope(&transaction, None, false, true, false)?;
         if replay_source_domain_challenge_v1(self)? != Some(row)
             || self.protected_writer_physical_names_v1()? != names
             || self.source_domain_policy_hold_v1()? != Some(expected_hold)
@@ -430,7 +430,7 @@ mod tests {
         )
         .expect("offline mutation fixture");
         writer
-            .commit_with_capacity_scope(&mutation, None, false, true)
+            .commit_with_capacity_scope(&mutation, None, false, true, false)
             .expect("offline malformed row");
         assert!(replay_source_domain_challenge_v1(&writer).is_err());
         drop(writer);
