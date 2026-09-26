@@ -16,6 +16,17 @@ enum {
   PAGED_MMAP_LEN = 128,
 };
 
+static __attribute__((noinline)) void
+marker_observation_enable(void)
+{
+  __asm__ volatile(
+      ".byte 0x0f, 0x1f, 0x84, 0x00\n\t"
+      ".long 0xc0100504\n\t"
+      :
+      :
+      : "memory");
+}
+
 static unsigned char resident_payload[RESIDENT_LEN] __attribute__((aligned(64)));
 
 static unsigned char
@@ -86,6 +97,9 @@ checked_mmap(size_t len)
 int
 main(void)
 {
+  /* Keep boot outside measured callbacks and return through a TB boundary. */
+  marker_observation_enable();
+
   const long page_size = sysconf(_SC_PAGESIZE);
   if (page_size < 4096) {
     puts("CRUCIBLE_S5_BAD_PAGE_SIZE");
