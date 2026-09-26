@@ -951,22 +951,26 @@
       # TCG guest and container layers; the local runner observes only two.
       "claim-container-${hostPlatform.system}-functional" = "${containerLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-container-lifecycle";
     };
+  # Keep the scenario catalog available to policy checks without forcing the
+  # executor derivation and every VM scenario during pure evaluation.
+  releaseQualificationScenarios =
+    qualificationReportScenarios
+    // qualificationAutomatedScenarios
+    // lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
+      operator-recovery = "${operatorRecoveryScenario}/bin/aos-qualification-operator-recovery";
+      production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";
+    };
+  releaseQualificationCaseScenarios =
+    k3sPackageScenarios
+    // lib.optionalAttrs hostPlatform.isLinux {
+      "package-function/aos-recovery/${hostPlatform.system}" = "${recoveryPackageScenario}/bin/aos-qualification-${hostPlatform.system}-aos-recovery";
+    };
   releaseQualificationExecutor = testing.mkQualificationExecutor {
     name = "aos-qualification-${hostPlatform.system}";
     platform = hostPlatform.system;
     identity = qualificationExecutorIdentity;
-    scenarios =
-      qualificationReportScenarios
-      // qualificationAutomatedScenarios
-      // lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
-        operator-recovery = "${operatorRecoveryScenario}/bin/aos-qualification-operator-recovery";
-        production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";
-      };
-    caseScenarios =
-      k3sPackageScenarios
-      // lib.optionalAttrs hostPlatform.isLinux {
-        "package-function/aos-recovery/${hostPlatform.system}" = "${recoveryPackageScenario}/bin/aos-qualification-${hostPlatform.system}-aos-recovery";
-      };
+    scenarios = releaseQualificationScenarios;
+    caseScenarios = releaseQualificationCaseScenarios;
     workRoot = "/var/lib/aos-release/qualification/${hostPlatform.system}";
     timeoutSeconds = 21600;
   };
@@ -1842,7 +1846,7 @@ in {
     image-assertions = import ./lib/testing/image-assertions.nix {inherit pkgs lib;};
     qualification = import ./tests/qualification {
       inherit pkgs lib build fleet container nativeAdapterMatrix;
-      releaseExecutor = releaseQualificationExecutor;
+      inherit releaseQualificationScenarios releaseQualificationCaseScenarios;
     };
     rust = {
       cargo-artifacts = import ./tests/cargo-artifacts {inherit pkgs;};
