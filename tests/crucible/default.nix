@@ -1193,6 +1193,7 @@ in rec {
         "checks.crucible.phase9.gates.campaignGateMatrix" = phase9.gates.campaignGateMatrix;
         "checks.crucible.phase9.gates.campaignOperationalContinuity" = phase9.gates.campaignOperationalContinuity;
         "checks.crucible.phase9.gates.campaignEnvoyNetworkVm" = phase9.gates.campaignEnvoyNetworkVm;
+        "checks.crucible.phase9.gates.campaignKnownFindingVm" = phase9.gates.campaignKnownFindingVm;
       };
       # The release aggregate depends on this traceability gate through the
       # required-claims aggregate. Check its declaration without forcing the
@@ -3040,6 +3041,9 @@ in rec {
         inherit pkgs lib;
       };
       campaignEnvoyNetworkVm = import ./phase9-campaign-envoy-network-vm.nix {
+        inherit pkgs lib;
+      };
+      campaignKnownFindingVm = import ./phase9-campaign-known-finding-vm.nix {
         inherit pkgs lib;
       };
       campaignOperationalContinuity = import ./phase9-campaign-operational-continuity.nix {
