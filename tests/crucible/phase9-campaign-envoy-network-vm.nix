@@ -35,6 +35,11 @@ in
           test "$(grep -Fxc TEST_RESULT:FAIL "$serial" || true)" -eq 0
           require_serial_line gate=gate:campaign-envoy-network-five-vm
           require_serial_line envoy_five_node_failover_and_recovery_authenticated=true
+          require_serial_line envoy_five_node_hot_fork_authenticated=true
+          require_serial_line envoy_five_node_thin_replay_authenticated=true
+          require_serial_line envoy_five_node_exact_restore_authenticated=true
+          require_serial_line envoy_five_node_retention_authenticated=true
+          require_serial_line envoy_five_node_graceful_completion_authenticated=true
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$serial"
 
           mkdir -p "$out/evidence"
@@ -44,6 +49,11 @@ in
           PASS
           gate=gate:campaign-envoy-network-five-vm
           envoy_five_node_failover_and_recovery_authenticated=true
+          envoy_five_node_hot_fork_authenticated=true
+          envoy_five_node_thin_replay_authenticated=true
+          envoy_five_node_exact_restore_authenticated=true
+          envoy_five_node_retention_authenticated=true
+          envoy_five_node_graceful_completion_authenticated=true
           evidence_retained=true
           RESULT
         '';

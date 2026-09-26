@@ -3305,6 +3305,11 @@ in rec {
             requiredLines = [
               "gate=gate:campaign-envoy-network-five-vm"
               "envoy_five_node_failover_and_recovery_authenticated=true"
+              "envoy_five_node_hot_fork_authenticated=true"
+              "envoy_five_node_thin_replay_authenticated=true"
+              "envoy_five_node_exact_restore_authenticated=true"
+              "envoy_five_node_retention_authenticated=true"
+              "envoy_five_node_graceful_completion_authenticated=true"
               "evidence_retained=true"
             ];
           }
