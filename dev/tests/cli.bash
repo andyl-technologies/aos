@@ -73,6 +73,8 @@ sed -i "s|@BASH@|$BASH|" "$scratch/bin/nix-instantiate" "$scratch/bin/nix-build"
 chmod +x "$scratch/bin/nix-instantiate" "$scratch/bin/nix-build" "$scratch/bin/nix" "$scratch/bin/setfacl" "$scratch/bin/getfacl" "$scratch/bin/nix-store" "$scratch/cli/bin/aos"
 
 export PATH="$scratch/bin:$PATH"
+# Keep build-command tests independent of the sandbox's placeholder HOME.
+export AOS_DEV_CACHE_DIR="$scratch/default-cache"
 export AOS_DEV_TEST_LOG="$scratch/nix-build.log"
 export AOS_DEV_TEST_CLI="$scratch/cli"
 export AOS_DEV_TEST_RELEASE_LOG="$scratch/release.log"
@@ -126,8 +128,8 @@ grep -Fq -- '--option extra-sandbox-paths /aos-build-cache/go=' "$AOS_DEV_TEST_L
 
 : > "$AOS_DEV_TEST_LOG"
 bash "$root/aos-dev" --no-go-cache --no-bazel-cache --no-rust-target-cache \
-  --rust-incremental build package alpha --no-out-link >/dev/null
-if grep -Eq -- 'shared(Go|Bazel|RustTarget)CacheDir' "$AOS_DEV_TEST_LOG"; then
+  --no-accache --rust-incremental build package alpha --no-out-link >/dev/null
+if grep -Eq -- 'shared(GoCacheDir|BazelCacheDir|RustTargetDir|AccacheDir|AccacheStateDir)' "$AOS_DEV_TEST_LOG"; then
   echo 'disabled directory cache received a Nix path' >&2
   exit 1
 fi
@@ -139,8 +141,8 @@ fi
 
 : > "$AOS_DEV_TEST_LOG"
 bash "$root/aos-dev" --no-go-cache --no-bazel-cache --no-rust-target-cache \
-  --no-rust-incremental build package alpha --no-out-link >/dev/null
-if grep -Eq -- 'shared(Go|Bazel|RustTarget)CacheDir|sharedRustIncremental|extra-sandbox-paths' "$AOS_DEV_TEST_LOG"; then
+  --no-accache --no-rust-incremental build package alpha --no-out-link >/dev/null
+if grep -Eq -- 'shared(GoCacheDir|BazelCacheDir|RustTargetDir|AccacheDir|AccacheStateDir)|sharedRustIncremental|extra-sandbox-paths' "$AOS_DEV_TEST_LOG"; then
   echo 'all-disabled build changed ordinary Nix arguments' >&2
   exit 1
 fi
@@ -149,7 +151,7 @@ fi
 AOS_DEV_GO_CACHE_DIR=/custom/go-cache \
   AOS_DEV_CACHE_DIR="$scratch/custom-cache" \
   bash "$root/aos-dev" --no-bazel-cache --no-rust-target-cache \
-    --no-rust-incremental build package alpha --no-out-link >/dev/null
+    --no-accache --no-rust-incremental build package alpha --no-out-link >/dev/null
 grep -Fq -- '--argstr sharedGoCacheDir /custom/go-cache' "$AOS_DEV_TEST_LOG"
 grep -Fq -- "/custom/go-cache=$scratch/custom-cache/go" "$AOS_DEV_TEST_LOG"
 
@@ -160,15 +162,30 @@ if grep -Fq -- 'sharedGoCacheDir' "$AOS_DEV_TEST_LOG"; then
   exit 1
 fi
 
-# Compiler caching is independently opt-in and obeys release isolation.
+# Compiler caching defaults on alongside incremental compilation. Custom
+# sandbox paths remain independent of the host storage root.
 : > "$AOS_DEV_TEST_LOG"
 AOS_DEV_ACCACHE_DIR=/custom/actions AOS_DEV_ACCACHE_STATE_DIR=/custom/action-state \
   AOS_DEV_CACHE_DIR="$scratch/compiler-cache" \
-  bash "$root/aos-dev" --accache --no-go-cache --no-bazel-cache --no-rust-target-cache \
-    --no-rust-incremental build package alpha --no-out-link >/dev/null
+  bash "$root/aos-dev" --no-go-cache --no-bazel-cache --no-rust-target-cache \
+    build package alpha --no-out-link >/dev/null
 grep -Fq -- '--argstr sharedAccacheDir /custom/actions' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '--argstr sharedAccacheStateDir /custom/action-state' "$AOS_DEV_TEST_LOG"
 grep -Fq -- "/custom/actions=$scratch/compiler-cache/accache" "$AOS_DEV_TEST_LOG"
+grep -Fq -- '--arg sharedRustIncremental true' "$AOS_DEV_TEST_LOG"
+
+# The broad enable flag restores every backend after individual opt-outs.
+: > "$AOS_DEV_TEST_LOG"
+bash "$root/aos-dev" --no-accache --cache build package alpha --no-out-link >/dev/null
+grep -Fq -- '--argstr sharedAccacheDir ' "$AOS_DEV_TEST_LOG"
+
+: > "$AOS_DEV_TEST_LOG"
+bash "$root/aos-dev" --no-accache build package alpha --no-out-link >/dev/null
+if grep -Fq 'sharedAccache' "$AOS_DEV_TEST_LOG"; then
+  echo 'disabled compiler cache received Nix configuration' >&2
+  exit 1
+fi
+grep -Fq -- '--arg sharedRustIncremental true' "$AOS_DEV_TEST_LOG"
 
 : > "$AOS_DEV_TEST_LOG"
 bash "$root/aos-dev" --release --accache build package alpha --no-out-link >/dev/null
