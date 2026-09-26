@@ -26,7 +26,12 @@
       && (allowEmpty || value != "")
       && builtins.stringLength value <= limits.maxStringLength
     then value
-    else fail "${context} must be a bounded${if allowEmpty then "" else " nonempty"} string";
+    else
+      fail "${context} must be a bounded${
+        if allowEmpty
+        then ""
+        else " nonempty"
+      } string";
 
   requireRelativePath = context: value:
     if abilities.types.relativePath.check value
@@ -48,9 +53,10 @@
         builtins.isList checked.fragments
         && checked.fragments != []
         && builtins.length checked.fragments <= 64
-      then builtins.genList (index:
-        normalizeFragment "${context}.fragments[${toString index}]" (builtins.elemAt checked.fragments index))
-      (builtins.length checked.fragments)
+      then
+        builtins.genList (index:
+          normalizeFragment "${context}.fragments[${toString index}]" (builtins.elemAt checked.fragments index))
+        (builtins.length checked.fragments)
       else fail "${context}.fragments must contain between 1 and 64 fragments";
   in {inherit fragments;};
 
@@ -102,9 +108,10 @@
     checked = requireAttrs context ["argv" "exit_code"] ["observes_rejection" "stderr" "stdin" "stdout" "timeout_seconds"] value;
     argv =
       if builtins.isList checked.argv && checked.argv != [] && builtins.length checked.argv <= 64
-      then builtins.genList (index:
-        normalizeTemplate "${context}.argv[${toString index}]" (builtins.elemAt checked.argv index))
-      (builtins.length checked.argv)
+      then
+        builtins.genList (index:
+          normalizeTemplate "${context}.argv[${toString index}]" (builtins.elemAt checked.argv index))
+        (builtins.length checked.argv)
       else fail "${context}.argv must contain between 1 and 64 templates";
     optionalTemplate = field:
       if !(builtins.hasAttr field checked) || checked.${field} == null
@@ -162,15 +169,17 @@
       else fail "${context}.files must be an attribute set";
     steps =
       if builtins.isList checked.steps && checked.steps != [] && builtins.length checked.steps <= 16
-      then builtins.genList (index:
-        normalizeStep "${context}.steps[${toString index}]" (builtins.elemAt checked.steps index))
-      (builtins.length checked.steps)
+      then
+        builtins.genList (index:
+          normalizeStep "${context}.steps[${toString index}]" (builtins.elemAt checked.steps index))
+        (builtins.length checked.steps)
       else fail "${context}.steps must contain between 1 and 16 commands";
     artifacts =
       if builtins.isList checked.artifacts && builtins.length checked.artifacts <= 32
-      then builtins.genList (index:
-        normalizeArtifact "${context}.artifacts[${toString index}]" (builtins.elemAt checked.artifacts index))
-      (builtins.length checked.artifacts)
+      then
+        builtins.genList (index:
+          normalizeArtifact "${context}.artifacts[${toString index}]" (builtins.elemAt checked.artifacts index))
+        (builtins.length checked.artifacts)
       else fail "${context}.artifacts must contain at most 32 observations";
   in
     if builtins.length fileNames > 32
@@ -180,9 +189,10 @@
       operation = requireString "${context}.operation" false checked.operation;
       expected = requireString "${context}.expected" false checked.expected;
       files = builtins.listToAttrs (map (name: {
-        name = requireRelativePath "${context}.files key" name;
-        value = normalizeTemplate "${context}.files.${name}" checked.files.${name};
-      }) fileNames);
+          name = requireRelativePath "${context}.files key" name;
+          value = normalizeTemplate "${context}.files.${name}" checked.files.${name};
+        })
+        fileNames);
       inherit steps artifacts;
     };
 
@@ -203,7 +213,10 @@
   projectTemplate = owner: template: let
     projected = map (fragment:
       if !(builtins.elem fragment.kind ["artifact-path" "artifact-root"])
-      then {value = fragment; selectors = [];}
+      then {
+        value = fragment;
+        selectors = [];
+      }
       else let
         normalized = abilities.normalizePackageOutputSelectors {
           inherit owner;
@@ -213,7 +226,8 @@
       in {
         value = fragment // {artifact = selector;};
         selectors = [selector];
-      }) template.fragments;
+      })
+    template.fragments;
   in {
     value.fragments = map (entry: entry.value) projected;
     selectors = builtins.concatMap (entry: entry.selectors) projected;
@@ -223,31 +237,40 @@
     projectedFiles = builtins.mapAttrs (_: projectTemplate owner) operation.files;
     projectOptional = value:
       if value == null
-      then {value = null; selectors = [];}
+      then {
+        value = null;
+        selectors = [];
+      }
       else projectTemplate owner value;
-    projectedSteps = map (step: let
-      argv = map (projectTemplate owner) step.argv;
-      stdin = projectOptional step.stdin;
-      stdout = projectOptional step.stdout;
-      stderr = projectOptional step.stderr;
-    in {
-      value = step // {
-        argv = map (entry: entry.value) argv;
-        stdin = stdin.value;
-        stdout = stdout.value;
-        stderr = stderr.value;
-      };
-      selectors =
-        builtins.concatMap (entry: entry.selectors) argv
-        ++ stdin.selectors
-        ++ stdout.selectors
-        ++ stderr.selectors;
-    }) operation.steps;
+    projectedSteps =
+      map (step: let
+        argv = map (projectTemplate owner) step.argv;
+        stdin = projectOptional step.stdin;
+        stdout = projectOptional step.stdout;
+        stderr = projectOptional step.stderr;
+      in {
+        value =
+          step
+          // {
+            argv = map (entry: entry.value) argv;
+            stdin = stdin.value;
+            stdout = stdout.value;
+            stderr = stderr.value;
+          };
+        selectors =
+          builtins.concatMap (entry: entry.selectors) argv
+          ++ stdin.selectors
+          ++ stdout.selectors
+          ++ stderr.selectors;
+      })
+      operation.steps;
   in {
-    value = operation // {
-      files = builtins.mapAttrs (_: entry: entry.value) projectedFiles;
-      steps = map (entry: entry.value) projectedSteps;
-    };
+    value =
+      operation
+      // {
+        files = builtins.mapAttrs (_: entry: entry.value) projectedFiles;
+        steps = map (entry: entry.value) projectedSteps;
+      };
     selectors =
       builtins.concatMap (entry: entry.selectors) (builtins.attrValues projectedFiles)
       ++ builtins.concatMap (entry: entry.selectors) projectedSteps;
@@ -279,29 +302,67 @@ in rec {
     };
   };
 
-  literal = text: normalizeFragment "literal fragment" {kind = "literal"; inherit text;};
+  literal = text:
+    normalizeFragment "literal fragment" {
+      kind = "literal";
+      inherit text;
+    };
   artifactRoot = {artifact ? abilities.packageOutput {}}:
-    normalizeFragment "artifact-root fragment" {kind = "artifact-root"; inherit artifact;};
+    normalizeFragment "artifact-root fragment" {
+      kind = "artifact-root";
+      inherit artifact;
+    };
   artifactPath = {
     artifact ? abilities.packageOutput {},
     path,
   }:
-    normalizeFragment "artifact-path fragment" {kind = "artifact-path"; inherit artifact path;};
-  workPath = path: normalizeFragment "work-path fragment" {kind = "work-path"; inherit path;};
-  harness = tool: normalizeFragment "harness fragment" {kind = "harness"; inherit tool;};
+    normalizeFragment "artifact-path fragment" {
+      kind = "artifact-path";
+      inherit artifact path;
+    };
+  workPath = path:
+    normalizeFragment "work-path fragment" {
+      kind = "work-path";
+      inherit path;
+    };
+  harness = tool:
+    normalizeFragment "harness fragment" {
+      kind = "harness";
+      inherit tool;
+    };
   template = fragments: normalizeTemplate "template" {inherit fragments;};
   text = value: template [(literal value)];
   step = normalizeStep "package probe step";
   operation = normalizeOperation "package probe operation";
-  textArtifact = {path, text}: normalizeArtifact "text artifact" {kind = "text"; inherit path text;};
-  sha256Artifact = {path, digest}: normalizeArtifact "sha256 artifact" {kind = "sha256"; inherit path digest;};
+  textArtifact = {
+    path,
+    text,
+  }:
+    normalizeArtifact "text artifact" {
+      kind = "text";
+      inherit path text;
+    };
+  sha256Artifact = {
+    path,
+    digest,
+  }:
+    normalizeArtifact "sha256 artifact" {
+      kind = "sha256";
+      inherit path digest;
+    };
   packageProbe = {
     primary,
     badInput,
   }:
-    normalizePackageProbe {inherit primary; bad_input = badInput;};
+    normalizePackageProbe {
+      inherit primary;
+      bad_input = badInput;
+    };
 
-  commandProbe = {primary, badInput}: let
+  commandProbe = {
+    primary,
+    badInput,
+  }: let
     tokenPattern = "(@out@/[A-Za-z0-9._+/-]*[A-Za-z0-9._+-]|@output:[A-Za-z0-9._+-]+@/[A-Za-z0-9._+/-]*[A-Za-z0-9._+-]|@work@/[A-Za-z0-9._+/-]*[A-Za-z0-9._+-]|@python@|@perl@|@bash@|@cc@|@cxx@|@out@)";
     harnesses = {
       "@bash@" = "bash";
@@ -323,10 +384,11 @@ in rec {
         work = builtins.match "@work@/(.+)" value;
       in
         if namedOutput != null
-        then artifactPath {
-          artifact = abilities.packageOutput {output = builtins.elemAt namedOutput 0;};
-          path = builtins.elemAt namedOutput 1;
-        }
+        then
+          artifactPath {
+            artifact = abilities.packageOutput {output = builtins.elemAt namedOutput 0;};
+            path = builtins.elemAt namedOutput 1;
+          }
         else if outputPath != null
         then artifactPath {path = builtins.head outputPath;}
         else if work != null
