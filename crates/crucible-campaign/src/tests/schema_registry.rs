@@ -575,7 +575,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     let scan_index = rows
         .get(scan_index_schema)
         .unwrap_or_else(|| panic!("missing ordered planner scan index schema"));
-    assert_eq!(scan_index[1], "2");
+    assert_eq!(scan_index[1], "3");
     assert_eq!(
         scan_index[2],
         "crucible-campaign::repository::planner_scan_index"

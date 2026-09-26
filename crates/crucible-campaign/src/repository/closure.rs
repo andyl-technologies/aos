@@ -907,6 +907,7 @@ impl CampaignRepository {
         let index = self.planner_scan_index_after(
             prior_roots.exploration,
             &[(request, request_record.branch_point())],
+            None,
             false,
         )?;
         upserts.insert(planner_scan_index_anchor_key(), index);

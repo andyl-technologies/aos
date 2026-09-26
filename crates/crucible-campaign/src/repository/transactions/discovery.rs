@@ -255,6 +255,7 @@ impl CampaignRepository {
         let projected_scan_index = self.planner_scan_index_after(
             current.snapshot.roots().exploration,
             &scan_requests,
+            None,
             false,
         )?;
         if self
@@ -305,6 +306,7 @@ impl CampaignRepository {
         let published = self.planner_scan_index_after(
             current.snapshot.roots().exploration,
             &scan_requests,
+            None,
             true,
         )?;
         if published != projected_scan_index {
