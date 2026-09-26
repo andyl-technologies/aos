@@ -1853,6 +1853,9 @@ in {
         sandbox-q04-held-writer-idmap = import ./tests/vm/sandbox-q04-held-writer-idmap.nix {
           inherit testing pkgs;
         };
+        sandbox-q04-protected-bootstrap = import ./tests/vm/sandbox-q04-protected-bootstrap.nix {
+          inherit testing pkgs lib;
+        };
         sandbox-cache-journal-readonly-replay = import ./tests/vm/sandbox-cache-journal-readonly-replay.nix {
           inherit testing pkgs lib;
         };
