@@ -65,7 +65,7 @@
     if bootstrapSource == null
     then
       if bootstrapVersion == "8.6.0"
-      then helperScope.bazelSource8
+      then helperScope.bazelSource8Prepared
       else if bootstrapVersion == "9.2.0"
       then helperScope.bazelSource9
       else helperScope.bazelSource
@@ -136,6 +136,7 @@ in
     # Release tooling can pass these verified Bazel 8 checkouts as module
     # overrides while fetching the remaining graph with downloads disabled.
     passthru.offlineModules = helperScope.bazelOfflineModules;
+    passthru.offlineSource = source;
     passthru.offlineRepositories =
       {platforms = helperScope.bazelPlatformsSource;}
       // helperScope.bazelAsyncProfilerRepositories
@@ -188,6 +189,11 @@ in
 
           mkdir -p derived/jars derived/maven
           cp -r ${mavenJars}/maven/. derived/maven/
+          ${lib.optionalString (builtins.compareVersions bootstrapVersion "8.0.0" >= 0) ''
+            # The older Gson wins classpath assembly and cannot read Bazel 8's lockfile.
+            chmod u+w derived/maven/com/google/code/gson/gson/2.9.0
+            rm derived/maven/com/google/code/gson/gson/2.9.0/gson-2.9.0.jar
+          ''}
           ln -s ${protobufJava}/share/java/protobuf-java-${protobufJava.version}.jar \
             derived/jars/protobuf-java.jar
           ln -s ${protobufJavaUtil}/share/java/protobuf-java-util-${protobufJavaUtil.version}.jar \
