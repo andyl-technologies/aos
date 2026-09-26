@@ -1,7 +1,6 @@
 //! Frontier ceiling and restart scale regressions.
 
 use super::*;
-use std::time::Instant;
 
 #[test]
 fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
@@ -37,9 +36,6 @@ fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
     let baseline_bytes = fixture.blobs.logical_bytes()?;
 
     let mut planner = planner_driver(&fixture)?;
-    let mut planner_ns = 0;
-    let mut maximum_planner_step_ns = 0;
-    let mut planner_step_samples = Vec::with_capacity(ATTEMPTS);
     #[cfg(feature = "test-support")]
     let mut checkpoint_samples = Vec::with_capacity(ATTEMPTS);
     #[cfg(feature = "test-support")]
@@ -47,7 +43,6 @@ fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
     #[cfg(feature = "test-support")]
     let mut prior_stored_objects = baseline_objects;
     for _ in 0..ATTEMPTS {
-        let started = Instant::now();
         let CampaignPlannerStepOutcome::Advanced {
             disposition:
                 PlannerDisposition::Issue {
@@ -58,10 +53,6 @@ fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
         else {
             return Err("profile planner did not issue the next attempt".into());
         };
-        let step_ns = started.elapsed().as_nanos();
-        planner_ns += step_ns;
-        maximum_planner_step_ns = maximum_planner_step_ns.max(step_ns);
-        planner_step_samples.push(step_ns);
         assert_eq!(issued_proposals.len(), 1);
 
         #[cfg(feature = "test-support")]
@@ -82,7 +73,6 @@ fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
     }
     let snapshot = fixture.repository.head(campaign)?.snapshot_id();
 
-    let queue_start = Instant::now();
     let mut cursor = None;
     let mut scanned_entries = 0;
     let mut pages = 0;
@@ -115,7 +105,6 @@ fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
             break;
         }
     }
-    let queue_ns = queue_start.elapsed().as_nanos();
     assert_eq!(attempts.len(), ATTEMPTS);
     assert!(pages > 1, "queue projection must cross a page boundary");
     assert_eq!(queue.reservation_count(), 0);
@@ -126,7 +115,6 @@ fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
         fixture.planner_authority.clone(),
         fixture.debugger_authority.clone(),
     )?;
-    let cold_start = Instant::now();
     let mut cold_cursor = None;
     let mut cold_attempts = BTreeSet::new();
     let mut cold_pages = 0;
@@ -141,16 +129,9 @@ fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
             break;
         }
     }
-    let cold_projection_ns = cold_start.elapsed().as_nanos();
     assert_eq!(cold_attempts, attempts);
     assert_eq!(cold_pages, pages);
 
-    for (index, sample) in planner_step_samples.into_iter().enumerate() {
-        println!(
-            "campaign_planner_queue_step ordinal={} ns={sample}",
-            index + 1
-        );
-    }
     #[cfg(feature = "test-support")]
     for (index, (depth, objects)) in checkpoint_samples.into_iter().enumerate() {
         println!(
@@ -160,7 +141,7 @@ fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
     }
     println!("campaign_planner_queue_snapshot id={snapshot}");
     println!(
-        "campaign_planner_queue_profile attempts={ATTEMPTS} pages={pages} scanned_entries={scanned_entries} cold_pages={cold_pages} planner_ns={planner_ns} maximum_planner_step_ns={maximum_planner_step_ns} queue_ns={queue_ns} cold_projection_ns={cold_projection_ns} retained_objects={} retained_bytes={}",
+        "campaign_planner_queue_profile attempts={ATTEMPTS} pages={pages} scanned_entries={scanned_entries} cold_pages={cold_pages} retained_objects={} retained_bytes={}",
         fixture.blobs.object_count()? - baseline_objects,
         fixture.blobs.logical_bytes()? - baseline_bytes,
     );
