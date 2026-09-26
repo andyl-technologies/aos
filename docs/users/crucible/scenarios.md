@@ -10,7 +10,7 @@ or implicit host-tool lookup.
 
 The world declares VM nodes, logical links, deterministic link characteristics,
 and device sub-nodes. Node configuration includes architecture, memory, vCPU
-count, fixed shift-0 instruction clock, kernel command line, and ready-point policy.
+count, fixed 50-picosecond instruction clock, kernel command line, and ready-point policy.
 
 The topology's objects are declared before the run. Signal bindings may change
 route, association, availability, lifecycle, and isolation state during

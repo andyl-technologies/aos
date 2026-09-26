@@ -32,7 +32,7 @@ Direct implementation references:
 | `<path>` | Host path. Relative paths are resolved from the command's working directory. |
 | `<hash>` | Content address in `blake3:<64 lowercase hexadecimal digits>` form. |
 | `<path-or-hash>` | A local file/path or an object resolvable from `--store`. |
-| `<dur>` | Positive integer followed by no suffix, `tick`, `ticks`, `ns`, `us`, `ms`, or `s`. No suffix means ticks; one tick is one nanosecond. |
+| `<dur>` | Positive integer followed by no suffix, `tick`, `ticks`, `ns`, `us`, `ms`, or `s`. No suffix means ticks; one tick is one picosecond (1,000 ticks per nanosecond). |
 | `*_nanos` | Unsigned integer duration in virtual nanoseconds. |
 | `*_ticks` | Unsigned integer virtual-time or scheduler coordinate. |
 | `*_basis_points` | Integer probability or factor measured in basis points. Probabilities accept `0..=10000`, where 10,000 is 100%. |

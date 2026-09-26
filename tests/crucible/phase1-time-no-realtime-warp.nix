@@ -225,7 +225,7 @@ in
             require_leaf ${deterministicLaunch} \
               "gate=gate:layer0-determinism" \
               "rtc=base=2026-01-01T00:00:00,clock=vm" \
-              "virtual_time_ns=icount<<shift" \
+              "virtual_time_ns=floor(sim_tick/1000)" \
               "tsc_source=icount" \
               "guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time" \
               "guest_time_epoch=fixed-rtc-epoch" \

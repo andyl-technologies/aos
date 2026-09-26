@@ -9,8 +9,9 @@ or `traffic-east`:
 root=/dev/vda rw init=/init console=ttyS0 noapic nolapic network.role=NAME network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2
 ```
 
-The worked-network scenario uses the fixed shift-0 clock, so each retired guest
-instruction advances virtual time by one nanosecond. The choice-free boot
+The worked-network scenario passes the required `-icount shift=0` launch argument.
+Under the patched `sim` clock, each retired guest instruction advances virtual
+time by 50 picoseconds. The choice-free boot
 capability applies only to this exact topology and command line.
 
 The QEMU world must give each VM a branch-private writable overlay of the immutable
