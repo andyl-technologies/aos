@@ -7,12 +7,13 @@
   compilers = {
     "${builtins.unsafeDiscardStringContext (toString pkgs.cc)}/bin/gcc" = "c";
     "${builtins.unsafeDiscardStringContext (toString pkgs.cc)}/bin/g++" = "c";
+    "${builtins.unsafeDiscardStringContext (toString pkgs.gccUnwrapped)}/bin/gcc" = "c";
     "${builtins.unsafeDiscardStringContext (toString pkgs.llvm)}/bin/clang" = "c";
     "${builtins.unsafeDiscardStringContext (toString pkgs.rust)}/bin/rustc" = "rust";
   };
   cacheEnvironment = pkgs.mkAccacheEnvironment {
     inherit compilers;
-    roots = [pkgs.cc pkgs.llvm pkgs.rust];
+    roots = [pkgs.cc pkgs.gccUnwrapped pkgs.llvm pkgs.rust];
     cacheDir = "/unused";
     stateDir = "/unused-state";
   };
@@ -26,6 +27,7 @@ in
     buildDeps = [
       pkgs.accache
       pkgs.cc
+      pkgs.gccUnwrapped
       pkgs.llvm
       pkgs.rust
       pkgs.python3
@@ -56,7 +58,8 @@ in
           ACCACHE_ORACLE_REPORT="$out/oracle.json" \
           ${pkgs.python3}/bin/python3 ${../../tools/accache/tests/oracle.py} \
             ${pkgs.accache}/bin/accache ${sccacheOracle}/bin/sccache \
-            ${pkgs.cc}/bin/gcc ${pkgs.llvm}/bin/clang ${pkgs.rust}/bin/rustc
+            ${pkgs.cc}/bin/gcc ${pkgs.llvm}/bin/clang ${pkgs.rust}/bin/rustc \
+            ${pkgs.gccUnwrapped}/bin/gcc
           mkdir -p "$out"
           printf 'passed\n' > "$out/result"
         '';
