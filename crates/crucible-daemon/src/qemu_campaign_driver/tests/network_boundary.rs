@@ -489,11 +489,12 @@ fn network_choice_rejects_duplicate_unknown_and_stale_physical_markers() {
     );
     let quiescence = SchedulerQuiescence::default();
 
+    // VMStop proof uses the raw counter; logical icount may carry an offset.
     lifecycle
         .parked
         .get_mut(&node("router-b"))
         .expect("parked B")
-        .physical_icount = Icount { retired: 12 };
+        .physical_raw_icount = Icount { retired: 12 };
     assert!(
         next_network_fault_discovery(
             &mut lifecycle,
@@ -511,7 +512,7 @@ fn network_choice_rejects_duplicate_unknown_and_stale_physical_markers() {
         .parked
         .get_mut(&node("router-b"))
         .expect("parked B")
-        .physical_icount = Icount { retired: 11 };
+        .physical_raw_icount = Icount { retired: 11 };
     let mut duplicate = entries.clone();
     duplicate.extend(network_phase_marker(&mut log, "router-a", 10));
     assert!(
