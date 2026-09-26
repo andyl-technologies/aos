@@ -143,6 +143,23 @@ def fixtures(gcc, clang, rustc):
                        "headers/value.h": c_sources["value.h"]},
                       {"headers/value.h": "#define VALUE 73\n"})
 
+        if name == "gcc":
+            # These search modes put the header at different points in GCC's
+            # include order. The header edit must invalidate all four actions.
+            for suffix, flags in [
+                ("idirafter", ["-idirafter", "headers"]),
+                ("iwithprefix", ["-iprefix", "headers/", "-iwithprefix", "."]),
+                ("iwithprefixbefore", ["-iprefix", "headers/",
+                                       "-iwithprefixbefore", "."]),
+                ("nostdinc", ["-nostdinc", "-Iheaders"]),
+            ]:
+                yield Fixture("gcc-" + suffix, compiler,
+                              base + flags + ["-frandom-seed=gcc-" + suffix],
+                              {"source.c": "#include <value.h>\n"
+                                           "int answer(void) { return VALUE; }\n",
+                               "headers/value.h": "#define VALUE 42\n"},
+                              {"headers/value.h": "#define VALUE 73\n"})
+
         yield Fixture(name + "-stack-usage", compiler,
                       base + ["-fstack-usage"], c_sources,
                       {"value.h": "#define VALUE 73\n"}, cacheable=False)
