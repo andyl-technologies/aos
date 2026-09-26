@@ -423,6 +423,8 @@ fn diagnostic_sink(specification: &str) -> Result<DiagnosticSink> {
                     "color" | "show-nesting" | "show-nesting-locations" | "show-nesting-levels"
                 ),
                 "sarif" => matches!(key, "serialization" | "version" | "state-graphs"),
+                // Diagram SVG is embedded in the HTML file. PATH selects dot
+                // and is already part of the action identity.
                 "experimental-html" => matches!(
                     key,
                     "css"
@@ -434,12 +436,6 @@ fn diagnostic_sink(specification: &str) -> Result<DiagnosticSink> {
                 _ => false,
             } || key == "cfgs";
             ensure!(supported, "unknown GCC diagnostic output parameter");
-            ensure!(
-                !(scheme == "experimental-html"
-                    && matches!(key, "show-state-diagrams" | "cfgs")
-                    && value == "yes"),
-                "GCC HTML diagrams may write additional side files"
-            );
         }
     }
     Ok(match (suffix, file) {

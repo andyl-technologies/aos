@@ -145,11 +145,12 @@ def run_suite(root):
     diagram_args = ["-c", "source.c", "-o", "reports/diagrams.o",
                     "-fdiagnostics-add-output=experimental-html:"
                     f"show-state-diagrams=yes,file={diagram_report}"]
-    invoke(gcc, diagram_args, "bypass")
-    assert diagram_report.is_file(), diagram_report
+    invoke(gcc, diagram_args)
+    diagram_bytes = diagram_report.read_bytes()
     diagram_report.unlink()
-    invoke(gcc, diagram_args, "bypass")
-    assert diagram_report.is_file(), diagram_report
+    (work / "reports/diagrams.o").unlink()
+    invoke(gcc, diagram_args, "hit")
+    assert diagram_report.read_bytes() == diagram_bytes
 
     (work / "library.rs").write_text('pub const VALUE: &str = env!("VALUE");\npub const TEXT: &str = include_str!("message.txt");\n')
     (work / "message.txt").write_text("one")

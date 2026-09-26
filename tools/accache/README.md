@@ -135,8 +135,10 @@ options bypass, as they do in the pinned sccache frontend. The joined
 `-dumpbase=foo` spelling instead acts as `-d` debug letters; its dumps are
 tracked. GCC 16's documented
 `-fdiagnostics-add-output` and `-fdiagnostics-set-output` SARIF sinks are cached
-with their report files. Parameterized text and plain HTML sinks are cached;
-HTML diagram modes and unknown sink specifications bypass.
+with their report files. Parameterized text and plain HTML sinks are cached.
+HTML diagram modes are cached with SVG embedded in the report; the action key
+includes `PATH`, which selects the AOS-built `dot` used for diagrams. Unknown
+sink specifications bypass.
 Specialized GCC dump families outside tree, RTL, IPA, language, statistics,
 debug, early-debug, and analyzer still bypass when they select implicit
 filenames. Explicitly named GCC dumps and optimization reports are cached with
@@ -210,7 +212,9 @@ bash ./aos-dev --release build check build.accache --no-out-link
 
 `checks.build.accache` builds the compiler wrapper and a pinned, test-only
 sccache executable from source. Its private sccache server runs inside the test
-sandbox and is stopped in `finally`. No developer cache/server is used.
+sandbox and is stopped in `finally`. No developer cache/server is used. The
+check provides the AOS-built Graphviz `dot` and requires embedded SVG in the
+direct-compiler HTML reports for diagram cases.
 
 The suite compares direct compilation, sccache, and accache using identical
 paths, flags, working directories, and environments. It checks exit status,
