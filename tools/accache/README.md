@@ -143,6 +143,12 @@ pinned sccache warm-hits but omits them. LLVM's internal option surface also
 permits other file reads and side outputs. Unrecognized `-Cllvm-args` options
 automatically pass through to rustc until their effects have an audited cache
 contract; `accache explain` records the bypass reason.
+
+Clang's `-mllvm` options use the same classification. Identified file inputs
+are fingerprinted, so editing a function-attribute CSV invalidates an object;
+report and unknown options run directly through Clang. The oracle covers both
+the separated and joined `-mllvm` spellings and a live pass report.
+
 Unstable Rust modes that write profiling data, MIR or NLL dumps, monomorphization
 statistics, closure reports, metrics, LLVM traces, codegen statistics,
 optimization remarks, or live timing reports bypass the cache so each

@@ -1,6 +1,6 @@
 //! Rust output discovery, native dependencies, and extension read contracts.
 
-use super::{Invocation, parsed, strings};
+use super::{Invocation, llvm, parsed, strings};
 use crate::model::{DynamicOutputs, Manifest, command};
 use accache_frontend::compiler::rust;
 use anyhow::{Result, ensure};
@@ -129,52 +129,23 @@ pub(super) fn configure(
             continue;
         };
         for argument in llvm_args.split_whitespace() {
-            let argument = argument.trim_start_matches('-');
-            if llvm_invocation_report(argument) {
-                // LLVM can put reports outside rustc's output directory.
-                // Replaying an rlib without those files would hide the report.
-                anyhow::bail!("Rust LLVM option {argument} writes an invocation report");
-            }
-            if let Some(path) = argument.strip_prefix("basic-block-sections=") {
-                // LLVM accepts a file of function and block IDs in addition
-                // to these three literal modes. rustc omits the file from
-                // dep-info even though editing it changes the rlib.
-                if !matches!(path, "all" | "none" | "labels") {
-                    ensure!(!path.is_empty(), "LLVM basic-block section list is empty");
+            match llvm::classify(argument) {
+                llvm::OptionEffect::FileInput(path) => {
+                    ensure!(!path.is_empty(), "LLVM file input is empty");
                     invocation.extra_inputs.insert(path.into());
                 }
-                continue;
+                llvm::OptionEffect::NoFileInput => {}
+                llvm::OptionEffect::InvocationReport => {
+                    // LLVM can put reports outside rustc's output directory.
+                    // Replaying an rlib without those files would hide them.
+                    anyhow::bail!("Rust LLVM option {argument} writes an invocation report");
+                }
+                llvm::OptionEffect::Unknown => {
+                    // Internal options remain usable through direct rustc
+                    // until their file effects have an audited contract.
+                    anyhow::bail!("Rust LLVM option {argument} has no audited cache contract");
+                }
             }
-            let file_input = [
-                "cgscc-inline-replay=",
-                "codegen-data-use-path=",
-                "extract-blocks-file=",
-                "forceattrs-csv-path=",
-                "fs-profile-file=",
-                "fs-remapping-file=",
-                "internalize-public-api-file=",
-                "ir2vec-vocab-path=",
-                "mir2vec-vocab-path=",
-                "ml-inliner-ir2vec-vocab-file=",
-                "ms-secure-hotpatch-functions-file=",
-                "pgo-test-profile-file=",
-                "pgo-test-profile-remapping-file=",
-                "rewrite-map-file=",
-                "sample-profile-file=",
-                "sample-profile-inline-replay=",
-                "summary-file=",
-            ]
-            .into_iter()
-            .find_map(|prefix| argument.strip_prefix(prefix));
-            if let Some(path) = file_input {
-                ensure!(!path.is_empty(), "LLVM file input is empty");
-                invocation.extra_inputs.insert(path.into());
-                continue;
-            }
-            // LLVM's internal flags include both implicit file reads and
-            // generated side files. Unknown options stay usable through a
-            // direct rustc call until their effects have an audited contract.
-            anyhow::bail!("Rust LLVM option {argument} has no audited cache contract");
         }
     }
 
@@ -339,39 +310,6 @@ fn codegen_options(args: &[String]) -> impl Iterator<Item = &str> {
                 .or_else(|| arg.strip_prefix("--codegen="))
         }
     })
-}
-
-fn llvm_invocation_report(argument: &str) -> bool {
-    let name = argument.split_once('=').map_or(argument, |(name, _)| name);
-    matches!(
-        name,
-        "as-secure-log-file"
-            | "attributor-dump-dep-graph"
-            | "attributor-view-dep-graph"
-            | "callgraph-dot-filename-prefix"
-            | "cfg-dot-filename-prefix"
-            | "constraint-elimination-dump-reproducers"
-            | "dot-cfg-mssa"
-            | "dot-ddg-filename-prefix"
-            | "info-output-file"
-            | "ir-dump-directory"
-            | "lto-pass-remarks-output"
-            | "lto-stats-file"
-            | "mcfg-dot-filename-prefix"
-            | "memprof-dot-file-path-prefix"
-            | "module-summary-dot-file"
-            | "opt-bisect-print-ir-path"
-            | "pgo-view-block-coverage-graph"
-            | "print-after"
-            | "print-after-all"
-            | "print-before"
-            | "print-before-all"
-            | "print-changed"
-            | "print-on-crash-path"
-            | "stats"
-            | "time-passes"
-    ) || name.starts_with("view-")
-        || name.starts_with("pgo-view-")
 }
 
 fn unpacked_split_debug(args: &[String]) -> bool {

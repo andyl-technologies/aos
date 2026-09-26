@@ -2565,6 +2565,122 @@ def check_rust_llvm_plugin(root, env, accache, sccache, rustc, clang, hits):
     return results
 
 
+def check_clang_llvm_file_inputs(root, env, accache, sccache, clang, hits):
+    """Hash files read through Clang's LLVM option forwarding."""
+    results = []
+    for fixture, forwarded in [
+        ("clang-llvm-attrs-separated", ["-mllvm", "-forceattrs-csv-path=attrs.csv"]),
+        ("clang-llvm-attrs-joined", ["-mllvm=-forceattrs-csv-path=attrs.csv"]),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "source.c").write_text(
+            "int answer(int x) { return x > 100 ? x * 3 : x + 2; }\n")
+        attrs = work / "attrs.csv"
+        object_file = work / "source.o"
+        depfile = work / "source.d"
+        args = [clang, "-O2", "-c", "source.c", "-o", "source.o",
+                "-MD", "-MF", "source.d", *forwarded]
+
+        def compile_object(wrapper):
+            object_file.unlink(missing_ok=True)
+            depfile.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            return (completed.stdout, completed.stderr,
+                    object_file.read_bytes(), depfile.read_bytes())
+
+        first_object = None
+        for revision, contents in enumerate(["answer,noinline\n", "answer,optnone\n"]):
+            attrs.write_text(contents)
+            direct = compile_object([])
+            assert b"attrs.csv" not in direct[3], (fixture, "LLVM input in depfile")
+            if first_object is None:
+                first_object = direct[2]
+            else:
+                assert direct[2] != first_object, (fixture, "LLVM file edit had no effect")
+
+            oracle_cold = compile_object([sccache])
+            before_hits = hits()
+            assert compile_object([sccache]) == oracle_cold
+            oracle_hit = hits() > before_hits
+            assert oracle_hit or oracle_cold == direct, (fixture, revision, oracle_cold)
+
+            assert compile_object([accache]) == direct
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert cold["outcome"] == "miss", (fixture, revision, cold)
+            if revision:
+                assert any("attrs.csv" in item for item in cold["changes"]), cold
+            assert compile_object([accache]) == direct
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert warm["outcome"] == "hit", (fixture, revision, warm)
+
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": oracle_hit,
+                            "oracle_stale_artifact": oracle_cold[2] != direct[2],
+                            "accache": "hit",
+                            "artifacts": ["source.o", "source.d"]})
+
+        print("PASS oracle", fixture, "LLVM file invalidation", flush=True)
+    return results
+
+
+def check_clang_llvm_report_passthrough(root, env, accache, sccache, clang, hits):
+    """Preserve both known dump files and less familiar live LLVM reports."""
+    results = []
+    for fixture, forwarded, report_file in [
+        ("clang-llvm-ir-dump",
+         ["-mllvm", "-print-after=instcombine",
+          "-mllvm", "-ir-dump-directory=dumps"], True),
+        ("clang-llvm-unknown-report",
+         ["-mllvm=-debug-pass=Structure"], False),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "dumps").mkdir()
+        (work / "source.c").write_text("int answer(int x) { return x + 1; }\n")
+        object_file = work / "source.o"
+        args = [clang, "-O2", "-c", "source.c", "-o", "source.o", *forwarded]
+
+        def compile_object(wrapper):
+            object_file.unlink(missing_ok=True)
+            for path in (work / "dumps").iterdir():
+                path.unlink()
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            reports = {path.name: path.read_bytes()
+                       for path in (work / "dumps").iterdir()}
+            return (completed.stdout, completed.stderr, object_file.read_bytes(), reports)
+
+        direct = compile_object([])
+        if report_file:
+            assert direct[3], (fixture, "LLVM wrote no dump files")
+        else:
+            assert b"Pass Arguments:" in direct[1], (fixture, "LLVM wrote no report")
+
+        oracle_cold = compile_object([sccache])
+        before_hits = hits()
+        oracle_warm = compile_object([sccache])
+        oracle_hit = hits() > before_hits
+        assert oracle_cold[2] == direct[2] and oracle_warm[2] == direct[2]
+
+        for _ in range(2):
+            assert compile_object([accache]) == direct, fixture
+            event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert event["outcome"] == "bypass", (fixture, event)
+            reason = ("invocation report" if report_file else "no audited cache contract")
+            assert reason in event["reason"], (fixture, event)
+
+        results.append({"fixture": fixture, "revision": 0,
+                        "oracle_hit": oracle_hit, "accache": "bypass",
+                        "oracle_missing_artifacts": sorted(set(direct[3]) - set(oracle_warm[3])),
+                        "artifacts": ["source.o", *sorted("dumps/" + name for name in direct[3])]})
+        print("PASS oracle", fixture, "passthrough", flush=True)
+    return results
+
+
 def check_rust_llvm_file_inputs(root, env, accache, sccache, rustc, hits):
     """Track LLVM section and function-attribute files omitted from dep-info."""
     results = []
@@ -3363,6 +3479,10 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                sccache, clang, hits))
         results.extend(check_clang_frontend_plugin(root, env, accache,
                                                    sccache, clang, hits))
+        results.extend(check_clang_llvm_file_inputs(root, env, accache,
+                                                    sccache, clang, hits))
+        results.extend(check_clang_llvm_report_passthrough(root, env, accache,
+                                                           sccache, clang, hits))
         results.extend(check_rust_native_archives(root, env, accache, sccache,
                                                   gcc, rustc, hits))
         results.extend(check_rust_extern_inputs(root, env, accache,

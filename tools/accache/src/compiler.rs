@@ -6,6 +6,7 @@
 
 mod c;
 mod dependencies;
+mod llvm;
 mod rust;
 
 pub(crate) use rust::bypass_output_directory;
