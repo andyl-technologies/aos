@@ -1076,7 +1076,15 @@ mod tests {
 
     #[test]
     fn platform_configuration_is_closed() -> Result<()> {
-        let executable = std::env::current_exe()?;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // Shared build caches may hard-link test binaries, while signer paths
+        // must name a single-link file with private permissions.
+        let signer_directory = tempfile::tempdir()?;
+        let executable = signer_directory.path().join("executor");
+        std::fs::copy(std::env::current_exe()?, &executable)?;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))?;
+
         let all = Platform::ALL
             .into_iter()
             .map(|platform| format!("{platform}={}", executable.display()))
