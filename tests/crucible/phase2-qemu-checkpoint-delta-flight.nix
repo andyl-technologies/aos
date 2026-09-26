@@ -50,17 +50,20 @@
       pkgs.rust
       pkgs.sed
       pkgs.socat
+      pkgs.sqlite
       qemuPackage
       sourceCheck
     ]
     ++ dependencies;
   campaignRuntimeEnvironment = {
     CC = "${pkgs.gcc}/bin/cc";
-    PKG_CONFIG_PATH = "${pkgs.glib.dev}/lib/pkgconfig";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+    PKG_CONFIG_PATH = "${pkgs.glib.dev}/lib/pkgconfig:${pkgs.sqlite}/lib/pkgconfig";
   };
   configureScript = ''
     set -eu
     export CARGO_HOME="$TMPDIR/cargo"
+    export RUSTFLAGS="-C link-arg=-Wl,-rpath,${pkgs.sqlite}/lib"
     mkdir -p "$CARGO_HOME" .cargo
     sed "s|@vendor@|${cargoDeps}|g" \
       "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
@@ -317,9 +320,11 @@
   authoritativeGate = pkgs.mkDerivation {
     pname = "crucible-phase2-qemu-checkpoint-delta-flight";
     version = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     src = crucibleSrc;
 
     buildDeps = runtimeInputs;
+    runtimeDeps = [pkgs.sqlite];
 
     phases = [
       {
