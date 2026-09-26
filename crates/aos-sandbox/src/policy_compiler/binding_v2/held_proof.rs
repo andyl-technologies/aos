@@ -10,9 +10,10 @@
 //! partition[32] | Cache-head[32] | quota-envelope[32] | SHA-256[32]
 //! ```
 //!
-//! The companion row is committed with AOSSFT01, never with AOSPCB02. It
-//! preserves the exact held preview for cold replay but is not a writer lease,
-//! CAS proof, publication capability, or effect authorization.
+//! The fixed companion is committed with AOSSFT01. A closed Root CAS may
+//! atomically copy those exact bytes beside AOSPCB02 and its retained hold.
+//! Neither copy is a transferable writer lease, publication capability, or
+//! effect authorization.
 
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use sha2::{Digest as _, Sha256};
@@ -22,6 +23,7 @@ use crate::journal::ProtectedJournalNamesV1;
 use super::PolicyCompilerJournalErrorV1;
 
 pub(super) const KEY: &[u8] = b"\0aos-policy-compiler-held-proof-v2\0";
+const CAS_KEY_PREFIX: &[u8] = b"\0aos-policy-compiler-held-cas-proof-v2\0";
 const MAGIC: &[u8; 8] = b"AOSPCP02";
 const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.held-proof.v2\0";
 pub(super) const RECORD_BYTES: usize = 16 + 32 * 10 + 8 * 6 + 16 * 3 + 48 + 32;
@@ -110,5 +112,106 @@ impl RootHeldProofV2 {
             .finalize();
         bytes[offset..].copy_from_slice(&checksum);
         Ok(bytes)
+    }
+
+    pub(super) fn decode(bytes: &[u8]) -> Result<Self, PolicyCompilerJournalErrorV1> {
+        if bytes.len() != RECORD_BYTES
+            || bytes.get(..8) != Some(MAGIC.as_slice())
+            || bytes.get(8..10) != Some(2_u16.to_be_bytes().as_slice())
+            || bytes[10..16] != [0; 6]
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let mut offset = 16;
+        let proof = Self {
+            terminal: ObjectDigest::from_bytes(take::<32>(bytes, &mut offset)?),
+            binding: ObjectDigest::from_bytes(take::<32>(bytes, &mut offset)?),
+            epoch: u64::from_be_bytes(take::<8>(bytes, &mut offset)?),
+            stage_nonce: take::<16>(bytes, &mut offset)?,
+            stage_issue: u64::from_be_bytes(take::<8>(bytes, &mut offset)?),
+            source_nonce: take::<16>(bytes, &mut offset)?,
+            source_issue: u64::from_be_bytes(take::<8>(bytes, &mut offset)?),
+            names: ProtectedJournalNamesV1::from_bytes(&take::<48>(bytes, &mut offset)?)
+                .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
+            source_packet: ObjectDigest::from_bytes(take::<32>(bytes, &mut offset)?),
+            cache_packet: ObjectDigest::from_bytes(take::<32>(bytes, &mut offset)?),
+            source_pin: ObjectDigest::from_bytes(take::<32>(bytes, &mut offset)?),
+            cache_pin: ObjectDigest::from_bytes(take::<32>(bytes, &mut offset)?),
+            controller_pin: ObjectDigest::from_bytes(take::<32>(bytes, &mut offset)?),
+            source_generation: u64::from_be_bytes(take::<8>(bytes, &mut offset)?),
+            cache_generation: u64::from_be_bytes(take::<8>(bytes, &mut offset)?),
+            controller_generation: u64::from_be_bytes(take::<8>(bytes, &mut offset)?),
+            project: ProjectId::from_bytes(take::<16>(bytes, &mut offset)?),
+            partition: ObjectDigest::from_bytes(take::<32>(bytes, &mut offset)?),
+            cache_head: ObjectDigest::from_bytes(take::<32>(bytes, &mut offset)?),
+            quota: ObjectDigest::from_bytes(take::<32>(bytes, &mut offset)?),
+        };
+        if proof.encode()?.as_slice() != bytes {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        Ok(proof)
+    }
+}
+
+pub(super) fn cas_key(binding: ObjectDigest) -> Vec<u8> {
+    let mut key = CAS_KEY_PREFIX.to_vec();
+    key.extend_from_slice(binding.as_bytes());
+    key
+}
+
+fn take<const N: usize>(
+    bytes: &[u8],
+    offset: &mut usize,
+) -> Result<[u8; N], PolicyCompilerJournalErrorV1> {
+    let value = bytes
+        .get(*offset..*offset + N)
+        .and_then(|part| part.try_into().ok())
+        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    *offset += N;
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn held_proof_codec_rejects_changed_cut_or_terminal() {
+        let proof = RootHeldProofV2 {
+            terminal: ObjectDigest::from_bytes([1; 32]),
+            binding: ObjectDigest::from_bytes([2; 32]),
+            epoch: 3,
+            stage_nonce: [4; 16],
+            stage_issue: 5,
+            source_nonce: [6; 16],
+            source_issue: 7,
+            names: ProtectedJournalNamesV1::from_bytes(&[8; 48]).expect("named Source inodes"),
+            source_packet: ObjectDigest::from_bytes([9; 32]),
+            cache_packet: ObjectDigest::from_bytes([10; 32]),
+            source_pin: ObjectDigest::from_bytes([11; 32]),
+            cache_pin: ObjectDigest::from_bytes([12; 32]),
+            controller_pin: ObjectDigest::from_bytes([13; 32]),
+            source_generation: 14,
+            cache_generation: 15,
+            controller_generation: 16,
+            project: ProjectId::from_bytes([17; 16]),
+            partition: ObjectDigest::from_bytes([18; 32]),
+            cache_head: ObjectDigest::from_bytes([19; 32]),
+            quota: ObjectDigest::from_bytes([20; 32]),
+        };
+        let row = proof.encode().expect("canonical held proof");
+        assert_eq!(
+            RootHeldProofV2::decode(&row).unwrap().terminal,
+            proof.terminal
+        );
+
+        for index in [
+            0, 8, 16, 48, 80, 88, 104, 112, 128, 136, 184, 216, 248, 280, 312, 344, 352, 360, 368,
+            384, 416, 448, 480,
+        ] {
+            let mut changed = row;
+            changed[index] ^= 1;
+            assert!(RootHeldProofV2::decode(&changed).is_err());
+        }
     }
 }

@@ -245,6 +245,78 @@ impl ClosedSourceTerminalRecordV1 {
 }
 
 impl ClosedPolicyRootSessionV2<'_> {
+    /// Consumes the exact V7 held proof in a closed Root CAS while writers stay held.
+    ///
+    /// The caller must retain Controller, Source, protected Cache, and physical
+    /// Cache writers and repeat the signer/owner postflight before this call.
+    /// The committed binding and held proof remain nonauthorizing; no owner
+    /// release, Create, Apply, or effect handoff follows from this result.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed terminal/proof, pins, Cache replay, Root stage, Source
+    /// challenge, session snapshot, or failed Root CAS/readback.
+    pub fn commit_staged_source_held_binding_v2(
+        &mut self,
+        claim: ClosedSourceTerminalClaimV1,
+        joined: ClosedPolicyRootSignerJoinV2,
+        controller_uid: u32,
+    ) -> Result<ClosedPolicyRootCasObservationV2, PolicyCompilerJournalErrorV1> {
+        let before = read_fixed_policy_cache_hold_v1()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let committed = self.commit_staged_source_held_binding_with_observation(
+            claim,
+            joined,
+            controller_uid,
+            (before.hold, before.replay.quota_digest),
+        )?;
+        let after = read_fixed_policy_cache_hold_v1()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if after.hold != before.hold || after.replay.quota_digest != before.replay.quota_digest {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        Ok(committed)
+    }
+
+    fn commit_staged_source_held_binding_with_observation(
+        &mut self,
+        claim: ClosedSourceTerminalClaimV1,
+        joined: ClosedPolicyRootSignerJoinV2,
+        controller_uid: u32,
+        observation: (CachePolicyHoldV1, ObjectDigest),
+    ) -> Result<ClosedPolicyRootCasObservationV2, PolicyCompilerJournalErrorV1> {
+        let snapshot = self
+            .postcommit
+            .as_ref()
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        self.authority.validate_snapshot_for_effect(snapshot)?;
+        self.validate_terminal_claim(claim, joined)?;
+        if joined.physical_cache().hold() != observation.0
+            || joined.physical_cache().quota_digest() != observation.1
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let terminal = self
+            .recover_terminal_with_held_proof_observation(claim, controller_uid, observation)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let proof_bytes = self
+            .authority
+            .get(HELD_PROOF_KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let proof = RootHeldProofV2::decode(proof_bytes)?;
+        if terminal.held_proof_digest()
+            != Some(ObjectDigest::from_bytes(Sha256::digest(proof_bytes).into()))
+            || proof.terminal != terminal.digest()
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+
+        // Only this exact postflight continuation may advance the already
+        // snapshotted session. The CAS helper still rechecks Root's chain.
+        self.postcommit = None;
+        self.commit_closed_binding_with_proof(&claim.proposed, None, Some(proof))
+    }
+
     /// Records a Controller-only signed terminal receipt under the held Root writer.
     ///
     /// The caller retains every Controller, Source, Cache-journal, and physical
@@ -591,6 +663,144 @@ impl ClosedPolicyRootSessionV2<'_> {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
         Ok(Some(joined))
+    }
+
+    /// Replays only a fully committed, still-held AOSPCP02 Root CAS.
+    ///
+    /// The fixed and per-binding proof rows must agree with the signed
+    /// terminal, current pins, Root challenge rows, and fixed Cache replay.
+    /// This historical decision is not a release or effect capability.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed or released Root hold, forged terminal, replaced
+    /// signer pin, missing CAS proof, stale Cache, or unrelated Root history.
+    pub fn recover_committed_source_held_binding_v2(
+        &mut self,
+        terminal_digest: ObjectDigest,
+        controller_uid: u32,
+    ) -> Result<Option<ClosedPolicyRootCasObservationV2>, PolicyCompilerJournalErrorV1> {
+        let observed = read_fixed_policy_cache_hold_v1()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        self.recover_committed_source_held_binding_with_observation(
+            terminal_digest,
+            controller_uid,
+            (observed.hold, observed.replay.quota_digest),
+        )
+    }
+
+    fn recover_committed_source_held_binding_with_observation(
+        &mut self,
+        terminal_digest: ObjectDigest,
+        controller_uid: u32,
+        observation: (CachePolicyHoldV1, ObjectDigest),
+    ) -> Result<Option<ClosedPolicyRootCasObservationV2>, PolicyCompilerJournalErrorV1> {
+        let row = self
+            .authority
+            .get(KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if row.len() != CLOSED_SOURCE_TERMINAL_RECORD_BYTES_V1
+            || terminal_digest.as_bytes() != Sha256::digest(row).as_slice()
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let proposed = &row[16..16 + CLOSED_POLICY_BINDING_BYTES_V2];
+        let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
+        let binding_digest = closed_policy_binding_digest_v2(proposed)?;
+        if !self.identity.matches(&binding) {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let (head, next_epoch, count) = current_root_binding_chain(&self.authority)?;
+        let binding_key = binding.key()?;
+        let consumed_key = held_cas_proof_key(binding_digest);
+        if head == binding.root_predecessor && next_epoch == binding.root_generation {
+            if self.authority.get(&binding_key)?.is_some()
+                || self.authority.get(&consumed_key)?.is_some()
+                || current_hold(&self.authority, head, next_epoch, count)?.is_some_and(|h| h.held)
+            {
+                return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+            }
+            return Ok(None);
+        }
+        if head != binding_digest
+            || next_epoch
+                != binding
+                    .root_generation
+                    .checked_add(1)
+                    .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
+            || self.authority.get(&binding_key)? != Some(proposed)
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let hold = current_hold(&self.authority, head, next_epoch, count)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if !hold.held
+            || hold.binding != binding_digest
+            || hold.epoch != binding.handoff_epoch
+            || self.authority.get(&proof_key(binding_digest))?.is_some()
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+
+        let consumed = self
+            .authority
+            .get(&consumed_key)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if self.authority.get(HELD_PROOF_KEY)? != Some(consumed) {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let proof = RootHeldProofV2::decode(consumed)?;
+        if proof.binding != binding_digest
+            || proof.epoch != binding.handoff_epoch
+            || proof.terminal != terminal_digest
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let base = ClosedPolicyRootCasBaseV2 {
+            issuer_owner: binding.issuer_owner,
+            predecessor: binding.root_predecessor,
+            next_generation: binding.root_generation,
+            deployment_signer_generation: binding.deployment_signer_generation,
+            project_signer_generation: binding.project_signer_generation,
+        };
+        let claim = ClosedSourceTerminalClaimV1::decode(&row[16..16 + CLAIM_BYTES], base)?;
+        if claim.proposed.as_slice() != proposed {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let stage = STAGE_CODEC.encode(
+            claim.staged.issue_epoch(),
+            claim.staged.challenge(),
+            self.identity.stage_cut(base),
+        );
+        let source = SOURCE_FLIGHT_CODEC.encode(
+            claim.source_issue,
+            claim.source_challenge.nonce(),
+            claim.source_challenge.cut(),
+        );
+        if self.authority.get(STAGE_KEY)? != Some(stage.as_slice())
+            || self.authority.get(SOURCE_FLIGHT_KEY)? != Some(source.as_slice())
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let pin = self
+            .authority
+            .get(CONTROLLER_HOLD_PIN_KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let packet = &row[16 + CLAIM_BYTES..BODY_BYTES];
+        if terminal_record_bytes(claim, controller_uid, pin, packet)?.as_slice() != row {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let expected =
+            self.expected_held_proof(claim, terminal_digest, observation.0, observation.1)?;
+        if expected.as_slice() != consumed {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        self.postcommit = Some(self.authority.snapshot()?);
+        Ok(Some(ClosedPolicyRootCasObservationV2 {
+            binding: binding_digest,
+            root_generation: binding.root_generation,
+            handoff_epoch: binding.handoff_epoch,
+        }))
     }
 
     fn validate_terminal_claim(
@@ -1145,7 +1355,7 @@ mod tests {
             identity: identity(&binding),
             postcommit: None,
         };
-        session
+        let (next_challenge, next_issue) = session
             .spend_staged_source_challenge_v1(&proposed, staged, || Ok([9; 16]))
             .expect("superseding Source challenge");
         assert!(
@@ -1162,6 +1372,157 @@ mod tests {
             session
                 .recover_staged_source_terminal_v1(claim, 1234)
                 .is_err()
+        );
+
+        session
+            .authority
+            .commit(
+                &JournalTransaction::new(
+                    [16; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        CONTROLLER_HOLD_PIN_KEY.to_vec(),
+                        pin.to_vec(),
+                    )],
+                )
+                .expect("restored Controller pin transaction"),
+            )
+            .expect("restored Controller pin");
+        let next_claim = ClosedSourceTerminalClaimV1::new(
+            &proposed,
+            staged,
+            source_hold,
+            next_challenge,
+            next_issue,
+            names,
+            ObjectDigest::from_bytes([42; 32]),
+            ObjectDigest::from_bytes([43; 32]),
+            ObjectDigest::from_bytes([44; 32]),
+            [47; 16],
+        )
+        .expect("new Root-spent terminal claim");
+        let next_packet = sign_test_controller_hold_readback_v1(
+            controller_hold,
+            1234,
+            next_claim.controller_challenge().expect("new challenge"),
+            5,
+            &controller_key,
+        )
+        .expect("new Controller-only terminal packet");
+        let next_terminal = session
+            .record_terminal(
+                next_claim,
+                joined,
+                1234,
+                &pin,
+                &next_packet,
+                Some(held_observation),
+            )
+            .expect("protected terminal and held proof");
+        assert_eq!(current_root_binding_chain(&session.authority).unwrap().2, 0);
+        assert_eq!(
+            session
+                .recover_committed_source_held_binding_with_observation(
+                    next_terminal.digest(),
+                    1234,
+                    held_observation,
+                )
+                .expect("proven CAS absence"),
+            None
+        );
+        assert!(
+            session
+                .commit_staged_source_held_binding_with_observation(
+                    next_claim,
+                    joined,
+                    1234,
+                    (held_observation.0, ObjectDigest::from_bytes([56; 32])),
+                )
+                .is_err(),
+            "changed Cache postflight must not commit"
+        );
+        assert_eq!(current_root_binding_chain(&session.authority).unwrap().2, 0);
+        let committed = session
+            .commit_staged_source_held_binding_with_observation(
+                next_claim,
+                joined,
+                1234,
+                held_observation,
+            )
+            .expect("closed AOSPCP02 Root CAS");
+        assert_eq!(committed.binding(), binding_digest);
+        assert_eq!(current_root_binding_chain(&session.authority).unwrap().2, 1);
+        assert!(session.release_inert_hold(committed).is_err());
+        assert!(
+            ack::current_ack(&session.authority, binding_digest, binding.handoff_epoch).is_err()
+        );
+        let consumed = session
+            .authority
+            .get(&held_cas_proof_key(binding_digest))
+            .expect("per-binding proof")
+            .expect("durable consumed proof")
+            .to_vec();
+        assert_eq!(
+            session.authority.get(HELD_PROOF_KEY).unwrap(),
+            Some(consumed.as_slice())
+        );
+        drop(session);
+        drop(root);
+
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("cold committed Root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        assert_eq!(
+            session
+                .recover_committed_source_held_binding_with_observation(
+                    next_terminal.digest(),
+                    1234,
+                    held_observation,
+                )
+                .expect("exact cold CAS replay"),
+            Some(committed)
+        );
+        assert!(
+            session
+                .recover_committed_source_held_binding_with_observation(
+                    next_terminal.digest(),
+                    1234,
+                    (held_observation.0, ObjectDigest::from_bytes([56; 32])),
+                )
+                .is_err(),
+            "changed Cache replay must reject committed CAS"
+        );
+        let mut forged_consumed = consumed.clone();
+        forged_consumed[184] ^= 1;
+        session
+            .authority
+            .commit(
+                &JournalTransaction::new(
+                    [17; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        held_cas_proof_key(binding_digest),
+                        forged_consumed,
+                    )],
+                )
+                .expect("forged consumed proof transaction"),
+            )
+            .expect("raw forged consumed proof");
+        assert!(
+            session
+                .recover_committed_source_held_binding_with_observation(
+                    next_terminal.digest(),
+                    1234,
+                    held_observation,
+                )
+                .is_err(),
+            "a mismatched consumed proof must fail closed"
         );
     }
 }

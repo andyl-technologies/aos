@@ -69,6 +69,7 @@ mod producer;
 mod proof;
 mod source_terminal;
 
+use held_proof::{RootHeldProofV2, cas_key as held_cas_proof_key};
 use hold::{HOLD_KEY, RootBindingHoldV1, current_hold, release_hold};
 use proof::{PROOF_KEY_PREFIX, RootQualifiedProofV1, proof_key};
 
@@ -1314,7 +1315,7 @@ impl ClosedPolicyRootSessionV2<'_> {
             source_pin: ObjectDigest::from_bytes(Sha256::digest(source_pin).into()),
             cache_pin: ObjectDigest::from_bytes(Sha256::digest(cache_pin).into()),
         };
-        self.commit_closed_binding_with_proof(proposed, Some(proof))
+        self.commit_closed_binding_with_proof(proposed, Some(proof), None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1459,13 +1460,14 @@ impl ClosedPolicyRootSessionV2<'_> {
         &mut self,
         proposed: &[u8],
     ) -> Result<ClosedPolicyRootCasObservationV2, PolicyCompilerJournalErrorV1> {
-        self.commit_closed_binding_with_proof(proposed, None)
+        self.commit_closed_binding_with_proof(proposed, None, None)
     }
 
     fn commit_closed_binding_with_proof(
         &mut self,
         proposed: &[u8],
         proof: Option<RootQualifiedProofV1>,
+        held_proof: Option<RootHeldProofV2>,
     ) -> Result<ClosedPolicyRootCasObservationV2, PolicyCompilerJournalErrorV1> {
         if self.postcommit.is_some() {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
@@ -1484,18 +1486,27 @@ impl ClosedPolicyRootSessionV2<'_> {
         );
         let exact_replay = predecessor == binding_head;
         let prior_hold = current_hold(&self.authority, predecessor, next_generation, count)?;
+        if proof.is_some() && held_proof.is_some() {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
         let qualified_proof_key = proof.map(|proof| proof_key(proof.binding));
         let proof_bytes = proof.map(RootQualifiedProofV1::encode).transpose()?;
+        let held_proof_key = held_proof.map(|proof| held_cas_proof_key(proof.binding));
+        let held_proof_bytes = held_proof.map(RootHeldProofV2::encode).transpose()?;
         if proof.is_some_and(|proof| {
+            proof.binding != binding_head || proof.epoch != binding.handoff_epoch
+        }) || held_proof.is_some_and(|proof| {
             proof.binding != binding_head || proof.epoch != binding.handoff_epoch
         }) {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
         let recorded_proof = self.authority.get(&proof_key(binding_head))?;
+        let recorded_held_proof = self.authority.get(&held_cas_proof_key(binding_head))?;
         if exact_replay {
             if self.authority.get(&key)? != Some(proposed)
                 || !prior_hold.is_some_and(|hold| hold.held && hold.binding == binding_head)
                 || recorded_proof != proof_bytes.as_ref().map(AsRef::as_ref)
+                || recorded_held_proof != held_proof_bytes.as_ref().map(AsRef::as_ref)
             {
                 return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
             }
@@ -1506,6 +1517,8 @@ impl ClosedPolicyRootSessionV2<'_> {
             require_unique_root_binding_identity(&self.authority, &binding)?;
             if !new_root_cas_matches(&binding, predecessor, next_generation, count)
                 || self.authority.get(&key)?.is_some()
+                || recorded_proof.is_some()
+                || recorded_held_proof.is_some()
             {
                 return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
             }
@@ -1548,6 +1561,13 @@ impl ClosedPolicyRootSessionV2<'_> {
                     value.to_vec(),
                 ));
             }
+            if let (Some(key), Some(value)) = (held_proof_key.as_ref(), held_proof_bytes.as_ref()) {
+                records.push(JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    key.clone(),
+                    value.to_vec(),
+                ));
+            }
             let transaction = JournalTransaction::new(transaction_id, records)?;
             // A qualified signer proof shares the binding/head/hold commit.
             // A lost response cannot leave a proof with no Root decision.
@@ -1557,6 +1577,8 @@ impl ClosedPolicyRootSessionV2<'_> {
                 || self.authority.get(HOLD_KEY)? != Some(held.as_slice())
                 || self.authority.get(&proof_key(binding_head))?
                     != proof_bytes.as_ref().map(AsRef::as_ref)
+                || self.authority.get(&held_cas_proof_key(binding_head))?
+                    != held_proof_bytes.as_ref().map(AsRef::as_ref)
             {
                 return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
             }
@@ -1595,6 +1617,10 @@ impl ClosedPolicyRootSessionV2<'_> {
             || held.issuer_owner != self.identity.issuer_owner
             || self.postcommit.is_none()
             || self.authority.get(&proof_key(held.binding))?.is_some()
+            || self
+                .authority
+                .get(&held_cas_proof_key(held.binding))?
+                .is_some()
         {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
@@ -2077,7 +2103,15 @@ fn recover_closed_binding_decision_with_proof_from_authority(
     };
     let proof_bytes = authority.get(&proof_key(binding))?;
     let proof = proof_bytes.map(RootQualifiedProofV1::decode).transpose()?;
+    let held_proof_bytes = authority.get(&held_cas_proof_key(binding))?;
+    let held_proof = held_proof_bytes.map(RootHeldProofV2::decode).transpose()?;
     if proof.is_some_and(|proof| proof.binding != binding || proof.epoch != epoch) {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    if proof.is_some() && held_proof.is_some()
+        || held_proof
+            .is_some_and(|proof| proof.binding != binding || proof.epoch != epoch || !hold.held)
+    {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
     if let Some(proof) = proof {
