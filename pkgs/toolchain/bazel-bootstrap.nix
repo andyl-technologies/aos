@@ -75,6 +75,11 @@
     if builtins.compareVersions bootstrapVersion "8.0.0" >= 0
     then callHelper ./_bazel-maven-bootstrap.nix {includeModernLibraries = true;}
     else helperScope.bazelMavenBootstrap;
+  mavenSourceRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenBootstrap = callHelper ./_bazel-maven-bootstrap.nix {
+      includeModernLibraries = true;
+    };
+  };
   protobufJava = helperScope.bazelProtobufJava;
   protobufJavaUtil = helperScope.bazelProtobufJavaUtil;
   grpcJavaPlugin =
@@ -139,8 +144,10 @@ in
     passthru.offlineSource = source;
     passthru.offlineNettyModules = helperScope.bazelNetty119;
     passthru.offlineCommonProtos = helperScope.bazelCommonProtos241;
+    passthru.offlineMavenSourceRepositories = mavenSourceRepositories;
     passthru.offlineRepositories =
-      {platforms = helperScope.bazelPlatformsSource;}
+      mavenSourceRepositories
+      // {platforms = helperScope.bazelPlatformsSource;}
       // helperScope.bazelAsyncProfilerRepositories
       // helperScope.bazelNetty119.repositories
       // {
