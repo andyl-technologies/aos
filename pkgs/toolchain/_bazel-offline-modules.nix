@@ -35,6 +35,52 @@
       hash = "sha256-/QbrEMxke9gUgbFjpMTKEk3y1NGk/56CeyWQgl6JEWI=";
     })
   ];
+
+  googleapisRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/googleapis/0.0.0-20240819-fe8ba054a";
+  googleapisSource = moduleSource {
+    name = "googleapis";
+    version = "0.0.0-20240819-fe8ba054a";
+    url = "https://github.com/googleapis/googleapis.git";
+    rev = "fe8ba054ad4f7eca946c2d14a63c3f07c0b586a0";
+    hash = "sha256-0odOAFekdecyPZNrSimUnFOctksVMEZjTpPmE9DbexU=";
+    fetchCommit = true;
+  };
+  googleapisPatch = fetchurl {
+    urls = ["${googleapisRegistryRoot}/patches/add_module_bazel.patch"];
+    hash = "sha256-SYfuiYfFrWWpalA+agDGXVV4ZgiyouUK61JWGVaaD6A=";
+  };
+  googleapisModule = fetchurl {
+    urls = ["${googleapisRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-EXt8e+cyftXWxIInRTPy29eGMTE/YHCU1GJcKCA8rN8=";
+  };
+
+  zstdJniRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/zstd-jni/1.5.6-9";
+  zstdJniSource = moduleSource {
+    name = "zstd-jni";
+    version = "1.5.6-9";
+    url = "https://github.com/luben/zstd-jni.git";
+    ref = "v1.5.6-9";
+    rev = "59b0b19c30b6942ad7eef8bb9a8c14e22290be3d";
+    hash = "sha256-XldyA/RbW0tcet6cp05P6E/GSatZ0rCs6kOT01U8xSE=";
+  };
+  zstdJniModule = fetchurl {
+    urls = ["${zstdJniRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-EwldcadY35fjpR1vSTURcZsNAl4F4SPBCpm0/JvUkTk=";
+  };
+  zstdJniPatches = [
+    (fetchurl {
+      urls = ["${zstdJniRegistryRoot}/patches/Native.java.patch"];
+      hash = "sha256-ruexYrt24UCKcwzePANDdZ4+nPLzVpZrkl3o0prkE7w=";
+    })
+    (fetchurl {
+      urls = ["${zstdJniRegistryRoot}/patches/add_build_file.patch"];
+      hash = "sha256-k67/p9wSUWEfSeeLVPabVleF+lH9YLxlog1auvezsts=";
+    })
+    (fetchurl {
+      urls = ["${zstdJniRegistryRoot}/patches/module_dot_bazel.patch"];
+      hash = "sha256-6nP0rVTjiLmtC5YqCYq1bi+dQI3pcgCGIsVqZ+27H1A=";
+    })
+  ];
 in {
   rules_cc = moduleSource {
     name = "rules_cc";
@@ -134,6 +180,76 @@ in {
         script = ''
           ${builtins.concatStringsSep "\n" (builtins.map (patchFile: ''patch --batch -p1 < ${patchFile}'') grpcPatches)}
           cmp MODULE.bazel ${grpcModule}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  googleapis = mkDerivation {
+    pname = "bazel-googleapis-bcr-source";
+    version = "0.0.0-20240819-fe8ba054a";
+    src = googleapisSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir googleapis-source
+          cp -a "$src"/. googleapis-source/
+          chmod -R u+w googleapis-source
+          cd googleapis-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch -p1 < ${googleapisPatch}
+          cmp MODULE.bazel ${googleapisModule}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  zstd-jni = mkDerivation {
+    pname = "bazel-zstd-jni-bcr-source";
+    version = "1.5.6-9";
+    src = zstdJniSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir zstd-jni-source
+          cp -a "$src"/. zstd-jni-source/
+          chmod -R u+w zstd-jni-source
+          cd zstd-jni-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          ${builtins.concatStringsSep "\n" (builtins.map (patchFile: ''patch --batch -p1 < ${patchFile}'') zstdJniPatches)}
+          cmp MODULE.bazel ${zstdJniModule}
         '';
       }
       {
