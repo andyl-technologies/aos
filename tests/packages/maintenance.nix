@@ -131,6 +131,7 @@ in
   assert !(builtins.hasAttr "update" annotated);
   assert annotated.passthru.aos.maintenance.unitId == "maintenance-fixture-1";
   assert annotated.passthru.aos.maintenance.artifacts.goModules.derivation == upstream.components.main.sources.source.drvPath;
+  assert !((pkgs.bazel.passthru.aos or {}) ? maintenance);
   assert upstream.version == "1.2.3";
   assert upstream.artifacts.goModules.hash == "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
   assert upstream.components.main.sources.source.passthru.aos.fixedOutput.kind == "url";
