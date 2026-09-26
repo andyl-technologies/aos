@@ -2561,6 +2561,80 @@ def check_rust_llvm_plugin(root, env, accache, sccache, rustc, clang, hits):
     return results
 
 
+def check_rust_llvm_file_inputs(root, env, accache, sccache, rustc, hits):
+    """Track an LLVM function-list input omitted from rustc dep-info."""
+    results = []
+    for fixture, codegen in [
+        ("rust-llvm-list-joined", [
+            "-Cllvm-args=--basic-block-sections=functions.txt"]),
+        ("rust-llvm-list-separated", [
+            "-C", "llvm-args=--basic-block-sections=functions.txt"]),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "target").mkdir()
+        (work / "source.rs").write_text(
+            '#[no_mangle] pub extern "C" fn answer(x: i32) -> i32 {\n'
+            '    if x > 100 { x * 3 } else { x + 2 }\n'
+            '}\n'
+            '#[no_mangle] pub extern "C" fn other(x: i32) -> i32 {\n'
+            '    if x < 0 { x * 5 } else { x - 7 }\n'
+            '}\n')
+        list_file = work / "functions.txt"
+        library = work / "target/libexample.rlib"
+        depfile = work / "target/example.d"
+        args = [rustc, "--crate-name=example", "--crate-type=rlib",
+                "--emit=link,dep-info", "--out-dir=target", "-Copt-level=0",
+                *codegen, "source.rs"]
+
+        def compile_library(wrapper):
+            library.unlink(missing_ok=True)
+            depfile.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            return (completed.stdout, completed.stderr,
+                    library.read_bytes(), depfile.read_bytes())
+
+        first_library = None
+        for revision, contents in enumerate(["!answer\n!!1\n", "!other\n!!1\n"]):
+            list_file.write_text(contents)
+            direct = compile_library([])
+            assert b"functions.txt" not in direct[3], "LLVM list appeared in dep-info"
+            if first_library is None:
+                first_library = direct[2]
+            else:
+                assert direct[2] != first_library, "LLVM list edit had no effect"
+
+            before_hits = hits()
+            oracle_cold = compile_library([sccache])
+            oracle_hit = hits() > before_hits
+            if oracle_cold != direct:
+                assert (revision == 1 and oracle_hit
+                        and oracle_cold[2] == first_library), (
+                            fixture, revision, "unexpected sccache difference")
+            before_hits = hits()
+            assert compile_library([sccache]) == oracle_cold
+            assert hits() > before_hits, (fixture, "sccache did not warm-hit")
+
+            assert compile_library([accache]) == direct
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert cold["outcome"] == "miss", (fixture, revision, cold)
+            if revision:
+                assert any("functions.txt" in item for item in cold["changes"]), cold
+            assert compile_library([accache]) == direct
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert warm["outcome"] == "hit", (fixture, revision, warm)
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": True,
+                            "oracle_stale_artifact": oracle_cold != direct,
+                            "accache": "hit",
+                            "artifacts": ["target/libexample.rlib", "target/example.d"]})
+
+        print("PASS oracle", fixture, "LLVM file invalidation", flush=True)
+    return results
+
+
 def check_rust_profile_use(root, env, accache, sccache, rustc, clang, hits):
     """Track rustc's profile input across cold and warm library actions."""
     work = root / "rust-profile-use"
@@ -3186,6 +3260,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                               sccache, rustc, hits))
         results.extend(check_rust_llvm_plugin(root, env, accache,
                                               sccache, rustc, clang, hits))
+        results.extend(check_rust_llvm_file_inputs(root, env, accache,
+                                                   sccache, rustc, hits))
         results.extend(check_rust_profile_use(root, env, accache, sccache,
                                               rustc, clang, hits))
         results.extend(check_rust_sample_profile_use(root, env, accache,
