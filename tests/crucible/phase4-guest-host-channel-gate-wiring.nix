@@ -333,12 +333,16 @@ in
       pname = "crucible-phase4-guest-host-channel-gate-wiring";
       version = "0";
       src = crucibleSrc;
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
       buildDeps = [
         pkgs.coreutils
+        pkgs.pkg-config
         pkgs.rust
         pkgs.sed
+        pkgs.sqlite
         qemuLiveWhiteboxDoorbell
       ];
+      runtimeDeps = [pkgs.sqlite];
       passthru.lazyGateDefinitions = {
         anyGuest = phase2AnyGuestDefinition;
         singleVmFingerprint = phase2SingleVmFingerprintDefinition;
