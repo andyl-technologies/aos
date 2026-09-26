@@ -18,6 +18,7 @@ required_claim_gates = [
   "gate:branch-point-model",
   "gate:typed-choice",
   "gate:typed-choice-product-checkpoint",
+  "gate:campaign-packaged-lifecycle",
   "gate:campaign-replay",
   "gate:lazy-frontier",
   "gate:attempt-idempotence",

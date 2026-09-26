@@ -36,6 +36,8 @@ const MAX_GUEST_SELECTABLE_BOUNDARY_LINE_BYTES: usize = 8 * 1024;
 pub(super) const MATERIALIZATION_DIAGNOSTIC_PREFIX: &str = "CRUCIBLE-MATERIALIZATION-V1 ";
 const EXACT_RESUME_PROGRESS_PREFIX: &str = "CRUCIBLE-EXACT-RESUME-PROGRESS-V1 ";
 
+#[path = "guest_choice/lifecycle.rs"]
+mod lifecycle;
 #[path = "guest_choice/maintenance_transfer.rs"]
 mod maintenance_transfer;
 

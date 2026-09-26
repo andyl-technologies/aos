@@ -2,7 +2,7 @@
 CAM-1	T-CAM-1.1	gate:campaign-model
 CAM-2	T-CAM-2.2	gate:typed-choice
 CAM-3	T-CAM-1.1,T-CAM-3.4	gate:campaign-model,gate:campaign-statistics
-CAM-4	T-CAM-4.1,T-CAM-4.3	gate:lazy-frontier,gate:branch-point-model
+CAM-4	T-CAM-4.1,T-CAM-4.3,T-CAM-4.8	gate:lazy-frontier,gate:branch-point-model,gate:campaign-packaged-lifecycle
 CAM-5	T-CAM-4.1,T-CAM-4.3	gate:lazy-frontier,gate:branch-point-model
 CAM-6	T-CAM-5.9,T-CAM-8.1	gate:campaign-operational-continuity,gate:campaign-store-composition
 CAM-7	T-CAM-7.3	gate:hot-fork-equivalence,gate:host-clone-cost
