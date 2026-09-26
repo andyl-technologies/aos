@@ -141,6 +141,8 @@ in
           # cache, write-back-root, packed, and S3 global-GC paths.
           for daemon_test in \
             campaign_gc::tests::policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy \
+            campaign_gc::tests::write_back_roots_retain_exact_pending_objects_and_refs_retain_closures \
+            campaign_gc::tests::direct_transfer_root_promoted_to_hot_root_revalidates_its_closure \
             campaign_gc::tests::write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion \
             campaign_gc::tests::apply_and_restart::interrupted_apply_retains_journal_and_requires_a_fresh_plan \
             campaign_gc::tests::apply_and_restart::directory_plan_journal_and_apply_survive_full_backend_restart \
@@ -149,7 +151,8 @@ in
             campaign_gc::tests::apply_and_restart::compressed_encrypted_graph_admin_drives_plaintext_accounted_gc_across_restart \
             campaign_gc::tests::apply_and_restart::logical_quota_graph_gc_reclaims_admission_capacity_across_restart \
             campaign_gc::tests::apply_and_restart::packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_bytes \
-            campaign_gc::tests::s3::s3_graph_admin_drives_global_gc_across_restart
+            campaign_gc::tests::s3::s3_graph_admin_drives_global_gc_across_restart \
+            campaign_gc::tests::s3::s3_gc_retains_multiple_refs_and_transfer_during_backend_faults
           do
             run_exact_lib_test crucible-daemon "$daemon_test"
           done
@@ -209,6 +212,8 @@ in
           branch_edge_credit_exactly_once=true
           global_gc=true
           interrupted_gc_journal=true
+          active_publication_transfer_write_back_gc=true
+          s3_faults_preserve_multiple_refs_and_transfer_gc=true
           packed_restart_and_repack=true
           specialized_layers=compressed,encrypted,compressed-encrypted,logical-quota,physical-quota,namespaced,profile-validated,s3
           RESULT
