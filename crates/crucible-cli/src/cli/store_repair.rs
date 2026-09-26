@@ -370,6 +370,6 @@ root = {target:?}
     fn object_path(root: &Path, content: ContentId) -> PathBuf {
         let encoded = content.encode();
         let digest = encoded.rsplit('.').next().expect("content digest");
-        root.join("trace").join("1").join(&digest[..2]).join(digest)
+        root.join("objects").join(&digest[..2]).join(encoded)
     }
 }

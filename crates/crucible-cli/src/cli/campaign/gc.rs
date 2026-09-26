@@ -893,10 +893,9 @@ mod tests {
         let digest = encoded.rsplit('.').next().expect("content digest");
         let object = fixture
             .objects
-            .join("scenario")
-            .join("1")
+            .join("objects")
             .join(&digest[..2])
-            .join(digest);
+            .join(encoded);
         fs::write(object, b"corrupt replacement").expect("corrupt stored object");
         let error = run_store_ensure(
             &StoreEnsureArgs {

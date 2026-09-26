@@ -635,10 +635,7 @@ fn corrupt_destination_object_retains_ownership_and_retries_after_repair() {
 fn directory_object_path(root: &Path, id: crucible_cas::content_store::ContentId) -> PathBuf {
     let encoded = id.encode();
     let digest = encoded.rsplit_once('.').expect("content ID digest").1;
-    root.join(id.kind().as_str())
-        .join(id.schema_version().to_string())
-        .join(&digest[..2])
-        .join(digest)
+    root.join("objects").join(&digest[..2]).join(encoded)
 }
 
 #[test]
