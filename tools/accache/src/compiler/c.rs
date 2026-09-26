@@ -101,6 +101,18 @@ pub(super) fn configure(
                         invocation.output(Path::new(destination), false)?;
                     }
                 } else if arg.starts_with("-fdump-") {
+                    if matches!(
+                        arg.as_str(),
+                        "-fdump-noaddr"
+                            | "-fdump-unnumbered"
+                            | "-fdump-unnumbered-links"
+                            | "-fdump-internal-locations"
+                            | "-fdump-passes"
+                    ) {
+                        // These change dump formatting or write only stderr;
+                        // they do not create another compiler output file.
+                        continue;
+                    }
                     if arg == "-fdump-final-insns" {
                         default_reports.insert(".gkd");
                         continue;
@@ -119,7 +131,8 @@ pub(super) fn configure(
                             || arg.starts_with("-fdump-ipa-")
                             || arg.starts_with("-fdump-lang-")
                             || arg.starts_with("-fdump-analyzer")
-                            || arg.starts_with("-fdump-statistics"),
+                            || arg.starts_with("-fdump-statistics")
+                            || matches!(arg.as_str(), "-fdump-debug" | "-fdump-earlydebug"),
                         "GCC dump option has an untracked side output"
                     );
                     implicit_dump = true;
