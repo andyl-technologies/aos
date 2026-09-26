@@ -814,6 +814,7 @@ let
     "tools/workerd/_rust-repository.nix" = "native-build-helper";
     "_platform-support.nix" = "platform-policy";
     "build-support/_cargo-artifacts.nix" = "native-build-helper";
+    "build-support/_cargo-source-vendor.nix" = "native-build-helper";
     "build-support/_config-module-renderer.nix" = "native-build-helper";
     "build-support/_expose-module.nix" = "target-independent-source";
     "build-support/_expose-renderer.nix" = "native-build-helper";
