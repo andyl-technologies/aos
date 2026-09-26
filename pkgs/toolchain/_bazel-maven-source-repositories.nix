@@ -1,7 +1,7 @@
 ##! Local Bazel repository overrides for Maven JARs compiled from source.
 {
   mkDerivation,
-  mavenBootstrap,
+  mavenPackage,
 }: let
   repositoryName = target:
     "rules_jvm_external++maven+"
@@ -11,10 +11,10 @@
     mkDerivation {
       pname = "bazel-maven-source-repository";
       version = "1";
-      src = mavenBootstrap;
+      src = mavenPackage;
 
       buildDeps = [];
-      runtimeDeps = [mavenBootstrap];
+      runtimeDeps = [mavenPackage];
 
       phases = [
         {
@@ -22,7 +22,7 @@
           script = ''
             mkdir -p "$out/file"
             printf 'workspace(name = "bazel_maven_source")\n' > "$out/WORKSPACE"
-            cp ${mavenBootstrap}/maven/${target} "$out/file/artifact.jar"
+            cp ${mavenPackage}/maven/${target} "$out/file/artifact.jar"
             cat > "$out/file/BUILD.bazel" <<'BUILD'
             package(default_visibility = ["//visibility:public"])
             filegroup(name = "file", srcs = ["artifact.jar"])
@@ -36,4 +36,4 @@ in
       name = repositoryName target;
       value = repository target;
     })
-    mavenBootstrap.passthru.sourceTargets)
+    mavenPackage.passthru.sourceTargets)
