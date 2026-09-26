@@ -142,30 +142,18 @@ pub(super) fn configure(
             scan.push(format!("-Wa,--MD,{}", invocation.dependencies.display()));
         }
     } else if parsed.language.needs_c_preprocessing() {
-        if parsed.language == Language::AssemblerToPreprocess {
-            if clang {
+        if clang {
+            if parsed.language == Language::AssemblerToPreprocess {
                 // Clang's integrated assembler cannot emit .include deps.
                 invocation.extension_reads(manifest)?;
             } else {
-                let mut assembly_scan = scan.clone();
-                assembly_scan.extend([
-                    "-c".into(),
-                    "-save-temps=obj".into(),
-                    "-o".into(),
-                    invocation
-                        ._temporary
-                        .path()
-                        .join("probe.o")
-                        .to_string_lossy()
-                        .into_owned(),
-                    format!("-Wa,--MD,{}", invocation.assembly_dependencies.display()),
-                ]);
-                if parsed.double_dash_input {
-                    assembly_scan.push("--".into());
-                }
-                assembly_scan.push(parsed.input.to_string_lossy().into_owned());
-                invocation.assembly_scan_args = Some(assembly_scan);
+                invocation.assembly_read_roots_if_directive =
+                    Some(manifest.read_roots.iter().map(PathBuf::from).collect());
             }
+        } else {
+            configure_assembly_scan(invocation, &scan, &parsed.input, parsed.double_dash_input);
+            invocation.assembly_probe_if_directive =
+                parsed.language != Language::AssemblerToPreprocess;
         }
         scan.extend([
             "-E".into(),
@@ -188,6 +176,14 @@ pub(super) fn configure(
             ),
             "unsupported GCC/Clang language driver"
         );
+        invocation.assembly_directive_input = Some(parsed.input.clone());
+        if clang {
+            invocation.assembly_read_roots_if_directive =
+                Some(manifest.read_roots.iter().map(PathBuf::from).collect());
+        } else {
+            configure_assembly_scan(invocation, &scan, &parsed.input, parsed.double_dash_input);
+            invocation.assembly_probe_if_directive = true;
+        }
         return Ok(());
     }
     if parsed.double_dash_input {
@@ -206,4 +202,30 @@ pub(super) fn configure(
         invocation.output(&object.path.with_extension("d"), false)?;
     }
     Ok(())
+}
+
+fn configure_assembly_scan(
+    invocation: &mut Invocation,
+    base: &[String],
+    input: &Path,
+    double_dash_input: bool,
+) {
+    let mut scan = base.to_vec();
+    scan.extend([
+        "-c".into(),
+        "-save-temps=obj".into(),
+        "-o".into(),
+        invocation
+            ._temporary
+            .path()
+            .join("probe.o")
+            .to_string_lossy()
+            .into_owned(),
+        format!("-Wa,--MD,{}", invocation.assembly_dependencies.display()),
+    ]);
+    if double_dash_input {
+        scan.push("--".into());
+    }
+    scan.push(input.to_string_lossy().into_owned());
+    invocation.assembly_scan_args = Some(scan);
 }

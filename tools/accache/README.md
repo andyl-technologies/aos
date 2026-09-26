@@ -85,6 +85,12 @@ The package author must declare every extension-readable mutable input and
 must not cache compiler extensions with undeclared side effects. This is an
 input contract, not an additional filesystem sandbox. Full tree hashing can
 produce conservative misses and can be expensive for large generated trees.
+Literal `.include` and `.incbin` directives in C/C++ inline assembly also
+receive extra dependency discovery when they appear in preprocessed text.
+GNU compilers use an assembler depfile probe only for those actions; Clang
+requires declared `read_roots`. Disable accache for actions that construct
+these directives from separate string fragments; the literal check cannot
+discover them.
 
 ## Frontend compatibility
 
@@ -201,6 +207,9 @@ discovered after compilation within the declared output directory.
 Another oracle case changes a GNU assembler `.include` under a `.S` file:
 pinned sccache incorrectly replays the old object, while accache reports the
 changed include in its miss explanation and returns the new compiler output.
+Four more cases mutate a binary read by C inline assembly in GCC/Clang `.c`
+and `.i` compilations. Pinned sccache again replays stale objects; accache
+misses and names the changed binary input.
 Clang and Rust profile cases generate two real instrumentation profiles each
 and require a miss naming the changed `.profdata` file, followed by a warm hit
 for each profile.

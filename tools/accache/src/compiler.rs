@@ -47,6 +47,9 @@ pub struct Invocation {
     dynamic_before: BTreeMap<String, OutputStamp>,
     scan_args: Option<Vec<String>>,
     assembly_scan_args: Option<Vec<String>>,
+    assembly_probe_if_directive: bool,
+    assembly_directive_input: Option<PathBuf>,
+    assembly_read_roots_if_directive: Option<Vec<PathBuf>>,
     scan_stdout: bool,
     dependencies: PathBuf,
     assembly_dependencies: PathBuf,
@@ -77,6 +80,9 @@ pub fn classify(
         dynamic_before: BTreeMap::new(),
         scan_args: None,
         assembly_scan_args: None,
+        assembly_probe_if_directive: false,
+        assembly_directive_input: None,
+        assembly_read_roots_if_directive: None,
         scan_stdout: false,
         dependencies: PathBuf::new(),
         assembly_dependencies: PathBuf::new(),
@@ -234,6 +240,7 @@ impl Invocation {
         environment: &BTreeMap<String, String>,
     ) -> Result<BTreeMap<String, String>> {
         let mut inputs = BTreeMap::new();
+        let mut assembler_file_directive = false;
         if let Some(scan) = &self.scan_args {
             if self.dependencies.exists() {
                 fs::remove_file(&self.dependencies)?;
@@ -252,6 +259,7 @@ impl Invocation {
                 inputs.insert(path.clone(), fingerprint(Path::new(&path))?);
             }
             if self.scan_stdout {
+                assembler_file_directive = has_assembler_file_directive(&output.stdout);
                 // GCC represents a consumed PCH as a pragma in preprocessed
                 // output. Its content is an input even when omitted by -MD.
                 for line in String::from_utf8_lossy(&output.stdout).lines() {
@@ -265,7 +273,12 @@ impl Invocation {
                 inputs.insert("<preprocessor-output>".into(), hash(&output.stdout));
             }
         }
-        if let Some(scan) = &self.assembly_scan_args {
+        if let Some(path) = &self.assembly_directive_input {
+            assembler_file_directive = has_assembler_file_directive(&fs::read(path)?);
+        }
+        if let Some(scan) = &self.assembly_scan_args
+            && (!self.assembly_probe_if_directive || assembler_file_directive)
+        {
             if self.assembly_dependencies.exists() {
                 fs::remove_file(&self.assembly_dependencies)?;
             }
@@ -298,6 +311,15 @@ impl Invocation {
         }
         for path in &self.recursive_dirs {
             self.directory_inputs(path, true, &mut inputs, &mut BTreeSet::new())?;
+        }
+        if assembler_file_directive && let Some(roots) = &self.assembly_read_roots_if_directive {
+            ensure!(
+                !roots.is_empty() && roots.iter().all(|path| path.is_dir()),
+                "assembler directive requires manifest read_roots"
+            );
+            for path in roots {
+                self.directory_inputs(path, true, &mut inputs, &mut BTreeSet::new())?;
+            }
         }
         // Native CPU flags must not share results across different hosts that
         // happen to use the same store closure. Ignore changing clock speeds.
@@ -367,6 +389,16 @@ impl Invocation {
         }
         Ok(())
     }
+}
+
+fn has_assembler_file_directive(bytes: &[u8]) -> bool {
+    [b".include".as_slice(), b".incbin".as_slice()]
+        .iter()
+        .any(|directive| {
+            bytes
+                .windows(directive.len())
+                .any(|word| word == *directive)
+        })
 }
 
 fn response_inputs(
