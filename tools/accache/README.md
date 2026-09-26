@@ -161,6 +161,9 @@ while concurrent crates are being built. Proc-macro consumers instead use an
 environment-matched probe and conservatively inventory their crate search
 directories: a macro can read `RUSTC_BOOTSTRAP` and emit different file reads.
 Native library search directories also retain their conservative inventory.
+Concurrent Cargo writes to a proc-macro consumer's search directory can change
+that inventory during compilation. Accache then records `unstable-inputs` with
+the changed file names and returns the compiled result without publishing it.
 The pinned built-in `-Zcodegen-backend=llvm` uses the compiler closure and can
 be cached. Other backend names and paths need declared `read_roots` because a
 runtime backend can read files missing from rustc's dep-info; an explicit

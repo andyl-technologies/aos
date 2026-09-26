@@ -213,4 +213,3 @@ pub enum ColorMode {
     #[default]
     Auto,
 }
-
