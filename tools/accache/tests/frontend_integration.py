@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -104,13 +105,101 @@ def suite(root):
               ["--crate-name=save_temps_disabled", "--crate-type=rlib",
                "--emit=link,dep-info", "--out-dir=target", "library.rs",
                "-Csave-temps=yes", "--codegen=save-temps=no"])
-    _, saved_temporaries = invoke(rustc,
-                                  ["--crate-name=save_temps_enabled", "--crate-type=rlib",
-                                   "--emit=link,dep-info", "--out-dir=target", "library.rs",
-                                   "-Csave-temps=no", "-Csave-temps=yes"], "bypass")
-    assert "save-temps" in saved_temporaries["reason"], saved_temporaries
-    assert list((work / "target").rglob("*.bc")), "rustc did not save temporary bitcode"
-    print("PASS Rust save-temps passthrough", flush=True)
+    saved_args = ["--crate-name=save_temps_enabled", "--crate-type=rlib",
+                  "--emit=link,dep-info", "--out-dir=target", "library.rs",
+                  "-Csave-temps=no", "-Csave-temps=yes"]
+    _, saved_temporaries = invoke(rustc, saved_args, "miss")
+    saved_paths = [work / path for path in saved_temporaries["artifacts"]]
+    assert any(path.suffix == ".bc" for path in saved_paths), saved_paths
+    assert any(path.parent.name.startswith(("rmeta", "rustc")) for path in saved_paths), saved_paths
+    saved_bytes = {path: path.read_bytes() for path in saved_paths}
+    for path in saved_paths:
+        path.unlink()
+    _, restored_temporaries = invoke(rustc, saved_args, "hit")
+    assert all(path.read_bytes() == content for path, content in saved_bytes.items())
+    assert set(restored_temporaries["artifacts"]) == set(saved_temporaries["artifacts"])
+    print("PASS Rust save-temps warm restoration", flush=True)
+
+    split_saved_args = ["--crate-name=split_saved", "--crate-type=rlib",
+                        "--emit=link,dep-info", "--out-dir=target", "library.rs",
+                        "-Csave-temps=yes", "-Csplit-debuginfo=unpacked", "-Cdebuginfo=2"]
+    _, split_saved = invoke(rustc, split_saved_args, "miss")
+    split_paths = [work / path for path in split_saved["artifacts"]]
+    assert any(path.suffix == ".dwo" for path in split_paths), split_paths
+    split_bytes = {path: path.read_bytes() for path in split_paths}
+    for path in split_paths:
+        path.unlink()
+    invoke(rustc, split_saved_args, "hit")
+    assert all(path.read_bytes() == content for path, content in split_bytes.items())
+    print("PASS Rust save-temps and split-debug restoration", flush=True)
+
+    for label, crate_type, emit in [
+        ("metadata", "rlib", "metadata,dep-info"),
+        ("staticlib", "staticlib", "link,dep-info"),
+    ]:
+        args = [f"--crate-name=saved_{label}", f"--crate-type={crate_type}",
+                f"--emit={emit}", "--out-dir=target", "library.rs",
+                "-Csave-temps=yes"]
+        _, first = invoke(rustc, args, "miss")
+        paths = [work / path for path in first["artifacts"]]
+        if crate_type == "staticlib":
+            assert any(path.parent.name.startswith(("rmeta", "rustc")) for path in paths), paths
+        contents = {path: path.read_bytes() for path in paths}
+        for path in paths:
+            path.unlink()
+        _, restored = invoke(rustc, args, "hit")
+        assert set(restored["artifacts"]) == set(first["artifacts"])
+        assert all(path.read_bytes() == content for path, content in contents.items())
+        print(f"PASS Rust save-temps {label} restoration", flush=True)
+
+    saved_target = work / "target" / "concurrent-saved"
+    saved_target.mkdir()
+    saved_cases = []
+    for name, answer in [("first", 11), ("second", 29)]:
+        source = work / f"saved-{name}.rs"
+        functions = "\n".join(
+            f"#[inline(never)] pub fn value_{index}() -> u32 {{ {answer + index} }}"
+            for index in range(200))
+        source.write_text(functions + "\n")
+        args = [f"--crate-name=saved_{name}", "--crate-type=rlib",
+                "--emit=link,dep-info", "--out-dir=target/concurrent-saved",
+                source.name, "-Csave-temps=yes", "-Ccodegen-units=4"]
+        saved_cases.append((name, args))
+
+    def saved_outputs():
+        outputs = []
+        for path in saved_target.rglob("*"):
+            if not path.is_file():
+                continue
+            parts = list(path.relative_to(saved_target).parts)
+            if len(parts) > 1 and parts[0].startswith(("rmeta", "rustc")):
+                parts[0] = "rmeta*" if parts[0].startswith("rmeta") else "rustc*"
+            outputs.append(("/".join(parts), path.read_bytes()))
+        return sorted(outputs)
+
+    direct_saved_outputs = {}
+    for name, args in saved_cases:
+        result = subprocess.run([rustc, *args], cwd=work, env=env,
+                                capture_output=True, timeout=120)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        direct_saved_outputs[name] = saved_outputs()
+        shutil.rmtree(saved_target)
+        saved_target.mkdir()
+
+    workers = [subprocess.Popen([binary, rustc, *args], cwd=work,
+                                env=env | {"ACCACHE_VERBOSE": "1"},
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+               for _, args in saved_cases]
+    for worker in workers:
+        _, stderr = worker.communicate(timeout=120)
+        assert worker.returncode == 0 and b"accache: miss:" in stderr, stderr
+
+    for name, args in saved_cases:
+        shutil.rmtree(saved_target)
+        saved_target.mkdir()
+        _, restored = invoke(rustc, args, "hit")
+        assert saved_outputs() == direct_saved_outputs[name], (name, restored)
+    print("PASS concurrent Rust save-temps output attribution", flush=True)
 
     # Both actions write the same .dwo output scope. A warm hit after they
     # compile concurrently must restore the files from its own source.

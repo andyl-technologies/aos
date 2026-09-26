@@ -4,6 +4,7 @@
 //! cache/ac/ab/abcdef...       ActionResult protobuf
 //! cache/cas/ab/abcdef...      SHA-256 addressed bytes
 //! state/locks/<action>       advisory lock, never unlinked
+//! state/locks/rust-dir-<sha> shared/exclusive Rust output-directory lock
 //! state/events/<unique>.json immutable provenance event
 //! ```
 //! Blobs are committed before action results. Readers verify every digest and
@@ -139,6 +140,30 @@ impl Backend {
         self.lock_named(&format!("scope-{}", hash(identity.as_bytes())))
     }
 
+    /// Coordinates Rust compilers sharing one output directory.
+    ///
+    /// Ordinary compiles take a shared lock. Saved temporary output discovery
+    /// takes an exclusive lock so another compiler's random metadata directory
+    /// cannot be mistaken for this action's side output.
+    ///
+    /// # Errors
+    /// Returns an error if the directory lock cannot be opened or acquired.
+    pub fn lock_rust_directory(&self, directory: &str, exclusive: bool) -> Result<File> {
+        let name = format!("rust-dir-{}", hash(directory.as_bytes()));
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(self.state.join("locks").join(name))?;
+        if exclusive {
+            lock.lock()?;
+        } else {
+            lock.lock_shared()?;
+        }
+        Ok(lock)
+    }
+
     fn lock_named(&self, name: &str) -> Result<File> {
         let lock = OpenOptions::new()
             .create(true)
@@ -209,6 +234,13 @@ impl Backend {
             )?;
             let parent = destination.parent().unwrap_or(Path::new("."));
             fs::create_dir_all(parent)?;
+            if !fixed_destinations.contains_key(&output.path) {
+                let scope = dynamic.ok_or_else(|| anyhow::anyhow!("missing dynamic scope"))?;
+                ensure!(
+                    parent.canonicalize()?.starts_with(&scope.directory),
+                    "dynamic output parent escaped its directory"
+                );
+            }
             // Set the creation mode before opening the file: the kernel then
             // applies the caller's umask or inherited ACL. A later chmod(0644)
             // would remove the write permission shared Cargo targets need.
@@ -373,35 +405,40 @@ fn wire_dynamic_output(scope: &DynamicOutputs, path: &Path) -> Result<String> {
         .parent()
         .ok_or_else(|| anyhow::anyhow!("dynamic output has no parent"))?
         .canonicalize()?;
-    ensure!(
-        parent == Path::new(&scope.directory),
-        "dynamic output escaped its directory"
-    );
+    let parent = parent
+        .strip_prefix(&scope.directory)
+        .map_err(|_| anyhow::anyhow!("dynamic output escaped its directory"))?;
     let name = path
         .file_name()
-        .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow::anyhow!("invalid dynamic output filename"))?;
+    let relative = parent.join(name);
     ensure!(
-        name.starts_with(&scope.prefix) && name.ends_with(&scope.suffix),
+        scope.accepts(&relative),
         "dynamic output name is outside its declared scope"
     );
-    Ok(format!("{}/{name}", wire_dynamic_root(scope)))
+    Ok(format!(
+        "{}/{}",
+        wire_dynamic_root(scope),
+        relative.display()
+    ))
 }
 
 fn dynamic_destination(scope: &DynamicOutputs, wire: &str) -> Option<String> {
     let root = wire_dynamic_root(scope);
-    let name = wire.strip_prefix(&format!("{root}/"))?;
-    if name.contains('/')
-        || name == "."
-        || name == ".."
-        || !name.starts_with(&scope.prefix)
-        || !name.ends_with(&scope.suffix)
+    let relative_name = wire.strip_prefix(&format!("{root}/"))?;
+    if relative_name
+        .split('/')
+        .any(|component| matches!(component, "" | "." | ".."))
     {
+        return None;
+    }
+    let relative = Path::new(relative_name);
+    if !scope.accepts(relative) {
         return None;
     }
     Some(
         Path::new(&scope.directory)
-            .join(name)
+            .join(relative)
             .to_string_lossy()
             .into_owned(),
     )
@@ -426,8 +463,13 @@ pub fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dynamic_destination, wire_dynamic_root};
+    use super::{Backend, dynamic_destination, wire_dynamic_root};
     use crate::model::DynamicOutputs;
+    use std::{
+        sync::{Arc, mpsc},
+        thread,
+        time::Duration,
+    };
 
     #[test]
     fn dynamic_cache_paths_cannot_escape_the_declared_output_scope() {
@@ -435,6 +477,7 @@ mod tests {
             directory: "/build/target".into(),
             prefix: "example.".into(),
             suffix: ".dwo".into(),
+            nested_prefixes: Vec::new(),
         };
         let root = wire_dynamic_root(&scope);
         let expected = "/build/target/example.hash-cgu.0.rcgu.dwo";
@@ -451,5 +494,62 @@ mod tests {
         ] {
             assert!(dynamic_destination(&scope, &wire).is_none(), "{wire}");
         }
+    }
+
+    #[test]
+    fn saved_rust_metadata_paths_stay_beneath_random_directories() {
+        let scope = DynamicOutputs {
+            directory: "/build/target".into(),
+            prefix: "example.".into(),
+            suffix: String::new(),
+            nested_prefixes: vec!["rmeta".into(), "rustc".into()],
+        };
+        let root = wire_dynamic_root(&scope);
+
+        assert_eq!(
+            dynamic_destination(&scope, &format!("{root}/rustcAB1234/lib.rmeta")),
+            Some("/build/target/rustcAB1234/lib.rmeta".into())
+        );
+        for wire in [
+            format!("{root}/rustcAB1234/../other.rmeta"),
+            format!("{root}/rustcAB1234/../../other.rmeta"),
+            format!("{root}/unrelated/lib.rmeta"),
+            format!("{root}/rmetaAB1234//full.rmeta"),
+        ] {
+            assert!(dynamic_destination(&scope, &wire).is_none(), "{wire}");
+        }
+    }
+
+    #[test]
+    fn saved_rust_actions_wait_for_other_compilers_in_the_target() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let backend = Arc::new(Backend::new(
+            temporary.path().join("cache"),
+            temporary.path().join("state"),
+        )?);
+        let first = backend.lock_rust_directory("/build/target", false)?;
+        let second = backend.lock_rust_directory("/build/target", false)?;
+        let (starting, started) = mpsc::channel();
+        let (acquired, finished) = mpsc::channel();
+        let contender = Arc::clone(&backend);
+
+        let worker = thread::spawn(move || -> anyhow::Result<()> {
+            starting.send(())?;
+            let exclusive = contender.lock_rust_directory("/build/target", true)?;
+            acquired.send(())?;
+            drop(exclusive);
+            Ok(())
+        });
+        started.recv_timeout(Duration::from_secs(1))?;
+        assert!(finished.recv_timeout(Duration::from_millis(50)).is_err());
+
+        drop(first);
+        assert!(finished.recv_timeout(Duration::from_millis(50)).is_err());
+        drop(second);
+        finished.recv_timeout(Duration::from_secs(1))?;
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("lock contender panicked"))??;
+        Ok(())
     }
 }

@@ -328,8 +328,8 @@ def check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits):
 def check_saved_temporaries(root, env, accache, sccache, rustc, hits):
     """Check that requested Rust temporary outputs survive accache invocations."""
     # Pinned sccache caches -Csave-temps but drops its dynamically named
-    # bitcode and temporary metadata on a hit. Accache preserves these
-    # requested outputs by letting rustc compile instead of caching it.
+    # bitcode and temporary metadata on a hit. Accache restores every file,
+    # including metadata under rustc's randomly named directories.
     save_temps = root / "rust-save-temps"
     save_temps.mkdir()
     (save_temps / "target").mkdir()
@@ -352,6 +352,15 @@ def check_saved_temporaries(root, env, accache, sccache, rustc, hits):
     def saved_bitcode(files):
         return any(name.endswith(".bc") for name in files)
 
+    def normalized(files):
+        entries = []
+        for name, contents in files.items():
+            parts = name.split("/")
+            if len(parts) > 2 and parts[1].startswith(("rmeta", "rustc")):
+                parts[1] = "rmeta*" if parts[1].startswith("rmeta") else "rustc*"
+            entries.append(("/".join(parts), contents))
+        return sorted(entries)
+
     direct_saved = compile_with_saved_temporaries([])
     oracle_saved = compile_with_saved_temporaries([sccache])
     before_hits = hits()
@@ -369,11 +378,15 @@ def check_saved_temporaries(root, env, accache, sccache, rustc, hits):
     assert all(saved_bitcode(files) for files in [direct_saved, oracle_saved,
                                                    accache_saved, accache_warm_saved])
     assert not saved_bitcode(oracle_hit_saved), "sccache save-temps defect changed"
-    for event in [cold_saved_event, warm_saved_event]:
-        assert event["outcome"] == "bypass" and "save-temps" in event["reason"], event
+    assert cold_saved_event["outcome"] == "miss", cold_saved_event
+    assert warm_saved_event["outcome"] == "hit", warm_saved_event
+    assert accache_saved == accache_warm_saved, sorted(set(accache_saved) ^ set(accache_warm_saved))
+    assert normalized(accache_saved) == normalized(direct_saved)
+    assert any("/rmeta" in path or "/rustc" in path
+               for path in warm_saved_event["artifacts"]), warm_saved_event
     print("PASS oracle rust-save-temps output preservation", flush=True)
     return {"fixture": "rust-save-temps", "revision": 0,
-            "oracle_hit": True, "accache": "bypass",
+            "oracle_hit": True, "accache": "hit",
             "oracle_missing_artifacts": sorted(set(oracle_saved) - set(oracle_hit_saved)),
             "artifacts": sorted(direct_saved)}
 
