@@ -138,7 +138,8 @@ in
     passthru.offlineModules = helperScope.bazelOfflineModules;
     passthru.offlineRepositories =
       {platforms = helperScope.bazelPlatformsSource;}
-      // helperScope.bazelAsyncProfilerRepositories;
+      // helperScope.bazelAsyncProfilerRepositories
+      // {"grpc++grpc_repo_deps_ext+com_github_cncf_xds" = helperScope.bazelGrpcXdsSource;};
 
     buildDeps =
       [
