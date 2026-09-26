@@ -292,6 +292,7 @@ let
   # Wave 3: compilers, interpreters and build systems.  These require a native
   # Linux compiler/interpreter package set distinct from Darwin target outputs.
   targetWave3 = [
+    "accache"
     "cargo-c"
     "mdbook"
     "alejandra"

@@ -57,6 +57,14 @@ in
   assert compilerShared.pkgs.aos.ACCACHE_STATE_DIR == "/custom/compiler-state";
   assert !(plain.pkgs.aos ? ACCACHE_MANIFEST);
   assert !(compilerShared.pkgs.rust ? ACCACHE_MANIFEST);
+  assert plain.pkgs.dwarves.drvPath != compilerShared.pkgs.dwarves.drvPath;
+  assert plain.pkgs.boringssl.drvPath != compilerShared.pkgs.boringssl.drvPath;
+  assert !(plain.pkgs.dwarves ? ACCACHE_MANIFEST);
+  assert !(plain.pkgs.boringssl ? ACCACHE_MANIFEST);
+  assert compilerShared.pkgs.dwarves.ACCACHE_DIR == "/custom/compiler-cache";
+  assert compilerShared.pkgs.boringssl.ACCACHE_STATE_DIR == "/custom/compiler-state";
+  assert compilerShared.pkgs.dwarves.CMAKE_C_COMPILER_LAUNCHER == "${compilerShared.pkgs.accache}/bin/accache";
+  assert !(compilerShared.pkgs.dwarves ? RUSTC_WRAPPER);
   assert cacheMountProbe.builder == "${plain.stdenv.bootstrap.bash}/bin/bash";
   assert plain.stdenv.cc.drvPath == shared.stdenv.cc.drvPath;
   assert plain.pkgs.gcc-libs.drvPath == shared.pkgs.gcc-libs.drvPath;

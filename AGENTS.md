@@ -164,9 +164,9 @@ target directory, Rust incremental compilation, and accache. Leading `--no-go-ca
 `AOS_DEV_GO_CACHE_DIR`, `AOS_DEV_BAZEL_CACHE_DIR`, and
 `AOS_DEV_RUST_TARGET_DIR`; `AOS_DEV_CACHE_DIR` selects their host storage root
 (XDG cache by default, with `/var/tmp` fallback for private homes).
-The CLI passes each enabled path to the matching language builder. Generic
-packages and toolchains keep their ordinary derivation identities. Accache caches
-nonincremental Rust actions; incremental invocations pass through. See
+The CLI passes each enabled path to the matching language builder. Opted-in
+CMake applications use accache; toolchains keep their ordinary identities.
+Accache caches nonincremental Rust actions; incremental invocations pass through. See
 [`tools/accache/README.md`](tools/accache/README.md) for coverage and diagnostics.
 
 Run `cache init` once per machine; it sets up directories and ACLs without

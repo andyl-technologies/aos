@@ -6,6 +6,7 @@
 }: let
   compilers = {
     "${builtins.unsafeDiscardStringContext (toString pkgs.cc)}/bin/gcc" = "c";
+    "${builtins.unsafeDiscardStringContext (toString pkgs.cc)}/bin/g++" = "c";
     "${builtins.unsafeDiscardStringContext (toString pkgs.llvm)}/bin/clang" = "c";
     "${builtins.unsafeDiscardStringContext (toString pkgs.rust)}/bin/rustc" = "rust";
   };
@@ -21,8 +22,10 @@ in
     version = "1";
     src = null;
     sharedBuildCache = false;
-    buildDeps = [pkgs.accache pkgs.cc pkgs.llvm pkgs.rust pkgs.python3 sccacheOracle];
+    buildDeps = [pkgs.accache pkgs.cc pkgs.llvm pkgs.rust pkgs.python3 pkgs.cmake pkgs.ninja sccacheOracle];
     ACCACHE_MANIFEST = cacheEnvironment.ACCACHE_MANIFEST;
+    CMAKE_C_COMPILER_LAUNCHER = cacheEnvironment.CMAKE_C_COMPILER_LAUNCHER;
+    CMAKE_CXX_COMPILER_LAUNCHER = cacheEnvironment.CMAKE_CXX_COMPILER_LAUNCHER;
     phases = [
       {
         name = "check";
@@ -32,6 +35,9 @@ in
           ${pkgs.python3}/bin/python3 ${../../tools/accache/tests/integration.py} \
             ${pkgs.accache}/bin/accache ${pkgs.cc}/bin/gcc \
             ${pkgs.llvm}/bin/clang ${pkgs.rust}/bin/rustc
+          ${pkgs.python3}/bin/python3 ${../../tools/accache/tests/cmake_integration.py} \
+            ${pkgs.accache}/bin/accache ${pkgs.cc}/bin/gcc \
+            ${pkgs.cc}/bin/g++ ${pkgs.cmake}/bin/cmake ${pkgs.ninja}/bin/ninja
           ${pkgs.python3}/bin/python3 ${../../tools/accache/tests/frontend_integration.py} \
             ${pkgs.accache}/bin/accache ${pkgs.cc}/bin/gcc \
             ${pkgs.llvm}/bin/clang ${pkgs.rust}/bin/rustc

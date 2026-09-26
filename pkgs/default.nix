@@ -426,10 +426,35 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         then crossFixupPhase
         else phase
     ) (args.phases or []);
+    # CMake application recipes opt in explicitly. Injecting launchers into
+    # every package would change bootstrap and language-toolchain identities.
+    cacheCCompilers =
+      sharedAccacheDir
+      != null
+      && sharedAccacheStateDir != null
+      && (args.cacheCCompilers or false)
+      && (args.sharedBuildCache or true)
+      && !isToolchainName packageName;
+    cCompilerCacheEnvironment = mkAccacheEnvironment {
+      compilers = {
+        "${builtins.unsafeDiscardStringContext (toString stdenv.cc)}/bin/cc" = "c";
+        "${builtins.unsafeDiscardStringContext (toString stdenv.cc)}/bin/gcc" = "c";
+        "${builtins.unsafeDiscardStringContext (toString stdenv.cc)}/bin/c++" = "c";
+        "${builtins.unsafeDiscardStringContext (toString stdenv.cc)}/bin/g++" = "c";
+      };
+      roots =
+        [stdenv.cc]
+        ++ builtins.map spliceBuildDependency (args.buildDeps or [])
+        ++ (args.runtimeDeps or [])
+        ++ (args.propagatedDeps or []);
+      cacheDir = sharedAccacheDir;
+      stateDir = sharedAccacheStateDir;
+    };
     lowerArgs =
       # `configModule` is an mkDerivation-level arg consumed here, not passed
       # down to the raw builder (mirrors how `expose` is handled).
-      (builtins.removeAttrs args ["configModule" "sharedBuildCache"])
+      (builtins.removeAttrs args ["configModule" "sharedBuildCache" "cacheCCompilers"])
+      // lib.optionalAttrs cacheCCompilers (builtins.removeAttrs cCompilerCacheEnvironment ["RUSTC_WRAPPER"])
       // {
         meta =
           (args.meta or {})

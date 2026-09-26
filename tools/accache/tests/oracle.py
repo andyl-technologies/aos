@@ -324,6 +324,97 @@ def check_assembler_include_invalidation(root, env, accache, sccache, gcc, hits)
             "oracle_stale_artifact": "source.o", "artifacts": ["source.o"]}
 
 
+def check_field_named_include(root, env, accache, sccache, gcc, clang, hits):
+    """A C field named include must not trigger an assembler dependency probe."""
+    results = []
+    for name, compiler in [("gcc", gcc), ("clang", clang)]:
+        fixture = f"{name}-absolute-field-include"
+        work = root / fixture
+        source_dir = work / "src"
+        build_dir = work / "build"
+        source_dir.mkdir(parents=True)
+        build_dir.mkdir()
+        source = source_dir / "source.c"
+        source.write_text("struct section { int include; };\n"
+                          "int answer(void) { struct section value = {42}; return value.include; }\n")
+        output = build_dir / "source.o"
+        args = [compiler, "-g", "-c", str(source), "-o", "source.o"]
+
+        def compile_object(wrapper):
+            output.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=build_dir, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            return output.read_bytes()
+
+        direct = compile_object([])
+        assert compile_object([sccache]) == direct
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() > before_hits, (fixture, "sccache did not hit")
+
+        assert compile_object([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", (fixture, cold)
+        assert compile_object([accache]) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", (fixture, warm)
+        results.append({"fixture": fixture, "revision": 0,
+                        "oracle_hit": True, "accache": "hit", "artifacts": ["build/source.o"]})
+        print("PASS oracle", fixture, flush=True)
+    return results
+
+
+def check_absolute_inline_assembler_input(root, env, accache, sccache, gcc, hits):
+    """Track an assembler file read from an absolute-path CMake-style source."""
+    work = root / "gcc-absolute-inline-asm"
+    source_dir = work / "src"
+    build_dir = work / "build"
+    source_dir.mkdir(parents=True)
+    build_dir.mkdir()
+    source = source_dir / "source.c"
+    source.write_text('asm(".text\\n.globl embedded\\nembedded:\\n.incbin \\"fragment.bin\\"\\n");\n')
+    fragment = build_dir / "fragment.bin"
+    fragment.write_bytes(b"one")
+    output = build_dir / "source.o"
+    args = [gcc, "-c", str(source), "-o", "source.o"]
+
+    def compile_object(wrapper):
+        output.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=build_dir, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        return output.read_bytes()
+
+    direct_old = compile_object([])
+    assert compile_object([sccache]) == direct_old
+    assert compile_object([accache]) == direct_old
+    cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+    assert cold["outcome"] == "miss", cold
+    assert compile_object([accache]) == direct_old
+    warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+    assert warm["outcome"] == "hit", warm
+
+    fragment.write_bytes(b"two")
+    direct_new = compile_object([])
+    assert direct_new != direct_old, "assembler input changed no object bytes"
+    before_hits = hits()
+    assert compile_object([sccache]) == direct_old, "sccache defect changed"
+    assert hits() > before_hits, "sccache did not reuse the stale action"
+    assert compile_object([accache]) == direct_new
+    changed = json.loads(subprocess.check_output([accache, "explain"], env=env))
+    assert changed["outcome"] == "miss", changed
+    assert any("fragment.bin" in item for item in changed["changes"]), changed
+    assert compile_object([accache]) == direct_new
+    warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+    assert warm["outcome"] == "hit", warm
+
+    print("PASS oracle GCC absolute inline assembler input", flush=True)
+    return {"fixture": "gcc-absolute-inline-asm", "revision": 1,
+            "oracle_hit": True, "accache": "hit",
+            "oracle_stale_artifact": "build/source.o", "artifacts": ["build/source.o"]}
+
+
 def check_inline_assembler_inputs(root, env, accache, sccache, gcc, clang, hits):
     """Invalidate C and preprocessed C actions when inline assembly reads a file."""
     results = []
@@ -754,6 +845,10 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
         results.append(check_saved_temporaries(root, env, accache, sccache, rustc, hits))
         results.append(check_assembler_include_invalidation(root, env, accache,
                                                             sccache, gcc, hits))
+        results.extend(check_field_named_include(root, env, accache, sccache,
+                                                 gcc, clang, hits))
+        results.append(check_absolute_inline_assembler_input(root, env, accache,
+                                                              sccache, gcc, hits))
         results.extend(check_inline_assembler_inputs(root, env, accache,
                                                      sccache, gcc, clang, hits))
         results.extend(check_clang_profile_use(root, env, accache, sccache,

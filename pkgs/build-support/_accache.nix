@@ -33,6 +33,12 @@
     "version"
     "phases"
     "RUSTC_WRAPPER"
+    # These select the wrapper or Nix parallelism, not compiler semantics.
+    # Keeping them would partition identical actions whenever accache is
+    # rebuilt or a caller chooses a different --cores value.
+    "CMAKE_C_COMPILER_LAUNCHER"
+    "CMAKE_CXX_COMPILER_LAUNCHER"
+    "NIX_BUILD_CORES"
     # Supported cached actions produce objects/libraries, not final linked
     # executables. The stdenv adds an output-specific install rpath here;
     # removing it from compiler execution permits reuse across derivations.

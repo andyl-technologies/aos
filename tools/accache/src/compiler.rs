@@ -49,6 +49,7 @@ pub struct Invocation {
     assembly_scan_args: Option<Vec<String>>,
     assembly_probe_if_directive: bool,
     assembly_directive_input: Option<PathBuf>,
+    source_input: Option<PathBuf>,
     assembly_read_roots_if_directive: Option<Vec<PathBuf>>,
     scan_stdout: bool,
     dependencies: PathBuf,
@@ -82,6 +83,7 @@ pub fn classify(
         assembly_scan_args: None,
         assembly_probe_if_directive: false,
         assembly_directive_input: None,
+        source_input: None,
         assembly_read_roots_if_directive: None,
         scan_stdout: false,
         dependencies: PathBuf::new(),
@@ -297,7 +299,20 @@ impl Invocation {
             {
                 // -save-temps=obj keeps the compiler's generated .s file in
                 // our probe directory. It is not an external action input.
-                if Path::new(&path).starts_with(self._temporary.path()) {
+                let dependency = Path::new(&path);
+                if dependency.starts_with(self._temporary.path()) {
+                    continue;
+                }
+                // GCC's .file directive can make the assembler list only the
+                // source basename. CMake often invokes GCC with an absolute
+                // source outside its build cwd, so that relative name does
+                // not exist there. The absolute source is already fingerprinted.
+                if !dependency.exists()
+                    && dependency.components().count() == 1
+                    && self.source_input.as_ref().is_some_and(|source| {
+                        source.is_absolute() && source.file_name() == dependency.file_name()
+                    })
+                {
                     continue;
                 }
                 inputs.insert(path.clone(), fingerprint(Path::new(&path))?);
@@ -397,7 +412,39 @@ fn has_assembler_file_directive(bytes: &[u8]) -> bool {
         .any(|directive| {
             bytes
                 .windows(directive.len())
-                .any(|word| word == *directive)
+                .enumerate()
+                .any(|(index, word)| {
+                    if word != *directive {
+                        return false;
+                    }
+                    let before = if index == 0 {
+                        None
+                    } else {
+                        Some(bytes[index - 1])
+                    };
+                    let after = bytes.get(index + directive.len()).copied();
+                    let boundary_before = match before {
+                        None => true,
+                        Some(value) if value.is_ascii_whitespace() => true,
+                        Some(b'"' | b'\'' | b'(' | b';' | b',' | b':' | b'=') => true,
+                        // A C string can place a directive after an escaped
+                        // newline or tab: asm("\\n.include ...").
+                        Some(value)
+                            if value.is_ascii_alphanumeric()
+                                && index >= 2
+                                && bytes[index - 2] == b'\\' =>
+                        {
+                            true
+                        }
+                        _ => false,
+                    };
+                    let boundary_after =
+                        after.is_none_or(|value| !value.is_ascii_alphanumeric() && value != b'_');
+                    // Field access such as secinfo[index].include must not
+                    // trigger an assembler probe, which may report unrelated
+                    // relative .file paths for an absolute C source.
+                    boundary_before && boundary_after
+                })
         })
 }
 

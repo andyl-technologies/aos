@@ -59,9 +59,10 @@ AOS_DEV_ACCACHE_STATE_DIR select separate sandbox data and metadata paths.
 Stats, explanations, provenance, C/C++ opt-in, and coverage are documented in
 tools/accache/README.md. No daemon starts. Release mode disables this too.
 
-Only mkGoPackage, mkBazelPackage, and mkCargoPackage use these cache settings.
-Generic C/C++ builds and language toolchains keep ordinary identities. Cargo
-target trees are keyed by build contract and shared across source revisions;
+Go, Bazel, and Cargo builders use these cache settings. Opted-in CMake application
+recipes also use accache; generic C/C++ builds and language toolchains keep
+ordinary identities. Cargo target trees are keyed by build contract and shared
+across source revisions;
 rustc incremental compilation is a separate option. Go and Bazel cache keys
 are opaque. 'cache <backend> entries' lists stored records; 'builds' lists
 direct aos-dev outputs and their Nix derivers from a local journal. It cannot

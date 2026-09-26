@@ -26,11 +26,14 @@ profiles. GCC, LLVM, Rust, Go, Java, and other toolchain builds keep their ordin
 identities. Building accache itself also has shared caching disabled.
 
 `mkCargoPackage` configures `RUSTC_WRAPPER` for application builds when both
-`sharedAccacheDir` and `sharedAccacheStateDir` are configured. C/C++ builders
-can use `pkgs.mkAccacheEnvironment` with their exact compiler paths and roots;
-it supplies CMake compiler launchers. Other build systems must invoke
-`accache /absolute/compiler/path ...` explicitly. This first integration does
-not replace every invocation of `cc` globally.
+`sharedAccacheDir` and `sharedAccacheStateDir` are configured. Application
+recipes using CMake can set `cacheCCompilers = true` on `mkDerivation`; dwarves
+and BoringSSL currently do. This adds GCC/G++ compiler launchers only when
+accache is enabled, using the ordinary compiler closure. Other C/C++ builders
+can use `pkgs.mkAccacheEnvironment` with their exact compiler paths and roots.
+Build systems without a compiler launcher must invoke
+`accache /absolute/compiler/path ...` explicitly. Generic `cc` calls are not
+replaced globally.
 
 The CLI mounts `AOS_DEV_ACCACHE_DIR` and `AOS_DEV_ACCACHE_STATE_DIR` (defaults:
 `/aos-build-cache/accache` and `/aos-build-cache/accache-state`) into the sandbox.
