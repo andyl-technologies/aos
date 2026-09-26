@@ -1,5 +1,6 @@
 ##! libaom — AV1 encoding and decoding for AVIF images and video.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -35,6 +36,97 @@ in
       role = "public-package";
     };
     pname = "libaom";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A single 16-by-16 YUV 4:2:0 frame.";
+        operation = "Encode it losslessly as AV1 and decode the result.";
+        expected = "The decoded pixel bytes exactly match the input frame.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                from pathlib import Path
+
+                luma = bytes((x * 9 + y * 7) % 256 for y in range(16) for x in range(16))
+                chroma = bytes([90]) * 64 + bytes([160]) * 64
+                frame = luma + chroma
+                Path("frame.yuv").write_bytes(frame)
+                Path("frame.y4m").write_bytes(
+                    b"YUV4MPEG2 W16 H16 F25:1 Ip A1:1 C420jpeg\nFRAME\n" + frame
+                )
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = [
+              "@out@/bin/aomenc"
+              "--codec=av1"
+              "--lossless=1"
+              "--cpu-used=8"
+              "--limit=1"
+              "--ivf"
+              "--output=frame.ivf"
+              "frame.y4m"
+            ];
+            exit_code = 0;
+          }
+          {
+            argv = [
+              "@out@/bin/aomdec"
+              "--codec=av1"
+              "--rawvideo"
+              "--i420"
+              "--output=decoded.yuv"
+              "frame.ivf"
+            ];
+            exit_code = 0;
+          }
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                from pathlib import Path
+
+                assert Path("frame.yuv").read_bytes() == Path("decoded.yuv").read_bytes()
+                print("libaom AV1 frame round trip passed")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "libaom AV1 frame round trip passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "Bytes that do not contain an AV1 bitstream.";
+        operation = "Attempt to decode them as AV1.";
+        expected = "The decoder rejects the invalid input.";
+        files."bad.ivf" = "not AV1\n";
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@out@/bin/aomdec"
+              "--codec=av1"
+              "--rawvideo"
+              "--i420"
+              "--output=bad.yuv"
+              "bad.ivf"
+            ];
+            exit_code = 1;
+            observes_rejection = true;
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://storage.googleapis.com/aom-releases/libaom-${version}.tar.gz"];
