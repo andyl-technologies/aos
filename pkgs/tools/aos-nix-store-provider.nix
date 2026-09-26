@@ -92,10 +92,6 @@ in
 
     preBuild = staticBuildSetup;
 
-    preInstall = ''
-      cp "target/$CARGO_BUILD_TARGET/release/aos-nix-store-provider" target/release/
-    '';
-
     postInstall = ''
       mkdir -p "$out/libexec"
       mv "$out/bin/aos-nix-store-provider" \

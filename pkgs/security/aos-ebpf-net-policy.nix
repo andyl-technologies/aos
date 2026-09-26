@@ -114,10 +114,6 @@ in
 
     preBuild = staticBuildSetup;
 
-    preInstall = ''
-      cp "target/$CARGO_BUILD_TARGET/release/aos-ebpf-net-policy-provider" target/release/
-    '';
-
     postInstall = ''
       mkdir -p $out/libexec $out/lib/bpf $out/share/aos/ebpf-net
       cp ${bpfSource} "$TMPDIR/aos-ebpf-net-policy.bpf.c"

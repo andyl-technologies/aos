@@ -88,10 +88,6 @@ in
 
     preBuild = staticBuildSetup;
 
-    preInstall = ''
-      cp "target/$CARGO_BUILD_TARGET/release/aos-ability-crucible" target/release/
-    '';
-
     postInstall = ''
       test -x "$out/bin/aos-ability-crucible"
       if patchelf --print-interpreter "$out/bin/aos-ability-crucible" \

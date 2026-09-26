@@ -87,10 +87,6 @@ in
     abilities = ./_aos-boot-transaction-storage-provider;
     preBuild = staticBuildSetup;
 
-    preInstall = ''
-      cp "target/$CARGO_BUILD_TARGET/release/aos-boot-transaction-storage-provider" target/release/
-    '';
-
     postInstall = ''
       test -x "$out/bin/aos-boot-transaction-storage-provider"
       if patchelf --print-interpreter "$out/bin/aos-boot-transaction-storage-provider" \

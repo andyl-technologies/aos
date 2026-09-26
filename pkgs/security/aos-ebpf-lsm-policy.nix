@@ -114,10 +114,6 @@ in
 
     preBuild = staticBuildSetup;
 
-    preInstall = ''
-      cp "target/$CARGO_BUILD_TARGET/release/aos-ebpf-lsm-provider" target/release/
-    '';
-
     postInstall = ''
       mkdir -p $out/libexec $out/lib/bpf $out/share/aos/ebpf-lsm
       cp ${bpfSource} "$TMPDIR/aos-ebpf-lsm-policy.bpf.c"
