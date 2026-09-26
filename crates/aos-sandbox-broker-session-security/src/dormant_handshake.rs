@@ -1824,17 +1824,25 @@ impl DormantAuthenticatedBrokerSessionV1 {
         DormantBrokerExecutionFailureV1<crate::HostExecutionHandoffErrorV1>,
     > {
         let method = request.0.method();
-        let method_matches = matches!(
+        let method_matches = if matches!(
             method,
-            BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
-                | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
-                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
-                | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
-        ) && request.0.authorization().is_some();
+            BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
+        ) {
+            request.0.authorization().is_none()
+        } else {
+            matches!(
+                method,
+                BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+                    | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
+                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+                    | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
+                    | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
+            ) && request.0.authorization().is_some()
+        };
         let (request, context) = self.begin_execution(request, method_matches)?;
         let body = match crate::host_execution_handoff::dispatch_host_execution_handoff_v1(
             host,

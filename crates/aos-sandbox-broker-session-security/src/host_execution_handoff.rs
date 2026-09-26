@@ -12,9 +12,10 @@ use std::time::{Duration, Instant};
 use aos_proto::aos::sandbox::local::v1::{
     BrokerMethod, HostAttachGateReadinessV1, HostExecutionCompletionStatusV1,
     HostExecutionNoApplyStatusV1, HostExecutionOutcomeV1, HostExecutionOutputReservationStatusV1,
-    HostExecutionOutputReservationV1, HostExecutionPhaseV1, ObserveHostExecutionArgumentResponseV1,
-    QueryHostExecutionArgumentNoApplyResponseV1, QueryHostExecutionArgumentResponseV1,
-    TerminalHostExecutionArgumentNoApplyResponseV1,
+    HostExecutionOutputReservationV1, HostExecutionPhaseV1, HostNoApplySettlementStatusV2,
+    ObserveHostExecutionArgumentResponseV1, QueryHostExecutionArgumentNoApplyResponseV1,
+    QueryHostExecutionArgumentResponseV1, QueryHostExecutionNoApplySettlementResponseV2,
+    SettleHostExecutionNoApplyResponseV2, TerminalHostExecutionArgumentNoApplyResponseV1,
 };
 use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use aos_sandbox::runtime_execution::{
@@ -45,6 +46,7 @@ use aos_sandbox_protocol::host_execution::{
     HOST_EXECUTION_CONTROL_CONTENT_V1, HostExecutionSpecContentFieldsV1,
     HostExecutionTerminalResultV1, decode_host_execution_terminal_result_v1,
 };
+use aos_sandbox_protocol::host_execution_no_apply::HostNoApplySettlementPhaseV2;
 use aos_sandbox_protocol::host_output::HostOutputReservationLocatorV1;
 use buffa::Message as _;
 
@@ -113,9 +115,6 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
     let method = request.method();
     let body = request.exact_body();
     let request_id = request.request_id();
-    let artifacts = request
-        .authorization()
-        .ok_or(HostExecutionHandoffErrorV1::Conflict)?;
     let peer = request.peer();
     let policy = request.peer_policy();
 
@@ -125,6 +124,61 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
     if claim.host_verifier().boot_id() != protected_boot_id {
         return Err(HostExecutionHandoffErrorV1::KernelBoot);
     }
+    if method == BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 {
+        if request.authorization().is_some() {
+            return Err(HostExecutionHandoffErrorV1::Conflict);
+        }
+        let record = host
+            .commit_no_apply_preliminary_v2(&mut claim, request, protected_boot_id)?
+            .ok_or(HostExecutionHandoffErrorV1::RecoveryRequired)?;
+        claim.revalidate()?;
+        check_kernel_boot(protected_boot_id)?;
+        return Ok(SettleHostExecutionNoApplyResponseV2 {
+            canonical_record: record,
+            ..Default::default()
+        }
+        .encode_to_vec());
+    }
+    if method == BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 {
+        if request.authorization().is_some() {
+            return Err(HostExecutionHandoffErrorV1::Conflict);
+        }
+        let history = host.query_no_apply_settlement_v2(&claim, request, protected_boot_id)?;
+        claim.revalidate()?;
+        check_kernel_boot(protected_boot_id)?;
+        let preliminary = history
+            .as_ref()
+            .and_then(|history| history.stage_bytes(HostNoApplySettlementPhaseV2::Preliminary))
+            .map_or_else(Vec::new, <[u8]>::to_vec);
+        let floor_sealed = history
+            .as_ref()
+            .and_then(|history| history.stage_bytes(HostNoApplySettlementPhaseV2::FloorSealed))
+            .map_or_else(Vec::new, <[u8]>::to_vec);
+        let ack_retained = history
+            .as_ref()
+            .and_then(|history| history.stage_bytes(HostNoApplySettlementPhaseV2::AckRetained))
+            .map_or_else(Vec::new, <[u8]>::to_vec);
+        let status = if !ack_retained.is_empty() {
+            HostNoApplySettlementStatusV2::HOST_NO_APPLY_SETTLEMENT_STATUS_ACK_RETAINED
+        } else if !floor_sealed.is_empty() {
+            HostNoApplySettlementStatusV2::HOST_NO_APPLY_SETTLEMENT_STATUS_FLOOR_SEALED
+        } else if !preliminary.is_empty() {
+            HostNoApplySettlementStatusV2::HOST_NO_APPLY_SETTLEMENT_STATUS_PRELIMINARY
+        } else {
+            HostNoApplySettlementStatusV2::HOST_NO_APPLY_SETTLEMENT_STATUS_ABSENT
+        };
+        return Ok(QueryHostExecutionNoApplySettlementResponseV2 {
+            status: status.into(),
+            preliminary,
+            floor_sealed,
+            ack_retained,
+            ..Default::default()
+        }
+        .encode_to_vec());
+    }
+    let artifacts = request
+        .authorization()
+        .ok_or(HostExecutionHandoffErrorV1::Conflict)?;
     if method == BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE {
         agent
             .as_ref()

@@ -10,7 +10,9 @@ use std::os::fd::OwnedFd;
 use std::pin::Pin;
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
-use aos_sandbox::runtime_execution::DormantRuntimeExecutionClaimV1;
+use aos_sandbox::runtime_execution::{
+    DormantRuntimeExecutionClaimV1, ProtectedHostNoApplySettlementHistoryV1,
+};
 use aos_sandbox_core::{ObjectDigest, ProtocolVersion};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1;
@@ -193,6 +195,32 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
         execution_spec_content: Option<&[u8]>,
         protected_boot_id: [u8; 16],
     ) -> Result<HostExecutionGrantReservationV1, DormantHostBrokerCallErrorV1>;
+
+    /// Appends or exactly replays one signed preliminary Host settlement.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale boot, signature-bound request, Host custody, or uncertain
+    /// protected append. Floor and ACK phases remain unavailable.
+    fn commit_no_apply_preliminary_v2(
+        &mut self,
+        claim: &mut DormantRuntimeExecutionClaimV1<'_>,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+    ) -> Result<Option<Vec<u8>>, DormantHostBrokerCallErrorV1>;
+
+    /// Reads an exact protected Host settlement history for a signed query.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale boot, foreign source, or unmatched HostState and journal
+    /// custody. The returned history grants no Controller settlement authority.
+    fn query_no_apply_settlement_v2(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+    ) -> Result<Option<ProtectedHostNoApplySettlementHistoryV1>, DormantHostBrokerCallErrorV1>;
 
     /// Verifies a distinct read-only ATTACH plan and fresh ownership lease.
     ///
@@ -481,6 +509,46 @@ where
                     Ok(sample)
                 },
             )
+            .map_err(Into::into)
+    }
+
+    fn commit_no_apply_preliminary_v2(
+        &mut self,
+        claim: &mut DormantRuntimeExecutionClaimV1<'_>,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+    ) -> Result<Option<Vec<u8>>, DormantHostBrokerCallErrorV1> {
+        let sample = crate::service::trusted_paired_clock_sample()?;
+        if sample.host_boot_id() != protected_boot_id
+            || self
+                .last_boottime_nanoseconds
+                .is_some_and(|floor| sample.boottime_nanoseconds() < floor)
+        {
+            return Err(DormantHostBrokerCallErrorV1::StaleKernel);
+        }
+        self.last_boottime_nanoseconds = Some(sample.boottime_nanoseconds());
+        self.broker
+            .commit_no_apply_preliminary_v2(claim, request, sample.boottime_nanoseconds())
+            .map_err(Into::into)
+    }
+
+    fn query_no_apply_settlement_v2(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+    ) -> Result<Option<ProtectedHostNoApplySettlementHistoryV1>, DormantHostBrokerCallErrorV1> {
+        let sample = crate::service::trusted_paired_clock_sample()?;
+        if sample.host_boot_id() != protected_boot_id
+            || self
+                .last_boottime_nanoseconds
+                .is_some_and(|floor| sample.boottime_nanoseconds() < floor)
+        {
+            return Err(DormantHostBrokerCallErrorV1::StaleKernel);
+        }
+        self.last_boottime_nanoseconds = Some(sample.boottime_nanoseconds());
+        self.broker
+            .query_no_apply_settlement_v2(claim, request, sample.boottime_nanoseconds())
             .map_err(Into::into)
     }
 

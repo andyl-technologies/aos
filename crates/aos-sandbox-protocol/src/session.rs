@@ -614,6 +614,13 @@ pub fn decode_request_envelope(
     }
     reject_legacy_authentication_field(&envelope.signed_session_request)?;
     let method = validate_method(envelope.method.as_known(), protocol)?;
+    if matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
+    ) {
+        return Err(ProtocolValidationError::MethodMismatch);
+    }
     let maximum = request_packet_maximum(method);
     if bytes.len() > maximum {
         return Err(ProtocolValidationError::RequestTooLarge);
@@ -1317,6 +1324,8 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
+        | BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
         | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
@@ -1347,9 +1356,7 @@ fn validate_outbound_carriers(
         BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => {
             roles == crate::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES
         }
-        BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
-        | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
-        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => false,
+        BrokerMethod::BROKER_METHOD_UNSPECIFIED => false,
     };
     if valid {
         Ok(())
@@ -1849,6 +1856,8 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
                 | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
+                | BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
         ) | (
             ProtocolId::MountBroker,
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY
@@ -1926,6 +1935,13 @@ fn validate_canonical_methods(
     }
     for method in methods {
         validate_method(Some(*method), protocol)?;
+        if matches!(
+            method,
+            BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
+        ) {
+            return Err(ProtocolValidationError::MethodMismatch);
+        }
     }
     if methods
         .windows(2)
@@ -2573,6 +2589,74 @@ mod tests {
             ownership_lease,
             ownership_lease_signature,
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn authenticated_no_apply_v2_methods_reject_even_well_formed_lease_artifacts() {
+        for method in [
+            BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2,
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2,
+        ] {
+            let envelope = BrokerRequestEnvelope {
+                method: method.into(),
+                body: vec![1],
+                authorization: Some(authorization_artifacts()).into(),
+                ..Default::default()
+            };
+            let validated =
+                validate_decoded_request_envelope(envelope, ProtocolId::HostBroker, 0).unwrap();
+            let profile =
+                aos_sandbox_broker_session_protocol::authenticated_broker_method_profile_v1(method)
+                    .unwrap();
+
+            assert_eq!(
+                crate::authenticated_session::validate_request_against_profile(
+                    &validated, &profile,
+                ),
+                Err(ProtocolValidationError::MethodMismatch),
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_negotiation_cannot_offer_no_apply_v2_methods() {
+        for method in [
+            BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2,
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2,
+        ] {
+            let hello = BrokerClientHello {
+                protocol_major: 1,
+                protocol_minor: 0,
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                maximum_response_bytes: 8_192,
+                required_methods: vec![method.into()],
+                ..Default::default()
+            };
+            assert_eq!(
+                negotiate_client_hello(
+                    &hello.encode_to_vec(),
+                    peer(),
+                    policy(),
+                    ProtocolId::HostBroker,
+                    &[],
+                    &[method],
+                ),
+                Err(ProtocolValidationError::MethodMismatch),
+            );
+            let unsigned_request = BrokerRequestEnvelope {
+                method: method.into(),
+                body: vec![1],
+                ..Default::default()
+            };
+            assert_eq!(
+                decode_request_envelope(
+                    &unsigned_request.encode_to_vec(),
+                    ProtocolId::HostBroker,
+                    0,
+                ),
+                Err(ProtocolValidationError::MethodMismatch),
+            );
         }
     }
 

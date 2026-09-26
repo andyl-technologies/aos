@@ -546,7 +546,9 @@ impl DormantAuthenticatedBrokerSessionV1 {
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
-            | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE => self
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
+            | BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => self
                 .execute_host_execution_and_commit(
                     request,
                     None,

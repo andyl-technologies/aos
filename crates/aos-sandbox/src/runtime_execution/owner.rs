@@ -2711,7 +2711,6 @@ impl DormantRuntimeExecutionClaimV1<'_> {
     ///
     /// Rejects a changed Host cut, marker, or stage history, a forged prepared
     /// record, stale Host currentness, or uncertain journal durability.
-    #[allow(dead_code, reason = "signed method-42 dispatch remains closed")]
     pub fn commit_host_settlement_preliminary_v1(
         &mut self,
         prepared: PreparedHostSettlementPreliminaryV1,
@@ -2746,7 +2745,6 @@ impl DormantRuntimeExecutionClaimV1<'_> {
     ///
     /// Rejects a changed marker, handoff, Controller assertion, session, or
     /// challenge, as well as malformed or orphaned protected Host history.
-    #[allow(dead_code, reason = "signed method-43 query remains closed")]
     pub fn match_host_settlement_preliminary_v1(
         &self,
         source: &ControllerExecutionArgumentAttemptV1,

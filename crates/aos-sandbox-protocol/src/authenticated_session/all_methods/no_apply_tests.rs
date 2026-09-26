@@ -4,11 +4,12 @@ use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerError, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
     BrokerResponseEnvelope, HostExecutionNoApplyStatusV1, HostNoApplySettlementPhaseV2,
     QueryHostExecutionArgumentNoApplyRequestV1, QueryHostExecutionArgumentNoApplyResponseV1,
+    QueryHostExecutionNoApplySettlementRequestV2, QueryHostExecutionNoApplySettlementResponseV2,
     SettleHostExecutionNoApplyRequestV2, TerminalHostExecutionArgumentNoApplyRequestV1,
     TerminalHostExecutionArgumentNoApplyResponseV1,
 };
 use aos_sandbox_broker_session_protocol::{
-    BrokerSessionProtocolV1, authenticated_broker_methods_for_role_v1,
+    BrokerSessionProtocolV1, authenticated_broker_methods_for_role_v1, decode_canonical_request_v1,
 };
 use aos_sandbox_core::{ObjectDigest, ProtocolId};
 use buffa::Message as _;
@@ -18,13 +19,15 @@ use super::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodRequestV1,
     AuthenticatedBrokerMethodResultV1, AuthenticatedBrokerMethodSemanticsV1,
     AuthenticatedBrokerOutcomeDirectionV1, AuthenticatedBrokerRequestDirectionV1,
-    OUTCOME_SEMANTIC_DOMAIN, RequestOutcomeContextV1, method_digest,
-    validate_decoded_request_envelope, validate_decoded_response_envelope,
+    AuthenticatedBrokerSemanticBindingsV1, OUTCOME_SEMANTIC_DOMAIN, RequestOutcomeContextV1,
+    method_digest, validate_decoded_request_envelope, validate_decoded_response_envelope,
+    validate_request_semantics,
 };
 use crate::host_execution_no_apply::{
     decode_host_execution_argument_no_apply_request_v1,
     decode_host_execution_argument_query_no_apply_request_v1,
-    decode_host_no_apply_settlement_request_v2, match_archived_host_no_apply_outcome_v2,
+    decode_host_no_apply_settlement_query_request_v2, decode_host_no_apply_settlement_request_v2,
+    match_archived_host_no_apply_outcome_v2,
     test_support::{header, peer_policy, record, source},
 };
 
@@ -40,6 +43,7 @@ fn outcome(
     let request_id = match &context {
         RequestOutcomeContextV1::HostNoApply(value)
         | RequestOutcomeContextV1::HostNoApplyQuery(value) => *value.header().request_id(),
+        RequestOutcomeContextV1::HostNoApplySettlementQuery(value) => *value.header().request_id(),
         _ => panic!("test requires a Host no-Apply context"),
     };
     let envelope = validate_decoded_request_envelope(
@@ -61,6 +65,9 @@ fn outcome(
             }
             BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => {
                 AuthenticatedBrokerMethodSemanticsV1::HostQueryNoApply
+            }
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => {
+                AuthenticatedBrokerMethodSemanticsV1::HostQueryNoApplySettlement
             }
             _ => panic!("test requires a Host no-Apply method"),
         },
@@ -92,6 +99,75 @@ fn outcome(
             filesystem_worker_qualification_commitment: None,
         },
     }
+}
+
+#[test]
+fn methods42_and43_reject_unsigned_packets() {
+    for method in [
+        BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2,
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2,
+    ] {
+        let unsigned = BrokerRequestEnvelope {
+            method: method.into(),
+            body: vec![1],
+            ..Default::default()
+        };
+        assert!(decode_canonical_request_v1(&unsigned.encode_to_vec()).is_err());
+    }
+}
+
+#[test]
+fn method42_semantic_admission_rejects_later_controller_phases() {
+    let (peer, policy) = peer_policy();
+    let mut request = SettleHostExecutionNoApplyRequestV2 {
+        header: Some(header([11; 16])).into(),
+        canonical_attempt: source().to_vec(),
+        original_session_binding: vec![12; 32],
+        original_signed_request_digest: vec![13; 32],
+        archive_head: vec![10; 32],
+        signed_terminal_outcome: vec![11; 32],
+        phase: HostNoApplySettlementPhaseV2::HOST_NO_APPLY_SETTLEMENT_PHASE_PRELIMINARY.into(),
+        challenge: vec![9; 16],
+        ..Default::default()
+    };
+    let admit = |request: &SettleHostExecutionNoApplyRequestV2| {
+        validate_request_semantics(
+            BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2,
+            &request.encode_to_vec(),
+            &[],
+            peer,
+            policy,
+            99,
+            AuthenticatedBrokerSemanticBindingsV1::default(),
+        )
+    };
+
+    assert!(admit(&request).is_ok());
+    request.phase =
+        HostNoApplySettlementPhaseV2::HOST_NO_APPLY_SETTLEMENT_PHASE_FLOOR_SEALED.into();
+    request.canonical_controller_coordinate = vec![20; 32];
+    assert!(admit(&request).is_err());
+
+    let mut ack = [0; 156];
+    ack[..8].copy_from_slice(b"AOSCFA01");
+    ack[8..10].copy_from_slice(&1_u16.to_be_bytes());
+    ack[12..28].copy_from_slice(&source()[24..40]);
+    ack[28..60].fill(3);
+    ack[60..92].fill(20);
+    ack[92..124].fill(21);
+    let checksum = Sha256::new()
+        .chain_update(b"aos.sandbox.create-failure-settlement-ack.v1\0")
+        .chain_update(&ack[..124])
+        .finalize();
+    ack[124..].copy_from_slice(&checksum);
+    request.phase =
+        HostNoApplySettlementPhaseV2::HOST_NO_APPLY_SETTLEMENT_PHASE_ACK_RETAINED.into();
+    request.canonical_controller_coordinate = ack.to_vec();
+    assert!(
+        decode_host_no_apply_settlement_request_v2(&request.encode_to_vec(), peer, policy, 99)
+            .is_ok()
+    );
+    assert!(admit(&request).is_err());
 }
 
 #[test]
@@ -303,4 +379,86 @@ fn method40_absent_and_terminal_error_never_yield_a_recorded_carrier() {
     .clone();
     admitted.result = AuthenticatedBrokerMethodResultV1::Error(error);
     assert!(admitted.recorded_host_no_apply().unwrap().is_none());
+}
+
+#[test]
+fn method43_signed_cold_query_carrier_rejects_changed_status_and_commitment() {
+    let request = QueryHostExecutionNoApplySettlementRequestV2 {
+        header: Some(header([10; 16])).into(),
+        canonical_attempt: source().to_vec(),
+        original_session_binding: vec![12; 32],
+        original_signed_request_digest: vec![13; 32],
+        ..Default::default()
+    };
+    let body = request.encode_to_vec();
+    let (peer, policy) = peer_policy();
+    assert!(
+        validate_request_semantics(
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2,
+            &body,
+            &[],
+            peer,
+            policy,
+            99,
+            AuthenticatedBrokerSemanticBindingsV1::default(),
+        )
+        .is_ok()
+    );
+    let context = RequestOutcomeContextV1::HostNoApplySettlementQuery(
+        decode_host_no_apply_settlement_query_request_v2(&body, peer, policy, 99).unwrap(),
+    );
+    let response = QueryHostExecutionNoApplySettlementResponseV2 {
+        status: aos_proto::aos::sandbox::local::v1::HostNoApplySettlementStatusV2::HOST_NO_APPLY_SETTLEMENT_STATUS_ABSENT.into(),
+        ..Default::default()
+    };
+    let method = BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2;
+    let mut admitted = outcome(method, body, context, response.encode_to_vec());
+
+    assert_eq!(
+        admitted
+            .recorded_host_no_apply_settlement_history()
+            .unwrap()
+            .unwrap()
+            .stages(),
+        &[None, None, None]
+    );
+
+    admitted.direction = AuthenticatedBrokerOutcomeDirectionV1::ServerSend;
+    assert!(
+        admitted
+            .recorded_host_no_apply_settlement_history()
+            .is_err()
+    );
+    admitted.direction = AuthenticatedBrokerOutcomeDirectionV1::ClientReceive;
+    if let AuthenticatedBrokerMethodResultV1::Success {
+        semantic_commitment,
+        ..
+    } = &mut admitted.result
+    {
+        *semantic_commitment = [20; 32];
+    }
+    assert!(
+        admitted
+            .recorded_host_no_apply_settlement_history()
+            .is_err()
+    );
+
+    let invalid = QueryHostExecutionNoApplySettlementResponseV2 {
+        status: aos_proto::aos::sandbox::local::v1::HostNoApplySettlementStatusV2::HOST_NO_APPLY_SETTLEMENT_STATUS_PRELIMINARY.into(),
+        ..Default::default()
+    };
+    admitted.result = AuthenticatedBrokerMethodResultV1::Success {
+        semantic_commitment: method_digest(
+            OUTCOME_SEMANTIC_DOMAIN,
+            method,
+            &invalid.encode_to_vec(),
+        ),
+        exact_body: invalid.encode_to_vec(),
+        filesystem_worker_qualification_commitment: None,
+    };
+    assert!(
+        admitted
+            .recorded_host_no_apply_settlement_history()
+            .is_err()
+    );
 }

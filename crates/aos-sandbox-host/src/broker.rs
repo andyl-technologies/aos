@@ -20,7 +20,8 @@ use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgum
 use aos_sandbox::controller_execution_preissue::ControllerExecutionReserveSourceV1;
 use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionClaimV1, PreparedHostSettlementPreliminaryV1,
-    VerifiedHostOutputReserveSourceV1, verify_host_output_reserve_source_v1,
+    ProtectedHostNoApplySettlementHistoryV1, VerifiedHostOutputReserveSourceV1,
+    verify_host_output_reserve_source_v1,
 };
 use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1,
@@ -50,7 +51,7 @@ use aos_sandbox_protocol::host_execution_no_apply::{
     ValidatedHostExecutionNoApplyRequestV1, ValidatedHostNoApplySettlementRequestV2,
     decode_host_execution_argument_no_apply_request_v1,
     decode_host_execution_argument_query_no_apply_request_v1,
-    decode_host_no_apply_settlement_request_v2,
+    decode_host_no_apply_settlement_query_request_v2, decode_host_no_apply_settlement_request_v2,
 };
 use aos_sandbox_protocol::host_output::{
     ValidatedHostOutputQueryRequestV1, ValidatedHostOutputReserveRequestV1,
@@ -1246,7 +1247,6 @@ where
     ///
     /// Rejects stale Host state or runtime custody, an incomplete terminal
     /// request, or any foreign original source, signed identity, or response.
-    #[allow(dead_code, reason = "signed V2 settlement admission remains closed")]
     pub fn verified_completed_no_apply_handoff_v1(
         &self,
         claim: &DormantRuntimeExecutionClaimV1<'_>,
@@ -1314,13 +1314,13 @@ where
     ///
     /// This read-only path records the Controller-supplied H/T digests as
     /// assertions. It neither verifies the Controller archive nor appends a
-    /// Host stage; production method-42 admission remains closed.
+    /// Host stage. The caller's signed session is checked by the dispatch path;
+    /// this preparer alone does not authenticate Controller archive custody.
     ///
     /// # Errors
     ///
     /// Rejects a non-preliminary request, foreign original attempt, stale
     /// HostState handoff, or changed protected cut.
-    #[allow(dead_code, reason = "method-42 stage admission remains closed")]
     pub fn prepare_no_apply_preliminary_v2(
         &self,
         claim: &DormantRuntimeExecutionClaimV1<'_>,
@@ -1363,14 +1363,13 @@ where
     /// The signed request authenticates the Controller's H/T assertions; Host
     /// independently rejoins its current marker and completed handoff before
     /// appending. This stage is nonauthorizing and cannot release Apply or
-    /// settle Controller Create. Method-42 transport remains closed until its
-    /// complete cross-owner exchange and recovery are qualified.
+    /// settle Controller Create. Later Controller floor and ACK phases remain
+    /// closed until their full cross-owner authority exchange is qualified.
     ///
     /// # Errors
     ///
     /// Rejects a foreign signed method, stale Host custody, changed protected
     /// cut, conflicting stage, or an append with unknown durability.
-    #[allow(dead_code, reason = "signed method-42 dispatch remains closed")]
     pub fn commit_no_apply_preliminary_v2(
         &self,
         claim: &mut DormantRuntimeExecutionClaimV1<'_>,
@@ -1379,7 +1378,7 @@ where
     ) -> Result<Option<Vec<u8>>> {
         if authenticated.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
             || authenticated.method() != BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
-            || authenticated.authorization().is_none()
+            || authenticated.authorization().is_some()
         {
             return Err(HostError::Fence(
                 "Host settlement request is not authenticated",
@@ -1391,6 +1390,11 @@ where
             authenticated.peer_policy(),
             now_boottime_nanoseconds,
         )?;
+        if let Some(replayed) =
+            self.match_no_apply_preliminary_v2(claim, &request, authenticated.session_binding())?
+        {
+            return Ok(Some(replayed));
+        }
         let Some(prepared) =
             self.prepare_no_apply_preliminary_v2(claim, &request, authenticated.session_binding())?
         else {
@@ -1399,7 +1403,13 @@ where
         let committed = claim
             .commit_host_settlement_preliminary_v1(prepared)
             .map_err(|_| HostError::Fence("Host preliminary append needs protected recovery"))?;
-        Ok(Some(committed.to_vec()))
+        let readback = self
+            .match_no_apply_preliminary_v2(claim, &request, authenticated.session_binding())?
+            .ok_or(HostError::Fence("Host preliminary readback is absent"))?;
+        if readback.as_slice() != committed.as_slice() {
+            return Err(HostError::Fence("Host preliminary readback changed"));
+        }
+        Ok(Some(readback))
     }
 
     /// Rejoins one historical stage to current Host marker and handoff custody.
@@ -1411,7 +1421,6 @@ where
     ///
     /// Rejects a foreign original source, changed HostState handoff, or any
     /// conflicting protected stage field.
-    #[allow(dead_code, reason = "signed method-43 recovery remains closed")]
     pub fn match_no_apply_preliminary_v2(
         &self,
         claim: &DormantRuntimeExecutionClaimV1<'_>,
@@ -1449,6 +1458,62 @@ where
             )
             .map_err(|_| HostError::Fence("Host preliminary replay is not exact"))?;
         Ok(record.map(|bytes| bytes.to_vec()))
+    }
+
+    /// Reads protected settlement history for the exact original signed attempt.
+    ///
+    /// The HostState handoff and method-39 marker are rejoined before a stage
+    /// is returned. The history remains nonauthorizing after this query.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign signed query, stale original attempt, changed
+    /// HostState handoff, or malformed protected stage history.
+    pub fn query_no_apply_settlement_v2(
+        &self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        authenticated: &AuthenticatedBrokerMethodRequestV1,
+        now_boottime_nanoseconds: u64,
+    ) -> Result<Option<ProtectedHostNoApplySettlementHistoryV1>> {
+        if authenticated.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            || authenticated.method()
+                != BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
+            || authenticated.authorization().is_some()
+        {
+            return Err(HostError::Fence(
+                "Host settlement query is not authenticated",
+            ));
+        }
+        let request = decode_host_no_apply_settlement_query_request_v2(
+            authenticated.exact_body(),
+            authenticated.peer(),
+            authenticated.peer_policy(),
+            now_boottime_nanoseconds,
+        )?;
+        let original = request.original();
+        let source =
+            ControllerExecutionArgumentAttemptV1::decode_canonical(original.canonical_attempt())
+                .map_err(|_| HostError::Fence("original Host settlement source is invalid"))?;
+        let handoff = self.verified_completed_no_apply_handoff_v1(
+            claim,
+            &source,
+            original.original_session_binding(),
+            original.original_signed_request_digest(),
+        )?;
+        let history = claim
+            .query_host_settlement_history_v1(
+                &source,
+                original.original_session_binding(),
+                original.original_signed_request_digest(),
+            )
+            .map_err(|_| HostError::Fence("Host settlement history is not exact"))?;
+        match (handoff, history) {
+            (None, None) => Ok(None),
+            (Some(handoff), Some(history)) if handoff.marker() == history.marker() => {
+                Ok(Some(history))
+            }
+            _ => Err(HostError::Fence("Host settlement handoff changed")),
+        }
     }
 
     fn original_argument_intent(
