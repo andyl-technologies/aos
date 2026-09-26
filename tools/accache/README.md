@@ -305,6 +305,9 @@ profile paths; each profile revision produces different object bytes.
 Clang sanitizer cases change an ignorelist under both the current and legacy
 flag spellings. Both caches miss on the edited list, warm-hit on a repeat, and
 produce the direct compiler's changed object.
+A Clang pass-plugin case rebuilds an LLVM plugin at the same path with different
+code. Both caches miss on the changed plugin, warm-hit on a repeat, and produce
+the direct compiler's changed object.
 Four Rust native-archive oracle cases cover joined and separated `-L` and `-l`
 flags. Replacing an AOS-built `libnative.a` changes the resulting rlib; both
 caches miss on the archive edit and warm-hit on a repeated compilation.

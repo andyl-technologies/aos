@@ -1876,13 +1876,11 @@ def check_rust_target_json(root, env, accache, sccache, rustc, hits):
     return results
 
 
-def check_rust_llvm_plugin(root, env, accache, sccache, rustc, clang, hits):
-    """Track an LLVM pass plugin omitted from rustc dep-info."""
-    work = root / "rust-llvm-plugin"
-    work.mkdir()
-    (work / "target").mkdir()
-    (work / "library.rs").write_text("pub fn answer() -> u32 { 42 }\n")
-    (work / "stamp.cpp").write_text('''\
+def build_llvm_stamp_plugin(work, clang, env, stamp):
+    """Build the same pass-plugin path with a different object-level stamp."""
+    source = work / "stamp.cpp"
+    if not source.exists():
+        source.write_text('''\
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/IR/Constants.h"
@@ -1909,6 +1907,70 @@ extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
     flags = subprocess.check_output([str(llvm / "llvm-config"), "--cxxflags",
                                      "--ldflags", "--libs", "core", "passes"],
                                     env=env, text=True)
+    build = subprocess.run([str(llvm / "clang++"), "-shared", "-fPIC",
+                            f"-DSTAMP={stamp}", *shlex.split(flags),
+                            "stamp.cpp", "-o", "plugin.so"],
+                           cwd=work, env=env, capture_output=True, timeout=120)
+    assert build.returncode == 0, build.stderr
+    return work / "plugin.so"
+
+
+def check_clang_pass_plugin(root, env, accache, sccache, clang, hits):
+    """Invalidate a Clang object when its LLVM pass plugin changes."""
+    work = root / "clang-pass-plugin"
+    work.mkdir()
+    (work / "source.c").write_text("int answer(void) { return 42; }\n")
+    plugin = work / "plugin.so"
+    object_file = work / "source.o"
+    args = [clang, "-O2", "-c", "source.c", "-fpass-plugin=" + str(plugin),
+            "-o", "source.o"]
+
+    def compile_object(wrapper):
+        object_file.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        return completed.stdout, completed.stderr, object_file.read_bytes()
+
+    results = []
+    first_object = None
+    for revision, stamp in enumerate([1, 2]):
+        build_llvm_stamp_plugin(work, clang, env, stamp)
+        direct = compile_object([])
+        if first_object is None:
+            first_object = direct[2]
+        else:
+            assert direct[2] != first_object, "Clang plugin edit had no effect"
+
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() == before_hits, "sccache ignored the changed Clang plugin"
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() > before_hits, "sccache did not warm-hit"
+
+        assert compile_object([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", (revision, cold)
+        if revision:
+            assert any("plugin.so" in item for item in cold["changes"]), cold
+        assert compile_object([accache]) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", (revision, warm)
+        results.append({"fixture": "clang-pass-plugin", "revision": revision,
+                        "oracle_hit": True, "accache": "hit",
+                        "artifacts": ["source.o"]})
+
+    print("PASS oracle clang-pass-plugin input invalidation", flush=True)
+    return results
+
+
+def check_rust_llvm_plugin(root, env, accache, sccache, rustc, clang, hits):
+    """Track an LLVM pass plugin omitted from rustc dep-info."""
+    work = root / "rust-llvm-plugin"
+    work.mkdir()
+    (work / "target").mkdir()
+    (work / "library.rs").write_text("pub fn answer() -> u32 { 42 }\n")
     plugin = work / "plugin.so"
     library = work / "target/libexample.rlib"
     depfile = work / "target/example.d"
@@ -1929,11 +1991,7 @@ extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
     results = []
     first_library = None
     for revision, stamp in enumerate([1, 2]):
-        build = subprocess.run([str(llvm / "clang++"), "-shared", "-fPIC",
-                                f"-DSTAMP={stamp}", *shlex.split(flags),
-                                "stamp.cpp", "-o", "plugin.so"],
-                               cwd=work, env=env, capture_output=True, timeout=120)
-        assert build.returncode == 0, build.stderr
+        build_llvm_stamp_plugin(work, clang, env, stamp)
         direct = compile_library([])
         assert b"plugin.so" not in direct[3], "dep-info listed LLVM plugin"
         if first_library is None:
@@ -2569,6 +2627,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                clang, hits))
         results.extend(check_clang_sanitizer_ignorelist(root, env, accache,
                                                         sccache, clang, hits))
+        results.extend(check_clang_pass_plugin(root, env, accache,
+                                               sccache, clang, hits))
         results.extend(check_rust_native_archives(root, env, accache, sccache,
                                                   gcc, rustc, hits))
         results.extend(check_rust_extern_inputs(root, env, accache,
