@@ -303,8 +303,7 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
                             .invocation()
                             .budget()
                             .fuel()
-                            .checked_sub(position_count)
-                            .unwrap_or_default()
+                            .saturating_sub(position_count)
                             .min(u64::from(request.invocation().budget().proposals()))
                             .min(MAX_FINITE_ISSUE_PROPOSALS as u64);
                         let proposals = candidate.to_proposals(request, invocation, affordable)?;
