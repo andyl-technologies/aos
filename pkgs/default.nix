@@ -1355,7 +1355,7 @@
     src = aosWorkspaceVendorSource;
     name = "aos-workspace-vendor";
     sourceRoot = "source";
-    hash = "sha256-E4/96185yRJymHSuqEI9Mgws4Q8DaPON+EqL5wDCruw=";
+    hash = "sha256-OrHXSHeyEXfKM+fRt0CpuDhvqUhDd4+hZ3CsGxcnNRk=";
   };
 
   # Auto-discover packages from subdirectories.
