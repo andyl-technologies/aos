@@ -149,11 +149,14 @@ Incremental Rust, executable/proc-macro compilation, ordinary linking, and
 upstream parser exclusions bypass. Frontend parsing compatibility is not a
 claim of support for every compiler/version/platform, nor for arbitrary new
 side-effect flags. This package targets the AOS Linux compiler toolchains.
-Rust's unstable `-Zno-link`, `-Zlink-only`, `-Zparse-crate-root-only`, and
-`-Zunpretty` modes bypass: they replace, consume, or omit the ordinary library
-output and need a separate artifact and input contract. In the pinned oracle,
-sccache returns a fatal error for these four modes after rustc succeeds;
+Rust's unstable `-Zno-analysis`, `-Zno-link`, `-Zlink-only`,
+`-Zparse-crate-root-only`, and `-Zunpretty` modes bypass: they replace, consume,
+or omit the ordinary library output and need a separate artifact and input
+contract. In the pinned oracle,
+sccache returns a fatal error for these five modes after rustc succeeds;
 accache returns rustc's result and records the bypass.
+`-Zno-codegen` still produces an rlib and dep-info, so both caches store it,
+invalidate it after a source edit, and restore it on a warm hit.
 Rust `--emit` forms that name individual output paths bypass as in the pinned
 sccache frontend; the compiler still writes those requested files normally.
 Clang's driver-level `-dependency-file` option also bypasses: the driver ignores
