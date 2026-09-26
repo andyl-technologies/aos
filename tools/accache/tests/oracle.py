@@ -2041,6 +2041,115 @@ def check_clang_pass_plugin(root, env, accache, sccache, clang, hits):
     return results
 
 
+def check_clang_frontend_plugin(root, env, accache, sccache, clang, hits):
+    """Replay a Clang AST plugin diagnostic after its library changes."""
+    llvm = Path(clang).parent
+    flags = subprocess.check_output([str(llvm / "llvm-config"), "--cxxflags",
+                                     "--ldflags", "--libs", "core"],
+                                    env=env, text=True)
+    plugin_source = '''\
+#include "clang/AST/ASTConsumer.h"
+#include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/FrontendPluginRegistry.h"
+#define STR2(x) #x
+#define STR(x) STR2(x)
+using namespace clang;
+class StampConsumer : public ASTConsumer {
+ public:
+  void HandleTranslationUnit(ASTContext &Context) override {
+    auto &Diags = Context.getDiagnostics();
+    unsigned Id = Diags.getCustomDiagID(DiagnosticsEngine::Warning,
+                                         "accache stamp " STR(STAMP_VALUE));
+    Diags.Report(Id);
+  }
+};
+class StampAction : public PluginASTAction {
+ protected:
+  std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &, llvm::StringRef) override {
+    return std::make_unique<StampConsumer>();
+  }
+  bool ParseArgs(const CompilerInstance &, const std::vector<std::string> &) override {
+    return true;
+  }
+  ActionType getActionType() override { return AddBeforeMainAction; }
+};
+static FrontendPluginRegistry::Add<StampAction> X("accache-stamp", "accache test plugin");
+'''
+    results = []
+    for fixture, plugin_flags in [
+        ("clang-frontend-plugin", lambda path: ["-fplugin=" + str(path)]),
+        ("clang-xclang-load", lambda path: [
+            "-Xclang", "-load", "-Xclang", str(path),
+            "-Xclang", "-add-plugin", "-Xclang", "accache-stamp"]),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "source.c").write_text("int answer(void) { return 42; }\n")
+        (work / "stamp.cpp").write_text(plugin_source)
+        plugin = work / "plugin.so"
+        object_file = work / "source.o"
+        args = [clang, "-c", "source.c", "-o", "source.o", *plugin_flags(plugin)]
+
+        def compile_object(wrapper):
+            object_file.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            artifact = object_file.read_bytes() if object_file.exists() else None
+            return completed.returncode, completed.stdout, completed.stderr, artifact
+
+        first_object = None
+        for revision, stamp in enumerate([1, 2]):
+            build = subprocess.run([str(llvm / "clang++"), "-shared", "-fPIC",
+                                    f"-DSTAMP_VALUE={stamp}", *shlex.split(flags),
+                                    "stamp.cpp", "-L" + str(llvm.parent / "lib"),
+                                    "-lclang-cpp", "-Wl,-rpath," + str(llvm.parent / "lib"),
+                                    "-o", "plugin.so"], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+            assert build.returncode == 0, (fixture, build.stderr)
+            direct = compile_object([])
+            assert (direct[0] == 0 and f"accache stamp {stamp}".encode()
+                    in direct[2]), (fixture, direct[:3])
+            if first_object is None:
+                first_object = direct[3]
+            else:
+                assert direct[3] == first_object, "diagnostic plugin changed object bytes"
+
+            if fixture == "clang-frontend-plugin":
+                # Pinned sccache converts -fplugin=path to a separated form
+                # that Clang rejects. Accache keeps the caller's original argv.
+                for _ in range(2):
+                    oracle = compile_object([sccache])
+                    assert (oracle[0] != 0 and oracle[3] is None
+                            and b"unknown argument: '-fplugin'" in oracle[2]), oracle[:3]
+                oracle_hit = False
+                oracle_exit_code = oracle[0]
+            else:
+                before_hits = hits()
+                assert compile_object([sccache]) == direct
+                assert hits() == before_hits, (fixture, "sccache ignored the plugin edit")
+                before_hits = hits()
+                assert compile_object([sccache]) == direct
+                assert hits() > before_hits, (fixture, "sccache did not warm-hit")
+                oracle_hit = True
+                oracle_exit_code = 0
+
+            assert compile_object([accache]) == direct
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert cold["outcome"] == "miss", (fixture, revision, cold)
+            if revision:
+                assert any("plugin.so" in item for item in cold["changes"]), cold
+            assert compile_object([accache]) == direct
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert warm["outcome"] == "hit", (fixture, revision, warm)
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": oracle_hit, "accache": "hit",
+                            "oracle_exit_code": oracle_exit_code,
+                            "artifacts": ["source.o"]})
+
+        print("PASS oracle", fixture, "plugin diagnostic invalidation", flush=True)
+    return results
+
+
 def check_rust_llvm_plugin(root, env, accache, sccache, rustc, clang, hits):
     """Track an LLVM pass plugin omitted from rustc dep-info."""
     work = root / "rust-llvm-plugin"
@@ -2707,6 +2816,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                sccache, clang, hits))
         results.extend(check_clang_pass_plugin(root, env, accache,
                                                sccache, clang, hits))
+        results.extend(check_clang_frontend_plugin(root, env, accache,
+                                                   sccache, clang, hits))
         results.extend(check_rust_native_archives(root, env, accache, sccache,
                                                   gcc, rustc, hits))
         results.extend(check_rust_extern_inputs(root, env, accache,

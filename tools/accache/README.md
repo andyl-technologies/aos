@@ -311,6 +311,11 @@ produce the direct compiler's changed object.
 A Clang pass-plugin case rebuilds an LLVM plugin at the same path with different
 code. Both caches miss on the changed plugin, warm-hit on a repeat, and produce
 the direct compiler's changed object.
+Two Clang AST-plugin cases change a diagnostic emitted by the library while
+keeping object bytes unchanged. Both caches invalidate and replay the diagnostic
+for `-Xclang -load`; pinned sccache rejects valid `-fplugin=path` by splitting
+the option, while accache preserves the joined form in its dependency probe
+and caches the direct compiler's output.
 A Clang randomized-layout case changes a seed file absent from the depfile.
 Both caches miss on the seed edit and restore the changed object and depfile on
 a warm hit.
