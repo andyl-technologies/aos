@@ -860,6 +860,11 @@ class PackageScenario:
             for store_path in sorted(self.closure)
             if (pathlib.Path(store_path) / site_packages).is_dir()
         )
+        closure_perl_path = ":".join(
+            str(pathlib.Path(store_path) / "lib/perl5")
+            for store_path in sorted(self.closure)
+            if (pathlib.Path(store_path) / "lib/perl5").is_dir()
+        )
         closure_include_path = ":".join(
             str(pathlib.Path(store_path) / "include")
             for store_path in sorted(self.closure)
@@ -883,11 +888,14 @@ class PackageScenario:
             "AOS_QUALIFICATION_BASH": os.environ["AOS_QUALIFICATION_BASH"],
             "AOS_QUALIFICATION_CC": os.environ["AOS_QUALIFICATION_CC"],
             "AOS_QUALIFICATION_CXX": os.environ["AOS_QUALIFICATION_CXX"],
+            "AOS_QUALIFICATION_PERL": os.environ["AOS_QUALIFICATION_PERL"],
             "AOS_QUALIFICATION_PYTHON": os.environ["AOS_QUALIFICATION_PYTHON"],
             "AOS_QUALIFICATION_NIX_STORE": os.environ["AOS_QUALIFICATION_NIX_STORE"],
         }
         if closure_python_path:
             environment["PYTHONPATH"] = closure_python_path
+        if closure_perl_path:
+            environment["PERL5LIB"] = closure_perl_path
         if closure_include_path:
             environment["C_INCLUDE_PATH"] = closure_include_path
             environment["CPLUS_INCLUDE_PATH"] = closure_include_path

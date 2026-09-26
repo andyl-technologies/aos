@@ -83,6 +83,7 @@
     export AOS_QUALIFICATION_BASH=${lib.escapeShellArg "${pkgs.bash}/bin/bash"}
     export AOS_QUALIFICATION_CC=${lib.escapeShellArg "${pkgs.cc}/bin/cc"}
     export AOS_QUALIFICATION_CXX=${lib.escapeShellArg "${pkgs.cc}/bin/c++"}
+    export AOS_QUALIFICATION_PERL=${lib.escapeShellArg "${pkgs.perl}/bin/perl"}
     export AOS_QUALIFICATION_PYTHON=${lib.escapeShellArg "${pkgs.python3}/bin/python3"}
 
     umask 077
