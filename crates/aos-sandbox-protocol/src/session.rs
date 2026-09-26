@@ -618,6 +618,7 @@ pub fn decode_request_envelope(
         method,
         BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
+            | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
     ) {
         return Err(ProtocolValidationError::MethodMismatch);
     }
@@ -1342,6 +1343,7 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
         | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS
+        | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
         | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
         | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
@@ -1869,6 +1871,9 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
                 | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS
         ) | (
+            ProtocolId::MountFuseBroker,
+            BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
+        ) | (
             ProtocolId::StorageBroker,
             BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
                 | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
@@ -1939,6 +1944,7 @@ fn validate_canonical_methods(
             method,
             BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
+                | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
         ) {
             return Err(ProtocolValidationError::MethodMismatch);
         }
@@ -2184,8 +2190,45 @@ mod tests {
     #[test]
     fn mount_fuse_three_rejects_legacy_methods_even_at_its_exact_version() {
         let method = BrokerMethod::BROKER_METHOD_MOUNT_APPLY;
+        let fuse_method = BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1;
         assert_eq!(
             validate_method(Some(method), ProtocolId::MountFuseBroker),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+        assert_eq!(
+            validate_method(Some(fuse_method), ProtocolId::MountBroker),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+        assert!(validate_method(Some(fuse_method), ProtocolId::MountFuseBroker).is_ok());
+        assert_eq!(
+            validate_canonical_methods(&[fuse_method], ProtocolId::MountFuseBroker, "FUSE methods"),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+        assert!(validate_outbound_carriers(fuse_method, &[]).is_ok());
+        assert!(
+            validate_outbound_carriers(
+                fuse_method,
+                &[BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_MOUNT_SOURCE]
+            )
+            .is_err()
+        );
+        assert!(
+            crate::authenticated_session::all_methods::authenticated_broker_method_adapter_v1(
+                fuse_method
+            )
+            .is_none()
+        );
+        let legacy_request = BrokerRequestEnvelope {
+            method: fuse_method.into(),
+            body: vec![1],
+            ..Default::default()
+        };
+        assert_eq!(
+            decode_request_envelope(
+                &legacy_request.encode_to_vec(),
+                ProtocolId::MountFuseBroker,
+                0,
+            ),
             Err(ProtocolValidationError::MethodMismatch)
         );
         assert!(

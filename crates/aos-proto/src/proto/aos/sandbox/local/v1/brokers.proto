@@ -107,6 +107,8 @@ enum BrokerMethod {
   BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE = 41;
   BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 = 42;
   BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 = 43;
+  // Dormant FUSE 3.0 Controller intent. No production endpoint advertises it.
+  BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1 = 44;
 }
 
 // Carries only a dedicated-key signed controller pending-grant receipt.

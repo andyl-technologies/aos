@@ -351,6 +351,9 @@ fn handshake(protocol: BrokerSessionProtocolV1, major: u16) -> Handshake {
         BrokerSessionProtocolV1::Host => BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
         BrokerSessionProtocolV1::Storage => BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
         BrokerSessionProtocolV1::Mount => BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+        BrokerSessionProtocolV1::MountFuse => {
+            BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
+        }
         BrokerSessionProtocolV1::Network => BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
     };
     let client_message = aos_proto::aos::sandbox::local::v1::BrokerClientHello {
