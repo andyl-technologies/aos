@@ -29,6 +29,8 @@ pub struct Invocation {
     pub outputs: Vec<String>,
     /// Artifacts whose absence is meaningful, such as optimized-away DWARF.
     pub optional_outputs: BTreeSet<String>,
+    /// Expanded rustc arguments when sccache accepts a nested response file.
+    pub execution_args: Option<Vec<String>>,
     scan_args: Option<Vec<String>>,
     scan_stdout: bool,
     dependencies: PathBuf,
@@ -54,6 +56,7 @@ pub fn classify(
         kind: format!("{kind}-sccache-8396f020-v1"),
         outputs: Vec::new(),
         optional_outputs: BTreeSet::new(),
+        execution_args: None,
         scan_args: None,
         scan_stdout: false,
         dependencies: PathBuf::new(),
@@ -63,13 +66,16 @@ pub fn classify(
         _temporary: tempfile::tempdir()?,
     };
     invocation.dependencies = invocation._temporary.path().join("dependencies.d");
-    response_inputs(
+    let (expanded_args, nested_response) = response_inputs(
         args,
         kind == "rust",
         &mut invocation.extra_inputs,
         &mut BTreeSet::new(),
         0,
     )?;
+    if kind == "rust" && nested_response {
+        invocation.execution_args = Some(expanded_args);
+    }
     match kind {
         "c" | "gcc" | "clang" => c::configure(&mut invocation, kind, compiler, args, manifest)?,
         "rust" => rust::configure(&mut invocation, compiler, args, environment, manifest)?,
@@ -260,8 +266,10 @@ fn response_inputs(
     inputs: &mut BTreeSet<PathBuf>,
     active: &mut BTreeSet<PathBuf>,
     depth: usize,
-) -> Result<()> {
+) -> Result<(Vec<String>, bool)> {
     ensure!(depth < 64, "response-file nesting limit exceeded");
+    let mut expanded = Vec::new();
+    let mut nested_response = false;
     for arg in args {
         if let Some(path) = arg.strip_prefix('@') {
             let path = PathBuf::from(path);
@@ -269,14 +277,21 @@ fn response_inputs(
             ensure!(active.insert(canonical.clone()), "recursive response file");
             inputs.insert(path.clone());
             let data = fs::read_to_string(&path)?;
-            if !rust {
-                // The actual parser owns GNU tokenization. Conservatively
-                // inspect nested response references with the same tokenizer.
-                let nested = accache_frontend::compiler::gcc::split_gnu_response_file_args(&data);
-                response_inputs(&strings(nested)?, false, inputs, active, depth + 1)?;
-            }
+            // The sccache Rust frontend expands nested @files even though
+            // direct rustc leaves an inner @file as a literal argument.
+            let nested = if rust {
+                accache_frontend::compiler::rust::split_rust_response_file_args(&data)
+            } else {
+                accache_frontend::compiler::gcc::split_gnu_response_file_args(&data)
+            };
+            let (contents, nested_in_contents) =
+                response_inputs(&strings(nested)?, rust, inputs, active, depth + 1)?;
+            expanded.extend(contents);
+            nested_response |= depth > 0 || nested_in_contents;
             active.remove(&canonical);
+        } else {
+            expanded.push(arg.clone());
         }
     }
-    Ok(())
+    Ok((expanded, nested_response))
 }

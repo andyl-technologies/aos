@@ -30,6 +30,7 @@ class Fixture:
     exit_code: int = 0
     precompile: list[str] = field(default_factory=list)
     nondeterministic_outputs: set[str] = field(default_factory=set)
+    direct_exit_code: int | None = None
 
 
 def fixtures(gcc, clang, rustc):
@@ -166,6 +167,10 @@ def fixtures(gcc, clang, rustc):
     yield Fixture("rust-response", rustc, ["@arguments.rsp"], rust_sources | {
         "arguments.rsp": "--crate-name=example\n--crate-type=rlib\n--emit=link,dep-info\n--out-dir=target\nlibrary.rs\n",
     })
+    yield Fixture("rust-nested-response", rustc, ["@outer.rsp"], rust_sources | {
+        "outer.rsp": "--crate-name=example\n--crate-type=rlib\n--emit=link,dep-info\n--out-dir=target\n@inner.rsp\nlibrary.rs\n",
+        "inner.rsp": "-Copt-level=0\n",
+    }, {"inner.rsp": "-Copt-level=3\n"}, direct_exit_code=1)
     yield Fixture("rust-failed", rustc,
                   ["--crate-type=rlib", "--emit=link,dep-info", "--out-dir=target", "library.rs"],
                   {"library.rs": 'compile_error!("intentional oracle failure");\n'}, cacheable=False, exit_code=1)
@@ -240,7 +245,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                 before = snapshot(work)
                 completed = subprocess.run([*wrapper, fixture.compiler, *fixture.arguments],
                                            cwd=work, env=env, capture_output=True, timeout=120)
-                assert completed.returncode == fixture.exit_code, (
+                expected_exit = fixture.direct_exit_code if not wrapper and fixture.direct_exit_code is not None else fixture.exit_code
+                assert completed.returncode == expected_exit, (
                     fixture.name, wrapper, completed.returncode, completed.stderr.decode(errors="replace"))
                 after = snapshot(work)
                 assert all(after.get(path) == value for path, value in before.items()), (
@@ -299,20 +305,31 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                         (work / name).write_text(contents)
                 direct = invoke([])
                 oracle_cold = invoke([sccache])
-                compare(direct, oracle_cold, "sccache cold vs direct")
+                if fixture.direct_exit_code is None:
+                    compare(direct, oracle_cold, "sccache cold vs direct")
+                    baseline = direct
+                else:
+                    # The pinned frontend expands a nested @file that rustc
+                    # itself leaves literal. Its successful result is the
+                    # reference for this sccache-specific extension.
+                    assert not direct[3], (fixture.name, "direct rustc wrote outputs")
+                    baseline = oracle_cold
                 before_hits = hits()
                 oracle_warm = invoke([sccache])
-                compare(direct, oracle_warm, "sccache warm vs direct")
+                compare(baseline, oracle_warm, "sccache warm vs direct" if baseline is direct else "sccache warm vs cold")
                 for path in fixture.nondeterministic_outputs:
                     assert oracle_warm[3][path] == oracle_cold[3][path], (
                         fixture.name, "sccache did not replay the cold PCH")
                 oracle_hit = hits() > before_hits
 
                 accache_cold = invoke([accache])
-                compare(direct, accache_cold, "accache cold vs direct")
+                compare(baseline, accache_cold, "accache cold vs baseline")
                 cold_event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+                if fixture.name == "rust-nested-response" and revision:
+                    assert any("inner.rsp" in change for change in cold_event["changes"]), (
+                        fixture.name, "inner response edit was not tracked", cold_event)
                 accache_warm = invoke([accache])
-                compare(direct, accache_warm, "accache warm vs direct")
+                compare(baseline, accache_warm, "accache warm vs baseline")
                 for path in fixture.nondeterministic_outputs:
                     assert accache_warm[3][path] == accache_cold[3][path], (
                         fixture.name, "accache did not replay the cold PCH")
@@ -326,8 +343,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     assert warm_event["outcome"] != "hit", (fixture.name, warm_event)
                 results.append({"fixture": fixture.name, "revision": revision,
                                 "oracle_hit": oracle_hit, "accache": warm_event["outcome"],
-                                "oracle_missing_artifacts": sorted(set(direct[3]) - set(oracle_warm[3])),
-                                "artifacts": sorted(direct[3])})
+                                "oracle_missing_artifacts": sorted(set(baseline[3]) - set(oracle_warm[3])),
+                                "artifacts": sorted(baseline[3])})
             print("PASS oracle", fixture.name, flush=True)
         report = json.dumps({"fixtures": results, "sccache_stats": stats()}, sort_keys=True)
         if destination := os.environ.get("ACCACHE_ORACLE_REPORT"):

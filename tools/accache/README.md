@@ -86,8 +86,11 @@ produce conservative misses and can be expensive for large generated trees.
 ## Frontend compatibility
 
 The complete pinned sccache GCC/Clang/Rust argument tables and parsers are
-extracted into [frontend](frontend/UPSTREAM.md). Original compiler arguments
-are passed unchanged, including response files. Unsupported invocations run
+extracted into [frontend](frontend/UPSTREAM.md). Cacheable Rust invocations
+with nested response files expand those files before execution, matching
+sccache's frontend even though direct rustc rejects them. Every referenced
+response file is fingerprinted so an inner edit invalidates the action.
+Other compiler arguments are passed unchanged. Unsupported invocations run
 the compiler and record a bypass reason. Non-UTF-8 arguments also run unchanged.
 
 Covered output families include ordinary C/C++ objects, depfiles, split debug
@@ -169,9 +172,14 @@ stdout, stderr, the complete generated-file inventory, executable bits, and
 artifact bytes. GCC PCH files are process-dependent: that fixture checks file
 presence and exact cold-to-warm replay in each cache, while PCH consumer objects
 still receive byte-for-byte comparisons. It deletes outputs before warm runs,
-asserts cache hits, and changes dependencies to require misses. Separate tests exercise corruption,
-concurrent identical requests, PCH/modules, native libraries, proc macro file
-reads, and persistent target paths.
+asserts cache hits, and changes dependencies to require misses. Separate tests
+exercise corruption, concurrent identical requests, PCH/modules, native
+libraries, proc macro file reads, and persistent target paths.
+
+The nested Rust response fixture uses pinned sccache as its output reference:
+direct rustc rejects an inner `@file`, while sccache expands it. The fixture
+mutates that inner file and requires a miss with provenance naming the change.
+The frontend check also requires incremental Rust to bypass caching.
 
 The suite asserts several pinned sccache output omissions: implicit `.d` files
 on warm `-MMD` hits without `-MF`, GCC `-aux-info` files, Clang serialized

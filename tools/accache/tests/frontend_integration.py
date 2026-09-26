@@ -90,6 +90,13 @@ def suite(root):
     roundtrip("rust persistent target outside source tree", rustc,
               [arg.replace("--out-dir=target", "--out-dir=" + str(persistent)) for arg in rust_args])
     roundtrip("rust staticlib", rustc, ["--crate-name", "static_example", "--crate-type", "staticlib", "--emit=link,dep-info", "--out-dir", "target", "library.rs"])
+    _, incremental = invoke(rustc,
+                            ["--crate-name=incremental_example", "--crate-type=rlib",
+                             "--emit=link,dep-info", "--out-dir=target", "library.rs",
+                             "-Cincremental=incremental-state"], "bypass")
+    assert "incremental" in incremental["reason"], incremental
+    assert (work / "target/libincremental_example.rlib").is_file()
+    print("PASS Rust incremental passthrough", flush=True)
     (work / "native.c").write_text("int native(void) { return 23; }\n")
     subprocess.run([gcc, "-c", "native.c", "-o", "native.o"], cwd=work, env=env, check=True)
     ar = str(Path(gcc).with_name("ar"))
