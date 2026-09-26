@@ -140,6 +140,7 @@ fn forge_branch_request_successor(
         .planner_scan_index_after(
             parent.snapshot.roots().exploration,
             &[(request_id, request.branch_point())],
+            None,
             true,
         )
         .expect("project forged scan index");

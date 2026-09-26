@@ -365,9 +365,19 @@ impl CampaignRepository {
             branch_request_ids.push(request_id);
             scan_requests.push((request_id, request.branch_point()));
         }
-        if !scan_requests.is_empty() {
-            let index =
-                self.planner_scan_index_after(prior_exploration, &scan_requests, mode.publishes())?;
+        // The request's immutable proposal cap cannot be reopened by later
+        // feedback or aggregate grants. Earlier ordinals remain scan candidates.
+        let retired = proposals
+            .last()
+            .filter(|proposal| proposal.ordinal() == selected_request.budget().maximum_proposals())
+            .map(|_| (selected.source(), selected.branch_point()));
+        if !scan_requests.is_empty() || retired.is_some() {
+            let index = self.planner_scan_index_after(
+                prior_exploration,
+                &scan_requests,
+                retired,
+                mode.publishes(),
+            )?;
             exploration_upserts.insert(planner_scan_index_anchor_key(), index);
         }
         if !indexed_requests.is_empty() {

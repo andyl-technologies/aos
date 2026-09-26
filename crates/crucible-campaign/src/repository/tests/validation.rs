@@ -73,7 +73,7 @@ fn current_exploration_index_anchors_are_required_without_writes() {
         "current-campaign-branch-request-index-is-missing",
     );
     expect_integrity_reason(
-        repository.planner_scan_index_after(missing_planner_scan, &[], false),
+        repository.planner_scan_index_after(missing_planner_scan, &[], None, false),
         "current-campaign-planner-scan-index-is-missing",
     );
 
@@ -1316,6 +1316,7 @@ fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
         .planner_scan_index_after(
             parent.snapshot.roots().exploration,
             &[(request_id, request.branch_point())],
+            None,
             true,
         )
         .expect("scan update");
