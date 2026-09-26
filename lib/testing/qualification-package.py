@@ -865,6 +865,11 @@ class PackageScenario:
             for store_path in sorted(self.closure)
             if (pathlib.Path(store_path) / "lib/perl5").is_dir()
         )
+        closure_data_path = ":".join(
+            str(pathlib.Path(store_path) / "share")
+            for store_path in sorted(self.closure)
+            if (pathlib.Path(store_path) / "share").is_dir()
+        )
         closure_include_path = ":".join(
             str(pathlib.Path(store_path) / "include")
             for store_path in sorted(self.closure)
@@ -896,6 +901,8 @@ class PackageScenario:
             environment["PYTHONPATH"] = closure_python_path
         if closure_perl_path:
             environment["PERL5LIB"] = closure_perl_path
+        if closure_data_path:
+            environment["XDG_DATA_DIRS"] = closure_data_path
         if closure_include_path:
             environment["C_INCLUDE_PATH"] = closure_include_path
             environment["CPLUS_INCLUDE_PATH"] = closure_include_path
