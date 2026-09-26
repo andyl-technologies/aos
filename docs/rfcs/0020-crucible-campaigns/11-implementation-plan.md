@@ -2419,6 +2419,25 @@ manual-bundle, trusted-signers, legacy evidence, or compatibility input path.
   ABI, QEMU, package, and license gates with campaigns disabled and enabled.
 - [ ] **T-CAM-9.2** Run performance baselines and prove the hot path meets the
   required scaling shape and minimum speedup.
+
+  The packaged lazy-frontier gate reports a small real-admission planner/queue
+  diagnostic, including paged accounting scans and retained logical object
+  bytes. This is not the §10.4 performance gate: it has no guest host-time
+  denominator, pinned reference-host baseline, or one-million-admission budget.
+  The million dormant-continuation fixture measures a different collection.
+  The canonical planner atomically issues and admits one proposal in one
+  immutable snapshot, whereas the manual `issue_proposal` and `admit_proposal`
+  APIs advance two snapshots. The canonical one-proposal, one-worker-slot
+  semantics must remain intact. One million canonical steps plus setup
+  transitions exceed the current 1,000,001-snapshot ancestry limit by a small
+  amount; increasing that limit requires measured closure and object-budget
+  evidence, rather than bypassing validation. Each step also rewrites
+  persistent Merkle nodes, and queue projection scans the mixed accounting
+  root. The implementation spike must retain raw object, index, packed-store,
+  peak-memory, and paged cold-reopen evidence for one million real admissions;
+  add a paged admission index if mixed accounting scans exceed the budget. The
+  <5% gate must time planner plus queue operations and the entire identical
+  short-branch host workload on one pinned host.
 - [ ] **T-CAM-9.3** Prove coordinator/executor restart, exact pause, backend-
   neutral archival and offline maintenance transfer, and fast midpoint
   debugging.

@@ -145,6 +145,23 @@ impl<S> CampaignPlannerDriver<S> {
         &self.initial_state
     }
 
+    /// Reports the current repository checkpoint retained by this planner driver.
+    ///
+    /// This diagnostic is available only to conformance tests. It permits a
+    /// scale fixture to distinguish incremental promotion from a complete
+    /// ancestry and closure replay without changing campaign authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns a repository error when the campaign head is missing or invalid.
+    #[cfg(feature = "test-support")]
+    pub fn validation_checkpoint_metrics(
+        &self,
+        campaign: &str,
+    ) -> Result<crate::CampaignValidationCheckpointMetrics, CampaignRepositoryError> {
+        self.repository.validation_checkpoint_metrics(campaign)
+    }
+
     /// Advances the planner by at most one bounded component invocation.
     ///
     /// A prior `ContinueScan` resumes at its authenticated cursor after a

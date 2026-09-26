@@ -1,6 +1,172 @@
 //! Frontier ceiling and restart scale regressions.
 
 use super::*;
+use std::time::Instant;
+
+#[test]
+fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
+    const ATTEMPTS: usize = 32;
+    const SCAN_LIMIT: usize = 7;
+
+    let fixture = GateFixture::new(
+        "admitted-attempt-profile",
+        CampaignMode::Strict,
+        tree_search_explorer()?,
+        &BTreeMap::new(),
+    )?;
+    let campaign = "admitted-attempt-profile";
+    let head = fixture.create_funded_running(campaign, &BTreeMap::new(), ATTEMPTS as u64)?;
+    let (domain, alternatives) = discrete_domain(campaign, ATTEMPTS)?;
+    let request = request_for_source(
+        &fixture,
+        &domain,
+        ChoiceValue::Discrete(alternatives[0]),
+        CandidateSource::finite(
+            alternatives
+                .iter()
+                .copied()
+                .map(ChoiceValue::Discrete)
+                .collect(),
+        )?,
+        BranchRequestCause::Operator(command_id(campaign, "request")),
+        campaign,
+        BranchBudget::new(ATTEMPTS as u64, ATTEMPTS as u64)?,
+    )?;
+    discover_and_submit(&fixture, campaign, head.snapshot_id(), &request)?;
+    let baseline_objects = fixture.blobs.object_count()?;
+    let baseline_bytes = fixture.blobs.logical_bytes()?;
+
+    let mut planner = planner_driver(&fixture)?;
+    let mut planner_ns = 0;
+    let mut maximum_planner_step_ns = 0;
+    let mut planner_step_samples = Vec::with_capacity(ATTEMPTS);
+    #[cfg(feature = "test-support")]
+    let mut checkpoint_samples = Vec::with_capacity(ATTEMPTS);
+    #[cfg(feature = "test-support")]
+    let mut prior_checkpoint = planner.validation_checkpoint_metrics(campaign)?;
+    #[cfg(feature = "test-support")]
+    let mut prior_stored_objects = baseline_objects;
+    for _ in 0..ATTEMPTS {
+        let started = Instant::now();
+        let CampaignPlannerStepOutcome::Advanced {
+            disposition:
+                PlannerDisposition::Issue {
+                    issued_proposals, ..
+                },
+            ..
+        } = planner.step(campaign)?
+        else {
+            return Err("profile planner did not issue the next attempt".into());
+        };
+        let step_ns = started.elapsed().as_nanos();
+        planner_ns += step_ns;
+        maximum_planner_step_ns = maximum_planner_step_ns.max(step_ns);
+        planner_step_samples.push(step_ns);
+        assert_eq!(issued_proposals.len(), 1);
+
+        #[cfg(feature = "test-support")]
+        {
+            let metrics = planner.validation_checkpoint_metrics(campaign)?;
+            let stored_objects = fixture.blobs.object_count()?;
+            let checkpoint_growth = metrics.closure_objects - prior_checkpoint.closure_objects;
+            let stored_growth = stored_objects - prior_stored_objects;
+            assert_eq!(metrics.ancestry_depth, prior_checkpoint.ancestry_depth + 1);
+            assert!(
+                stored_growth <= checkpoint_growth,
+                "all newly stored objects must fit within the checkpoint's closure growth bound"
+            );
+            prior_checkpoint = metrics;
+            prior_stored_objects = stored_objects;
+            checkpoint_samples.push((metrics.ancestry_depth, metrics.closure_objects));
+        }
+    }
+    let snapshot = fixture.repository.head(campaign)?.snapshot_id();
+
+    let queue_start = Instant::now();
+    let mut cursor = None;
+    let mut scanned_entries = 0;
+    let mut pages = 0;
+    let mut attempts = BTreeSet::new();
+    let mut queue = AttemptQueue::new(DaemonEpoch::from_bytes([0x93; 16])?, 1)?;
+    loop {
+        let page = fixture
+            .repository
+            .project_claimable_attempts(campaign, cursor, SCAN_LIMIT)?;
+        assert_eq!(page.snapshot(), snapshot);
+        assert!(page.scanned_entries() <= SCAN_LIMIT);
+        assert!(page.attempts().len() <= SCAN_LIMIT);
+        scanned_entries += page.scanned_entries();
+        pages += 1;
+        for attempt in page.attempts() {
+            assert!(
+                attempts.insert(*attempt),
+                "duplicate attempt in queue projection"
+            );
+        }
+        if !page.attempts().is_empty() {
+            let reservation = queue
+                .reserve_from_page(&page, WorkerSlotId::new(0))?
+                .ok_or("claimable page did not yield a reservation")?;
+            assert_eq!(reservation.attempt(), page.attempts()[0]);
+            queue.release(reservation)?;
+        }
+        cursor = page.next();
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let queue_ns = queue_start.elapsed().as_nanos();
+    assert_eq!(attempts.len(), ATTEMPTS);
+    assert!(pages > 1, "queue projection must cross a page boundary");
+    assert_eq!(queue.reservation_count(), 0);
+
+    let reopened = CampaignRepository::with_component_authorities(
+        fixture.blobs.clone(),
+        fixture.refs.clone(),
+        fixture.planner_authority.clone(),
+        fixture.debugger_authority.clone(),
+    )?;
+    let cold_start = Instant::now();
+    let mut cold_cursor = None;
+    let mut cold_attempts = BTreeSet::new();
+    let mut cold_pages = 0;
+    loop {
+        let page = reopened.project_claimable_attempts(campaign, cold_cursor, SCAN_LIMIT)?;
+        assert_eq!(page.snapshot(), snapshot);
+        assert!(page.scanned_entries() <= SCAN_LIMIT);
+        cold_attempts.extend(page.attempts().iter().copied());
+        cold_pages += 1;
+        cold_cursor = page.next();
+        if cold_cursor.is_none() {
+            break;
+        }
+    }
+    let cold_projection_ns = cold_start.elapsed().as_nanos();
+    assert_eq!(cold_attempts, attempts);
+    assert_eq!(cold_pages, pages);
+
+    for (index, sample) in planner_step_samples.into_iter().enumerate() {
+        println!(
+            "campaign_planner_queue_step ordinal={} ns={sample}",
+            index + 1
+        );
+    }
+    #[cfg(feature = "test-support")]
+    for (index, (depth, objects)) in checkpoint_samples.into_iter().enumerate() {
+        println!(
+            "campaign_planner_queue_checkpoint ordinal={} ancestry={depth} objects={objects}",
+            index + 1
+        );
+    }
+    println!("campaign_planner_queue_snapshot id={snapshot}");
+    println!(
+        "campaign_planner_queue_profile attempts={ATTEMPTS} pages={pages} scanned_entries={scanned_entries} cold_pages={cold_pages} planner_ns={planner_ns} maximum_planner_step_ns={maximum_planner_step_ns} queue_ns={queue_ns} cold_projection_ns={cold_projection_ns} retained_objects={} retained_bytes={}",
+        fixture.blobs.object_count()? - baseline_objects,
+        fixture.blobs.logical_bytes()? - baseline_bytes,
+    );
+
+    Ok(())
+}
 
 #[test]
 fn exhaustive_all_above_the_policy_ceiling_rejects_without_writes() -> Result<(), Box<dyn Error>> {
