@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import struct
 import sys
@@ -1875,6 +1876,98 @@ def check_rust_target_json(root, env, accache, sccache, rustc, hits):
     return results
 
 
+def check_rust_llvm_plugin(root, env, accache, sccache, rustc, clang, hits):
+    """Track an LLVM pass plugin omitted from rustc dep-info."""
+    work = root / "rust-llvm-plugin"
+    work.mkdir()
+    (work / "target").mkdir()
+    (work / "library.rs").write_text("pub fn answer() -> u32 { 42 }\n")
+    (work / "stamp.cpp").write_text('''\
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/PassPlugin.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/GlobalVariable.h"
+using namespace llvm;
+struct StampPass : PassInfoMixin<StampPass> {
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
+    auto *Type = Type::getInt32Ty(M.getContext());
+    new GlobalVariable(M, Type, true, GlobalValue::ExternalLinkage,
+                       ConstantInt::get(Type, STAMP), "accache_plugin_stamp");
+    return PreservedAnalyses::none();
+  }
+};
+extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
+  return {LLVM_PLUGIN_API_VERSION, "accache-oracle", LLVM_VERSION_STRING,
+          [](PassBuilder &PB) {
+            PB.registerPipelineStartEPCallback([](ModulePassManager &MPM, OptimizationLevel) {
+              MPM.addPass(StampPass());
+            });
+          }};
+}
+''')
+    llvm = Path(clang).parent
+    flags = subprocess.check_output([str(llvm / "llvm-config"), "--cxxflags",
+                                     "--ldflags", "--libs", "core", "passes"],
+                                    env=env, text=True)
+    plugin = work / "plugin.so"
+    library = work / "target/libexample.rlib"
+    depfile = work / "target/example.d"
+    rust_env = env | {"RUSTC_BOOTSTRAP": "1"}
+    args = [rustc, "--crate-name=example", "--crate-type=rlib",
+            "--emit=link,dep-info", "--out-dir=target", "-Copt-level=2",
+            "-Zllvm-plugins=" + str(plugin), "library.rs"]
+
+    def compile_library(wrapper):
+        library.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=rust_env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        return (completed.stdout, completed.stderr,
+                library.read_bytes(), depfile.read_bytes())
+
+    results = []
+    first_library = None
+    for revision, stamp in enumerate([1, 2]):
+        build = subprocess.run([str(llvm / "clang++"), "-shared", "-fPIC",
+                                f"-DSTAMP={stamp}", *shlex.split(flags),
+                                "stamp.cpp", "-o", "plugin.so"],
+                               cwd=work, env=env, capture_output=True, timeout=120)
+        assert build.returncode == 0, build.stderr
+        direct = compile_library([])
+        assert b"plugin.so" not in direct[3], "dep-info listed LLVM plugin"
+        if first_library is None:
+            first_library = direct[2]
+        else:
+            assert direct[2] != first_library, "LLVM plugin edit had no effect"
+
+        before_hits = hits()
+        oracle_cold = compile_library([sccache])
+        oracle_hit = hits() > before_hits
+        if oracle_cold != direct:
+            assert (revision == 1 and oracle_hit
+                    and oracle_cold[2] == first_library), "unexpected sccache difference"
+        before_hits = hits()
+        assert compile_library([sccache]) == oracle_cold
+        assert hits() > before_hits, "sccache did not warm-hit"
+
+        assert compile_library([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+        assert cold["outcome"] == "miss", (revision, cold)
+        if revision:
+            assert any("plugin.so" in item for item in cold["changes"]), cold
+        assert compile_library([accache]) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+        assert warm["outcome"] == "hit", (revision, warm)
+        results.append({"fixture": "rust-llvm-plugin", "revision": revision,
+                        "oracle_hit": True, "oracle_stale_artifact": oracle_cold != direct,
+                        "accache": "hit",
+                        "artifacts": ["target/libexample.rlib", "target/example.d"]})
+
+    print("PASS oracle rust-llvm-plugin input invalidation", flush=True)
+    return results
+
+
 def check_rust_profile_use(root, env, accache, sccache, rustc, clang, hits):
     """Track rustc's profile input across cold and warm library actions."""
     work = root / "rust-profile-use"
@@ -2482,6 +2575,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                 sccache, rustc, hits))
         results.extend(check_rust_target_json(root, env, accache,
                                               sccache, rustc, hits))
+        results.extend(check_rust_llvm_plugin(root, env, accache,
+                                              sccache, rustc, clang, hits))
         results.extend(check_rust_profile_use(root, env, accache, sccache,
                                               rustc, clang, hits))
         results.extend(check_rust_sample_profile_use(root, env, accache,

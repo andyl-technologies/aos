@@ -113,6 +113,16 @@ pub(super) fn configure(
                 invocation.extra_inputs.insert(path.into());
             }
         }
+        if let Some(paths) = option.strip_prefix("llvm-plugins=") {
+            // rustc splits this option on whitespace and loads each library
+            // during codegen. Neither the libraries nor their own file reads
+            // appear in the generated dep-info.
+            ensure!(!paths.trim().is_empty(), "Rust LLVM plugin list is empty");
+            for path in paths.split_whitespace() {
+                invocation.extra_inputs.insert(path.into());
+            }
+            invocation.extension_reads(manifest)?;
+        }
     }
 
     invocation

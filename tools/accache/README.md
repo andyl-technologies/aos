@@ -317,6 +317,10 @@ absent from rustc's dep-info. A self-contained `no_core` crate avoids building
 another target toolchain. Both caches miss on the target edit, warm-hit on a
 repeat, and produce the direct compiler's changed rlib; accache names the JSON
 file in its miss explanation.
+A Rust LLVM pass plugin case rebuilds the plugin at the same path with different
+code that changes the rlib. The plugin is absent from rustc's dep-info: pinned
+sccache replays the old rlib, while accache fingerprints the library, misses
+with its path in the explanation, and then warm-hits on the new result.
 The dataflow-sanitizer ABI-list case changes a file absent from rustc's dep-info.
 Pinned sccache replays the old object, while accache misses and names the
 changed list before producing the new object.
