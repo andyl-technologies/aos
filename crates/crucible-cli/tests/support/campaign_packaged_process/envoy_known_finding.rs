@@ -8,6 +8,7 @@ use std::io::Write as _;
 use std::os::unix::net::UnixStream;
 
 use super::*;
+use crucible_api::ControlClient as _;
 use crucible_campaign::{
     CampaignExecutorStore, CampaignLineage, CampaignRepository, ConfigurationId, FindingId,
     ObjectiveEvaluation, ObservationId, PinRetention, PropertyVerdict, RankingCandidate,
@@ -182,7 +183,7 @@ fn public_five_node_envoy_network_retains_known_failure() -> Result<(), Box<dyn 
     let paused_snapshot = super::super::midpoint_debug::pause_campaign_for_debug(&fixture)?;
     let paused_proof = authenticated_finding(&fixture, &paused_snapshot, &finding)?;
     assert_eq!(paused_proof.finding(), finding_proof.finding());
-    super::super::midpoint_debug::verify_public_debug_handoff(
+    let debug_session = super::super::midpoint_debug::verify_public_debug_handoff(
         &fixture,
         service.daemon_url(),
         &paused_snapshot,
@@ -197,6 +198,7 @@ fn public_five_node_envoy_network_retains_known_failure() -> Result<(), Box<dyn 
         &measured_configuration,
         &finding,
         &paused_proof,
+        &debug_session,
     )?;
 
     println!("envoy_product_branch_steering_authenticated=true");
@@ -444,9 +446,14 @@ fn retain_and_cleanup_product_finding(
     configuration: &str,
     finding: &str,
     original_proof: &crucible_campaign::GetCampaignFindingObjectResponse,
+    debug_session: &str,
 ) -> Result<(), Box<dyn Error>> {
     let head = campaign_status(fixture)?;
     assert_eq!(head["state"], "paused");
+    let live_sessions = public_debug_sessions(service.daemon_url())?;
+    assert_eq!(live_sessions.len(), 1);
+    assert_eq!(format_debug_session(live_sessions[0]), debug_session);
+
     let pinned = run_json(
         connected_campaign(fixture).args([
             "pin",
@@ -590,10 +597,73 @@ fn retain_and_cleanup_product_finding(
         })?;
     assert_eq!(retained_summary, pin_summary);
     assert_eq!(retained_pins, pin_records);
+    let recovered_sessions = public_debug_sessions(reopened.daemon_url())?;
+    assert_eq!(recovered_sessions.len(), 1);
+    assert_eq!(recovered_sessions[0].seed, live_sessions[0].seed);
+    destroy_public_debug_session(reopened.daemon_url(), recovered_sessions[0])?;
     reopened.stop()?;
+
+    // A fresh owner must not readmit a debug session removed from durable inventory.
+    let mut cleared = fixture.start_service(None)?;
+    assert!(public_debug_sessions(cleared.daemon_url())?.is_empty());
+    cleared.stop()?;
 
     println!("envoy_product_retention_and_cleanup_authenticated=true");
     Ok(())
+}
+
+fn public_debug_sessions(
+    daemon_url: &str,
+) -> Result<Vec<crucible_api::SessionRef>, Box<dyn Error>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let sessions = runtime.block_on(async {
+        let client =
+            crucible_api::RpcControlClient::new(crucible_api::RpcEndpoint::http2(daemon_url))?;
+        client.list_sessions().await
+    })?;
+    Ok(sessions
+        .sessions
+        .into_iter()
+        .map(|entry| entry.session)
+        .collect())
+}
+
+fn destroy_public_debug_session(
+    daemon_url: &str,
+    session: crucible_api::SessionRef,
+) -> Result<(), Box<dyn Error>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let client =
+            crucible_api::RpcControlClient::new(crucible_api::RpcEndpoint::http2(daemon_url))?;
+        let request =
+            crucible_api::DestroySessionRequest::new(session).with_expected_epoch(session.epoch);
+        let removed = client.destroy_session(request).await?;
+        assert_eq!(removed.session, session);
+        assert!(removed.stopped);
+        assert!(!removed.already_absent);
+
+        let repeated = client.destroy_session(request).await?;
+        assert_eq!(repeated.session, session);
+        assert!(!repeated.stopped);
+        assert!(repeated.already_absent);
+        assert!(client.list_sessions().await?.sessions.is_empty());
+        Ok::<(), crucible_api::ControlClientError>(())
+    })?;
+    Ok(())
+}
+
+fn format_debug_session(session: crucible_api::SessionRef) -> String {
+    format!(
+        "{}:{}:{}",
+        session.id.value,
+        session.epoch,
+        session.seed.to_hex()
+    )
 }
 
 fn verify_packaged_replay(
