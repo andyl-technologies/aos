@@ -124,6 +124,11 @@ def fixtures(gcc, clang, rustc):
     # setting explicitly so the reference compiler serializes the same options.
     yield Fixture("clang-pch", clang, ["-x", "c-header", "-c", "header.h", "-o", "header.pch", "-fdiagnostics-color=always"],
                   {"header.h": "#define VALUE 42\n"})
+    yield Fixture("clang-xclang-pch", clang,
+                  ["-x", "c-header", "-Xclang", "-emit-pch", "-c", "header.h",
+                   "-o", "header.pch", "-fdiagnostics-color=always"],
+                  {"header.h": "#define VALUE 42\n"},
+                  {"header.h": "#define VALUE 73\n"})
     for name, compiler, precompiled, include in [
         ("gcc", gcc, "header.h.gch", []),
         ("clang", clang, "header.pch", ["-include-pch", "header.pch"]),
