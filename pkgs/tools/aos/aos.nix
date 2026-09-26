@@ -741,7 +741,9 @@ in
           mkdir -p "$testSupport/bin"
           mv "$out/bin/aos-release-fleet-fixture" "$testSupport/bin/"
           mv "$out/bin/aos-ability-interruption-audit" "$testSupport/bin/"
+          mv "$out/bin/aos-ability-authority-audit" "$testSupport/bin/"
           test -x "$testSupport/bin/aos-ability-interruption-audit"
+          test -x "$testSupport/bin/aos-ability-authority-audit"
 
           # The common fixup phase visits only the primary output. Strip every
           # shipped executable here so the split-output closure checks inspect

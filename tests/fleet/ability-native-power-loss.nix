@@ -127,6 +127,7 @@ in {
       PACKAGE_RUNTIME = ${packageRuntime}
       RUNTIME_AUDIT_MATRIX_SPEC = ${builtins.toJSON "${authorityMatrixSpec}/matrix-spec.json"}
       RUNTIME_AUDIT_INTERFACE_ROOTS = ${builtins.toJSON (map builtins.toString authorityInterfaceRoots)}
+      AUTHORITY_AUDIT = "${pkgs.aos.testSupport}/bin/aos-ability-authority-audit"
       INTERRUPTION_AUDIT = "${pkgs.aos.testSupport}/bin/aos-ability-interruption-audit"
       SYSTEMCTL = "${pkgs.systemd}/bin/systemctl"
       SYSTEMD_RUN = "${pkgs.systemd}/bin/systemd-run"
@@ -2109,7 +2110,7 @@ in {
           ]
       )
       runtime.succeed(
-          f"{Path(PACKAGE_RUNTIME).parent}/aos-ability-authority-audit "
+          f"{AUTHORITY_AUDIT} "
           f"{runtime_audit_arguments}",
           timeout=1800,
       )

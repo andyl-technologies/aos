@@ -1,37 +1,40 @@
-//! Executes the closed native-adapter interruption qualification cohort.
+//! Executes the closed native-adapter runtime-control qualification cohort.
 //!
-//! The release image runs this binary from the candidate package runtime. Each
-//! cell builds a checked plan from the exact published interface descriptor,
-//! halts admission before resource acquisition, drops the transaction, and
-//! reopens its durable journal. Evidence comes from the journal, a durable
-//! reservation ledger, and an independent foreign sentinel. Later boundaries
-//! require provider-specific effect oracles and stay outside this cohort.
+//! This binary is installed in the candidate's test-support output so release
+//! qualification executes the candidate's linked ability runtime. It accepts
+//! only the immutable matrix specification and realized interface documents,
+//! performs no provider effect, and emits evidence derived from durable
+//! journals and an independent reservation ledger.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::num::NonZeroU32;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::{
     AbilityValue, AccessMode, AggregateId, ArtifactReference, ControllerAssignment, DependencyEdge,
-    IndeterminateSemantics, InterfaceDocument, InterfaceKey, LocalKey, MethodDescriptor,
-    MethodReference, Operation, PlanNodeKey, ProviderAssignment, ProviderImplementationReference,
-    ResourceAccess, ResourceId, RetryPolicy, TransactionId, ValueExpression,
+    DependencyKind, IncarnationId, IndeterminateSemantics, InterfaceDocument, InterfaceKey,
+    LocalKey, MethodDescriptor, MethodReference, Operation, OperationPrecondition, PlanNodeKey,
+    ProviderAssignment, ProviderImplementationReference, ResourceAccess, ResourceId, RetryPolicy,
+    TransactionId, ValueExpression, compare_edges, compare_operation_keys,
 };
 use aos_ability_runtime::adapter::{
-    AdapterCompletion, AdapterRecord, CancellationDisposition, CatalogReservation,
-    EffectDisposition, InvocationPurpose, MonotonicClock, PlanRetentionReceipt,
+    AdapterCompletion, AdapterRecord, CancellationDisposition, CancellationToken,
+    CatalogReservation, EffectDisposition, InvocationPurpose, MonotonicClock, PlanRetentionReceipt,
     ReconcileDisposition, ReservationContext, ResourceAdmissionEvidence, ResourceHandle,
     RootRetentionReceipt, RuntimeControl, TrustedAdapter, TrustedPlanStore, TrustedResourceCatalog,
     TrustedRootStore,
 };
 use aos_ability_runtime::execution::{
-    AdmissionError, AuthorityRejection, Boundary, CheckedExecutionJournalSnapshot,
+    AdmissionError, AuthorityCheckBoundary, AuthorityRejection, CheckedExecutionJournalSnapshot,
     ExecutionBoundaryControl, ExecutionBoundaryObservation, ExecutionBoundaryObserver,
-    ExecutionEventKind, ExecutionTransaction, RecoveryAction, RuntimeAuthorityRole,
-    TrustedAdmissionPolicy, TrustedAuthoritySnapshot,
+    ExecutionError, ExecutionEventKind, ExecutionStep, ExecutionTransaction, RecoveryAction,
+    ResourceReleaseError, RuntimeAuthorityRole, TrustedAdmissionPolicy, TrustedAuthoritySnapshot,
 };
 use aos_ability_runtime::journal::JournalLimits;
 use aos_ability_validate::test_support::{PlanFixture, plan_fixture};
@@ -41,15 +44,39 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
+#[path = "ability_authority_cases.rs"]
+mod cases;
 #[path = "ability_audit_common.rs"]
 mod common;
 
+use cases::{run_failure_control_cell, run_replacement_cell};
 use common::{Adapter, MatrixMethod, MatrixSpec, load_interfaces, minimal_value, validate_spec};
 
-const OUTPUT_SCHEMA: &str = "aos.qualification.interruption-audit/v1";
-const SUBJECT_SCHEMA: &str = "aos.qualification.interruption-subject/v1";
-const PLAN_BUNDLE_SCHEMA: &str = "aos.qualification.interruption-plan/v1";
-const INTERRUPTION_SCENARIO: &str = "interrupt-before-acquisition";
+const OUTPUT_SCHEMA: &str = "aos.qualification.native-adapter-runtime-audit/v1";
+const SUBJECT_SCHEMA: &str = "aos.qualification.native-adapter-runtime-subject/v1";
+const REPLACEMENT_SUBJECT_SCHEMA: &str =
+    "aos.qualification.native-adapter-incarnation-replacement-subject/v1";
+const PLAN_BUNDLE_SCHEMA: &str = "aos.qualification.native-adapter-runtime-plan/v1";
+const ROLE_SCENARIOS: [&str; 12] = [
+    "revoke-caller-before-acquisition",
+    "revoke-caller-after-acquisition",
+    "revoke-caller-before-external-effect",
+    "revoke-provider-before-acquisition",
+    "revoke-provider-after-acquisition",
+    "revoke-provider-before-external-effect",
+    "revoke-enforcement-before-acquisition",
+    "revoke-enforcement-after-acquisition",
+    "revoke-enforcement-before-external-effect",
+    "revoke-assignment-before-acquisition",
+    "revoke-assignment-after-acquisition",
+    "revoke-assignment-before-external-effect",
+];
+const FAILURE_CONTROL_SCENARIOS: [&str; 3] =
+    ["expire-attempt-deadline", "fail-cleanup", "fail-release"];
+const REPLACEMENT_SCENARIOS: [&str; 2] = [
+    "replace-executor-incarnation",
+    "replace-provider-incarnation",
+];
 
 #[derive(Serialize)]
 struct AuditOutput {
@@ -64,6 +91,13 @@ struct AuditCell {
     subject: Value,
     plan_bundle: Value,
     evidence: Value,
+}
+
+#[derive(Clone, Copy)]
+struct AuditScenario {
+    role: RuntimeAuthorityRole,
+    boundary: aos_ability_runtime::execution::Boundary,
+    authority_boundary: AuthorityCheckBoundary,
 }
 
 #[derive(Clone)]
@@ -84,9 +118,26 @@ impl AdapterCompletion for AuditRecord {
     }
 }
 
-#[derive(Default)]
 struct NoDispatchAdapter {
-    calls: usize,
+    observation: AbilityValue,
+    execute_calls: usize,
+    reconcile_calls: usize,
+    cancel_calls: usize,
+}
+
+impl NoDispatchAdapter {
+    fn new(observation: AbilityValue) -> Self {
+        Self {
+            observation,
+            execute_calls: 0,
+            reconcile_calls: 0,
+            cancel_calls: 0,
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.execute_calls + self.reconcile_calls + self.cancel_calls
+    }
 }
 
 impl TrustedAdapter for NoDispatchAdapter {
@@ -124,58 +175,94 @@ impl TrustedAdapter for NoDispatchAdapter {
 
     fn execute(
         &mut self,
-        request: &Self::Request,
+        _request: &Self::Request,
         _control: &dyn RuntimeControl,
     ) -> EffectDisposition<Self::Completion, Self::Observation> {
-        self.calls += 1;
+        self.execute_calls += 1;
         EffectDisposition::RejectedBeforeEffect(AuditRecord {
-            evidence: request.clone(),
+            evidence: self.observation.clone(),
             outputs: BTreeMap::new(),
         })
     }
 
     fn reconcile(
         &mut self,
-        request: &Self::Request,
+        _request: &Self::Request,
         _control: &dyn RuntimeControl,
     ) -> ReconcileDisposition<Self::Completion, Self::Observation> {
-        self.calls += 1;
-        ReconcileDisposition::StillIndeterminate(AuditRecord {
-            evidence: request.clone(),
+        self.reconcile_calls += 1;
+        ReconcileDisposition::RejectedBeforeEffect(AuditRecord {
+            evidence: self.observation.clone(),
             outputs: BTreeMap::new(),
         })
     }
 
     fn cancel(
         &mut self,
-        request: &Self::Request,
+        _request: &Self::Request,
         _control: &dyn RuntimeControl,
     ) -> CancellationDisposition<Self::Completion, Self::Observation> {
-        self.calls += 1;
+        self.cancel_calls += 1;
         CancellationDisposition::Indeterminate(AuditRecord {
-            evidence: request.clone(),
+            evidence: self.observation.clone(),
             outputs: BTreeMap::new(),
         })
     }
 }
 
-#[derive(Clone, Copy)]
-struct AuditClock;
+struct AuditClock {
+    now: Cell<u64>,
+    restart_stable: Cell<u64>,
+}
 
-impl MonotonicClock for AuditClock {
-    fn now_millis(&self) -> u64 {
-        1
+impl AuditClock {
+    fn new(now: u64) -> Self {
+        Self {
+            now: Cell::new(now),
+            restart_stable: Cell::new(now),
+        }
     }
 
-    fn restart_stable_millis(&self) -> u64 {
-        1
+    fn advance_to(&self, now: u64) {
+        self.now.set(now);
+        self.restart_stable.set(now);
     }
 }
 
-#[derive(Clone, Copy)]
-struct AllowPolicy;
+impl MonotonicClock for AuditClock {
+    fn now_millis(&self) -> u64 {
+        self.now.get()
+    }
 
-impl TrustedAuthoritySnapshot for AllowPolicy {
+    fn restart_stable_millis(&self) -> u64 {
+        self.restart_stable.get()
+    }
+}
+
+struct RevocablePolicy {
+    revoked: Rc<Cell<Option<RuntimeAuthorityRole>>>,
+}
+
+#[derive(Clone, Copy)]
+struct AuthorityFence {
+    revoked: Option<RuntimeAuthorityRole>,
+}
+
+fn authorize_role(
+    revoked: Option<RuntimeAuthorityRole>,
+    role: RuntimeAuthorityRole,
+) -> Result<(), io::Error> {
+    if revoked == Some(role) {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "qualification role was revoked",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+impl TrustedAuthoritySnapshot for AuthorityFence {
     type Error = io::Error;
 
     fn authorize_role(
@@ -185,9 +272,9 @@ impl TrustedAuthoritySnapshot for AllowPolicy {
         _operation: &Operation,
         _method: &MethodReference,
         _purpose: InvocationPurpose,
-        _role: RuntimeAuthorityRole,
+        role: RuntimeAuthorityRole,
     ) -> Result<(), Self::Error> {
-        Ok(())
+        authorize_role(self.revoked, role)
     }
 
     fn authorize_resources(
@@ -198,12 +285,42 @@ impl TrustedAuthoritySnapshot for AllowPolicy {
         _expected_provider: Option<&ProviderAssignment>,
         _resources: &[ResourceAdmissionEvidence],
     ) -> Result<(), Self::Error> {
-        Ok(())
+        authorize_role(self.revoked, RuntimeAuthorityRole::AssignmentIncarnation)
     }
 }
 
-impl TrustedAdmissionPolicy for AllowPolicy {
-    type DispatchFence = Self;
+impl TrustedAuthoritySnapshot for RevocablePolicy {
+    type Error = io::Error;
+
+    fn authorize_role(
+        &mut self,
+        _plan: &CheckedEffectPlan,
+        _binding: &aos_ability_model::Binding,
+        _operation: &Operation,
+        _method: &MethodReference,
+        _purpose: InvocationPurpose,
+        role: RuntimeAuthorityRole,
+    ) -> Result<(), Self::Error> {
+        authorize_role(self.revoked.get(), role)
+    }
+
+    fn authorize_resources(
+        &mut self,
+        _plan: &CheckedEffectPlan,
+        _binding: &aos_ability_model::Binding,
+        _operation: &Operation,
+        _expected_provider: Option<&ProviderAssignment>,
+        _resources: &[ResourceAdmissionEvidence],
+    ) -> Result<(), Self::Error> {
+        authorize_role(
+            self.revoked.get(),
+            RuntimeAuthorityRole::AssignmentIncarnation,
+        )
+    }
+}
+
+impl TrustedAdmissionPolicy for RevocablePolicy {
+    type DispatchFence = AuthorityFence;
 
     fn acquire_dispatch_fence(
         &mut self,
@@ -213,37 +330,70 @@ impl TrustedAdmissionPolicy for AllowPolicy {
         _method: &MethodReference,
         _purpose: InvocationPurpose,
     ) -> Result<Self::DispatchFence, AuthorityRejection<Self::Error>> {
-        Ok(*self)
+        Ok(AuthorityFence {
+            revoked: self.revoked.get(),
+        })
     }
 }
 
-struct HaltAtBoundary {
-    path: PathBuf,
-    observed: Option<Boundary>,
+struct RevokeAtBoundary {
+    revoked: Rc<Cell<Option<RuntimeAuthorityRole>>>,
+    scenario: AuditScenario,
+    observed: Option<aos_ability_runtime::execution::Boundary>,
 }
 
-impl ExecutionBoundaryObserver for HaltAtBoundary {
+impl ExecutionBoundaryObserver for RevokeAtBoundary {
     fn observe(
         &mut self,
         observation: ExecutionBoundaryObservation<'_>,
         _control: &dyn RuntimeControl,
     ) -> anyhow::Result<ExecutionBoundaryControl> {
-        if observation.boundary() != Boundary::BeforeResourceAcquisition {
-            return Ok(ExecutionBoundaryControl::Continue);
+        if observation.boundary() == self.scenario.boundary {
+            self.revoked.set(Some(self.scenario.role));
+            self.observed = Some(observation.boundary());
         }
+        Ok(ExecutionBoundaryControl::Continue)
+    }
+}
 
-        let bytes = canonical_bytes(&json!({
-            "schema": "aos.qualification.interruption-boundary/v1",
-            "scenario": INTERRUPTION_SCENARIO,
-            "transaction": observation.transaction(),
-            "operation": observation.operation(),
-            "attempt": observation.attempt(),
-            "purpose": observation.purpose(),
-            "boundary": format!("{:?}", observation.boundary()),
-        }))?;
-        write_durable(&self.path, &bytes)?;
-        self.observed = Some(observation.boundary());
-        Ok(ExecutionBoundaryControl::Halt)
+struct FailAtBoundary {
+    target: aos_ability_runtime::execution::Boundary,
+    observed: bool,
+}
+
+struct ExpireAtBoundary<'a> {
+    clock: &'a AuditClock,
+    target: aos_ability_runtime::execution::Boundary,
+    advance_by: u64,
+    observed: bool,
+}
+
+impl ExecutionBoundaryObserver for ExpireAtBoundary<'_> {
+    fn observe(
+        &mut self,
+        observation: ExecutionBoundaryObservation<'_>,
+        _control: &dyn RuntimeControl,
+    ) -> anyhow::Result<ExecutionBoundaryControl> {
+        if observation.boundary() == self.target {
+            self.observed = true;
+            self.clock
+                .advance_to(self.clock.now_millis().saturating_add(self.advance_by));
+        }
+        Ok(ExecutionBoundaryControl::Continue)
+    }
+}
+
+impl ExecutionBoundaryObserver for FailAtBoundary {
+    fn observe(
+        &mut self,
+        observation: ExecutionBoundaryObservation<'_>,
+        _control: &dyn RuntimeControl,
+    ) -> anyhow::Result<ExecutionBoundaryControl> {
+        if observation.boundary() == self.target {
+            self.observed = true;
+            bail!("injected qualification boundary failure");
+        }
+        Ok(ExecutionBoundaryControl::Continue)
     }
 }
 
@@ -306,13 +456,16 @@ impl TrustedRootStore for DurableStore {
 struct ReservationState {
     acquire_calls: usize,
     release_calls: usize,
-    owners: BTreeSet<String>,
+    release_failures: usize,
+    owners: usize,
     max_owners: usize,
 }
 
 struct DurableCatalog {
     ledger: PathBuf,
     state: ReservationState,
+    fail_releases: usize,
+    observed_provider_incarnation: Option<IncarnationId>,
 }
 
 impl DurableCatalog {
@@ -320,6 +473,7 @@ impl DurableCatalog {
         let bytes = canonical_bytes(&json!({
             "acquire-calls": self.state.acquire_calls,
             "release-calls": self.state.release_calls,
+            "release-failures": self.state.release_failures,
             "owners": self.state.owners,
             "max-owners": self.state.max_owners,
         }))
@@ -338,22 +492,20 @@ impl TrustedResourceCatalog for DurableCatalog {
         _operation: &Operation,
         access: &ResourceAccess,
     ) -> Result<CatalogReservation<Self::Handle>, Self::Error> {
-        let owner = format!(
-            "{:?}/{:?}/{}",
-            context.transaction, context.operation.operation.key, context.attempt,
-        );
         self.state.acquire_calls += 1;
-        self.state.owners.insert(owner.clone());
-        self.state.max_owners = self.state.max_owners.max(self.state.owners.len());
+        self.state.owners += 1;
+        self.state.max_owners = self.state.max_owners.max(self.state.owners);
         self.persist()?;
 
         Ok(CatalogReservation::new(
-            owner,
+            access.resource.key.as_str().to_string(),
             ResourceAdmissionEvidence::new(
                 access.resource.clone(),
-                context
-                    .expected_provider
-                    .map(|assignment| assignment.incarnation.clone()),
+                self.observed_provider_incarnation.clone().or_else(|| {
+                    context
+                        .expected_provider
+                        .map(|assignment| assignment.incarnation.clone())
+                }),
                 None,
                 AbilityValue::new(json!({"reserved": true})).map_err(io::Error::other)?,
             ),
@@ -363,12 +515,16 @@ impl TrustedResourceCatalog for DurableCatalog {
     fn release(
         &mut self,
         _resource: &ResourceId,
-        handle: &mut Self::Handle,
+        _handle: &mut Self::Handle,
     ) -> Result<(), Self::Error> {
-        if !self.state.owners.remove(handle) {
-            return Err(io::Error::other("reservation owner is absent"));
-        }
         self.state.release_calls += 1;
+        if self.fail_releases > 0 {
+            self.fail_releases -= 1;
+            self.state.release_failures += 1;
+            self.persist()?;
+            return Err(io::Error::other("injected catalog release failure"));
+        }
+        self.state.owners = self.state.owners.saturating_sub(1);
         self.persist()
     }
 }
@@ -407,14 +563,19 @@ fn main() -> Result<()> {
         .applicability
         .applicable_cell_ids
         .iter()
-        .filter(|id| id.ends_with(&format!("/{INTERRUPTION_SCENARIO}")))
+        .filter(|id| {
+            let scenario = id.rsplit('/').next().unwrap_or_default();
+            ROLE_SCENARIOS.contains(&scenario)
+                || FAILURE_CONTROL_SCENARIOS.contains(&scenario)
+                || REPLACEMENT_SCENARIOS.contains(&scenario)
+        })
         .cloned()
         .collect();
 
     let evidence_root = output_path.with_extension("evidence");
     ensure!(
         !evidence_root.try_exists()?,
-        "interruption evidence directory already exists"
+        "authority evidence directory already exists"
     );
     fs::create_dir_all(&evidence_root)?;
     let mut cells = BTreeMap::new();
@@ -436,7 +597,7 @@ fn main() -> Result<()> {
                 .methods
                 .get(&LocalKey::new(&method.method)?)
                 .with_context(|| format!("interface lacks method {}", method.method))?;
-            for scenario_name in [INTERRUPTION_SCENARIO] {
+            for scenario_name in ROLE_SCENARIOS {
                 let cell_id = format!(
                     "{}/{}/abi-{}/{}/{}",
                     adapter.adapter,
@@ -450,7 +611,7 @@ fn main() -> Result<()> {
                 }
                 let cell = matrix_cells
                     .get(&cell_id)
-                    .with_context(|| format!("matrix lacks interruption cell {cell_id}"))?;
+                    .with_context(|| format!("matrix lacks role cell {cell_id}"))?;
                 validate_cell(cell, adapter, method, scenario_name)?;
                 let audit = run_cell(
                     &evidence_root,
@@ -460,8 +621,73 @@ fn main() -> Result<()> {
                     &interfaces,
                     descriptor,
                     method,
+                    parse_scenario(scenario_name)?,
                 )
-                .with_context(|| format!("interruption cell {cell_id} failed"))?;
+                .with_context(|| format!("authority cell {cell_id} failed"))?;
+                ensure!(
+                    cells.insert(cell_id, audit).is_none(),
+                    "duplicate audit cell"
+                );
+            }
+            for scenario_name in FAILURE_CONTROL_SCENARIOS {
+                let cell_id = format!(
+                    "{}/{}/abi-{}/{}/{}",
+                    adapter.adapter,
+                    adapter.interface_name,
+                    adapter.interface_abi,
+                    method.method,
+                    scenario_name,
+                );
+                if !expected.contains(&cell_id) {
+                    continue;
+                }
+                let cell = matrix_cells
+                    .get(&cell_id)
+                    .with_context(|| format!("matrix lacks failure-control cell {cell_id}"))?;
+                validate_cell(cell, adapter, method, scenario_name)?;
+                let audit = run_failure_control_cell(
+                    &evidence_root,
+                    &cell_id,
+                    cell,
+                    interface,
+                    &interfaces,
+                    descriptor,
+                    method,
+                    scenario_name,
+                )
+                .with_context(|| format!("failure-control cell {cell_id} failed"))?;
+                ensure!(
+                    cells.insert(cell_id, audit).is_none(),
+                    "duplicate audit cell"
+                );
+            }
+            for scenario_name in REPLACEMENT_SCENARIOS {
+                let cell_id = format!(
+                    "{}/{}/abi-{}/{}/{}",
+                    adapter.adapter,
+                    adapter.interface_name,
+                    adapter.interface_abi,
+                    method.method,
+                    scenario_name,
+                );
+                if !expected.contains(&cell_id) {
+                    continue;
+                }
+                let cell = matrix_cells
+                    .get(&cell_id)
+                    .with_context(|| format!("matrix lacks replacement cell {cell_id}"))?;
+                validate_cell(cell, adapter, method, scenario_name)?;
+                let audit = run_replacement_cell(
+                    &evidence_root,
+                    &cell_id,
+                    cell,
+                    interface,
+                    &interfaces,
+                    descriptor,
+                    method,
+                    scenario_name,
+                )
+                .with_context(|| format!("incarnation-replacement cell {cell_id} failed"))?;
                 ensure!(
                     cells.insert(cell_id, audit).is_none(),
                     "duplicate audit cell"
@@ -472,7 +698,7 @@ fn main() -> Result<()> {
 
     ensure!(
         cells.keys().cloned().collect::<BTreeSet<_>>() == expected,
-        "interruption audit differs from the applicable matrix cells"
+        "runtime audit differs from the applicable matrix cells"
     );
     let output = AuditOutput {
         schema: OUTPUT_SCHEMA,
@@ -489,17 +715,17 @@ fn validate_cell(
     method: &MatrixMethod,
     scenario: &str,
 ) -> Result<()> {
+    let expected_interface = json!({
+        "name": adapter.interface_name,
+        "abi": adapter.interface_abi,
+        "descriptor": adapter.interface_descriptor,
+    });
     ensure!(
         cell.get("adapter") == Some(&json!(adapter.adapter)),
         "cell adapter differs"
     );
     ensure!(
-        cell.get("interface")
-            == Some(&json!({
-                "name": adapter.interface_name,
-                "abi": adapter.interface_abi,
-                "descriptor": adapter.interface_descriptor,
-            })),
+        cell.get("interface") == Some(&expected_interface),
         "cell interface differs"
     );
     ensure!(
@@ -531,24 +757,26 @@ fn run_cell(
     interfaces: &BTreeMap<InterfaceKey, InterfaceDocument>,
     descriptor: &MethodDescriptor,
     matrix_method: &MatrixMethod,
+    scenario: AuditScenario,
 ) -> Result<AuditCell> {
     let directory =
         evidence_root.join(digest_bytes(cell_id.as_bytes()).trim_start_matches("sha256:"));
     fs::create_dir_all(&directory)?;
     let journal_path = directory.join("execution.journal");
     let ledger_path = directory.join("reservation-ledger.json");
-    let boundary_path = directory.join("interruption-boundary.json");
     let foreign_path = directory.join("foreign-resource");
     write_durable(&foreign_path, b"independent-foreign-resource\n")?;
     let foreign_before = digest_file(&foreign_path)?;
 
-    let (plan, plan_bundle, operation_key, dependent_key) =
+    let (plan, plan_bundle, operation_key, _dependent_key, observation) =
         checked_plan(interface, interfaces, descriptor, matrix_method)?;
-    let operation = plan
+    let planned_incarnation = plan
         .operation(&operation_key)
-        .context("checked plan lacks the selected operation")?;
+        .and_then(|operation| operation.preconditions.first())
+        .and_then(|precondition| precondition.expected_incarnation.clone())
+        .context("checked plan lacks its provider-incarnation precondition")?;
     let transaction_id = TransactionId(LocalKey::new(&format!(
-        "interrupt-{}",
+        "authority-{}",
         &digest_bytes(cell_id.as_bytes())[7..23]
     ))?);
     let mut store = DurableStore {
@@ -556,18 +784,6 @@ fn run_cell(
         plan_bundle,
         bundle_digest: None,
     };
-    let mut catalog = DurableCatalog {
-        ledger: ledger_path.clone(),
-        state: ReservationState::default(),
-    };
-    catalog.persist()?;
-    let adapter = NoDispatchAdapter::default();
-    let mut policy = AllowPolicy;
-    let mut observer = HaltAtBoundary {
-        path: boundary_path.clone(),
-        observed: None,
-    };
-
     let mut transaction = ExecutionTransaction::open(
         &plan,
         transaction_id.clone(),
@@ -575,94 +791,121 @@ fn run_cell(
         JournalLimits::default(),
         &mut store,
     )?;
-    let failure = match transaction.admit_with_observer(
-        &operation_key,
-        &adapter,
-        &mut catalog,
-        &mut policy,
-        &AuditClock,
-        &mut observer,
-    ) {
-        Ok(_) => bail!("admission continued past the interruption boundary"),
-        Err(failure) => failure,
+    let mut catalog = DurableCatalog {
+        ledger: ledger_path.clone(),
+        state: ReservationState::default(),
+        fail_releases: 0,
+        observed_provider_incarnation: Some(planned_incarnation),
     };
+    catalog.persist()?;
+    let revoked = Rc::new(Cell::new(None));
+    let mut policy = RevocablePolicy {
+        revoked: Rc::clone(&revoked),
+    };
+    let mut observer = RevokeAtBoundary {
+        revoked,
+        scenario,
+        observed: None,
+    };
+    let mut adapter = NoDispatchAdapter::new(observation);
+    let clock = AuditClock::new(1);
+
+    match scenario.boundary {
+        aos_ability_runtime::execution::Boundary::FinalDispatch => {
+            let admitted = transaction
+                .admit(&operation_key, &adapter, &mut catalog, &mut policy, &clock)
+                .map_err(|failure| anyhow::anyhow!(failure.error().to_string()))?;
+            let error = match transaction.drive_admitted_with_observer(
+                &admitted,
+                &mut adapter,
+                &mut policy,
+                &clock,
+                &CancellationToken::default(),
+                &mut observer,
+            ) {
+                Ok(_) => bail!("final dispatch unexpectedly succeeded"),
+                Err(error) => error,
+            };
+            assert_execution_rejection(&error, scenario)?;
+            transaction
+                .release_admitted::<NoDispatchAdapter, _, _>(admitted, &mut catalog, &clock)
+                .map_err(|failure| anyhow::anyhow!(failure.error().to_string()))?;
+        }
+        _ => {
+            let failure = match transaction.admit_with_observer(
+                &operation_key,
+                &adapter,
+                &mut catalog,
+                &mut policy,
+                &clock,
+                &mut observer,
+            ) {
+                Ok(_) => bail!("admission unexpectedly succeeded"),
+                Err(failure) => failure,
+            };
+            assert_admission_rejection(failure.error(), scenario)?;
+        }
+    }
+
     ensure!(
-        matches!(
-            failure.error(),
-            AdmissionError::BoundaryHalt(Boundary::BeforeResourceAcquisition)
-        ),
-        "admission stopped with an unexpected error"
+        observer.observed == Some(scenario.boundary),
+        "revocation boundary was not observed"
     );
     ensure!(
-        observer.observed == Some(Boundary::BeforeResourceAcquisition),
-        "interruption boundary was not observed"
+        adapter.calls() == 0,
+        "authority fence allowed adapter dispatch"
     );
+    ensure!(
+        catalog.state.max_owners <= 1,
+        "more than one resource owner was observed"
+    );
+    ensure!(
+        catalog.state.owners == 0,
+        "resource ownership was not released"
+    );
+    let expected_acquisitions = usize::from(
+        scenario.boundary != aos_ability_runtime::execution::Boundary::BeforeResourceAcquisition,
+    );
+    ensure!(
+        catalog.state.acquire_calls == expected_acquisitions,
+        "unexpected acquisition count"
+    );
+    ensure!(
+        catalog.state.release_calls == expected_acquisitions,
+        "unexpected release count"
+    );
+
     drop(transaction);
-
-    let fault_snapshot =
+    let snapshot =
         CheckedExecutionJournalSnapshot::read(&plan, &journal_path, JournalLimits::default())?;
-    let fault_journal_digest = digest_file(&journal_path)?;
-    let fault_events = event_counts(&fault_snapshot);
-    ensure!(
-        fault_events == json!({"transaction-planned": 1}),
-        "before-acquisition interruption changed durable operation state"
-    );
-
-    let mut recovered = ExecutionTransaction::open(
-        &plan,
-        transaction_id.clone(),
-        &journal_path,
-        JournalLimits::default(),
-        &mut store,
-    )?;
-    let ready_at_restart = recovered
-        .schedule_ready(NonZeroUsize::new(8).context("ready batch size must be non-zero")?)?;
-    let primary_ready_at_restart = ready_at_restart.iter().any(|ready| {
-        ready.operation() == &operation_key && ready.action() == &RecoveryAction::Admit
-    });
-    let dependent_ready_at_restart = ready_at_restart
+    let authority_rejections = snapshot
+        .records()
         .iter()
-        .any(|ready| ready.operation() == &dependent_key);
+        .filter(|record| {
+            matches!(
+                record.body().body(),
+                ExecutionEventKind::AuthorityRejected { role, boundary, .. }
+                    if *role == scenario.role && *boundary == scenario.authority_boundary
+            )
+        })
+        .count();
+    let effect_outcomes = snapshot
+        .records()
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.body().body(),
+                ExecutionEventKind::EffectCompleted { .. }
+                    | ExecutionEventKind::EffectRejectedBeforeEffect { .. }
+                    | ExecutionEventKind::EffectIndeterminate { .. }
+            )
+        })
+        .count();
     ensure!(
-        primary_ready_at_restart,
-        "interrupted operation was not recoverable by fresh admission"
+        authority_rejections == 1,
+        "journal lacks exact authority rejection"
     );
-    ensure!(
-        !dependent_ready_at_restart,
-        "required-success dependent became ready after failure"
-    );
-    drop(recovered);
-
-    let restart_snapshot =
-        CheckedExecutionJournalSnapshot::read(&plan, &journal_path, JournalLimits::default())?;
-    ensure!(
-        event_counts(&restart_snapshot) == json!({"transaction-planned": 1}),
-        "journal reopen changed durable operation state"
-    );
-    ensure!(
-        fault_journal_digest == digest_file(&journal_path)?,
-        "journal bytes changed while reopening pending work"
-    );
-    ensure!(
-        fault_snapshot.head_digest() == restart_snapshot.head_digest(),
-        "journal head changed while reopening pending work"
-    );
-    ensure!(
-        adapter.calls == 0,
-        "before-acquisition interruption dispatched an adapter"
-    );
-    ensure!(
-        catalog.state.acquire_calls == 0,
-        "before-acquisition interruption acquired a resource"
-    );
-    ensure!(
-        catalog.state.release_calls == 0,
-        "before-acquisition interruption released a resource"
-    );
-    ensure!(
-        catalog.state.owners.is_empty() && catalog.state.max_owners == 0,
-        "before-acquisition interruption observed a resource owner"
-    );
+    ensure!(effect_outcomes == 0, "journal reports an adapter outcome");
     let foreign_after = digest_file(&foreign_path)?;
     ensure!(foreign_before == foreign_after, "foreign sentinel changed");
 
@@ -670,7 +913,6 @@ fn run_cell(
     let bundle_digest = store
         .bundle_digest
         .context("plan bundle was not retained")?;
-    let retained_bundle = fs::read(directory.join("plan-bundle.json"))?;
     let subject = json!({
         "schema": SUBJECT_SCHEMA,
         "cell-id": cell_id,
@@ -679,28 +921,17 @@ fn run_cell(
         "method": matrix_method.method,
         "plan": plan.id(),
         "transaction": transaction_id,
-        "operation": operation_key,
-        "dependent-operation": dependent_key,
     });
+    let plan_bundle = fs::read(directory.join("plan-bundle.json"))?;
     let evidence = json!({
-        "scenario": INTERRUPTION_SCENARIO,
-        "runtime-boundary": format!("{:?}", Boundary::BeforeResourceAcquisition),
-        "operation-recovery": operation.recovery,
-        "boundary-record": {
-            "digest": digest_file(&boundary_path)?,
-            "bytes": serde_json::from_slice::<Value>(&fs::read(&boundary_path)?)?,
-        },
-        "journal-at-fault": {
-            "digest": fault_journal_digest,
-            "head": fault_snapshot.head_digest(),
-            "state": "pending",
-            "events": fault_events,
-        },
-        "journal-after-restart": {
+        "role": scenario.role,
+        "authority-boundary": scenario.authority_boundary,
+        "runtime-boundary": format!("{:?}", scenario.boundary),
+        "journal": {
             "digest": digest_file(&journal_path)?,
-            "head": restart_snapshot.head_digest(),
-            "state": "pending",
-            "events": event_counts(&restart_snapshot),
+            "head": snapshot.head_digest(),
+            "authority-rejections": authority_rejections,
+            "effect-outcomes": effect_outcomes,
         },
         "reservation-ledger": {
             "digest": digest_file(&ledger_path)?,
@@ -709,12 +940,7 @@ fn run_cell(
             "max-owners": catalog.state.max_owners,
             "owners": catalog.state.owners,
         },
-        "adapter-calls": {
-            "total": adapter.calls,
-            "dependent": 0,
-        },
-        "primary-ready-at-restart": primary_ready_at_restart,
-        "dependent-ready-at-restart": dependent_ready_at_restart,
+        "dispatch-calls": adapter.calls(),
         "foreign-before": foreign_before,
         "foreign-after": foreign_after,
     });
@@ -725,29 +951,10 @@ fn run_cell(
         plan_bundle: json!({
             "schema": PLAN_BUNDLE_SCHEMA,
             "digest": format!("{bundle_digest}"),
-            "bytes-sha256": digest_bytes(&retained_bundle),
+            "bytes-sha256": digest_bytes(&plan_bundle),
         }),
         evidence,
     })
-}
-
-fn event_counts(snapshot: &CheckedExecutionJournalSnapshot) -> Value {
-    let mut counts = BTreeMap::<String, usize>::new();
-    for record in snapshot.records() {
-        let kind = match record.body().body() {
-            ExecutionEventKind::TransactionPlanned { .. } => "transaction-planned",
-            ExecutionEventKind::OperationAdmitted { .. } => "operation-admitted",
-            ExecutionEventKind::EffectIntent { .. } => "effect-intent",
-            ExecutionEventKind::EffectCompleted { .. } => "effect-completed",
-            ExecutionEventKind::ReconciliationIntent { .. } => "reconciliation-intent",
-            ExecutionEventKind::ReconciliationObserved { .. } => "reconciled",
-            ExecutionEventKind::ResourcesReleased { .. } => "resources-released",
-            ExecutionEventKind::OperationInterventionRequired { .. } => "intervention-required",
-            _ => "other",
-        };
-        *counts.entry(kind.to_string()).or_default() += 1;
-    }
-    json!(counts)
 }
 
 fn checked_plan(
@@ -760,6 +967,7 @@ fn checked_plan(
     Vec<u8>,
     aos_ability_model::ScopedOperationKey,
     aos_ability_model::ScopedOperationKey,
+    AbilityValue,
 )> {
     let mut fixture: PlanFixture = plan_fixture();
     let interface_key = interface.interface_key()?;
@@ -787,7 +995,7 @@ fn checked_plan(
 
     fixture.binding_inputs.desired_state.child_requests[0].methods = methods.clone();
     fixture.binding_plan.requests[0].methods = methods.clone();
-    fixture.binding_plan.bindings[0].caller_grant.methods = methods;
+    fixture.binding_plan.bindings[0].caller_grant.methods = methods.clone();
     fixture.binding_plan.bindings[0].caller_grant.resources[0].operations =
         descriptor.permitted_operations.clone();
     let access = match matrix_method.required_target_access.as_str() {
@@ -801,64 +1009,45 @@ fn checked_plan(
     fixture.binding_inputs.desired_state.child_requests[0].parameters = input.clone();
     fixture.binding_plan.requests[0].parameters = input.clone();
     let interface_key = fixture.effect_plan.operations[0].interface.clone();
+    let planned_incarnation = fixture.binding_inputs.environment.providers[0]
+        .incarnation
+        .clone()
+        .context("fixture provider lacks an incarnation")?;
+    let reconcile = if descriptor.outcome.indeterminate == IndeterminateSemantics::Reconcile {
+        Some(MethodReference {
+            interface: interface_key.clone(),
+            method: LocalKey::new(&matrix_method.method)?,
+        })
+    } else {
+        None
+    };
     let operation = &mut fixture.effect_plan.operations[0];
-    operation.key.key = LocalKey::new(&matrix_method.method)?;
+    operation.key.key = LocalKey::new("matrix-primary")?;
     operation.method = LocalKey::new(&matrix_method.method)?;
     operation.target.resource.key = LocalKey::new("qualified-resource")?;
     operation.target.operations = descriptor.permitted_operations.clone();
     operation.inputs = ValueExpression::Literal { value: input };
     operation.accesses[0].resource = operation.target.resource.clone();
     operation.accesses[0].mode = access;
-    // This fixture derives its representative recovery behavior from the
-    // selected interface outcome. Matrix policy never authors a route map.
-    operation.recovery.retry =
-        if descriptor.outcome.indeterminate == IndeterminateSemantics::Reconcile {
-            RetryPolicy::Bounded {
-                max_attempts: NonZeroU32::new(2).context("retry count must be non-zero")?,
-                backoff_millis: 0,
-            }
-        } else {
-            RetryPolicy::Disabled
-        };
-    operation.recovery.reconcile =
-        if descriptor.outcome.indeterminate == IndeterminateSemantics::Reconcile {
-            Some(MethodReference {
-                interface: interface_key,
-                method: LocalKey::new(&matrix_method.method)?,
-            })
-        } else {
-            None
-        };
+    operation.preconditions = vec![OperationPrecondition {
+        resource: operation.target.resource.clone(),
+        expected_revision: None,
+        expected_incarnation: Some(planned_incarnation),
+    }];
+    operation.recovery.retry = RetryPolicy::Disabled;
+    operation.recovery.reconcile = reconcile;
     operation.recovery.cancel = None;
     operation.recovery.compensate = None;
     let qualified_resource = operation.target.resource.clone();
     let controller = if access == AccessMode::ExclusiveWrite {
         Some(AggregateId {
             provider: qualified_resource.provider.clone(),
-            group: LocalKey::new("interruption-audit")?,
+            group: LocalKey::new("authority-audit")?,
         })
     } else {
         None
     };
     operation.controller = controller.clone();
-    let operation_key = operation.key.clone();
-    let mut dependent = operation.clone();
-    dependent.key.key = LocalKey::new("dependent-after-interruption")?;
-    let dependent_key = dependent.key.clone();
-    fixture.effect_plan.operations.push(dependent);
-    fixture
-        .effect_plan
-        .operations
-        .sort_by(|left, right| left.key.cmp(&right.key));
-    fixture.effect_plan.edges = vec![DependencyEdge {
-        from: PlanNodeKey::Operation {
-            key: operation_key.clone(),
-        },
-        to: PlanNodeKey::Operation {
-            key: dependent_key.clone(),
-        },
-        kind: aos_ability_model::DependencyKind::RequiredSuccess,
-    }];
     fixture.binding_plan.bindings[0].caller_grant.resources[0].resource =
         qualified_resource.clone();
     fixture.binding_plan.resources[0].resource = qualified_resource.clone();
@@ -875,6 +1064,29 @@ fn checked_plan(
         fixture.binding_inputs.desired_state.controllers = vec![assignment.clone()];
         fixture.effect_plan.controllers = vec![assignment];
     }
+    let operation_key = fixture.effect_plan.operations[0].key.clone();
+    let mut dependent = fixture.effect_plan.operations[0].clone();
+    dependent.key.key = LocalKey::new("matrix-dependent")?;
+    let dependent_key = dependent.key.clone();
+    fixture.effect_plan.operations.push(dependent);
+    fixture.effect_plan.edges.push(DependencyEdge {
+        from: PlanNodeKey::Operation {
+            key: operation_key.clone(),
+        },
+        to: PlanNodeKey::Operation {
+            key: dependent_key.clone(),
+        },
+        kind: DependencyKind::RequiredSuccess,
+    });
+    fixture
+        .effect_plan
+        .operations
+        .sort_by(|left, right| compare_operation_keys(&left.key, &right.key));
+    fixture.effect_plan.edges.sort_by(compare_edges);
+    let observation = AbilityValue::new(minimal_value(
+        &descriptor.outcome.observation_evidence,
+        &fixture,
+    )?)?;
     fixture.refresh_commitments();
     let plan = fixture
         .clone()
@@ -893,11 +1105,71 @@ fn checked_plan(
         "effect-plan": fixture.effect_plan,
     }))?;
 
-    Ok((plan, plan_bundle, operation_key, dependent_key))
+    Ok((plan, plan_bundle, operation_key, dependent_key, observation))
+}
+
+fn parse_scenario(name: &str) -> Result<AuditScenario> {
+    use aos_ability_runtime::execution::Boundary;
+    let role = if name.contains("caller") {
+        RuntimeAuthorityRole::CallerBindingGrant
+    } else if name.contains("provider") {
+        RuntimeAuthorityRole::ProviderMethodImplementation
+    } else if name.contains("enforcement") {
+        RuntimeAuthorityRole::EnforcementPlatformGuarantee
+    } else if name.contains("assignment") {
+        RuntimeAuthorityRole::AssignmentIncarnation
+    } else {
+        bail!("unknown role scenario {name}");
+    };
+    let (boundary, authority_boundary) = if name.ends_with("before-acquisition") {
+        (
+            Boundary::BeforeResourceAcquisition,
+            AuthorityCheckBoundary::BeforeResourceAcquisition,
+        )
+    } else if name.ends_with("after-acquisition") {
+        (
+            Boundary::ResourcesAcquired,
+            AuthorityCheckBoundary::AfterResourceAcquisition,
+        )
+    } else if name.ends_with("before-external-effect") {
+        (
+            Boundary::FinalDispatch,
+            AuthorityCheckBoundary::FinalDispatch,
+        )
+    } else {
+        bail!("unknown authority timing {name}");
+    };
+    Ok(AuditScenario {
+        role,
+        boundary,
+        authority_boundary,
+    })
+}
+
+fn assert_execution_rejection(error: &ExecutionError, scenario: AuditScenario) -> Result<()> {
+    match error {
+        ExecutionError::DispatchAdmission(AdmissionError::FreshAuthorization {
+            role,
+            boundary,
+            ..
+        }) if *role == scenario.role && *boundary == scenario.authority_boundary => Ok(()),
+        other => bail!("unexpected final dispatch error: {other}"),
+    }
+}
+
+fn assert_admission_rejection(error: &AdmissionError, scenario: AuditScenario) -> Result<()> {
+    match error {
+        AdmissionError::FreshAuthorization { role, boundary, .. }
+            if *role == scenario.role && *boundary == scenario.authority_boundary =>
+        {
+            Ok(())
+        }
+        other => bail!("unexpected admission error: {other}"),
+    }
 }
 
 fn parse_digest(value: &str) -> Result<Sha256Digest> {
-    serde_json::from_value(json!(value)).map_err(Into::into)
+    serde_json::from_value(Value::String(value.to_string())).map_err(Into::into)
 }
 
 fn canonical_bytes(value: &impl Serialize) -> Result<Vec<u8>> {
@@ -912,8 +1184,8 @@ fn digest_file(path: &Path) -> Result<String> {
     Ok(digest_bytes(&fs::read(path)?))
 }
 
-fn digest_bytes(value: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(value))
+fn digest_bytes(bytes: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
 fn write_durable(path: &Path, bytes: &[u8]) -> Result<(), io::Error> {
