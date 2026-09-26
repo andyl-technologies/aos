@@ -20,11 +20,13 @@
 //! ```
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 #[cfg(any(target_os = "linux", test))]
 use thiserror::Error;
 
+use crate::controller_service::journal::production_journal_limits;
 use crate::hierarchy::model::TreeLimitsV1;
 #[cfg(target_os = "linux")]
 use crate::hierarchy::source_seed::verify_controller_source_tree_seed_from_fixed_issuer_v1;
@@ -59,6 +61,8 @@ const RETAINED_HEAD_DOMAIN: &[u8] =
     b"aos.sandbox.publisher-project-authorization.retained-current-head.v2\0";
 const ROW_BYTES: usize = 188 + PACKET_BYTES;
 const HEAD_BYTES: usize = 80;
+const CONTROLLER_ROOT: &str = "/var/lib/aos/sandboxd";
+const CONTROLLER_JOURNAL: &str = "controller.journal";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct RetainedProjectAuthorizationRowV2 {
@@ -300,6 +304,22 @@ pub(super) fn validate_rows_and_heads(
 }
 
 impl PublisherPolicyStore<'_> {
+    fn require_fixed_controller_writer_v2(&self) -> Result<(), ProjectAuthorizationSourceErrorV2> {
+        let uid = self
+            .journal
+            .protected_owner_uid()
+            .map_err(PublisherPolicyError::from)?;
+        self.journal
+            .require_protected_named_location(
+                Path::new(CONTROLLER_ROOT),
+                CONTROLLER_JOURNAL,
+                uid,
+                production_journal_limits(),
+            )
+            .map_err(PublisherPolicyError::from)?;
+        Ok(())
+    }
+
     /// Checks one seed against the authenticated current Controller row.
     ///
     /// The caller must retain this store's Controller writer. Both issuer
@@ -317,6 +337,7 @@ impl PublisherPolicyStore<'_> {
         project: ProjectId,
         packet: &[u8],
     ) -> Result<VerifiedControllerSourceTreeSeedV1, CurrentSourceTreeSeedPreflightErrorV1> {
+        self.require_fixed_controller_writer_v2()?;
         let authorization_issuer =
             ProtectedProjectAuthorizationIssuerV2::from_systemd_credentials()?;
         authorization_issuer.recheck()?;
@@ -331,6 +352,7 @@ impl PublisherPolicyStore<'_> {
             verify_controller_source_tree_seed_from_fixed_issuer_v1,
         )?;
         authorization_issuer.recheck()?;
+        self.require_fixed_controller_writer_v2()?;
         Ok(verified)
     }
 
@@ -365,10 +387,12 @@ impl PublisherPolicyStore<'_> {
         Option<VerifiedPublisherProjectAuthorizationSourceV2>,
         ProjectAuthorizationSourceErrorV2,
     > {
+        self.require_fixed_controller_writer_v2()?;
         let issuer = ProtectedProjectAuthorizationIssuerV2::from_systemd_credentials()?;
         issuer.recheck()?;
         let current = self.current_authenticated_project_authorization_v2(project, issuer.pin())?;
         issuer.recheck()?;
+        self.require_fixed_controller_writer_v2()?;
         Ok(current)
     }
 
@@ -421,6 +445,7 @@ impl PublisherPolicyStore<'_> {
         request_id: [u8; 16],
         packet: &[u8],
     ) -> Result<ProjectAuthorizationRetentionV2, ProjectAuthorizationSourceErrorV2> {
+        self.require_fixed_controller_writer_v2()?;
         let issuer = ProtectedProjectAuthorizationIssuerV2::from_systemd_credentials()?;
         issuer.recheck()?;
         let result = self.retain_project_authorization_source_v2(
@@ -431,6 +456,7 @@ impl PublisherPolicyStore<'_> {
             issuer.pin(),
         )?;
         issuer.recheck()?;
+        self.require_fixed_controller_writer_v2()?;
         Ok(result)
     }
 
@@ -831,6 +857,75 @@ mod tests {
                 &pin(&authorization_signer)
             ),
             Err(ProjectAuthorizationSourceErrorV2::Stale)
+        ));
+    }
+
+    #[test]
+    fn copied_protected_controller_rows_cannot_pass_fixed_current_reads() {
+        let source_directory = TestDirectory::new();
+        let project = ProjectId::from_bytes([1; 16]);
+        let authorization_signer = SigningKey::from_bytes(&[2; 32]);
+        let mut source_journal = source_directory.open();
+        let mut source = initial_store(&mut source_journal, project);
+        let authorization_packet = packet(&source, project, [4; 16], 9, &authorization_signer);
+        source
+            .retain_project_authorization_source_v2(
+                [5; 16],
+                project,
+                [4; 16],
+                &authorization_packet,
+                &pin(&authorization_signer),
+            )
+            .unwrap();
+        let copied_records = source
+            .journal
+            .all_records()
+            .map(|(namespace, key, value)| {
+                JournalRecord::put(namespace, key.to_vec(), value.to_vec())
+            })
+            .collect();
+        drop(source);
+        drop(source_journal);
+
+        let copy_directory = TestDirectory::new();
+        let mut copied_journal = copy_directory.open_with_limits(production_journal_limits());
+        copied_journal
+            .commit(&JournalTransaction::new([99; 16], copied_records).unwrap())
+            .unwrap();
+        let copy =
+            PublisherPolicyStore::load(&mut copied_journal, PublisherPolicyLimits::default())
+                .unwrap();
+        let authorization = copy
+            .current_authenticated_project_authorization_v2(project, &pin(&authorization_signer))
+            .unwrap()
+            .unwrap();
+        let authorization_head = copy
+            .current_project_authorization_head_digest_v2(project)
+            .unwrap();
+        let seed_signer = SigningKey::from_bytes(&[42; 32]);
+        let seed = ControllerSourceTreeSeedV1::new(
+            project,
+            authorization.limits(),
+            authorization.publisher_generation(),
+            authorization.publisher_head_digest(),
+            authorization_head,
+            authorization.request_id(),
+            authorization.epoch(),
+        )
+        .unwrap();
+        let seed_packet = sign_controller_source_tree_seed_v1(seed, 11, &seed_signer).unwrap();
+
+        assert!(matches!(
+            copy.current_authenticated_project_authorization_from_fixed_issuer_v2(project),
+            Err(ProjectAuthorizationSourceErrorV2::Publisher(
+                PublisherPolicyError::Journal(_)
+            ))
+        ));
+        assert!(matches!(
+            copy.preflight_current_source_tree_seed_from_fixed_issuers_v1(project, &seed_packet),
+            Err(CurrentSourceTreeSeedPreflightErrorV1::Authorization(
+                ProjectAuthorizationSourceErrorV2::Publisher(PublisherPolicyError::Journal(_))
+            ))
         ));
     }
 

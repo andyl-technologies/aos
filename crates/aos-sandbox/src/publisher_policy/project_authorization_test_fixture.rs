@@ -37,8 +37,12 @@ impl TestDirectory {
     }
 
     pub(super) fn open(&self) -> Journal {
+        self.open_with_limits(JournalLimits::default())
+    }
+
+    pub(super) fn open_with_limits(&self, limits: JournalLimits) -> Journal {
         let uid = fs::metadata(&self.0).unwrap().uid();
-        Journal::open_protected_at_uid(&self.0, "controller.journal", JournalLimits::default(), uid)
+        Journal::open_protected_at_uid(&self.0, "controller.journal", limits, uid)
             .unwrap()
             .0
     }
