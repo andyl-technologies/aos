@@ -60,14 +60,16 @@
     };
   semanticInterfaces = builtins.mapAttrs (_: semanticInterface) abilities.interfaces;
   semanticImplementations = builtins.mapAttrs (_: semanticImplementation) abilities.implementations;
+  interfaceIdentityKey = identity: builtins.toJSON identity;
+  interfacesByIdentity = groupBy (declaration:
+    interfaceIdentityKey (lib.abilities.interfaceIdentity (
+      lib.abilities.interfaceDocumentFromDeclaration declaration
+    ))) (builtins.attrValues semanticInterfaces);
   interfaceForImplementation = implementationKey: implementation:
     if builtins.isString implementation.interface
     then semanticInterfaces.${implementation.interface} or (fail "implementation '${implementationKey}' references an absent interface")
     else let
-      matches = builtins.filter (declaration:
-        lib.abilities.interfaceIdentity (lib.abilities.interfaceDocumentFromDeclaration declaration)
-        == implementation.interface)
-      (builtins.attrValues semanticInterfaces);
+      matches = interfacesByIdentity.${interfaceIdentityKey implementation.interface} or [];
     in
       if builtins.length matches == 1
       then builtins.head matches
@@ -243,14 +245,15 @@
   selectionGroupKey = entry:
     providerSelectionKey entry.binding;
   selectionGroups = groupBy selectionGroupKey selections;
+  bindingNamesByRequest =
+    groupBy (bindingName:
+      abilities.bindings.${bindingName}.request) (builtins.attrNames abilities.bindings);
 
   childContextFor = groupKey:
   # Outer resolution rounds add one checked binding and its selected provider
   # module. The derived request remains internal to this fixed point.
     lib.filterAttrs (_: child: child.binding != null) (builtins.mapAttrs (_: child: let
-        bindingNames = builtins.filter (
-          bindingName: abilities.bindings.${bindingName}.request == child.request
-        ) (builtins.attrNames abilities.bindings);
+        bindingNames = bindingNamesForRequest child.request;
         bindingName =
           if bindingNames == []
           then null
@@ -820,9 +823,7 @@
     {}
     actualOutputEntries;
   bindingNamesForRequest = requestKey:
-    builtins.filter (
-      bindingName: abilities.bindings.${bindingName}.request == requestKey
-    ) (builtins.attrNames abilities.bindings);
+    bindingNamesByRequest.${requestKey} or [];
   unresolvedChildren =
     builtins.filter (
       child: bindingNamesForRequest child.request == []
