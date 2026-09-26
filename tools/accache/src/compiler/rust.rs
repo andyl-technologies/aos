@@ -28,6 +28,9 @@ pub(super) fn configure(
         // timings. Replaying an object alone would silently lose the report.
         anyhow::bail!("Rust -Z{option} has invocation-specific output");
     }
+    if let Some(option) = nonstandard_compilation_option(&expanded) {
+        anyhow::bail!("Rust -Z{option} changes the compilation or output contract");
+    }
     let saves_temps = saves_temporary_outputs(&expanded);
     let output_directory = parsed.output_dir.canonicalize()?;
     invocation.rust_output_directory = Some(output_directory.to_string_lossy().into_owned());
@@ -99,15 +102,7 @@ pub(super) fn configure(
         .extend(parsed.profile.iter().cloned());
 
     // These unstable inputs are not necessarily listed in rustc's depfile.
-    for (index, arg) in expanded.iter().enumerate() {
-        let option = if arg == "-Z" {
-            expanded.get(index + 1).map(String::as_str)
-        } else {
-            arg.strip_prefix("-Z")
-        };
-        let Some(option) = option else {
-            continue;
-        };
+    for option in unstable_options(&expanded) {
         if let Some(path) = option.strip_prefix("profile-sample-use=") {
             ensure!(!path.is_empty(), "Rust sample profile path is empty");
             invocation.extra_inputs.insert(path.into());
@@ -219,15 +214,7 @@ fn saves_temporary_outputs(args: &[String]) -> bool {
 }
 
 fn invocation_specific_unstable_option(args: &[String]) -> Option<&str> {
-    for (index, arg) in args.iter().enumerate() {
-        let option = if arg == "-Z" {
-            args.get(index + 1).map(String::as_str)
-        } else {
-            arg.strip_prefix("-Z")
-        };
-        let Some(option) = option else {
-            continue;
-        };
+    for option in unstable_options(args) {
         let name = option.split_once('=').map_or(option, |(name, _)| name);
         if matches!(
             name,
@@ -253,6 +240,27 @@ fn invocation_specific_unstable_option(args: &[String]) -> Option<&str> {
         }
     }
     None
+}
+
+fn nonstandard_compilation_option(args: &[String]) -> Option<&str> {
+    unstable_options(args)
+        .map(|option| option.split_once('=').map_or(option, |(name, _)| name))
+        .find(|name| {
+            matches!(
+                *name,
+                "no-link" | "link-only" | "parse-crate-root-only" | "unpretty"
+            )
+        })
+}
+
+fn unstable_options(args: &[String]) -> impl Iterator<Item = &str> {
+    args.iter().enumerate().filter_map(|(index, arg)| {
+        if arg == "-Z" {
+            args.get(index + 1).map(String::as_str)
+        } else {
+            arg.strip_prefix("-Z")
+        }
+    })
 }
 
 fn unpacked_split_debug(args: &[String]) -> bool {
