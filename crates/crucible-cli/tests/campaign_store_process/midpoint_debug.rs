@@ -1035,7 +1035,7 @@ pub(super) fn verify_public_debug_handoff(
     finding_proof: &crucible_campaign::GetCampaignFindingObjectResponse,
     node: &str,
     timeout: Duration,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<String, Box<dyn Error>> {
     let first = run_public_debug_client_at_node(
         fixture,
         daemon_url,
@@ -1062,7 +1062,7 @@ pub(super) fn verify_public_debug_handoff(
     assert_eq!(first.stop_reply_class, second.stop_reply_class);
 
     println!("public_product_finding_debug_authenticated=true");
-    Ok(())
+    Ok(first.session)
 }
 
 fn run_public_debug_client(
@@ -1213,6 +1213,7 @@ fn bounded_debug_output(bytes: &[u8]) -> String {
 #[derive(Debug)]
 struct PublicDebugEvidence {
     session_response: String,
+    session: String,
     checkpoint: crucible_campaign::ExactCheckpointId,
     configuration: String,
     role: crucible_daemon::CampaignDebugCheckpointRole,
@@ -1265,6 +1266,7 @@ fn parse_campaign_debug_response(line: &str) -> Result<PublicDebugEvidence, Box<
 
     Ok(PublicDebugEvidence {
         session_response: line.to_owned(),
+        session: session.to_owned(),
         checkpoint,
         configuration,
         role,
@@ -1443,7 +1445,7 @@ fn parse_single_rsp_stop_reply(bytes: &[u8]) -> Result<Option<u8>, Box<dyn Error
 
     let payload = &bytes[packet_start + 1..checksum_offset];
     if payload.len() < 3
-        || !matches!(payload[0], b'T' | b'S' | b'W' | b'X')
+        || !matches!(payload[0], b'T' | b'S')
         || decode_rsp_hex(payload[1]).is_none()
         || decode_rsp_hex(payload[2]).is_none()
     {
@@ -1504,6 +1506,8 @@ fn rsp_safe_read_rejects_errors_malformed_checksums_and_extra_data() {
         b"+$T05#b9+".as_slice(),
         b"+$T05#b9$S05#b8".as_slice(),
         b"++$T05#b9".as_slice(),
+        b"+$W00#b7".as_slice(),
+        b"+$X09#c1".as_slice(),
     ] {
         assert!(
             parse_single_rsp_stop_reply(invalid).is_err(),
