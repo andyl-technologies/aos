@@ -380,139 +380,15 @@ fn take<const N: usize>(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-    use std::path::PathBuf;
+    use ed25519_dalek::SigningKey;
 
-    use aos_sandbox_core::format::encode_policy;
-    use aos_sandbox_core::model::{
-        CacheDomain, CacheDomainKind, Policy, ResourceProfile, RevocationMode, RevocationPolicy,
-    };
-    use aos_sandbox_core::{CacheDomainId, DecodeLimits};
-    use ed25519_dalek::{Signer as _, SigningKey};
-
-    use crate::{Journal, JournalLimits, JournalRecord, JournalTransaction};
+    use crate::{JournalRecord, JournalTransaction};
 
     use super::*;
-    use crate::publisher_policy::{PreparedPublisherPolicyRevisionV1, PublisherPolicyLimits};
-
-    struct TestDirectory(PathBuf);
-
-    impl TestDirectory {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "aos-project-authorization-v2-{}-{}",
-                std::process::id(),
-                ProjectId::new()
-            ));
-            fs::create_dir(&path).unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
-            Self(path)
-        }
-
-        fn open(&self) -> Journal {
-            let uid = fs::metadata(&self.0).unwrap().uid();
-            Journal::open_protected_at_uid(
-                &self.0,
-                "controller.journal",
-                JournalLimits::default(),
-                uid,
-            )
-            .unwrap()
-            .0
-        }
-    }
-
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn policy(
-        project: ProjectId,
-        generation: u64,
-        not_before: i64,
-    ) -> PreparedPublisherPolicyRevisionV1 {
-        let policy = Policy::new(
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            ResourceProfile::new(Vec::new()).unwrap(),
-            Vec::new(),
-            CacheDomain::new(
-                CacheDomainKind::Project,
-                CacheDomainId::from_bytes(*project.as_bytes()),
-            ),
-            RevocationPolicy::new(RevocationMode::DenyNew, 0),
-            None,
-            Vec::new(),
-        )
-        .unwrap();
-        PreparedPublisherPolicyRevisionV1::from_canonical_bytes(
-            project,
-            generation,
-            not_before,
-            1_000,
-            &encode_policy(&policy),
-            DecodeLimits::default(),
-        )
-        .unwrap()
-    }
-
-    fn packet(
-        store: &PublisherPolicyStore<'_>,
-        project: ProjectId,
-        key: &SigningKey,
-        signer_generation: u64,
-        request_id: [u8; 16],
-        epoch: u64,
-    ) -> [u8; PACKET_BYTES] {
-        let current = store.current_policy(project).unwrap().unwrap();
-        let head = store
-            .journal
-            .get(
-                RecordNamespace::PublisherPolicy,
-                &policy_current_key(project),
-            )
-            .unwrap();
-        let revision = store
-            .journal
-            .get(
-                RecordNamespace::PublisherPolicy,
-                &policy_revision_key(project, current.generation()),
-            )
-            .unwrap();
-        let mut bytes = [0; PACKET_BYTES];
-        bytes[..8].copy_from_slice(MAGIC);
-        bytes[8..10].copy_from_slice(&VERSION.to_be_bytes());
-        bytes[12..20].copy_from_slice(&signer_generation.to_be_bytes());
-        bytes[20..36].copy_from_slice(project.as_bytes());
-        bytes[36..44].copy_from_slice(&current.generation().to_be_bytes());
-        bytes[44..76].copy_from_slice(commitment(HEAD_DOMAIN, head).as_bytes());
-        bytes[76..108].copy_from_slice(commitment(REVISION_DOMAIN, revision).as_bytes());
-        bytes[108..124].copy_from_slice(&request_id);
-        bytes[124..132].copy_from_slice(&epoch.to_be_bytes());
-        for (index, limit) in [1_u32, 8, 7, 6, 5, 4, 3].into_iter().enumerate() {
-            let offset = 132 + index * 4;
-            bytes[offset..offset + 4].copy_from_slice(&limit.to_be_bytes());
-        }
-        resign(&mut bytes, key);
-        bytes
-    }
-
-    fn resign(bytes: &mut [u8; PACKET_BYTES], key: &SigningKey) {
-        let signature = key.sign(&signing_preimage(&bytes[..BODY_BYTES]));
-        bytes[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
-    }
-
-    fn pin(key: &SigningKey, generation: u64) -> PinnedPublisherProjectAuthorizationIssuerV2 {
-        let credential =
-            encode_project_authorization_issuer_credential_v2(generation, &key.verifying_key())
-                .unwrap();
-        PinnedPublisherProjectAuthorizationIssuerV2::decode(&credential).unwrap()
-    }
+    use crate::publisher_policy::PublisherPolicyLimits;
+    use crate::publisher_policy::project_authorization_test_fixture::{
+        TestDirectory, packet, pin, policy, resign,
+    };
 
     #[test]
     fn signed_limits_join_exact_protected_publisher_head_and_cold_replay() {
