@@ -53,6 +53,7 @@ use super::recovery::{
     VerifiedPreparedRealizationAuthorityV1, VerifiedPublishedRollbackAuthorityV1,
     VerifiedSnapshotRecoveryAuthorityV1, VerifiedStageTransitionV1,
 };
+use super::tree_lineage::{ClosedTreeLineageRecordV1, decode_closed_tree_lineage_v1};
 
 const MAXIMUM_PROTECTED_CURRENT_HEADS: usize = 262_144;
 
@@ -72,6 +73,8 @@ pub enum HierarchyProtectedRecordKindV1 {
     Checkpoint = 5,
     /// Stores one opaque fact recovered only through protected-current replay.
     Evidence = 6,
+    /// Retains one immutable, nonauthorizing Tree generation link.
+    TreeLineage = 7,
 }
 
 /// Defines the closed hierarchy adapter schema.
@@ -173,15 +176,17 @@ impl ProtectedDomainSchemaV1 for HierarchyProtectedJournalSchemaV1 {
             4 => Some(Self::Kind::DetachEffect),
             5 => Some(Self::Kind::Checkpoint),
             6 => Some(Self::Kind::Evidence),
+            7 => Some(Self::Kind::TreeLineage),
             _ => None,
         }
     }
 
     fn namespace(kind: Self::Kind) -> RecordNamespace {
         match kind {
-            Self::Kind::Tree | Self::Kind::History | Self::Kind::Evidence => {
-                RecordNamespace::DesiredState
-            }
+            Self::Kind::Tree
+            | Self::Kind::History
+            | Self::Kind::Evidence
+            | Self::Kind::TreeLineage => RecordNamespace::DesiredState,
             Self::Kind::RealizationEffect | Self::Kind::DetachEffect => RecordNamespace::Effect,
             Self::Kind::Checkpoint => RecordNamespace::RuntimeGeneration,
         }
@@ -195,14 +200,16 @@ impl ProtectedDomainSchemaV1 for HierarchyProtectedJournalSchemaV1 {
             Self::Kind::DetachEffect => 4,
             Self::Kind::Checkpoint => 5,
             Self::Kind::Evidence => 6,
+            Self::Kind::TreeLineage => 7,
         }
     }
 
     fn role(kind: Self::Kind) -> ProtectedRecordRoleV1 {
         match kind {
-            Self::Kind::Tree | Self::Kind::History | Self::Kind::Evidence => {
-                ProtectedRecordRoleV1::State
-            }
+            Self::Kind::Tree
+            | Self::Kind::History
+            | Self::Kind::Evidence
+            | Self::Kind::TreeLineage => ProtectedRecordRoleV1::State,
             Self::Kind::RealizationEffect | Self::Kind::DetachEffect => {
                 ProtectedRecordRoleV1::Effect
             }
@@ -250,6 +257,9 @@ impl ProtectedDomainSchemaV1 for HierarchyProtectedJournalSchemaV1 {
             Self::Kind::Evidence => decode_hierarchy_protected_evidence_v1(body)
                 .filter(|evidence| evidence.identity().as_slice() == identity)
                 .map(|_| ProtectedReducerPhaseV1::Observed),
+            Self::Kind::TreeLineage => decode_closed_tree_lineage_v1(body)
+                .filter(|lineage| lineage.identity().as_slice() == identity)
+                .map(|_| ProtectedReducerPhaseV1::Observed),
             Self::Kind::Tree | Self::Kind::History | Self::Kind::Checkpoint => None,
         }
     }
@@ -260,7 +270,10 @@ impl ProtectedDomainSchemaV1 for HierarchyProtectedJournalSchemaV1 {
             Self::Kind::History => magic == b"AOSHHI01",
             Self::Kind::RealizationEffect => magic == b"AOSHRG01" || magic == b"AOSHRH01",
             Self::Kind::DetachEffect => magic == b"AOSHDG01" || magic == b"AOSHDH01",
-            Self::Kind::Tree | Self::Kind::Checkpoint | Self::Kind::Evidence => false,
+            Self::Kind::Tree
+            | Self::Kind::Checkpoint
+            | Self::Kind::Evidence
+            | Self::Kind::TreeLineage => false,
         };
         if !has_one_subject {
             return None;
@@ -466,6 +479,8 @@ pub(crate) enum HierarchyReducerRecordV1<'record> {
     TransactionHead(RetainedRealizationTransactionHeadV1),
     /// Encodes one evidence value previously minted by this protected owner.
     Evidence(&'record HierarchyProtectedEvidenceV1),
+    /// Encodes one immutable structural lineage link.
+    TreeLineage(&'record ClosedTreeLineageRecordV1),
 }
 
 /// Canonical hierarchy shared-journal key.
@@ -621,9 +636,9 @@ impl<'journal> HierarchyProtectedJournalOwnerV1<'journal> {
     ///
     /// The provisional head decoder grants no authority. Ordinary typed replay
     /// must subsequently authenticate every complete retained head against the
-    /// candidate set before this owner is returned. A bare Tree remains closed
-    /// until a signed genesis receipt, immutable lineage, and independent
-    /// anti-rollback floor can be verified together.
+    /// candidate set before this owner is returned. Structural lineage alone
+    /// cannot open a Tree: Controller receipt/currentness and an independent
+    /// anti-rollback floor must be verified together.
     ///
     /// # Errors
     ///
@@ -659,8 +674,8 @@ impl<'journal> HierarchyProtectedJournalOwnerV1<'journal> {
     ///
     /// This is a source observation, not standalone policy publication
     /// authority. A cross-owner issuer must keep this owner borrowed through
-    /// its root binding commit and effect handoff. Until protected genesis and
-    /// lineage verification exists, a materialized Tree fails cold claim.
+    /// its root binding commit and effect handoff. Until protected Controller
+    /// receipt and floor verification exists, a materialized Tree fails claim.
     ///
     /// # Errors
     ///
@@ -1087,15 +1102,33 @@ pub(crate) fn replay_project_ancestry_head_v1(
 pub(crate) fn recover_hierarchy_replay_validator_v1(
     journal: &Journal,
 ) -> Result<HierarchyProtectedReplayValidatorV1, HierarchyProtectedJournalErrorV1> {
+    recover_hierarchy_replay_validator_impl_v1(journal, false)
+}
+
+pub(super) fn recover_hierarchy_replay_validator_for_closed_lineage_v1(
+    journal: &Journal,
+) -> Result<HierarchyProtectedReplayValidatorV1, HierarchyProtectedJournalErrorV1> {
+    recover_hierarchy_replay_validator_impl_v1(journal, true)
+}
+
+fn recover_hierarchy_replay_validator_impl_v1(
+    journal: &Journal,
+    allow_structural_tree: bool,
+) -> Result<HierarchyProtectedReplayValidatorV1, HierarchyProtectedJournalErrorV1> {
     let candidates =
         protected_current_record_candidates_v1::<HierarchyProtectedJournalSchemaV1>(journal)?;
     let mut realization_heads = Vec::new();
     let mut detach_heads = Vec::new();
     let mut transaction_heads = Vec::new();
     for candidate in &candidates {
-        if candidate.key().kind() == HierarchyProtectedRecordKindV1::Tree {
-            // The current Tree codec proves shape only. No production writer
-            // yet binds its genesis and successors to independent authority.
+        if !allow_structural_tree
+            && matches!(
+                candidate.key().kind(),
+                HierarchyProtectedRecordKindV1::Tree | HierarchyProtectedRecordKindV1::TreeLineage
+            )
+        {
+            // Structural lineage does not establish Controller currentness or
+            // an independent rollback floor for the public ancestry readers.
             return Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord);
         }
         match candidate.body().get(..8) {
@@ -1193,6 +1226,10 @@ pub(crate) fn hierarchy_reducer_envelope_v1(
             HierarchyProtectedRecordKindV1::Evidence,
             encode_hierarchy_protected_evidence_v1(value)
                 .ok_or(HierarchyProtectedJournalErrorV1::NonCanonicalRecord),
+        ),
+        HierarchyReducerRecordV1::TreeLineage(value) => (
+            HierarchyProtectedRecordKindV1::TreeLineage,
+            Ok(value.encode()),
         ),
     };
     if key.kind() != required_kind {
