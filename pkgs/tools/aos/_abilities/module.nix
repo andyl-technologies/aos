@@ -10,7 +10,6 @@
     ./nix-store-database.nix
     ./package-attestation-quote.nix
     ./package-profile-convergence.nix
-    ./platform-selection.nix
     ./privileged-executable.nix
     ./provisioning-configuration-evaluator.nix
     ./registry-snapshot.nix

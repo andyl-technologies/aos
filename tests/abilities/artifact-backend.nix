@@ -76,11 +76,16 @@
       selectedProviderModules = [providerModule];
     };
   selected = evaluateSelected {};
+  systemOwned = evaluateSelected {request = "system:wrong-artifact-backend";};
   alternateRequest = builtins.tryEval (builtins.deepSeq
-    (evaluateSelected {request = "system:wrong-artifact-backend";}).config.aos.artifacts.backend
+    systemOwned.config.aos.artifacts.backend
     true);
   backend = selected.config.aos.artifacts.backend;
   output = selected.config.aos.abilities.compositionOutputs."aos:artifact-backend".artifact-reference;
+  projectedArtifact = evaluated: request:
+    (lib.abilities.sourceStageFixedPoint evaluated.config.aos.abilities)
+    .compositionOutputs.${request}.artifact-reference.value;
+  providerArtifact = lib.abilities.packageOutput {package = "aos-oci-backend";};
 in
   assert builtins.elem "ability-effects-v1" pkgs.aos-oci-backend.contract.value.required_features;
   assert static.config.aos.artifacts.backend == null;
@@ -90,6 +95,8 @@ in
   assert backend.package == builtins.toString pkgs.aos-oci-backend;
   assert backend.artifact == output.value;
   assert backend.artifact == backendArtifact;
+  assert projectedArtifact selected "aos:artifact-backend" == providerArtifact;
+  assert projectedArtifact systemOwned "system:wrong-artifact-backend" == providerArtifact;
   assert output.phase == "planning";
   assert output.lifetime == "persistent";
   assert output.visibility == "protected";

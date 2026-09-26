@@ -4,7 +4,10 @@
   lib,
   pkgs,
   ...
-}: {
+}: let
+  manager = lib.abilities.interfaces.systemManager.interfaces.manager;
+  configured = config.aos.abilities.environment != null;
+in {
   environment.systemPackages =
     [pkgs.systemd]
     ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable pkgs.aos-systemd-var-policy;
@@ -20,7 +23,23 @@
     )
     pkgs.aos-systemd-var-policy;
 
-  aos.abilities.instances."systemd:system-manager-provider".implementation = "systemd:system-manager";
+  aos.abilities.instances = lib.mkMerge [
+    {"systemd:system-manager-provider".implementation = "systemd:system-manager";}
+    (lib.mkIf configured {system-manager = {};})
+  ];
+
+  aos.abilities.requirementTemplates.system-manager = {
+    description = "Requires the system's package-owned manager implementation.";
+    interface = manager.identity.name;
+    inherit (manager.identity) abi descriptor;
+  };
+  aos.abilities.requests = lib.mkIf configured {
+    system-manager = {
+      requirement = "system-manager";
+      consumer = "system-manager";
+      parameters = true;
+    };
+  };
 
   aos.abilities.bindings."system-manager:systemd" = {
     request = "aos:system-manager";

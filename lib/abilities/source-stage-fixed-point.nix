@@ -111,6 +111,16 @@
     inherit (binding) request providerInstance slot;
     implementation = implementationReference "binding implementation" binding.implementation;
   };
+  bindingEntries = builtins.map (binding: {
+    name = binding.request;
+    value = binding;
+  }) (builtins.attrValues abilities.bindings);
+  bindingsByRequest = let
+    selected = builtins.listToAttrs bindingEntries;
+  in
+    if builtins.length (builtins.attrNames selected) != builtins.length bindingEntries
+    then throw "source-stage output has several selected bindings for one request"
+    else selected;
   projectCompositionRequirement = _: requirement:
     requirement
     // {
@@ -136,15 +146,12 @@
       value = semanticRequirement name abilities.requirementTemplates.${name};
     })
     referencedRootRequirements);
-  requestFor = name:
-    abilities.requests.${name}
-    or abilities.compositionRequests.${name}
-    or (throw "source-stage output '${name}' has no request in the completed fixed point");
-  projectOutput = requestName: _: output:
-    output
-    // {
-      value = normalizeOwnedValue (declarationOwner (requestFor requestName)) output.value;
-    };
+  projectOutput = requestName: _: output: let
+    binding = bindingsByRequest.${requestName}
+      or (throw "source-stage output '${requestName}' has no selected binding");
+    owner = (implementationReference "output provider" binding.implementation).package;
+  in
+    output // {value = normalizeOwnedValue owner output.value;};
   projectedOutputs =
     builtins.mapAttrs
     (requestName: outputs: builtins.mapAttrs (projectOutput requestName) outputs)
