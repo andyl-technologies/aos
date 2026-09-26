@@ -2011,6 +2011,87 @@ def check_clang_sample_profile(root, env, accache, sccache, clang, hits):
     return results
 
 
+def check_clang_multilib_config(root, env, accache, sccache, clang, hits):
+    """Track an explicit multilib YAML file and its selected header tree."""
+    fixture = "clang-multilib-config"
+    work = root / fixture
+    work.mkdir()
+    sysroot = work / "sysroot"
+    for variant, value in [("variantA", 42), ("variantB", 73)]:
+        include = sysroot / variant / "include"
+        include.mkdir(parents=True)
+        (include / "value.h").write_text(f"#define VALUE {value}\n")
+    (work / "source.c").write_text(
+        "#include <value.h>\nint answer(void) { return VALUE; }\n")
+    config = work / "multilib.yaml"
+    object_file = work / "source.o"
+    depfile = work / "source.d"
+    args = [clang, "--target=aarch64-none-elf", "--sysroot=" + str(sysroot),
+            "-multi-lib-config=multilib.yaml", "-c", "source.c",
+            "-o", "source.o", "-MD", "-MF", "source.d"]
+
+    def compile_object(wrapper):
+        object_file.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+        return (completed.stdout, completed.stderr,
+                object_file.read_bytes(), depfile.read_bytes())
+
+    results = []
+    first_object = None
+    first_direct = None
+    previous = None
+    for revision, (variant, comment) in enumerate([
+        ("variantA", ""), ("variantB", ""),
+        ("variantB", "# same selected variant\n"),
+    ]):
+        config.write_text(
+            "MultilibVersion: 1.0\nVariants:\n"
+            f"- Dir: {variant}\n"
+            "  Flags: [--target=aarch64-unknown-none-elf]\n" + comment)
+        direct = compile_object([])
+        assert variant.encode() in direct[3], (fixture, revision, "wrong header selected")
+        assert b"multilib.yaml" not in direct[3], (fixture, "config entered dep-info")
+        if first_object is None:
+            first_object = direct[2]
+            first_direct = direct
+        elif revision == 1:
+            assert direct[2] != first_object, (fixture, "variant changed no object bytes")
+        else:
+            assert direct == previous, (fixture, "comment changed compiler output")
+
+        before_hits = hits()
+        oracle = compile_object([sccache])
+        if revision:
+            assert hits() > before_hits, (fixture, "oracle did not reuse its stale action")
+            assert oracle == first_direct, (fixture, revision, "oracle defect changed")
+        else:
+            assert oracle == direct, (fixture, revision, "oracle cold")
+        before_hits = hits()
+        assert compile_object([sccache]) == oracle, (fixture, revision, "oracle warm")
+        assert hits() > before_hits, (fixture, revision, "oracle did not hit")
+
+        assert compile_object([accache]) == direct, (fixture, revision, "cold")
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", (fixture, revision, cold)
+        if revision:
+            assert any("multilib.yaml" in item for item in cold["changes"]), cold
+        assert compile_object([accache]) == direct, (fixture, revision, "warm")
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", (fixture, revision, warm)
+
+        results.append({"fixture": fixture, "revision": revision,
+                        "oracle_hit": True, "accache": "hit",
+                        "oracle_stale_artifact": revision > 0,
+                        "artifacts": ["source.o", "source.d"]})
+        previous = direct
+
+    print("PASS oracle", fixture, "configuration invalidation", flush=True)
+    return results
+
+
 def check_clang_profile_remapping(root, env, accache, sccache, clang, hits):
     """Track C++ profile remappings even though Clang omits them from dep-info."""
     source = (
@@ -3898,6 +3979,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                 sccache, clang, hits))
         results.extend(check_clang_sample_profile(root, env, accache,
                                                   sccache, clang, hits))
+        results.extend(check_clang_multilib_config(root, env, accache,
+                                                   sccache, clang, hits))
         results.extend(check_clang_profile_remapping(root, env, accache,
                                                      sccache, clang, hits))
         results.extend(check_clang_layout_seed(root, env, accache,
