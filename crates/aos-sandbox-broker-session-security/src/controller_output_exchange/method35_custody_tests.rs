@@ -8,10 +8,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use aos_proto::aos::sandbox::local::v1::{
     ApplyRuntimeRequest, AssignmentFence, Audience, BrokerAuthorizationArtifactsV1,
     BrokerClientHello, BrokerMethod, BrokerRequestEnvelope, BrokerServerHello, Feature,
-    RequestHeader, ReserveHostExecutionOutputRequestV1, RuntimeAction,
+    ObserveHostStorageOutputRequestV1, RequestHeader, ReserveHostExecutionOutputRequestV1,
+    ReserveStorageExecutionOutputRequestV1, RuntimeAction,
 };
 use aos_sandbox::controller_execution_preissue::ControllerExecutionReserveSourceV1;
-use aos_sandbox::runtime_execution::DormantRuntimeExecutionOwnerV1;
+use aos_sandbox::runtime_execution::{
+    DormantRuntimeExecutionOwnerV1, ProtectedHostOutputReservationV1,
+};
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionProtocolV1, BrokerSessionTrafficStateV1, decode_canonical_client_hello_v1,
     decode_canonical_request_v1, decode_canonical_server_hello_v1,
@@ -39,15 +42,24 @@ use aos_sandbox_host::worker::{
     HostRuntimeIdentity, HostWorker, ObservedRuntimeState, PinnedLeader, PinnedPayloadLeader,
     WorkerObservation, WorkerOperation,
 };
-use aos_sandbox_host::{HostError, Result as HostResult};
+use aos_sandbox_host::{
+    DormantHostBrokerCallsiteV1, DormantHostBrokerCompositionV1, HostError, Result as HostResult,
+};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodRequestAdmissionV1,
     admit_server_received_authenticated_broker_method_request_v1,
     authenticated_semantic_bindings_from_envelope_v1,
 };
+use aos_sandbox_protocol::host_storage_output_readback::{
+    decode_host_storage_output_readback_request_v1,
+    decode_host_storage_output_readback_response_v1, host_storage_output_readback_grant_v1,
+};
 use aos_sandbox_protocol::semantics::host_output_reserve_grant_v1;
 use aos_sandbox_protocol::session::decode_request_envelope;
+use aos_sandbox_protocol::storage_output_reserve::{
+    StorageOutputReserveRecordsV1, storage_output_reserve_grant_v1,
+};
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ValidatedAssignmentFence, ValidatedRuntimePlan,
     decode_runtime_request,
@@ -59,12 +71,17 @@ use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 
 use crate::endpoint::{ProtectedBrokerSessionBrokerV1, ProtectedBrokerSessionClientV1};
-use crate::test_signed_endpoint::{TestEndpointRole, install_endpoint, manifest_and_secrets};
+use crate::host_execution_handoff::dispatch_host_storage_output_with_claim_for_test_v1;
+use crate::test_signed_endpoint::{
+    TestEndpointRole, install_endpoint, manifest_and_secrets, manifest_and_secrets_for_audience,
+};
 
 const ASSIGNMENT_DIGEST: [u8; 32] = [5; 32];
 const NODE: NodeId = NodeId::from_bytes([3; 16]);
 const BASE_REQUEST_ID: [u8; 16] = [33; 16];
 const RESERVE_REQUEST_ID: [u8; 16] = [35; 16];
+const STORAGE_RESERVE_REQUEST_ID: [u8; 16] = [46; 16];
+const HOST_READBACK_REQUEST_ID: [u8; 16] = [48; 16];
 
 struct EndpointCleanup<'a>(&'a Path, &'a Path);
 
@@ -380,8 +397,6 @@ fn output_source(boot: [u8; 16], deadline: u64) -> [u8; 688] {
     source[16..32].fill(1);
     source[32..48].fill(2);
     source[48..80].fill(3);
-    source[80..88].copy_from_slice(&5_u64.to_be_bytes());
-    source[88..96].copy_from_slice(&7_u64.to_be_bytes());
     source[96..104].copy_from_slice(&9_u64.to_be_bytes());
     source[104..120].copy_from_slice(&boot);
     source[120..128].copy_from_slice(&deadline.to_be_bytes());
@@ -399,10 +414,7 @@ fn output_source(boot: [u8; 16], deadline: u64) -> [u8; 688] {
         source[offset..offset + 32].fill(value);
     }
     source[296..328].copy_from_slice(&ASSIGNMENT_DIGEST);
-    source[424..432].copy_from_slice(&12_u64.to_be_bytes());
     source[432..440].copy_from_slice(&20_u64.to_be_bytes());
-    source[440..448].copy_from_slice(&5_u64.to_be_bytes());
-    source[448..456].copy_from_slice(&7_u64.to_be_bytes());
     let claim_digest = Sha256::digest(&source[192..488]);
     source[488..520].copy_from_slice(&claim_digest);
 
@@ -437,9 +449,31 @@ fn signed_method35_request(
     artifacts: BrokerAuthorizationArtifactsV1,
     boottime: u64,
 ) -> aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1 {
+    signed_method_request(
+        client_path,
+        broker_path,
+        BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        RESERVE_REQUEST_ID,
+        body,
+        artifacts,
+        boottime,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn signed_method_request(
+    client_path: &Path,
+    broker_path: &Path,
+    method: BrokerMethod,
+    audience: Audience,
+    request_id: [u8; 16],
+    body: Vec<u8>,
+    artifacts: BrokerAuthorizationArtifactsV1,
+    boottime: u64,
+) -> aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1 {
     let mut client = ProtectedBrokerSessionClientV1::load(client_path).unwrap();
     let mut broker = ProtectedBrokerSessionBrokerV1::load(broker_path).unwrap();
-    let method = BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT;
     let features = vec![
         feature("aos.sandbox.authentication.broker-session"),
         feature("aos.sandbox.authorization.signed-plan-lease"),
@@ -449,7 +483,7 @@ fn signed_method35_request(
         .finalize_client_hello(
             BrokerClientHello {
                 protocol_major: 1,
-                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                audience: audience.into(),
                 required_features: features.clone(),
                 maximum_response_bytes: 65_536,
                 required_methods: vec![method.into()],
@@ -493,7 +527,7 @@ fn signed_method35_request(
             transcript.session_binding(),
             client.process_execution_id_bytes(),
             1,
-            RESERVE_REQUEST_ID,
+            request_id,
         )
         .unwrap();
     let canonical = decode_canonical_request_v1(&packet).unwrap();
@@ -505,7 +539,10 @@ fn signed_method35_request(
         None,
         0,
         peer(),
-        peer_policy(),
+        PeerPolicy {
+            audience,
+            ..peer_policy()
+        },
         boottime,
         bindings,
         &context,
@@ -514,13 +551,98 @@ fn signed_method35_request(
     {
         AuthenticatedBrokerMethodRequestAdmissionV1::New { request, .. } => request,
         AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(_) => {
-            panic!("fresh method35 replayed")
+            panic!("fresh signed Host request replayed")
         }
     }
 }
 
+fn seal_controller_record(domain: &[u8], record: &mut [u8], checksum_start: usize) {
+    let digest = Sha256::new()
+        .chain_update(domain)
+        .chain_update(&record[..checksum_start])
+        .finalize();
+    record[checksum_start..checksum_start + 32].copy_from_slice(&digest);
+}
+
+fn storage_readback_body(
+    source: &ControllerExecutionReserveSourceV1,
+    protected: ProtectedHostOutputReservationV1,
+    deadline: u64,
+) -> Vec<u8> {
+    let mut attempt = [0_u8; 816];
+    attempt[..8].copy_from_slice(b"AOSCIA01");
+    attempt[8..696].copy_from_slice(&source.canonical_bytes());
+    attempt[696..712].copy_from_slice(&RESERVE_REQUEST_ID);
+    attempt[712..744].copy_from_slice(protected.plan_digest().as_bytes());
+    attempt[744..776].copy_from_slice(protected.semantic_request_digest().as_bytes());
+    attempt[776..784].copy_from_slice(&deadline.to_be_bytes());
+    seal_controller_record(
+        b"aos.sandbox.controller-output-attempt.v1\0",
+        &mut attempt,
+        784,
+    );
+
+    let mut settlement = [0_u8; 208];
+    settlement[..8].copy_from_slice(b"AOSCIS01");
+    settlement[8..24].copy_from_slice(source.preissue().execution().as_bytes());
+    settlement[24..40].copy_from_slice(source.preissue().create_operation().as_bytes());
+    settlement[40..72].copy_from_slice(&attempt[784..816]);
+    settlement[72..104].copy_from_slice(protected.correlation_digest().as_bytes());
+    settlement[104..112].copy_from_slice(&protected.original_journal_sequence().to_be_bytes());
+    settlement[112..144].fill(17);
+    settlement[144..176].fill(18);
+    seal_controller_record(
+        b"aos.sandbox.controller-output-settlement.v1\0",
+        &mut settlement,
+        176,
+    );
+
+    // These Controller-shaped records are only structural fixture inputs.
+    // The real Host pair and distinct signed method-48 grant are checked later.
+    let original = ReserveStorageExecutionOutputRequestV1 {
+        header: Some(header(STORAGE_RESERVE_REQUEST_ID, deadline)).into(),
+        canonical_controller_attempt: attempt.to_vec(),
+        canonical_controller_settlement: settlement.to_vec(),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let records =
+        StorageOutputReserveRecordsV1::from_canonical_records(&attempt, &settlement).unwrap();
+    let storage_semantics =
+        storage_output_reserve_grant_v1(assignment(), STORAGE_RESERVE_REQUEST_ID, &original)
+            .unwrap();
+    let original_plan_digest = [21_u8; 32];
+    let attempt_digest = Sha256::new()
+        .chain_update(b"aos.sandbox.controller-storage-output-attempt.v1\0")
+        .chain_update(b"AOSCST01")
+        .chain_update(records.host_locator().execution().as_bytes())
+        .chain_update(records.host_locator().create_operation().as_bytes())
+        .chain_update(STORAGE_RESERVE_REQUEST_ID)
+        .chain_update(original_plan_digest)
+        .chain_update(storage_semantics.argument_commitment().digest().as_bytes())
+        .chain_update(u16::try_from(original.len()).unwrap().to_be_bytes())
+        .chain_update(&original)
+        .finalize();
+
+    let mut readback_header = header(HOST_READBACK_REQUEST_ID, deadline);
+    readback_header.audience = Audience::AUDIENCE_STORAGE_BROKER.into();
+    ObserveHostStorageOutputRequestV1 {
+        header: Some(readback_header).into(),
+        canonical_original_storage_reserve_request: original,
+        original_storage_signed_plan_digest: original_plan_digest.to_vec(),
+        original_storage_semantic_digest: storage_semantics
+            .argument_commitment()
+            .digest()
+            .as_bytes()
+            .to_vec(),
+        controller_storage_attempt_digest: attempt_digest.to_vec(),
+        ..Default::default()
+    }
+    .encode_to_vec()
+}
+
 #[tokio::test]
-async fn signed_method35_reserves_protected_output_and_survives_cold_reopen() {
+async fn signed_method35_custody_supports_protected_method48_readback() {
     let temporary = TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
     let client_path = temporary.path().join("client");
     let broker_path = temporary.path().join("broker");
@@ -556,7 +678,7 @@ async fn signed_method35_reserves_protected_output_and_survives_cold_reopen() {
             * 1_000_000_000;
     let deadline = boottime + 60_000_000_000;
     let clock = RawPairedClockSample::new_untrusted(
-        RawClockProvenance::new_untrusted([49; 16]).unwrap(),
+        RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
         boot,
         wall,
         boottime,
@@ -702,7 +824,58 @@ async fn signed_method35_reserves_protected_output_and_survives_cold_reopen() {
             )
             .is_err()
     );
-    HostBroker::open(
+    let storage_client_path = temporary.path().join("storage-client");
+    let storage_broker_path = temporary.path().join("storage-broker");
+    for path in [&storage_client_path, &storage_broker_path] {
+        fs::create_dir(path).unwrap();
+    }
+    let (storage_manifest, storage_secrets) = manifest_and_secrets_for_audience(
+        BrokerSessionProtocolV1::Host,
+        crate::manifest::BrokerSessionSecurityAudienceV1::StorageBroker,
+    );
+    install_endpoint(
+        &storage_client_path,
+        &storage_manifest,
+        &storage_secrets,
+        TestEndpointRole::Client,
+    );
+    install_endpoint(
+        &storage_broker_path,
+        &storage_manifest,
+        &storage_secrets,
+        TestEndpointRole::Broker,
+    );
+    let _storage_endpoint_cleanup = EndpointCleanup(&storage_client_path, &storage_broker_path);
+
+    let readback_body = storage_readback_body(&source, protected, deadline);
+    let storage_policy = PeerPolicy {
+        audience: Audience::AUDIENCE_STORAGE_BROKER,
+        ..peer_policy()
+    };
+    let readback_request = decode_host_storage_output_readback_request_v1(
+        &readback_body,
+        peer(),
+        storage_policy,
+        boottime,
+    )
+    .unwrap();
+    let readback_grant = host_storage_output_readback_grant_v1(
+        assignment(),
+        HOST_READBACK_REQUEST_ID,
+        &readback_body,
+    )
+    .unwrap();
+    let authenticated_readback = signed_method_request(
+        &storage_client_path,
+        &storage_broker_path,
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT,
+        Audience::AUDIENCE_STORAGE_BROKER,
+        HOST_READBACK_REQUEST_ID,
+        readback_body,
+        signed.artifacts(readback_grant, 2),
+        boottime,
+    );
+    let mut cold_host = HostBroker::open(
         NoCatalog,
         FileHostStateStore::open_exclusive(&state_path).unwrap(),
         FreezeWorker,
@@ -710,4 +883,57 @@ async fn signed_method35_reserves_protected_output_and_survives_cold_reopen() {
         signed.authority(),
     )
     .unwrap();
+    let mut callsite = DormantHostBrokerCompositionV1::new(&mut cold_host);
+    let response = dispatch_host_storage_output_with_claim_for_test_v1(
+        &cold_claim,
+        authenticated_readback.method(),
+        authenticated_readback.authorization().is_some(),
+        false,
+        boot,
+        || {
+            callsite.observe_authenticated_storage_output(
+                &cold_claim,
+                &authenticated_readback,
+                boot,
+            )
+        },
+        || Ok(()),
+    )
+    .unwrap();
+    let observed =
+        decode_host_storage_output_readback_response_v1(&response, &readback_request).unwrap();
+    assert_eq!(
+        observed.reservation().correlation_digest(),
+        Some(protected.correlation_digest())
+    );
+    assert_eq!(
+        observed.reservation().original_host_journal_sequence(),
+        Some(protected.original_journal_sequence())
+    );
+    assert_eq!(observed.current_assignment(), assignment());
+    assert_eq!(
+        observed.controller_storage_attempt_digest(),
+        readback_request.controller_storage_attempt_digest()
+    );
+    assert!(observed.protected_head_sequence() >= protected.original_journal_sequence());
+
+    // A read-only replay must reread the same protected pair without moving
+    // the Host journal head or minting a new output reservation.
+    let replay = dispatch_host_storage_output_with_claim_for_test_v1(
+        &cold_claim,
+        authenticated_readback.method(),
+        authenticated_readback.authorization().is_some(),
+        false,
+        boot,
+        || {
+            callsite.observe_authenticated_storage_output(
+                &cold_claim,
+                &authenticated_readback,
+                boot,
+            )
+        },
+        || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(replay, response);
 }
