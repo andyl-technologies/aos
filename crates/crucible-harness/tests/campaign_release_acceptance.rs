@@ -118,7 +118,7 @@ fn release_acceptance_requires_automated_local_evidence() -> Result<(), Box<dyn 
         contract.executable_evidence.required_gates,
         EXECUTABLE_GATES
     );
-    assert_eq!(contract.executable_evidence.required_claim_gates.len(), 33);
+    assert_eq!(contract.executable_evidence.required_claim_gates.len(), 34);
 
     assert_eq!(contract.e2e_evidence.gate, "gate:e2e-determinism");
     assert_eq!(
