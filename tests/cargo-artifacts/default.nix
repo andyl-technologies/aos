@@ -1,17 +1,12 @@
 ##! Regression checks for reusable Cargo dependency artifacts.
 {pkgs}: let
-  sourceA = builtins.path {
-    path = ./source-a;
-    name = "cargo-artifact-source-a";
-  };
-  sourceB = builtins.path {
-    path = ./source-b;
-    name = "cargo-artifact-source-b";
-  };
-  sourceManifestChange = builtins.path {
-    path = ./source-manifest-change;
-    name = "cargo-artifact-source-manifest-change";
-  };
+  # Keep these as paths inside the flake source. mkCargoDummySource performs
+  # the filtered copy whose identity this regression test compares; wrapping
+  # them in another builtins.path can leave an unrealized intermediate store
+  # path when the test is evaluated purely.
+  sourceA = ./source-a;
+  sourceB = ./source-b;
+  sourceManifestChange = ./source-manifest-change;
   dummyA = pkgs.mkCargoDummySource {
     srcRoot = sourceA;
     name = "cargo-artifact-fixture-dummy";

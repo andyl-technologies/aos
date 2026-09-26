@@ -27,6 +27,7 @@ See the composefs-dump(5) man page for the per-line format:
 Filetype codes (octal): 4=directory, 10=regular file, 12=symlink.
 """
 
+import argparse
 import glob
 import json
 import os
@@ -59,6 +60,7 @@ class ComposefsPath:
     mtime: str = "1.0"
     content: str = "-"
     digest: str = "-"
+    selinux_context: str | None = None
 
     def __init__(
         self,
@@ -104,7 +106,91 @@ class ComposefsPath:
             str(self.content),
             str(self.digest),
         ]
+        if self.selinux_context is not None:
+            # composefs-dump represents the conventional terminating NUL as an
+            # explicit xattr byte; mkcomposefs preserves the supplied length.
+            encoded_context = self.selinux_context.encode("ascii") + b"\x00"
+            line_list.append(
+                "security.selinux=" + escape_xattr_value(encoded_context)
+            )
         return " ".join(line_list)
+
+
+def escape_xattr_value(value: bytes) -> str:
+    """Escapes one composefs dump xattr value canonically."""
+
+    escaped: list[str] = []
+    for byte in value:
+        if byte == ord("\\"):
+            escaped.append("\\\\")
+        elif 0x21 <= byte <= 0x7E and byte != ord("="):
+            escaped.append(chr(byte))
+        else:
+            escaped.append(f"\\x{byte:02x}")
+    return "".join(escaped)
+
+
+def load_context_map(path: str) -> dict[tuple[str, FileType], str | None]:
+    """Loads the canonical context plan consumed by image builders."""
+
+    with open(path, "rb") as context_file:
+        document = json.load(context_file)
+    if document.get("version") != 1 or not isinstance(document.get("entries"), list):
+        raise ValueError("SELinux context map must use schema version 1")
+
+    kind_map = {
+        "directory": FileType.directory,
+        "regular": FileType.file,
+        "symlink": FileType.symlink,
+    }
+    contexts: dict[tuple[str, FileType], str | None] = {}
+    for entry in document["entries"]:
+        try:
+            image_path = normalize_path(entry["path"])
+            file_type = kind_map[entry["kind"]]
+            context = entry["context"]
+        except (KeyError, TypeError) as error:
+            raise ValueError("invalid SELinux context-map entry") from error
+        if context is not None:
+            if not isinstance(context, str):
+                raise ValueError(f"invalid SELinux context for {image_path}")
+            try:
+                context.encode("ascii")
+            except UnicodeEncodeError as error:
+                raise ValueError(
+                    f"non-ASCII SELinux context for {image_path}"
+                ) from error
+            if "\x00" in context or any(character.isspace() for character in context):
+                raise ValueError(f"invalid SELinux context for {image_path}")
+            if len(context.split(":", 3)) not in {3, 4}:
+                raise ValueError(f"invalid SELinux context for {image_path}")
+
+        key = (image_path, file_type)
+        if key in contexts:
+            raise ValueError(f"duplicate SELinux context-map entry for {image_path}")
+        contexts[key] = context
+    return contexts
+
+
+def apply_context_map(
+    paths: list[ComposefsPath], contexts: dict[tuple[str, FileType], str | None]
+) -> None:
+    """Assigns exactly one non-default SELinux context to every image inode."""
+
+    for composefs_path in paths:
+        key = (normalize_path(composefs_path.path), composefs_path.filetype)
+        if key not in contexts:
+            raise ValueError(
+                "SELinux context map has no entry for "
+                f"{composefs_path.path} ({composefs_path.filetype.name})"
+            )
+        context = contexts[key]
+        if context is None or context.split(":", 3)[2] in {
+            "default_t",
+            "unlabeled_t",
+        }:
+            raise ValueError(f"unsafe SELinux context for {composefs_path.path}")
+        composefs_path.selinux_context = context
 
 
 def eprint(*args: Any, **kwargs: Any) -> None:
@@ -250,10 +336,11 @@ def recurse_symlink_source(
 
 
 def main() -> None:
-    config_file = sys.argv[1]
-    if not config_file:
-        eprint("No config file was supplied.")
-        sys.exit(1)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("config_file")
+    parser.add_argument("--context-map")
+    options = parser.parse_args()
+    config_file = options.config_file
 
     with open(config_file, "rb") as f:
         config = json.load(f)
@@ -325,9 +412,21 @@ def main() -> None:
             )
         add_leading_directories(target, attrs, paths)
 
-    composefs_dump = ["/ 4096 40755 1 0 0 0 0.0 - - -"]  # Root inode.
-    for key in sorted(paths):
-        composefs_path = paths[key]
+    root = ComposefsPath(
+        {"target": "/", "uid": "0", "gid": "0"},
+        size=4096,
+        filetype=FileType.directory,
+        mode="0755",
+        payload="-",
+    )
+    # Preserve the historical root record exactly when labeling is disabled.
+    root.mtime = "0.0"
+    ordered_paths = [root, *(paths[key] for key in sorted(paths))]
+    if options.context_map is not None:
+        apply_context_map(ordered_paths, load_context_map(options.context_map))
+
+    composefs_dump = []
+    for composefs_path in ordered_paths:
         eprint(composefs_path.path)
         composefs_dump.append(composefs_path.write_line())
 

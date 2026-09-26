@@ -73,6 +73,9 @@ let
       abi = "gnu";
       vendor = "unknown";
       objectFormat = "elf";
+      # AOS kernels use the architecture defaults, which are 4 KiB for every
+      # supported Linux target (including ARM64_4K_PAGES on AArch64).
+      pageSize = _: 4096;
       sharedLibraryExtension = "so";
       staticLibraryExtension = "a";
       executableExtension = "";
@@ -145,6 +148,10 @@ let
           mesonCpu
           ;
         dynamicLinker = kernel.dynamicLinker cpuName;
+        pageSize =
+          if kernel ? pageSize
+          then kernel.pageSize cpuName
+          else null;
         inherit
           (kernel)
           objectFormat

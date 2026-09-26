@@ -109,11 +109,30 @@ buildStdenv.mkDerivation {
           test -e "$archive" || continue
           mv "$archive" "$static/lib/"
         done
+
+        # glibc installs libm.a as an absolute linker script. Keep its archive
+        # references with the static output when splitting those archives away
+        # from the shared-library output.
+        libmScript="$static/lib/libm.a"
+        test -f "$libmScript"
+        sed -i "s|$out/lib/|$static/lib/|g" "$libmScript"
+        grep -F "$static/lib/libm-2.39.a" "$libmScript"
+        grep -F "$static/lib/libmvec.a" "$libmScript"
+        if grep -F "$out/lib/" "$libmScript" >/dev/null; then
+          echo "error: static libm linker script retained the shared output" >&2
+          exit 1
+        fi
+
         for archive in libc_nonshared.a libpthread_nonshared.a; do
           if test -f "$static/lib/$archive"; then
             mv "$static/lib/$archive" "$out/lib/$archive"
           fi
         done
+
+        # Locale recipes execute build-side localedef against source data from
+        # this target libc. Keep that data in the bin output, as native glibc does.
+        mkdir -p "$bin/share"
+        mv "$out/share/i18n" "$bin/share/i18n"
 
         if test -f "$out/bin/getent"; then
           mv "$out/bin/getent" "$getent/bin/getent"
@@ -134,6 +153,8 @@ buildStdenv.mkDerivation {
         test -f "$out/lib/${hostPlatform.dynamicLinker}"
         test -f "$dev/include/stdio.h"
         test -f "$static/lib/libc.a"
+        test -f "$bin/share/i18n/charmaps/UTF-8.gz"
+        test -f "$bin/share/i18n/locales/C"
       '';
     }
   ];

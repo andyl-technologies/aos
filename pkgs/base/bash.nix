@@ -48,29 +48,31 @@ in
     };
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake];
+    # Recursive consumers race the generated builtins on highly parallel hosts.
+    enableParallelBuilding = false;
     runtimeDeps =
       if stdenv.hostPlatform.isDarwin
       then [ncurses]
       else [];
-    postPatch =
-      ''
-        # GNU Bash's official patches are authored for -p0 from the unpacked
-        # source directory, unlike the repository's usual -p1 patches.
-        ${builtins.concatStringsSep "\n" (map (patch: "patch --batch -p0 < ${patch}") bashPatches)}
+    postPatch = ''
+      # GNU Bash's official patches are authored for -p0 from the unpacked
+      # source directory, unlike the repository's usual -p1 patches.
+      ${builtins.concatStringsSep "\n" (map (patch: "patch --batch -p0 < ${patch}") bashPatches)}
 
-        # Configure is generated with a host /bin/sh shebang. Run it through the
-        # AOS stdenv shell instead of the sandbox host shell.
-        sed -i '1c#!${stdenv.shell}' configure
-      ''
-      + (
-        if stdenv.isCross
+      # Configure is generated with a host /bin/sh shebang. Run it through the
+      # AOS stdenv shell instead of the sandbox host shell.
+      sed -i '1c#!${stdenv.shell}' configure
+
+      ${
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then ''
-          # tparam.c calls write(2) but relies on an implicit declaration, which
-          # current target compilers reject while cross-building Bash.
+          # tparam.c calls write(2) but relies on an implicit declaration. Modern
+          # target compilers reject that while cross-compiling Bash.
           sed -i '/#include <config.h>/a#include <unistd.h>' lib/termcap/tparam.c
         ''
         else ""
-      );
+      }
+    '';
     preConfigure =
       if stdenv.isCross && stdenv.hostPlatform.isDarwin
       then ''

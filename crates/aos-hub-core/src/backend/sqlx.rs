@@ -111,10 +111,17 @@ impl SqlxBackend {
 
         let mut pool_options = SqlitePoolOptions::new();
         if in_memory {
-            // A `:memory:` database lives in one connection; a larger pool would
-            // hand out separate empty databases and break every query that
-            // reads back what a prior one wrote.
-            pool_options = pool_options.max_connections(1);
+            // A `:memory:` database lives in one connection. Keep that exact
+            // connection for the pool's full lifetime: SQLx may otherwise
+            // discard it when an acquire is cancelled during the default
+            // liveness check or when an idle/lifetime reaper runs, replacing
+            // the complete database with a new empty one.
+            pool_options = pool_options
+                .max_connections(1)
+                .min_connections(1)
+                .test_before_acquire(false)
+                .idle_timeout(None)
+                .max_lifetime(None);
         }
         let retry_deadline = tokio::time::Instant::now() + SQLITE_OPEN_LOCK_RETRY_LIMIT;
         let pool = loop {
@@ -283,6 +290,106 @@ impl super::Backend for SqlxBackend {
             #[cfg(feature = "mysql")]
             Self::Mysql(pool) => mysql::checked_batch(pool, stmts).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::task::Poll;
+    use std::time::Duration;
+
+    use super::SqlxBackend;
+
+    fn sqlite_pool(backend: SqlxBackend) -> sqlx::SqlitePool {
+        match backend {
+            SqlxBackend::Sqlite(pool) => pool,
+            #[cfg(any(feature = "postgres", feature = "mysql"))]
+            _ => unreachable!("the sqlite constructor returned another backend"),
+        }
+    }
+
+    #[tokio::test]
+    async fn in_memory_sqlite_retains_its_database_across_cancelled_acquisition() {
+        let pool = sqlite_pool(SqlxBackend::connect_sqlite(":memory:").await.unwrap());
+        let options = pool.options();
+        assert_eq!(options.get_max_connections(), 1);
+        assert_eq!(options.get_min_connections(), 1);
+        assert!(!options.get_test_before_acquire());
+        assert_eq!(options.get_idle_timeout(), None);
+        assert_eq!(options.get_max_lifetime(), None);
+
+        sqlx::query("CREATE TABLE retention_probe (value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO retention_probe (value) VALUES ('retained')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let held = pool.acquire().await.unwrap();
+        let cancelled = tokio::time::timeout(Duration::ZERO, pool.acquire()).await;
+        assert!(cancelled.is_err());
+        drop(held);
+
+        let value: String = sqlx::query_scalar("SELECT value FROM retention_probe")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(value, "retained");
+    }
+
+    #[tokio::test]
+    async fn in_memory_sqlite_acquire_has_no_post_checkout_cancellation_point() {
+        let pool = sqlite_pool(SqlxBackend::connect_sqlite(":memory:").await.unwrap());
+        sqlx::query("CREATE TABLE immediate_probe (value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut returned = pool.acquire().await.unwrap();
+        returned.return_to_pool().await;
+
+        let mut acquire = Box::pin(pool.acquire());
+        let Poll::Ready(acquired) = futures_util::poll!(&mut acquire) else {
+            panic!("idle in-memory connection acquisition reached a cancellation point");
+        };
+        let mut acquired = acquired.unwrap();
+        acquired.return_to_pool().await;
+
+        sqlx::query("SELECT value FROM immediate_probe")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn file_backed_sqlite_keeps_standard_pool_recycling() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("pool.sqlite");
+        let pool = sqlite_pool(
+            SqlxBackend::connect_sqlite(path.to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let options = pool.options();
+        let defaults = SqlitePoolOptions::new();
+        assert_eq!(
+            options.get_max_connections(),
+            defaults.get_max_connections()
+        );
+        assert_eq!(
+            options.get_min_connections(),
+            defaults.get_min_connections()
+        );
+        assert_eq!(
+            options.get_test_before_acquire(),
+            defaults.get_test_before_acquire()
+        );
+        assert_eq!(options.get_idle_timeout(), defaults.get_idle_timeout());
+        assert_eq!(options.get_max_lifetime(), defaults.get_max_lifetime());
     }
 }
 

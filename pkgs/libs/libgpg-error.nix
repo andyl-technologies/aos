@@ -78,6 +78,19 @@ in
               --disable-static \
               --disable-nls
           ''
+          else if stdenv.isCross && stdenv.hostPlatform.isLinux
+          then ''
+            # CC_FOR_BUILD deliberately isolates native generators from target
+            # hardening state. Pass this package's existing flexible-array
+            # exception explicitly for yat2m while retaining all other native
+            # compiler-wrapper hardening.
+            CC_FOR_BUILD="$BUILD_CC -fstrict-flex-arrays=1" \
+              ./configure \
+                $configureFlags \
+                --prefix=$out \
+                --disable-static \
+                --disable-nls
+          ''
           else ''
             ./configure \
               $configureFlags \

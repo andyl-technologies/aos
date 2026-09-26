@@ -21,6 +21,12 @@
   ...
 }: let
   cfg = config.aos.filesystems;
+  protectedSandboxNetworkRoots =
+    config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
+  varRootContext =
+    config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
+  varRootContextOption =
+    lib.optionalString protectedSandboxNetworkRoots ",rootcontext=${varRootContext}";
 
   # OpenZFS is an out-of-tree module, so its build is bound to one exact
   # kernel. `aos.boot.storage` overrides this when the immutable image slots
@@ -51,7 +57,7 @@
       if cfg.rootReadOnly
       then "ro"
       else "rw"
-    },relatime  0  ${
+    },relatime,nodev  0  ${
       if cfg.rootFsType == "erofs"
       then "0"
       else "1"
@@ -68,7 +74,7 @@
       ''
       else ''
         # /var — persistent mutable state (partition created by systemd-repart)
-        /dev/disk/by-partlabel/var  /var  ext4  rw,relatime,nosuid,nodev  0  2
+        /dev/disk/by-partlabel/var  /var  ext4  rw,relatime,nosuid,nodev${varRootContextOption}  0  2
       ''
     )
     ""

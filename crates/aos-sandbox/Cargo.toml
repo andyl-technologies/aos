@@ -1,0 +1,49 @@
+[package]
+name = "aos-sandbox"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+# Run explicitly in the AOS kernel-test VM, outside the package-build sandbox.
+kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+# Enables a private-directory protected-journal opener for dependent crate tests.
+test-fixtures = []
+# Only the isolated KVM fixture can prepare an inert Cache hold and empty manifest.
+cache-physical-join-vm-fixture = []
+
+[dependencies]
+aos-filesystem-view-core.workspace = true
+aos-proto.workspace = true
+aos-sandbox-agent.workspace = true
+aos-sandbox-core.workspace = true
+aos-sandbox-ownership-protocol.workspace = true
+aos-sandbox-protocol.workspace = true
+aos-sandbox-source-provider-protocol.workspace = true
+axum.workspace = true
+buffa.workspace = true
+connectrpc.workspace = true
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
+futures.workspace = true
+rustix = { workspace = true, features = ["event", "fs", "net", "process", "rand", "time"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+ssh-key.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+aos-sandbox-linux.workspace = true
+rand.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+tokio-rustls.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+rcgen.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

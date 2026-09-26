@@ -1,6 +1,7 @@
 ##! systemd — System and service manager
 {
   mkDerivation,
+  stdenv,
   fetchurl,
   gnumake,
   pkg-config,
@@ -21,6 +22,8 @@
   getent,
   libcap,
   libxcrypt,
+  gcc-libs,
+  libidn2,
   pcre2,
   audit,
   libselinux,
@@ -32,6 +35,7 @@
   linux-pam,
   tpm2-tss,
   coreutils,
+  grep,
   bash,
   bzip2,
   python3-pefile,
@@ -56,6 +60,10 @@
     openssl
     libcap
     libxcrypt
+    # glibc loads these by SONAME for unwinding and IDN name-service paths.
+    # Keep the providers in PID 1's authenticated runtime closure explicitly.
+    gcc-libs
+    libidn2
     audit
     libselinux
     libsepol
@@ -67,9 +75,6 @@
     linux-pam
     tpm2-tss
   ];
-  systemdRuntimeLibraryPath = builtins.concatStringsSep ":" (
-    map (dependency: "${dependency}/lib") systemdRuntimeDeps
-  );
 in
   mkDerivation {
     pname = "systemd";
@@ -105,12 +110,42 @@ in
     #          rejects the dm-verity signed-key activation.
     #   0006 — Keep an embedded signed UKI command line authoritative over
     #          addon and SMBIOS fragments that run before initrd validation.
+    #   0007 — Add the closed AOS payload seccomp profile to nspawn and install
+    #          it after container setup, immediately before payload execution.
+    #   0008 — Consume a named supervisor-only root descriptor without
+    #          reopening its pathname or forwarding it to the payload.
+    #   0009 — Test fail-closed shutdown-intent state for retained-supervisor
+    #          reboot support. Runtime integration is a separate step.
+    #   0010 — Authenticate per-boot shutdown intent and reset the empty payload
+    #          cgroup while retaining the AOS supervisor and unit invocation.
+    #   0011 — Install a broker-owned attachment anchor from an exact named
+    #          descriptor with the target idmap and hard read-only attributes.
+    #   0012 — Reserve unit-reference lifetime control to root so an
+    #          unprivileged client cannot prevent exact terminal collection.
+    #   0013 — Route authenticated switch-root and daemon-reexec operations
+    #          through the immutable AOS SELinux guard without init fallback.
+    #   0014 — Deliver only an exact named, sealed guest-agent descriptor set
+    #          to the fixed PID 1 bootstrap, never generic activation FDs.
+    #   0015 — Require the AOS kernel no-set-ID task guard before seccomp for
+    #          RestrictSUIDSGID=, allowing safe descriptor-relative openat2.
+    #   0016 — Reject truncated sd-bus ancillary data even when the message
+    #          body does not reference the discarded descriptor.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
       ./patches/0004-skip-runtime-dir-for-test-run-manager.patch
       ./patches/0005-fail-closed-on-roothash-signature-rejection.patch
       ./patches/0006-ignore-external-cmdline-for-embedded-uki.patch
+      ./patches/0007-nspawn-aos-payload-seccomp-profile.patch
+      ./patches/0008-nspawn-owned-root-descriptor.patch
+      ./patches/0009-nspawn-shutdown-intent-state.patch
+      ./patches/0010-nspawn-retained-supervisor-reboot.patch
+      ./patches/0011-nspawn-attachment-anchor-descriptor.patch
+      ./patches/0012-restrict-unit-reference-methods.patch
+      ./patches/0013-aos-selinux-root-handoff.patch
+      ./patches/0014-nspawn-guest-agent-descriptors.patch
+      ./patches/0015-restrict-suid-sgid-kernel-guard.patch
+      ./patches/0016-reject-truncated-bus-ancillary-data.patch
     ];
 
     buildDeps = [
@@ -123,6 +158,7 @@ in
       python3
       gperf
       getent
+      grep
       # Kernel UAPI headers are compile-time only. Keeping them out of
       # runtimeDeps avoids a dead RPATH/RUNPATH entry (linux-headers ships no
       # shared library) and keeps the 7 MiB header tree out of the closure.
@@ -168,10 +204,14 @@ in
 
           # libseccomp is loaded on demand, so DT_NEEDED-based RPATH shrinking
           # cannot retain its search directory. Bind the loader to the AOS
-          # library explicitly so syscall filters work without host libraries.
+          # library's real inode: immutable stage 0 rejects an absolute dlopen
+          # path that still traverses even an in-store SONAME symlink.
           test "$(grep -Fc '"libseccomp.so.2"' src/shared/seccomp-util.c)" -eq 1
+          libseccomp_real=$(${coreutils}/bin/readlink -f \
+            ${libseccomp}/lib/libseccomp.so.2)
+          test -f "$libseccomp_real"
           sed -i \
-            's|"libseccomp.so.2"|"${libseccomp}/lib/libseccomp.so.2"|' \
+            "s|\"libseccomp.so.2\"|\"$libseccomp_real\"|" \
             src/shared/seccomp-util.c
 
           # Fix shebangs: /usr/bin/env and /bin/bash don't exist in the sandbox
@@ -240,7 +280,7 @@ in
                   chmod +x .python-wrapper/bin/python3
                   export PATH="$(pwd)/.python-wrapper/bin:$PATH"
 
-                  # Explicit RPATH so systemd binaries find their own shared libs
+                  # Explicit RPATH keeps systemd's own shared libs resolvable.
                   export LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib -Wl,-rpath,$out/lib/systemd"
 
                   # Override compiled-in binary paths so systemd references its
@@ -256,12 +296,15 @@ in
                   export C_INCLUDE_PATH="$(echo "$C_INCLUDE_PATH" | tr ':' '\n' | grep -v linux-headers | tr '\n' ':' | sed 's/:$//')"
 
                   mkdir -p build && cd build
+                  # The stage-2 launcher must carry a GNU build ID; Meson did
+                  # not retain it when it was supplied through LDFLAGS alone.
                   meson setup .. \
                     $mesonFlags \
                     --prefix=$out \
                     --sysconfdir=$out/etc \
                     -Dwerror=false \
                     --buildtype=release \
+                    '-Dc_link_args=["-Wl,--build-id=sha1"]' \
                     -Dmode=release \
                     -Dsysvinit-path="" \
                     -Dsysvrcnd-path="" \
@@ -395,6 +438,18 @@ in
         '';
       }
       {
+        name = "check-aos-payload-seccomp";
+        script =
+          if stdenv.isCross
+          then ''
+            # Target execution belongs to the architecture-specific VM gate.
+            true
+          ''
+          else ''
+            ./test-nspawn-seccomp
+          '';
+      }
+      {
         name = "install";
         # DESTDIR=/ satisfies systemd's "test -n $DESTDIR" guard that skips
         # live-system mutations during packaging.  With --prefix=$out, all
@@ -402,6 +457,12 @@ in
         # is effectively a no-op for prefix-relative targets.
         script = ''
           DESTDIR=/ ninja install
+          ${elfutils}/bin/eu-readelf --notes "$out/lib/systemd/systemd" \
+            | grep -Fq 'Build ID:'
+          # A patch log is insufficient evidence that PID 1 contains the
+          # authenticated switch-root guard; enforce it on the installed ELF.
+          ${grep}/bin/grep -aFq 'Cannot open authenticated AOS root-handoff guard' \
+            "$out/lib/systemd/systemd"
 
           # Source generators must run with native Python during the cross
           # build. Retarget installed scripts to the AArch64 interpreter.
@@ -452,16 +513,26 @@ in
         script = ''
           # Meson does not preserve the cc-wrapper RPATH on every target.
           # First resolve direct dependencies and discard unused build paths,
-          # then retain the declared runtime paths for systemd's dlopen calls.
-          # Those libraries are deliberately absent from DT_NEEDED.
+          # then retain existing declared library directories for systemd's
+          # dlopen calls. Some runtime tools, notably bash, have no lib/; a
+          # nonexistent RPATH fails the immutable stage-0 closure audit.
+          runtime_library_path="$out/lib:$out/lib/systemd"
+          for dependency in ${builtins.concatStringsSep " " (map builtins.toString systemdRuntimeDeps)}; do
+            if [ -d "$dependency/lib" ]; then
+              runtime_library_path="$runtime_library_path:$dependency/lib"
+            fi
+          done
           find "$out" -type f | while read -r executable; do
             patchelf --print-needed "$executable" >/dev/null 2>&1 || continue
-            patchelf --add-rpath \
-              "$out/lib:$out/lib/systemd:${systemdRuntimeLibraryPath}" \
+            patchelf --force-rpath --add-rpath \
+              "$runtime_library_path" \
               "$executable"
             patchelf --shrink-rpath "$executable"
-            patchelf --add-rpath \
-              "$out/lib:$out/lib/systemd:${systemdRuntimeLibraryPath}" \
+            # glibc's libgcc_s unwind load is an indirect dlopen. DT_RPATH
+            # carries the sealed directory set to linked descendants;
+            # DT_RUNPATH does not.
+            patchelf --force-rpath --add-rpath \
+              "$runtime_library_path" \
               "$executable"
           done
 
@@ -487,7 +558,7 @@ in
           # site-packages before invoking python3 on the original
           # script.
           if [ -x "$out/bin/ukify" ]; then
-            mkdir -p "$tools/bin"
+            mkdir -p "$tools/bin" "$tools/lib/systemd"
             mv "$out/bin/ukify" "$tools/bin/.ukify-unwrapped"
             sed -i "1c #!${python3}/bin/python3" \
               "$tools/bin/.ukify-unwrapped"
@@ -497,6 +568,13 @@ in
           exec "${python3}/bin/python3" "$tools/bin/.ukify-unwrapped" "\$@"
           EOF
             chmod +x "$tools/bin/ukify"
+
+            # Meson also installs a relative compatibility alias. Keep it
+            # beside the relocated tool; leaving it in $out points at the
+            # now-absent $out/bin/ukify and breaks the immutable stage-0
+            # runtime-closure audit.
+            mv "$out/lib/systemd/ukify" "$tools/lib/systemd/ukify"
+            test -x "$tools/lib/systemd/ukify"
           fi
 
           mkdir -p "$tools/lib/kernel"
@@ -515,6 +593,33 @@ in
           exec "${python3}/bin/python3" "$ukify_hook.unwrapped" "\$@"
           EOF
           chmod +x "$ukify_hook"
+        '';
+      }
+      {
+        name = "measure-aos-payload-policy";
+        # This public artifact binds the reviewed compiler policy to the exact
+        # final PID 1 and nspawn binaries. Host still verifies live PID 1 and
+        # the protected readiness claims before using it.
+        script = ''
+          test -x "$out/lib/systemd/systemd"
+          test -x "$out/bin/systemd-nspawn"
+          mkdir -p "$out/share/aos"
+          cp ${./payload-root-policy-v1} "$out/share/aos/payload-root-policy-v1"
+          # Meson leaves the phase in build/, one level below patched source.
+          cp ../src/nspawn/nspawn-seccomp.c "$out/share/aos/nspawn-seccomp-source-v1"
+          pid1_digest=$(sha256sum "$out/lib/systemd/systemd")
+          nspawn_digest=$(sha256sum "$out/bin/systemd-nspawn")
+          payload_filter_digest=$(sha256sum "$out/share/aos/nspawn-seccomp-source-v1")
+          pid1_digest=''${pid1_digest%% *}
+          nspawn_digest=''${nspawn_digest%% *}
+          payload_filter_digest=''${payload_filter_digest%% *}
+          {
+            printf 'AOSBPA02\n'
+            printf '%s\n' "$pid1_digest"
+            printf '%s\n' "$nspawn_digest"
+            cat "$out/share/aos/payload-root-policy-v1"
+            printf '%s\n' "$payload_filter_digest"
+          } > "$out/share/aos/backend-policy-artifact-v2"
         '';
       }
     ];

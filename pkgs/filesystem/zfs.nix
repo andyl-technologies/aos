@@ -12,6 +12,7 @@
   buildPackages,
   gnumake,
   pkg-config,
+  patchelf,
   util-linux,
   openssl,
   zlib,
@@ -22,6 +23,7 @@
   kmod,
   elfutils,
   dwarves,
+  gcc-libs,
   kernel ? null,
 }: let
   version = "2.4.4";
@@ -49,10 +51,16 @@ in
       hash = "sha256-Kjxw1Vo3zHFhipWmDoGtZlMCAesRjTd0Hcku/PhIyLE=";
     };
 
+    # Scope OpenZFS 44aa82a's Linux 6.9+ superblock UUID path to the pinned
+    # AOS kernel. It binds immutable pool and dataset GUIDs so Storage can
+    # verify a detached snapshot by descriptor, not its replaceable ZFS name.
+    patches = [./zfs-mounted-fs-uuid.patch];
+
     buildDeps =
       [
         gnumake
         pkg-config
+        patchelf
       ]
       ++ (
         if kernel == null
@@ -64,6 +72,7 @@ in
       openssl
       zlib
       libtirpc
+      gcc-libs
     ];
     propagatedDeps = [];
     disallowedReferences = lib.optional (kernel != null) kernel.dev;
@@ -198,6 +207,23 @@ in
           # generic fixup pass does not recognize it as a runtime executable.
           # Remove its compile-time include paths explicitly.
           strip --strip-debug "$out/lib/udev/zvol_id"
+
+          # glibc loads libgcc_s by soname when pthread cancellation needs
+          # unwind support. A caller's DT_RUNPATH is not used for that
+          # libc-originated lookup, so make libzfs retain the AOS unwind
+          # runtime as a direct dependency. This covers every libzfs caller,
+          # including ordinary `zfs send`, without relying on ambient state.
+          patched_libzfs=0
+          for library in "$out"/lib/libzfs.so.*.*.*; do
+            [ -f "$library" ] || continue
+            patchelf --add-needed libgcc_s.so.1 "$library"
+            patchelf --add-rpath ${gcc-libs}/lib "$library"
+            patchelf --print-needed "$library" | grep -Fx libgcc_s.so.1
+            patchelf --print-rpath "$library" | tr ':' '\n' | \
+              grep -Fx ${gcc-libs}/lib
+            patched_libzfs=$((patched_libzfs + 1))
+          done
+          [ "$patched_libzfs" -eq 1 ]
         '';
       }
     ];

@@ -1,0 +1,427 @@
+//! Network-audience adapter for shared signed authority admission.
+
+use std::path::Path;
+
+use aos_proto::aos::sandbox::local::v1::ApplyNetworkRequest;
+use aos_sandbox::RecordNamespace;
+use aos_sandbox_broker::{
+    AdmissionRequest, BrokerAdmissionError, BrokerAuthority, BrokerAuthorityConfigError,
+    BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectClockDispositionV1, BrokerEffectIntentV1,
+    BrokerLocalRecordDomain, VerifiedBrokerAdmission,
+};
+use aos_sandbox_core::{
+    AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerPlanTrustAnchor, DesiredGeneration,
+    IncarnationId, NodeId, ObjectDigest, OwnershipLeaseTrustAnchor, ProtocolId, ProtocolVersion,
+    RawPairedClockSample, SandboxId,
+};
+use aos_sandbox_protocol::semantics::network::CanonicalNetworkSemanticsV1;
+use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
+use buffa::Message as _;
+use sha2::{Digest as _, Sha256};
+
+use crate::catalog::{
+    AuthenticatedNetworkPreparationV1, ResolvedNetworkPreparationV1,
+    encode_authenticated_resolution,
+};
+
+fn catalog_domain() -> Result<BrokerLocalRecordDomain, NetworkAdmissionError> {
+    BrokerLocalRecordDomain::new(*b"AOSNETCATALOG001")
+        .map_err(|_| NetworkAdmissionError::InvalidConfiguration)
+}
+
+fn handle_domain() -> Result<BrokerLocalRecordDomain, NetworkAdmissionError> {
+    BrokerLocalRecordDomain::new(*b"AOSNETHANDLE0001")
+        .map_err(|_| NetworkAdmissionError::InvalidConfiguration)
+}
+
+const HANDLE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.handle.v1\0";
+
+/// Network authority configuration failure.
+pub type NetworkAuthorityConfigError = BrokerAuthorityConfigError;
+/// Network signed admission failure.
+pub type NetworkAdmissionError = BrokerAdmissionError;
+
+/// Owns protected Network-audience trust and journal authentication.
+pub struct NetworkAuthorityV1(pub(crate) BrokerAuthority);
+
+impl NetworkAuthorityV1 {
+    /// Constructs authority from protected trust anchors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkAdmissionError::InvalidConfiguration`] for sentinels.
+    pub fn new(
+        plan: BrokerPlanTrustAnchor,
+        lease: OwnershipLeaseTrustAnchor,
+        node: NodeId,
+        key_id: [u8; 16],
+        secret: [u8; 32],
+    ) -> Result<Self, NetworkAdmissionError> {
+        BrokerAuthority::new(BrokerDomain::Network, plan, lease, node, key_id, secret).map(Self)
+    }
+
+    /// Loads authority from the shared protected fixed-file schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkAuthorityConfigError`] for insecure or invalid credentials.
+    pub fn from_protected_directory(
+        path: impl AsRef<Path>,
+    ) -> Result<Self, NetworkAuthorityConfigError> {
+        BrokerAuthority::from_protected_directory(path, BrokerDomain::Network).map(Self)
+    }
+
+    // Only the root-owned catalog publisher in this crate may call this.
+    // Keeping it crate-private prevents callers from blessing arbitrary local
+    // identities merely because they can submit broker requests.
+    pub(crate) fn authenticate_protected_catalog_for_assignment(
+        &self,
+        resolution: ResolvedNetworkPreparationV1,
+        assignment: BrokerAssignment,
+    ) -> Result<AuthenticatedNetworkPreparationV1, NetworkAdmissionError> {
+        let payload = encode_authenticated_resolution(assignment, &resolution);
+        let sealed = self.0.seal_local_record(
+            RecordNamespace::DesiredState,
+            resolution.binding().digest().as_bytes(),
+            catalog_domain()?,
+            &payload,
+        )?;
+        Ok(AuthenticatedNetworkPreparationV1 {
+            resolution,
+            assignment,
+            sealed,
+        })
+    }
+
+    pub(crate) fn validate_catalog<'a>(
+        &self,
+        catalog: &'a AuthenticatedNetworkPreparationV1,
+        assignment: BrokerAssignment,
+    ) -> Result<&'a ResolvedNetworkPreparationV1, NetworkAdmissionError> {
+        if catalog.assignment != assignment {
+            return Err(NetworkAdmissionError::RequestMismatch);
+        }
+        let payload = self.0.open_local_record(
+            RecordNamespace::DesiredState,
+            catalog.resolution.binding().digest().as_bytes(),
+            catalog_domain()?,
+            &catalog.sealed,
+        )?;
+        if payload != encode_authenticated_resolution(assignment, &catalog.resolution) {
+            return Err(NetworkAdmissionError::RequestMismatch);
+        }
+        Ok(&catalog.resolution)
+    }
+
+    pub(crate) fn mint_network_handle(
+        &self,
+        assignment: BrokerAssignment,
+        preimage: &[u8],
+    ) -> Result<[u8; 32], NetworkAdmissionError> {
+        let sealed = self.0.seal_local_record(
+            RecordNamespace::DesiredState,
+            assignment.sandbox().as_bytes(),
+            handle_domain()?,
+            preimage,
+        )?;
+        let handle: [u8; 32] = Sha256::new()
+            .chain_update(HANDLE_DIGEST_DOMAIN)
+            .chain_update(sealed)
+            .finalize()
+            .into();
+        if handle == [0; 32] {
+            return Err(NetworkAdmissionError::InvalidConfiguration);
+        }
+        Ok(handle)
+    }
+
+    pub(crate) fn admit(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        semantics: &CanonicalNetworkSemanticsV1,
+        body: &[u8],
+        version: ProtocolVersion,
+        clock: &RawPairedClockSample,
+        prior: Option<&[u8]>,
+    ) -> Result<VerifiedBrokerAdmission, NetworkAdmissionError> {
+        let assignment = decode_assignment(body)?;
+        let admission = self.0.admit(
+            artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Network,
+                protocol: ProtocolId::NetworkBroker,
+                protocol_version: version,
+                assignment,
+                request_id: *semantics.header().request_id(),
+                request_body: body,
+                descriptor_count: 0,
+                verb: semantics.broker_verb(),
+                target: semantics.grant_target(),
+                argument_commitment: semantics.argument_commitment(),
+                request_deadline_boottime_nanoseconds: semantics
+                    .header()
+                    .deadline_boottime_nanoseconds(),
+            },
+            clock,
+            prior,
+        )?;
+        if let Some((digest, generation)) = semantics.operation().ownership_lease() {
+            let local = admission.fence.local_lease_record();
+            if admission.effect.lease_digest().as_bytes() != digest
+                || local.lease_generation() != generation
+                || Some(local.fail_stop_boottime_nanoseconds())
+                    != semantics.operation().fail_stop_boottime_nanoseconds()
+            {
+                return Err(NetworkAdmissionError::RequestMismatch);
+            }
+        }
+        Ok(admission)
+    }
+
+    pub(crate) fn latest_fence(
+        &self,
+        sandbox_id: &[u8; 16],
+        candidates: [Option<&[u8]>; 2],
+    ) -> Result<Option<Vec<u8>>, NetworkAdmissionError> {
+        let mut latest: Option<(Vec<u8>, BrokerAuthorizationFenceV1)> = None;
+        for bytes in candidates.into_iter().flatten() {
+            let fence = self.open_fence(sandbox_id, bytes)?;
+            self.check_current_fence(&fence)?;
+            latest = match latest {
+                None => Some((bytes.to_vec(), fence)),
+                Some((_current_bytes, current)) if fence_follows(&fence, &current) => {
+                    Some((bytes.to_vec(), fence))
+                }
+                Some((current_bytes, current)) if fence_follows(&current, &fence) => {
+                    Some((current_bytes, current))
+                }
+                Some(_) => return Err(NetworkAdmissionError::FenceRejected),
+            };
+        }
+        Ok(latest.map(|(bytes, _)| bytes))
+    }
+
+    pub(crate) fn seal_fence(
+        &self,
+        sandbox_id: &[u8; 16],
+        admission: &VerifiedBrokerAdmission,
+    ) -> Result<Vec<u8>, NetworkAdmissionError> {
+        self.0.seal_fence(sandbox_id, &admission.fence)
+    }
+
+    pub(crate) fn seal_operation_fence(
+        &self,
+        request_id: &[u8; 16],
+        admission: &VerifiedBrokerAdmission,
+    ) -> Result<Vec<u8>, NetworkAdmissionError> {
+        self.0.seal_operation_fence(request_id, &admission.fence)
+    }
+
+    pub(crate) fn seal_effect(
+        &self,
+        request_id: &[u8; 16],
+        admission: &VerifiedBrokerAdmission,
+    ) -> Result<Vec<u8>, NetworkAdmissionError> {
+        self.0.seal_effect(request_id, &admission.effect)
+    }
+
+    pub(crate) fn seal_local(
+        &self,
+        request_id: &[u8; 16],
+        domain: BrokerLocalRecordDomain,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, NetworkAdmissionError> {
+        self.0
+            .seal_local_record(RecordNamespace::Operation, request_id, domain, payload)
+    }
+
+    pub(crate) fn open_local<'a>(
+        &self,
+        request_id: &[u8; 16],
+        domain: BrokerLocalRecordDomain,
+        bytes: &'a [u8],
+    ) -> Result<&'a [u8], NetworkAdmissionError> {
+        self.0
+            .open_local_record(RecordNamespace::Operation, request_id, domain, bytes)
+    }
+
+    pub(crate) fn validate_links(
+        &self,
+        sandbox_id: &[u8; 16],
+        request_id: &[u8; 16],
+        fence: &[u8],
+        effect: &[u8],
+    ) -> Result<aos_sandbox_broker::BrokerEffectIntentV1, NetworkAdmissionError> {
+        let opened_fence = self.0.open_fence(sandbox_id, fence)?;
+        let opened_effect = self.0.open_effect(request_id, effect)?;
+        let lease = opened_fence.local_lease_record();
+        if opened_fence.assignment().sandbox().as_bytes() != sandbox_id
+            || opened_effect.plan_digest() != opened_fence.plan_digest()
+            || opened_effect.lease_digest() != lease.lease_digest()
+            || opened_effect.host_boot_id() != lease.host_boot_id()
+            || opened_effect.clock_provenance() != lease.clock_provenance()
+        {
+            return Err(NetworkAdmissionError::FenceRejected);
+        }
+        Ok(opened_effect)
+    }
+
+    pub(crate) fn validate_operation_links(
+        &self,
+        sandbox_id: &[u8; 16],
+        request_id: &[u8; 16],
+        fence: &[u8],
+        effect: &[u8],
+    ) -> Result<aos_sandbox_broker::BrokerEffectIntentV1, NetworkAdmissionError> {
+        let opened_fence = self.0.open_operation_fence(request_id, fence)?;
+        let opened_effect = self.0.open_effect(request_id, effect)?;
+        let lease = opened_fence.local_lease_record();
+        if opened_fence.assignment().sandbox().as_bytes() != sandbox_id
+            || opened_effect.plan_digest() != opened_fence.plan_digest()
+            || opened_effect.lease_digest() != lease.lease_digest()
+            || opened_effect.host_boot_id() != lease.host_boot_id()
+            || opened_effect.clock_provenance() != lease.clock_provenance()
+        {
+            return Err(NetworkAdmissionError::FenceRejected);
+        }
+        Ok(opened_effect)
+    }
+
+    pub(crate) fn open_fence(
+        &self,
+        sandbox_id: &[u8; 16],
+        bytes: &[u8],
+    ) -> Result<aos_sandbox_broker::BrokerAuthorizationFenceV1, NetworkAdmissionError> {
+        self.0.open_fence(sandbox_id, bytes)
+    }
+
+    pub(crate) fn open_operation_fence(
+        &self,
+        request_id: &[u8; 16],
+        bytes: &[u8],
+    ) -> Result<aos_sandbox_broker::BrokerAuthorizationFenceV1, NetworkAdmissionError> {
+        self.0.open_operation_fence(request_id, bytes)
+    }
+
+    pub(crate) fn check_current_fence(
+        &self,
+        fence: &aos_sandbox_broker::BrokerAuthorizationFenceV1,
+    ) -> Result<(), NetworkAdmissionError> {
+        self.0.check_current_fence(fence)
+    }
+
+    pub(crate) fn check_before_effect<F>(
+        &self,
+        effect: &BrokerEffectIntentV1,
+        trusted_clock: &mut F,
+    ) -> Result<(), NetworkAdmissionError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, NetworkAdmissionError>,
+    {
+        self.0.check_before_effect(effect, trusted_clock)
+    }
+
+    /// Classifies one already-read protected clock sample for a durable effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkAdmissionError::FenceRejected`] unless the sample has
+    /// valid paired-clock continuity with the authenticated effect.
+    pub(crate) fn classify_effect_clock(
+        &self,
+        effect: &BrokerEffectIntentV1,
+        current_clock: &RawPairedClockSample,
+    ) -> Result<BrokerEffectClockDispositionV1, NetworkAdmissionError> {
+        self.0.classify_effect_clock(effect, current_clock)
+    }
+}
+
+fn fence_follows(
+    current: &BrokerAuthorizationFenceV1,
+    historical: &BrokerAuthorizationFenceV1,
+) -> bool {
+    let current_assignment = current.assignment();
+    let historical_assignment = historical.assignment();
+    if current.node() != historical.node()
+        || current_assignment.sandbox() != historical_assignment.sandbox()
+        || current_assignment.epoch() < historical_assignment.epoch()
+    {
+        return false;
+    }
+    if current_assignment.epoch() > historical_assignment.epoch() {
+        return true;
+    }
+    if current_assignment.incarnation() != historical_assignment.incarnation()
+        || current.ownership_authority() != historical.ownership_authority()
+        || current_assignment.desired_generation() < historical_assignment.desired_generation()
+    {
+        return false;
+    }
+    if current_assignment.desired_generation() > historical_assignment.desired_generation() {
+        return true;
+    }
+    if current_assignment != historical_assignment
+        || current.plan_digest() != historical.plan_digest()
+    {
+        return false;
+    }
+
+    let current_lease = current.local_lease_record();
+    let historical_lease = historical.local_lease_record();
+    current_lease.lease_generation() > historical_lease.lease_generation()
+        || (current_lease.lease_generation() == historical_lease.lease_generation()
+            && current_lease == historical_lease)
+}
+
+pub(crate) fn decode_assignment(body: &[u8]) -> Result<BrokerAssignment, NetworkAdmissionError> {
+    let request = ApplyNetworkRequest::decode_from_slice(body)
+        .map_err(|_| NetworkAdmissionError::RequestMismatch)?;
+    let fence = request
+        .fence
+        .as_option()
+        .ok_or(NetworkAdmissionError::RequestMismatch)?;
+    BrokerAssignment::new(
+        SandboxId::from_bytes(
+            fence
+                .sandbox_id
+                .as_slice()
+                .try_into()
+                .map_err(|_| NetworkAdmissionError::RequestMismatch)?,
+        ),
+        IncarnationId::from_bytes(
+            fence
+                .incarnation_id
+                .as_slice()
+                .try_into()
+                .map_err(|_| NetworkAdmissionError::RequestMismatch)?,
+        ),
+        AssignmentEpoch::new(fence.assignment_epoch),
+        DesiredGeneration::new(fence.desired_generation),
+        ObjectDigest::from_bytes(
+            fence
+                .assignment_digest
+                .as_slice()
+                .try_into()
+                .map_err(|_| NetworkAdmissionError::RequestMismatch)?,
+        ),
+    )
+    .map_err(|_| NetworkAdmissionError::RequestMismatch)
+}
+
+pub(crate) fn decode_request_id(body: &[u8]) -> Result<[u8; 16], NetworkAdmissionError> {
+    let request = ApplyNetworkRequest::decode_from_slice(body)
+        .map_err(|_| NetworkAdmissionError::RequestMismatch)?;
+    let request_id: [u8; 16] = request
+        .header
+        .as_option()
+        .ok_or(NetworkAdmissionError::RequestMismatch)?
+        .request_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| NetworkAdmissionError::RequestMismatch)?;
+    if request_id == [0; 16] {
+        return Err(NetworkAdmissionError::RequestMismatch);
+    }
+
+    Ok(request_id)
+}

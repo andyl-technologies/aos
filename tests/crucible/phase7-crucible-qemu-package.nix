@@ -15,7 +15,7 @@
   qemuProbeFor = overrides:
     import ../../pkgs/emulation/qemu.nix ({
         inherit lib;
-        inherit (pkgs) bash buildPackages stdenv libcap-ng libusb1 libgcrypt gnutls fuse3;
+        inherit (pkgs) bash buildPackages stdenv libcap-ng libusb1 libgcrypt gnutls fuse3 gcc-libs;
         mkDerivation = args: let
           passthru = args.passthru or {};
         in
@@ -106,8 +106,12 @@
     ]
     ++ failuresFor "pkgs/default.nix" pkgsDefault [
       {
+        label = "QEMU package wrapper imports the source recipe";
+        needle = "package = callPackage ./emulation/qemu.nix args;";
+      }
+      {
         label = "qemu-crucible explicit package override";
-        needle = "qemu-crucible = callPackage ./emulation/qemu.nix";
+        needle = "qemu-crucible = mkQemuPackage {";
       }
       {
         label = "qemu-crucible package name";
@@ -123,7 +127,7 @@
       }
       {
         label = "qemu-crucible-reference package";
-        needle = "qemu-crucible-reference = callPackage ./emulation/qemu.nix";
+        needle = "qemu-crucible-reference = mkQemuPackage {";
       }
       {
         label = "qemu-crucible-reference patch opt-out";

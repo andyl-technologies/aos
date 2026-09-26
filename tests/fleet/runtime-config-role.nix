@@ -26,9 +26,13 @@
         aos.image.allowTestArtifacts = true;
         # Host-selectable OpenSSH/chrony closures plus the control agent make
         # this acceptance image larger than the production golden-image gate.
-        # The measured fixture root occupies 666 MiB; retain the separate
-        # production publication contract.
-        aos.image.budgets.maxRootMiB = 704;
+        # The measured fixture root occupies 666 MiB and its compressed disk
+        # occupies 769 MiB; retain the separate production publication
+        # contract while giving this acceptance-only image explicit headroom.
+        aos.image.budgets = {
+          maxRootMiB = 704;
+          maxDownloadMiB = 800;
+        };
         aos.image.erofsCompressionLevel = 1;
       }
     ];

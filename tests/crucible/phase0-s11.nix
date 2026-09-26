@@ -35,6 +35,13 @@
   skipUnlessBuilt ? null,
 }: let
   boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
+  # The deployed kernel's DEBUG_WX page-table walk can consume the fixed S11
+  # instruction horizon before PID 1 starts. S11 tests RR scheduling, not the
+  # kernel's boot-time W^X diagnostic, so keep that check in the deployed
+  # kernel while excluding it from this deterministic guest fixture.
+  s11Kernel = pkgs.linuxWith ''
+    # CONFIG_DEBUG_WX is not set
+  '';
   workload = pkgs.mkDerivation {
     pname = "crucible-phase0-s11-workload";
     version = "0";
@@ -366,7 +373,7 @@ in
         ++ lib.optionals (execBoundaryPluginPackage != null) [execBoundaryPluginPackage];
 
       INITRAMFS = "${initramfs}/initrd.img";
-      KERNEL = builtins.toString pkgs.linux;
+      KERNEL = builtins.toString s11Kernel;
       QEMU = "${qemuPackage}/bin/qemu-system-x86_64";
       QEMU_DATA_DIR = qemuDataDir;
       PLUGIN = "${tracePluginPackage}/lib/qemu/plugins/crucible-qemu-trace-plugin.so";

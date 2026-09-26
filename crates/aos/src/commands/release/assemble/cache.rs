@@ -4,11 +4,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context as _, Result};
-use aos_core::nar::cache::{canonical_sha256_hex, NarInfoSigner};
+use anyhow::{Context as _, Result, bail};
+use aos_core::nar::cache::{NarInfoSigner, canonical_sha256_hex};
 use aos_core::nar::info::{self, NarInfo};
 use aos_release::artifact::{
-    require_store_path, ArtifactKind, ArtifactRelation, ArtifactRelationship, Compression,
+    ArtifactKind, ArtifactRelation, ArtifactRelationship, Compression, require_store_path,
 };
 use aos_release::build::BuildReportV1;
 use aos_release::digest::Sha256Digest;
@@ -507,9 +507,11 @@ mod tests {
         let Err(error) = assemble(invalid_cache.path(), &empty_report(), &key, &mut payload) else {
             panic!("cache assembly should reject a false compressed identity");
         };
-        assert!(error
-            .to_string()
-            .contains("differs from its finalized identity"));
+        assert!(
+            error
+                .to_string()
+                .contains("differs from its finalized identity")
+        );
         Ok(())
     }
 

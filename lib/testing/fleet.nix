@@ -32,7 +32,35 @@
   pkgs,
   lib,
 }: let
+  # Fleet systems and their runtime closures come from `pkgs`, whose host
+  # platform is the guest architecture during a cross build. Everything that
+  # executes in the derivation sandbox must instead come from buildPackages.
+  hostPkgs = pkgs.buildPackages;
   vmLib = import ./vm.nix {inherit pkgs lib;};
+
+  guestArchitecture = pkgs.stdenv.hostPlatform.constraints.cpu;
+  qemuPlatforms = {
+    x86_64 = {
+      qemuBinary = "qemu-system-x86_64";
+      machineType = "q35";
+      acceleration = "kvm";
+      cpuModel = "host";
+      console = "ttyS0";
+    };
+    aarch64 = {
+      qemuBinary = "qemu-system-aarch64";
+      machineType = "virt";
+      acceleration = "tcg";
+      # This Armv8.0 baseline is already used by the repository's packaged
+      # AArch64 QEMU execution gates. Later ISA extensions remain optional.
+      cpuModel = "cortex-a57";
+      console = "ttyAMA0";
+    };
+  };
+  qemuPlatform =
+    if builtins.hasAttr guestArchitecture qemuPlatforms
+    then builtins.getAttr guestArchitecture qemuPlatforms
+    else throw "fleet: unsupported guest architecture '${guestArchitecture}'";
   # ── MAC scheme (mirrors NixOS qemu-common.nix) ─────────────────────
   # 52:54:00:12:<vlan>:<machine>. The fleet's primary mcast NIC uses
   # vlan byte 0 (in keeping with the original convention here). The
@@ -55,10 +83,11 @@
   # interpolation only) and keeping it as a stable per-machine field
   # avoids parameterising downstream helpers on the mode.
   #
-  # The guest agent reaches every fleet machine one of two ways: baked into
+  # Machines that expect the guest agent receive it one of two ways: baked into
   # the /var seed (kernel boot + `varProvisioning = "baked"`, the default), or
   # through a test-only unit baked into the effective system for image/repart
-  # boots that ship no seed. The latter references the bundled agent payload
+  # boots that ship no seed. Serial-only negative tests set `expectAgent = false`
+  # and carry no agent payload. The image path references a bundled payload
   # directly; it is intentionally not placed in the runtime package seed,
   # because host evaluation would otherwise need a registry entry for test
   # infrastructure before the harness could establish its control channel.
@@ -70,13 +99,14 @@
       bootMode = m.bootMode or "kernel";
       varProvisioning = m.varProvisioning or "baked";
       packages = m.packages or [];
+      expectAgent = m.expectAgent or true;
       # `baked` /var seeds the agent at build time; every other shape uses
       # the test-only unit added by `mkNewpathModule` below.
       bakesAgent = bootMode == "kernel" && varProvisioning == "baked";
       agentBundled = m.system.config.aos.packages.aos-test-agent.bundle or false;
       seedPackages = builtins.filter (package: package != "aos-test-agent") packages;
       checkedPackages =
-        if bakesAgent || agentBundled
+        if !expectAgent || bakesAgent || agentBundled
         then seedPackages
         else
           throw ''
@@ -100,9 +130,11 @@
       varSizeMiB = m.varSizeMiB or 256;
       imageDiskMiB = m.imageDiskMiB or 40960;
       extraDisks = m.extraDisks or [];
-      expectAgent = m.expectAgent or true;
+      inherit expectAgent;
       memoryMiB = m.memoryMiB or 2048;
       tpm = m.tpm or false;
+      firmwareVars = m.firmwareVars or null;
+      exportFirmwareVars = m.exportFirmwareVars or false;
       hostAliases = m.hostAliases or [];
       name = mname;
       ip = "192.168.50.${toString (i + 10)}";
@@ -124,6 +156,21 @@
           " ${lib.concatStringsSep " " m.hostAliases}"
       )
       machinesWithIndex);
+
+  # Firmware variable stores are host-side paths and optional test outputs.
+  # Reject invalid combinations before the harness evaluates any VM closure.
+  validateFirmwareVarsMachine = machine:
+    if machine.firmwareVars != null && machine.bootMode != "image"
+    then throw "fleet: firmwareVars is valid only for image-boot machines"
+    else if machine.exportFirmwareVars && machine.bootMode != "image"
+    then throw "fleet: exportFirmwareVars is valid only for image-boot machines"
+    else if
+      machine.exportFirmwareVars
+      && builtins.match "[A-Za-z_][A-Za-z0-9_]*" machine.name == null
+    then
+      throw
+      "fleet: firmware-vars export requires a safe machine basename"
+    else machine;
 
   # ── Per-machine identity module (baked via extendModules) ──────────
   # Bakes each machine's identity into the image.
@@ -152,7 +199,7 @@
   }: let
     agentPackage = config.aos.packages.aos-test-agent.package or pkgs.aos-test-agent;
     agentPath = "${agentPackage}/share/aos-test-agent/aos-test-agent";
-    runtimeAgentUnit = pkgs.writeTextFile {
+    runtimeAgentUnit = hostPkgs.writeTextFile {
       name = "aos-fleet-test-agent-runtime-unit";
       destination = "/aos-test-agent.service";
       text = ''
@@ -265,7 +312,7 @@
         [
           (mkNewpathModule {
             inherit m hostsEntries sshAuthorizedKey;
-            bakeAgentUnit = !m.bakesAgent;
+            bakeAgentUnit = m.expectAgent && !m.bakesAgent;
           })
         ]
         # A baked-/var kernel machine already carries the fleet control agent
@@ -298,8 +345,8 @@
         compressedImage = effectiveSystem.config.system.build.image.raw;
         compressedImageName = "aos-${effectiveSystem.config.aos.system.name}.img.zst";
         imageDisk =
-          pkgs.runCommand "aos-fleet-${m.name}-image-disk" {
-            buildDeps = [pkgs.zstd];
+          hostPkgs.runCommand "aos-fleet-${m.name}-image-disk" {
+            buildDeps = [hostPkgs.zstd];
           } ''
             mkdir -p "$out"
             zstd -d --sparse --no-progress \
@@ -315,7 +362,7 @@
           builtins.map
           (name: {
             inherit name;
-            source = pkgs.writeTextFile {
+            source = hostPkgs.writeTextFile {
               name = "aos-fleet-${m.name}-metadata-${name}";
               text = m.metadata.${name};
               destination = "/value";
@@ -334,15 +381,15 @@
           else if metadataFiles == []
           then null
           else
-            pkgs.runCommand "aos-fleet-${m.name}-metadata" {
-              buildDeps = [pkgs.libisoburn];
+            hostPkgs.runCommand "aos-fleet-${m.name}-metadata" {
+              buildDeps = [hostPkgs.libisoburn];
             } ''
               mkdir -p "$out/tree"
               ${lib.concatMapStringsSep "\n" (file: ''
                   cp ${file.source}/value "$out/tree/${file.name}"
                 '')
                 metadataFiles}
-              ${pkgs.libisoburn}/bin/xorriso -as mkisofs \
+              ${hostPkgs.libisoburn}/bin/xorriso -as mkisofs \
                 -V aos-metadata \
                 -o "$out/metadata.iso" \
                 "$out/tree"
@@ -360,7 +407,24 @@
           m.extraDisks;
       in
         {
-          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB expectAgent hostStoreMount;
+          inherit
+            (m)
+            name
+            ip
+            mac
+            debugMac
+            index
+            packages
+            bootMode
+            tpm
+            firmwareVars
+            exportFirmwareVars
+            varProvisioning
+            varSizeMiB
+            memoryMiB
+            expectAgent
+            hostStoreMount
+            ;
           extraDisks = resolvedExtraDisks;
           inherit metadataISO;
           system = effectiveSystem;
@@ -394,9 +458,21 @@
     bootTimeout = spec.bootTimeout or null;
     systemReadyTimeout = spec.systemReadyTimeout or null;
 
-    machinesWithIndex = mkMachinesWithIndex machines;
+    machinesWithIndex = builtins.map validateFirmwareVarsMachine (mkMachinesWithIndex machines);
     hostsEntries = mkHostsEntries machinesWithIndex;
     machineBuilds = mkMachineBuilds {inherit machinesWithIndex hostsEntries;};
+    validateMachinePlatform = machine:
+      if
+        guestArchitecture
+        == "aarch64"
+        && (machine.bootMode == "image" || machine.tpm)
+      then
+        throw ''
+          fleet: the aarch64 QEMU profile supports direct-kernel, TPM-less
+          functional tests only. Persistent UEFI/TPM qualification remains a
+          separate release gate.
+        ''
+      else machine;
 
     # Driver manifest. One entry per fleet machine; transport pinned to
     # qemu. The driver consumes this JSON and starts each VM in order,
@@ -419,15 +495,22 @@
               {
                 inherit (mb) name mac ip;
                 transport = "qemu";
+                architecture = guestArchitecture;
+                qemu_binary = qemuPlatform.qemuBinary;
+                machine_type = qemuPlatform.machineType;
+                acceleration = qemuPlatform.acceleration;
+                cpu_model = qemuPlatform.cpuModel;
+                console = qemuPlatform.console;
                 memory_mib = mb.memoryMiB;
                 vcpu_count = 2;
                 # vTPM (RFC-0006 phase 3): when set, the driver launches a
                 # per-machine swtpm and wires QEMU's tpm-tis to it.
                 tpm = mb.tpm;
                 expect_agent = mb.expectAgent;
+                export_firmware_vars = mb.exportFirmwareVars;
                 extra_disks = mb.extraDisks;
                 host_store_mount = mb.hostStoreMount;
-                swtpm_bin = "${pkgs.swtpm}/bin/swtpm";
+                swtpm_bin = "${hostPkgs.swtpm}/bin/swtpm";
               }
               // (
                 if mb.bootMode == "image"
@@ -438,7 +521,10 @@
                   # Identity is baked into the image /etc, so no fw_cfg channel.
                   fw_cfg = null;
                   firmware_code = "${pkgs.edk2}/FV/OVMF_CODE.fd";
-                  firmware_vars = "${pkgs.edk2}/FV/OVMF_VARS.fd";
+                  firmware_vars =
+                    if mb.firmwareVars == null
+                    then "${pkgs.edk2}/FV/OVMF_VARS.fd"
+                    else mb.firmwareVars;
                   metadata =
                     if mb.metadataISO == null
                     then null
@@ -463,14 +549,14 @@
                   })
               )
           )
-          machineBuilds;
+          (builtins.map validateMachinePlatform machineBuilds);
       };
-    manifestFile = pkgs.writeTextFile {
+    manifestFile = hostPkgs.writeTextFile {
       name = "aos-fleet-test-${name}-manifest.json";
       text = builtins.toJSON manifest;
       destination = "/manifest.json";
     };
-    testPyFile = pkgs.writeTextFile {
+    testPyFile = hostPkgs.writeTextFile {
       name = "aos-fleet-test-${name}-test.py";
       text = testScript;
       destination = "/test.py";
@@ -489,31 +575,56 @@
       cp ${manifestFile}/manifest.json "$TMPDIR/manifest.json"
       cp ${testPyFile}/test.py         "$TMPDIR/test.py"
 
-      ${pkgs.aos-test-driver}/bin/aos-test-driver \
+      ${hostPkgs.aos-test-driver}/bin/aos-test-driver \
         --manifest "$TMPDIR/manifest.json" \
         --test     "$TMPDIR/test.py"
 
+      # The driver's export-aware shutdown waits for a natural QEMU exit, so
+      # writable pflash is closed before we inspect and preserve it.
       mkdir -p "$out"
+      ${lib.concatMapStringsSep "\n" (machine:
+        lib.optionalString machine.exportFirmwareVars ''
+          firmware_vars="$TMPDIR/${machine.name}-OVMF_VARS.fd"
+          if [ ! -f "$firmware_vars" ] || [ -L "$firmware_vars" ]; then
+            echo "fleet: missing regular firmware-vars result for ${machine.name}" >&2
+            exit 1
+          fi
+
+          expected_size=$(${hostPkgs.coreutils}/bin/stat -c %s ${lib.escapeShellArg (
+            if machine.firmwareVars == null
+            then "${pkgs.edk2}/FV/OVMF_VARS.fd"
+            else machine.firmwareVars
+          )})
+          actual_size=$(${hostPkgs.coreutils}/bin/stat -c %s "$firmware_vars")
+          if [ "$actual_size" -ne "$expected_size" ]; then
+            echo "fleet: firmware-vars result for ${machine.name} changed size" >&2
+            exit 1
+          fi
+
+          ${hostPkgs.coreutils}/bin/install -m 0444 "$firmware_vars" \
+            "$out/${machine.name}-OVMF_VARS.fd"
+        '')
+      machinesWithIndex}
       for log in "$TMPDIR"/*-serial.log "$TMPDIR"/*-qemu.log; do
         [ -f "$log" ] && cp "$log" "$out/"
       done
       echo PASS > "$out/result"
     '';
 
-    testDrv = pkgs.mkDerivation {
+    testDrv = hostPkgs.mkDerivation {
       pname = "aos-fleet-test-${name}";
       version = "0";
       src = null;
 
       buildDeps = [
-        pkgs.coreutils
-        pkgs.qemu
-        pkgs.socat
-        pkgs.python3
-        pkgs.aos-test-driver
+        hostPkgs.coreutils
+        hostPkgs.qemu
+        hostPkgs.socat
+        hostPkgs.python3
+        hostPkgs.aos-test-driver
         # sgdisk — the driver relocates the GPT backup header after
         # growing an image-boot machine's per-run disk copy.
-        pkgs.gptfdisk
+        hostPkgs.gptfdisk
       ];
 
       phases = [
@@ -523,7 +634,7 @@
         }
       ];
 
-      requiredSystemFeatures = ["kvm"];
+      requiredSystemFeatures = lib.optional (qemuPlatform.acceleration == "kvm") "kvm";
     };
   in
     # Attach `driverInteractive` as a function on the test derivation —
@@ -534,7 +645,13 @@
     testDrv
     // {
       driverInteractive = sshAuthorizedKey:
-        mkFleetTestInteractive {inherit spec sshAuthorizedKey;};
+        if guestArchitecture != "x86_64"
+        then
+          throw ''
+            fleet: interactive mode supports only x86_64; the aarch64 profile
+            is a sandboxed direct-kernel TCG qualification path
+          ''
+        else mkFleetTestInteractive {inherit spec sshAuthorizedKey;};
     };
 
   # ============================================================
@@ -807,5 +924,5 @@
       ];
     };
 in {
-  inherit mkFleetTest mkFleetTestInteractive uriEncode dataUrl;
+  inherit mkFleetTest mkFleetTestInteractive validateFirmwareVarsMachine uriEncode dataUrl;
 }

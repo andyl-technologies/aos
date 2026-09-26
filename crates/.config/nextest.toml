@@ -22,6 +22,29 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 filter = 'test(apr_release_channel_upload_supports_verified_consumer_sync)'
 threads-required = "num-test-threads"
 
+# These registry integration tests perform many signed Git operations or
+# fetch complete channel partitions. Each completed well below its deadline
+# when run alone, but timed out while sharing the full workspace check.
+[[profile.default.overrides]]
+filter = 'test(apr_add_authoring_clone_supports_release_upload_workflow)'
+threads-required = "num-test-threads"
+
+[[profile.default.overrides]]
+filter = 'test(signed_apr_release_admits_and_publishes_the_staged_graph)'
+threads-required = "num-test-threads"
+
+[[profile.default.overrides]]
+filter = 'test(signed_static_registry_lists_selects_downloads_and_preserves_trust)'
+threads-required = "num-test-threads"
+
+[[profile.default.overrides]]
+filter = 'test(retirement_resign_rotates_release_and_partition_signatures)'
+threads-required = "num-test-threads"
+
+[[profile.default.overrides]]
+filter = 'test(release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer)'
+threads-required = "num-test-threads"
+
 # This end-to-end registry test deliberately cancels an in-flight upload and
 # waits for the server-side transaction to release before issuing DELETE. Keep
 # it isolated so unrelated I/O-heavy tests cannot consume its bounded retry

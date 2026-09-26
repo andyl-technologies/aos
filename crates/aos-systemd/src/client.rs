@@ -7,6 +7,7 @@
 //! signal stream continuously, dodging the "stream not polled" hang.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -105,6 +106,20 @@ pub struct FailedUnit {
     pub status_dump: String,
 }
 
+/// Reports one stable manager observation of an active service's cgroup locator.
+///
+/// The path and PID are not kernel authority. A consumer must open the cgroup
+/// beneath a trusted cgroup-v2 root and verify the pinned PID's exact membership.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServiceControlGroupObservation {
+    /// Systemd's cgroup path relative to the cgroup-v2 root, with a leading slash.
+    pub control_group: String,
+    /// Service main PID observed before and after its cgroup property.
+    pub main_pid: NonZeroU32,
+    /// Current systemd activation identity observed before and after.
+    pub invocation_id: [u8; 16],
+}
+
 /// Result of a post-run failed-unit scan.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FailedUnitsReport {
@@ -171,8 +186,8 @@ struct JobRegistry {
 
 /// Typed async client for `org.freedesktop.systemd1`.
 pub struct SystemdClient {
-    conn: zbus::Connection,
-    manager: ManagerProxy<'static>,
+    pub(crate) conn: zbus::Connection,
+    pub(crate) manager: ManagerProxy<'static>,
     jobs: Arc<Mutex<JobRegistry>>,
     reloading: Arc<AtomicBool>,
     /// One tick per observed `JobRemoved`, regardless of whether a waiter was
@@ -373,7 +388,7 @@ impl SystemdClient {
     /// is no caller-side timeout — per switch-to-configuration-ng's contract,
     /// "this job is in flight; we wait for systemd's answer." Callers wanting
     /// an upper bound wrap this in `tokio::time::timeout` themselves.
-    async fn await_job(&self, path: OwnedObjectPath) -> Result<JobOutcome> {
+    pub(crate) async fn await_job(&self, path: OwnedObjectPath) -> Result<JobOutcome> {
         let path_key = path.as_str().to_owned();
         let rx = {
             let mut reg = self.jobs.lock().unwrap();
@@ -490,6 +505,178 @@ impl SystemdClient {
         let iface = zbus::names::InterfaceName::try_from("org.freedesktop.systemd1.Unit")
             .expect("static interface name is valid");
         Ok(props.get(iface, prop).await?)
+    }
+
+    /// Reads service properties from one PID 1-owned systemd bus generation.
+    ///
+    /// The manager destination is its unique bus name, not the replaceable
+    /// well-known name. The owner and service identity are checked on both
+    /// sides of the read; callers still recheck any kernel objects they pin.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-service name, a manager not owned by PID 1, an inactive
+    /// or changing service, an absent property, or any D-Bus failure.
+    pub async fn observe_pid1_service_properties(
+        &self,
+        name: &str,
+        expected_main_pid: u32,
+        properties: &[&str],
+    ) -> Result<Vec<OwnedValue>> {
+        if !name.ends_with(".service") || name.contains('/') || name.contains('\0') {
+            return Err(Error::InvalidSandboxUnit(
+                "service name is not an exact unit name".to_owned(),
+            ));
+        }
+        if expected_main_pid == 0 {
+            return Err(Error::InvalidSandboxUnit(
+                "service main PID is absent".to_owned(),
+            ));
+        }
+
+        let bus = zbus::fdo::DBusProxy::new(&self.conn).await?;
+        let manager_name = zbus::names::BusName::try_from("org.freedesktop.systemd1")
+            .map_err(|error| Error::InvalidSandboxUnit(error.to_string()))?;
+        let owner = bus.get_name_owner(manager_name.clone()).await?;
+        if bus
+            .get_connection_unix_process_id(owner.as_str().try_into().map_err(
+                |error: zbus::names::Error| Error::InvalidSandboxUnit(error.to_string()),
+            )?)
+            .await?
+            != 1
+        {
+            return Err(Error::InvalidSandboxUnit(
+                "systemd bus owner is not PID 1".to_owned(),
+            ));
+        }
+
+        let manager = ManagerProxy::builder(&self.conn)
+            .destination(owner.clone())?
+            .build()
+            .await?;
+        let path = manager.get_unit(name).await?;
+        let unit = UnitProxy::builder(&self.conn)
+            .destination(owner.clone())?
+            .path(path.clone())?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let service = ServiceProxy::builder(&self.conn)
+            .destination(owner.clone())?
+            .path(path.clone())?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let before = (
+            unit.id().await?,
+            unit.active_state().await?,
+            service.main_pid().await?,
+            unit.invocation_id().await?,
+        );
+
+        let property_proxy = zbus::fdo::PropertiesProxy::builder(&self.conn)
+            .destination(owner.clone())?
+            .path(path)?
+            .build()
+            .await?;
+        let interface = zbus::names::InterfaceName::try_from("org.freedesktop.systemd1.Service")
+            .map_err(|error| Error::InvalidSandboxUnit(error.to_string()))?;
+        let mut values = Vec::with_capacity(properties.len());
+        for property in properties {
+            values.push(property_proxy.get(interface.clone(), property).await?);
+        }
+
+        let after = (
+            unit.id().await?,
+            unit.active_state().await?,
+            service.main_pid().await?,
+            unit.invocation_id().await?,
+        );
+        if before != after
+            || before.0 != name
+            || before.1 != "active"
+            || before.2 != expected_main_pid
+            || before.3.len() != 16
+            || before.3.iter().all(|byte| *byte == 0)
+            || bus.get_name_owner(manager_name).await? != owner
+        {
+            return Err(Error::InvalidSandboxUnit(
+                "PID 1 service changed during property readback".to_owned(),
+            ));
+        }
+        Ok(values)
+    }
+
+    /// Observes an active service's exact unit, invocation, main PID, and cgroup.
+    ///
+    /// The returned path is only a locator. Consumers must retain and validate
+    /// the kernel cgroup object and PID separately; a service restart after this
+    /// call does not preserve either observation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a missing, inactive, substituted, or changing service, an
+    /// invalid cgroup path or invocation, or a D-Bus exchange failure.
+    pub async fn observe_service_control_group(
+        &self,
+        name: &str,
+    ) -> Result<ServiceControlGroupObservation> {
+        if !name.ends_with(".service") || name.contains('/') || name.contains('\0') {
+            return Err(Error::InvalidSandboxUnit(
+                "service name is not an exact unit name".to_owned(),
+            ));
+        }
+        let path = self.manager.get_unit(name).await?;
+        let unit = UnitProxy::builder(&self.conn)
+            .path(path.clone())?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let service = ServiceProxy::builder(&self.conn)
+            .path(path)?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+
+        let id_before = unit.id().await?;
+        let invocation_before = unit.invocation_id().await?;
+        let active_before = unit.active_state().await?;
+        let pid_before = service.main_pid().await?;
+        let control_group = service.control_group().await?;
+        let pid_after = service.main_pid().await?;
+        let active_after = unit.active_state().await?;
+        let invocation_after = unit.invocation_id().await?;
+        let id_after = unit.id().await?;
+
+        let invocation_id: [u8; 16] = invocation_before
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::InvalidSandboxUnit("service invocation is invalid".to_owned()))?;
+        let main_pid = NonZeroU32::new(pid_before)
+            .ok_or_else(|| Error::InvalidSandboxUnit("service main PID is absent".to_owned()))?;
+        let path_is_normalized = control_group.len() <= 4096
+            && control_group.starts_with('/')
+            && control_group.split('/').skip(1).all(|part| {
+                !part.is_empty() && part != "." && part != ".." && !part.contains('\0')
+            });
+        if id_before != name
+            || id_after != name
+            || invocation_id == [0; 16]
+            || invocation_before != invocation_after
+            || active_before != "active"
+            || active_after != "active"
+            || pid_before != pid_after
+            || !path_is_normalized
+        {
+            return Err(Error::InvalidSandboxUnit(
+                "service identity or cgroup changed during observation".to_owned(),
+            ));
+        }
+        Ok(ServiceControlGroupObservation {
+            control_group,
+            main_pid,
+            invocation_id,
+        })
     }
 
     /// List units filtered by active states and shell-glob name patterns;

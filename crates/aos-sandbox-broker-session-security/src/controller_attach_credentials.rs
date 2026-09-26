@@ -1,0 +1,285 @@
+//! Dedicated controller credentials for signed public OpenSSH attachment.
+//!
+//! The grant seed and user CA key are loaded only from fixed systemd names.
+//! The compact Host trust credential is checked byte for byte before its
+//! digest enters a grant; no public request supplies route or signing data.
+//!
+//! ```text
+//! openssh-attach-grant-signing-key = 32 raw Ed25519 seed bytes
+//! openssh-attach-grant-public-key = 32 raw Ed25519 public key bytes
+//! openssh-attach-ca-signing-key = unencrypted Ed25519 OpenSSH private key
+//! openssh-attach-trust.json = canonical AOSHAT01 deployment trust JSON
+//! ```
+
+use std::path::Path;
+
+use aos_sandbox::attach_route_issuer::OpenSshAttachRouteIssuerV1;
+use aos_sandbox::public_attach_pending::PublicAttachPendingV1;
+use aos_sandbox_agent::openssh_gate::OpenSshGateBindingV1;
+use aos_sandbox_agent::openssh_gate_linux::expected_openssh_gate_config_v1;
+use ed25519_dalek::SigningKey;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+use ssh_key::{Algorithm, PublicKey};
+use zeroize::Zeroizing;
+
+use crate::fixed_role_credential::{
+    CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
+};
+
+const GRANT_SIGNING_KEY: &str = "openssh-attach-grant-signing-key";
+const GRANT_PUBLIC_KEY: &str = "openssh-attach-grant-public-key";
+const CA_SIGNING_KEY: &str = "openssh-attach-ca-signing-key";
+const TRUST: &str = "openssh-attach-trust.json";
+const TRUST_MAGIC: &str = "AOSHAT01";
+const MAXIMUM_CA_BYTES: usize = 8 * 1024;
+const MAXIMUM_TRUST_BYTES: usize = 2048;
+const MAXIMUM_HOST_BYTES: usize = 255;
+const MAXIMUM_USER_BYTES: usize = 32;
+const MAXIMUM_KEY_BYTES: usize = 128;
+
+/// Owns the independent signing inputs for one controller worker.
+pub(crate) struct ControllerAttachCredentialsV1 {
+    grant_seed: Zeroizing<[u8; 32]>,
+    issuer: OpenSshAttachRouteIssuerV1,
+    trust_digest: [u8; 32],
+    trust: DeploymentTrustV1,
+}
+
+/// Reports incomplete or unsafe dedicated attach credentials.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum ControllerAttachCredentialErrorV1 {
+    /// One of the required protected credentials is missing or invalid.
+    #[error("controller OpenSSH attach credentials are unavailable or invalid")]
+    Invalid,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DeploymentTrustV1 {
+    magic: String,
+    host: String,
+    port: u16,
+    user: String,
+    host_public_key: String,
+    trusted_user_ca_public_key: String,
+}
+
+impl ControllerAttachCredentialsV1 {
+    /// Loads the complete optional credential set from systemd custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unsafe directory or any incomplete, malformed, or mismatched
+    /// set. An entirely absent set leaves public ATTACH unavailable.
+    pub(crate) fn from_process_credentials_optional()
+    -> Result<Option<Self>, ControllerAttachCredentialErrorV1> {
+        let Some(directory) = std::env::var_os("CREDENTIALS_DIRECTORY") else {
+            return Ok(None);
+        };
+        let directory = Path::new(&directory);
+        if !directory.is_absolute() {
+            return Err(ControllerAttachCredentialErrorV1::Invalid);
+        }
+        let Some(grant_seed) = read_credential(directory, GRANT_SIGNING_KEY, 32)? else {
+            if read_credential(directory, GRANT_PUBLIC_KEY, 32)?.is_some()
+                || read_credential(directory, CA_SIGNING_KEY, MAXIMUM_CA_BYTES)?.is_some()
+                || read_credential(directory, TRUST, MAXIMUM_TRUST_BYTES)?.is_some()
+            {
+                return Err(ControllerAttachCredentialErrorV1::Invalid);
+            }
+            return Ok(None);
+        };
+        let grant_seed: [u8; 32] = grant_seed
+            .as_slice()
+            .try_into()
+            .map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?;
+        let grant_seed = Zeroizing::new(grant_seed);
+        let expected_public: [u8; 32] = read_required(directory, GRANT_PUBLIC_KEY, 32)?
+            .as_slice()
+            .try_into()
+            .map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?;
+        if SigningKey::from_bytes(&grant_seed)
+            .verifying_key()
+            .to_bytes()
+            != expected_public
+        {
+            return Err(ControllerAttachCredentialErrorV1::Invalid);
+        }
+
+        let ca_key = Zeroizing::new(read_required(directory, CA_SIGNING_KEY, MAXIMUM_CA_BYTES)?);
+        let issuer = OpenSshAttachRouteIssuerV1::new(&ca_key)
+            .map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?;
+        let trust_bytes = read_required(directory, TRUST, MAXIMUM_TRUST_BYTES)?;
+        let trust = parse_deployment_trust(&trust_bytes)?;
+        let trust_digest = Sha256::digest(&trust_bytes).into();
+
+        Ok(Some(Self {
+            grant_seed,
+            issuer,
+            trust_digest,
+            trust,
+        }))
+    }
+
+    /// Returns a short-lived signer value for one protected grant operation.
+    pub(crate) fn signing_key(&self) -> SigningKey {
+        SigningKey::from_bytes(&self.grant_seed)
+    }
+
+    /// Returns the protected CA issuer used only after Host gate readback.
+    pub(crate) const fn issuer(&self) -> &OpenSshAttachRouteIssuerV1 {
+        &self.issuer
+    }
+
+    /// Returns the exact deployed Host trust credential commitment.
+    pub(crate) const fn trust_digest(&self) -> [u8; 32] {
+        self.trust_digest
+    }
+
+    /// Checks an authenticated Host route against the deployed static pins.
+    #[must_use]
+    pub(crate) fn matches_route_pins(
+        &self,
+        host: &str,
+        port: u16,
+        user: &str,
+        host_public_key: &[u8],
+        trusted_user_ca_public_key: &[u8],
+    ) -> bool {
+        self.trust.host == host
+            && self.trust.port == port
+            && self.trust.user == user
+            && self.trust.host_public_key.as_bytes() == host_public_key
+            && self.trust.trusted_user_ca_public_key.as_bytes() == trusted_user_ca_public_key
+    }
+
+    /// Derives the expected gate configuration for this protected operation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a malformed pending binding or static deployment trust value.
+    pub(crate) fn gate_config_digest(
+        &self,
+        pending: &PublicAttachPendingV1,
+    ) -> Result<[u8; 32], ControllerAttachCredentialErrorV1> {
+        let binding = OpenSshGateBindingV1 {
+            attach_operation_id: *pending.operation_id().as_bytes(),
+            execution_id: pending.execution_id(),
+            incarnation_id: pending.sandbox_incarnation_id(),
+            assignment_epoch: pending.assignment_epoch(),
+            principal_id: pending.principal_id(),
+            audit_id: pending.audit_id(),
+            user: self.trust.user.clone(),
+            port: self.trust.port,
+            host_public_key: self.trust.host_public_key.clone(),
+            trusted_user_ca_public_key: self.trust.trusted_user_ca_public_key.clone(),
+            expires_at: pending.expires_at(),
+            // The generator validates this field but does not include it in
+            // the config, so a nonzero sentinel breaks the digest cycle.
+            gate_config_digest: [1; 32],
+        };
+        let configuration = expected_openssh_gate_config_v1(&binding)
+            .map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?;
+        Ok(Sha256::digest(configuration).into())
+    }
+}
+
+fn parse_deployment_trust(
+    bytes: &[u8],
+) -> Result<DeploymentTrustV1, ControllerAttachCredentialErrorV1> {
+    let trust: DeploymentTrustV1 =
+        serde_json::from_slice(bytes).map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?;
+    if trust.magic != TRUST_MAGIC
+        || !valid_host(&trust.host)
+        || trust.port == 0
+        || !valid_user(&trust.user)
+        || !canonical_ed25519_key(&trust.host_public_key)
+        || !canonical_ed25519_key(&trust.trusted_user_ca_public_key)
+        || serde_json::to_vec(&trust).map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?
+            != bytes
+    {
+        return Err(ControllerAttachCredentialErrorV1::Invalid);
+    }
+    Ok(trust)
+}
+
+fn valid_host(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= MAXIMUM_HOST_BYTES
+        && host.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':' | b'[' | b']')
+        })
+        && !host.starts_with('-')
+}
+
+fn valid_user(user: &str) -> bool {
+    !user.is_empty()
+        && user.len() <= MAXIMUM_USER_BYTES
+        && user.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || byte == b'_' || (index != 0 && byte == b'-')
+        })
+}
+
+fn canonical_ed25519_key(line: &str) -> bool {
+    if line.len() > MAXIMUM_KEY_BYTES {
+        return false;
+    }
+    let Ok(key) = PublicKey::from_openssh(line) else {
+        return false;
+    };
+    key.algorithm() == Algorithm::Ed25519
+        && key.comment().is_empty()
+        && key.to_openssh().is_ok_and(|encoded| encoded == line)
+}
+
+fn read_required(
+    directory: &Path,
+    name: &str,
+    maximum: usize,
+) -> Result<Vec<u8>, ControllerAttachCredentialErrorV1> {
+    read_credential(directory, name, maximum)?.ok_or(ControllerAttachCredentialErrorV1::Invalid)
+}
+
+fn read_credential(
+    directory: &Path,
+    name: &str,
+    maximum: usize,
+) -> Result<Option<Vec<u8>>, ControllerAttachCredentialErrorV1> {
+    read_optional_bounded_role_credential_v1(
+        directory,
+        name,
+        1,
+        maximum,
+        true,
+        CredentialOwnerPolicyV1::Any,
+    )
+    .map_err(|_| ControllerAttachCredentialErrorV1::Invalid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_deployment_trust;
+
+    const KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILM+rvN+ot98qgEN796jTiQfZfG1KaT0PtFDJ/XFSqti";
+
+    #[test]
+    fn deployment_trust_requires_exact_static_canonical_schema() {
+        let trust = format!(
+            "{{\"magic\":\"AOSHAT01\",\"host\":\"attach.example\",\"port\":2222,\"user\":\"aos\",\"host_public_key\":\"{KEY}\",\"trusted_user_ca_public_key\":\"{KEY}\"}}"
+        );
+
+        assert!(parse_deployment_trust(trust.as_bytes()).is_ok());
+        assert!(parse_deployment_trust(format!("{trust}\n").as_bytes()).is_err());
+        assert!(parse_deployment_trust(trust.replace("AOSHAT01", "AOSHAT02").as_bytes()).is_err());
+        assert!(
+            parse_deployment_trust(
+                trust
+                    .replace(",\"port\"", ",\"gate_config_digest\":[],\"port\"")
+                    .as_bytes()
+            )
+            .is_err()
+        );
+    }
+}

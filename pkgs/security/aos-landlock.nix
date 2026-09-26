@@ -91,6 +91,28 @@ mkDerivation {
           exit 1
         fi
 
+        printf readable > /tmp/aos-landlock-deny/readable
+        aos-landlock --require-abi 4 \
+          --fs-read / \
+          --fs-ro /nix/store \
+          -- ${pkgs.coreutils}/bin/cat /tmp/aos-landlock-deny/readable \
+          > /dev/null
+
+        # AOS coreutils dispatches by argv[0], so preserve the applet basename.
+        mkdir /tmp/aos-landlock-deny/copied
+        cp ${pkgs.coreutils}/bin/true /tmp/aos-landlock-deny/copied/true
+        aos-landlock --require-abi 4 \
+          --fs-ro / \
+          -- /tmp/aos-landlock-deny/copied/true
+
+        if aos-landlock --require-abi 4 \
+          --fs-read / \
+          --fs-ro /nix/store \
+          -- /tmp/aos-landlock-deny/copied/true; then
+          echo "FAIL: aos-landlock --fs-read unexpectedly granted execute" >&2
+          exit 1
+        fi
+
         echo "aos-landlock fs policy: PASS"
       '';
     };

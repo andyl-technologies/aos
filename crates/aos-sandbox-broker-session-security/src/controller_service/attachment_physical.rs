@@ -1,0 +1,1150 @@
+//! Reconciles protected attachment intent against fresh authenticated Mount state.
+//!
+//! The result is nonauthorizing. Ready still requires the existing protected
+//! post-attach verification record; this adapter never manufactures one from a
+//! successful Apply response or a public projection.
+
+use aos_proto::aos::sandbox::local::v1::{MountAction, MountSourceAcquisitionPhase};
+use aos_sandbox::Journal;
+use aos_sandbox::attachment_effect_owner::ProtectedAttachmentEffectOwnerV1;
+use aos_sandbox::attachment_mount::{
+    PreparedCurrentAttachmentMountCatalogQueryV1, PreparedCurrentAttachmentMountRecoveryV1,
+    PreparedCurrentAttachmentMountReplayCatalogQueryV1, PreparedCurrentAttachmentMountResumeV1,
+    PreparedCurrentAttachmentMountV1,
+};
+use aos_sandbox::attachment_reconciliation::AttachmentReconciliationActionV1;
+use aos_sandbox::attachment_source::{
+    AttachmentSourceActionV1, AttachmentSourceAttemptKindV1, AttachmentSourceBoundsV1,
+    CurrentAttachmentSourcePlanV1, DurableCurrentAttachmentSourceDispatchV1,
+};
+use aos_sandbox::attachment_state::AttachmentDesiredPresenceV1;
+use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox::runtime_scope::NamespaceTargetOutcome;
+use aos_sandbox_core::model::{AttachmentConsistency, AttachmentPresentation};
+use aos_sandbox_core::{AttachmentId, ObjectDigest, OperationId, RawPairedClockSample, SandboxId};
+
+use super::attachment_target::ControllerAttachmentTargetInputsV1;
+use super::{
+    ControllerBrokerPlanSignerV1, EffectFailure, EffectReceipt, ProductionEffectExecutor,
+    sample_ownership_clock,
+};
+
+pub(super) enum PendingAttachmentCatalogQueryV1 {
+    Initial(PreparedCurrentAttachmentMountCatalogQueryV1),
+    Replay(PreparedCurrentAttachmentMountReplayCatalogQueryV1),
+}
+
+impl PendingAttachmentCatalogQueryV1 {
+    fn query(&self) -> &aos_sandbox::mount_preparation::PreparedCurrentMountCatalogQueryV1 {
+        match self {
+            Self::Initial(query) => query.query(),
+            Self::Replay(query) => query.query(),
+        }
+    }
+
+    fn recheck(
+        &self,
+        journal: &mut Journal,
+    ) -> Result<(), aos_sandbox::attachment_mount::AttachmentMountError> {
+        let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
+        match self {
+            Self::Initial(query) => query.recheck(journal, &mut clock),
+            Self::Replay(query) => query.recheck(journal, &mut clock),
+        }
+    }
+}
+
+/// Reports only exact source/Mount terminal proof eligible for a public receipt.
+pub(super) enum VerifiedAttachmentPhysicalV1 {
+    Ready {
+        desired_digest: ObjectDigest,
+        acquisition_id: [u8; 32],
+        mount_handle: [u8; 32],
+        verification_digest: [u8; 32],
+    },
+    Released {
+        desired_digest: ObjectDigest,
+    },
+}
+
+impl VerifiedAttachmentPhysicalV1 {
+    /// Encodes a stable public receipt from exact protected terminal proof.
+    pub(super) fn receipt(self, operation: OperationId) -> Result<EffectReceipt, EffectFailure> {
+        let mut bytes = Vec::with_capacity(8 + 16 + 32 * 4);
+        match self {
+            Self::Ready {
+                desired_digest,
+                acquisition_id,
+                mount_handle,
+                verification_digest,
+            } => {
+                bytes.extend_from_slice(b"AOSATR01");
+                bytes.extend_from_slice(operation.as_bytes());
+                bytes.extend_from_slice(desired_digest.as_bytes());
+                bytes.extend_from_slice(&acquisition_id);
+                bytes.extend_from_slice(&mount_handle);
+                bytes.extend_from_slice(&verification_digest);
+            }
+            Self::Released { desired_digest } => {
+                bytes.extend_from_slice(b"AOSADL01");
+                bytes.extend_from_slice(operation.as_bytes());
+                bytes.extend_from_slice(desired_digest.as_bytes());
+            }
+        }
+        EffectReceipt::new(bytes).map_err(|error| EffectFailure::Permanent(error.to_string()))
+    }
+}
+
+pub(super) fn observe(
+    executor: &mut ProductionEffectExecutor,
+    operation: OperationId,
+    attachment: AttachmentId,
+    sandbox: SandboxId,
+    journal: &mut Journal,
+) -> Result<VerifiedAttachmentPhysicalV1, EffectFailure> {
+    if executor.pending_attachment_source_attempt.is_none()
+        && drain_pending_before_slot(executor, journal)?
+    {
+        return Err(retryable("fresh authenticated Mount inventory is pending"));
+    }
+
+    let host = executor
+        .attachment_host
+        .as_ref()
+        .ok_or_else(|| retryable("exact Host attachment identity is unavailable"))?;
+    let inputs =
+        ControllerAttachmentTargetInputsV1::from_protected_configuration(host, executor.node)
+            .map_err(|error| retryable(error.to_string()))?;
+    let target = match inputs
+        .acquire(journal, sandbox)
+        .map_err(|error| retryable(error.to_string()))?
+    {
+        NamespaceTargetOutcome::Current(target) => *target,
+        NamespaceTargetOutcome::AdvanceRequired(_) => {
+            return Err(retryable(
+                "attachment namespace assignment successor is pending",
+            ));
+        }
+    };
+
+    let mut owner = ProtectedAttachmentEffectOwnerV1::claim(journal)
+        .map_err(|error| retryable(error.to_string()))?;
+    let desired = owner
+        .operation(operation)
+        .map_err(|error| retryable(error.to_string()))?
+        .ok_or_else(|| retryable("protected attachment generation is pending"))?;
+    let current = owner
+        .current(attachment)
+        .map_err(|error| retryable(error.to_string()))?
+        .ok_or_else(|| retryable("current attachment generation is unavailable"))?;
+    if desired.record_digest() != current.record_digest() {
+        return Err(retryable("attachment generation has a protected successor"));
+    }
+    let desired_digest = desired.record_digest();
+    let live_source_owner = if desired.presence() == AttachmentDesiredPresenceV1::Present
+        && desired.intent().consistency() == AttachmentConsistency::LocalLive
+        && sample_ownership_clock()
+            .map_err(|error| retryable(error.to_string()))?
+            .wall_seconds()
+            < desired.intent().lease().expires_seconds()
+    {
+        Some(
+            owner
+                .local_live_source_owner(&desired)
+                .map_err(|error| retryable(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+
+    let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
+    let mut expired_acquire = owner
+        .begin_expired_source_acquire(&desired, &target, &mut clock)
+        .map_err(|error| retryable(error.to_string()))?;
+    if expired_acquire.as_ref().is_some_and(|expired| {
+        executor
+            .pending_attachment_source_attempt
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.source_attempt().operation_id() == expired.operation_id()
+            })
+    }) {
+        let pending = executor
+            .pending_attachment_source_attempt
+            .as_ref()
+            .ok_or_else(|| retryable("superseded Acquire custody is unavailable"))?;
+        with_mount_session(executor, |mount| {
+            mount
+                .drain_pending_mount_acquire(pending)
+                .map_err(|error| retryable(error.to_string()))
+        })?;
+        // The live token cannot authorize a send after its original deadline.
+        // Durable packet custody remains until fresh Mount inventory decides it.
+        executor.pending_attachment_source_attempt = None;
+    }
+    drop(owner);
+    if drain_pending_before_slot(executor, journal)? {
+        return Err(retryable("retained attachment effect is draining"));
+    }
+    if desired.intent().presentation() == AttachmentPresentation::Fuse {
+        // Prior native custody may still need recovery above. A FUSE
+        // generation cannot enter either existing source or Mount effect path.
+        return Err(retryable("FUSE attachment dispatch is not authenticated"));
+    }
+    let mut owner = ProtectedAttachmentEffectOwnerV1::claim(journal)
+        .map_err(|error| retryable(error.to_string()))?;
+
+    let fence = owner
+        .begin_authenticated_mount_inventory()
+        .map_err(|error| retryable(error.to_string()))?;
+    let snapshot = with_mount_session(executor, |mount| {
+        let outcome = mount
+            .current_inventory_observation()
+            .map_err(|error| retryable(error.to_string()))?;
+        owner
+            .complete_authenticated_mount_inventory(fence, &outcome)
+            .map_err(|error| retryable(error.to_string()))
+    })?;
+    let (target, snapshot, source_action) = if matches!(
+        desired.presence(),
+        AttachmentDesiredPresenceV1::Present | AttachmentDesiredPresenceV1::Released
+    ) {
+        let fence = owner
+            .begin_authenticated_source_inventory()
+            .map_err(|error| retryable(error.to_string()))?;
+        let (sources, rowless_cancellation) = with_mount_session(executor, |mount| {
+            let outcome = mount
+                .current_source_inventory_observation()
+                .map_err(|error| retryable(error.to_string()))?;
+            Ok(match expired_acquire.take() {
+                Some(expired) => {
+                    let (snapshot, proof) = owner
+                        .complete_post_deadline_source_inventory(expired, fence, &outcome)
+                        .map_err(|error| retryable(error.to_string()))?;
+                    (snapshot, proof)
+                }
+                None => (
+                    owner
+                        .complete_authenticated_source_inventory(fence, &outcome)
+                        .map_err(|error| retryable(error.to_string()))?,
+                    None,
+                ),
+            })
+        })?;
+        let inventory = owner
+            .join_current_mount_filesystem_inventory(snapshot, sources)
+            .map_err(|error| retryable(error.to_string()))?;
+        let bounds = source_bounds(desired.intent())?;
+        let source_scope = if let Some(source_owner) = live_source_owner {
+            drop(owner);
+            let scope = observe_live_source(executor, journal, source_owner)?;
+            owner = ProtectedAttachmentEffectOwnerV1::claim(journal)
+                .map_err(|error| retryable(error.to_string()))?;
+            Some(scope)
+        } else {
+            None
+        };
+        let source = match source_scope {
+            Some(scope) => owner.plan_current_live_source(
+                desired.clone(),
+                inventory,
+                target,
+                scope,
+                bounds,
+                &mut clock,
+            ),
+            None => {
+                owner.plan_current_source(desired.clone(), inventory, target, bounds, &mut clock)
+            }
+        }
+        .map_err(|error| retryable(error.to_string()))?;
+        let action = source.action();
+        if matches!(action, AttachmentSourceActionV1::CancelAcquire { .. }) {
+            let proof = rowless_cancellation.ok_or_else(|| {
+                retryable("original Acquire deadline or fresh rowless proof is pending")
+            })?;
+            owner
+                .complete_rowless_source_cancel(proof, source, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            return Err(retryable(
+                "rowless Acquire custody is canceled; fresh Mount inventory is pending",
+            ));
+        }
+        if executor
+            .pending_attachment_source_consume
+            .as_ref()
+            .is_some_and(|completed| completed.desired().intent().id() == attachment)
+        {
+            let completed = executor
+                .pending_attachment_source_consume
+                .take()
+                .ok_or_else(|| retryable("completed detached Create custody is unavailable"))?;
+            if completed.desired().record_digest() != desired.record_digest() {
+                // The terminal Create receipt is already protected and no
+                // response remains unread. A successor desired generation
+                // must use its selected historical source lineage, not this
+                // live token's now-stale desired guard.
+                owner
+                    .record_recovered_current_source_consume(source, &mut clock)
+                    .map_err(|error| retryable(error.to_string()))?;
+                return Err(retryable(
+                    "prior detached Create source custody is recovered",
+                ));
+            }
+            if let Err(error) = owner.record_current_source_consume(source, &completed, &mut clock)
+            {
+                executor.pending_attachment_source_consume = Some(completed);
+                return Err(retryable(error.to_string()));
+            }
+            return Err(retryable("detached Create source custody is recorded"));
+        }
+        if matches!(
+            action,
+            AttachmentSourceActionV1::AwaitAttachment {
+                consume_attempt_recorded: false,
+                ..
+            }
+        ) {
+            owner
+                .record_recovered_current_source_consume(source, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            return Err(retryable(
+                "durable detached Create source custody is recovered",
+            ));
+        }
+        if action == AttachmentSourceActionV1::Acquire {
+            ensure_mount_policy(executor)?;
+            let coordinates = with_mount_session(executor, |mount| {
+                mount
+                    .mount_request_coordinates()
+                    .map_err(|error| retryable(error.to_string()))
+            })?;
+            let prepared = owner
+                .prepare_current_source_acquire(
+                    source,
+                    OperationId::from_bytes(coordinates.request_id()),
+                    coordinates.deadline_boottime_nanoseconds(),
+                    &mut clock,
+                )
+                .map_err(|error| retryable(error.to_string()))?;
+            let scope =
+                ControllerBrokerPlanSignerV1::mount_revocation_scope_from_process_credentials()
+                    .map_err(|error| retryable(error.to_string()))?;
+            let plan = owner
+                .current_source_acquire_plan(&prepared, scope, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            let issued = plan.issued_seconds();
+            let signed = executor
+                .broker_plan_signer
+                .as_ref()
+                .ok_or_else(|| retryable("independent Mount plan signer is unavailable"))?
+                .sign_mount_plan(plan, issued)
+                .map_err(|error| retryable(error.to_string()))?;
+            let bound = owner
+                .bind_current_source_acquire(prepared, signed, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            let attempt = owner
+                .admit_current_source_acquire(bound, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            executor.pending_attachment_source_attempt = Some(attempt);
+            drop(owner);
+            drain_pending_source_attempt(executor, journal)?;
+            return Err(retryable("fresh Mount source inventory is pending"));
+        }
+        if matches!(action, AttachmentSourceActionV1::CompleteAcquire { .. }) {
+            owner
+                .complete_current_source_acquire(source, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            return Err(retryable(
+                "source custody completed; fresh Mount inventory is pending",
+            ));
+        }
+        if matches!(
+            action,
+            AttachmentSourceActionV1::AwaitAcquisition {
+                phase: MountSourceAcquisitionPhase::MOUNT_SOURCE_ACQUISITION_PHASE_UNSPECIFIED,
+                ..
+            }
+        ) {
+            // The paired signed inventory is rowless; only the original
+            // packet may be resent after current authority rebinds exactly.
+            let attempt = bind_current_source_resume(executor, &mut owner, source, &mut clock)?;
+            executor.pending_attachment_source_attempt = Some(attempt);
+            drop(owner);
+            drain_pending_source_attempt(executor, journal)?;
+            return Err(retryable("fresh Mount source inventory is pending"));
+        }
+        if matches!(action, AttachmentSourceActionV1::CompleteConsume { .. }) {
+            owner
+                .complete_current_source_consume(source, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            return Err(retryable(
+                "post-attach source custody completed; fresh Mount inventory is pending",
+            ));
+        }
+        if action == AttachmentSourceActionV1::Released {
+            let (target, resources) = source.into_mount_reconciliation_inputs();
+            (target, resources, Some(action))
+        } else if matches!(action, AttachmentSourceActionV1::CompleteRelease { .. }) {
+            owner
+                .complete_current_source_release(source, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            return Err(retryable(
+                "source release custody completed; fresh Mount inventory is pending",
+            ));
+        } else if matches!(action, AttachmentSourceActionV1::Release { .. }) {
+            if let Some(kind) = owner
+                .open_current_source_attempt_kind(attachment)
+                .map_err(|error| retryable(error.to_string()))?
+            {
+                if kind == AttachmentSourceAttemptKindV1::Acquire {
+                    owner
+                        .close_current_source_acquire_for_release(source, &mut clock)
+                        .map_err(|error| retryable(error.to_string()))?;
+                    return Err(retryable(
+                        "acquired source custody is closed; fresh Mount inventory is pending",
+                    ));
+                }
+                if kind != AttachmentSourceAttemptKindV1::Release {
+                    return Err(retryable("another source custody attempt is still open"));
+                }
+                // The signed predecessor row is still at the exact revision
+                // named by Release; recovery cannot mint a successor request.
+                let attempt = bind_current_source_resume(executor, &mut owner, source, &mut clock)?;
+                executor.pending_attachment_source_attempt = Some(attempt);
+                drop(owner);
+                drain_pending_source_attempt(executor, journal)?;
+                return Err(retryable("fresh Mount source inventory is pending"));
+            }
+            ensure_mount_policy(executor)?;
+            let coordinates = with_mount_session(executor, |mount| {
+                mount
+                    .mount_request_coordinates()
+                    .map_err(|error| retryable(error.to_string()))
+            })?;
+            let prepared = owner
+                .prepare_current_source_release(
+                    source,
+                    OperationId::from_bytes(coordinates.request_id()),
+                    coordinates.deadline_boottime_nanoseconds(),
+                    &mut clock,
+                )
+                .map_err(|error| retryable(error.to_string()))?;
+            let scope =
+                ControllerBrokerPlanSignerV1::mount_revocation_scope_from_process_credentials()
+                    .map_err(|error| retryable(error.to_string()))?;
+            let plan = owner
+                .current_source_release_plan(&prepared, scope, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            let issued = plan.issued_seconds();
+            let signed = executor
+                .broker_plan_signer
+                .as_ref()
+                .ok_or_else(|| retryable("independent Mount plan signer is unavailable"))?
+                .sign_mount_plan(plan, issued)
+                .map_err(|error| retryable(error.to_string()))?;
+            let bound = owner
+                .bind_current_source_release(prepared, signed, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            let attempt = owner
+                .admit_current_source_release(bound, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            executor.pending_attachment_source_attempt = Some(attempt);
+            drop(owner);
+            drain_pending_source_attempt(executor, journal)?;
+            return Err(retryable("fresh Mount source inventory is pending"));
+        } else {
+            let (target, resources) = source.into_mount_reconciliation_inputs();
+            (target, resources, Some(action))
+        }
+    } else {
+        (target, snapshot, None)
+    };
+    let inventory = owner
+        .reconcile_current_mount_inventory(target, snapshot, &mut clock)
+        .map_err(|error| retryable(error.to_string()))?;
+    // Source planning consumes its short Host observation. Reconciliation
+    // needs a fresh one before it can classify a resource as Present.
+    let source_scope = if let Some(source_owner) = live_source_owner {
+        drop(owner);
+        let scope = observe_live_source(executor, journal, source_owner)?;
+        owner = ProtectedAttachmentEffectOwnerV1::claim(journal)
+            .map_err(|error| retryable(error.to_string()))?;
+        Some(scope)
+    } else {
+        None
+    };
+    let reconciliation = match source_scope {
+        Some(scope) => owner.reconcile_current_live(desired, inventory, scope, &mut clock),
+        None => owner.reconcile_current(desired, inventory, &mut clock),
+    }
+    .map_err(|error| retryable(error.to_string()))?;
+    let action = reconciliation.action();
+    if !source_allows_mount(source_action, action) {
+        return Err(retryable(
+            "protected source acquisition has not reached the Mount transition",
+        ));
+    }
+    if matches!(action, AttachmentReconciliationActionV1::Verify { .. }) {
+        owner
+            .verify_current_mount_installation(reconciliation, &mut clock)
+            .map_err(|error| retryable(error.to_string()))?;
+        return Err(retryable(
+            "post-attach kernel evidence is recorded; fresh Mount inventory is pending",
+        ));
+    }
+    if let AttachmentReconciliationActionV1::Ready {
+        mount_handle,
+        verification_digest,
+        ..
+    } = action
+    {
+        let Some(AttachmentSourceActionV1::Ready { acquisition_id, .. }) = source_action else {
+            return Err(retryable("source readiness proof is unavailable"));
+        };
+        return Ok(VerifiedAttachmentPhysicalV1::Ready {
+            desired_digest,
+            acquisition_id,
+            mount_handle,
+            verification_digest,
+        });
+    }
+    if action == AttachmentReconciliationActionV1::Released {
+        return Ok(VerifiedAttachmentPhysicalV1::Released { desired_digest });
+    }
+    if matches!(action, AttachmentReconciliationActionV1::Wait { .. }) {
+        ensure_mount_policy(executor)?;
+        let recovery = owner
+            .prepare_current_mount_recovery(reconciliation, &mut clock)
+            .map_err(|error| retryable(error.to_string()))?;
+        drop(owner);
+        match recovery {
+            PreparedCurrentAttachmentMountRecoveryV1::Catalog(query) => {
+                executor.pending_attachment_catalog_query =
+                    Some(PendingAttachmentCatalogQueryV1::Replay(query));
+                drain_pending_catalog_query(executor, journal)?;
+            }
+            PreparedCurrentAttachmentMountRecoveryV1::Release(prepared) => {
+                resume_and_dispatch_mount(executor, prepared, journal)?;
+            }
+        }
+        return Err(retryable("fresh authenticated Mount inventory is pending"));
+    }
+    if !matches!(
+        action,
+        AttachmentReconciliationActionV1::Prepare { .. }
+            | AttachmentReconciliationActionV1::Install { .. }
+            | AttachmentReconciliationActionV1::Replace { .. }
+            | AttachmentReconciliationActionV1::Detach { .. }
+    ) {
+        return Err(retryable(
+            "attachment source and Mount transaction is pending",
+        ));
+    }
+
+    ensure_mount_policy(executor)?;
+    let coordinates = with_mount_session(executor, |mount| {
+        mount
+            .mount_request_coordinates()
+            .map_err(|error| retryable(error.to_string()))
+    })?;
+    let query = owner
+        .prepare_authenticated_mount_catalog_query(
+            reconciliation,
+            coordinates.request_id(),
+            coordinates.deadline_boottime_nanoseconds(),
+            &mut clock,
+        )
+        .map_err(|error| retryable(error.to_string()))?;
+    executor.pending_attachment_catalog_query =
+        Some(PendingAttachmentCatalogQueryV1::Initial(query));
+    drop(owner);
+    drain_pending_catalog_query(executor, journal)?;
+    Err(retryable("fresh authenticated Mount inventory is pending"))
+}
+
+fn source_bounds(
+    intent: &aos_sandbox_core::model::AttachmentIntent,
+) -> Result<AttachmentSourceBoundsV1, EffectFailure> {
+    let lease = intent.lease();
+    let duration = lease
+        .expires_seconds()
+        .checked_sub(lease.issued_seconds())
+        .and_then(|seconds| u64::try_from(seconds).ok())
+        .ok_or_else(|| retryable("attachment lease has invalid source duration"))?;
+    let lease_seconds =
+        duration.min(aos_sandbox_source_provider_protocol::MAXIMUM_SOURCE_LEASE_SECONDS);
+    let maximum_submounts = if intent.mount_attributes().recursive() {
+        aos_sandbox_source_provider_protocol::MAXIMUM_SOURCE_SUBMOUNTS
+    } else {
+        0
+    };
+    AttachmentSourceBoundsV1::new(intent, lease_seconds, maximum_submounts)
+        .map_err(|error| retryable(error.to_string()))
+}
+
+fn observe_live_source(
+    executor: &ProductionEffectExecutor,
+    journal: &mut Journal,
+    source_owner: SandboxId,
+) -> Result<aos_sandbox::runtime_scope::CurrentRuntimeScope, EffectFailure> {
+    let host = executor
+        .attachment_host
+        .as_ref()
+        .ok_or_else(|| retryable("exact Host attachment identity is unavailable"))?;
+    ControllerAttachmentTargetInputsV1::from_protected_configuration(host, executor.node)
+        .map_err(|error| retryable(error.to_string()))?
+        .acquire_source(journal, source_owner)
+        .map_err(|error| retryable(error.to_string()))
+}
+
+fn source_allows_mount(
+    source: Option<AttachmentSourceActionV1>,
+    mount: AttachmentReconciliationActionV1,
+) -> bool {
+    match (source, mount) {
+        (_, AttachmentReconciliationActionV1::FuseDispatchClosed) => false,
+        (None, _) => true,
+        (Some(AttachmentSourceActionV1::Released), AttachmentReconciliationActionV1::Released) => {
+            true
+        }
+        (
+            Some(AttachmentSourceActionV1::Consume { .. }),
+            AttachmentReconciliationActionV1::Prepare { .. },
+        ) => true,
+        (
+            Some(AttachmentSourceActionV1::AwaitAttachment {
+                mount_handle,
+                consume_attempt_recorded: true,
+                ..
+            }),
+            AttachmentReconciliationActionV1::Install {
+                mount_handle: candidate,
+            }
+            | AttachmentReconciliationActionV1::Replace {
+                mount_handle: candidate,
+                ..
+            },
+        ) => mount_handle == candidate,
+        (
+            Some(AttachmentSourceActionV1::AwaitAttachment {
+                mount_handle,
+                consume_attempt_recorded: true,
+                ..
+            }),
+            AttachmentReconciliationActionV1::Verify {
+                mount_handle: candidate,
+                ..
+            },
+        ) => mount_handle == candidate,
+        (
+            Some(AttachmentSourceActionV1::Ready {
+                mount_handle,
+                verification_digest,
+                ..
+            }),
+            AttachmentReconciliationActionV1::Ready {
+                mount_handle: candidate,
+                verification_digest: candidate_verification,
+                ..
+            },
+        ) => mount_handle == candidate && verification_digest == candidate_verification,
+        (
+            Some(AttachmentSourceActionV1::DrainAttachment { mount_handle, .. }),
+            AttachmentReconciliationActionV1::Detach {
+                mount_handle: candidate,
+            }
+            | AttachmentReconciliationActionV1::Release {
+                mount_handle: candidate,
+            },
+        ) => mount_handle == candidate,
+        (Some(_), AttachmentReconciliationActionV1::Wait { .. }) => true,
+        (
+            Some(_),
+            AttachmentReconciliationActionV1::Fault { .. }
+            | AttachmentReconciliationActionV1::Conflict { .. },
+        ) => true,
+        _ => false,
+    }
+}
+
+pub(super) fn drain_pending_before_slot(
+    executor: &mut ProductionEffectExecutor,
+    journal: &mut Journal,
+) -> Result<bool, EffectFailure> {
+    if executor.pending_attachment_source_attempt.is_some() {
+        drain_pending_source_attempt(executor, journal)?;
+        return Ok(true);
+    }
+    if executor.pending_attachment_mount_attempt.is_some() {
+        drain_pending_mount_attempt(executor, journal)?;
+        return Ok(true);
+    }
+    if executor.pending_attachment_catalog_query.is_some() {
+        drain_pending_catalog_query(executor, journal)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn drain_pending_source_attempt(
+    executor: &mut ProductionEffectExecutor,
+    journal: &mut Journal,
+) -> Result<(), EffectFailure> {
+    let attempt = executor
+        .pending_attachment_source_attempt
+        .take()
+        .ok_or_else(|| retryable("retained Mount source Acquire is unavailable"))?;
+    let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
+    if let Err(error) = attempt.recheck(journal, &mut clock) {
+        if attempt.kind() == AttachmentSourceAttemptKindV1::Acquire
+            && with_mount_session(executor, |mount| {
+                mount
+                    .drain_pending_mount_acquire(&attempt)
+                    .map_err(|error| retryable(error.to_string()))
+            })
+            .is_ok()
+        {
+            // Packet custody stays durable. A later fresh inventory can
+            // classify the drained outcome without the expired Host scope.
+            return Err(retryable(error.to_string()));
+        }
+        executor.pending_attachment_source_attempt = Some(attempt);
+        return Err(retryable(error.to_string()));
+    }
+    let outcome = with_mount_session(executor, |mount| {
+        mount
+            .authenticated_mount_source_effect(&attempt)
+            .map_err(|error| retryable(error.to_string()))
+    });
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            executor.pending_attachment_source_attempt = Some(attempt);
+            return Err(error);
+        }
+    };
+    // The source Host scope may change while Mount executes. A successful
+    // terminal packet cannot promote stale source authority to completion.
+    if let Err(error) = attempt.recheck(journal, &mut clock) {
+        return Err(retryable(error.to_string()));
+    }
+    if let Err(error) = attempt.validate_terminal_outcome(&outcome) {
+        executor.pending_attachment_source_attempt = Some(attempt);
+        return Err(retryable(error.to_string()));
+    }
+    Ok(())
+}
+
+fn ensure_mount_policy(executor: &ProductionEffectExecutor) -> Result<(), EffectFailure> {
+    executor
+        .attachment_mount
+        .as_ref()
+        .ok_or_else(|| retryable("exact Mount attachment identity is unavailable"))?;
+    ControllerBrokerPlanSignerV1::mount_trust_anchor_from_process_credentials()
+        .map_err(|error| retryable(error.to_string()))?;
+    executor
+        .broker_plan_signer
+        .as_ref()
+        .ok_or_else(|| retryable("independent Mount plan signer is unavailable"))?;
+    Ok(())
+}
+
+// Rebinds the original signed request; callers retain the pending/drain decision.
+fn bind_current_source_resume(
+    executor: &ProductionEffectExecutor,
+    owner: &mut ProtectedAttachmentEffectOwnerV1<'_>,
+    source: CurrentAttachmentSourcePlanV1,
+    clock: &mut impl FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+) -> Result<DurableCurrentAttachmentSourceDispatchV1, EffectFailure> {
+    ensure_mount_policy(executor)?;
+    let prepared = owner
+        .prepare_current_source_resume(source, clock)
+        .map_err(|error| retryable(error.to_string()))?;
+    let (canonical_plan, canonical_signature) = prepared
+        .original_plan_artifacts()
+        .map_err(|error| retryable(error.to_string()))?;
+    let signed = executor
+        .broker_plan_signer
+        .as_ref()
+        .ok_or_else(|| retryable("independent Mount plan signer is unavailable"))?
+        .recover_mount_plan(&canonical_plan, &canonical_signature)
+        .map_err(|error| retryable(error.to_string()))?;
+    owner
+        .bind_current_source_resume(prepared, signed, clock)
+        .map_err(|error| retryable(error.to_string()))
+}
+
+fn drain_pending_catalog_query(
+    executor: &mut ProductionEffectExecutor,
+    journal: &mut Journal,
+) -> Result<(), EffectFailure> {
+    let query = executor
+        .pending_attachment_catalog_query
+        .take()
+        .ok_or_else(|| retryable("retained Mount catalog query is unavailable"))?;
+    if let Err(error) = query.recheck(journal) {
+        if with_mount_session(executor, |mount| {
+            mount
+                .drain_pending_mount_catalog(query.query())
+                .map_err(|error| retryable(error.to_string()))
+        })
+        .is_ok()
+        {
+            return Err(retryable(error.to_string()));
+        }
+        executor.pending_attachment_catalog_query = Some(query);
+        return Err(retryable(error.to_string()));
+    }
+    let outcome = with_mount_session(executor, |mount| {
+        mount
+            .authenticated_mount_catalog_preparation(query.query())
+            .map_err(|error| retryable(error.to_string()))
+    });
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            executor.pending_attachment_catalog_query = Some(query);
+            return Err(error);
+        }
+    };
+    let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
+    match query {
+        PendingAttachmentCatalogQueryV1::Initial(query) => {
+            let prepared = query
+                .complete_authenticated(journal, &outcome, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            admit_and_dispatch_mount(executor, prepared, journal)
+        }
+        PendingAttachmentCatalogQueryV1::Replay(query) => {
+            let prepared = query
+                .complete_authenticated(journal, &outcome, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            resume_and_dispatch_mount(executor, prepared, journal)
+        }
+    }
+}
+
+fn resume_and_dispatch_mount(
+    executor: &mut ProductionEffectExecutor,
+    prepared: PreparedCurrentAttachmentMountResumeV1,
+    journal: &mut Journal,
+) -> Result<(), EffectFailure> {
+    ensure_mount_policy(executor)?;
+    let (canonical_plan, canonical_signature) = prepared
+        .original_plan_artifacts()
+        .map_err(|error| retryable(error.to_string()))?;
+    let signed = executor
+        .broker_plan_signer
+        .as_ref()
+        .ok_or_else(|| retryable("independent Mount plan signer is unavailable"))?
+        .recover_mount_plan(&canonical_plan, &canonical_signature)
+        .map_err(|error| retryable(error.to_string()))?;
+    let mut owner = ProtectedAttachmentEffectOwnerV1::claim(journal)
+        .map_err(|error| retryable(error.to_string()))?;
+    let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
+    let bound = owner
+        .bind_current_mount_recovery(prepared, signed, &mut clock)
+        .map_err(|error| retryable(error.to_string()))?;
+    let attempt = owner
+        .resume_current_mount_effect(bound, &mut clock)
+        .map_err(|error| retryable(error.to_string()))?;
+    executor.pending_attachment_mount_attempt = Some(attempt);
+    drop(owner);
+    drain_pending_mount_attempt(executor, journal)
+}
+
+fn admit_and_dispatch_mount(
+    executor: &mut ProductionEffectExecutor,
+    prepared: PreparedCurrentAttachmentMountV1,
+    journal: &mut Journal,
+) -> Result<(), EffectFailure> {
+    ensure_mount_policy(executor)?;
+    let signer = executor
+        .broker_plan_signer
+        .as_ref()
+        .ok_or_else(|| retryable("independent Mount plan signer is unavailable"))?;
+    let scope = ControllerBrokerPlanSignerV1::mount_revocation_scope_from_process_credentials()
+        .map_err(|error| retryable(error.to_string()))?;
+    let deadline = prepared.valid_until_boottime_nanoseconds();
+    let mut owner = ProtectedAttachmentEffectOwnerV1::claim(journal)
+        .map_err(|error| retryable(error.to_string()))?;
+    let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
+    let plan = owner
+        .current_mount_plan(&prepared, scope, &mut clock)
+        .map_err(|error| retryable(error.to_string()))?;
+    let issued = plan.issued_seconds();
+    let signed = signer
+        .sign_mount_plan(plan, issued)
+        .map_err(|error| retryable(error.to_string()))?;
+    let bound = owner
+        .bind_current_mount_plan(prepared, signed, &mut clock)
+        .map_err(|error| retryable(error.to_string()))?;
+    let attempt = owner
+        .admit_current_mount_effect(bound, deadline, &mut clock)
+        .map_err(|error| retryable(error.to_string()))?;
+    executor.pending_attachment_mount_attempt = Some(attempt);
+    drop(owner);
+    drain_pending_mount_attempt(executor, journal)
+}
+
+fn drain_pending_mount_attempt(
+    executor: &mut ProductionEffectExecutor,
+    journal: &mut Journal,
+) -> Result<(), EffectFailure> {
+    let attempt = executor
+        .pending_attachment_mount_attempt
+        .take()
+        .ok_or_else(|| retryable("retained Mount Apply attempt is unavailable"))?;
+    let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
+    if let Err(error) = attempt.recheck(journal, &mut clock) {
+        if with_mount_session(executor, |mount| {
+            mount
+                .drain_pending_mount_apply(attempt.attempt())
+                .map_err(|error| retryable(error.to_string()))
+        })
+        .is_ok()
+        {
+            // An already-sent result is read but cannot use this expired
+            // source scope. Durable Apply custody awaits fresh inventory.
+            return Err(retryable(error.to_string()));
+        }
+        executor.pending_attachment_mount_attempt = Some(attempt);
+        return Err(retryable(error.to_string()));
+    }
+    let outcome = with_mount_session(executor, |mount| {
+        mount
+            .authenticated_mount_apply(attempt.attempt())
+            .map_err(|error| retryable(error.to_string()))
+    });
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            executor.pending_attachment_mount_attempt = Some(attempt);
+            return Err(error);
+        }
+    };
+    let mut owner = ProtectedAttachmentEffectOwnerV1::claim(journal)
+        .map_err(|error| retryable(error.to_string()))?;
+    let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
+    let completed = owner
+        .complete_authenticated_mount_effect(attempt, &outcome, &mut clock)
+        .map_err(|error| retryable(error.to_string()))?;
+    if completed.mount_action() == MountAction::MOUNT_ACTION_CREATE_DETACHED {
+        executor.pending_attachment_source_consume = Some(completed);
+    }
+    Ok(())
+}
+
+fn with_mount_session<T>(
+    executor: &ProductionEffectExecutor,
+    action: impl FnOnce(&mut crate::DormantMountLifecycleInventoryOwnerV1) -> Result<T, EffectFailure>,
+) -> Result<T, EffectFailure> {
+    let mut sessions = executor
+        .sessions
+        .lock()
+        .map_err(|_| retryable("broker session lock is poisoned"))?;
+    let mount = sessions
+        .mount
+        .as_mut()
+        .ok_or_else(|| retryable("authenticated Mount session is unavailable"))?;
+    action(mount)
+}
+
+fn retryable(message: impl Into<String>) -> EffectFailure {
+    EffectFailure::Retryable(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aos_proto::aos::sandbox::local::v1::MountLifecycle;
+
+    #[test]
+    fn fuse_selection_never_qualifies_for_native_source_or_mount_effects() {
+        assert!(!source_allows_mount(
+            None,
+            AttachmentReconciliationActionV1::FuseDispatchClosed,
+        ));
+        assert!(!source_allows_mount(
+            Some(AttachmentSourceActionV1::Consume {
+                acquisition_id: [1; 32],
+                revision: 1,
+                record_digest: [2; 32],
+            }),
+            AttachmentReconciliationActionV1::FuseDispatchClosed,
+        ));
+    }
+
+    #[test]
+    fn detached_create_requires_completed_active_source_custody() {
+        let prepare = AttachmentReconciliationActionV1::Prepare {
+            replacement_mount_handle: None,
+        };
+        assert!(!source_allows_mount(
+            Some(AttachmentSourceActionV1::Acquire),
+            prepare,
+        ));
+        assert!(!source_allows_mount(
+            Some(AttachmentSourceActionV1::CompleteAcquire {
+                acquisition_id: [1; 32],
+                revision: 1,
+                record_digest: [2; 32],
+            }),
+            prepare,
+        ));
+        assert!(source_allows_mount(
+            Some(AttachmentSourceActionV1::Consume {
+                acquisition_id: [1; 32],
+                revision: 1,
+                record_digest: [2; 32],
+            }),
+            prepare,
+        ));
+    }
+
+    #[test]
+    fn installation_and_drain_require_matching_source_phase() {
+        let install = AttachmentReconciliationActionV1::Install {
+            mount_handle: [3; 32],
+        };
+        let detach = AttachmentReconciliationActionV1::Detach {
+            mount_handle: [3; 32],
+        };
+        let awaiting = AttachmentSourceActionV1::AwaitAttachment {
+            acquisition_id: [1; 32],
+            mount_handle: [3; 32],
+            lifecycle: MountLifecycle::MOUNT_LIFECYCLE_PREPARED,
+            consume_attempt_recorded: true,
+        };
+        let draining = AttachmentSourceActionV1::DrainAttachment {
+            acquisition_id: [1; 32],
+            mount_handle: [3; 32],
+            lifecycle: MountLifecycle::MOUNT_LIFECYCLE_INSTALLED,
+        };
+        let uncustodied = AttachmentSourceActionV1::AwaitAttachment {
+            acquisition_id: [1; 32],
+            mount_handle: [3; 32],
+            lifecycle: MountLifecycle::MOUNT_LIFECYCLE_PREPARED,
+            consume_attempt_recorded: false,
+        };
+        assert!(!source_allows_mount(Some(uncustodied), install));
+        assert!(source_allows_mount(Some(awaiting), install));
+        assert!(!source_allows_mount(
+            Some(awaiting),
+            AttachmentReconciliationActionV1::Install {
+                mount_handle: [4; 32],
+            },
+        ));
+        assert!(!source_allows_mount(Some(draining), install));
+        assert!(!source_allows_mount(Some(awaiting), detach));
+        assert!(source_allows_mount(Some(draining), detach));
+    }
+
+    #[test]
+    fn attachment_release_waits_for_source_release_custody() {
+        let mount = AttachmentReconciliationActionV1::Released;
+        assert!(!source_allows_mount(
+            Some(AttachmentSourceActionV1::Release {
+                acquisition_id: [1; 32],
+                revision: 2,
+                record_digest: [2; 32],
+            }),
+            mount,
+        ));
+        assert!(!source_allows_mount(
+            Some(AttachmentSourceActionV1::CompleteRelease {
+                acquisition_id: [1; 32],
+                revision: 3,
+                record_digest: [3; 32],
+            }),
+            mount,
+        ));
+        assert!(source_allows_mount(
+            Some(AttachmentSourceActionV1::Released),
+            mount,
+        ));
+    }
+
+    #[test]
+    fn post_attach_verification_and_ready_require_exact_source_match() {
+        let awaiting = AttachmentSourceActionV1::AwaitAttachment {
+            acquisition_id: [1; 32],
+            mount_handle: [2; 32],
+            lifecycle: MountLifecycle::MOUNT_LIFECYCLE_INSTALLED,
+            consume_attempt_recorded: true,
+        };
+        let verify = AttachmentReconciliationActionV1::Verify {
+            mount_handle: [2; 32],
+            unique_mount_id: 9,
+        };
+        assert!(source_allows_mount(Some(awaiting), verify));
+        assert!(!source_allows_mount(
+            Some(AttachmentSourceActionV1::AwaitAttachment {
+                acquisition_id: [1; 32],
+                mount_handle: [2; 32],
+                lifecycle: MountLifecycle::MOUNT_LIFECYCLE_INSTALLED,
+                consume_attempt_recorded: false,
+            }),
+            verify,
+        ));
+
+        let ready = AttachmentSourceActionV1::Ready {
+            acquisition_id: [1; 32],
+            mount_handle: [2; 32],
+            verification_digest: [3; 32],
+        };
+        let installed = AttachmentReconciliationActionV1::Ready {
+            mount_handle: [2; 32],
+            unique_mount_id: 9,
+            verification_digest: [3; 32],
+        };
+        assert!(source_allows_mount(Some(ready), installed));
+        assert!(!source_allows_mount(
+            Some(AttachmentSourceActionV1::Ready {
+                acquisition_id: [1; 32],
+                mount_handle: [2; 32],
+                verification_digest: [4; 32],
+            }),
+            installed,
+        ));
+        assert!(!source_allows_mount(
+            Some(AttachmentSourceActionV1::Ready {
+                acquisition_id: [1; 32],
+                mount_handle: [5; 32],
+                verification_digest: [3; 32],
+            }),
+            installed,
+        ));
+    }
+
+    #[test]
+    fn terminal_receipts_bind_operation_and_protected_evidence() {
+        let operation = OperationId::from_bytes([1; 16]);
+        let ready = VerifiedAttachmentPhysicalV1::Ready {
+            desired_digest: ObjectDigest::from_bytes([2; 32]),
+            acquisition_id: [3; 32],
+            mount_handle: [4; 32],
+            verification_digest: [5; 32],
+        }
+        .receipt(operation)
+        .unwrap();
+        assert_eq!(ready.as_bytes().len(), 8 + 16 + 32 * 4);
+        assert_eq!(&ready.as_bytes()[..8], b"AOSATR01");
+        assert_eq!(&ready.as_bytes()[8..24], operation.as_bytes());
+        assert_eq!(&ready.as_bytes()[24..56], &[2; 32]);
+        assert_eq!(&ready.as_bytes()[56..88], &[3; 32]);
+        assert_eq!(&ready.as_bytes()[88..120], &[4; 32]);
+        assert_eq!(&ready.as_bytes()[120..152], &[5; 32]);
+
+        let released = VerifiedAttachmentPhysicalV1::Released {
+            desired_digest: ObjectDigest::from_bytes([2; 32]),
+        }
+        .receipt(operation)
+        .unwrap();
+        assert_eq!(released.as_bytes().len(), 8 + 16 + 32);
+        assert_eq!(&released.as_bytes()[..8], b"AOSADL01");
+        assert_eq!(&released.as_bytes()[8..24], operation.as_bytes());
+        assert_eq!(&released.as_bytes()[24..56], &[2; 32]);
+    }
+}

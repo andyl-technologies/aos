@@ -1,0 +1,362 @@
+##! modules/sandbox/policy-authority.nix — signed deployment policy input custody
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
+  cfg = config.aos.sandbox.policyAuthority;
+  controller = config.aos.sandbox.controller;
+  cacheRecovery = config.systemd.services.aos-sandbox-policy-cache-recovery;
+  cacheRecoveryConfig = cacheRecovery.serviceConfig;
+  cacheSignerView = config.aos.sandbox.cacheSignerView or {enable = false;};
+  sourceSignerView = config.aos.sandbox.sourceSignerView or {enable = false;};
+  cacheSignerService = config.aos.sandbox.cacheSignerService or {enable = false;};
+  sourceSignerService = config.aos.sandbox.sourceSignerService or {enable = false;};
+  cacheSignerUid =
+    if cacheSignerView.enable && cacheSignerService.enable
+    then cacheSignerView.uid
+    else 0;
+  sourceSignerUid =
+    if sourceSignerView.enable && sourceSignerService.enable
+    then sourceSignerView.uid
+    else 0;
+  requiredCredentials = {
+    deploymentPublicKey = "deployment-public-key";
+    deploymentHeadPacket = "deployment-head.packet";
+    nodePolicy = "node-policy.json";
+    sitePolicy = "site-policy.json";
+    backendCapabilities = "backend-capabilities.json";
+    catalogs = "catalogs.json";
+    projectPublicKey = "project-public-key";
+  };
+  projectCredentials = {
+    projectHeadPacket = "project-head.packet";
+    projectLayer = "project-layer.json";
+    projectHeadPacketV2 = "project-head-v2.packet";
+    projectLayerV2 = "project-layer-v2.json";
+  };
+  cacheCredentials = {
+    cacheOwnerReadbackPublicKey = "cache-owner-readback-public-key";
+  };
+  controllerCredentials = {
+    controllerHoldPublicKey = "controller-hold-public-key";
+  };
+  sourceCredentials = {
+    sourceHoldPublicKey = "source-hold-public-key";
+  };
+  credentialFiles = requiredCredentials // projectCredentials // cacheCredentials // controllerCredentials // sourceCredentials;
+  cacheJournalSource = "/var/lib/aos/sandbox/cache-residency-journals";
+  cacheJournalView = "/run/aos/sandbox-policy-cache-journals";
+  prepareCacheJournalView = pkgs.writeShellScriptBin "aos-sandbox-cache-journal-view" ''
+    set -eu
+
+    source=${cacheJournalSource}
+    view=${cacheJournalView}
+    controller_uid=${toString controller.uid}
+    controller_gid=${toString controller.gid}
+
+    require_root_directory() {
+      test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g' "$1")" = directory:0:0
+      mode="$(${pkgs.coreutils}/bin/stat --format='%a' "$1")"
+      test $((8#$mode & 022)) -eq 0
+    }
+
+    for directory in /var /var/lib /var/lib/aos /var/lib/aos/sandbox; do
+      if ! test -e "$directory"; then
+        ${pkgs.coreutils}/bin/mkdir --mode=0755 "$directory"
+      fi
+      require_root_directory "$directory"
+    done
+
+    # Unexpected old-path journal names must never initialize the new view.
+    legacy=/var/lib/aos/sandbox/cache-residency
+    # The parent was checked as root-owned, so the Controller cannot rename
+    # this root after the check. An alias to the empty new root is never safe.
+    if test -L "$legacy"; then
+      exit 1
+    fi
+    if test -e "$legacy"; then
+      test "$(${pkgs.coreutils}/bin/stat --format='%F' "$legacy")" = directory
+    fi
+    for name in state.journal authority.journal clock.journal policy-hold.journal; do
+      for suffix in "" .lock .compact.tmp; do
+        if test -e "$legacy/$name$suffix" || test -L "$legacy/$name$suffix"; then
+          exit 1
+        fi
+      done
+    done
+
+    if ! test -e "$source"; then
+      ${pkgs.coreutils}/bin/mkdir --mode=0700 "$source"
+      ${pkgs.coreutils}/bin/chown "$controller_uid:$controller_gid" "$source"
+    fi
+    test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g:%a' "$source")" = "directory:$controller_uid:$controller_gid:700"
+
+    # Reject unexpected initial contents. This is not a live filename filter;
+    # a future reader must still open only fixed names and verify currentness.
+    for entry in "$source"/* "$source"/.[!.]* "$source"/..?*; do
+      if ! test -e "$entry" && ! test -L "$entry"; then
+        continue
+      fi
+      case "$entry" in
+        "$source"/state.journal|"$source"/state.journal.lock|"$source"/state.journal.compact.tmp|\
+        "$source"/authority.journal|"$source"/authority.journal.lock|"$source"/authority.journal.compact.tmp|\
+        "$source"/clock.journal|"$source"/clock.journal.lock|"$source"/clock.journal.compact.tmp|\
+        "$source"/policy-hold.journal|"$source"/policy-hold.journal.lock|"$source"/policy-hold.journal.compact.tmp) ;;
+        *) exit 1 ;;
+      esac
+      test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g:%a' "$entry")" = "regular file:$controller_uid:$controller_gid:600"
+    done
+
+    if ! test -e /run/aos; then
+      ${pkgs.coreutils}/bin/mkdir --mode=0755 /run/aos
+    fi
+    require_root_directory /run
+    require_root_directory /run/aos
+    if ! test -e "$view"; then
+      ${pkgs.coreutils}/bin/mkdir --mode=0700 "$view"
+    fi
+    test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g:%a' "$view")" = directory:0:0:700
+    if ${pkgs.util-linux}/bin/findmnt --mountpoint "$view" --noheadings >/dev/null; then
+      exit 1
+    fi
+
+    ${pkgs.util-linux}/bin/mount --bind \
+      --map-users "$controller_uid:0:1" \
+      --map-groups "$controller_gid:0:1" \
+      --options ro,nosuid,nodev,noexec,nosymfollow \
+      "$source" "$view"
+    trap '${pkgs.util-linux}/bin/umount --no-canonicalize ${cacheJournalView}' EXIT
+
+    test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g:%a' "$view")" = directory:0:0:700
+    test "$(${pkgs.coreutils}/bin/stat --format='%d:%i' "$source")" = \
+      "$(${pkgs.coreutils}/bin/stat --format='%d:%i' "$view")"
+    mount_options="$(${pkgs.util-linux}/bin/findmnt --noheadings --mountpoint "$view" --output VFS-OPTIONS)"
+    for option in ro nosuid nodev noexec nosymfollow; do
+      case ",$mount_options," in
+        *,$option,*) ;;
+        *) exit 1 ;;
+      esac
+    done
+    trap - EXIT
+  '';
+in {
+  options.aos.sandbox.policyAuthority = {
+    enable = lib.mkEnableOption "the root-owned signed deployment policy input authority";
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.aos-sandboxd;
+      defaultText = "pkgs.aos-sandboxd";
+      description = "The package containing the independent policy authority executable.";
+    };
+
+    credentials = lib.mapAttrs (option: _:
+      lib.mkOption {
+        type = lib.types.nullOr lib.serviceTypes.credentialName;
+        default = null;
+        description =
+          if option == "deploymentPublicKey"
+          then "Externally provisioned 80-byte AOSPDK01 deployment signer pin (nonzero generation and public key). Raw 32-byte keys are rejected."
+          else if option == "projectPublicKey"
+          then "Externally provisioned 80-byte AOSPPK01 project signer pin (nonzero generation and public key). Raw 32-byte keys are rejected."
+          else if option == "cacheOwnerReadbackPublicKey"
+          then "Optional 80-byte AOSCPK01 Cache-only signer pin for nonauthorizing V2 settlement and Q04 held-flight readback; first CAS and Create remain closed."
+          else if option == "controllerHoldPublicKey"
+          then "Optional 80-byte AOSCTK01 Controller-only hold signer pin. Root persists exact replay but Q04 does not consume receipts or publish Create."
+          else if option == "sourceHoldPublicKey"
+          then "Optional 80-byte AOSSPK01 Source-only hold signer pin for nonauthorizing Q04 held-flight readback; first CAS and Create remain closed."
+          else if option == "projectHeadPacketV2" || option == "projectLayerV2"
+          then "Optional AOSPPH02/AOSPPL02 project source; both credentials are required for the closed AOSPHQ04 path."
+          else "Externally provisioned signed deployment policy authority input.";
+      })
+    credentialFiles;
+  };
+
+  config = lib.mkIf cfg.enable {
+    assertions =
+      lib.mapAttrsToList (option: _: {
+        assertion = cfg.credentials.${option} != null;
+        message = "aos.sandbox.policyAuthority.credentials.${option} is required";
+      })
+      requiredCredentials
+      ++ [
+        {
+          assertion =
+            (cfg.credentials.projectHeadPacket == null)
+            == (cfg.credentials.projectLayer == null);
+          message = "aos.sandbox.policyAuthority V1 project packet and input credentials must be provisioned together";
+        }
+        {
+          assertion =
+            (cfg.credentials.projectHeadPacketV2 == null)
+            == (cfg.credentials.projectLayerV2 == null);
+          message = "aos.sandbox.policyAuthority V2 project packet and input credentials must be provisioned together";
+        }
+        {
+          assertion =
+            (cfg.credentials.projectHeadPacket != null)
+            != (cfg.credentials.projectHeadPacketV2 != null);
+          message = "aos.sandbox.policyAuthority requires exactly one project source version";
+        }
+        {
+          assertion =
+            cacheRecoveryConfig.ExecStart
+            == "${cfg.package}/bin/aos-sandbox-policy-authorityd --serve-cache-signer-recovery ${toString controller.uid} ${toString controller.gid}"
+            && cacheRecoveryConfig.Type == "simple"
+            && cacheRecoveryConfig.User == "root"
+            && cacheRecoveryConfig.Group == "aos-sandboxd"
+            && cacheRecoveryConfig.UMask == "0007"
+            && cacheRecoveryConfig.RuntimeDirectory == "aos/sandbox-policy-cache-recovery"
+            && cacheRecoveryConfig.RuntimeDirectoryMode == "0710"
+            && cacheRecoveryConfig.StateDirectory == "aos/sandbox/policy-compiler"
+            && cacheRecoveryConfig.StateDirectoryMode == "0700";
+          message = "Cache recovery must retain its fixed executable, root identity, and private socket and journal directories";
+        }
+        {
+          assertion =
+            (cacheRecoveryConfig.LoadCredential or [])
+            == []
+            && (cacheRecoveryConfig.ReadWritePaths or []) == []
+            && (cacheRecoveryConfig.BindPaths or []) == []
+            && cacheRecoveryConfig.ProtectSystem == "strict"
+            && cacheRecoveryConfig.CapabilityBoundingSet == ""
+            && cacheRecoveryConfig.NoNewPrivileges
+            && cacheRecoveryConfig.RestrictAddressFamilies == ["AF_UNIX"]
+            && (cacheRecovery.requires or []) == []
+            && (cacheRecovery.wants or []) == []
+            && cacheRecovery.after == ["local-fs.target"]
+            && cacheRecovery.unitConfig.RequiresMountsFor == ["/var/lib/aos/sandbox/policy-compiler"]
+            && (cacheRecovery.unitConfig.BindsTo or []) == [];
+          message = "Cache recovery must not depend on policy credentials, normal authority, Cache views, or broad write access";
+        }
+      ];
+
+    systemd.services.aos-sandbox-cache-journal-view = {
+      description = "AOS root-only idmapped Cache journal view";
+      wantedBy = ["multi-user.target"];
+      before = ["aos-sandboxd.service" "aos-sandbox-policy-authorityd.service"];
+      after = ["local-fs.target"];
+      unitConfig.RequiresMountsFor = ["/var/lib/aos/sandbox"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${prepareCacheJournalView}/bin/aos-sandbox-cache-journal-view";
+        ExecStop = "${pkgs.util-linux}/bin/umount --no-canonicalize ${cacheJournalView}";
+        User = "root";
+        Group = "root";
+        UMask = "0077";
+        CapabilityBoundingSet = [
+          "CAP_CHOWN"
+          "CAP_DAC_READ_SEARCH"
+          "CAP_SETGID"
+          "CAP_SETUID"
+          "CAP_SYS_ADMIN"
+        ];
+        RestrictAddressFamilies = ["AF_UNIX"];
+      };
+    };
+
+    systemd.services.aos-sandbox-policy-authorityd = {
+      description = "AOS signed deployment policy input authority";
+      wantedBy = ["multi-user.target"];
+      requires =
+        ["aos-sandbox-cache-journal-view.service"]
+        ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
+        ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service";
+      after =
+        ["local-fs.target" "aos-sandbox-cache-journal-view.service"]
+        ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
+        ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service";
+      unitConfig.BindsTo =
+        ["aos-sandbox-cache-journal-view.service"]
+        ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
+        ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service";
+      serviceConfig = {
+        Type = "simple";
+        # Zero identities disable signer flights unless their separate services and views are enabled.
+        ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd ${toString controller.uid} ${toString controller.gid} ${toString cacheSignerUid} ${toString sourceSignerUid}";
+        LoadCredential =
+          lib.mapAttrsToList (option: name: "${name}:/run/credentials/@system/${cfg.credentials.${option}}")
+          (lib.filterAttrs (option: _: cfg.credentials.${option} != null) credentialFiles);
+        StateDirectory = "aos/sandbox/policy-compiler";
+        StateDirectoryMode = "0700";
+        RuntimeDirectory = "aos/sandbox-policy-authority";
+        RuntimeDirectoryMode = "0710";
+        User = "root";
+        Group = "aos-sandboxd";
+        UMask = "0007";
+
+        CapabilityBoundingSet = "";
+        InaccessiblePaths =
+          lib.optionals cacheSignerView.enable [
+            "/run/aos/sandbox-cache-signer-journals"
+            "/run/aos/sandbox-cache-signer-objects"
+          ]
+          ++ lib.optional sourceSignerView.enable "/run/aos/sandbox-source-signer-journal";
+        DevicePolicy = "closed";
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateTmp = true;
+        ProcSubset = "pid";
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHome = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectProc = "invisible";
+        ProtectSystem = "strict";
+        RestrictAddressFamilies = ["AF_UNIX"];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+      };
+    };
+
+    # Historical V7 replay must remain reachable when signed current inputs or
+    # the normal authority's credential loading fail before it binds a socket.
+    systemd.services.aos-sandbox-policy-cache-recovery = {
+      description = "AOS root-only Cache signer settlement recovery";
+      wantedBy = ["multi-user.target"];
+      after = ["local-fs.target"];
+      unitConfig.RequiresMountsFor = ["/var/lib/aos/sandbox/policy-compiler"];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd --serve-cache-signer-recovery ${toString controller.uid} ${toString controller.gid}";
+        StateDirectory = "aos/sandbox/policy-compiler";
+        StateDirectoryMode = "0700";
+        RuntimeDirectory = "aos/sandbox-policy-cache-recovery";
+        RuntimeDirectoryMode = "0710";
+        User = "root";
+        Group = "aos-sandboxd";
+        # Rust binds recovery.sock as root:aos-sandboxd with mode 0770.
+        UMask = "0007";
+
+        CapabilityBoundingSet = "";
+        DevicePolicy = "closed";
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateTmp = true;
+        ProcSubset = "pid";
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHome = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectProc = "invisible";
+        ProtectSystem = "strict";
+        RestrictAddressFamilies = ["AF_UNIX"];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+      };
+    };
+  };
+}

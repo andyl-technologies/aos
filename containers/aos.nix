@@ -138,8 +138,8 @@ in {
           mode = "0700";
         }
       ];
-      # The server package order has one reviewed collision: coreutils `kill`
-      # wins over util-linux, matching the production system PATH.
+      # Coreutils wins the single reviewed `kill` collision with util-linux,
+      # matching the ordered production system PATH.
       allowedFacadeCollisions = ["kill"];
       shell = true;
     };

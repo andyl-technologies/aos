@@ -1,0 +1,44 @@
+diff --git a/module/os/linux/zfs/zfs_vfsops.c b/module/os/linux/zfs/zfs_vfsops.c
+--- a/module/os/linux/zfs/zfs_vfsops.c
++++ b/module/os/linux/zfs/zfs_vfsops.c
+@@ -20,6 +20,7 @@
+ #include <sys/types.h>
+ #include <sys/param.h>
+ #include <sys/sysmacros.h>
++#include <sys/byteorder.h>
+ #include <sys/kmem.h>
+ #include <sys/pathname.h>
+ #include <sys/vnode.h>
+@@ -1333,6 +1334,24 @@ zfsvfs_teardown(zfsvfs_t *zfsvfs, boolean_t unmounting)
+ 
+ static atomic_long_t zfs_bdi_seq = ATOMIC_LONG_INIT(0);
+ 
++/*
++ * Bind the mounted superblock to the immutable pool and dataset GUIDs.
++ * Linux 7.2 serves FS_IOC_GETFSUUID from s_uuid on an already-open file;
++ * unlike statfs().f_fsid, this identifies the exact mounted snapshot.
++ */
++static void
++zfs_set_sb_uuid(struct super_block *sb, objset_t *os)
++{
++	uint64_t guids[2];
++
++	_Static_assert(sizeof (guids) == sizeof (sb->s_uuid),
++	    "the pool and dataset GUIDs must fill s_uuid exactly");
++
++	guids[0] = BE_64(spa_guid(dmu_objset_spa(os)));
++	guids[1] = BE_64(dsl_get_guid(dmu_objset_ds(os)));
++	super_set_uuid(sb, (uint8_t *)guids, sizeof (guids));
++}
++
+ int
+ zfs_domount(struct super_block *sb, const char *osname,
+     vfs_t *vfs, int silent)
+@@ -1379,6 +1397,7 @@ zfs_domount(struct super_block *sb, const char *osname,
+ 	sb->s_time_gran = 1;
+ 	sb->s_blocksize = recordsize;
+ 	sb->s_blocksize_bits = ilog2(recordsize);
++	zfs_set_sb_uuid(sb, zfsvfs->z_os);
+ 
+ 	error = -super_setup_bdi_name(sb, "%.28s-%ld", "zfs",
+ 	    atomic_long_inc_return(&zfs_bdi_seq));

@@ -1,0 +1,29 @@
+[package]
+name = "aos-sandbox-network-systemd-custody-fixture"
+version = "0.0.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "aos-netd-custody-fixture"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+aos-proto.workspace = true
+aos-sandbox.workspace = true
+aos-sandbox-broker.workspace = true
+aos-sandbox-core.workspace = true
+aos-sandbox-linux.workspace = true
+aos-sandbox-network.workspace = true
+aos-sandbox-protocol.workspace = true
+buffa.workspace = true
+ed25519-dalek.workspace = true
+rustix = { workspace = true, features = ["fs", "net", "process"] }
+sha2.workspace = true
+tokio.workspace = true
+zbus.workspace = true
+
+[lints]
+workspace = true

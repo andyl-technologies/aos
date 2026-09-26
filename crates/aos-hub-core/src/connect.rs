@@ -1804,9 +1804,21 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         list_registries
     );
     r = rpc_route!(r, "/aos.hub.v1.RegistryService/GetRegistry", get_registry);
-    r = rpc_route!(r, "/aos.hub.v1.RegistryService/GetRegistryMetadata", get_registry_metadata);
-    r = rpc_route!(r, "/aos.hub.v1.RegistryService/PlanUpdateRegistryMetadata", plan_update_registry_metadata);
-    r = rpc_route!(r, "/aos.hub.v1.RegistryService/UpdateRegistryMetadata", update_registry_metadata);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryService/GetRegistryMetadata",
+        get_registry_metadata
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryService/PlanUpdateRegistryMetadata",
+        plan_update_registry_metadata
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.RegistryService/UpdateRegistryMetadata",
+        update_registry_metadata
+    );
     r = rpc_route!(r, "/aos.hub.v1.RegistryService/ListReleases", list_releases);
     r = rpc_route!(
         r,
@@ -3870,10 +3882,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
             .route("/_assets/app.js", get(assets::app_js))
             .route("/_assets/theme.js", get(assets::theme_js))
             .route("/_assets/{asset}", get(assets::console_asset))
-            .route(
-                "/_assets/geist-sans-variable.woff2",
-                get(assets::font_sans),
-            )
+            .route("/_assets/geist-sans-variable.woff2", get(assets::font_sans))
             .route("/_assets/geist-mono-variable.woff2", get(assets::font_mono))
             .route("/_assets/OFL.txt", get(assets::font_license));
         // Crawler-control and LLM-summary documents, served from the shared

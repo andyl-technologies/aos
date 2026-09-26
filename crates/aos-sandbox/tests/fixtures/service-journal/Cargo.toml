@@ -1,0 +1,15 @@
+[package]
+name = "aos-sandbox-service-journal-probe"
+version = "0.0.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+aos-sandbox = { workspace = true, features = ["cache-physical-join-vm-fixture"] }
+aos-sandbox-core.workspace = true
+ed25519-dalek.workspace = true
+rustix = { workspace = true, features = ["fs", "process"] }
+
+[lints]
+workspace = true

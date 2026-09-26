@@ -1,0 +1,4 @@
+# Mutations applied to network-kernel-plan-v1.hex; every result must fail.
+malformed replace 11 ff
+trailing append 00
+overflow replace 388 0101

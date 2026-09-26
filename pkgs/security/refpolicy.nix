@@ -9,11 +9,15 @@
   checkpolicy,
   semodule-utils,
   policycoreutils,
+  production ? false,
 }: let
   version = "2.20240916";
 in
   mkDerivation {
-    pname = "refpolicy";
+    pname =
+      if production
+      then "refpolicy-production"
+      else "refpolicy";
     inherit version;
 
     src = fetchurl {
@@ -52,7 +56,20 @@ in
       }
       {
         name = "configure";
-        script = ''
+        script =
+          (
+            if production
+            then ''
+              # Match the production kernel's ordered security-class map. The
+              # final-policy gate independently derives and verifies this map
+              # from the pinned kernel source.
+              patch -p1 < ${./_aos-selinux-production-policy/refpolicy-linux-6.18.33.patch}
+              sed -i 's/^UNK_PERMS.*/UNK_PERMS = reject/' build.conf
+
+            ''
+            else ""
+          )
+          + ''
           # Set policy build options
           sed -i \
             -e 's/^#\?DISTRO.*/DISTRO = redhat/' \
@@ -111,7 +128,10 @@ in
     ];
 
     meta = {
-      description = "SELinux Reference Policy — base SELinux policy";
+      description =
+        if production
+        then "SELinux Reference Policy with the production Linux security-class map"
+        else "SELinux Reference Policy — base SELinux policy";
       homepage = "https://github.com/SELinuxProject/refpolicy";
       license = "GPL-2.0-or-later";
     };

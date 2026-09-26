@@ -42,8 +42,14 @@ aos-maintain = { workspace = true }
 aos-release = { workspace = true }
 aos-image-finalizer = { workspace = true }
 aos-profile = { workspace = true }
+aos-sandbox = { workspace = true }
+aos-sandbox-core = { workspace = true }
+aos-proto = { workspace = true }
+buffa = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
+connectrpc = { workspace = true }
+http = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }

@@ -1,0 +1,14 @@
+[package]
+name = "aos-sandbox-source-provider-ledger"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+aos-sandbox-core.workspace = true
+aos-sandbox-source-provider-protocol.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

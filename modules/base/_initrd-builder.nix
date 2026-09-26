@@ -22,6 +22,8 @@
 ##!   8. The output of `generateUnits` for the rendered initrd units —
 ##!      `boot.initrd.systemd.services` etc. resolved through the stage-1
 ##!      ToUnit renderers.
+##!   9. An optional, preverified Mount executable carrier image, hash tree,
+##!      and root hash inside the signed stage-1 EROFS image.
 ##!
 ##! Arguments:
 ##!   pkgs          — AOS package set
@@ -34,8 +36,8 @@
 ##!                   systemd-networkd `.network` files (from the typed
 ##!                   `boot.initrd.systemd.network` tree); copied into
 ##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
-##!   keepBinutils — retain current binutils for signed UKI section inspection
-##!                  in recovery-enabled normal initrds.
+##!   mountExecutableCarrier — optional derivation with carrier.ext4,
+##!                   carrier.hash, and carrier.root-hash outputs.
 ##!
 ##! Output: $out/initrd.img (zstd-compressed newc cpio archive)
 {
@@ -47,11 +49,23 @@
   loadModules,
   initrdUnits,
   initrdExtraPackages ? [],
+  mountExecutableCarrier ? null,
   initrdNetworkDir ? null,
+  stage0Init ? null,
+  immutableSelinuxPolicy ? null,
   maskedUnits ? [],
   validateBootIdentity ? false,
-  keepBinutils ? false,
 }: let
+  immutableStage0 =
+    if stage0Init == null && immutableSelinuxPolicy == null
+    then false
+    else if stage0Init != null && immutableSelinuxPolicy != null
+    then true
+    else throw "initrd-builder: stage0Init and immutableSelinuxPolicy must be set together";
+  checkedMountExecutableCarrier =
+    if mountExecutableCarrier == null || immutableStage0
+    then mountExecutableCarrier
+    else throw "initrd-builder: Mount executable carrier requires immutable SELinux stage0";
   inherit
     (pkgs)
     bash
@@ -69,6 +83,16 @@
     util-linux
     zstd
     ;
+  policySupport = ../../pkgs/security/_aos-selinux-production-policy;
+  policyRoot =
+    if immutableSelinuxPolicy == null
+    then null
+    else "${immutableSelinuxPolicy}/etc/selinux/aos";
+  nativeErofsUtils = pkgs.buildPackages.erofs-utils;
+  nativeLibselinux = pkgs.buildPackages.libselinux;
+  nativePatchelf = pkgs.buildPackages.patchelf;
+  nativePython = pkgs.buildPackages.python3;
+  nativeCryptsetup = pkgs.buildPackages.cryptsetup;
   bootIdentityPackages = lib.optional validateBootIdentity pkgs.aos-boot-identity;
 
   # Packages whose full runtime closures are copied into the initrd's
@@ -90,7 +114,8 @@
     ++ bootIdentityPackages
     # Feature-specific closures injected by modules (e.g. the measured-boot
     # PCR-policy public key — RFC-0006 phase 3).
-    ++ initrdExtraPackages;
+    ++ initrdExtraPackages
+    ++ lib.optional immutableStage0 stage0Init;
 
   # Short /bin/<name> symlinks. A binary only needs to appear here if an
   # initrd unit (or a script invoked by one) references it as `/bin/foo`
@@ -352,12 +377,20 @@ in
     name = "aos-initrd";
     src = null;
 
-    buildDeps = [
-      cpio
-      zstd
-      coreutils
-      findutils
-    ];
+    buildDeps =
+      [
+        cpio
+        zstd
+        coreutils
+        findutils
+      ]
+      ++ lib.optionals immutableStage0 [
+        nativeErofsUtils
+        nativeLibselinux
+        nativePatchelf
+        nativePython
+      ]
+      ++ lib.optional (checkedMountExecutableCarrier != null) nativeCryptsetup;
 
     # `exportReferencesGraph` writes one file per package/name pair
     # containing that package's transitive runtime closure. Nix
@@ -781,9 +814,11 @@ in
                  root/nix/store/*-linux-headers-2.6.* \
                  root/nix/store/*-linux-*-dev \
                  root/nix/store/*-source
-          ${lib.optionalString (!keepBinutils) ''
-            rm -rf root/nix/store/*-binutils-2.41*
-          ''}
+          # Normal boot validates the signed command-line tuple directly and
+          # never inspects PE sections. Recovery owns its separate initrd and
+          # keeps objcopy there; retaining the full current binutils closure in
+          # this initrd would consume the fixed normal-boot artifact budget.
+          rm -rf root/nix/store/*-binutils-2.41*
 
           # util-linux: man pages, zsh completion, etc.
           find root/nix/store -maxdepth 2 -type d -name '*-util-linux-*' -print0 \
@@ -813,6 +848,154 @@ in
         script = ''
           set -euo pipefail
           mkdir -p $out
+
+          ${lib.optionalString immutableStage0 ''
+            echo "==> Building labeled immutable stage-1 EROFS"
+
+            ${lib.optionalString (checkedMountExecutableCarrier != null) ''
+              # The image and its Merkle tree enter the signed initrd together.
+              # The root hash is the fixed input for a later boot-time mapper;
+              # no executable authority is inferred from this build check.
+              carrier=${checkedMountExecutableCarrier}
+              if [ ! -d "$carrier" ] || [ -L "$carrier" ]; then
+                echo "initrd-builder: Mount carrier output is not a directory" >&2
+                exit 1
+              fi
+              for name in carrier.ext4 carrier.hash carrier.root-hash; do
+                if [ ! -f "$carrier/$name" ] || [ -L "$carrier/$name" ]; then
+                  echo "initrd-builder: Mount carrier $name is not a regular file" >&2
+                  exit 1
+                fi
+              done
+              test "$(stat -c %s "$carrier/carrier.ext4")" -gt 0
+              test "$(stat -c %s "$carrier/carrier.ext4")" -le 268435456
+              test "$(stat -c %s "$carrier/carrier.hash")" -gt 0
+              test "$(stat -c %s "$carrier/carrier.hash")" -le 8388608
+              test "$(stat -c %s "$carrier/carrier.root-hash")" -eq 65
+              LC_ALL=C ${grep}/bin/grep -Eq '^[0-9a-f]{64}$' \
+                "$carrier/carrier.root-hash"
+
+              ${nativeCryptsetup}/sbin/veritysetup dump \
+                "$carrier/carrier.hash" > carrier-verity-profile
+              LC_ALL=C ${grep}/bin/grep -Eq '^Hash type:[[:space:]]+1$' \
+                carrier-verity-profile
+              LC_ALL=C ${grep}/bin/grep -Eq '^Hash algorithm:[[:space:]]+sha256$' \
+                carrier-verity-profile
+              LC_ALL=C ${grep}/bin/grep -Eq '^Data block size:[[:space:]]+4096 \[bytes\]$' \
+                carrier-verity-profile
+              LC_ALL=C ${grep}/bin/grep -Eq '^Hash block size:[[:space:]]+4096 \[bytes\]$' \
+                carrier-verity-profile
+              data_blocks=$(${grep}/bin/grep '^Data blocks:' carrier-verity-profile \
+                | ${coreutils}/bin/tr -cd '0-9')
+              test -n "$data_blocks"
+              test "$data_blocks" -gt 0
+              test "$(stat -c %s "$carrier/carrier.ext4")" \
+                -eq "$((data_blocks * 4096))"
+
+              root_hash=$(${coreutils}/bin/cat "$carrier/carrier.root-hash")
+              ${nativeCryptsetup}/sbin/veritysetup verify \
+                "$carrier/carrier.ext4" "$carrier/carrier.hash" "$root_hash"
+
+              mkdir -p root/lib/aos/mount-executable-carrier
+              cp "$carrier/carrier.ext4" "$carrier/carrier.hash" \
+                "$carrier/carrier.root-hash" \
+                root/lib/aos/mount-executable-carrier/
+              chmod 0444 root/lib/aos/mount-executable-carrier/*
+            ''}
+
+            # Both conventional entry points resolve to the physical store
+            # objects that stage 0 verifies after loading the policy. Keep a
+            # /lib/systemd/systemd alias as an additional authoritative
+            # init_exec_t name while /usr remains the merged-/usr symlink.
+            ln -sfn ${stage0Init}/bin/aos-selinux-stage0 root/sbin/init
+            ln -sfn ${stage0Init}/bin/aos-selinux-stage0 root/init
+            ln -sfn ${systemd}/lib/systemd/systemd root/bin/systemd
+            ln -sfn ${systemd}/lib/systemd/systemd root/lib/systemd/systemd
+            mkdir -p root/sys/fs/selinux
+
+            systemd_interpreter=$(
+              ${nativePatchelf}/bin/patchelf --print-interpreter \
+                root${systemd}/lib/systemd/systemd
+            )
+            case "$systemd_interpreter" in
+              /nix/store/*) ;;
+              *)
+                echo "initrd-builder: systemd has a non-store ELF interpreter" >&2
+                exit 1
+                ;;
+            esac
+            if [ ! -f "root$systemd_interpreter" ]; then
+              echo "initrd-builder: staged systemd interpreter is absent" >&2
+              exit 1
+            fi
+
+            ${nativePython}/bin/python3 -B ${policySupport}/context_plan.py \
+              --root root \
+              --file-contexts ${policyRoot}/contexts/files/file_contexts \
+              --libselinux ${nativeLibselinux}/lib/libselinux.so.1 \
+              --dynamic-loader "$systemd_interpreter" \
+              --output-file-contexts exact-file-contexts \
+              --output-map expected-contexts.json
+            ${nativeLibselinux}/sbin/sefcontext_compile \
+              -p ${policyRoot}/policy/policy.33 \
+              -o exact-file-contexts.bin \
+              exact-file-contexts
+            ${nativePython}/bin/python3 -B \
+              ${policySupport}/verify_context_lookups.py \
+              --file-contexts exact-file-contexts \
+              --libselinux ${nativeLibselinux}/lib/libselinux.so.1 \
+              --expected expected-contexts.json
+
+            # The aliases above are useful only if the physical executable
+            # inodes received the exact label the PID-1 guard will demand.
+            ${nativePython}/bin/python3 -c '
+            import json, sys
+            expected = "system_u:object_r:init_exec_t"
+            entries = {
+                entry["path"]: entry for entry in
+                json.load(open(sys.argv[1], encoding="utf-8"))["entries"]
+            }
+            for path in sys.argv[2:]:
+                entry = entries.get(path)
+                if entry is None or entry["kind"] != "regular" or entry["context"] != expected:
+                    raise SystemExit(f"physical PID-1 executable is not exactly init_exec_t: {path}: {entry}")
+            ' \
+              expected-contexts.json \
+              ${stage0Init}/bin/aos-selinux-stage0 \
+              ${systemd}/lib/systemd/systemd
+
+            ${nativePython}/bin/python3 -B \
+              ${policySupport}/labeled_erofs_tar.py \
+              --root root \
+              --map expected-contexts.json \
+              --output stage1-labeled.tar
+            ${nativeErofsUtils}/bin/mkfs.erofs \
+              --all-root \
+              --tar=f \
+              -T0 \
+              -U bdfb6fc9-0000-4000-8000-000000000021 \
+              --workers=$NIX_BUILD_CORES \
+              -z zstd,level=19 \
+              aos-stage1.erofs \
+              stage1-labeled.tar
+            ${nativeErofsUtils}/bin/fsck.erofs aos-stage1.erofs
+            ${nativePython}/bin/python3 -B \
+              ${policySupport}/verify_erofs_contexts.py \
+              --dump-erofs ${nativeErofsUtils}/bin/dump.erofs \
+              --image aos-stage1.erofs \
+              --expected expected-contexts.json
+
+            # The outer newc archive is deliberately non-general: it contains
+            # only the static admission loader and the verified stage-1 image.
+            # No unlabeled stage-1 executable remains reachable before policy
+            # load and the kernel_t -> init_t transition.
+            mv root stage1-root
+            mkdir root
+            cp ${stage0Init}/bin/aos-selinux-stage0 root/init
+            cp aos-stage1.erofs root/aos-stage1.erofs
+            chmod 0555 root/init
+            chmod 0444 root/aos-stage1.erofs
+          ''}
 
           echo "==> Packing cpio archive"
           # Reproducible timestamps — every entry epoch 1.

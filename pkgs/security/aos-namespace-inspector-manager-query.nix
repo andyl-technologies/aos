@@ -1,0 +1,148 @@
+##! aos-namespace-inspector-manager-query — Bounded systemd 261 PID 1 query helpers
+{
+  lib,
+  mkDerivation,
+  stdenv,
+  pkg-config,
+  systemd,
+}: let
+  helperDirectory = builtins.path {
+    path = ./_aos-namespace-inspector-manager-query;
+    name = "aos-namespace-inspector-manager-query-source";
+  };
+  manifestDirectory = builtins.path {
+    path = ../../crates/aos-sandbox-network/src/namespace_inspector/manager_query;
+    name = "aos-namespace-inspector-manager-query-manifest";
+    filter = path: type:
+      type == "directory" || builtins.baseNameOf path == "systemd_v259_properties.def";
+  };
+  manifest = "${manifestDirectory}/systemd_v259_properties.def";
+  fixtureDirectory = builtins.path {
+    path = ../../tests/sandbox;
+    name = "aos-namespace-inspector-manager-query-fixture-source";
+    filter = path: type:
+      type == "directory"
+      || lib.hasPrefix "namespace-inspector-manager-query-fixture" (builtins.baseNameOf path)
+      || builtins.baseNameOf path == "broker-loader-environment-test.c";
+  };
+  helperSources = [
+    "${helperDirectory}/main.c"
+    "${helperDirectory}/protocol.c"
+    "${helperDirectory}/systemd-query.c"
+    "${helperDirectory}/fd-table.c"
+  ];
+  brokerSources = [
+    "${helperDirectory}/broker-query.c"
+    "${helperDirectory}/fd-table.c"
+  ];
+  fixtureSources = [
+    "${fixtureDirectory}/namespace-inspector-manager-query-fixture.c"
+    "${fixtureDirectory}/namespace-inspector-manager-query-fixture-bus.c"
+    "${fixtureDirectory}/namespace-inspector-manager-query-fixture-cases.c"
+  ];
+in
+  assert systemd.version == "261.2";
+    mkDerivation {
+      pname = "aos-namespace-inspector-manager-query";
+      version = "1";
+      src = null;
+
+      buildDeps = [pkg-config];
+      runtimeDeps = [systemd];
+      propagatedDeps = [];
+      disallowedReferences = [helperDirectory fixtureDirectory manifestDirectory];
+
+      phases = [
+        {
+          name = "build";
+          script = ''
+            helper=$out/libexec/aos-namespace-inspector-manager-query
+            common_flags="-std=c17 -O2 -Wall -Wextra -Werror"
+            include_flags="-I${helperDirectory} -I${fixtureDirectory} -I${manifestDirectory}"
+
+            $CC $common_flags $include_flags \
+              -DAOS_INSPECTOR_WORKER_MODE=1 \
+              -DAOS_BROKER_QUERY_PROGRAM="\"$helper\"" \
+              -c ${helperDirectory}/broker-query.c \
+              -o inspector-worker-query.o \
+              $(pkg-config --cflags libsystemd)
+
+            $CC $common_flags $include_flags \
+              -DAOS_MANAGER_QUERY_PROGRAM="\"$helper\"" \
+              ${lib.concatStringsSep " " (map toString helperSources)} \
+              inspector-worker-query.o \
+              -o aos-namespace-inspector-manager-query \
+              $(pkg-config --cflags --libs libsystemd)
+
+            broker_helper=$out/libexec/aos-network-broker-manager-query
+            $CC $common_flags $include_flags \
+              -DAOS_BROKER_QUERY_PROGRAM="\"$broker_helper\"" \
+              ${lib.concatStringsSep " " (map toString brokerSources)} \
+              -o aos-network-broker-manager-query \
+              $(pkg-config --cflags --libs libsystemd)
+
+            $CC $common_flags $include_flags \
+              ${lib.concatStringsSep " " (map toString fixtureSources)} \
+              -o namespace-inspector-manager-query-fixture \
+              $(pkg-config --cflags --libs libsystemd)
+
+            $CC $common_flags $include_flags \
+              -DAOS_BROKER_QUERY_PROGRAM="\"$broker_helper\"" \
+              ${fixtureDirectory}/broker-loader-environment-test.c \
+              ${helperDirectory}/fd-table.c \
+              -o broker-loader-environment-test \
+              $(pkg-config --cflags --libs libsystemd)
+          '';
+        }
+        {
+          name = "install";
+          script = ''
+            mkdir -p $out/libexec
+            cp aos-namespace-inspector-manager-query $out/libexec/
+            cp aos-network-broker-manager-query $out/libexec/
+          '';
+        }
+        {
+          name = "check";
+          script = lib.optionalString (!stdenv.isCross) ''
+            ./broker-loader-environment-test
+
+            ./namespace-inspector-manager-query-fixture \
+              $out/libexec/aos-namespace-inspector-manager-query
+
+            # The broker mode is separately linked and has no ambient entry.
+            broker_status=0
+            $out/libexec/aos-network-broker-manager-query || broker_status=$?
+            test "$broker_status" -eq 254
+          '';
+        }
+      ];
+
+      passthru.evidenceSources =
+        map
+        (source:
+          builtins.path {
+            path = source;
+            # The basename is a store object label, not a reference to its
+            # containing source tree; preserve the context on `path` only.
+            name = builtins.baseNameOf (builtins.unsafeDiscardStringContext source);
+          })
+        (
+          helperSources
+          ++ brokerSources
+          ++ fixtureSources
+          ++ [
+            "${helperDirectory}/helper.h"
+            "${fixtureDirectory}/namespace-inspector-manager-query-fixture.h"
+            "${fixtureDirectory}/broker-loader-environment-test.c"
+            manifest
+            ./aos-namespace-inspector-manager-query.nix
+          ]
+        );
+
+      meta = {
+        description = "Bounded inspector and broker systemd PID 1 query helpers";
+        license = "Apache-2.0";
+        platforms = ["x86_64-linux" "aarch64-linux"];
+      };
+    }
