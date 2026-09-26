@@ -1,5 +1,6 @@
 ##! mozjpeg — JPEG encoder and decoder used by source-built Sharp/libvips.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -42,6 +43,64 @@ in
       role = "public-package";
     };
     pname = "mozjpeg";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A two-by-two red PPM bitmap.";
+        operation = "Encode it as JPEG and decode it back to PPM.";
+        expected = "All decoded pixels remain predominantly red.";
+        files."probe.ppm" = "P3\n2 2\n255\n255 0 0 255 0 0\n255 0 0 255 0 0\n";
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/cjpeg" "-quality" "95" "-outfile" "probe.jpg" "probe.ppm"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = ["@out@/bin/djpeg" "-outfile" "decoded.ppm" "probe.jpg"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                from pathlib import Path
+
+                header, dimensions, max_value, pixels = Path("decoded.ppm").read_bytes().split(b"\n", 3)
+                assert (header, dimensions, max_value) == (b"P6", b"2 2", b"255")
+                assert len(pixels) == 12
+                for offset in range(0, len(pixels), 3):
+                    red, green, blue = pixels[offset:offset + 3]
+                    assert red >= 240 and green <= 16 and blue <= 16
+                print("mozjpeg image round trip passed")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "mozjpeg image round trip passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "Bytes that do not contain a JPEG image.";
+        operation = "Attempt to decode them with djpeg.";
+        expected = "The decoder rejects the invalid image.";
+        files."broken.jpg" = "not JPEG\n";
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/djpeg" "-outfile" "broken.ppm" "broken.jpg"];
+            exit_code = 1;
+            observes_rejection = true;
+            stdout.exact = "";
+          }
+        ];
+      };
+    };
     inherit version src;
 
     buildDeps =
