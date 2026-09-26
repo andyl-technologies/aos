@@ -23,6 +23,8 @@ impl CampaignRepository {
         parent: &LoadedSnapshot,
         child: &CampaignSnapshot,
     ) -> Result<usize, CampaignRepositoryError> {
+        // Bounded finite Issues may publish several admissions at once. Charge
+        // the actual changed trie positions and their newly linked leaf closure.
         let prior = parent.snapshot.roots();
         let next = child.roots();
         if prior.graph != next.graph

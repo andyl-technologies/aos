@@ -3,6 +3,9 @@
 use super::*;
 use crate::{BranchBudget, ProbabilityModelId};
 
+// The canonical frontier planner emits at most this many finite choices in one Issue.
+const MAX_SIMPLE_FINITE_ISSUE_PROPOSALS: usize = 16;
+
 #[derive(Clone, Debug)]
 pub(super) struct PlannerIssueProjection {
     pub exploration: ContentId,
@@ -429,6 +432,7 @@ impl CampaignRepository {
                 &mut exploration_upserts,
                 proposal,
                 proposal_content,
+                &proposals[..proposal_index],
             )?;
             proposal_ids.push(proposal_id);
         }
@@ -663,9 +667,11 @@ impl CampaignRepository {
             self.frontier_index_after(prior_exploration, &projections, mode.publishes())?;
         exploration_upserts.insert(frontier_index_anchor_key(), next_frontier);
 
+        // Every proposal has passed source-order and consecutive-ordinal checks
+        // above. The closure walker can charge their combined authenticated delta.
         let simple_finite_issue = matches!(selected_request.source(), CandidateSource::Finite(_))
             && branch_requests.is_empty()
-            && proposals.len() == 1
+            && (1..=MAX_SIMPLE_FINITE_ISSUE_PROPOSALS).contains(&proposals.len())
             && projections.len() == 1
             && feedback_projection.is_none();
         let exploration =
@@ -872,6 +878,7 @@ impl CampaignRepository {
         upserts: &mut BTreeMap<CampaignHash, ContentId>,
         proposal: &Proposal,
         proposal_content: ContentId,
+        previous_proposals: &[Proposal],
     ) -> Result<(), CampaignRepositoryError> {
         let proposal_key = map_key_content("exploration.proposal", proposal_content);
         let ordinal_key = proposal_ordinal_key(proposal.request(), proposal.ordinal());
@@ -890,7 +897,16 @@ impl CampaignRepository {
             let prior_content = self
                 .overlay_get(prior, upserts, prior_key)?
                 .ok_or_else(|| integrity("planner-issue-skipped-proposal-ordinal"))?;
-            let prior_proposal = self.decode_proposal(prior_content)?;
+            // Preflight has not published earlier proposals in this Issue.
+            // Their IDs were authenticated while building the overlay above.
+            let prior_proposal = if let Some(previous) = previous_proposals.last() {
+                if previous.id()?.content_id() != prior_content {
+                    return Err(integrity("planner-issue-proposal-predecessor-mismatch"));
+                }
+                previous.clone()
+            } else {
+                self.decode_proposal(prior_content)?
+            };
             if prior_proposal.request() != proposal.request()
                 || prior_proposal.ordinal().checked_add(1) != Some(proposal.ordinal())
             {
