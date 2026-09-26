@@ -1323,8 +1323,8 @@ def build_gcc_assembler(work, env, gcc, assembler, wrapper, value):
 
 def check_gcc_compiler_prefix(root, env, accache, sccache, gcc, hits,
                               fixture, option, directory=False, separated=False,
-                              compiler_path=False):
-    """Hash an assembler selected by a GCC option or COMPILER_PATH."""
+                              compiler_path=False, exec_prefix=False):
+    """Hash an assembler selected by a GCC option or environment prefix."""
     work = root / fixture
     work.mkdir()
     (work / "tools").mkdir()
@@ -1337,9 +1337,26 @@ def check_gcc_compiler_prefix(root, env, accache, sccache, gcc, hits,
     wrapper = work / "tools" / tool_name
     object_file = work / "source.o"
     prefix = str(work / "tools") + "/" if directory else str(work / "tools/prefix-")
-    selected = [] if compiler_path else ([option, prefix] if separated else [option + prefix])
+    selected = [] if compiler_path or exec_prefix else (
+        [option, prefix] if separated else [option + prefix])
     args = [gcc, *selected, "-c", "source.S", "-o", "source.o"]
-    compile_env = env | {"COMPILER_PATH": str(work / "tools")} if compiler_path else env
+    compile_env = env
+    if compiler_path:
+        compile_env = env | {"COMPILER_PATH": str(work / "tools")}
+    if exec_prefix:
+        # GCC derives libexec/gcc search paths from GCC_EXEC_PREFIX. Its cc1
+        # must remain available there while this fixture changes only as.
+        frontend = subprocess.check_output(
+            [gcc, "-print-prog-name=cc1"], cwd=work, env=env, text=True).strip()
+        assert Path(frontend).is_file(), (fixture, frontend)
+        toolchain = work / "toolchain"
+        (toolchain / "lib/gcc").mkdir(parents=True)
+        relative = Path(frontend).parent.relative_to(Path(gcc).parents[1] / "libexec/gcc")
+        subprograms = toolchain / "libexec/gcc" / relative
+        subprograms.mkdir(parents=True)
+        (subprograms / "cc1").symlink_to(frontend)
+        wrapper = subprograms / "as"
+        compile_env = env | {"GCC_EXEC_PREFIX": str(toolchain / "lib/gcc") + "/"}
 
     def compile_object(command):
         object_file.unlink(missing_ok=True)
@@ -4104,16 +4121,17 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
         results.append(check_assembler_include_invalidation(root, env, accache,
                                                             sccache, gcc, hits))
         results.extend(check_gcc_nested_specs(root, env, accache, sccache, gcc, hits))
-        for fixture, option, directory, separated, compiler_path in [
-            ("gcc-file-prefix-assembler", "-B", False, False, False),
-            ("gcc-long-prefix-assembler", "--prefix=", False, False, False),
-            ("gcc-directory-prefix-assembler", "-B", True, False, False),
-            ("gcc-separated-directory-prefix-assembler", "-B", True, True, False),
-            ("gcc-compiler-path-assembler", "", False, False, True),
+        for fixture, option, directory, separated, compiler_path, exec_prefix in [
+            ("gcc-file-prefix-assembler", "-B", False, False, False, False),
+            ("gcc-long-prefix-assembler", "--prefix=", False, False, False, False),
+            ("gcc-directory-prefix-assembler", "-B", True, False, False, False),
+            ("gcc-separated-directory-prefix-assembler", "-B", True, True, False, False),
+            ("gcc-compiler-path-assembler", "", False, False, True, False),
+            ("gcc-exec-prefix-assembler", "", False, False, False, True),
         ]:
             results.extend(check_gcc_compiler_prefix(
                 root, env, accache, sccache, raw_gcc, hits,
-                fixture, option, directory, separated, compiler_path))
+                fixture, option, directory, separated, compiler_path, exec_prefix))
         results.extend(check_gcc_compiler_path_precedence(
             root, env, accache, sccache, raw_gcc, hits))
         results.extend(check_gcc_profile_note_outputs(root, env, accache,
