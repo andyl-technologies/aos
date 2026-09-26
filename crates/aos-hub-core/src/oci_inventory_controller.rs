@@ -34,6 +34,7 @@ const MAX_OCI_INVENTORY_OBJECT_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_PLACEMENTS_PER_PASS: usize = 100;
 const INVENTORY_CLAIM_LEASE_SECONDS: i64 = 60 * 60;
 const INVENTORY_PAGE_SIZE: usize = 1;
+const OCI_BLOB_PREFIX: &str = "oci/blobs/sha256/";
 
 /// Native provider work admitted by one maintenance dispatch.
 pub const NATIVE_OCI_INVENTORY_DISPATCH_BUDGET: OciInventoryDispatchBudget =
@@ -612,7 +613,11 @@ impl OciProviderInventoryController {
             let requested_cursor = cursor.clone();
             let Some(page) = before_dispatch_deadline(
                 dispatch,
-                fetch.list_page(requested_cursor.as_deref(), page_limit),
+                fetch.list_page_with_prefix(
+                    OCI_BLOB_PREFIX,
+                    requested_cursor.as_deref(),
+                    page_limit,
+                ),
             )
             .await?
             else {

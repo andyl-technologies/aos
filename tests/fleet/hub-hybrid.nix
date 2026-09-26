@@ -898,7 +898,22 @@ in {
       ])
       parallel_commands.append('wait "$native_pid"')
       parallel_commands.append('for pid in $pids; do wait "$pid"; done')
-      client.succeed("\n".join(parallel_commands), timeout=180)
+      try:
+          client.succeed("\n".join(parallel_commands), timeout=180)
+      except Exception:
+          print("hybrid Worker memory after parallel upload failure:", worker.succeed(
+              "cat /proc/meminfo | head -n 8"
+          ))
+          print("hybrid Worker processes after parallel upload failure:", worker.succeed(
+              "ps -eo pid,rss,comm,args | tail -n 25 || true"
+          ))
+          print("hybrid Worker logs after parallel upload failure:", worker.succeed(
+              "tail -n 120 /var/lib/hybrid-worker/wrangler.log"
+          ))
+          print("hybrid Worker kernel logs after parallel upload failure:", worker.succeed(
+              "journalctl -k --no-pager -n 60"
+          ))
+          raise
 
       loaded_samples = client.succeed("cat /tmp/hybrid-parallel-pages").splitlines()
       assert len(loaded_samples) == 25, loaded_samples
@@ -1122,6 +1137,17 @@ in {
           f"-c {shlex.quote(inventory_query)})\" = 1",
           timeout=240,
       )
+      inventory_pages = int(native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          "-c \"SELECT generation.checkpoint_ordinal "
+          "FROM oci_provider_inventory_generations generation "
+          "JOIN oci_provider_inventory_heads head "
+          "ON head.generation_id = generation.id "
+          "JOIN oci_provider_inventory_entries entry "
+          "ON entry.generation_id = generation.id "
+          f"WHERE entry.object_key = 'oci/blobs/sha256/{publication_digest}'\""
+      ).strip())
+      assert inventory_pages <= 16, inventory_pages
 
       durations = [
           float(client.succeed(f"cat /tmp/hybrid-parallel-{index}.time").strip())

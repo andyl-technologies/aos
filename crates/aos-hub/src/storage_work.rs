@@ -1106,6 +1106,15 @@ impl SurfaceFetch for HybridSurfaceFetch {
     }
 
     async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
+        self.list_page_with_prefix("", cursor, limit).await
+    }
+
+    async fn list_page_with_prefix(
+        &self,
+        prefix: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<SurfaceListPage> {
         anyhow::ensure!(
             (1..=1000).contains(&limit),
             "hybrid listing page limit is invalid"
@@ -1116,7 +1125,7 @@ impl SurfaceFetch for HybridSurfaceFetch {
                 &self.placement,
                 &self.binding,
                 StorageWorkOperation::ListPage {
-                    prefix: String::new(),
+                    prefix: prefix.to_owned(),
                     cursor: cursor.map(str::to_owned),
                     limit: page_limit,
                 },

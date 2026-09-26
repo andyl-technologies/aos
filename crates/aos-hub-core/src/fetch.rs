@@ -590,6 +590,24 @@ pub trait SurfaceFetch: BackendBounds {
         )
     }
 
+    /// Lists a page using a provider-side prefix when the backend supports it.
+    ///
+    /// A backend may ignore the hint and return a full-surface page. Callers
+    /// must still validate and filter every returned path. The cursor belongs
+    /// to the same prefix walk for the lifetime of one inventory generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when listing fails or the backend rejects the cursor.
+    async fn list_page_with_prefix(
+        &self,
+        _prefix: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<SurfaceListPage> {
+        self.list_page(cursor, limit).await
+    }
+
     /// Returns a backend-issued strong entity tag for one object, when available.
     ///
     /// Implementations must return `None` for weak tags. A backend may return
