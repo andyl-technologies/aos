@@ -6,6 +6,7 @@
   version = "6.0.53";
   source = ./sources/tomcat-annotations-6.0.53;
   target = "org/apache/tomcat/tomcat-annotations-api/${version}/tomcat-annotations-api-${version}.jar";
+  legacyTarget = "org/apache/tomcat/annotations-api/${version}/annotations-api-${version}.jar";
   buildJdk = buildPackages.openjdk-17;
 in
   mkDerivation {
@@ -13,7 +14,7 @@ in
     inherit version;
     src = source;
 
-    passthru.sourceTargets = [target];
+    passthru.sourceTargets = [target legacyTarget];
 
     buildDeps = [buildJdk buildPackages.findutils buildPackages.python3];
     runtimeDeps = [];
@@ -82,9 +83,12 @@ in
       {
         name = "install";
         script = ''
-          mkdir -p "$out/maven/$(dirname '${target}')" "$out/share/licenses/tomcat"
+          mkdir -p "$out/maven/$(dirname '${target}')" \
+            "$out/maven/$(dirname '${legacyTarget}')" "$out/share/licenses/tomcat"
           jar --create --file "$out/maven/${target}" \
             --no-manifest --date=1980-01-01T00:00:02Z -C classes .
+          # Tomcat 6 published this same annotation API under its older Maven coordinate.
+          cp "$out/maven/${target}" "$out/maven/${legacyTarget}"
           cp "$src/LICENSE" "$src/NOTICE" "$out/share/licenses/tomcat/"
         '';
       }
