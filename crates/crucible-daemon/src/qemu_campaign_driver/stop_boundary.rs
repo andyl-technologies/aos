@@ -70,7 +70,7 @@ pub(super) fn reached_requested_stop(
                 }) if marker.name == *name
             )
         }),
-        StopCondition::VirtualTimeNanoseconds(deadline) => outcome.frontier.ticks >= *deadline,
+        StopCondition::VirtualTimePicoseconds(deadline) => outcome.frontier.ticks >= *deadline,
         StopCondition::EventCount(count) => observed_event_count
             .checked_add(outcome.event_log_entries.len())
             .and_then(|events| u64::try_from(events).ok())
@@ -78,10 +78,10 @@ pub(super) fn reached_requested_stop(
         StopCondition::Terminal => false,
         StopCondition::ExecutionQuanta(bound) => completed_quanta >= bound,
         StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_nanoseconds,
+            virtual_time_picoseconds,
             execution_quanta,
         } => {
-            outcome.frontier.ticks >= *virtual_time_nanoseconds
+            outcome.frontier.ticks >= *virtual_time_picoseconds
                 || completed_quanta >= execution_quanta
         }
         StopCondition::Observation(condition) => {
@@ -113,7 +113,7 @@ pub(super) fn policy_timeout_at(
     completed_quanta: u64,
 ) -> Option<ModeledStop> {
     let StopCondition::Bounded {
-        virtual_time_nanoseconds,
+        virtual_time_picoseconds,
         execution_quanta,
         ..
     } = requested
@@ -121,7 +121,7 @@ pub(super) fn policy_timeout_at(
         return None;
     };
     let proof = BoundedStopProof::new(frontier.ticks, completed_quanta);
-    let kind = if virtual_time_nanoseconds.is_some_and(|deadline| frontier.ticks >= deadline) {
+    let kind = if virtual_time_picoseconds.is_some_and(|deadline| frontier.ticks >= deadline) {
         PolicyTimeoutKind::VirtualTime
     } else if execution_quanta.is_some_and(|deadline| completed_quanta >= deadline) {
         PolicyTimeoutKind::ExecutionQuanta

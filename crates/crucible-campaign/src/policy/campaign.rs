@@ -181,12 +181,12 @@ impl Canonical for RetentionPolicy {
 
 /// Canonical modeled attempt deadline and optional operational host watchdog.
 ///
-/// The virtual-time and quantum bounds are absolute coordinates from scenario
+/// The picosecond and quantum bounds are absolute coordinates from scenario
 /// genesis. The host watchdog is local supervision and cannot produce modeled
 /// evidence or a campaign finding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CampaignAttemptTimeoutPolicy {
-    virtual_time_nanoseconds: Option<u64>,
+    virtual_time_picoseconds: Option<u64>,
     execution_quanta: Option<u64>,
     host_completion_watchdog_ms: Option<u64>,
 }
@@ -199,16 +199,16 @@ impl CampaignAttemptTimeoutPolicy {
     /// Returns [`CampaignCodecError::InvalidValue`] for absent or zero modeled
     /// bounds, or a zero host watchdog.
     pub fn new(
-        virtual_time_nanoseconds: Option<u64>,
+        virtual_time_picoseconds: Option<u64>,
         execution_quanta: Option<u64>,
         host_completion_watchdog_ms: Option<u64>,
     ) -> Result<Self, CampaignCodecError> {
-        if virtual_time_nanoseconds.is_none() && execution_quanta.is_none() {
+        if virtual_time_picoseconds.is_none() && execution_quanta.is_none() {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "attempt timeout policy has no modeled bound",
             });
         }
-        if virtual_time_nanoseconds == Some(0) || execution_quanta == Some(0) {
+        if virtual_time_picoseconds == Some(0) || execution_quanta == Some(0) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "attempt timeout policy has a zero modeled bound",
             });
@@ -219,16 +219,16 @@ impl CampaignAttemptTimeoutPolicy {
             });
         }
         Ok(Self {
-            virtual_time_nanoseconds,
+            virtual_time_picoseconds,
             execution_quanta,
             host_completion_watchdog_ms,
         })
     }
 
-    /// Returns the absolute deterministic virtual-time deadline.
+    /// Returns the absolute deterministic virtual-time deadline in picoseconds.
     #[must_use]
-    pub const fn virtual_time_nanoseconds(self) -> Option<u64> {
-        self.virtual_time_nanoseconds
+    pub const fn virtual_time_picoseconds(self) -> Option<u64> {
+        self.virtual_time_picoseconds
     }
 
     /// Returns the absolute deterministic scheduler-quantum deadline.
@@ -246,7 +246,7 @@ impl CampaignAttemptTimeoutPolicy {
 
 impl Canonical for CampaignAttemptTimeoutPolicy {
     fn encode(&self, encoder: &mut Encoder) {
-        self.virtual_time_nanoseconds.encode(encoder);
+        self.virtual_time_picoseconds.encode(encoder);
         self.execution_quanta.encode(encoder);
         self.host_completion_watchdog_ms.encode(encoder);
     }
@@ -773,7 +773,7 @@ impl CampaignPolicy {
         match self.attempt_timeout_policy {
             Some(timeout) => crate::StopCondition::bounded(
                 primary,
-                timeout.virtual_time_nanoseconds(),
+                timeout.virtual_time_picoseconds(),
                 timeout.execution_quanta(),
             ),
             None => {

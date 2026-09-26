@@ -351,7 +351,7 @@ signal = "coverage-rarity"
 weight_micros = 500000
 
 [attempt_timeout]
-virtual_time_nanoseconds = 10000000000
+virtual_time_picoseconds = 10000000000000
 execution_quanta = 1000000
 host_completion_watchdog_ms = 120000
 
@@ -366,8 +366,9 @@ exact_findings = true
 exact_user_pins = true
 ```
 
-`[attempt_timeout]` is optional. When present, it requires a positive virtual-time
-bound, a positive execution-quantum bound, or both. Reaching a modeled bound
+`[attempt_timeout]` is optional. When present, it requires a positive absolute
+virtual-time coordinate in picoseconds, a positive execution-quantum bound, or
+both. The example sets a 10-second virtual-time deadline. Reaching a modeled bound
 records an authenticated `PolicyTimeout` outcome in the campaign Observation,
 subject to terminal and assertion outcome precedence. Campaign logic can
 handle that result; no timer event is delivered inside the guest.

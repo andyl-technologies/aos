@@ -396,7 +396,7 @@ fn explicit_discovery_with_execution_quanta_is_cold_recomputable() {
     let (repository, lineage, policy) = fixture();
     let head = running_discovery_head(&repository, "explicit-quanta", &lineage, &policy, true);
     let stop = StopCondition::VirtualTimeOrExecutionQuanta {
-        virtual_time_nanoseconds: 20,
+        virtual_time_picoseconds: 20,
         execution_quanta: 3,
     };
     let request = DiscoveryRequest::new(

@@ -213,7 +213,7 @@ version-three TOML schema names the exact scenario semantic ID, 32-byte lowercas
 hexadecimal seed, campaign mode, one closed explorer variant, ordered choice
 generator references, objectives, guidance weights, stop conditions, fairness,
 retention, default-admission intent, and optional `[attempt_timeout]` modeled
-virtual-time/quantum bounds and host watchdog. The compiler admits at most 16 MiB,
+absolute picosecond/quantum bounds and host watchdog. The compiler admits at most 16 MiB,
 rejects unknown fields and duplicate semantic keys, constructs the public typed
 policy values so every canonical invariant is shared with repository decoding,
 and only then durably installs a new canonical binary record without replacing
@@ -339,7 +339,7 @@ crucible campaign branch NAME --expected SNAPSHOT \
 The ordinary `branch` forms publish an additive finite or generated
 `BranchRequest` with an exact operator command cause. Values use the closed
 `true`, `false`, `i64:N`, `u64:N`, or `discrete:ALTERNATIVE_ID` grammar. Stop conditions use
-`next-choice`, `terminal`, `boundary:NAME`, `virtual-time-ns:N`, `events:N`,
+`next-choice`, `terminal`, `boundary:NAME`, `virtual-time-ps:N`, `events:N`,
 `execution-quanta:N`, or
 `virtual-time-or-execution-quanta:TIME_NANOSECONDS:QUANTA`. Both execution-
 quanta forms use a nonzero absolute scheduler coordinate from scenario genesis.

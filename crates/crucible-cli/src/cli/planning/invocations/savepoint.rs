@@ -395,7 +395,7 @@ fn validate_savepoint_boundary_proof(
         | SavepointBoundaryProof::Breakpoint { frontier_ticks, .. }
         | SavepointBoundaryProof::CampaignMarkerEvent { frontier_ticks, .. } => *frontier_ticks,
         SavepointBoundaryProof::CampaignObservation { proof, .. } => {
-            proof.boundary().frontier_nanoseconds()
+            proof.boundary().frontier_picoseconds()
         }
     };
     if proof_frontier != anchor.frontier_ticks {

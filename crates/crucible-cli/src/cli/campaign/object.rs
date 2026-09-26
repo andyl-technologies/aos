@@ -431,15 +431,15 @@ pub(super) fn campaign_stop_condition_label(stop: &StopCondition) -> String {
     match stop {
         StopCondition::NextChoice => String::from("next-choice"),
         StopCondition::NamedBoundary(value) => format!("boundary:{value}"),
-        StopCondition::VirtualTimeNanoseconds(value) => format!("virtual-time-ns:{value}"),
+        StopCondition::VirtualTimePicoseconds(value) => format!("virtual-time-ps:{value}"),
         StopCondition::EventCount(value) => format!("events:{value}"),
         StopCondition::Terminal => String::from("terminal"),
         StopCondition::ExecutionQuanta(value) => format!("execution-quanta:{value}"),
         StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_nanoseconds,
+            virtual_time_picoseconds,
             execution_quanta,
         } => format!(
-            "virtual-time-or-execution-quanta:{virtual_time_nanoseconds}:{execution_quanta}"
+            "virtual-time-or-execution-quanta:{virtual_time_picoseconds}:{execution_quanta}"
         ),
         StopCondition::Observation(ObservationCondition::SchedulerQuiescent) => {
             String::from("observation:scheduler-quiescent")
@@ -458,15 +458,15 @@ pub(super) fn campaign_stop_condition_label(stop: &StopCondition) -> String {
         }
         StopCondition::Bounded {
             primary,
-            virtual_time_nanoseconds,
+            virtual_time_picoseconds,
             execution_quanta,
         } => {
-            let virtual_time = virtual_time_nanoseconds
+            let virtual_time = virtual_time_picoseconds
                 .map_or_else(|| String::from("none"), |value| value.to_string());
             let quanta =
                 execution_quanta.map_or_else(|| String::from("none"), |value| value.to_string());
             format!(
-                "bounded:{}:virtual-time-ns={virtual_time}:execution-quanta={quanta}",
+                "bounded:{}:virtual-time-ps={virtual_time}:execution-quanta={quanta}",
                 campaign_stop_condition_label(primary)
             )
         }

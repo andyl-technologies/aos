@@ -84,7 +84,7 @@ fn policy_timeout_capture_authenticates_host_marker_after_native_qemu_log() {
     let policy = (
         StopCondition::Bounded {
             primary: Box::new(StopCondition::NextChoice),
-            virtual_time_nanoseconds: Some(frontier.ticks),
+            virtual_time_picoseconds: Some(frontier.ticks),
             execution_quanta: None,
         },
         PolicyTimeoutKind::VirtualTime,

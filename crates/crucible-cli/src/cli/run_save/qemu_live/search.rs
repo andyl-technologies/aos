@@ -851,7 +851,7 @@ fn accepted_observation_outcome(accepted: &GuardedDefaultCampaignObservation) ->
         StopOutcome::GuestCrash(_) => OutcomeKind::Crashed,
         StopOutcome::Reached(_) | StopOutcome::TerminalSuccess => OutcomeKind::Passed,
         StopOutcome::BoundedPrimaryReached { stop, .. } => match stop.primary() {
-            StopCondition::VirtualTimeNanoseconds(_)
+            StopCondition::VirtualTimePicoseconds(_)
             | StopCondition::ExecutionQuanta(_)
             | StopCondition::VirtualTimeOrExecutionQuanta { .. } => OutcomeKind::Timeout,
             _ => OutcomeKind::Passed,
@@ -957,21 +957,21 @@ fn accepted_stop_label(stop: &StopOutcome) -> String {
     match stop {
         StopOutcome::Reached(condition) => format!("reached:{condition:?}"),
         StopOutcome::BoundedPrimaryReached { stop, proof } => format!(
-            "bounded-primary-reached:{:?}:frontier-ns={}:quanta={}",
+            "bounded-primary-reached:{:?}:frontier-ps={}:quanta={}",
             stop.primary(),
-            proof.frontier_nanoseconds(),
+            proof.frontier_picoseconds(),
             proof.completed_quanta()
         ),
         StopOutcome::BoundedPrimaryTimeout { stop, proof } => format!(
-            "bounded-primary-timeout:{:?}:frontier-ns={}:quanta={}",
+            "bounded-primary-timeout:{:?}:frontier-ps={}:quanta={}",
             stop.primary(),
-            proof.frontier_nanoseconds(),
+            proof.frontier_picoseconds(),
             proof.completed_quanta()
         ),
         StopOutcome::PolicyTimeout { stop, kind, proof } => format!(
-            "policy-timeout:{kind:?}:{:?}:frontier-ns={}:quanta={}",
+            "policy-timeout:{kind:?}:{:?}:frontier-ps={}:quanta={}",
             stop.primary(),
-            proof.frontier_nanoseconds(),
+            proof.frontier_picoseconds(),
             proof.completed_quanta()
         ),
         StopOutcome::TerminalSuccess => String::from("terminal-success"),

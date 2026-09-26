@@ -131,8 +131,8 @@ pub enum StopCondition {
     NextChoice,
     /// Stop at a scenario-declared semantic boundary.
     NamedBoundary(String),
-    /// Stop at a deterministic virtual-time deadline in nanoseconds.
-    VirtualTimeNanoseconds(u64),
+    /// Stop at a deterministic virtual-time deadline in picoseconds.
+    VirtualTimePicoseconds(u64),
     /// Stop after a deterministic modeled event count.
     EventCount(u64),
     /// Run until a modeled terminal outcome.
@@ -141,8 +141,8 @@ pub enum StopCondition {
     ExecutionQuanta(u64),
     /// Stop when either absolute virtual time or scheduler quanta reaches its bound.
     VirtualTimeOrExecutionQuanta {
-        /// Deterministic virtual-time deadline in nanoseconds.
-        virtual_time_nanoseconds: u64,
+        /// Deterministic virtual-time deadline in picoseconds.
+        virtual_time_picoseconds: u64,
         /// Absolute scheduler-quantum coordinate from scenario genesis.
         execution_quanta: u64,
     },
@@ -157,8 +157,8 @@ pub enum StopCondition {
     Bounded {
         /// The original semantic boundary, retained for exact replay.
         primary: Box<StopCondition>,
-        /// Absolute virtual-time deadline in nanoseconds, if configured.
-        virtual_time_nanoseconds: Option<u64>,
+        /// Absolute virtual-time deadline in picoseconds, if configured.
+        virtual_time_picoseconds: Option<u64>,
         /// Absolute scheduler-quantum deadline, if configured.
         execution_quanta: Option<u64>,
     },
@@ -173,12 +173,12 @@ impl StopCondition {
     /// nested policy deadline, or an invalid primary stop.
     pub fn bounded(
         primary: Self,
-        virtual_time_nanoseconds: Option<u64>,
+        virtual_time_picoseconds: Option<u64>,
         execution_quanta: Option<u64>,
     ) -> Result<Self, CampaignCodecError> {
         let bounded = Self::Bounded {
             primary: Box::new(primary),
-            virtual_time_nanoseconds,
+            virtual_time_picoseconds,
             execution_quanta,
         };
         bounded.validate()?;
@@ -199,10 +199,10 @@ impl StopCondition {
     pub const fn bounded_deadlines(&self) -> Option<(Option<u64>, Option<u64>)> {
         match self {
             Self::Bounded {
-                virtual_time_nanoseconds,
+                virtual_time_picoseconds,
                 execution_quanta,
                 ..
-            } => Some((*virtual_time_nanoseconds, *execution_quanta)),
+            } => Some((*virtual_time_picoseconds, *execution_quanta)),
             _ => None,
         }
     }
@@ -219,11 +219,11 @@ impl StopCondition {
     pub(crate) fn validate(&self) -> Result<(), CampaignCodecError> {
         match self {
             Self::NamedBoundary(name) => validate_identifier(name, "stop boundary is invalid"),
-            Self::VirtualTimeNanoseconds(0)
+            Self::VirtualTimePicoseconds(0)
             | Self::EventCount(0)
             | Self::ExecutionQuanta(0)
             | Self::VirtualTimeOrExecutionQuanta {
-                virtual_time_nanoseconds: 0,
+                virtual_time_picoseconds: 0,
                 ..
             }
             | Self::VirtualTimeOrExecutionQuanta {
@@ -237,12 +237,12 @@ impl StopCondition {
             }),
             Self::Bounded {
                 primary,
-                virtual_time_nanoseconds,
+                virtual_time_picoseconds,
                 execution_quanta,
             } => {
                 if matches!(primary.as_ref(), Self::Bounded { .. })
-                    || (virtual_time_nanoseconds.is_none() && execution_quanta.is_none())
-                    || *virtual_time_nanoseconds == Some(0)
+                    || (virtual_time_picoseconds.is_none() && execution_quanta.is_none())
+                    || *virtual_time_picoseconds == Some(0)
                     || *execution_quanta == Some(0)
                 {
                     return Err(CampaignCodecError::InvalidValue {
@@ -265,7 +265,7 @@ impl Canonical for StopCondition {
                 encoder.u8(1);
                 name.encode(encoder);
             }
-            Self::VirtualTimeNanoseconds(value) => {
+            Self::VirtualTimePicoseconds(value) => {
                 encoder.u8(2);
                 value.encode(encoder);
             }
@@ -279,11 +279,11 @@ impl Canonical for StopCondition {
                 value.encode(encoder);
             }
             Self::VirtualTimeOrExecutionQuanta {
-                virtual_time_nanoseconds,
+                virtual_time_picoseconds,
                 execution_quanta,
             } => {
                 encoder.u8(6);
-                virtual_time_nanoseconds.encode(encoder);
+                virtual_time_picoseconds.encode(encoder);
                 execution_quanta.encode(encoder);
             }
             Self::NextChoiceOrExecutionQuanta { execution_quanta } => {
@@ -296,12 +296,12 @@ impl Canonical for StopCondition {
             }
             Self::Bounded {
                 primary,
-                virtual_time_nanoseconds,
+                virtual_time_picoseconds,
                 execution_quanta,
             } => {
                 encoder.u8(9);
                 primary.encode(encoder);
-                virtual_time_nanoseconds.encode(encoder);
+                virtual_time_picoseconds.encode(encoder);
                 execution_quanta.encode(encoder);
             }
         }
@@ -323,12 +323,12 @@ fn decode_stop_condition(
         1 => StopCondition::NamedBoundary(
             decoder.string_bounded(MAX_IDENTIFIER_BYTES, "stop-boundary-name-bytes")?,
         ),
-        2 => StopCondition::VirtualTimeNanoseconds(u64::decode(decoder)?),
+        2 => StopCondition::VirtualTimePicoseconds(u64::decode(decoder)?),
         3 => StopCondition::EventCount(u64::decode(decoder)?),
         4 => StopCondition::Terminal,
         5 => StopCondition::ExecutionQuanta(u64::decode(decoder)?),
         6 => StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_nanoseconds: u64::decode(decoder)?,
+            virtual_time_picoseconds: u64::decode(decoder)?,
             execution_quanta: u64::decode(decoder)?,
         },
         7 => StopCondition::NextChoiceOrExecutionQuanta {

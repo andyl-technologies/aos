@@ -727,11 +727,11 @@ fn authenticate_timeout_capture(
             .ok_or(InvalidEventLog)?;
         if record.budget_kind != expected_kind
             || record.configured_limit != Some(expected_limit)
-            || proof.frontier_nanoseconds() != snapshot.frontier().ticks
+            || proof.frontier_picoseconds() != snapshot.frontier().ticks
             || proof.completed_quanta() != snapshot.quanta()
             || match kind {
                 crucible_campaign::PolicyTimeoutKind::VirtualTime => {
-                    proof.frontier_nanoseconds() < expected_limit
+                    proof.frontier_picoseconds() < expected_limit
                 }
                 crucible_campaign::PolicyTimeoutKind::ExecutionQuanta => {
                     proof.completed_quanta() < expected_limit
@@ -739,7 +739,7 @@ fn authenticate_timeout_capture(
             }
             || (*kind == crucible_campaign::PolicyTimeoutKind::ExecutionQuanta
                 && stop.bounded_deadlines().is_some_and(|(virtual_time, _)| {
-                    virtual_time.is_some_and(|limit| proof.frontier_nanoseconds() >= limit)
+                    virtual_time.is_some_and(|limit| proof.frontier_picoseconds() >= limit)
                 }))
         {
             return Err(InvalidEventLog);

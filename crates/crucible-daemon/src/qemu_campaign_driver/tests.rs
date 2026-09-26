@@ -1169,7 +1169,7 @@ fn named_boundary_requires_the_exact_guest_marker() {
 #[test]
 fn virtual_time_boundary_caps_a_quantum_before_a_later_terminal() {
     let deadline = 2_000_000;
-    let attempt = input(StopCondition::VirtualTimeNanoseconds(deadline));
+    let attempt = input(StopCondition::VirtualTimePicoseconds(deadline));
     let configuration = starting_configuration(&attempt);
     let mut lifecycle = TerminalCrossingLifecycle {
         configuration,
@@ -1196,7 +1196,7 @@ fn virtual_time_boundary_caps_a_quantum_before_a_later_terminal() {
     assert!(!lifecycle.terminal);
     assert!(matches!(
         pending.stop,
-        ModeledStop::Reached(StopCondition::VirtualTimeNanoseconds(value)) if value == deadline
+        ModeledStop::Reached(StopCondition::VirtualTimePicoseconds(value)) if value == deadline
     ));
     assert_eq!(pending.terminal_at.ticks, deadline);
 
@@ -1216,7 +1216,7 @@ fn virtual_time_boundary_caps_a_quantum_before_a_later_terminal() {
 #[test]
 fn combined_stop_uses_the_first_absolute_bound() {
     let stop = StopCondition::VirtualTimeOrExecutionQuanta {
-        virtual_time_nanoseconds: 10,
+        virtual_time_picoseconds: 10,
         execution_quanta: 2,
     };
     let input = input(stop.clone());
@@ -1262,7 +1262,7 @@ fn combined_stop_uses_the_first_absolute_bound() {
 fn policy_timeout_prefers_virtual_time_at_a_shared_completed_quantum() {
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::NamedBoundary(String::from("later"))),
-        virtual_time_nanoseconds: Some(10),
+        virtual_time_picoseconds: Some(10),
         execution_quanta: Some(2),
     };
     let input = input(StopCondition::Terminal);
@@ -1285,7 +1285,7 @@ fn policy_timeout_prefers_virtual_time_at_a_shared_completed_quantum() {
             kind: PolicyTimeoutKind::VirtualTime,
             proof,
             ..
-        }) if proof.frontier_nanoseconds() == 10 && proof.completed_quanta() == 2
+        }) if proof.frontier_picoseconds() == 10 && proof.completed_quanta() == 2
     ));
 }
 
@@ -1293,7 +1293,7 @@ fn policy_timeout_prefers_virtual_time_at_a_shared_completed_quantum() {
 fn policy_virtual_timeout_seals_a_typed_stop_with_retained_causal_marker() {
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::Terminal),
-        virtual_time_nanoseconds: Some(1),
+        virtual_time_picoseconds: Some(1),
         execution_quanta: Some(2),
     };
     let input = input(stop.clone());
@@ -1342,15 +1342,15 @@ fn policy_virtual_timeout_seals_a_typed_stop_with_retained_causal_marker() {
             stop: reached,
             kind: PolicyTimeoutKind::VirtualTime,
             proof,
-        } if *reached == stop && proof.frontier_nanoseconds() == 1 && proof.completed_quanta() == 1
+        } if *reached == stop && proof.frontier_picoseconds() == 1 && proof.completed_quanta() == 1
     ));
 }
 
 #[test]
 fn bounded_primary_retains_its_exact_predeadline_coordinate() {
     let stop = StopCondition::Bounded {
-        primary: Box::new(StopCondition::VirtualTimeNanoseconds(4)),
-        virtual_time_nanoseconds: Some(10),
+        primary: Box::new(StopCondition::VirtualTimePicoseconds(4)),
+        virtual_time_picoseconds: Some(10),
         execution_quanta: Some(2),
     };
     let input = input(StopCondition::Terminal);
@@ -1370,7 +1370,7 @@ fn bounded_primary_retains_its_exact_predeadline_coordinate() {
     assert!(matches!(
         reached_requested_stop(&stop, &evidence).expect("primary stop"),
         Some(ModeledStop::BoundedPrimaryReached { proof, .. })
-            if proof.frontier_nanoseconds() == 4 && proof.completed_quanta() == 1
+            if proof.frontier_picoseconds() == 4 && proof.completed_quanta() == 1
     ));
 }
 
@@ -1380,7 +1380,7 @@ fn bounded_next_choice_intrinsic_fallback_is_not_a_choice() {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 1,
         }),
-        virtual_time_nanoseconds: Some(10),
+        virtual_time_picoseconds: Some(10),
         execution_quanta: Some(2),
     };
     let input = input(stop.clone());
@@ -1400,7 +1400,7 @@ fn bounded_next_choice_intrinsic_fallback_is_not_a_choice() {
     assert!(matches!(
         reached_requested_stop(&stop, &evidence).expect("intrinsic fallback"),
         Some(ModeledStop::BoundedPrimaryTimeout { proof, .. })
-            if proof.frontier_nanoseconds() == 4 && proof.completed_quanta() == 1
+            if proof.frontier_picoseconds() == 4 && proof.completed_quanta() == 1
     ));
 }
 
@@ -1410,7 +1410,7 @@ fn bounded_next_choice_reaches_an_actual_choice_before_intrinsic_fallback() {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 2,
         }),
-        virtual_time_nanoseconds: Some(10),
+        virtual_time_picoseconds: Some(10),
         execution_quanta: Some(3),
     };
     let input = input(stop.clone());
@@ -1433,7 +1433,7 @@ fn bounded_next_choice_reaches_an_actual_choice_before_intrinsic_fallback() {
     assert!(matches!(
         reached_requested_stop(&stop, &evidence).expect("actual choice"),
         Some(ModeledStop::BoundedPrimaryReached { proof, .. })
-            if proof.frontier_nanoseconds() == 4 && proof.completed_quanta() == 1
+            if proof.frontier_picoseconds() == 4 && proof.completed_quanta() == 1
     ));
 }
 
@@ -1441,7 +1441,7 @@ fn bounded_next_choice_reaches_an_actual_choice_before_intrinsic_fallback() {
 fn bounded_next_choice_reached_accepts_a_live_preselection_handoff() {
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::NextChoice),
-        virtual_time_nanoseconds: Some(10),
+        virtual_time_picoseconds: Some(10),
         execution_quanta: Some(3),
     };
     let reached = ModeledStop::BoundedPrimaryReached {
@@ -1458,7 +1458,7 @@ fn bounded_next_choice_intrinsic_fallback_wins_a_same_quantum_choice() {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 2,
         }),
-        virtual_time_nanoseconds: Some(10),
+        virtual_time_picoseconds: Some(10),
         execution_quanta: Some(3),
     };
     let input = input(stop.clone());
@@ -1481,7 +1481,7 @@ fn bounded_next_choice_intrinsic_fallback_wins_a_same_quantum_choice() {
     assert!(matches!(
         reached_requested_stop(&stop, &evidence).expect("same-quantum fallback"),
         Some(ModeledStop::BoundedPrimaryTimeout { proof, .. })
-            if proof.frontier_nanoseconds() == 4 && proof.completed_quanta() == 2
+            if proof.frontier_picoseconds() == 4 && proof.completed_quanta() == 2
     ));
 }
 
@@ -1556,7 +1556,7 @@ fn restored_start_at_intrinsic_choice_fallback_seals_exact_timeout() {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 7,
         }),
-        virtual_time_nanoseconds: None,
+        virtual_time_picoseconds: None,
         execution_quanta: Some(12),
     };
     let input = input(stop);
@@ -1601,7 +1601,7 @@ fn restored_start_past_intrinsic_choice_fallback_fails_before_sealing() {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 7,
         }),
-        virtual_time_nanoseconds: None,
+        virtual_time_picoseconds: None,
         execution_quanta: Some(12),
     };
     let input = input(stop);
@@ -1643,7 +1643,7 @@ fn continued_origin_past_intrinsic_choice_fallback_fails_before_sealing() {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 7,
         }),
-        virtual_time_nanoseconds: None,
+        virtual_time_picoseconds: None,
         execution_quanta: Some(12),
     };
     let input = input(stop);
@@ -1683,7 +1683,7 @@ fn reached_policy_deadline_wins_over_overdue_intrinsic_fallback_at_start() {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 7,
         }),
-        virtual_time_nanoseconds: None,
+        virtual_time_picoseconds: None,
         execution_quanta: Some(5),
     };
     let input = input(stop.clone());
@@ -1731,7 +1731,7 @@ fn restored_terminal_verdict_wins_past_intrinsic_choice_fallback() {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
             execution_quanta: 7,
         }),
-        virtual_time_nanoseconds: None,
+        virtual_time_picoseconds: None,
         execution_quanta: Some(12),
     };
     let input = input(stop);
@@ -1769,7 +1769,7 @@ fn restored_terminal_verdict_wins_past_intrinsic_choice_fallback() {
 #[test]
 fn restored_virtual_time_uses_the_scheduler_frontier_when_the_log_tail_is_earlier() {
     let deadline = 8;
-    let input = input(StopCondition::VirtualTimeNanoseconds(deadline));
+    let input = input(StopCondition::VirtualTimePicoseconds(deadline));
     let mut source_log = EventLog::new();
     let prefix = source_log
         .append_observable_events([ObservableEvent::guest_marker(
@@ -1815,7 +1815,7 @@ fn restored_virtual_time_uses_the_scheduler_frontier_when_the_log_tail_is_earlie
     assert_eq!(pending.terminal_at, VirtualTime { ticks: 9 });
     assert!(matches!(
         pending.stop,
-        ModeledStop::Reached(StopCondition::VirtualTimeNanoseconds(value))
+        ModeledStop::Reached(StopCondition::VirtualTimePicoseconds(value))
             if value == deadline
     ));
 }

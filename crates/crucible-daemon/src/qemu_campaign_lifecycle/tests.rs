@@ -3470,7 +3470,7 @@ fn selected_after_genesis_input_with_continuation(
 ) {
     let source_stop = continuation_input
         .as_ref()
-        .map(|input| StopCondition::VirtualTimeNanoseconds(input.source_frontier_ticks()))
+        .map(|input| StopCondition::VirtualTimePicoseconds(input.source_frontier_ticks()))
         .unwrap_or(StopCondition::ExecutionQuanta(1));
     selected_after_genesis_input_with_optional_continuation_source_stop(
         continuation_input,
@@ -3639,7 +3639,7 @@ fn selected_after_two_controlled_generations() -> (
             configuration: configuration_artifact,
         },
         base.attempt().path(),
-        StopCondition::VirtualTimeNanoseconds(1),
+        StopCondition::VirtualTimePicoseconds(1),
     )
     .expect("first source attempt");
     let first_id = first.id().expect("first source attempt ID");
@@ -3651,7 +3651,7 @@ fn selected_after_two_controlled_generations() -> (
             reached: reached_first_artifact,
         },
         base.attempt().path(),
-        StopCondition::VirtualTimeNanoseconds(2),
+        StopCondition::VirtualTimePicoseconds(2),
         AttemptContinuationInput::scheduler_reseed(
             test_continuation_source_observation_for(b"two-control-first-observation"),
             1,
@@ -3680,13 +3680,13 @@ fn selected_after_two_controlled_generations() -> (
         first,
         reached_first.clone(),
         crucible::SignalFaultCampaignReplayPlan::empty(reached_first.clone()),
-        crucible_campaign::StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(1)),
+        crucible_campaign::StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(1)),
     );
     let second_origin = CrucibleAttemptOrigin::new_with_source_stop(
         second,
         reached_second.clone(),
         crucible::SignalFaultCampaignReplayPlan::empty(reached_second.clone()),
-        crucible_campaign::StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(2)),
+        crucible_campaign::StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(2)),
     );
     let expected_controls = [(1, reached_first.id()), (2, reached_second.id())];
     let input = CrucibleAttemptExecution::from_test_parts(

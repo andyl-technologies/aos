@@ -1958,20 +1958,20 @@ fn requested_attempt_stop_frontier(requested: &StopCondition) -> Option<VirtualT
     match requested {
         StopCondition::Bounded {
             primary,
-            virtual_time_nanoseconds,
+            virtual_time_picoseconds,
             ..
         } => requested_attempt_stop_frontier(primary)
             .map(|frontier| frontier.ticks)
             .into_iter()
-            .chain(*virtual_time_nanoseconds)
+            .chain(*virtual_time_picoseconds)
             .min()
             .map(|ticks| VirtualTime { ticks }),
-        StopCondition::VirtualTimeNanoseconds(deadline) => Some(VirtualTime { ticks: *deadline }),
+        StopCondition::VirtualTimePicoseconds(deadline) => Some(VirtualTime { ticks: *deadline }),
         StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_nanoseconds,
+            virtual_time_picoseconds,
             ..
         } => Some(VirtualTime {
-            ticks: *virtual_time_nanoseconds,
+            ticks: *virtual_time_picoseconds,
         }),
         StopCondition::NextChoice
         | StopCondition::NextChoiceOrExecutionQuanta { .. }
@@ -2380,12 +2380,12 @@ fn initial_requested_stop(
     }
 
     let reached = match requested {
-        StopCondition::VirtualTimeNanoseconds(deadline) => frontier.ticks >= *deadline,
+        StopCondition::VirtualTimePicoseconds(deadline) => frontier.ticks >= *deadline,
         StopCondition::ExecutionQuanta(bound) => completed_quanta >= *bound,
         StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_nanoseconds,
+            virtual_time_picoseconds,
             execution_quanta,
-        } => frontier.ticks >= *virtual_time_nanoseconds || completed_quanta >= *execution_quanta,
+        } => frontier.ticks >= *virtual_time_picoseconds || completed_quanta >= *execution_quanta,
         StopCondition::EventCount(count) => {
             u64::try_from(observed_event_count).is_ok_and(|observed| observed >= *count)
         }
@@ -2562,7 +2562,7 @@ fn retain_modeled_timeout(
     pending: &mut QemuFreshPendingObservation,
 ) -> Result<Option<FailureTimeoutRecord>, QemuFreshModeledDriverError> {
     if let ModeledStop::PolicyTimeout { proof, .. } = &pending.stop
-        && (proof.frontier_nanoseconds() != pending.terminal_at.ticks
+        && (proof.frontier_picoseconds() != pending.terminal_at.ticks
             || proof.completed_quanta() != pending.completed_quanta)
     {
         return Err(QemuFreshModeledDriverError::BoundedStopProof);
@@ -2685,13 +2685,13 @@ fn modeled_timeout_limit(
     };
     if let StopCondition::Bounded {
         primary,
-        virtual_time_nanoseconds,
+        virtual_time_picoseconds,
         execution_quanta,
     } = stop
     {
         // A virtual deadline wins over a quantum deadline at one boundary.
         // Primary stops retain only the timeout evidence they actually reached.
-        if virtual_time_nanoseconds.is_some_and(|deadline| pending.terminal_at.ticks >= deadline) {
+        if virtual_time_picoseconds.is_some_and(|deadline| pending.terminal_at.ticks >= deadline) {
             return None;
         }
         if let Some(deadline) = execution_quanta
@@ -2719,7 +2719,7 @@ fn configured_execution_quanta_limit(stop: &StopCondition) -> Option<u64> {
         }) => Some(*execution_quanta),
         StopCondition::NextChoice
         | StopCondition::NamedBoundary(_)
-        | StopCondition::VirtualTimeNanoseconds(_)
+        | StopCondition::VirtualTimePicoseconds(_)
         | StopCondition::EventCount(_)
         | StopCondition::Terminal
         | StopCondition::Observation(_) => None,

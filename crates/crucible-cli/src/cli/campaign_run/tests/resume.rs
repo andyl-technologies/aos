@@ -10,7 +10,7 @@ fn resume_authenticates_attempt_timeout_and_bounded_primary_frontier() {
     plan.terminal_condition = RunTerminalCondition::VirtualTime;
     plan.max_virtual_time_ticks = Some(10);
     let primary =
-        StopCondition::bounded(StopCondition::VirtualTimeNanoseconds(10), Some(20), Some(8))
+        StopCondition::bounded(StopCondition::VirtualTimePicoseconds(10), Some(20), Some(8))
             .or_panic("bounded resume stop");
     let reached = StopOutcome::BoundedPrimaryReached {
         stop: primary,
@@ -44,7 +44,7 @@ fn resume_authenticates_attempt_timeout_and_bounded_primary_frontier() {
 
     plan.max_virtual_time_ticks = Some(30);
     let policy_stop =
-        StopCondition::bounded(StopCondition::VirtualTimeNanoseconds(30), Some(20), Some(8))
+        StopCondition::bounded(StopCondition::VirtualTimePicoseconds(30), Some(20), Some(8))
             .or_panic("policy-preempted resume stop");
     let timed_out = StopOutcome::PolicyTimeout {
         stop: policy_stop,
@@ -154,7 +154,7 @@ fn campaign_resume_projection_preserves_source_oracle_watch_and_cleanup() {
     } = resume_campaign_fixture(
         &temporary,
         &evidence,
-        StopCondition::VirtualTimeNanoseconds(10),
+        StopCondition::VirtualTimePicoseconds(10),
         true,
     );
     let result = campaign_resume_workflow_report(&resume_plan, &evidence, &campaign);
@@ -304,13 +304,13 @@ fn campaign_resume_projection_does_not_rewind_for_an_earlier_deadline() {
     } = resume_campaign_fixture(
         &temporary,
         &evidence,
-        StopCondition::VirtualTimeNanoseconds(3),
+        StopCondition::VirtualTimePicoseconds(3),
         false,
     );
 
     assert_eq!(
         campaign.terminal().observation().stop(),
-        &StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(3))
+        &StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(3))
     );
     assert_eq!(campaign.evidence().frontier(), source_frontier);
 
@@ -340,7 +340,7 @@ fn campaign_resume_frontier_validation_binds_reached_deadlines_only() {
     plan.terminal_condition = RunTerminalCondition::VirtualTime;
     plan.max_virtual_time = Some(String::from("3ticks"));
     plan.max_virtual_time_ticks = Some(3);
-    let earlier_stop = StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(3));
+    let earlier_stop = StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(3));
 
     validate_campaign_resume_frontier(&plan, source_frontier, &earlier_stop, source_frontier)
         .or_panic("an earlier deadline must preserve the source frontier");
@@ -365,7 +365,7 @@ fn campaign_resume_frontier_validation_binds_reached_deadlines_only() {
 
     plan.max_virtual_time = Some(String::from("10ticks"));
     plan.max_virtual_time_ticks = Some(10);
-    let future_stop = StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(10));
+    let future_stop = StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(10));
     validate_campaign_resume_frontier(
         &plan,
         source_frontier,

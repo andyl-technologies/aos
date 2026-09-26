@@ -695,7 +695,7 @@ impl Canonical for AssertionViolationWitness {
 /// Exact coordinates before and after the quantum that satisfied a stop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ObservationQuantumBoundary {
-    frontier_nanoseconds: u64,
+    frontier_picoseconds: u64,
     start_completed_quanta: u64,
     completed_quanta: u64,
     start_events: u64,
@@ -709,7 +709,7 @@ impl ObservationQuantumBoundary {
     /// Returns [`CampaignCodecError`] when the completed coordinate is not
     /// exactly one greater than the coordinate recorded before the drive.
     pub fn new(
-        frontier_nanoseconds: u64,
+        frontier_picoseconds: u64,
         start_completed_quanta: u64,
         completed_quanta: u64,
         start_events: u64,
@@ -720,17 +720,17 @@ impl ObservationQuantumBoundary {
             });
         }
         Ok(Self {
-            frontier_nanoseconds,
+            frontier_picoseconds,
             start_completed_quanta,
             completed_quanta,
             start_events,
         })
     }
 
-    /// Returns the exact virtual-time frontier in nanoseconds.
+    /// Returns the exact virtual-time frontier in picoseconds.
     #[must_use]
-    pub const fn frontier_nanoseconds(self) -> u64 {
-        self.frontier_nanoseconds
+    pub const fn frontier_picoseconds(self) -> u64 {
+        self.frontier_picoseconds
     }
 
     /// Returns the absolute quantum coordinate immediately before the drive.
@@ -754,7 +754,7 @@ impl ObservationQuantumBoundary {
 
 impl Canonical for ObservationQuantumBoundary {
     fn encode(&self, encoder: &mut Encoder) {
-        self.frontier_nanoseconds.encode(encoder);
+        self.frontier_picoseconds.encode(encoder);
         self.start_completed_quanta.encode(encoder);
         self.completed_quanta.encode(encoder);
         self.start_events.encode(encoder);
@@ -965,24 +965,24 @@ impl Canonical for ObservationStopProof {
 /// Executor-attested coordinates at one policy-bounded stop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BoundedStopProof {
-    frontier_nanoseconds: u64,
+    frontier_picoseconds: u64,
     completed_quanta: u64,
 }
 
 impl BoundedStopProof {
     /// Records the exact scheduler frontier and absolute completed-quantum coordinate.
     #[must_use]
-    pub const fn new(frontier_nanoseconds: u64, completed_quanta: u64) -> Self {
+    pub const fn new(frontier_picoseconds: u64, completed_quanta: u64) -> Self {
         Self {
-            frontier_nanoseconds,
+            frontier_picoseconds,
             completed_quanta,
         }
     }
 
-    /// Returns the virtual-time frontier in nanoseconds.
+    /// Returns the virtual-time frontier in picoseconds.
     #[must_use]
-    pub const fn frontier_nanoseconds(self) -> u64 {
-        self.frontier_nanoseconds
+    pub const fn frontier_picoseconds(self) -> u64 {
+        self.frontier_picoseconds
     }
 
     /// Returns the absolute completed-quantum coordinate.
@@ -994,7 +994,7 @@ impl BoundedStopProof {
 
 impl Canonical for BoundedStopProof {
     fn encode(&self, encoder: &mut Encoder) {
-        self.frontier_nanoseconds.encode(encoder);
+        self.frontier_picoseconds.encode(encoder);
         self.completed_quanta.encode(encoder);
     }
 
@@ -1171,7 +1171,7 @@ impl StopOutcome {
                     && winning_policy_timeout(
                         bounded,
                         BoundedStopProof::new(
-                            proof.boundary().frontier_nanoseconds(),
+                            proof.boundary().frontier_picoseconds(),
                             proof.boundary().completed_quanta(),
                         ),
                     ) == Ok(None)
@@ -1214,7 +1214,7 @@ fn winning_policy_timeout(
     proof: BoundedStopProof,
 ) -> Result<Option<PolicyTimeoutKind>, CampaignCodecError> {
     let StopCondition::Bounded {
-        virtual_time_nanoseconds,
+        virtual_time_picoseconds,
         execution_quanta,
         ..
     } = stop
@@ -1224,7 +1224,7 @@ fn winning_policy_timeout(
         });
     };
     stop.validate()?;
-    if virtual_time_nanoseconds.is_some_and(|bound| proof.frontier_nanoseconds() >= bound) {
+    if virtual_time_picoseconds.is_some_and(|bound| proof.frontier_picoseconds() >= bound) {
         return Ok(Some(PolicyTimeoutKind::VirtualTime));
     }
     if execution_quanta.is_some_and(|bound| proof.completed_quanta() >= bound) {

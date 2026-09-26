@@ -1131,7 +1131,7 @@ fn explicit_virtual_time_discovery_retains_the_first_frontier_crossing_the_deadl
     let quantum_nanoseconds = 1_100_000;
     let completed_frontier = quantum_nanoseconds * 2;
     let (request, node) = request();
-    let request = request.with_discovery_stop(StopCondition::VirtualTimeNanoseconds(deadline));
+    let request = request.with_discovery_stop(StopCondition::VirtualTimePicoseconds(deadline));
     let (factory, evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
             node,
@@ -1151,7 +1151,7 @@ fn explicit_virtual_time_discovery_retains_the_first_frontier_crossing_the_deadl
     assert_eq!(completed.evidence().frontier().ticks, completed_frontier);
     assert_eq!(
         completed.terminal().observation().stop(),
-        &StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(deadline))
+        &StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(deadline))
     );
 }
 
@@ -1162,7 +1162,7 @@ fn virtual_time_savepoint_capture_replays_and_authenticates_the_same_boundary() 
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node) = checkpoint_request();
     let request = request
-        .with_discovery_stop(StopCondition::VirtualTimeNanoseconds(deadline))
+        .with_discovery_stop(StopCondition::VirtualTimePicoseconds(deadline))
         .with_reached_stop_savepoint_capture(Arc::clone(&checkpoints));
     let starts = Arc::new(AtomicUsize::new(0));
     let (factory, evidence) =
@@ -1192,7 +1192,7 @@ fn virtual_time_savepoint_capture_replays_and_authenticates_the_same_boundary() 
     );
     assert_eq!(
         savepoint.stop(),
-        &StopCondition::VirtualTimeNanoseconds(deadline)
+        &StopCondition::VirtualTimePicoseconds(deadline)
     );
     assert_eq!(savepoint.evidence(), completed.evidence());
     assert_eq!(savepoint.evidence().frontier().ticks, 2_200_000);
@@ -1389,7 +1389,7 @@ fn selection_free_resume_authenticates_the_exact_source_before_continuing() {
     assert_eq!(completed.observations().len(), 2);
     assert_eq!(
         completed.observations()[0].observation().stop(),
-        &StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(source_frontier.ticks))
+        &StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(source_frontier.ticks))
     );
     assert_eq!(
         completed.terminal().observation().stop(),
@@ -1599,7 +1599,7 @@ fn portable_resume_rejects_override_before_execution() {
 #[test]
 fn selection_free_resume_applies_an_earlier_final_stop_after_source_admission() {
     let source_frontier = VirtualTime { ticks: 5 };
-    let final_stop = StopCondition::VirtualTimeNanoseconds(3);
+    let final_stop = StopCondition::VirtualTimePicoseconds(3);
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node) = checkpoint_request();
@@ -1697,7 +1697,7 @@ fn savepoint_capture_rejects_a_terminal_outcome_before_the_requested_deadline() 
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node) = checkpoint_request();
     let request = request
-        .with_discovery_stop(StopCondition::VirtualTimeNanoseconds(2_000_000))
+        .with_discovery_stop(StopCondition::VirtualTimePicoseconds(2_000_000))
         .with_reached_stop_savepoint_capture(checkpoints);
     let (factory, evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(TerminalLifecycleFactory {
@@ -1730,7 +1730,7 @@ fn savepoint_capture_rejects_mismatched_replay_evidence() {
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node) = checkpoint_request();
     let request = request
-        .with_discovery_stop(StopCondition::VirtualTimeNanoseconds(2_000_000))
+        .with_discovery_stop(StopCondition::VirtualTimePicoseconds(2_000_000))
         .with_reached_stop_savepoint_capture(checkpoints);
     let starts = Arc::new(AtomicUsize::new(0));
     let (factory, evidence) =
@@ -1758,7 +1758,7 @@ fn savepoint_default_choice_preserves_the_requested_continuation_stop() {
     let marker = StopCondition::NamedBoundary(String::from("checkpoint-ready"));
     assert_eq!(default_choice_continuation_stop(true, &marker), marker);
 
-    let virtual_time = StopCondition::VirtualTimeNanoseconds(2_000_000);
+    let virtual_time = StopCondition::VirtualTimePicoseconds(2_000_000);
     assert_eq!(
         default_choice_continuation_stop(true, &virtual_time),
         virtual_time
@@ -1803,11 +1803,11 @@ fn explicit_execution_quanta_discovery_stops_at_the_absolute_coordinate() {
 
 #[test]
 fn explicit_combined_discovery_stops_at_the_first_reached_bound() {
-    let virtual_time_nanoseconds = 15;
+    let virtual_time_picoseconds = 15;
     let execution_quanta = 3;
     let quantum_nanoseconds = 10;
     let stop = StopCondition::VirtualTimeOrExecutionQuanta {
-        virtual_time_nanoseconds,
+        virtual_time_picoseconds,
         execution_quanta,
     };
     let (request, node) = request();

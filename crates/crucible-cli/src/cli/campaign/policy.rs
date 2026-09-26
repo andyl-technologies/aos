@@ -166,7 +166,7 @@ struct AuthoredFairnessPolicy {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthoredCampaignAttemptTimeout {
-    virtual_time_nanoseconds: Option<AuthoredU64>,
+    virtual_time_picoseconds: Option<AuthoredU64>,
     execution_quanta: Option<AuthoredU64>,
     host_completion_watchdog_ms: Option<AuthoredU64>,
 }
@@ -445,7 +445,7 @@ impl AuthoredCampaignPolicy {
 impl AuthoredCampaignAttemptTimeout {
     fn into_policy(self) -> Result<CampaignAttemptTimeoutPolicy, CliError> {
         CampaignAttemptTimeoutPolicy::new(
-            self.virtual_time_nanoseconds
+            self.virtual_time_picoseconds
                 .map(|value| value.into_value("attempt virtual-time deadline"))
                 .transpose()?,
             self.execution_quanta
@@ -1158,7 +1158,7 @@ stop = "next-choice"
         let input = temporary.path().join("policy.toml");
         let output = temporary.path().join("policy.bin");
         let authored = format!(
-            "{}\n[attempt_timeout]\nvirtual_time_nanoseconds = 1000000\nexecution_quanta = 500\nhost_completion_watchdog_ms = \"{}\"\n",
+            "{}\n[attempt_timeout]\nvirtual_time_picoseconds = 1000000\nexecution_quanta = 500\nhost_completion_watchdog_ms = \"{}\"\n",
             manifest(),
             u64::MAX,
         );
@@ -1171,7 +1171,7 @@ stop = "next-choice"
         .expect("decode bounded policy");
         let timeout = policy.attempt_timeout_policy().expect("attempt timeout");
 
-        assert_eq!(timeout.virtual_time_nanoseconds(), Some(1_000_000));
+        assert_eq!(timeout.virtual_time_picoseconds(), Some(1_000_000));
         assert_eq!(timeout.execution_quanta(), Some(500));
         assert_eq!(timeout.host_completion_watchdog_ms(), Some(u64::MAX));
         assert_eq!(
@@ -1191,7 +1191,7 @@ stop = "next-choice"
         let output = temporary.path().join("policy.bin");
         for timeout in [
             "host_completion_watchdog_ms = 1000",
-            "virtual_time_nanoseconds = 0",
+            "virtual_time_picoseconds = 0",
             "execution_quanta = 0",
             "execution_quanta = 10\nhost_completion_watchdog_ms = 0",
             "execution_quanta = 10\nhost_completion_watchdog_ms = \"18446744073709551616\"",

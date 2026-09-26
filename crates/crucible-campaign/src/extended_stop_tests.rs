@@ -30,7 +30,7 @@ fn campaign_policy_deadlines_are_bounded_and_preserve_primary_precedence() {
         .expect("bounded policy");
     let stop = StopCondition::bounded(
         StopCondition::NextChoice,
-        policy.virtual_time_nanoseconds(),
+        policy.virtual_time_picoseconds(),
         policy.execution_quanta(),
     )
     .expect("bounded stop");
@@ -225,7 +225,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         cause,
         BranchBudget::new(1, 1).expect("branch budget"),
         StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_nanoseconds: 11,
+            virtual_time_picoseconds: 11,
             execution_quanta: 7,
         },
     )
@@ -275,7 +275,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         BranchRequestCause::Planner(invocation),
         BranchBudget::new(1, 1).expect("SMC branch budget"),
         StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_nanoseconds: 11,
+            virtual_time_picoseconds: 11,
             execution_quanta: 7,
         },
     )
@@ -461,11 +461,11 @@ fn extended_stop_tags_reject_zero_bounds_and_unknown_values() {
     for stop in [
         StopCondition::ExecutionQuanta(0),
         StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_nanoseconds: 0,
+            virtual_time_picoseconds: 0,
             execution_quanta: 1,
         },
         StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_nanoseconds: 1,
+            virtual_time_picoseconds: 1,
             execution_quanta: 0,
         },
         StopCondition::NextChoiceOrExecutionQuanta {

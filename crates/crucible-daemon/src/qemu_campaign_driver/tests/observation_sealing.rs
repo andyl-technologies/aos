@@ -260,7 +260,7 @@ fn observation_seal_rejects_shifted_quantum_coordinates() {
         proof.satisfaction(),
         proof.child(),
         ObservationQuantumBoundary::new(
-            boundary.frontier_nanoseconds() + 1,
+            boundary.frontier_picoseconds() + 1,
             boundary.start_completed_quanta() + 1,
             boundary.completed_quanta() + 1,
             boundary.start_events(),

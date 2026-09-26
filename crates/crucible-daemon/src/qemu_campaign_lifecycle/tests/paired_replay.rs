@@ -39,7 +39,7 @@ fn fresh_paired_replay_keeps_selected_evidence_and_both_distinct_coverages_coher
     )
     .expect("paired replay scenario");
     let input =
-        modeled_fresh_runner_input_for_scenario(scenario, StopCondition::VirtualTimeNanoseconds(1));
+        modeled_fresh_runner_input_for_scenario(scenario, StopCondition::VirtualTimePicoseconds(1));
     let candidate = finding_candidate_artifact(&input);
     let expected_event = condition_observation_entry_for_test(
         1,
