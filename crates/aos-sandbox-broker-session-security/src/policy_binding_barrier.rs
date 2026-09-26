@@ -28,7 +28,10 @@ use aos_sandbox::policy_compiler::{
     propose_closed_current_create_explicit_policy_binding_v2,
     with_current_create_cache_signer_barrier_v5, with_current_create_policy_source_barrier_v4,
 };
-use aos_sandbox::{ControllerPolicyHoldV1, Journal, journal::SourceDomainPolicyHoldV1};
+use aos_sandbox::{
+    ControllerPolicyHoldV1, Journal,
+    journal::{CachePolicyHoldV1, SourceDomainPolicyHoldV1},
+};
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
 use ed25519_dalek::VerifyingKey;
 
@@ -65,16 +68,7 @@ pub fn commit_fixed_parentless_create_held_binding_v4(
     controller_gid: u32,
     cache_signer: &PinnedCacheOwnerReadbackSignerV1,
 ) -> io::Result<ClosedPolicyRootCasObservationV2> {
-    let controller_hold = controller
-        .controller_policy_hold_v1()
-        .map_err(io::Error::other)?
-        .filter(|hold| hold.is_held())
-        .ok_or_else(invalid_cut)?;
-    let source_hold = source_domains
-        .closed_policy_source_hold_v1()
-        .map_err(io::Error::other)?
-        .filter(|hold| hold.is_held())
-        .ok_or_else(invalid_cut)?;
+    let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
 
     with_current_create_cache_signer_barrier_v5(
         controller,
@@ -84,16 +78,13 @@ pub fn commit_fixed_parentless_create_held_binding_v4(
         operation,
         sandbox,
         |_, _, held| -> io::Result<_> {
-            compare_closed_policy_binding_hold_claims_v2(
+            validate_staged_held_claims(
                 proposed,
+                staged,
                 controller_hold,
                 source_hold,
                 held.hold(),
-            )
-            .map_err(io::Error::other)?;
-            if staged.base().next_generation() != controller_hold.epoch() {
-                return Err(invalid_cut());
-            }
+            )?;
 
             let cache_packet_verified = Cell::new(false);
             let outcome = commit_staged_closed_policy_signer_flight_v4(
@@ -171,6 +162,43 @@ fn verify_exact_held_replay(
     }
 }
 
+fn held_policy_claims(
+    controller: &Journal,
+    source_domains: &ProtectedSourceDomainJournalOwnerV1,
+) -> io::Result<(ControllerPolicyHoldV1, SourceDomainPolicyHoldV1)> {
+    let controller_hold = controller
+        .controller_policy_hold_v1()
+        .map_err(io::Error::other)?
+        .filter(|hold| hold.is_held())
+        .ok_or_else(invalid_cut)?;
+    let source_hold = source_domains
+        .closed_policy_source_hold_v1()
+        .map_err(io::Error::other)?
+        .filter(|hold| hold.is_held())
+        .ok_or_else(invalid_cut)?;
+    Ok((controller_hold, source_hold))
+}
+
+fn validate_staged_held_claims(
+    proposed: &[u8],
+    staged: StagedClosedPolicyRootBaseV2,
+    controller_hold: ControllerPolicyHoldV1,
+    source_hold: SourceDomainPolicyHoldV1,
+    cache_hold: CachePolicyHoldV1,
+) -> io::Result<()> {
+    compare_closed_policy_binding_hold_claims_v2(
+        proposed,
+        controller_hold,
+        source_hold,
+        cache_hold,
+    )
+    .map_err(io::Error::other)?;
+    if staged.base().next_generation() != controller_hold.epoch() {
+        return Err(invalid_cut());
+    }
+    Ok(())
+}
+
 fn request_verified_held_cache_packet(
     physical: &DormantCacheOwnerV1,
     held: &CacheResidencyWriterReadbackV2,
@@ -231,16 +259,7 @@ pub fn inspect_fixed_parentless_create_staged_signer_flight_v4(
     controller_gid: u32,
     cache_signer: &PinnedCacheOwnerReadbackSignerV1,
 ) -> io::Result<ClosedPolicyBindingSignerFlightV4> {
-    let controller_hold = controller
-        .controller_policy_hold_v1()
-        .map_err(io::Error::other)?
-        .filter(|hold| hold.is_held())
-        .ok_or_else(invalid_cut)?;
-    let source_hold = source_domains
-        .closed_policy_source_hold_v1()
-        .map_err(io::Error::other)?
-        .filter(|hold| hold.is_held())
-        .ok_or_else(invalid_cut)?;
+    let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
 
     with_current_create_cache_signer_barrier_v5(
         controller,
@@ -250,16 +269,13 @@ pub fn inspect_fixed_parentless_create_staged_signer_flight_v4(
         operation,
         sandbox,
         |_, _, held| -> io::Result<_> {
-            compare_closed_policy_binding_hold_claims_v2(
+            validate_staged_held_claims(
                 proposed,
+                staged,
                 controller_hold,
                 source_hold,
                 held.hold(),
-            )
-            .map_err(io::Error::other)?;
-            if staged.base().next_generation() != controller_hold.epoch() {
-                return Err(invalid_cut());
-            }
+            )?;
             let flight = inspect_staged_closed_policy_signer_flight_v4(
                 staged,
                 proposed,
@@ -314,16 +330,7 @@ pub fn inspect_fixed_parentless_create_staged_binding_v4(
     staged: StagedClosedPolicyRootBaseV2,
     proposed: &[u8],
 ) -> io::Result<ClosedPolicyBindingPreviewV4> {
-    let controller_hold = controller
-        .controller_policy_hold_v1()
-        .map_err(io::Error::other)?
-        .filter(|hold| hold.is_held())
-        .ok_or_else(invalid_cut)?;
-    let source_hold = source_domains
-        .closed_policy_source_hold_v1()
-        .map_err(io::Error::other)?
-        .filter(|hold| hold.is_held())
-        .ok_or_else(invalid_cut)?;
+    let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
 
     with_current_create_cache_signer_barrier_v5(
         controller,
@@ -333,16 +340,13 @@ pub fn inspect_fixed_parentless_create_staged_binding_v4(
         operation,
         sandbox,
         |_, _, held| -> io::Result<_> {
-            compare_closed_policy_binding_hold_claims_v2(
+            validate_staged_held_claims(
                 proposed,
+                staged,
                 controller_hold,
                 source_hold,
                 held.hold(),
-            )
-            .map_err(io::Error::other)?;
-            if staged.base().next_generation() != controller_hold.epoch() {
-                return Err(invalid_cut());
-            }
+            )?;
             let preview = preview_staged_closed_policy_binding_v4(staged, proposed)?;
             if preview.binding() != controller_hold.binding()
                 || preview.epoch() != controller_hold.epoch()
@@ -380,16 +384,7 @@ pub fn recover_fixed_parentless_create_closed_binding_decision_v4(
     operation: OperationId,
     sandbox: SandboxId,
 ) -> io::Result<ClosedPolicyBindingDecisionV2> {
-    let controller_hold = controller
-        .controller_policy_hold_v1()
-        .map_err(io::Error::other)?
-        .filter(|hold| hold.is_held())
-        .ok_or_else(invalid_cut)?;
-    let source_hold = source_domains
-        .closed_policy_source_hold_v1()
-        .map_err(io::Error::other)?
-        .filter(|hold| hold.is_held())
-        .ok_or_else(invalid_cut)?;
+    let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
 
     with_current_create_cache_signer_barrier_v5(
         controller,
