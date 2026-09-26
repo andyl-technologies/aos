@@ -41,15 +41,31 @@ pub(super) fn configure(
             CCompilerKind::Gcc,
         )
     })?;
-    for output in parsed.outputs.values() {
-        invocation.output(&output.path, output.optional)?;
+    let expanded = strings(gcc::ExpandIncludeFile::new(&cwd, &arguments))?;
+    let profile_note = (!clang)
+        .then(|| {
+            expanded
+                .iter()
+                .rev()
+                .find_map(|arg| arg.strip_prefix("-fprofile-note="))
+        })
+        .flatten();
+    for (name, output) in &parsed.outputs {
+        if *name != "gcno" || profile_note.is_none() {
+            invocation.output(&output.path, output.optional)?;
+        }
+    }
+    if parsed.outputs.contains_key("gcno")
+        && let Some(path) = profile_note
+    {
+        ensure!(!path.is_empty(), "GCC profile note path is empty");
+        invocation.output(Path::new(path), false)?;
     }
     invocation.source_input = Some(parsed.input.clone());
     invocation.extra_inputs.insert(parsed.input.clone());
     invocation
         .extra_inputs
         .extend(parsed.extra_hash_files.iter().cloned());
-    let expanded = strings(gcc::ExpandIncludeFile::new(&cwd, &arguments))?;
     if clang
         && expanded.iter().enumerate().any(|(index, argument)| {
             argument == "-dependency-file" && (index == 0 || expanded[index - 1] != "-Xclang")
