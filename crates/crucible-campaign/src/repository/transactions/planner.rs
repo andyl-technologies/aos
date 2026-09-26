@@ -383,23 +383,33 @@ impl CampaignRepository {
         let fact = CampaignFact::PlannerAdvanced(step_id);
         let transition_content = self.put_fact(&fact)?;
         let mut roots = current.snapshot.roots();
-        let issue_growth_upper = issue_projection
+        let has_issue_projection = issue_projection.is_some();
+        let simple_finite_issue = issue_projection
             .as_ref()
-            .map(|projected| projected.closure_growth_upper);
+            .is_some_and(|projected| projected.simple_finite_issue);
         if let Some(projected) = issue_projection {
             roots.exploration = projected.exploration;
             roots.accounting = projected.accounting;
         }
         roots.coordination = coordination;
-        let (next, budget_witness) = self.budgeted_successor(
+        let (next, mut budget_witness) = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),
             roots,
             crate::CampaignFactId::from_content_id(transition_content)?,
         )?;
+        if simple_finite_issue {
+            self.cover_local_budget_growth(&current, &mut budget_witness)?;
+        }
         let next_content = self.put_snapshot(&next)?;
-        let closure_growth_upper = issue_growth_upper.unwrap_or(MAX_SIMPLE_SUCCESSOR_GROWTH);
+        let closure_growth_upper = if simple_finite_issue {
+            self.simple_planner_issue_growth_upper(&current, &next)?
+        } else if has_issue_projection {
+            MAX_PLANNER_ISSUE_SUCCESSOR_GROWTH
+        } else {
+            MAX_SIMPLE_SUCCESSOR_GROWTH
+        };
         let checkpoint = self.prepare_local_successor_checkpoint(
             current_content,
             next_content,

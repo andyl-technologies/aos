@@ -436,6 +436,125 @@ impl MerkleMap {
         self.verify_closure_objects_cached(root, &mut BTreeSet::new())
     }
 
+    /// Charges every final-root node position changed from an authenticated root.
+    ///
+    /// An old subtree with the same content ID at the same prefix was already
+    /// reachable. A changed subtree is walked even when its nodes existed in
+    /// storage before this update; storage novelty cannot prove reachability.
+    pub(crate) fn collect_changed_node_positions(
+        &self,
+        prior: ContentId,
+        next: ContentId,
+        positions: &mut BTreeSet<(ContentId, Vec<u8>)>,
+        roots: &mut BTreeSet<ContentId>,
+        values: &mut BTreeSet<ContentId>,
+        limit: usize,
+    ) -> Result<(), CampaignStoreError> {
+        let mut root_pairs = vec![(prior, next)];
+        while let Some((old_root, new_root)) = root_pairs.pop() {
+            if old_root == new_root {
+                continue;
+            }
+            roots.insert(new_root);
+            let mut stack = vec![(Some(old_root), None, new_root, Vec::new(), None)];
+            while let Some((old_id, old_leaf, new_id, prefix, expected_count)) = stack.pop() {
+                if old_id == Some(new_id) {
+                    if let Some(count) = expected_count {
+                        let depth = u8::try_from(prefix.len())
+                            .map_err(|_| invalid("closure-node-limit"))?;
+                        if self.read_node(new_id, depth)?.entry_count != count {
+                            return Err(invalid("child-entry-count-mismatch"));
+                        }
+                    }
+                    continue;
+                }
+                let depth =
+                    u8::try_from(prefix.len()).map_err(|_| invalid("closure-node-limit"))?;
+                let next_node = self.read_node(new_id, depth)?;
+                if expected_count.is_some_and(|count| next_node.entry_count != count) {
+                    return Err(invalid("child-entry-count-mismatch"));
+                }
+                let old_node = old_id.map(|id| self.read_node(id, depth)).transpose()?;
+                positions.insert((new_id, prefix.clone()));
+                if positions.len() > limit || roots.len() > limit {
+                    return Err(invalid("closure-node-limit"));
+                }
+
+                for (slot, entry) in &next_node.entries {
+                    let mut child_prefix = prefix.clone();
+                    child_prefix.push(*slot);
+                    let old_entry = old_node
+                        .as_ref()
+                        .and_then(|old| old.entries.get(slot).cloned())
+                        .or_else(|| {
+                            old_leaf.and_then(|(key, value)| {
+                                (digest_nibble(key, depth) == *slot)
+                                    .then_some(MerkleEntry::Leaf { key, value })
+                            })
+                        });
+                    match entry {
+                        MerkleEntry::Leaf { key, value } => {
+                            if !key_has_prefix(*key, &child_prefix) {
+                                return Err(invalid("leaf-ancestor-prefix-mismatch"));
+                            }
+                            if !self.backend.contains(*value)? {
+                                return Err(crucible_cas::content_store::StoreError::NotFound {
+                                    id: *value,
+                                }
+                                .into());
+                            }
+                            if value.kind() == ObjectKind::MerkleNode
+                                && !matches!(old_entry.as_ref(), Some(MerkleEntry::Leaf { key: old_key, value: old_value }) if old_key == key && old_value == value)
+                            {
+                                let old_root = match old_entry.as_ref() {
+                                    Some(MerkleEntry::Leaf {
+                                        key: old_key,
+                                        value: old_value,
+                                    }) if old_key == key
+                                        && old_value.kind() == ObjectKind::MerkleNode =>
+                                    {
+                                        *old_value
+                                    }
+                                    _ => Self::empty_content_id()?,
+                                };
+                                root_pairs.push((old_root, *value));
+                            } else if value.kind() != ObjectKind::MerkleNode
+                                && !matches!(old_entry.as_ref(), Some(MerkleEntry::Leaf { key: old_key, value: old_value }) if old_key == key && old_value == value)
+                            {
+                                values.insert(*value);
+                                if values.len() > limit {
+                                    return Err(invalid("closure-node-limit"));
+                                }
+                            }
+                        }
+                        MerkleEntry::Node {
+                            content_id,
+                            entry_count,
+                        } => {
+                            let (old_child, old_leaf) = match old_entry {
+                                Some(MerkleEntry::Node { content_id, .. }) => {
+                                    (Some(content_id), None)
+                                }
+                                Some(MerkleEntry::Leaf { key, value }) => {
+                                    (None, Some((key, value)))
+                                }
+                                None => (None, None),
+                            };
+                            stack.push((
+                                old_child,
+                                old_leaf,
+                                *content_id,
+                                child_prefix,
+                                Some(*entry_count),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn verify_closure_objects_cached(
         &self,
         root: ContentId,
@@ -1546,6 +1665,65 @@ mod tests {
         let backend = Arc::new(MemoryBlobBackend::new("campaign-test", 16 * 1024 * 1024));
         let map = MerkleMap::new(backend.clone());
         (backend, map)
+    }
+
+    #[test]
+    fn changed_positions_include_splits_and_reject_false_reused_child_counts() {
+        let (backend, map) = map();
+        for name in ["first", "second"] {
+            let id = value(name);
+            backend
+                .put_if_absent(id, &BlobHandle::from_bytes(name.as_bytes().to_vec()))
+                .expect("store leaf value");
+        }
+        let empty = map.empty().expect("empty root");
+        let first = map
+            .insert(empty.content_id(), hash(0x10), value("first"))
+            .expect("first leaf");
+        let second = map
+            .insert(first.content_id(), hash(0x11), value("second"))
+            .expect("split leaf");
+
+        let mut positions = BTreeSet::new();
+        let mut roots = BTreeSet::new();
+        let mut values = BTreeSet::new();
+        map.collect_changed_node_positions(
+            first.content_id(),
+            second.content_id(),
+            &mut positions,
+            &mut roots,
+            &mut values,
+            100,
+        )
+        .expect("changed final tree");
+        assert!(positions.contains(&(second.content_id(), Vec::new())));
+        assert!(positions.iter().any(|(_, prefix)| !prefix.is_empty()));
+        assert_eq!(roots, BTreeSet::from([second.content_id()]));
+        assert!(values.contains(&value("second")));
+        assert!(!values.contains(&value("first")));
+
+        let mut forged = map.read_node(second.content_id(), 0).expect("valid root");
+        let MerkleEntry::Node { entry_count, .. } =
+            forged.entries.get_mut(&1).expect("split child")
+        else {
+            panic!("split child is a node");
+        };
+        *entry_count += 1;
+        forged.recompute_count().expect("forged parent count");
+        let forged_id = map.persist_node(&forged).expect("store forged parent");
+        assert!(matches!(
+            map.collect_changed_node_positions(
+                second.content_id(),
+                forged_id,
+                &mut BTreeSet::new(),
+                &mut BTreeSet::new(),
+                &mut BTreeSet::new(),
+                100,
+            ),
+            Err(CampaignStoreError::InvalidMerkle {
+                reason: "child-entry-count-mismatch"
+            })
+        ));
     }
 
     #[test]
