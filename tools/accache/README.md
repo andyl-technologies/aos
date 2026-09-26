@@ -159,6 +159,9 @@ accache returns rustc's result and records the bypass.
 invalidate it after a source edit, and restore it on a warm hit.
 Rust `--emit` forms that name individual output paths bypass as in the pinned
 sccache frontend; the compiler still writes those requested files normally.
+The oracle also compares direct and wrapper output for GCC and Clang
+`-fsyntax-only` and saved-intermediate modes, GCC `-fcallgraph-info`, and Clang
+`-MJ`. These bypasses preserve the complete set of files each driver writes.
 Clang's driver-level `-dependency-file` option also bypasses: the driver ignores
 it while pinned sccache expects a file at that path and fails during publication.
 Clang `-Wp` requests that mix a dependency output with other forwarded CPP
