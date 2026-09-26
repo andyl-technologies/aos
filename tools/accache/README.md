@@ -131,9 +131,10 @@ Rust extern/native dependencies and proc macro consumers are covered by the
 input contract above. Rust's unstable sample-profile and dataflow-sanitizer ABI
 list inputs are fingerprinted; editing either invalidates the action.
 Rust `-Cllvm-args` basic-block section lists and identified LLVM file inputs
-are fingerprinted separately because rustc omits them from dep-info. A
-two-spelling oracle changes a section list and the resulting rlib: pinned
-sccache replays the stale rlib, while accache misses and names the list file.
+are fingerprinted separately because rustc omits them from dep-info. Four
+oracle families cover joined and separated `-C` with a section list and a
+function-attribute CSV. Editing either changes the rlib: pinned sccache
+replays the stale rlib, while accache misses and names the edited file.
 LLVM's internal option surface also permits other file reads and side outputs;
 disable accache for any such option not covered by this adapter.
 Unstable Rust modes that write profiling data, MIR or NLL dumps, monomorphization
