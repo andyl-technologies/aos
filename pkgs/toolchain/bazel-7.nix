@@ -69,6 +69,11 @@
     fetchurl = buildPackages.fetchurl;
     inherit buildPackages bazelMavenBootstrap;
   };
+  bazelErrorProneCheckApi = import ./_bazel-error-prone-check-api.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelMavenBootstrap bazelErrorProneDataflow;
+  };
   bazelLogkit = import ./_bazel-logkit.nix {
     mkDerivation = buildPackages.mkDerivation;
     fetchurl = buildPackages.fetchurl;
@@ -295,6 +300,7 @@
       bazelMavenBootstrap
       bazelJimfs
       bazelErrorProneDataflow
+      bazelErrorProneCheckApi
       bazelAvalonApi
       bazelMailApi
       bazelLog4j
