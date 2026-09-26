@@ -30,6 +30,8 @@ const DATABASE_FILE: &str = "objects.sqlite3";
 const LOCK_FILE: &str = "inventory.lock";
 const METADATA_DOMAIN: &[u8] = b"crucible.content-store.sqlite-metadata.v1";
 const MAX_CHUNK_BYTES: usize = 64 * 1024;
+const MAX_BATCH_OBJECTS: usize = 64;
+const MAX_BATCH_BYTES: u64 = 4 * 1024 * 1024;
 
 /// SQLite-backed durable immutable object leaf.
 ///
@@ -323,6 +325,76 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
             .commit()
             .map_err(|source| database_error("commit-sqlite-blob-put", source))?;
         Ok(sqlite_receipt(&self.name, id, logical_length))
+    }
+
+    fn put_many_if_absent(
+        &self,
+        objects: &[(ContentId, BlobHandle)],
+    ) -> Result<Vec<PutReceipt>, StoreError> {
+        if objects.len() > MAX_BATCH_OBJECTS {
+            return Err(StoreError::Quota);
+        }
+
+        // Authentication must finish before taking the connection lock: a
+        // source may itself read through this backend's SQLite connection.
+        let mut total_bytes = 0_u64;
+        let mut staged = Vec::new();
+        staged
+            .try_reserve_exact(objects.len())
+            .map_err(|_| StoreError::Quota)?;
+        for (id, source) in objects {
+            let length = source.logical_length();
+            total_bytes = total_bytes.checked_add(length).ok_or(StoreError::Quota)?;
+            if total_bytes > MAX_BATCH_BYTES {
+                return Err(StoreError::Quota);
+            }
+            let bytes = source
+                .read_all(MAX_BATCH_BYTES)
+                .map_err(|error| match error {
+                    StoreError::InvalidSourceLength { .. } => StoreError::Corrupt { id: *id },
+                    other => other,
+                })?;
+            validate_bytes(*id, &bytes)?;
+            staged.push((*id, bytes));
+        }
+
+        let _inventory_lock = self.acquire_inventory_lock()?;
+        let mut connection = self.lock_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|source| database_error("begin-sqlite-blob-batch", source))?;
+        let mut inserted = false;
+        for (id, bytes) in &staged {
+            let exists: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM objects WHERE id = ?1)",
+                    [id.encode()],
+                    |row| row.get(0),
+                )
+                .map_err(|source| database_error("test-sqlite-batch-presence", source))?;
+            if exists {
+                authenticate_stored(&transaction, *id)?;
+                continue;
+            }
+            transaction
+                .execute(
+                    "INSERT INTO objects (id, body) VALUES (?1, ?2)",
+                    params![id.encode(), bytes],
+                )
+                .map_err(|source| database_error("stage-sqlite-batch-object", source))?;
+            inserted = true;
+        }
+        if inserted {
+            advance_metadata(&transaction)?;
+        }
+        transaction
+            .commit()
+            .map_err(|source| database_error("commit-sqlite-blob-batch", source))?;
+
+        Ok(staged
+            .into_iter()
+            .map(|(id, bytes)| sqlite_receipt(&self.name, id, bytes.len() as u64))
+            .collect())
     }
 }
 
@@ -700,7 +772,9 @@ mod tests {
     // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
     #![allow(clippy::expect_used)]
 
+    use std::collections::{BTreeMap, BTreeSet};
     use std::os::unix::fs::{MetadataExt, symlink};
+    use std::sync::{Arc, Barrier};
 
     use super::*;
 
@@ -821,6 +895,291 @@ mod tests {
                 bytes
             );
         }
+    }
+
+    #[test]
+    fn batch_rekeys_same_backend_source_and_reopens_atomically() {
+        let root = tempfile::tempdir().expect("temporary database root");
+        let backend = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("open database");
+        let first_bytes = b"first committed source";
+        let first = ContentId::for_bytes(ObjectKind::CampaignFact, 1, first_bytes);
+        backend
+            .put_if_absent(first, &BlobHandle::from_bytes(first_bytes))
+            .expect("publish source");
+
+        let rekeyed = ContentId::for_bytes(ObjectKind::Trace, 1, first_bytes);
+        let second_bytes = b"second batch object";
+        let second = ContentId::for_bytes(ObjectKind::CampaignFact, 1, second_bytes);
+        let objects = [
+            (
+                rekeyed,
+                backend.read(first, None).expect("same-backend source"),
+            ),
+            (second, BlobHandle::from_bytes(second_bytes)),
+        ];
+        let receipts = backend
+            .put_many_if_absent(&objects)
+            .expect("durable batch publication");
+        assert_eq!(receipts.len(), 2);
+        assert!(receipts.iter().all(PutReceipt::is_durable));
+        assert_eq!(receipts[0].id, rekeyed);
+        assert_eq!(receipts[1].id, second);
+
+        let invalid = ContentId::for_bytes(ObjectKind::Trace, 1, b"different bytes");
+        let rejected = [
+            (
+                ContentId::for_bytes(ObjectKind::Trace, 1, b"would be orphaned"),
+                BlobHandle::from_bytes(b"would be orphaned"),
+            ),
+            (invalid, BlobHandle::from_bytes(b"wrong bytes")),
+        ];
+        assert!(matches!(
+            backend.put_many_if_absent(&rejected),
+            Err(StoreError::Corrupt { id }) if id == invalid
+        ));
+        assert!(!backend.contains(rejected[0].0).expect("no partial batch"));
+        drop(backend);
+
+        let reopened = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("cold reopen");
+        for (id, expected) in [
+            (rekeyed, first_bytes.as_slice()),
+            (second, second_bytes.as_slice()),
+        ] {
+            assert_eq!(
+                reopened
+                    .read(id, None)
+                    .expect("reopened batch object")
+                    .read_all(1024)
+                    .expect("authenticated body"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn graph_forwards_admitted_batch_as_one_durable_mutation() {
+        let root = tempfile::tempdir().expect("temporary graph root");
+        let leaf = StoreNodeId::new("sqlite-batch-leaf").expect("leaf ID");
+        let database_root = root.path().join("blobs");
+        let (graph, _) = StoreGraph::build_with_admin(StoreGraphConfig {
+            root: leaf.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+            nodes: BTreeMap::from([(
+                leaf,
+                StoreNodeSpec::Sqlite {
+                    root: database_root.clone(),
+                },
+            )]),
+        })
+        .expect("build SQLite graph");
+        let first_bytes = b"first graph object";
+        let second_bytes = b"second graph object";
+        let first = ContentId::for_bytes(ObjectKind::CampaignFact, 1, first_bytes);
+        let second = ContentId::for_bytes(ObjectKind::CampaignFact, 1, second_bytes);
+        let rejected = ContentId::for_bytes(ObjectKind::Trace, 1, b"rejected kind");
+        let objects = [
+            (first, BlobHandle::from_bytes(first_bytes)),
+            (second, BlobHandle::from_bytes(second_bytes)),
+        ];
+
+        assert!(
+            graph
+                .put_many_if_absent(&[
+                    objects[0].clone(),
+                    (rejected, BlobHandle::from_bytes(b"rejected kind")),
+                ])
+                .is_err()
+        );
+        assert!(
+            !graph
+                .contains(first)
+                .expect("rejected batch left no object")
+        );
+
+        let before = {
+            let connection = Connection::open(database_root.join(DATABASE_FILE))
+                .expect("inspect database generation");
+            load_metadata(&connection).expect("valid metadata").1
+        };
+        let receipts = graph
+            .put_many_if_absent(&objects)
+            .expect("publish graph batch");
+        assert_eq!(receipts.len(), objects.len());
+        assert!(receipts.iter().all(PutReceipt::is_durable));
+        let after = {
+            let connection = Connection::open(database_root.join(DATABASE_FILE))
+                .expect("inspect committed generation");
+            load_metadata(&connection)
+                .expect("valid committed metadata")
+                .1
+        };
+        assert_eq!(after, before + 1);
+
+        drop(graph);
+        let reopened = SqliteBlobBackend::open("sqlite-batch-leaf", &database_root)
+            .expect("cold reopen batch");
+        for (id, expected) in [
+            (first, first_bytes.as_slice()),
+            (second, second_bytes.as_slice()),
+        ] {
+            assert_eq!(
+                reopened
+                    .read(id, None)
+                    .expect("batch object")
+                    .read_all(1024)
+                    .expect("authenticated batch object"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_id_within_one_batch_has_one_durable_placement() {
+        let root = tempfile::tempdir().expect("temporary database root");
+        let backend = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("open database");
+        let bytes = b"one object listed twice";
+        let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
+        let source = BlobHandle::from_bytes(bytes);
+        let objects = [(id, source.clone()), (id, source)];
+
+        let receipts = backend
+            .put_many_if_absent(&objects)
+            .expect("publish duplicate ID batch");
+        assert_eq!(receipts.len(), 2);
+        assert!(receipts.iter().all(PutReceipt::is_durable));
+        let mut fence = backend.acquire_inventory_fence().expect("inventory fence");
+        assert_eq!(
+            fence
+                .visit_inventory(&mut |_| Ok(()))
+                .expect("inventory after batch")
+                .objects(),
+            1
+        );
+    }
+
+    #[test]
+    fn failed_batch_commit_rolls_back_every_staged_object() {
+        let root = tempfile::tempdir().expect("temporary database root");
+        let backend = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("open database");
+        let fault = Connection::open(root.path().join(DATABASE_FILE)).expect("open fault writer");
+        fault
+            .execute_batch(
+                "CREATE TABLE required_parent (id INTEGER PRIMARY KEY);
+                 CREATE TABLE deferred_child (
+                     parent INTEGER REFERENCES required_parent(id)
+                         DEFERRABLE INITIALLY DEFERRED
+                 );
+                 CREATE TRIGGER fail_object_commit AFTER INSERT ON objects BEGIN
+                     INSERT INTO deferred_child(parent) VALUES (1);
+                 END;",
+            )
+            .expect("install deferred commit failure");
+        drop(fault);
+
+        let first_bytes = b"first staged object";
+        let second_bytes = b"second staged object";
+        let first = ContentId::for_bytes(ObjectKind::Trace, 1, first_bytes);
+        let second = ContentId::for_bytes(ObjectKind::Trace, 1, second_bytes);
+        let objects = [
+            (first, BlobHandle::from_bytes(first_bytes)),
+            (second, BlobHandle::from_bytes(second_bytes)),
+        ];
+        assert!(backend.put_many_if_absent(&objects).is_err());
+        assert!(
+            backend
+                .lock_connection()
+                .expect("writer lock")
+                .is_autocommit()
+        );
+        for id in [first, second] {
+            assert!(!backend.contains(id).expect("failed commit is invisible"));
+        }
+        drop(backend);
+
+        let reopened = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("cold reopen");
+        for id in [first, second] {
+            assert!(!reopened.contains(id).expect("failed commit stayed absent"));
+        }
+    }
+
+    #[test]
+    fn concurrent_reader_sees_entire_batch_or_none() {
+        let root = tempfile::tempdir().expect("temporary database root");
+        let backend = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("open database");
+        let reader = Connection::open_with_flags(
+            root.path().join(DATABASE_FILE),
+            OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("open independent reader");
+        let objects = (0..MAX_BATCH_OBJECTS)
+            .map(|index| {
+                let bytes = vec![index as u8; MAX_CHUNK_BYTES];
+                let id = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
+                (id, BlobHandle::from_bytes(bytes))
+            })
+            .collect::<Vec<_>>();
+        let ready = Arc::new(Barrier::new(2));
+        let writer_ready = ready.clone();
+        let writer_backend = backend.clone();
+        let writer = std::thread::spawn(move || {
+            writer_ready.wait();
+            writer_backend.put_many_if_absent(&objects)
+        });
+
+        let count = || -> i64 {
+            reader
+                .query_row("SELECT count(*) FROM objects", [], |row| row.get(0))
+                .expect("read committed object count")
+        };
+        assert_eq!(count(), 0);
+        ready.wait();
+        while !writer.is_finished() {
+            let observed = count();
+            assert!(observed == 0 || observed == MAX_BATCH_OBJECTS as i64);
+            std::thread::yield_now();
+        }
+        let receipts = writer
+            .join()
+            .expect("writer thread")
+            .expect("durable batch");
+        assert_eq!(receipts.len(), MAX_BATCH_OBJECTS);
+        assert_eq!(count(), MAX_BATCH_OBJECTS as i64);
+    }
+
+    #[test]
+    fn batch_rolls_back_new_objects_when_an_existing_id_is_corrupt() {
+        let root = tempfile::tempdir().expect("temporary database root");
+        let backend = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("open database");
+        let existing_bytes = b"existing immutable object";
+        let existing = ContentId::for_bytes(ObjectKind::Trace, 1, existing_bytes);
+        backend
+            .put_if_absent(existing, &BlobHandle::from_bytes(existing_bytes))
+            .expect("publish existing object");
+
+        let fault = Connection::open(root.path().join(DATABASE_FILE)).expect("open for fault");
+        fault
+            .execute(
+                "UPDATE objects SET body = ?1 WHERE id = ?2",
+                params![b"corrupt", existing.encode()],
+            )
+            .expect("inject corrupt existing object");
+        drop(fault);
+
+        let new_bytes = b"new object before corruption check";
+        let new = ContentId::for_bytes(ObjectKind::Trace, 1, new_bytes);
+        let objects = [
+            (new, BlobHandle::from_bytes(new_bytes)),
+            (existing, BlobHandle::from_bytes(existing_bytes)),
+        ];
+        assert!(matches!(
+            backend.put_many_if_absent(&objects),
+            Err(StoreError::Corrupt { id }) if id == existing
+        ));
+        assert!(!backend.contains(new).expect("first insert rolled back"));
+        drop(backend);
+
+        let reopened = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("cold reopen");
+        assert!(!reopened.contains(new).expect("rollback remains durable"));
     }
 
     #[test]
