@@ -73,6 +73,7 @@ in
   testing.mkVMTest {
     name = "crucible-qemu-hot-fork-scaling";
     memory = 6144;
+    hostCpuPin = true;
     rootfsDeps = [
       flight
       guest
@@ -178,6 +179,12 @@ in
       export CRUCIBLE_ATOMIC_WORLD_UID=65534
       export CRUCIBLE_ATOMIC_WORLD_GID=65534
       export CRUCIBLE_ATOMIC_WORLD_CHECKPOINTS=/tmp/checkpoints
+      export CRUCIBLE_CAMPAIGN_PERF_STORAGE_ROOT=/tmp/attempts/performance-campaign
+      mkdir -m 700 "$CRUCIBLE_CAMPAIGN_PERF_STORAGE_ROOT"
+      mkdir -m 700 /tmp/campaign-performance-worker
+      cp ${pkgs.crucible}/bin/crucible /tmp/campaign-performance-worker/crucible
+      chmod 0500 /tmp/campaign-performance-worker/crucible
+      export CRUCIBLE_CAMPAIGN_PERF_PLANNER_EXECUTABLE=/tmp/campaign-performance-worker/crucible
 
       run_exact_lib_test() {
         package="$1"
@@ -536,11 +543,31 @@ in
         exact_restore_corpus_size=3 \
         setup_speedup_minimum=5x \
         steady_execution_overhead_limit_percent=10 \
+        campaign_planner_supervisor=packaged-process \
+        campaign_blob_backend=directory \
+        campaign_short_branch_boundary=two-node-pending-selectable \
+        campaign_guest_cpu_affinity=0 \
         known_dirty_guest_pages=1024 \
         memory_metrics=VmPTE,VmData,AnonHugePages,numa_maps \
         multi_node_launch_model=max-plus-bounded-orchestration; do
         ${pkgs.grep}/bin/grep -Fxq "$evidence" /tmp/performance-ratchet-result
       done
+      for index in 0 1 2; do
+        for metric in \
+          campaign_request_setup_ns \
+          campaign_planner_queue_ns \
+          campaign_storage_physical_bytes \
+          hot_guest_continuation_ns \
+          exact_guest_continuation_ns; do
+          ${pkgs.grep}/bin/grep -Eq \
+            "^corpus_''${index}_''${metric}=[1-9][0-9]*$" \
+            /tmp/performance-ratchet-result
+        done
+      done
+      ${pkgs.grep}/bin/grep -Eq '^campaign_planner_queue_total_ns=[1-9][0-9]*$' \
+        /tmp/performance-ratchet-result
+      ${pkgs.grep}/bin/grep -Eq '^hot_guest_continuation_total_ns=[1-9][0-9]*$' \
+        /tmp/performance-ratchet-result
 
       run_exact_lib_test \
         crucible-daemon \

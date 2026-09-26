@@ -25,6 +25,7 @@ required_claim_gates = [
   "gate:hot-fork-equivalence",
   "gate:hot-fork-isolation",
   "gate:hot-fork-scaling",
+  "gate:campaign-performance",
   "gate:host-clone-cost",
   "gate:world-fork-atomicity",
   "gate:exact-closure-streaming",

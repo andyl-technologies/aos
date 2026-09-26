@@ -147,7 +147,7 @@ impl CampaignRepository {
 
         let mut choice_cache = ChoiceValidationCache::default();
         let (ancestry_depth, lifecycle, genesis, derived_branch) =
-            self.validate_snapshot_ancestry(head, &mut choice_cache)?;
+            self.validate_snapshot_ancestry(head, &mut choice_cache, MAX_SNAPSHOT_ANCESTRY)?;
         let closure_objects = self.verify_campaign_closures_anchored_cached(
             [head],
             &BTreeSet::new(),
@@ -239,7 +239,7 @@ impl CampaignRepository {
 
         let mut choice_cache = ChoiceValidationCache::default();
         let (ancestry_depth, lifecycle, genesis, derived_branch) =
-            self.validate_snapshot_ancestry(child, &mut choice_cache)?;
+            self.validate_snapshot_ancestry(child, &mut choice_cache, MAX_SNAPSHOT_ANCESTRY)?;
         let closure_objects = self.verify_campaign_closures_anchored_cached(
             [child],
             &BTreeSet::new(),
@@ -304,6 +304,7 @@ impl CampaignRepository {
         &self,
         mut content_id: ContentId,
         choice_cache: &mut ChoiceValidationCache,
+        maximum_depth: usize,
     ) -> Result<
         (
             usize,
@@ -326,7 +327,7 @@ impl CampaignRepository {
         let mut derived_branch = None;
         let mut validated_generator_policies = BTreeSet::new();
 
-        for depth in 1..=MAX_SNAPSHOT_ANCESTRY {
+        for depth in 1..=maximum_depth.min(MAX_SNAPSHOT_ANCESTRY) {
             if !snapshots.insert(content_id) {
                 return Err(integrity("snapshot-ancestry-cycle"));
             }

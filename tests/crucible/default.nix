@@ -1203,6 +1203,8 @@ in rec {
         "checks.crucible.phase9.gates.campaignEnvoyNetworkVm" = phase9.gates.campaignEnvoyNetworkVm;
         "checks.crucible.phase9.gates.campaignKnownFindingVm" = phase9.gates.campaignKnownFindingVm;
         "checks.crucible.phase9.gates.campaignEnvoyProductLifecycle" = phase9.gates.campaignEnvoyProductLifecycle;
+        "checks.crucible.phase9.gates.campaignMetadataMillion" = phase9.gates.campaignMetadataMillion;
+        "checks.crucible.phase9.gates.campaignPerformance" = phase9.gates.campaignPerformance;
       };
       # The release aggregate depends on this traceability gate through the
       # required-claims aggregate. Check its declaration without forcing the
@@ -3091,6 +3093,14 @@ in rec {
         ];
         dependencies = [];
       };
+      campaignMetadataMillion = import ./phase9-campaign-metadata-million.nix {
+        inherit pkgs lib;
+      };
+      campaignPerformance = import ./phase9-campaign-performance.nix {
+        inherit pkgs;
+        nativeScaling = phase7.gates.hotForkScaling.rawGate;
+        metadataMillion = campaignMetadataMillion;
+      };
       campaignRequiredGates = import ./phase9-campaign-required-gates.nix {
         inherit pkgs lib;
         requiredStatuses = [
@@ -3117,6 +3127,7 @@ in rec {
           phase7.gates.hotForkScaling
           phase7.gates.hostCloneCost
           phase7.gates.worldForkAtomicity
+          campaignPerformance
           campaignFindingExactVm
           campaignFindingSignalVm
           campaignFindingForkWriteVm
@@ -3200,6 +3211,17 @@ in rec {
             gate = "gate:hot-fork-scaling";
             result = phase7.gates.hotForkScaling.rawGate;
             requiredLines = ["gate=gate:hot-fork-scaling"];
+          }
+          {
+            gate = "gate:campaign-performance";
+            result = campaignPerformance;
+            requiredLines = [
+              "gate=gate:campaign-performance"
+              "real_admissions=1000000"
+              "short_branch_planner_queue_under_5_percent=true"
+              "same_pinned_host_reference=true"
+              "durable_metadata_budget_authenticated=true"
+            ];
           }
           {
             gate = "gate:host-clone-cost";

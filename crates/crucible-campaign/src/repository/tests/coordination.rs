@@ -2281,6 +2281,37 @@ fn discarded_validation_checkpoints_rebuild_from_the_immutable_head() {
 }
 
 #[test]
+fn cold_ancestry_validation_rejects_a_head_beyond_its_bounded_depth() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("cold-ancestry-limit", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "cold-ancestry-limit",
+    );
+    let child = repository
+        .submit_known_branch_request("cold-ancestry-limit", genesis.snapshot_id(), &request)
+        .expect("publish one successor");
+    let content = child.new_snapshot.content_id();
+
+    assert!(matches!(
+        repository.validate_snapshot_ancestry(content, &mut ChoiceValidationCache::default(), 2),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "snapshot-ancestry-limit"
+        })
+    ));
+    let (depth, _, _, _) = repository
+        .validate_snapshot_ancestry(content, &mut ChoiceValidationCache::default(), 3)
+        .expect("three-snapshot cold ancestry");
+    assert_eq!(depth, 3);
+    assert_eq!(MAX_SNAPSHOT_ANCESTRY, 1_250_001);
+}
+
+#[test]
 fn local_successors_enforce_the_restart_ancestry_limit() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
