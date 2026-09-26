@@ -6,13 +6,14 @@
   name,
   version,
   url,
-  ref,
+  ref ? null,
   rev,
   hash,
+  fetchCommit ? false,
   extraExcludes ? [],
 }:
 fetchgit {
-  inherit url ref rev hash;
+  inherit url ref rev hash fetchCommit;
   name = "${name}-${version}-source-only";
 
   git = buildPackages.git-minimal;
