@@ -16,7 +16,7 @@
   probeFor = packageName: let
     package = pkgs.${packageName};
     contract = package.contract or (throw "qualification package '${packageName}' has no contract");
-    packageProbe = contract.value.qualification.package_probe;
+    packageProbe = contract.value.qualification.package_probe or (throw "qualification package '${packageName}' has no package probe");
   in
     mkPackageProbe {
       name = packageName;

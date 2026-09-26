@@ -21,9 +21,8 @@
 #     on a shellcheck binary.
 #
 # Top-level signature takes the minimal set of AOS-built tools it needs.
-# The file is auto-discovered by pkgs/default.nix and exposes its outputs as
-# `pkgs.trivial-builders`; pkgs/default.nix then re-inherits the four
-# primitives into the flat package set so that consumers can say
+# The file is imported privately by pkgs/default.nix, which exposes the four
+# primitives in the flat package set so that consumers can say
 # `pkgs.writeTextFile` / `pkgs.runCommand` directly.
 {
   lib,

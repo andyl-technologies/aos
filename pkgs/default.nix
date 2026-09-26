@@ -298,7 +298,8 @@
   # store paths out of the output (matches nixpkgs nuke-refs idiom).
   mkDerivation = args: let
     packageName =
-      args.pname
+      args.catalogName
+      or args.pname
       or args.name
       or (throw "mkDerivation: package must set pname or name");
     existingOutputs = args.outputs or ["out"];
@@ -484,9 +485,7 @@
       in
         packageOptions ++ serviceOptions;
     packageProjectionResult =
-      if evaluatedAbilities == null && authoredPackageProbe == null
-      then null
-      else if builtins.elem "contract" existingOutputs
+      if builtins.elem "contract" existingOutputs
       then throw "mkDerivation package contract for '${packageName}' reserves the 'contract' output name"
       else
         lib.abilities.projectPackage {
@@ -497,23 +496,16 @@
           optionDeclarations = abilityOptionDeclarations;
           packageProbe = authoredPackageProbe;
         };
-    packageProjection =
-      if packageProjectionResult == null
-      then null
-      else packageProjectionResult.value;
+    packageProjection = packageProjectionResult.value;
     packageAbilityProjection =
       if evaluatedAbilities == null
       then null
       else packageProjectionResult.abilities;
-    packageProjectionSource =
-      if packageProjection == null
-      then null
-      else
-        packageContractDocument {
-          inherit packageName;
-          version = args.version or "0";
-          projection = packageProjection;
-        };
+    packageProjectionSource = packageContractDocument {
+      inherit packageName;
+      version = args.version or "0";
+      projection = packageProjection;
+    };
     needsRuntimeProjection =
       evaluatedAbilities
       != null
@@ -566,7 +558,7 @@
     lowerArgs =
       # Package integration modules are evaluated by this wrapper and never
       # become low-level derivation attributes.
-      (builtins.removeAttrs args ["abilities" "platformSupport" "qualification" "sharedBuildCache"])
+      (builtins.removeAttrs args ["abilities" "catalogName" "platformSupport" "qualification" "sharedBuildCache"])
       // {
         meta =
           (args.meta or {})
@@ -590,29 +582,26 @@
       };
     drv = rawMkDerivation lowerArgs;
     abilityAttrs =
-      if packageProjection == null
-      then {}
-      else
-        {
-          contract = {
-            value = packageProjection;
-            document = packageProjectionSource;
-            selectors = packageProjectionResult.selectors;
-          };
-        }
-        // lib.optionalAttrs needsRuntimeProjection {
-          runtimeContract = {
-            value = runtimeProjectionResult.value;
-            document = runtimeProjectionSource;
-            selectors = runtimeProjectionResult.selectors;
-          };
-        }
-        // lib.optionalAttrs (evaluatedAbilities != null) {
-          abilities = packageAbilityProjection;
-          # Module selection and artifact binding use the package's real
-          # module output. The static ability view contains semantic data only.
-          module = abilityModuleArtifact;
+      {
+        contract = {
+          value = packageProjection;
+          document = packageProjectionSource;
+          selectors = packageProjectionResult.selectors;
         };
+      }
+      // lib.optionalAttrs needsRuntimeProjection {
+        runtimeContract = {
+          value = runtimeProjectionResult.value;
+          document = runtimeProjectionSource;
+          selectors = runtimeProjectionResult.selectors;
+        };
+      }
+      // lib.optionalAttrs (evaluatedAbilities != null) {
+        abilities = packageAbilityProjection;
+        # Module selection and artifact binding use the package's real
+        # module output. The static ability view contains semantic data only.
+        module = abilityModuleArtifact;
+      };
     platformAttrs = lib.optionalAttrs (packagePlatformSupport != null) {
       platformSupport = packagePlatformSupport;
     };
@@ -1323,6 +1312,7 @@
     );
   in
     fn (auto // overrides);
+  trivialBuilders = callPackage ./build-support/_trivial-builders.nix {};
 
   # Shared Linux kernel source (single tarball for linux and linux-headers)
   linuxSource = import ./kernel/_source.nix {inherit fetchurl mkManualUpstream;};
@@ -1397,7 +1387,15 @@
     filePackages = builtins.listToAttrs (
       map (name: {
         name = lib.removeSuffix ".nix" name;
-        value = callPackage (dir + "/${name}") {};
+        # The catalog name comes from the recipe path. Versioned variants may
+        # share a derivation pname but still need distinct contract identities.
+        value = let
+          path = dir + "/${name}";
+          acceptsMkDerivation = (builtins.functionArgs (import path)) ? mkDerivation;
+        in
+          callPackage path (lib.optionalAttrs acceptsMkDerivation {
+            mkDerivation = args: mkDerivation (args // {catalogName = lib.removeSuffix ".nix" name;});
+          });
       })
       nixFiles
     );
@@ -1560,7 +1558,7 @@
     util-linux = resolvedBuildPackages.util-linux;
   };
   uncheckedPackageNames = builtins.attrNames (
-    builtins.removeAttrs discoveredPackages ["trivial-builders"]
+    discoveredPackages
     // {
       nuke-references = null;
       qemu-crucible = null;
@@ -2913,14 +2911,12 @@
       ));
     }
     # --- Trivial builders, exposed flat on the package set ---
-    # The file at pkgs/build-support/trivial-builders.nix is also picked up
-    # by discoverPackages as `self.trivial-builders`; here we re-inherit the
-    # four primitives into the top level so consumers can call
-    # `pkgs.writeTextFile` / `pkgs.runCommand` etc. directly, matching the
+    # The private builder module supplies four primitives at the top level,
+    # so consumers can call `pkgs.writeTextFile` / `pkgs.runCommand`, matching the
     # nixpkgs convention that the ported systemd library expects.
     // (
       let
-        tb = self.trivial-builders;
+        tb = trivialBuilders;
       in {
         inherit
           (tb)
