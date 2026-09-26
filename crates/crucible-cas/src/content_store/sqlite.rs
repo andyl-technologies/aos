@@ -10,14 +10,15 @@
 //! returning. The lock spans administrative inventory and deletion, including
 //! the separate commits needed to make each deletion independently durable.
 
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use rusqlite::blob::ZeroBlob;
 use rusqlite::{Connection, DatabaseName, OpenFlags, OptionalExtension, params};
-use rustix::fs::{FlockOperation, flock};
+use rustix::fs::{FlockOperation, OFlags, flock};
 
 use super::admin::{
     InventoryCounter, PhysicalRepairAuthority, persistent_inventory_generation,
@@ -55,8 +56,20 @@ impl SqliteBlobBackend {
         super::directory::create_dir_all_durable(&root)?;
 
         let database_path = root.join(DATABASE_FILE);
-        let connection = Connection::open(&database_path)
-            .map_err(|source| database_error("open-sqlite-blob-database", source))?;
+        for name in [
+            DATABASE_FILE.to_owned(),
+            format!("{DATABASE_FILE}-wal"),
+            format!("{DATABASE_FILE}-shm"),
+            format!("{DATABASE_FILE}-journal"),
+            LOCK_FILE.to_owned(),
+        ] {
+            reject_nonregular_existing(&root.join(name))?;
+        }
+        let connection = Connection::open_with_flags(
+            &database_path,
+            OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(|source| database_error("open-sqlite-blob-database", source))?;
         connection
             .execute_batch("PRAGMA auto_vacuum=FULL;")
             .map_err(|source| database_error("configure-sqlite-auto-vacuum", source))?;
@@ -101,16 +114,7 @@ impl SqliteBlobBackend {
         // SQLite syncs its database and WAL; the containing directory must
         // also persist the initial database and lock names before publication.
         let lock_path = root.join(LOCK_FILE);
-        OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(|source| StoreError::Io {
-                operation: "create-sqlite-inventory-lock",
-                path: lock_path,
-                source,
-            })?;
+        open_inventory_lock(&lock_path, true)?;
         File::open(&root)
             .and_then(|directory| directory.sync_all())
             .map_err(|source| StoreError::Io {
@@ -122,9 +126,11 @@ impl SqliteBlobBackend {
         // A source handle may be read while the writer holds its connection
         // through a conditional put or fenced repair. WAL readers need a
         // separate connection so that same-store publication cannot deadlock.
-        let read_connection =
-            Connection::open_with_flags(&database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .map_err(|source| database_error("open-sqlite-blob-reader", source))?;
+        let read_connection = Connection::open_with_flags(
+            &database_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(|source| database_error("open-sqlite-blob-reader", source))?;
 
         Ok(Self {
             name: name.into(),
@@ -148,15 +154,7 @@ impl SqliteBlobBackend {
 
     fn acquire_inventory_lock(&self) -> Result<File, StoreError> {
         let path = self.root.join(LOCK_FILE);
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)
-            .map_err(|source| StoreError::Io {
-                operation: "open-sqlite-inventory-lock",
-                path: path.clone(),
-                source,
-            })?;
+        let file = open_inventory_lock(&path, false)?;
         flock(&file, FlockOperation::LockExclusive).map_err(|source| StoreError::Io {
             operation: "lock-sqlite-inventory",
             path,
@@ -203,6 +201,46 @@ impl SqliteBlobBackend {
         } else {
             Ok(BlobHandle::integrity_checked(id, source))
         }
+    }
+}
+
+fn open_inventory_lock(path: &Path, create: bool) -> Result<File, StoreError> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(create)
+        .custom_flags(OFlags::NOFOLLOW.bits() as i32)
+        .open(path)
+        .map_err(|source| StoreError::Io {
+            operation: "open-sqlite-inventory-lock",
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let metadata = file.metadata().map_err(|source| StoreError::Io {
+        operation: "inspect-sqlite-inventory-lock",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(StoreError::InvalidComposition {
+            reason: "SQLite inventory lock is not a regular file",
+        });
+    }
+    Ok(file)
+}
+
+fn reject_nonregular_existing(path: &Path) -> Result<(), StoreError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(()),
+        Ok(_) => Err(StoreError::InvalidComposition {
+            reason: "SQLite blob root contains a non-regular storage entry",
+        }),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(StoreError::Io {
+            operation: "inspect-sqlite-blob-entry",
+            path: path.to_path_buf(),
+            source,
+        }),
     }
 }
 
@@ -659,7 +697,7 @@ fn invalid_object_data() -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::{MetadataExt, symlink};
 
     use super::*;
 
@@ -940,6 +978,43 @@ mod tests {
             SqliteBlobBackend::open("sqlite-test", root.path()),
             Err(StoreError::InvalidComposition { .. })
         ));
+    }
+
+    #[test]
+    fn symlinked_database_sidecar_lock_and_root_fail_closed() {
+        let root = tempfile::tempdir().expect("temporary database root");
+        let external = tempfile::tempdir().expect("external sentinel root");
+        let sentinel = external.path().join("sentinel");
+        std::fs::write(&sentinel, b"unchanged").expect("write sentinel");
+
+        let database = root.path().join(DATABASE_FILE);
+        symlink(&sentinel, &database).expect("symlink database");
+        assert!(SqliteBlobBackend::open("sqlite-test", root.path()).is_err());
+        std::fs::remove_file(&database).expect("remove database symlink");
+
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let sidecar = root.path().join(format!("{DATABASE_FILE}{suffix}"));
+            symlink(&sentinel, &sidecar).expect("symlink sidecar");
+            assert!(SqliteBlobBackend::open("sqlite-test", root.path()).is_err());
+            std::fs::remove_file(sidecar).expect("remove sidecar symlink");
+        }
+
+        let backend = SqliteBlobBackend::open("sqlite-test", root.path()).expect("open database");
+        let lock = root.path().join(LOCK_FILE);
+        std::fs::remove_file(&lock).expect("remove inventory lock");
+        symlink(&sentinel, &lock).expect("symlink inventory lock");
+        assert!(backend.acquire_inventory_fence().is_err());
+        assert!(SqliteBlobBackend::open("sqlite-test", root.path()).is_err());
+        drop(backend);
+        std::fs::remove_file(&lock).expect("remove inventory lock symlink");
+
+        let alias = external.path().join("aliased-root");
+        symlink(root.path(), &alias).expect("symlink database root");
+        assert!(SqliteBlobBackend::open("sqlite-test", &alias).is_err());
+        assert_eq!(
+            std::fs::read(sentinel).expect("read sentinel"),
+            b"unchanged"
+        );
     }
 
     #[test]
