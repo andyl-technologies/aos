@@ -1111,11 +1111,7 @@ impl CampaignRepository {
         match mode {
             IssueProjectionMode::Preflight => Ok(prior),
             IssueProjectionMode::Publish => {
-                let mut root = prior;
-                for (key, value) in upserts {
-                    root = self.merkle.insert(root, *key, *value)?.content_id();
-                }
-                Ok(root)
+                Ok(self.merkle.insert_many(prior, upserts)?.content_id())
             }
             IssueProjectionMode::Validate {
                 target_exploration,
