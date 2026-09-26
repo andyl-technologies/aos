@@ -3347,34 +3347,25 @@ mod tests {
             ("platform_variant", 12),
         ] {
             let equality = format!("manifest.{column} = ${parameter}");
-            let null_check = format!("manifest.{column} IS NULL AND ${parameter} IS NULL");
+            let null_check =
+                format!("manifest.{column} IS NULL AND CAST(${parameter} AS VARCHAR) IS NULL");
             assert!(postgres.sql.contains(&equality), "{}", postgres.sql);
             assert!(postgres.sql.contains(&null_check), "{}", postgres.sql);
-            assert!(
-                postgres.sql.find(&equality) < postgres.sql.find(&null_check),
-                "PostgreSQL must infer ${parameter} from typed equality first: {}",
-                postgres.sql
-            );
         }
     }
 
     #[test]
-    fn manifest_reference_predicate_types_nullable_parameters_before_null_checks() {
+    fn manifest_reference_predicate_casts_nullable_parameters() {
         let postgres = crate::dialect::Dialect::Postgres
             .translate(OCI_MANIFEST_REFERENCE_PREDICATE)
             .unwrap();
 
         for (equality, null_check) in [
-            ("link.digest = $2", "$2 IS NOT NULL"),
-            ("tag.name = $3", "$3 IS NOT NULL"),
+            ("link.digest = $2", "CAST($2 AS VARCHAR) IS NOT NULL"),
+            ("tag.name = $3", "CAST($3 AS VARCHAR) IS NOT NULL"),
         ] {
             assert!(postgres.sql.contains(equality), "{}", postgres.sql);
             assert!(postgres.sql.contains(null_check), "{}", postgres.sql);
-            assert!(
-                postgres.sql.find(equality) < postgres.sql.find(null_check),
-                "PostgreSQL must infer nullable reference parameters from typed equality first: {}",
-                postgres.sql
-            );
         }
     }
 
