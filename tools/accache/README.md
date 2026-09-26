@@ -319,6 +319,9 @@ and caches the direct compiler's output.
 A Clang randomized-layout case changes a seed file absent from the depfile.
 Both caches miss on the seed edit and restore the changed object and depfile on
 a warm hit.
+A Clang warning-suppression mapping case changes only compiler stderr while
+leaving object bytes unchanged. The mapping is absent from Clang's depfile;
+both caches miss when it changes and replay the matching diagnostic on a hit.
 Four Rust native-archive oracle cases cover joined and separated `-L` and `-l`
 flags. Replacing an AOS-built `libnative.a` changes the resulting rlib; both
 caches miss on the archive edit and warm-hit on a repeated compilation.
