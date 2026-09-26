@@ -1303,9 +1303,9 @@ def check_gcc_nested_specs(root, env, accache, sccache, gcc, hits):
              "artifacts": ["source.o"]} for revision in range(2)]
 
 
-def check_gcc_file_prefix_tool(root, env, accache, sccache, gcc, hits):
-    """Hash an assembler selected by the filename-prefix form of -B."""
-    fixture = "gcc-file-prefix-assembler"
+def check_gcc_file_prefix_tool(root, env, accache, sccache, gcc, hits,
+                               fixture, option):
+    """Hash an assembler selected by a GCC filename-prefix option."""
     work = root / fixture
     work.mkdir()
     (work / "tools").mkdir()
@@ -1317,7 +1317,7 @@ def check_gcc_file_prefix_tool(root, env, accache, sccache, gcc, hits):
     wrapper_source = work / "tool.c"
     wrapper = work / "tools/prefix-as"
     object_file = work / "source.o"
-    args = [gcc, "-B" + str(work / "tools/prefix-"),
+    args = [gcc, option + str(work / "tools/prefix-"),
             "-c", "source.S", "-o", "source.o"]
 
     def build_assembler(value):
@@ -4036,8 +4036,12 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
         results.append(check_assembler_include_invalidation(root, env, accache,
                                                             sccache, gcc, hits))
         results.extend(check_gcc_nested_specs(root, env, accache, sccache, gcc, hits))
-        results.extend(check_gcc_file_prefix_tool(root, env, accache,
-                                                  sccache, raw_gcc, hits))
+        for fixture, option in [
+            ("gcc-file-prefix-assembler", "-B"),
+            ("gcc-long-prefix-assembler", "--prefix="),
+        ]:
+            results.extend(check_gcc_file_prefix_tool(
+                root, env, accache, sccache, raw_gcc, hits, fixture, option))
         results.extend(check_gcc_profile_note_outputs(root, env, accache,
                                                       sccache, gcc, hits))
         results.extend(check_gcc_auto_profile_inputs(root, env, accache,
