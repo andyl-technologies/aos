@@ -3528,6 +3528,8 @@ def check_clang_llvm_file_inputs(root, env, accache, sccache, clang, hits):
     for fixture, forwarded in [
         ("clang-llvm-attrs-separated", ["-mllvm", "-forceattrs-csv-path=attrs.csv"]),
         ("clang-llvm-attrs-joined", ["-mllvm=-forceattrs-csv-path=attrs.csv"]),
+        ("clang-llvm-attrs-value-separated",
+         ["-mllvm", "-forceattrs-csv-path", "-mllvm", "attrs.csv"]),
     ]:
         work = root / fixture
         work.mkdir()
@@ -3586,7 +3588,7 @@ def check_clang_llvm_file_inputs(root, env, accache, sccache, clang, hits):
 def check_llvm_scalar_tuning(root, env, accache, sccache, clang, rustc, hits):
     """Cache pure LLVM tuning flags in both supported compiler frontends."""
     results = []
-    for (language, compiler), (option, values, changes_object) in product(
+    for (language, compiler), (option, values, changes_object), spelling in product(
         [("clang", clang), ("rust", rustc)],
         [
             ("inline-threshold", ["0", "225"], True),
@@ -3594,8 +3596,9 @@ def check_llvm_scalar_tuning(root, env, accache, sccache, clang, rustc, hits):
             ("unroll-count", ["1", "4"], True),
             ("unroll-threshold", ["1", "1000"], True),
         ],
+        ["joined", "separate-value"],
     ):
-        fixture = language + "-llvm-" + option
+        fixture = language + "-llvm-" + option + "-" + spelling
         work = root / fixture
         work.mkdir()
         object_file = work / ("source.o" if language == "clang" else "target/libexample.rlib")
@@ -3621,9 +3624,14 @@ def check_llvm_scalar_tuning(root, env, accache, sccache, clang, rustc, hits):
         def compile_object(wrapper, value):
             object_file.unlink(missing_ok=True)
             depfile.unlink(missing_ok=True)
-            flag = f"-mllvm=-{option}={value}" if language == "clang" \
-                else f"-Cllvm-args=-{option}={value}"
-            completed = subprocess.run([*wrapper, *base, flag], cwd=work, env=env,
+            if language == "clang":
+                flags = ([f"-mllvm=-{option}={value}"] if spelling == "joined"
+                         else ["-mllvm", "-" + option, "-mllvm", value])
+            else:
+                llvm_option = (f"-{option}={value}" if spelling == "joined"
+                               else f"-{option} {value}")
+                flags = ["-Cllvm-args=" + llvm_option]
+            completed = subprocess.run([*wrapper, *base, *flags], cwd=work, env=env,
                                        capture_output=True, timeout=120)
             assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
             return (completed.stdout, completed.stderr,
@@ -4183,6 +4191,8 @@ def check_rust_llvm_file_inputs(root, env, accache, sccache, rustc, hits):
          "attrs.csv", ["answer,noinline\n", "answer,optnone\n"], 2, False),
         ("rust-llvm-attrs-separated", "--forceattrs-csv-path=attrs.csv",
          "attrs.csv", ["answer,noinline\n", "answer,optnone\n"], 2, True),
+        ("rust-llvm-attrs-value-separated", "--forceattrs-csv-path attrs.csv",
+         "attrs.csv", ["answer,noinline\n", "answer,optnone\n"], 2, False),
     ]:
         work = root / fixture
         work.mkdir()

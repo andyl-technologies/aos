@@ -159,25 +159,10 @@ pub(super) fn configure(
         let Some(llvm_args) = option.strip_prefix("llvm-args=") else {
             continue;
         };
-        for argument in llvm_args.split_whitespace() {
-            match llvm::classify(argument) {
-                llvm::OptionEffect::FileInput(path) => {
-                    ensure!(!path.is_empty(), "LLVM file input is empty");
-                    invocation.extra_inputs.insert(path.into());
-                }
-                llvm::OptionEffect::NoFileInput => {}
-                llvm::OptionEffect::InvocationReport => {
-                    // LLVM can put reports outside rustc's output directory.
-                    // Replaying an rlib without those files would hide them.
-                    anyhow::bail!("Rust LLVM option {argument} writes an invocation report");
-                }
-                llvm::OptionEffect::Unknown => {
-                    // Internal options remain usable through direct rustc
-                    // until their file effects have an audited contract.
-                    anyhow::bail!("Rust LLVM option {argument} has no audited cache contract");
-                }
-            }
-        }
+        invocation.extra_inputs.extend(llvm::file_inputs(
+            &llvm_args.split_whitespace().collect::<Vec<_>>(),
+            "Rust",
+        )?);
     }
 
     // The dep-info probe below names the crate artifacts rustc actually read,
