@@ -3,6 +3,7 @@
   mkCargoPackage,
   fetchurl,
   fetchCargoVendor,
+  callPackage,
   buildPackages,
   bash,
   stdenv,
@@ -12,17 +13,22 @@
     urls = ["https://github.com/bazelbuild/rules_rust/archive/refs/tags/${rulesVersion}.tar.gz"];
     hash = "078gjw7p4f4qbz5v3zjy6fzvzs0k5vr92i9kbvhjs5dzlck1r29k";
   };
+  cargoVendorRaw = fetchCargoVendor {
+    inherit src;
+    sourceRoot = "rules_rust-${rulesVersion}/crate_universe";
+    name = "workerd-cargo-bazel-vendor";
+    hash = "sha256-MPaL3S2xxtzk+7JbAk5xskeKvQ7d3w353HTWrG4XHio=";
+  };
+  sourceOnlyCargoVendor = callPackage ../../build-support/_cargo-source-vendor.nix {};
 in
   mkCargoPackage {
     pname = "workerd-cargo-bazel";
     version = "0.18.0";
     inherit src;
     cargoRoot = "crate_universe";
-    cargoDeps = fetchCargoVendor {
-      inherit src;
-      sourceRoot = "rules_rust-${rulesVersion}/crate_universe";
-      name = "workerd-cargo-bazel-vendor";
-      hash = "sha256-MPaL3S2xxtzk+7JbAk5xskeKvQ7d3w353HTWrG4XHio=";
+    cargoDeps = sourceOnlyCargoVendor {
+      name = "workerd-cargo-bazel-source-only";
+      vendor = cargoVendorRaw;
     };
     cargoFlags = "-p cargo-bazel";
     cargoTestFlags = "-p cargo-bazel --lib";
@@ -58,6 +64,31 @@ in
       text = text.replace('PathBuf::from("cargo")', 'PathBuf::from("${buildPackages.rust}/bin/cargo")')
       text = text.replace('PathBuf::from("rustc")', 'PathBuf::from("${buildPackages.rust}/bin/rustc")')
       source.write_text(text)
+
+      # Cargo's directory vendor records real source URLs but places Git
+      # manifests outside CARGO_HOME/git/checkouts. Preserve the upstream
+      # subdirectory layout when cargo-bazel renders Bazel Git repositories.
+      annotation = Path('crate_universe/src/metadata/metadata_annotation.rs')
+      text = annotation.read_text()
+      marker = '        // {CARGO_HOME}/git/checkouts/name-hash/short-sha/[strip_prefix...]/Cargo.toml\n'
+      replacement = marker + '\n'.join([
+          '        if pkg.manifest_path.as_str().contains("/source-git-") {',
+          '            let strip_prefix = match pkg.name.as_str() {',
+          '                "lol_html" => None,',
+          '                "lol_html_c_api" => Some("c-api"),',
+          '                "ruff_python_parser" => Some("crates/ruff_python_parser"),',
+          '                "ruff_source_file" => Some("crates/ruff_source_file"),',
+          '                "ruff_python_ast" => Some("crates/ruff_python_ast"),',
+          '                "ruff_text_size" => Some("crates/ruff_text_size"),',
+          '                "ruff_python_trivia" => Some("crates/ruff_python_trivia"),',
+          '                other => bail!("Unmapped vendored Git crate: {other}"),',
+          '            };',
+          '            return Ok(strip_prefix.map(String::from));',
+          '        }',
+          "",
+      ]) + '\n'
+      assert text.count(marker) == 1
+      annotation.write_text(text.replace(marker, replacement))
 
       # The resolver writes this shell script into temporary directories at
       # runtime; its interpreter must remain in the installed closure.
