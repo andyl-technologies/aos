@@ -617,7 +617,7 @@ enters a release build.
 | `gate:scheduler-liveness` | `crucible` `tests/` (`--features test-double`) | reaches quiescence/limit |
 | `gate:control-responsive` | `crucible-session` + `crucible-api` `tests/` | bounded-quantum ack |
 | `gate:any-guest` | `crucible-qemu` `tests/` (guest matrix) | unmodified-guest boot |
-| `gate:qemu-inert` / `gate:patch-microtests` | AOS QEMU package tests ([`26`](26-packaging-aos-integration.md)) + `crucible-qemu-plugin` | sim-off identity; atomic-patch capability evidence |
+| `gate:qemu-inert` / `gate:patch-microtests` | AOS QEMU package tests ([`26`](26-packaging-aos-integration.md)) + `crucible-qemu-plugin` | sim-control inertness, pinned-corpus identity, and patch capability evidence |
 | `gate:divergence-bisect` | `crucible-harness` | first-differing-step localization |
 | `gate:adversarial-determinism` | `crucible-harness` (host-hostile driver) | N-run byte-identical logs |
 | `gate:e2e-determinism` | `crucible-harness` + `crucible-cli` (final acceptance) | full multi-VM reproduce |

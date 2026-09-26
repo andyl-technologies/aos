@@ -922,9 +922,9 @@ tightly here.
   argument is passed, no control socket is created, no shared-memory region is
   mapped, and none of the atomic-patch capabilities the plugin calls take effect
   ([`14-protocol.md`](14-protocol.md) [PROTO-24], [INV-7]). The plugin's existence
-  MUST have zero effect on a QEMU process launched without it; AOS's production
-  QEMU built from the same source MUST be behaviorally identical to upstream when
-  the plugin is absent. *Gate:* `gate:qemu-inert`. *Spec:* §12.10.4, forward-ref
+  MUST have zero effect on a QEMU process launched without it. Ordinary-TCG
+  picosecond timer representation is independent of plugin loading and governed
+  by [DET-36]. *Gate:* `gate:qemu-inert`. *Spec:* §12.10.4, forward-ref
   [`11-qemu-patches.md`](11-qemu-patches.md); routes [INV-7], [DET-36].
 
 ## 12.11 Summary

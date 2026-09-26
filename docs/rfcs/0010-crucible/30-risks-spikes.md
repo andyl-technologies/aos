@@ -710,26 +710,27 @@ choice is a performance tuning recorded in 22/25.
 
 Determinism is only stable for a *fixed* QEMU build: TCG codegen, device models,
 and the atomic patch all affect `T` ([DET-35]). This spike verifies that the
-patched QEMU AOS ships reproduces the determinism contract, that the patch is
-inert when sim mode is off ([INV-7]), and that the build identity travels with the
+patched QEMU AOS ships reproduces the determinism contract, that its sim controls
+are inert when sim mode is off ([INV-7]), and that the build identity travels with the
 reproduction artifact so a version bump is a controlled, re-gated event.
 
 ### Assumption under test
 
 The AOS-built, patched QEMU ([G-7], [`26-packaging-aos-integration.md`](26-packaging-aos-integration.md))
-(a) reproduces S1's bit-identical single-VM fingerprint, (b) is behaviorally
-identical to upstream when sim mode is off ([INV-7], [DET-36]), and (c) produces a
-build identity that, recorded in the reproduction artifact, lets a run reproduce
-*only* against the build that produced it — so a QEMU/patch change is detectable
-and re-gated, never a silent determinism drift ([DET-35]).
+(a) reproduces S1's bit-identical single-VM fingerprint, (b) preserves the
+checked sim-off corpus and exact-phase migration contract ([INV-7], [DET-36]),
+and (c) produces a build identity that, recorded in the reproduction artifact,
+lets a run reproduce *only* against the build that produced it. A QEMU/patch
+change is detected and re-gated, never a silent determinism drift ([DET-35]).
 
 ### What to build / measure
 
 Build the patched QEMU hermetically in AOS. (a) Re-run S1 against the AOS build and
 confirm the fingerprint matches the S1 baseline build. (b) Run the atomic
 patch's component tests and sim-off inertness corpus ([DET-37]): the same source
-built without sim mode active behaves identically to upstream on representative
-non-sim workloads (`gate:qemu-inert`). (c) Capture the build identity (a content hash of the QEMU
+built without sim mode active matches upstream on checked guest/QMP outputs and
+legacy Q35 migration bytes, permitting only the authenticated PIT phase state
+(`gate:qemu-inert`). (c) Capture the build identity (a content hash of the QEMU
 derivation + atomic patch) into the reproduction artifact; then rebuild with a
 deliberate trivial QEMU change and confirm the artifact's recorded build identity
 no longer matches, so the run is flagged as needing re-gating rather than silently
@@ -738,24 +739,26 @@ producing a different `T`.
 ```text
 S9 procedure:
   (a) S1 on AOS-built patched QEMU -> fingerprint == S1 baseline
-  (b) atomic patch: sim-off behavior == upstream on non-sim workloads (qemu-inert)
+  (b) sim controls inert; checked corpus equal except PIT phase (qemu-inert)
   (c) artifact records build_id = hash(qemu drv + atomic patch);
       rebuild with a trivial change -> build_id changes -> run flagged "re-gate"
 ```
 
 ### Pass / fail criterion
 
-**Pass:** (a) the AOS build reproduces the S1 fingerprint; (b) the atomic patch
-is inert sim-off (production QEMU behaviorally identical to upstream); (c) the build
+**Pass:** (a) the AOS build reproduces the S1 fingerprint; (b) sim controls are
+inert off, and the checked corpus plus PIT phase projection pass; (c) the build
 identity is in the artifact and a build change is detected as a re-gate, not a
 silent drift.
 
-**Fail:** the AOS build diverges from the baseline, the patch changes non-sim
-behavior, or a build change is not reflected in the artifact's build identity.
+**Fail:** the AOS build diverges from the baseline, sim control leaks into
+ordinary TCG, the checked corpus changes beyond the authenticated PIT phase,
+or a build change is not reflected in the artifact's build identity.
 
 - **[RISK-16]** Spike **S9** MUST confirm the AOS-built patched QEMU reproduces
-  the single-VM fingerprint ([DET-1]), that the atomic patch is **inert when sim mode is
-  off** ([INV-7], [DET-36], [DET-37], `gate:qemu-inert`), and that the QEMU **build
+  the single-VM fingerprint ([DET-1]), that sim controls are **inert when sim
+  mode is off** and exact-phase state is authenticated ([INV-7], [DET-36],
+  [DET-37], `gate:qemu-inert`), and that the QEMU **build
   identity** is recorded in the reproduction artifact so a run reproduces only
   against its producing build and a build/patch change is a re-gated, never silent,
   event ([DET-35]). A QEMU or patch change MUST re-run S1 and S9 before it ships.
@@ -1784,13 +1787,15 @@ never tolerated). Results live in the decision register (31).
   fuzzing budget; adopt a cheaper coverage representation if over budget. —
   satisfies [RISK-15]; spec §30.9.
 - [x] **T-RISK-9** Run **S9**: AOS-built patched QEMU reproduces the S1
-  fingerprint, the atomic patch is inert sim-off (`gate:qemu-inert`), and the QEMU build
-  identity is recorded in the reproduction artifact so a build change is re-gated,
-  never silent. Phase 0 recorded the active AOS QEMU derivation and atomic-patch
-  identity, consumed the green S1 fingerprint, and proved a mutated build id
-  forces re-gating; full upstream-vs-patched inertness remains a later
-  `gate:qemu-inert` obligation because the current atomic patch intentionally
-  changes icount behavior. — satisfies [RISK-16], [DET-35], [INV-7]; spec §30.10.
+  fingerprint, sim controls are inert off and the checked corpus passes
+  (`gate:qemu-inert`), and the QEMU build identity is recorded in the reproduction
+  artifact so a build change is re-gated, never silent. Phase 0 recorded the
+  active AOS QEMU derivation and atomic-patch identity, consumed the green S1
+  fingerprint, and proved a mutated build id forces re-gating. The
+  `gate:qemu-inert` implementation compares the checked sim-off corpus and
+  authenticates the sole Q35 PIT phase subsection without claiming
+  universal ordinary-TCG byte identity. — satisfies [RISK-16], [DET-35], [INV-7];
+  spec §30.10.
 - [x] **T-RISK-10** Re-run **S10** for instruction ABI v4: the aarch64 doorbell
   is observed synchronously at the exact
   retirement icount, carries its register payload, yields a reproducible marker

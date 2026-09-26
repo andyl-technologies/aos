@@ -498,29 +498,28 @@ genuinely unresolved and is tracked as a spike in
 - **Affects:** [G-8], [G-9], [INV-3], [DET-11], [DET-13], [DET-34], [SHM-*],
   [PROTO-*], [BOUND-4]–[BOUND-8]; files 04 (§4.4, §4.9), 13, 14, 37.
 
-### D-16 — The atomic QEMU patch is inert unless sim mode is active
+### D-16 — Simulation control is inert unless sim mode is active
 
 - **Status:** Decided
-- **Decision:** Every mechanism in the atomic AOS QEMU patch is **inert unless
-  simulation mode is explicitly activated** (plugin loaded + sim flags). The same
-  AOS QEMU source built and run without sim mode active is **behaviorally
-  identical to upstream**; each capability has focused evidence proving both
-  that it *takes effect* in sim mode and that it is *inert* out of sim mode.
-- **Rationale:** AOS ships *one* QEMU package, used both for production
-  virtualization and for Crucible. An atomic patch that changed non-sim
-  behavior would silently alter AOS's production QEMU — unacceptable. Gating
-  the integration behind sim mode lets Crucible's mechanisms live in the shipped QEMU
-  without risk, keeps the atomic patch upstreamable (inert-by-default is the
-  posture upstream expects), and makes the inertness itself testable
-  ([gate:qemu-inert]). It also means a single from-source build serves both
-  purposes, consistent with AOS's hermetic-from-source principle (G-7).
+- **Decision:** Simulation-control mechanisms in the atomic AOS QEMU patch are
+  **inert unless simulation mode is explicitly activated** (plugin loaded + sim
+  flags). Ordinary TCG retains versioned picosecond timer state and must restore
+  its exact phase. The pinned sim-off corpus matches upstream guest/QMP output
+  and legacy Q35 migration bytes, allowing only the authenticated PIT phase
+  subsection; each sim capability has focused effect and inertness evidence.
+- **Rationale:** Crucible's patched QEMU also runs ordinary TCG. Unreviewed
+  non-sim changes would silently alter its production behavior. Sim gating
+  protects the control mechanisms; the explicit ordinary-TCG timer representation
+  is versioned and tested by `gate:qemu-inert`. The patched build serves both
+  ordinary TCG and Crucible, consistent with AOS's hermetic-from-source
+  principle (G-7).
 - **Alternatives considered:**
-  - *A separate "Crucible QEMU" fork built only for simulation.* Rejected: two
-    QEMU builds to maintain, two security surfaces, and divergence risk; one
-    inert-by-default package is simpler and safer.
+  - *A separate "Crucible QEMU" source fork built only for simulation.* Rejected:
+    two source lines to maintain and divergence risk; one pinned source with
+    gated sim controls and versioned timer state is simpler.
   - *The integration is always active but "harmless" in production.* Rejected:
-    "harmless" is unprovable in general; inert-unless-sim-mode with focused capability
-    evidence and an aggregate inertness test is the provable posture ([INV-7]).
+    "harmless" is unprovable in general; gated sim controls and an authenticated
+    ordinary-TCG timer exception are the checked posture ([INV-7]).
 - **Affects:** [G-7], [INV-7], [DET-36], [DET-37]; files 04 (§4.10), 10, 11.
 
 ### D-17 — Standalone of the RFC-0007 (ratchet) ratchet; shared substrate gated for later
