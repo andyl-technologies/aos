@@ -133,6 +133,7 @@ use super::store::{
     ProtectedHostOutputReservationV1,
 };
 
+pub mod bootstrap_proof;
 pub(crate) mod host_currentness_fence;
 mod settlement_admission;
 #[cfg(all(
@@ -151,7 +152,6 @@ const BOOTSTRAP_ROOT: &str = "/var/lib/aos/sandbox-host/bootstrap";
 const BOOTSTRAP_MANIFEST_NAME: &str = "runtime-owner.records";
 #[cfg(target_os = "linux")]
 const BOOTSTRAP_VERITY_NAME: &str = "runtime-owner.records.verity";
-#[cfg(target_os = "linux")]
 const BOOTSTRAP_MANIFEST_MAGIC: &[u8; 8] = b"AOSRBM01";
 #[cfg(target_os = "linux")]
 const BOOTSTRAP_VERITY_MAGIC: &[u8; 8] = b"AOSRBV01";
@@ -175,10 +175,8 @@ const HOST_EVIDENCE_MAGIC: &[u8; 8] = b"AOSRHE01";
 const HOST_EVIDENCE_BYTES: usize = 152;
 const PLAN_CATALOG_MAGIC: &[u8; 8] = b"AOSRPL01";
 const PLAN_CATALOG_BYTES: usize = 216;
-#[cfg(target_os = "linux")]
 const BOOTSTRAP_RECORD_BYTES: usize =
     PEER_BYTES + CURRENTNESS_BYTES + CAPABILITIES_BYTES + HOST_EVIDENCE_BYTES + PLAN_CATALOG_BYTES;
-#[cfg(target_os = "linux")]
 const BOOTSTRAP_MANIFEST_BYTES: usize = 8 + BOOTSTRAP_RECORD_BYTES + 32;
 // Begin, five records, and Commit advance the protected snapshot by seven.
 const PEER_PROVISION_TRANSACTION_FRAME_COUNT: u64 = 7;

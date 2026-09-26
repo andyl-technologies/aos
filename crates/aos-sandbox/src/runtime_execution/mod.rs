@@ -62,6 +62,10 @@ pub use host_output_source::{
     HostOutputReserveSourceErrorV1, VerifiedHostOutputReserveSourceV1,
     verify_host_output_reserve_source_v1,
 };
+pub use owner::bootstrap_proof::{
+    RuntimeBootstrapExpectationV1, RuntimeBootstrapProofErrorV1, RuntimeBootstrapProofV1,
+    RuntimeBootstrapSignerPinV1,
+};
 pub use owner::{
     AuthenticatedRecoveredHostAgentOutcomeV1, AuthenticatedRuntimeArgumentReadbackV1,
     CommittedHostAgentOutcomeV1, DormantRuntimeExecutionClaimV1,
