@@ -95,7 +95,7 @@ pkgs.mkDerivation {
 
         assert re.search(r"^campaign_guest_cpu_affinity=0$", serial, re.MULTILINE)
         assert re.search(r"^campaign_planner_supervisor=packaged-process$", serial, re.MULTILINE)
-        assert re.search(r"^campaign_blob_backend=directory$", serial, re.MULTILINE)
+        assert re.search(r"^campaign_blob_backend=sqlite-store-graph$", serial, re.MULTILINE)
         assert re.search(r"^campaign_short_branch_boundary=two-node-pending-selectable$", serial, re.MULTILINE)
         assert expected["host_pinned_cpu"] == "0"
         assert re.search(r"^host_allowed_cpus=[0-9,-]+$", host, re.MULTILINE)

@@ -548,7 +548,7 @@ in
         setup_speedup_minimum=5x \
         steady_execution_overhead_limit_percent=10 \
         campaign_planner_supervisor=packaged-process \
-        campaign_blob_backend=directory \
+        campaign_blob_backend=sqlite-store-graph \
         campaign_short_branch_boundary=two-node-pending-selectable \
         campaign_guest_cpu_affinity=0 \
         known_dirty_guest_pages=1024 \

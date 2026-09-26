@@ -11,7 +11,9 @@ use crucible_campaign::{
     CampaignRepository, CampaignSeed, CandidateSource, CanonicalFrontierPlanner, ControlRequest,
     DaemonEpoch, PlannerClient, PlannerDisposition, PlanningBudget, WorkerSlotId,
 };
-use crucible_cas::content_store::{DirectoryBlobBackend, DirectoryRefBackend};
+use crucible_cas::content_store::{
+    DirectoryRefBackend, ObjectKind, StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
+};
 
 use crate::guest_selectable::resolve_guest_selectable;
 use crate::planner_process::{CanonicalPlannerProcessConfig, CanonicalPlannerProcessSupervisor};
@@ -36,16 +38,41 @@ pub(super) fn measure_campaign_planner_queue_at_boundary(
             .expect("packaged planner worker executable"),
     );
     std::fs::create_dir_all(&storage_root).expect("create performance storage root");
+    let root = StoreNodeId::new("campaign-primary").expect("campaign store node");
+    // Match the deployed campaign graph's admitted kinds and durable leaf.
+    let blobs = StoreGraph::build(StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([
+            ObjectKind::CampaignFact,
+            ObjectKind::CampaignSnapshot,
+            ObjectKind::MerkleNode,
+            ObjectKind::Scenario,
+            ObjectKind::Configuration,
+            ObjectKind::Policy,
+            ObjectKind::ExactManifest,
+            ObjectKind::RamExtent,
+            ObjectKind::DiskExtent,
+            ObjectKind::DeviceState,
+            ObjectKind::Observation,
+            ObjectKind::Finding,
+            ObjectKind::Projection,
+            ObjectKind::Trace,
+        ]),
+        nodes: BTreeMap::from([(
+            root,
+            StoreNodeSpec::Sqlite {
+                root: storage_root.join("blobs"),
+            },
+        )]),
+    })
+    .expect("build production campaign SQLite store graph");
     let authority =
         crucible_campaign::PlannerAuthorityKey::from_bytes([0x92; 32]).expect("planner authority");
     let debugger_authority = crucible_campaign::DebuggerAuthorityKey::from_bytes([0x94; 32])
         .expect("debugger authority");
     let repository = Arc::new(
         CampaignRepository::with_component_authorities(
-            Arc::new(DirectoryBlobBackend::new(
-                format!("native-performance-{index}"),
-                storage_root.join("blobs"),
-            )),
+            Arc::new(blobs),
             Arc::new(DirectoryRefBackend::new(storage_root.join("refs"))),
             authority.clone(),
             debugger_authority,
