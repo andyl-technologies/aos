@@ -136,9 +136,9 @@ in
     # Release tooling can pass these verified Bazel 8 checkouts as module
     # overrides while fetching the remaining graph with downloads disabled.
     passthru.offlineModules = helperScope.bazelOfflineModules;
-    passthru.offlineRepositories = {
-      platforms = helperScope.bazelPlatformsSource;
-    };
+    passthru.offlineRepositories =
+      {platforms = helperScope.bazelPlatformsSource;}
+      // helperScope.bazelAsyncProfilerRepositories;
 
     buildDeps =
       [
