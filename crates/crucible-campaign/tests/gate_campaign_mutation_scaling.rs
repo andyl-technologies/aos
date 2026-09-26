@@ -165,6 +165,58 @@ impl MutableRefBackend for ConflictOnceRefBackend {
 }
 
 #[test]
+fn budget_successor_conflict_keeps_parent_checkpoint() {
+    let (repository, reads, refs, lineage, policy) = fixture();
+    let created = repository
+        .create("budget-witness-cas", &lineage, &policy, &BTreeMap::new())
+        .expect("create campaign");
+    let parent = created.snapshot_id();
+    let request = ControlRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive(
+            "gate.campaign-budget-witness",
+            b"grant",
+        )),
+        expected_snapshot: parent,
+        action: CampaignControlAction::GrantBudget(
+            crucible_campaign::BudgetGrant::new(1, 1).expect("grant"),
+        ),
+    };
+
+    refs.arm();
+    assert!(matches!(
+        repository.apply_control("budget-witness-cas", &request),
+        Err(CampaignRepositoryError::RefConflict { .. })
+    ));
+    let rejected_child = reads.last_put();
+    assert!(!repository.has_retained_validation_checkpoint(rejected_child));
+    assert!(repository.has_retained_validation_checkpoint(parent.content_id()));
+    assert_eq!(
+        repository
+            .head("budget-witness-cas")
+            .expect("authoritative parent")
+            .snapshot_id(),
+        parent
+    );
+
+    let retried = repository
+        .apply_control("budget-witness-cas", &request)
+        .expect("retry grant");
+    let cold = CampaignRepository::new(reads, refs);
+    assert_eq!(
+        cold.head("budget-witness-cas")
+            .expect("cold authenticated child")
+            .snapshot_id(),
+        retried.new_snapshot
+    );
+    assert_eq!(
+        cold.budget_projection("budget-witness-cas")
+            .expect("cold budget")
+            .granted_attempts,
+        1
+    );
+}
+
+#[test]
 fn ten_thousand_instrumented_mutations_cover_the_cperf9_contract() {
     let (repository, reads, refs, lineage, policy) = fixture();
     let genesis = repository

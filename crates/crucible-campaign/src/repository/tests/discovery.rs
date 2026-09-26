@@ -129,6 +129,7 @@ fn forged_discovery_successor(
                 fact_id,
             )
             .expect("budgeted successor")
+            .0
     } else {
         CampaignSnapshot::successor(
             parent_id,
@@ -547,7 +548,8 @@ fn explicit_discovery_cold_validation_rejects_a_tampered_configuration() {
             roots,
             CampaignFactId::from_content_id(transition_content).expect("transition id"),
         )
-        .expect("forged successor");
+        .expect("forged successor")
+        .0;
     let forged_content = repository.put_snapshot(&forged).expect("forged snapshot");
 
     let cold = CampaignRepository::new(Arc::clone(&repository.blobs), Arc::clone(&repository.refs));

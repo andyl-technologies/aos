@@ -92,7 +92,7 @@ impl CampaignRepository {
         let mut roots = current.snapshot.roots();
         roots.accounting = accounting;
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
-        let next = self.budgeted_successor(
+        let (next, budget_witness) = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),
@@ -105,6 +105,7 @@ impl CampaignRepository {
             next_content,
             None,
             MAX_SIMPLE_SUCCESSOR_GROWTH,
+            &budget_witness,
         )?;
 
         match self
@@ -170,7 +171,7 @@ impl CampaignRepository {
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
         let fact = CampaignFact::AttemptAdmitted(admission.id()?);
         let transition = self.put_fact(&fact)?;
-        let next = self.budgeted_successor(
+        let (next, budget_witness) = self.budgeted_successor(
             current.snapshot.id()?,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),
@@ -183,6 +184,7 @@ impl CampaignRepository {
             next_content,
             None,
             MAX_SIMPLE_SUCCESSOR_GROWTH,
+            &budget_witness,
         )?;
         match self
             .refs

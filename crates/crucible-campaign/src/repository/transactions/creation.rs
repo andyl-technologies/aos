@@ -404,7 +404,7 @@ impl CampaignRepository {
         let transition_content = self.put_fact(&fact)?;
         let mut roots = source.snapshot.roots();
         roots.coordination = self.coordination_with_parent_result(source_content, &source)?;
-        let next = self.budgeted_successor(
+        let (next, budget_witness) = self.budgeted_successor(
             source_snapshot,
             source.snapshot.lineage(),
             active_policy,
@@ -417,6 +417,7 @@ impl CampaignRepository {
             next_content,
             None,
             MAX_SIMPLE_SUCCESSOR_GROWTH,
+            &budget_witness,
         )?;
 
         match self
