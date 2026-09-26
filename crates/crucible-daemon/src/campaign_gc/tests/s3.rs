@@ -2,10 +2,11 @@
 
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::io::Cursor;
+use std::path::Path;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crucible_campaign::CampaignRepository;
+use crucible_campaign::{ActiveAttemptPolicy, CampaignHash, CampaignRepository, CampaignState};
 use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{
     BlobHandle, ContentId, DirectoryRefBackend, ImmutableBlobBackend, ObjectKind, RefName,
@@ -456,6 +457,14 @@ fn graph_config(endpoint: StoreS3EndpointId) -> StoreGraphConfig {
 fn build_graph(
     service: Arc<MemoryS3Service>,
 ) -> (StoreGraph, crucible_cas::content_store::StoreGraphAdmin) {
+    let config = graph_config(service.endpoint.clone());
+    build_graph_with_config(service, config)
+}
+
+fn build_graph_with_config(
+    service: Arc<MemoryS3Service>,
+    config: StoreGraphConfig,
+) -> (StoreGraph, crucible_cas::content_store::StoreGraphAdmin) {
     let mut clients = StoreGraphS3Clients::new();
     clients
         .insert(service.endpoint.clone(), service.clone())
@@ -464,7 +473,7 @@ fn build_graph(
         .insert_administration(service.endpoint.clone(), service.clone())
         .expect("administrative S3 capability");
     StoreGraph::build_with_admin_and_all_capabilities(
-        graph_config(service.endpoint.clone()),
+        config,
         &StoreGraphKeyring::new(),
         &StoreGraphNamespaceAuthorizers::new(),
         &StoreGraphObjectProfilers::new(),
@@ -472,6 +481,59 @@ fn build_graph(
         &clients,
     )
     .expect("administrable S3 graph")
+}
+
+fn write_back_graph_config(endpoint: StoreS3EndpointId, root: &Path) -> StoreGraphConfig {
+    let write_back = StoreNodeId::new("write-back").expect("write-back node");
+    let staging = StoreNodeId::new("staging").expect("staging node");
+    let destination = StoreNodeId::new("s3-primary").expect("S3 node");
+    StoreGraphConfig {
+        root: write_back.clone(),
+        admitted_kinds: BTreeSet::from([
+            ObjectKind::CampaignFact,
+            ObjectKind::CampaignSnapshot,
+            ObjectKind::MerkleNode,
+            ObjectKind::Scenario,
+            ObjectKind::Configuration,
+            ObjectKind::Policy,
+            ObjectKind::ExactManifest,
+            ObjectKind::RamExtent,
+            ObjectKind::DiskExtent,
+            ObjectKind::DeviceState,
+            ObjectKind::Observation,
+            ObjectKind::Finding,
+            ObjectKind::Projection,
+            ObjectKind::Trace,
+        ]),
+        nodes: BTreeMap::from([
+            (
+                write_back,
+                StoreNodeSpec::WriteBack {
+                    staging: staging.clone(),
+                    destination: destination.clone(),
+                    journal_root: root.join("write-back-journal"),
+                    maximum_pending_objects: 1024,
+                    maximum_pending_bytes: 16 * 1024 * 1024,
+                },
+            ),
+            (
+                staging,
+                StoreNodeSpec::Directory {
+                    root: root.join("staging"),
+                },
+            ),
+            (
+                destination,
+                StoreNodeSpec::S3 {
+                    endpoint,
+                    bucket: BUCKET.to_string(),
+                    prefix: PREFIX.to_string(),
+                    maximum_logical_object_bytes: MAXIMUM_OBJECT_BYTES,
+                    multipart_part_bytes: MULTIPART_PART_BYTES,
+                },
+            ),
+        ]),
+    }
 }
 
 #[test]
@@ -820,4 +882,311 @@ fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
             bytes
         );
     }
+}
+
+fn publish_paused_s3_campaign(repository: &CampaignRepository) -> [CampaignSnapshotId; 3] {
+    let scenario = ScenarioDefId::from_hash(CampaignHash::derive(
+        "crucible.test.gc-s3-campaign",
+        b"scenario",
+    ));
+    let genesis = ConfigurationId::from_hash(CampaignHash::derive(
+        "crucible.test.gc-s3-campaign",
+        b"genesis",
+    ));
+    let scenario_content = repository
+        .publish_scenario_artifact(scenario, 1, b"S3 recovery scenario".to_vec())
+        .expect("publish S3 scenario");
+    let genesis_content = repository
+        .publish_configuration_artifact(
+            scenario,
+            scenario_content,
+            genesis,
+            1,
+            b"S3 recovery genesis".to_vec(),
+        )
+        .expect("publish S3 genesis");
+    let lineage = CampaignLineage::new(
+        scenario,
+        scenario_content,
+        genesis,
+        genesis_content,
+        "crucible-s3-recovery-test",
+        "qemu-s3-recovery-test",
+        BTreeMap::from([(String::from("control"), 1)]),
+        1,
+        1,
+    )
+    .expect("S3 recovery lineage");
+    let policy = CampaignPolicy::new(
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([0x73; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 1,
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("S3 recovery fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
+    )
+    .expect("S3 recovery policy");
+    let created = repository
+        .create("s3-source", &lineage, &policy, &BTreeMap::new())
+        .expect("create S3 recovery campaign");
+    let resumed = repository
+        .apply_control(
+            "s3-source",
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "crucible.test.gc-s3-campaign",
+                    b"resume",
+                )),
+                expected_snapshot: created.snapshot_id(),
+                action: CampaignControlAction::Resume,
+            },
+        )
+        .expect("resume S3 recovery campaign");
+    let paused = repository
+        .apply_control(
+            "s3-source",
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "crucible.test.gc-s3-campaign",
+                    b"pause",
+                )),
+                expected_snapshot: resumed.new_snapshot,
+                action: CampaignControlAction::Pause(ActiveAttemptPolicy::Drain),
+            },
+        )
+        .expect("pause S3 recovery campaign");
+    let east = repository
+        .derive_campaign("s3-source", paused.new_snapshot, "s3-east", None)
+        .expect("derive east from paused campaign");
+    let west = repository
+        .derive_campaign("s3-east", east.new_snapshot, "s3-west", None)
+        .expect("derive west from paused east");
+    assert_eq!(repository.state("s3-east").expect("east state"), CampaignState::Paused);
+    assert_eq!(repository.state("s3-west").expect("west state"), CampaignState::Paused);
+    [paused.new_snapshot, east.new_snapshot, west.new_snapshot]
+}
+
+#[test]
+fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc() {
+    let temp = tempfile::TempDir::new().expect("temporary paused S3 recovery root");
+    let service = Arc::new(MemoryS3Service::new());
+    let config = write_back_graph_config(service.endpoint.clone(), temp.path());
+    let (graph, admin) = build_graph_with_config(service.clone(), config);
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(temp.path().join("refs")));
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let mut ledger = DirectoryAssignmentLedger::open(temp.path().join("ledger"))
+        .expect("open paused S3 recovery ledger");
+    let [paused, east, west] = publish_paused_s3_campaign(&repository);
+
+    let orphan = ContentEnvelope::new(
+        "crucible.test.gc-s3-orphan",
+        1,
+        BTreeSet::new(),
+        b"unreachable paused-campaign object".to_vec(),
+    )
+    .expect("S3 recovery orphan");
+    let orphan_id = orphan.content_id(ObjectKind::Trace);
+    graph
+        .put_if_absent(orphan_id, &BlobHandle::from_bytes(orphan.canonical_bytes()))
+        .expect("stage S3 recovery orphan");
+    let flushed = graph.flush_write_back(1024).expect("flush paused campaign to S3");
+    assert_eq!(flushed.pending(), 0);
+
+    // Evict the completed staging copy so the paused head must authenticate
+    // through S3 while another transfer remains pending in write-back.
+    let staging = DirectoryBlobBackend::new("staging", temp.path().join("staging"));
+    let mut stage_fence = staging.acquire_inventory_fence().expect("fence staging tier");
+    assert_eq!(
+        stage_fence
+            .delete_candidate(west.content_id())
+            .expect("evict flushed paused head"),
+        PlannedDeleteDisposition::Deleted
+    );
+    drop(stage_fence);
+
+    let transfer = ContentEnvelope::new(
+        "crucible.test.gc-s3-active-transfer",
+        1,
+        BTreeSet::new(),
+        b"pending S3 transfer".to_vec(),
+    )
+    .expect("pending S3 transfer");
+    let transfer_bytes = transfer.canonical_bytes();
+    let transfer_id = transfer.content_id(ObjectKind::Trace);
+    graph
+        .put_if_absent(transfer_id, &BlobHandle::from_bytes(transfer_bytes.clone()))
+        .expect("stage active S3 transfer");
+    let transfers = TestCampaignTransferRoots::default();
+    transfers.replace(vec![CampaignTransferRetentionRoot::new(
+        transfer_id,
+        transfer_bytes.len() as u64,
+    )]);
+    let hot = MemoryHotCheckpointFallbackRetentionStore::new();
+
+    for fault in [S3_UNAVAILABLE, S3_CREDENTIALS_EXPIRED] {
+        service.set_fault(fault);
+        assert!(repository.head("s3-west").is_err(), "paused head survived fault {fault}");
+        assert!(graph.flush_write_back(1).is_err(), "write-back ignored fault {fault}");
+        assert!(
+            super::super::plan_single_host_campaign_gc_with_hot_checkpoints(
+                &repository,
+                refs.as_ref(),
+                &mut ledger,
+                Some(graph.as_ref()),
+                CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+                &admin,
+            )
+            .is_err(),
+            "GC planning accepted fault {fault}"
+        );
+    }
+    service.set_fault(S3_AVAILABLE);
+
+    let west_bytes = graph
+        .read(west.content_id(), None)
+        .expect("read recovered paused head")
+        .read_all(1024 * 1024)
+        .expect("authenticate recovered paused head");
+    let (west_location, original) = {
+        let mut objects = service.objects.lock().expect("S3 object lock");
+        let (location, stored) = objects
+            .iter_mut()
+            .find(|(_location, bytes)| bytes.as_ref() == west_bytes.as_slice())
+            .expect("west paused head in S3");
+        let original = stored.clone();
+        let mut corrupt = west_bytes.clone();
+        corrupt[0] ^= 0xff;
+        *stored = Arc::from(corrupt);
+        (location.clone(), original)
+    };
+    assert!(matches!(
+        graph
+            .read(west.content_id(), None)
+            .and_then(|handle| handle.read_all(1024 * 1024)),
+        Err(StoreError::Corrupt { .. })
+    ));
+    assert!(repository.head("s3-west").is_err());
+    assert!(
+        super::super::plan_single_host_campaign_gc_with_hot_checkpoints(
+            &repository,
+            refs.as_ref(),
+            &mut ledger,
+            Some(graph.as_ref()),
+            CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+            &admin,
+        )
+        .is_err(),
+        "GC planning accepted corrupt paused S3 head"
+    );
+    service
+        .objects
+        .lock()
+        .expect("S3 object lock")
+        .insert(west_location, original);
+
+    let prepared = super::super::plan_single_host_campaign_gc_with_hot_checkpoints(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+        &admin,
+    )
+    .expect("plan recovered paused campaign GC");
+    assert!(prepared.roots().iter().any(|id| id == transfer_id));
+    assert!(prepared.candidates().iter().any(|candidate| candidate.id() == orphan_id));
+    let (mut stale, _) = DirectoryCampaignGcJournal::create(temp.path().join("stale"), &prepared)
+        .expect("journal pre-publication GC");
+    let north = repository
+        .derive_campaign("s3-east", east, "s3-north", None)
+        .expect("publish third derived head after planning");
+    assert!(matches!(
+        super::super::apply_single_host_campaign_gc_with_hot_checkpoints(
+            &mut stale,
+            &repository,
+            refs.as_ref(),
+            &mut ledger,
+            Some(graph.as_ref()),
+            CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+            &admin,
+        ),
+        Err(CampaignGcApplyError::PhysicalBasisChanged { .. })
+            | Err(CampaignGcApplyError::RefBasisChanged)
+    ));
+    assert!(graph.contains(orphan_id).expect("orphan survived stale plan"));
+
+    let recovered = super::super::plan_single_host_campaign_gc_with_hot_checkpoints(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+        &admin,
+    )
+    .expect("replan after third derived publication");
+    let (mut journal, _) = DirectoryCampaignGcJournal::create(temp.path().join("recovered"), &recovered)
+        .expect("journal recovered paused campaign GC");
+    let report = super::super::apply_single_host_campaign_gc_with_hot_checkpoints(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+        &admin,
+    )
+    .expect("apply recovered paused campaign GC");
+    assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
+    assert!(!graph.contains(orphan_id).expect("orphan reclaimed"));
+    assert!(graph.contains(transfer_id).expect("pending transfer retained"));
+    for (name, expected) in [
+        ("s3-source", paused),
+        ("s3-east", east),
+        ("s3-west", west),
+        ("s3-north", north.new_snapshot),
+    ] {
+        assert_eq!(
+            repository
+                .head(name)
+                .expect("recovered campaign head")
+                .snapshot_id(),
+            expected
+        );
+        assert_eq!(
+            repository.state(name).expect("recovered campaign state"),
+            CampaignState::Paused
+        );
+    }
+
+    let reopened_config = write_back_graph_config(service.endpoint.clone(), temp.path());
+    let (reopened_graph, _) = build_graph_with_config(service, reopened_config);
+    let reopened = CampaignRepository::new(Arc::new(reopened_graph), refs);
+    assert_eq!(reopened.state("s3-west").expect("reopen paused west"), CampaignState::Paused);
+    let resumed = reopened
+        .apply_control(
+            "s3-west",
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "crucible.test.gc-s3-campaign",
+                    b"resume-after-recovery",
+                )),
+                expected_snapshot: west,
+                action: CampaignControlAction::Resume,
+            },
+        )
+        .expect("resume west after backend recovery and graph restart");
+    assert_ne!(resumed.new_snapshot, west);
+    assert_eq!(reopened.state("s3-west").expect("resumed west"), CampaignState::Running);
 }
