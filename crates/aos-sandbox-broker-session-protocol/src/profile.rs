@@ -643,6 +643,7 @@ pub const fn supported_broker_session_version_v1(protocol: BrokerSessionProtocol
         | BrokerSessionProtocolV1::Storage
         | BrokerSessionProtocolV1::Network => (1, 0),
         BrokerSessionProtocolV1::Mount => (2, 0),
+        BrokerSessionProtocolV1::MountFuse => (3, 0),
     }
 }
 
@@ -652,6 +653,7 @@ pub const fn maximum_broker_session_request_bytes_v1(protocol: BrokerSessionProt
     match protocol {
         BrokerSessionProtocolV1::Host => AUTHENTICATED_HOST_QUERY_MAXIMUM_BYTES,
         BrokerSessionProtocolV1::Mount => AUTHENTICATED_MOUNT_PREPARE_CATALOG_MAXIMUM_BYTES,
+        BrokerSessionProtocolV1::MountFuse => AUTHENTICATED_ORDINARY_REQUEST_MAXIMUM_BYTES,
         BrokerSessionProtocolV1::Storage | BrokerSessionProtocolV1::Network => {
             AUTHENTICATED_ORDINARY_REQUEST_MAXIMUM_BYTES
         }
@@ -1034,6 +1036,48 @@ mod tests {
     use super::*;
 
     const RESPONSE_MAXIMUM: u32 = 65_536;
+
+    #[test]
+    fn mount_fuse_three_has_no_advertisable_methods_or_legacy_downgrade() {
+        let fuse = BrokerSessionProtocolV1::MountFuse;
+        let controller = Audience::AUDIENCE_NODE_CONTROLLER;
+        assert_eq!(supported_broker_session_version_v1(fuse), (3, 0));
+        assert!(authenticated_broker_methods_for_role_v1(fuse, controller).is_empty());
+        assert!(production_broker_client_hello_v1(fuse, controller, RESPONSE_MAXIMUM).is_err());
+        assert!(production_broker_server_hello_v1(fuse, controller, RESPONSE_MAXIMUM).is_err());
+
+        for method in AUTHENTICATED_BROKER_METHODS_V1 {
+            assert!(!method_matches_protocol(method, fuse));
+        }
+        assert!(method_matches_protocol(
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+            BrokerSessionProtocolV1::Mount
+        ));
+
+        let legacy_client = production_broker_client_hello_v1(
+            BrokerSessionProtocolV1::Mount,
+            controller,
+            RESPONSE_MAXIMUM,
+        )
+        .unwrap();
+        let legacy_server = production_broker_server_hello_v1(
+            BrokerSessionProtocolV1::Mount,
+            controller,
+            RESPONSE_MAXIMUM,
+        )
+        .unwrap();
+        assert!(
+            validate_authenticated_negotiation_v1(
+                &legacy_client,
+                &legacy_server,
+                fuse,
+                3,
+                0,
+                controller,
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn production_hello_profiles_cover_every_registered_endpoint_role() {

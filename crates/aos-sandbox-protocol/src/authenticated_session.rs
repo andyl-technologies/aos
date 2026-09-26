@@ -1274,6 +1274,7 @@ fn protocol_id_for_profile(protocol: BrokerSessionProtocolV1) -> ProtocolId {
         BrokerSessionProtocolV1::Host => ProtocolId::HostBroker,
         BrokerSessionProtocolV1::Storage => ProtocolId::StorageBroker,
         BrokerSessionProtocolV1::Mount => ProtocolId::MountBroker,
+        BrokerSessionProtocolV1::MountFuse => ProtocolId::MountFuseBroker,
         BrokerSessionProtocolV1::Network => ProtocolId::NetworkBroker,
     }
 }

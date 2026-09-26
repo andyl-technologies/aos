@@ -228,6 +228,7 @@ fn protocol_code(protocol: ProtocolId) -> u64 {
         | ProtocolId::CoordinatorNode
         | ProtocolId::OwnershipAuthority
         | ProtocolId::SourceProvider
+        | ProtocolId::MountFuseBroker
         | ProtocolId::GuestAgent => unreachable!("broker plans use only broker protocols"),
     }
 }

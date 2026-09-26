@@ -823,5 +823,9 @@ mod tests {
                 "unexpected signed-admission result for {protocol:?}"
             );
         }
+        assert!(!supports_signed_admission(
+            ProtocolId::MountFuseBroker,
+            ProtocolVersion::new(3, 0)
+        ));
     }
 }

@@ -1006,6 +1006,7 @@ fn decode_protocol(
         Some(2) => Ok(BrokerSessionProtocolV1::Storage),
         Some(3) => Ok(BrokerSessionProtocolV1::Mount),
         Some(4) => Ok(BrokerSessionProtocolV1::Network),
+        Some(5) => Ok(BrokerSessionProtocolV1::MountFuse),
         _ => Err(BrokerSessionDurableError::InvalidClosedValue),
     }
 }

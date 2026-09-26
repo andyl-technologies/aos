@@ -2182,6 +2182,33 @@ mod tests {
     }
 
     #[test]
+    fn mount_fuse_three_rejects_legacy_methods_even_at_its_exact_version() {
+        let method = BrokerMethod::BROKER_METHOD_MOUNT_APPLY;
+        assert_eq!(
+            validate_method(Some(method), ProtocolId::MountFuseBroker),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+        assert!(
+            validate_canonical_methods(&[], ProtocolId::MountFuseBroker, "FUSE methods").is_err()
+        );
+
+        let mut hello = client_hello();
+        hello.protocol_major = 3;
+        hello.protocol_minor = 0;
+        assert!(
+            negotiate_client_hello(
+                &hello.encode_to_vec(),
+                peer(),
+                policy(),
+                ProtocolId::MountFuseBroker,
+                &client_features(),
+                &[method],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn legacy_sessions_reject_every_known_authentication_carrier_and_feature() {
         let signed_plan = feature(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE);
         let authentication = feature(BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE);

@@ -4473,6 +4473,7 @@ fn protocol_code(protocol: BrokerSessionProtocolV1) -> u8 {
         BrokerSessionProtocolV1::Storage => 2,
         BrokerSessionProtocolV1::Mount => 3,
         BrokerSessionProtocolV1::Network => 4,
+        BrokerSessionProtocolV1::MountFuse => 5,
     }
 }
 
@@ -4482,6 +4483,7 @@ fn decode_protocol(code: u8) -> Result<BrokerSessionProtocolV1, BrokerSessionSec
         2 => Ok(BrokerSessionProtocolV1::Storage),
         3 => Ok(BrokerSessionProtocolV1::Mount),
         4 => Ok(BrokerSessionProtocolV1::Network),
+        5 => Ok(BrokerSessionProtocolV1::MountFuse),
         _ => Err(BrokerSessionSecurityError::Currentness),
     }
 }

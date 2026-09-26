@@ -1,11 +1,12 @@
 //! Broker Session Authentication 1.0 cryptographic and wire foundation.
 //!
-//! This crate defines a production-inert authentication profile for the four
-//! node-local broker protocols. It owns fixed signed artifacts, canonical
-//! protobuf projections, protected-context shape checks, transcript binding,
-//! and a pure stop-and-wait sequence model. It does not advertise the feature,
-//! load protected configuration, generate nonces, dispatch effects, persist a
-//! journal, inspect kernel objects, or confer authority.
+//! This crate defines authentication profiles for four node-local brokers and
+//! a closed, separately versioned Mount FUSE protocol. It owns fixed signed
+//! artifacts, canonical protobuf projections, protected-context shape checks,
+//! transcript binding, and a pure stop-and-wait sequence model. It does not
+//! advertise the feature, load protected configuration, generate nonces,
+//! dispatch effects, persist a journal, inspect kernel objects, or confer
+//! authority.
 //!
 //! Every signed artifact uses this exact outer envelope:
 //!

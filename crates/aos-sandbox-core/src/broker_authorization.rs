@@ -1403,6 +1403,41 @@ mod tests {
     }
 
     #[test]
+    fn legacy_mount_plan_cannot_be_rebound_to_fuse_protocol() {
+        let fixture = fixture();
+        let mut expectation = context(&fixture);
+        expectation.protocol = ProtocolId::MountFuseBroker;
+        expectation.protocol_version = ProtocolVersion::new(3, 0);
+        assert!(verify(&fixture, expectation).is_err());
+
+        let legacy_grant = BrokerGrant::new(
+            BrokerVerb::MountCreate,
+            BrokerGrantTarget::Assignment,
+            BrokerArgumentCommitment::from_digest(ObjectDigest::from_bytes([13; 32])).unwrap(),
+            4_096,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            BrokerAuthorizationPlan::new(
+                BrokerAudience::Mount,
+                ProtocolId::MountFuseBroker,
+                ProtocolVersion::new(3, 0),
+                fixture.context_assignment,
+                fixture.node,
+                fixture.ownership_authority,
+                vec![legacy_grant],
+                ObjectDigest::from_bytes([7; 32]),
+                RevocationScopeId::from_bytes([8; 16]),
+                100,
+                200,
+                Vec::new(),
+            ),
+            Err(InvalidBrokerAuthorizationPlan::ProtocolAudienceMismatch)
+        );
+    }
+
+    #[test]
     fn one_plan_can_commit_distinct_semantics_for_the_same_verb_and_target() {
         let fixture = fixture();
         let grant = |byte| {
