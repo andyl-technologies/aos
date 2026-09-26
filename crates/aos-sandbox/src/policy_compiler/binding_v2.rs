@@ -66,6 +66,7 @@ mod ack;
 mod hold;
 mod producer;
 mod proof;
+mod source_terminal;
 
 use hold::{HOLD_KEY, RootBindingHoldV1, current_hold, release_hold};
 use proof::{PROOF_KEY_PREFIX, RootQualifiedProofV1, proof_key};
@@ -78,6 +79,10 @@ pub use ack::{
 pub use producer::{
     propose_closed_current_create_explicit_policy_binding_v2,
     propose_closed_current_create_policy_binding_v2,
+};
+pub use source_terminal::{
+    CLOSED_SOURCE_TERMINAL_RECORD_BYTES_V1, ClosedSourceTerminalClaimV1,
+    ClosedSourceTerminalRecordV1,
 };
 
 pub(super) const BINDING_V2_KEY_PREFIX: &[u8] = b"\0aos-policy-compiler-binding-v2\0";
@@ -2430,14 +2435,14 @@ mod tests {
         }
     }
 
-    fn cas_fixture() -> ClosedPolicyRootBindingV2 {
+    pub(super) fn cas_fixture() -> ClosedPolicyRootBindingV2 {
         let mut binding = fixture();
         binding.barrier_epoch = 1;
         binding.handoff_epoch = 1;
         binding
     }
 
-    fn matching_cache_hold(binding: &ClosedPolicyRootBindingV2) -> CachePolicyHoldV1 {
+    pub(super) fn matching_cache_hold(binding: &ClosedPolicyRootBindingV2) -> CachePolicyHoldV1 {
         CachePolicyHoldV1::new(
             binding.project,
             binding.physical_partition,
@@ -2565,7 +2570,7 @@ mod tests {
         );
     }
 
-    fn identity(binding: &ClosedPolicyRootBindingV2) -> RootPolicyBindingIdentityV2 {
+    pub(super) fn identity(binding: &ClosedPolicyRootBindingV2) -> RootPolicyBindingIdentityV2 {
         RootPolicyBindingIdentityV2 {
             deployment_head: binding.compiler_head,
             project: binding.project,
@@ -2585,7 +2590,7 @@ mod tests {
         }
     }
 
-    fn open_test_root(directory: &std::path::Path) -> Journal {
+    pub(super) fn open_test_root(directory: &std::path::Path) -> Journal {
         let uid = fs::metadata(directory).expect("directory owner").uid();
         Journal::open_protected_at_uid(
             directory,
