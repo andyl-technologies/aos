@@ -17,7 +17,9 @@
 use aos_proto::aos::sandbox::local::v1::{
     MountAction, MountFaultPhase, MountLifecycle, MountSourceConsistency,
 };
-use aos_sandbox_core::model::{AttachmentConsistency, AttachmentIntent, ViewMutation, ViewSource};
+use aos_sandbox_core::model::{
+    AttachmentConsistency, AttachmentIntent, AttachmentPresentation, ViewMutation, ViewSource,
+};
 use aos_sandbox_core::{ObjectDigest, RawPairedClockSample};
 use aos_sandbox_protocol::ValidatedMountInventoryRecord;
 
@@ -66,6 +68,10 @@ pub enum AttachmentReconciliationConflictV1 {
 /// Describes one safe planning conclusion without granting effect authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttachmentReconciliationActionV1 {
+    /// FUSE intent is current, but no authenticated FUSE broker method exists.
+    ///
+    /// This is never a Mount preparation, worker launch, or readiness decision.
+    FuseDispatchClosed,
     /// The attachment lease has not reached its inclusive issue time.
     AwaitLease {
         /// Inclusive wall-clock second at which planning may resume.
@@ -691,6 +697,12 @@ fn decide(
         return conflict(AttachmentReconciliationConflictV1::TargetMismatch, None);
     }
 
+    // This is a closed marker, not a live FUSE decision: a future dispatch
+    // must check release/expiry and native slot occupancy before any effect.
+    if intent.presentation() == AttachmentPresentation::Fuse {
+        return AttachmentReconciliationActionV1::FuseDispatchClosed;
+    }
+
     let desired_generation = intent.desired_generation().get();
     let attachment_id = *intent.id().as_bytes();
     let destination_slot_id = *intent.destination_slot().as_bytes();
@@ -1179,6 +1191,31 @@ mod tests {
         .unwrap()
     }
 
+    fn fuse_intent(generation: u64) -> AttachmentIntent {
+        let native = intent(generation);
+        let (sandbox, incarnation) = native.consumer();
+        let (source_view, source_revision) = native.source_view();
+
+        AttachmentIntent::new_with_presentation(
+            native.id(),
+            native.desired_generation(),
+            sandbox,
+            incarnation,
+            native.expected_namespace_generation(),
+            source_view,
+            source_revision,
+            native.source_incarnation(),
+            native.view().clone(),
+            native.destination_slot(),
+            native.consistency(),
+            native.mutation(),
+            native.mount_attributes(),
+            native.lease(),
+            AttachmentPresentation::Fuse,
+        )
+        .unwrap()
+    }
+
     fn target() -> TargetFacts {
         TargetFacts {
             sandbox: [3; 16],
@@ -1508,6 +1545,34 @@ mod tests {
                 unique_mount_id: 12,
             }
         );
+    }
+
+    #[test]
+    fn fuse_selection_never_enters_native_dispatch_or_ready() {
+        let installed = resource(12, 2, MountLifecycle::MOUNT_LIFECYCLE_INSTALLED);
+        let verification = VerificationFacts {
+            mount_handle: [12; 32],
+            unique_mount_id: 12,
+            record_digest: [13; 32],
+        };
+        for (presence, now_seconds) in [
+            (AttachmentDesiredPresenceV1::Present, 15),
+            (AttachmentDesiredPresenceV1::Present, 20),
+            (AttachmentDesiredPresenceV1::Released, 15),
+        ] {
+            assert_eq!(
+                decide(
+                    presence,
+                    &fuse_intent(2),
+                    now_seconds,
+                    target(),
+                    &[installed],
+                    &[],
+                    Some(verification),
+                ),
+                AttachmentReconciliationActionV1::FuseDispatchClosed
+            );
+        }
     }
 
     #[test]

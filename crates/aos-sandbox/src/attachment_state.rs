@@ -5,7 +5,7 @@
 //! state:
 //!
 //! ```text
-//! AOSATD01 | state:1 | flags:1 | reserved:2 | operation-id:16 |
+//! AOSATD01 or AOSATD02 | state:1 | flags:1 | reserved:2 | operation-id:16 |
 //! request-digest:32 | predecessor-digest:32 | intent-bytes:4 |
 //! canonical-intent | digest:32
 //! ```
@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use aos_sandbox_core::model::AttachmentIntent;
 use aos_sandbox_core::{
     AttachmentId, ObjectDigest, OperationId, RawPairedClockSample, decode_attachment_intent_v1,
-    encode_attachment_intent_v1,
+    decode_attachment_intent_v2, encode_attachment_intent_v1, encode_attachment_intent_v2,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -28,9 +28,12 @@ use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::{CurrentNamespaceTarget, NamespaceTargetError};
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
-const MAGIC: &[u8; 8] = b"AOSATD01";
-const DOMAIN: &[u8] = b"aos.sandbox.attachment-desired.v1\0";
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.attachment-desired.transaction.v1\0";
+const MAGIC_V1: &[u8; 8] = b"AOSATD01";
+const MAGIC_V2: &[u8; 8] = b"AOSATD02";
+const DOMAIN_V1: &[u8] = b"aos.sandbox.attachment-desired.v1\0";
+const DOMAIN_V2: &[u8] = b"aos.sandbox.attachment-desired.v2\0";
+const TRANSACTION_DOMAIN_V1: &[u8] = b"aos.sandbox.attachment-desired.transaction.v1\0";
+const TRANSACTION_DOMAIN_V2: &[u8] = b"aos.sandbox.attachment-desired.transaction.v2\0";
 const FIXED_RECORD_BYTES: usize = 128;
 const FLAG_EXPECTED_PREVIOUS: u8 = 1;
 const MAXIMUM_INTENT_BYTES: usize = 1024 * 1024;
@@ -84,6 +87,51 @@ impl AttachmentDesiredMutationV1 {
         request_digest: ObjectDigest,
         expected_previous: Option<ObjectDigest>,
     ) -> Result<Self, AttachmentDesiredStateError> {
+        Self::new_for_version(
+            RecordVersion::V1,
+            presence,
+            intent,
+            operation_id,
+            request_digest,
+            expected_previous,
+        )
+    }
+
+    /// Constructs a v2 desired mutation with an explicit presentation choice.
+    ///
+    /// V2 may encode either FUSE or Native, allowing a future controller to
+    /// return to Native without downgrading a previously v2 history. FUSE
+    /// remains non-dispatchable until a separate authenticated Mount profile
+    /// exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors documented by [`Self::new`].
+    pub fn new_v2(
+        presence: AttachmentDesiredPresenceV1,
+        intent: AttachmentIntent,
+        operation_id: OperationId,
+        request_digest: ObjectDigest,
+        expected_previous: Option<ObjectDigest>,
+    ) -> Result<Self, AttachmentDesiredStateError> {
+        Self::new_for_version(
+            RecordVersion::V2,
+            presence,
+            intent,
+            operation_id,
+            request_digest,
+            expected_previous,
+        )
+    }
+
+    fn new_for_version(
+        version: RecordVersion,
+        presence: AttachmentDesiredPresenceV1,
+        intent: AttachmentIntent,
+        operation_id: OperationId,
+        request_digest: ObjectDigest,
+        expected_previous: Option<ObjectDigest>,
+    ) -> Result<Self, AttachmentDesiredStateError> {
         if operation_id.as_bytes() == &[0; 16]
             || request_digest.as_bytes() == &[0; 32]
             || expected_previous.is_some_and(|digest| digest.as_bytes() == &[0; 32])
@@ -91,11 +139,12 @@ impl AttachmentDesiredMutationV1 {
             return Err(AttachmentDesiredStateError::InvalidMutation);
         }
 
-        let intent_bytes = encode_attachment_intent_v1(&intent);
+        let intent_bytes = version.encode_intent(&intent)?;
         if intent_bytes.is_empty() || intent_bytes.len() > MAXIMUM_INTENT_BYTES {
             return Err(AttachmentDesiredStateError::Capacity);
         }
         let mut record = Record {
+            version,
             presence,
             operation_id,
             request_digest,
@@ -119,6 +168,46 @@ impl AttachmentDesiredMutationV1 {
     #[must_use]
     pub const fn expected_previous(&self) -> Option<ObjectDigest> {
         self.record.expected_previous
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum RecordVersion {
+    V1,
+    V2,
+}
+
+impl RecordVersion {
+    fn encode_intent(
+        self,
+        intent: &AttachmentIntent,
+    ) -> Result<Vec<u8>, AttachmentDesiredStateError> {
+        match self {
+            Self::V1 => encode_attachment_intent_v1(intent)
+                .map_err(|_| AttachmentDesiredStateError::InvalidMutation),
+            Self::V2 => Ok(encode_attachment_intent_v2(intent)),
+        }
+    }
+
+    const fn magic(self) -> &'static [u8; 8] {
+        match self {
+            Self::V1 => MAGIC_V1,
+            Self::V2 => MAGIC_V2,
+        }
+    }
+
+    const fn domain(self) -> &'static [u8] {
+        match self {
+            Self::V1 => DOMAIN_V1,
+            Self::V2 => DOMAIN_V2,
+        }
+    }
+
+    const fn transaction_domain(self) -> &'static [u8] {
+        match self {
+            Self::V1 => TRANSACTION_DOMAIN_V1,
+            Self::V2 => TRANSACTION_DOMAIN_V2,
+        }
     }
 }
 
@@ -245,6 +334,7 @@ impl From<crate::AttachmentSlotStateError> for AttachmentDesiredStateError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Record {
+    version: RecordVersion,
     presence: AttachmentDesiredPresenceV1,
     operation_id: OperationId,
     request_digest: ObjectDigest,
@@ -268,7 +358,7 @@ impl Record {
 
     fn compute_digest(&self) -> [u8; 32] {
         let mut digest = Sha256::new();
-        digest.update(DOMAIN);
+        digest.update(self.version.domain());
         digest.update([self.presence as u8]);
         digest.update(self.operation_id.as_bytes());
         digest.update(self.request_digest.as_bytes());
@@ -291,7 +381,11 @@ impl Record {
             || self.intent_bytes.is_empty()
             || self.intent_bytes.len() > MAXIMUM_INTENT_BYTES
             || self.encoded_len() > MAXIMUM_RECORD_BYTES
-            || encode_attachment_intent_v1(&self.intent) != self.intent_bytes
+            || self
+                .version
+                .encode_intent(&self.intent)
+                .map_err(|_| AttachmentDesiredStateError::CorruptState)?
+                != self.intent_bytes
             || self.compute_digest() != self.digest
         {
             return Err(AttachmentDesiredStateError::CorruptState);
@@ -301,7 +395,7 @@ impl Record {
 
     fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(self.encoded_len());
-        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(self.version.magic());
         bytes.push(self.presence as u8);
         bytes.push(if self.expected_previous.is_some() {
             FLAG_EXPECTED_PREVIOUS
@@ -327,9 +421,11 @@ impl Record {
             return Err(AttachmentDesiredStateError::CorruptState);
         }
         let mut bytes = bytes;
-        if take::<8>(&mut bytes)? != *MAGIC {
-            return Err(AttachmentDesiredStateError::CorruptState);
-        }
+        let version = match take::<8>(&mut bytes)? {
+            bytes if bytes == *MAGIC_V1 => RecordVersion::V1,
+            bytes if bytes == *MAGIC_V2 => RecordVersion::V2,
+            _ => return Err(AttachmentDesiredStateError::CorruptState),
+        };
         let presence = AttachmentDesiredPresenceV1::from_byte(take::<1>(&mut bytes)?[0])?;
         let flags = take::<1>(&mut bytes)?[0];
         if flags & !FLAG_EXPECTED_PREVIOUS != 0 || take::<2>(&mut bytes)? != [0; 2] {
@@ -359,10 +455,19 @@ impl Record {
         if !bytes.is_empty() {
             return Err(AttachmentDesiredStateError::CorruptState);
         }
-        let intent =
-            decode_attachment_intent_v1(&intent_bytes, aos_sandbox_core::DecodeLimits::default())
-                .map_err(|_| AttachmentDesiredStateError::CorruptState)?;
+        let intent = match version {
+            RecordVersion::V1 => decode_attachment_intent_v1(
+                &intent_bytes,
+                aos_sandbox_core::DecodeLimits::default(),
+            ),
+            RecordVersion::V2 => decode_attachment_intent_v2(
+                &intent_bytes,
+                aos_sandbox_core::DecodeLimits::default(),
+            ),
+        }
+        .map_err(|_| AttachmentDesiredStateError::CorruptState)?;
         let record = Self {
+            version,
             presence,
             operation_id,
             request_digest,
@@ -377,7 +482,7 @@ impl Record {
 
     fn transaction(&self) -> Result<JournalTransaction, AttachmentDesiredStateError> {
         let mut transaction_id: [u8; 16] = Sha256::new()
-            .chain_update(TRANSACTION_DOMAIN)
+            .chain_update(self.version.transaction_domain())
             .chain_update(self.digest)
             .finalize()[..16]
             .try_into()
@@ -451,6 +556,7 @@ impl History {
                 Some(previous)
                     if previous.intent.desired_generation().get().checked_add(1)
                         == Some(*generation)
+                        && previous.version <= record.version
                         && previous.presence != AttachmentDesiredPresenceV1::Released
                         && record.expected_previous
                             == Some(ObjectDigest::from_bytes(previous.digest))
@@ -522,6 +628,7 @@ impl History {
         }
         if proposed.expected_previous != Some(ObjectDigest::from_bytes(current.digest))
             || current.presence == AttachmentDesiredPresenceV1::Released
+            || proposed.version < current.version
             || proposed.intent.desired_generation().get()
                 != current
                     .intent
@@ -767,8 +874,8 @@ mod tests {
         EffectFailure, EffectObservation, EffectPlan, EffectReceipt, SingleNodeEffectExecutor,
     };
     use aos_sandbox_core::model::{
-        AttachmentConsistency, AttachmentLease, CacheDomain, CacheDomainKind, MountAttributes,
-        View, ViewConsistency, ViewMutation, ViewSource,
+        AttachmentConsistency, AttachmentLease, AttachmentPresentation, CacheDomain,
+        CacheDomainKind, MountAttributes, View, ViewConsistency, ViewMutation, ViewSource,
     };
     use aos_sandbox_core::{
         AttachmentSlotId, CacheDomainId, DesiredGeneration, FeatureRef, IncarnationId, LeaseId,
@@ -924,6 +1031,45 @@ mod tests {
         .unwrap()
     }
 
+    fn fuse_intent(id: u8, slot: u8, generation: u64) -> AttachmentIntent {
+        AttachmentIntent::new_with_presentation(
+            AttachmentId::from_bytes([id; 16]),
+            DesiredGeneration::new(generation),
+            SandboxId::from_bytes([3; 16]),
+            IncarnationId::from_bytes([4; 16]),
+            NamespaceGeneration::new(5),
+            ViewId::from_bytes([6; 16]),
+            Revision::new(generation),
+            None,
+            view_descriptor(),
+            AttachmentSlotId::from_bytes([slot; 16]),
+            AttachmentConsistency::ImmutableRevision,
+            ViewMutation::ReadOnly,
+            MountAttributes::new(true, true, true, true, true, false),
+            AttachmentLease::new(LeaseId::from_bytes([9; 16]), 10, 20).unwrap(),
+            AttachmentPresentation::Fuse,
+        )
+        .unwrap()
+    }
+
+    fn v2_mutation(
+        intent: AttachmentIntent,
+        expected_previous: Option<ObjectDigest>,
+    ) -> AttachmentDesiredMutationV1 {
+        let operation_byte = intent.id().as_bytes()[0]
+            .checked_add(u8::try_from(intent.desired_generation().get()).unwrap())
+            .and_then(|value| value.checked_add(10))
+            .unwrap();
+        AttachmentDesiredMutationV1::new_v2(
+            AttachmentDesiredPresenceV1::Present,
+            intent,
+            OperationId::from_bytes([operation_byte; 16]),
+            ObjectDigest::from_bytes([12; 32]),
+            expected_previous,
+        )
+        .unwrap()
+    }
+
     fn mutation(
         presence: AttachmentDesiredPresenceV1,
         intent: AttachmentIntent,
@@ -1027,6 +1173,111 @@ mod tests {
                 .record_digest(),
             first_digest
         );
+    }
+
+    #[test]
+    fn fuse_selection_requires_v2_and_replays_after_compaction() {
+        let (directory, mut journal) = journal();
+        let selected = fuse_intent(1, 2, 1);
+        assert!(matches!(
+            AttachmentDesiredMutationV1::new(
+                AttachmentDesiredPresenceV1::Present,
+                selected.clone(),
+                OperationId::from_bytes([12; 16]),
+                ObjectDigest::from_bytes([12; 32]),
+                None,
+            ),
+            Err(AttachmentDesiredStateError::InvalidMutation)
+        ));
+
+        let first = v2_mutation(selected, None);
+        assert_eq!(&first.record.encode()[..8], MAGIC_V2);
+        let mut unknown_version = first.record.encode();
+        unknown_version[..8].copy_from_slice(b"AOSATD03");
+        assert!(matches!(
+            Record::decode(&unknown_version),
+            Err(AttachmentDesiredStateError::CorruptState)
+        ));
+        assert_eq!(
+            commit_without_target(&mut journal, &first),
+            AttachmentDesiredCommitOutcomeV1::Recorded
+        );
+        assert_eq!(
+            commit_without_target(&mut journal, &first),
+            AttachmentDesiredCommitOutcomeV1::Replay
+        );
+
+        journal.compact().unwrap();
+        drop(journal);
+        let recovered = open_journal(&directory);
+        assert_eq!(
+            get(&recovered, first.attachment_id())
+                .unwrap()
+                .unwrap()
+                .intent()
+                .presentation(),
+            AttachmentPresentation::Fuse
+        );
+        assert_eq!(
+            History::load(&recovered)
+                .unwrap()
+                .validate_mutation(&first)
+                .unwrap(),
+            AttachmentDesiredCommitOutcomeV1::Replay
+        );
+    }
+
+    #[test]
+    fn mixed_history_allows_upgrade_but_rejects_downgrade_on_commit_and_replay() {
+        let (_directory, mut journal) = journal();
+        let first = mutation(AttachmentDesiredPresenceV1::Present, intent(1, 2, 1), None);
+        assert_eq!(&first.record.encode()[..8], MAGIC_V1);
+        commit_without_target(&mut journal, &first);
+
+        let second = v2_mutation(
+            fuse_intent(1, 2, 2),
+            Some(ObjectDigest::from_bytes(first.record.digest)),
+        );
+        commit_without_target(&mut journal, &second);
+        assert_eq!(
+            History::load(&journal)
+                .unwrap()
+                .validate_mutation(&second)
+                .unwrap(),
+            AttachmentDesiredCommitOutcomeV1::Replay
+        );
+
+        let native_v2 = v2_mutation(
+            intent(1, 2, 3),
+            Some(ObjectDigest::from_bytes(second.record.digest)),
+        );
+        assert_eq!(
+            History::load(&journal)
+                .unwrap()
+                .validate_mutation(&native_v2)
+                .unwrap(),
+            AttachmentDesiredCommitOutcomeV1::Recorded
+        );
+
+        let downgrade = mutation(
+            AttachmentDesiredPresenceV1::Present,
+            intent(1, 2, 3),
+            Some(ObjectDigest::from_bytes(second.record.digest)),
+        );
+        assert!(matches!(
+            History::load(&journal)
+                .unwrap()
+                .validate_mutation(&downgrade),
+            Err(AttachmentDesiredStateError::Conflict)
+        ));
+
+        journal
+            .commit(&downgrade.record.transaction().unwrap())
+            .unwrap();
+        assert!(matches!(
+            validate_namespace(&journal),
+            Err(AttachmentDesiredStateError::CorruptState)
+        ));
     }
 
     #[test]

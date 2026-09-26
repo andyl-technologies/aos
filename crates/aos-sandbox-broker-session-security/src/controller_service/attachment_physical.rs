@@ -20,7 +20,7 @@ use aos_sandbox::attachment_source::{
 use aos_sandbox::attachment_state::AttachmentDesiredPresenceV1;
 use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::NamespaceTargetOutcome;
-use aos_sandbox_core::model::AttachmentConsistency;
+use aos_sandbox_core::model::{AttachmentConsistency, AttachmentPresentation};
 use aos_sandbox_core::{AttachmentId, ObjectDigest, OperationId, RawPairedClockSample, SandboxId};
 
 use super::attachment_target::ControllerAttachmentTargetInputsV1;
@@ -185,6 +185,11 @@ pub(super) fn observe(
     drop(owner);
     if drain_pending_before_slot(executor, journal)? {
         return Err(retryable("retained attachment effect is draining"));
+    }
+    if desired.intent().presentation() == AttachmentPresentation::Fuse {
+        // Prior native custody may still need recovery above. A FUSE
+        // generation cannot enter either existing source or Mount effect path.
+        return Err(retryable("FUSE attachment dispatch is not authenticated"));
     }
     let mut owner = ProtectedAttachmentEffectOwnerV1::claim(journal)
         .map_err(|error| retryable(error.to_string()))?;
@@ -598,6 +603,7 @@ fn source_allows_mount(
     mount: AttachmentReconciliationActionV1,
 ) -> bool {
     match (source, mount) {
+        (_, AttachmentReconciliationActionV1::FuseDispatchClosed) => false,
         (None, _) => true,
         (Some(AttachmentSourceActionV1::Released), AttachmentReconciliationActionV1::Released) => {
             true
@@ -953,6 +959,22 @@ fn retryable(message: impl Into<String>) -> EffectFailure {
 mod tests {
     use super::*;
     use aos_proto::aos::sandbox::local::v1::MountLifecycle;
+
+    #[test]
+    fn fuse_selection_never_qualifies_for_native_source_or_mount_effects() {
+        assert!(!source_allows_mount(
+            None,
+            AttachmentReconciliationActionV1::FuseDispatchClosed,
+        ));
+        assert!(!source_allows_mount(
+            Some(AttachmentSourceActionV1::Consume {
+                acquisition_id: [1; 32],
+                revision: 1,
+                record_digest: [2; 32],
+            }),
+            AttachmentReconciliationActionV1::FuseDispatchClosed,
+        ));
+    }
 
     #[test]
     fn detached_create_requires_completed_active_source_custody() {

@@ -25,8 +25,9 @@ pub use assignment::{
     MAX_ASSIGNMENT_SOURCE_COMMITMENTS,
 };
 pub use domain::{
-    AttachmentConsistency, AttachmentIntent, AttachmentLease, InvalidDomainModel,
-    MAX_ANCESTRY_DEPTH, MountAttributes, PlacementAssignment, PlacementRequest, SandboxAncestry,
+    AttachmentConsistency, AttachmentIntent, AttachmentLease, AttachmentPresentation,
+    InvalidDomainModel, MAX_ANCESTRY_DEPTH, MountAttributes, PlacementAssignment, PlacementRequest,
+    SandboxAncestry,
 };
 pub use execution::{
     CapturedStreamV1, ExecutionAccessRouteV1, ExecutionArgumentEnvelopeV1,
