@@ -14,7 +14,11 @@
     then "linux-x86_64"
     else if stdenv.hostPlatform.system == "aarch64-linux"
     then "linux-aarch_64"
-    else throw "Netty Unix JNI source build needs a Linux target: ${stdenv.hostPlatform.system}";
+    else if stdenv.hostPlatform.system == "x86_64-darwin"
+    then "osx-x86_64"
+    else if stdenv.hostPlatform.system == "aarch64-darwin"
+    then "osx-aarch_64"
+    else throw "Netty Unix JNI source build has no target for ${stdenv.hostPlatform.system}";
   source = fetchgit {
     url = "https://github.com/netty/netty.git";
     rev = "69270b102a6339ef3279e3f0755526db001850ef";
