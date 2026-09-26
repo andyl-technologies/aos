@@ -117,6 +117,9 @@ nonincremental rlib/staticlib, metadata, dep-info, unpacked split debug
 `.dwo` files, and `-Csave-temps=yes` bitcode, object, and saved metadata files.
 Rust extern/native dependencies and proc macro consumers are covered by the
 input contract above.
+Unstable Rust diagnostic modes that write profiling data, MIR or NLL dumps,
+metrics, LLVM traces, or live timing reports bypass the cache so each invocation
+produces its own report.
 GNU assembler `--MD` output forwarded through `-Wa` or `-Xassembler` is
 tracked for GCC and Clang with an external assembler. Clang's generated
 assembly path can make that depfile nondeterministic; a warm hit restores the
