@@ -103,8 +103,9 @@ use crate::execution_output_reservation::{
 };
 use crate::execution_parent_resource::ExecutionParentResourceSourceV1;
 use crate::journal::{
-    GlobalCapacityReservationPurposeV1, HostExecutionFenceV1, Journal, JournalError, JournalLimits,
-    JournalRecord, JournalTransaction, ProtectedJournalAuthority, RecordNamespace,
+    GlobalCapacityReservationPurposeV1, HostCurrentnessFenceV1, HostExecutionFenceV1, Journal,
+    JournalError, JournalLimits, JournalRecord, JournalTransaction, ProtectedJournalAuthority,
+    RecordNamespace,
 };
 use crate::sandbox_spec_state;
 
@@ -129,6 +130,10 @@ use super::store::{
     ProtectedExecutionAdmissionStateV1, ProtectedHostOutputReservationV1,
 };
 
+pub(crate) mod host_currentness_fence;
+
+use host_currentness_fence::{load_host_currentness_fence_v1, validate_host_currentness_pair_v1};
+
 const HOST_STATE_ROOT: &str = "/var/lib/aos/sandbox-host";
 #[cfg(target_os = "linux")]
 const BOOTSTRAP_ROOT: &str = "/var/lib/aos/sandbox-host/bootstrap";
@@ -144,11 +149,12 @@ const PEER_JOURNAL_NAME: &str = "runtime-agent-peer.journal";
 const EXECUTION_JOURNAL_NAME: &str = "runtime-execution.journal";
 const AGENT_JOURNAL_NAME: &str = "runtime-agent-state.journal";
 const LIFECYCLE_JOURNAL_NAME: &str = "runtime-lifecycle.journal";
-const PEER_CURRENT_KEY: &[u8] = b"dormant-agent-peer-current-v1";
-const CURRENTNESS_KEY: &[u8] = b"runtime-execution-currentness-v1";
-const CAPABILITIES_KEY: &[u8] = b"runtime-backend-capabilities-v1";
-const HOST_EVIDENCE_KEY: &[u8] = b"runtime-host-evidence-v1";
-const PLAN_CATALOG_KEY: &[u8] = b"runtime-plan-catalog-v1";
+const PEER_CURRENT_KEY: &[u8] = crate::journal::host_currentness_fence::PEER_CURRENT_KEY;
+const CURRENTNESS_KEY: &[u8] = crate::journal::host_currentness_fence::CURRENTNESS_KEY;
+const CAPABILITIES_KEY: &[u8] = crate::journal::host_currentness_fence::CAPABILITIES_KEY;
+const HOST_EVIDENCE_KEY: &[u8] = crate::journal::host_currentness_fence::HOST_EVIDENCE_KEY;
+const PLAN_CATALOG_KEY: &[u8] = crate::journal::host_currentness_fence::PLAN_CATALOG_KEY;
+const HOST_CURRENTNESS_FENCE_KEY: &[u8] = crate::journal::host_currentness_fence::KEY;
 const PEER_MAGIC: &[u8; 8] = b"AOSHPE01";
 const CURRENTNESS_MAGIC: &[u8; 8] = b"AOSREC01";
 const PEER_BYTES: usize = 296;
@@ -579,6 +585,7 @@ impl DormantRuntimeExecutionOwnerV1 {
         let peer_authority =
             peer_journal.claim_protected_authority(RecordNamespace::HostExecution)?;
         let protected_sequence = peer_authority.snapshot()?.sequence();
+        let peer_fence = load_host_currentness_fence_v1(&peer_authority, protected_sequence)?;
         let peer_record = peer_authority
             .get(PEER_CURRENT_KEY)?
             .ok_or(DormantRuntimeExecutionOwnerErrorV1::MissingCurrentness)?
@@ -605,18 +612,22 @@ impl DormantRuntimeExecutionOwnerV1 {
                 && key != CAPABILITIES_KEY
                 && key != HOST_EVIDENCE_KEY
                 && key != PLAN_CATALOG_KEY
+                && key != HOST_CURRENTNESS_FENCE_KEY
         }) {
             return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
         }
 
         let resolved = resolve_currentness(
-            protected_sequence,
+            peer_fence.map_or(protected_sequence, |fence| fence.pre_hold_epoch),
             peer_record.as_slice(),
             currentness_record.as_slice(),
             capability_record.as_slice(),
             host_evidence_record.as_slice(),
             plan_record.as_slice(),
         )?;
+        if peer_fence.is_some_and(|fence| fence.store_binding != resolved.execution_store_binding) {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
+        }
         let admission_state = ProtectedExecutionAdmissionStateV1::new(&resolved.currentness);
         let execution = open_execution_store(
             execution_journal,
@@ -627,6 +638,12 @@ impl DormantRuntimeExecutionOwnerV1 {
                 resolved.agent_peer.channel_binding,
                 resolved.agent_peer.authority_binding,
             )?,
+            peer_fence.is_some(),
+        )?;
+        validate_host_currentness_pair_v1(
+            peer_fence,
+            execution.load_host_execution_fence_v1()?,
+            resolved.execution_store_binding,
         )?;
         let agent = open_agent_store(
             agent_journal,
@@ -647,6 +664,8 @@ impl DormantRuntimeExecutionOwnerV1 {
         Ok(DormantRuntimeExecutionClaimV1 {
             peer_authority,
             protected_sequence,
+            peer_fence,
+            execution_store_binding: resolved.execution_store_binding,
             peer_record,
             currentness_record,
             capability_record,
@@ -671,6 +690,8 @@ impl DormantRuntimeExecutionOwnerV1 {
 pub struct DormantRuntimeExecutionClaimV1<'owner> {
     peer_authority: ProtectedJournalAuthority<'owner>,
     protected_sequence: u64,
+    peer_fence: Option<HostCurrentnessFenceV1>,
+    execution_store_binding: ObjectDigest,
     peer_record: Vec<u8>,
     currentness_record: Vec<u8>,
     capability_record: Vec<u8>,
@@ -2822,8 +2843,9 @@ impl DormantRuntimeExecutionClaimV1<'_> {
     ///
     /// This retains the HostState and Effect writer claims through the append.
     /// H/T remain Controller assertions until an independently authenticated
-    /// two-owner continuation proves their current archive custody. The fence
-    /// is permanent in this version and grants no Floor seal or Apply.
+    /// two-owner continuation proves their current archive custody. The paired
+    /// Effect and HostState holds are permanent in this version and grant no
+    /// Floor seal or Apply.
     ///
     /// # Errors
     ///
@@ -2861,8 +2883,7 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         let fence =
             self.execution
                 .acquire_host_execution_fence_v1(preliminary, cut.epoch, cut.digest)?;
-        self.validate_current()
-            .map_err(|_| JournalRuntimeExecutionError::SettlementOutcomeUnknown)?;
+        self.commit_host_currentness_fence_after_effect_v1(fence)?;
         Ok(fence)
     }
 
@@ -3396,6 +3417,10 @@ impl DormantRuntimeExecutionClaimV1<'_> {
     }
 
     fn validate_current(&self) -> Result<(), DormantRuntimeExecutionOwnerErrorV1> {
+        let peer_fence_bytes = self
+            .peer_fence
+            .map(HostCurrentnessFenceV1::encode)
+            .transpose()?;
         if self.peer_authority.snapshot()?.sequence() != self.protected_sequence
             || self.peer_authority.get(PEER_CURRENT_KEY)? != Some(self.peer_record.as_slice())
             || self.peer_authority.get(CURRENTNESS_KEY)? != Some(self.currentness_record.as_slice())
@@ -3403,6 +3428,8 @@ impl DormantRuntimeExecutionClaimV1<'_> {
             || self.peer_authority.get(HOST_EVIDENCE_KEY)?
                 != Some(self.host_evidence_record.as_slice())
             || self.peer_authority.get(PLAN_CATALOG_KEY)? != Some(self.plan_record.as_slice())
+            || self.peer_authority.get(HOST_CURRENTNESS_FENCE_KEY)?
+                != peer_fence_bytes.as_ref().map(|bytes| bytes.as_slice())
             || self.lifecycle_authority.get(LIFECYCLE_HEAD_KEY)?
                 != Some(encode_lifecycle_head(self.lifecycle_head).as_slice())
             || self.lifecycle_authority.get(LIFECYCLE_ISSUE_KEY)? != self.lifecycle_issue.as_deref()
@@ -3410,6 +3437,11 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         {
             return Err(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness);
         }
+        validate_host_currentness_pair_v1(
+            self.peer_fence,
+            self.execution.load_host_execution_fence_v1()?,
+            self.execution_store_binding,
+        )?;
         Ok(())
     }
 
@@ -4110,6 +4142,7 @@ fn open_execution_store<'journal>(
     store_binding: ObjectDigest,
     admission_state: ProtectedExecutionAdmissionStateV1,
     agent_peer: ProtectedAgentRoutePeerV1,
+    require_existing: bool,
 ) -> Result<JournalRuntimeExecutionStoreV1<'journal>, JournalRuntimeExecutionError> {
     let empty = {
         let authority = journal.claim_global_capacity_reservation_authority(
@@ -4118,6 +4151,10 @@ fn open_execution_store<'journal>(
         authority.is_materialized_empty()?
     };
     if empty {
+        // A retained HostState hold must not initialize a rolled-back Effect store.
+        if require_existing {
+            return Err(JournalRuntimeExecutionError::UninitializedStore);
+        }
         JournalRuntimeExecutionStoreV1::initialize(
             journal,
             store_binding,
@@ -4973,6 +5010,10 @@ pub enum DormantRuntimeExecutionOwnerErrorV1 {
 #[cfg(test)]
 mod accepted_output_currentness_tests {
     use super::*;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use ed25519_dalek::SigningKey;
+    use tempfile::TempDir;
 
     fn fixed_currentness(resource_ledger: u8, authority_context: u8) -> AdmissionCurrentnessV1 {
         let runtime = RuntimeCurrentnessV1::new(
@@ -5021,6 +5062,46 @@ mod accepted_output_currentness_tests {
             stream_limits: Some((0, 0)),
             record_digest: ObjectDigest::from_bytes([19; 32]),
         }
+    }
+
+    #[test]
+    fn retained_hoststate_hold_never_initializes_empty_effect_store() {
+        let directory = TempDir::new_in(std::env::current_dir().expect("current directory"))
+            .expect("test directory");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let uid = directory.path().metadata().expect("metadata").uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "empty-effect.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("empty Effect journal");
+        let peer = ProtectedAgentRoutePeerV1::new(
+            SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes(),
+            ObjectDigest::from_bytes([8; 32]),
+            ObjectDigest::from_bytes([9; 32]),
+        )
+        .expect("fixed peer");
+
+        assert!(matches!(
+            open_execution_store(
+                &mut journal,
+                ObjectDigest::from_bytes([1; 32]),
+                ProtectedExecutionAdmissionStateV1::new(&fixed_currentness(20, 21)),
+                peer,
+                true,
+            ),
+            Err(JournalRuntimeExecutionError::UninitializedStore)
+        ));
+        assert!(
+            journal
+                .claim_protected_authority(RecordNamespace::Effect)
+                .expect("Effect authority")
+                .is_materialized_empty()
+                .expect("still empty")
+        );
     }
 
     #[test]

@@ -3872,6 +3872,18 @@ mod output_v2_tests {
                 .expect("fence readback"),
             Some(held)
         );
+        // A valid cold Effect fence cannot be treated as a complete Host
+        // continuation when the separate HostState journal lacks its hold.
+        assert!(
+            super::super::owner::host_currentness_fence::validate_host_currentness_pair_v1(
+                None,
+                recovered_fence
+                    .load_host_execution_fence_v1()
+                    .expect("cold Effect fence"),
+                binding,
+            )
+            .is_err()
+        );
         assert!(matches!(
             recovered_fence.authority.commit(&competing),
             Err(JournalError::ProtectedBoundary)

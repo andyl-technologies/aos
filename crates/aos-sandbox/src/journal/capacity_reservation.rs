@@ -265,7 +265,8 @@ impl Journal {
         {
             return Err(JournalError::InvalidTransaction);
         }
-        let result = self.commit_with_capacity_scope(transaction, None, true, false, false)?;
+        let result =
+            self.commit_with_capacity_scope(transaction, None, true, false, false, false)?;
         let record_digest = digest_bytes(
             prepared
                 .record
@@ -378,6 +379,7 @@ impl Journal {
             transaction,
             Some(reservation.reservation_id),
             true,
+            false,
             false,
             false,
         )

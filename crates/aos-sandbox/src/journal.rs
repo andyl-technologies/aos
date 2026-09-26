@@ -42,6 +42,7 @@ pub(crate) use mount_manager_startup::{
 mod cache_policy_hold;
 mod capacity_reservation;
 mod controller_policy_hold;
+pub(crate) mod host_currentness_fence;
 pub(crate) mod host_execution_fence;
 mod source_domain_challenge;
 mod source_domain_policy_hold;
@@ -54,6 +55,7 @@ pub use capacity_reservation::{
     PreparedGlobalCapacityReservationV1,
 };
 pub use controller_policy_hold::{ControllerPolicyEffectAckV1, ControllerPolicyHoldV1};
+pub(crate) use host_currentness_fence::HostCurrentnessFenceV1;
 pub(crate) use host_execution_fence::HostExecutionFenceV1;
 pub use source_domain_challenge::SourceDomainChallengeV1;
 pub(crate) use source_domain_challenge::replay_source_domain_challenge_v1;
@@ -2005,7 +2007,7 @@ impl Journal {
         &mut self,
         transaction: &JournalTransaction,
     ) -> Result<CommitResult, JournalError> {
-        self.commit_with_capacity_scope(transaction, None, false, false, false)
+        self.commit_with_capacity_scope(transaction, None, false, false, false, false)
     }
 
     fn commit_with_capacity_scope(
@@ -2015,8 +2017,14 @@ impl Journal {
         allow_capacity_records: bool,
         allow_policy_hold_transition: bool,
         allow_host_fence_acquisition: bool,
+        allow_host_currentness_fence_acquisition: bool,
     ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
+        host_currentness_fence::require_no_mutation(
+            &self.state,
+            transaction,
+            allow_host_currentness_fence_acquisition,
+        )?;
         host_execution_fence::require_no_mutation(
             &self.state,
             transaction,
@@ -2156,6 +2164,7 @@ impl Journal {
         let mut expected_length = self.file.metadata()?.len();
 
         for transaction in transactions {
+            host_currentness_fence::require_no_mutation(&state, transaction, false)?;
             host_execution_fence::require_no_mutation(&state, transaction, false)?;
             if !allow_policy_hold_transition {
                 controller_policy_hold::require_no_mutation(&state, transaction)?;
@@ -2235,6 +2244,7 @@ impl Journal {
     /// Effect fence is held.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        host_currentness_fence::require_no_compaction(&self.state)?;
         host_execution_fence::require_no_compaction(&self.state)?;
         controller_policy_hold::require_no_compaction(&self.state)?;
         source_domain_policy_hold::require_no_compaction(&self.state)?;
@@ -2855,7 +2865,7 @@ impl ProtectedJournalAuthority<'_> {
             return Err(JournalError::ProtectedBoundary);
         }
         self.journal
-            .commit_with_capacity_scope(transaction, None, false, false, true)
+            .commit_with_capacity_scope(transaction, None, false, false, true, false)
     }
 
     #[cfg(test)]
@@ -2869,7 +2879,67 @@ impl ProtectedJournalAuthority<'_> {
             return Err(JournalError::ProtectedBoundary);
         }
         self.journal
-            .commit_with_capacity_scope(transaction, None, false, false, true)
+            .commit_with_capacity_scope(transaction, None, false, false, true, false)
+    }
+
+    /// Acquires the nonauthorizing HostState half of a retained Effect fence.
+    ///
+    /// The fixed five-record currentness view and its original snapshot are
+    /// rechecked here. The caller holds the Effect writer and must verify that
+    /// `effect_fence_digest` names its exact durable AOSCHF01 row.
+    pub(crate) fn acquire_host_currentness_fence_v1(
+        &mut self,
+        fence: HostCurrentnessFenceV1,
+        transaction: &JournalTransaction,
+    ) -> Result<CommitResult, JournalError> {
+        let fence_bytes = fence.encode()?;
+        let exact_transaction = matches!(transaction.records(), [record]
+            if record.namespace() == RecordNamespace::HostExecution
+                && record.key() == host_currentness_fence::KEY
+                && record.value() == Some(fence_bytes.as_slice()));
+        if self.namespace != RecordNamespace::HostExecution
+            || self.scope != ProtectedAuthorityScope::SingleNamespace
+            || !exact_transaction
+            || self.journal.snapshot_sequence() != fence.pre_hold_epoch
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        self.journal.ensure_protected_authority()?;
+
+        let keys = self
+            .journal
+            .records(RecordNamespace::HostExecution)
+            .map(|(key, _)| key)
+            .collect::<Vec<_>>();
+        let exact_owner = keys.len() == host_currentness_fence::OWNER_KEYS.len()
+            && keys
+                .iter()
+                .all(|key| host_currentness_fence::OWNER_KEYS.contains(key));
+        let measured_cut = host_currentness_fence::cut_v1(
+            self.journal.records(RecordNamespace::HostExecution),
+            fence.store_binding,
+            fence.pre_hold_epoch,
+            false,
+        )?;
+        if !exact_owner || measured_cut != fence.pre_hold_cut {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        self.journal
+            .commit_with_capacity_scope(transaction, None, false, false, false, true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_host_currentness_fence_for_test(
+        &mut self,
+        transaction: &JournalTransaction,
+    ) -> Result<CommitResult, JournalError> {
+        if self.namespace != RecordNamespace::HostExecution
+            || self.scope != ProtectedAuthorityScope::SingleNamespace
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        self.journal
+            .commit_with_capacity_scope(transaction, None, false, false, false, true)
     }
 
     /// Prepares capacity reservation bound to this protected owner namespace.
