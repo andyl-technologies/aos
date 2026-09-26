@@ -2763,6 +2763,112 @@ def check_clang_llvm_report_passthrough(root, env, accache, sccache, clang, hits
     return results
 
 
+def check_rust_codegen_backend(root, env, accache, sccache, rustc, hits):
+    """Cache the built-in backend and pass through undeclared runtime libraries."""
+    results = []
+    rust_env = env | {"RUSTC_BOOTSTRAP": "1"}
+    undeclared_manifest = json.loads(Path(env["ACCACHE_MANIFEST"]).read_text())
+    undeclared_manifest["read_roots"] = []
+    undeclared_manifest_path = root / "manifest-without-read-roots.json"
+    undeclared_manifest_path.write_text(json.dumps(undeclared_manifest))
+    undeclared_env = rust_env | {"ACCACHE_MANIFEST": str(undeclared_manifest_path)}
+    for fixture, backend_flags in [
+        ("rust-codegen-backend-llvm", ["-Zcodegen-backend=llvm"]),
+        ("rust-codegen-backend-last-llvm",
+         ["-Zcodegen-backend=backend.so", "-Zcodegen-backend=llvm"]),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "target").mkdir()
+        (work / "backend.so").write_bytes(b"not a dynamic library")
+        source = work / "source.rs"
+        library = work / "target/libexample.rlib"
+        depfile = work / "target/example.d"
+        args = [rustc, "--crate-name=example", "--crate-type=rlib",
+                "--emit=link,dep-info", "--out-dir=target", *backend_flags,
+                "source.rs"]
+
+        def compile_library(wrapper):
+            library.unlink(missing_ok=True)
+            depfile.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=rust_env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            return (completed.stdout, completed.stderr,
+                    library.read_bytes(), depfile.read_bytes())
+
+        first_library = None
+        for revision, value in enumerate([42, 73]):
+            source.write_text(f"pub fn answer() -> u32 {{ {value} }}\n")
+            direct = compile_library([])
+            if first_library is None:
+                first_library = direct[2]
+            else:
+                assert direct[2] != first_library, (fixture, "source edit had no effect")
+
+            assert compile_library([sccache])[2:] == direct[2:]
+            before_hits = hits()
+            assert compile_library([sccache])[2:] == direct[2:]
+            oracle_hit = hits() > before_hits
+
+            assert compile_library([accache]) == direct, (fixture, revision, "cold")
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+            assert cold["outcome"] == "miss", (fixture, revision, cold)
+            assert compile_library([accache]) == direct, (fixture, revision, "warm")
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+            assert warm["outcome"] == "hit", (fixture, revision, warm)
+
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": oracle_hit, "accache": "hit",
+                            "artifacts": ["target/libexample.rlib", "target/example.d"]})
+
+        print("PASS oracle", fixture, "backend selection", flush=True)
+
+    for fixture, backend_flags, error_text in [
+        ("rust-codegen-backend-path-joined", ["-Zcodegen-backend=backend.so"],
+         b"couldn't load codegen backend"),
+        ("rust-codegen-backend-path-separated", ["-Z", "codegen-backend=backend.so"],
+         b"couldn't load codegen backend"),
+        ("rust-codegen-backend-name", ["-Zcodegen-backend=unknown"],
+         b"failed to find a `codegen-backends` folder"),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "target").mkdir()
+        (work / "backend.so").write_bytes(b"not a dynamic library")
+        (work / "source.rs").write_text("pub fn answer() -> u32 { 42 }\n")
+        args = [rustc, "--crate-name=example", "--crate-type=rlib",
+                "--emit=link,dep-info", "--out-dir=target", *backend_flags,
+                "source.rs"]
+
+        def invoke(wrapper, invocation_env):
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=invocation_env,
+                                       capture_output=True, timeout=120)
+            return completed.returncode, completed.stdout, completed.stderr
+
+        direct = invoke([], rust_env)
+        assert direct[0] != 0 and error_text in direct[2], direct
+        oracle = invoke([sccache], rust_env)
+        assert oracle[0] == direct[0], (fixture, oracle)
+        for _ in range(2):
+            assert invoke([accache], undeclared_env) == direct, fixture
+            event = json.loads(subprocess.check_output([accache, "explain"], env=undeclared_env))
+            assert (event["outcome"] == "bypass"
+                    and "compiler extension requires manifest read_roots" in event["reason"]), event
+
+        assert invoke([accache], rust_env) == direct, fixture
+        event = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+        assert (event["outcome"] == "bypass"
+                and "rustc output discovery failed" in event["reason"]), event
+
+        results.append({"fixture": fixture, "revision": 0,
+                        "oracle_hit": False, "accache": "bypass",
+                        "artifacts": []})
+        print("PASS oracle", fixture, "undeclared backend passthrough", flush=True)
+
+    return results
+
+
 def check_rust_shell_argfiles(root, env, accache, sccache, rustc, hits):
     """Cache quoted Rust argfiles and invalidate after an option edit."""
     results = []
@@ -3679,6 +3785,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                               sccache, rustc, hits))
         results.extend(check_rust_llvm_plugin(root, env, accache,
                                               sccache, rustc, clang, hits))
+        results.extend(check_rust_codegen_backend(root, env, accache,
+                                                  sccache, rustc, hits))
         results.extend(check_rust_shell_argfiles(root, env, accache,
                                                  sccache, rustc, hits))
         results.append(check_rust_shell_literal_at_passthrough(

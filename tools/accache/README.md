@@ -145,6 +145,12 @@ unpacked split debug
 Rust extern/native dependencies and proc macro consumers are covered by the
 input contract above. Rust's unstable sample-profile and dataflow-sanitizer ABI
 list inputs are fingerprinted; editing either invalidates the action.
+The pinned built-in `-Zcodegen-backend=llvm` uses the compiler closure and can
+be cached. Other backend names and paths need declared `read_roots` because a
+runtime backend can read files missing from rustc's dep-info; an explicit
+backend file is fingerprinted separately. A missing or unloadable backend
+passes through with rustc's own diagnostic. The oracle has no valid alternate
+backend, so caching a working external backend is not yet verified.
 Rust `-Cllvm-args` basic-block section lists and identified LLVM file inputs
 are fingerprinted separately because rustc omits them from dep-info. Four
 oracle families cover joined and separated `-C` with a section list and a

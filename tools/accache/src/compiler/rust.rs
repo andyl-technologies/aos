@@ -31,6 +31,20 @@ pub(super) fn configure(
     if let Some(option) = nonstandard_compilation_option(&expanded) {
         anyhow::bail!("Rust -Z{option} changes the compilation or output contract");
     }
+    if let Some(backend) = unstable_options(&expanded)
+        .filter_map(|option| option.strip_prefix("codegen-backend="))
+        .last()
+    {
+        ensure!(!backend.is_empty(), "Rust codegen backend is empty");
+        if backend != "llvm" {
+            let path = Path::new(backend);
+            // A runtime codegen library can read files absent from rustc's
+            // dep-info. Only the pinned built-in LLVM backend is covered by
+            // the compiler closure without an extension read contract.
+            invocation.extra_inputs.insert(path.into());
+            invocation.extension_reads(manifest)?;
+        }
+    }
     let saves_temps = saves_temporary_outputs(&expanded);
     let output_directory = parsed.output_dir.canonicalize()?;
     invocation.rust_output_directory = Some(output_directory.to_string_lossy().into_owned());
