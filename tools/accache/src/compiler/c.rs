@@ -1,7 +1,7 @@
 //! GCC and Clang discovery using the complete pinned argument tables.
 
 use super::{Invocation, parsed, strings};
-use crate::model::Manifest;
+use crate::model::{DynamicOutputs, Manifest};
 use accache_frontend::compiler::{Language, c::CCompilerKind, clang, gcc};
 use anyhow::{Result, ensure};
 use std::{
@@ -50,8 +50,8 @@ pub(super) fn configure(
         .extend(parsed.extra_hash_files.iter().cloned());
     let expanded = strings(gcc::ExpandIncludeFile::new(&cwd, &arguments))?;
     // GCC accepts report options through sccache's generic argument path.
-    // Explicit report destinations are outputs, while a dump with an implicit
-    // name cannot be restored safely from the pinned frontend's output set.
+    // The pinned frontend omits their files, so discover those destinations
+    // before allowing an action to be stored.
     if !clang {
         ensure!(
             !expanded.iter().any(|arg| {
@@ -60,53 +60,67 @@ pub(super) fn configure(
             }),
             "additional GCC diagnostic outputs need explicit tracking"
         );
+        let mut implicit_dump = false;
         for arg in &expanded {
             if arg.starts_with("-fopt-info") || arg.starts_with("-fdump-") {
                 if let Some((_, destination)) = arg.split_once('=') {
-                    invocation.output(Path::new(destination), false)?;
+                    if !matches!(destination, "stdout" | "stderr" | "-") {
+                        invocation.output(Path::new(destination), false)?;
+                    }
                 } else if arg.starts_with("-fdump-") {
-                    anyhow::bail!("GCC dump writes an unnamed side output");
+                    ensure!(
+                        arg.starts_with("-fdump-tree-")
+                            || arg.starts_with("-fdump-rtl-")
+                            || arg.starts_with("-fdump-ipa-")
+                            || arg.starts_with("-fdump-lang-")
+                            || arg.starts_with("-fdump-statistics"),
+                        "GCC dump option has an untracked side output"
+                    );
+                    implicit_dump = true;
                 }
             }
         }
-        if expanded
+        let sarif_file = expanded
             .iter()
             .rev()
             .find_map(|arg| arg.strip_prefix("-fdiagnostics-format="))
-            == Some("sarif-file")
-        {
-            // GCC forms a dump filename from the object stem and the source
-            // suffix. Custom dump naming has separate precedence rules, so
-            // pass those invocations through until they can be represented.
+            == Some("sarif-file");
+        if sarif_file || implicit_dump {
+            // Custom dump naming has separate precedence rules. Pass those
+            // invocations through until their destinations can be derived.
             ensure!(
-                !expanded.iter().any(|arg| {
-                    arg == "-dumpbase"
-                        || arg.starts_with("-dumpbase=")
-                        || arg == "--dumpbase"
-                        || arg.starts_with("--dumpbase=")
-                        || arg == "-dumpdir"
-                        || arg.starts_with("-dumpdir=")
-                        || arg == "--dumpdir"
-                        || arg.starts_with("--dumpdir=")
-                }),
-                "GCC SARIF report uses custom dump naming"
+                !uses_custom_dump_naming(&expanded),
+                "GCC side output uses custom dump naming"
             );
             let object = parsed
                 .outputs
                 .get("obj")
-                .ok_or_else(|| anyhow::anyhow!("GCC SARIF report has no object output"))?;
-            let stem = object
-                .path
-                .file_stem()
-                .ok_or_else(|| anyhow::anyhow!("GCC SARIF report has no object stem"))?;
-            let source_suffix = parsed.input.extension();
-            let mut filename = stem.to_os_string();
-            if let Some(suffix) = source_suffix {
-                filename.push(".");
-                filename.push(suffix);
+                .ok_or_else(|| anyhow::anyhow!("GCC side output has no object output"))?;
+            let dump_base = default_dump_base(&parsed.input, &object.path)?;
+            if sarif_file {
+                let mut filename = dump_base.clone();
+                filename.push(".sarif");
+                invocation.output(&object.path.with_file_name(filename), false)?;
             }
-            filename.push(".sarif");
-            invocation.output(&object.path.with_file_name(filename), false)?;
+            if implicit_dump {
+                // Pass numbers vary by GCC version and optimization pipeline.
+                // Restrict dynamic discovery to the selected object's directory
+                // and dump base so replay includes only this action's reports.
+                let directory = object
+                    .path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or(Path::new("."))
+                    .canonicalize()?;
+                let prefix = dump_base
+                    .to_str()
+                    .ok_or_else(|| anyhow::anyhow!("non-UTF-8 GCC dump base"))?;
+                invocation.dynamic_outputs = Some(DynamicOutputs {
+                    directory: directory.to_string_lossy().into_owned(),
+                    prefix: format!("{prefix}."),
+                    suffix: String::new(),
+                });
+            }
         }
     }
     for (index, arg) in expanded.iter().enumerate() {
@@ -274,6 +288,26 @@ pub(super) fn configure(
         invocation.output(&object.path.with_extension("d"), false)?;
     }
     Ok(())
+}
+
+fn default_dump_base(input: &Path, object: &Path) -> Result<OsString> {
+    let mut base = object
+        .file_stem()
+        .ok_or_else(|| anyhow::anyhow!("GCC side output has no object stem"))?
+        .to_os_string();
+    if let Some(suffix) = input.extension() {
+        base.push(".");
+        base.push(suffix);
+    }
+    Ok(base)
+}
+
+fn uses_custom_dump_naming(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        ["-dumpbase", "--dumpbase", "-dumpdir", "--dumpdir"]
+            .iter()
+            .any(|name| arg == name || arg.starts_with(&format!("{name}=")))
+    })
 }
 
 fn configure_assembly_scan(
