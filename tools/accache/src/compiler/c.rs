@@ -87,6 +87,7 @@ pub(super) fn configure(
         "compiler timing output is not a replayable artifact"
     );
     if clang {
+        let mut llvm_arguments = Vec::new();
         for (index, arg) in expanded.iter().enumerate() {
             let llvm_arg = if arg == "-mllvm" {
                 expanded.get(index + 1).map(String::as_str)
@@ -96,24 +97,12 @@ pub(super) fn configure(
             let Some(llvm_arg) = llvm_arg else {
                 continue;
             };
-            match llvm::classify(llvm_arg) {
-                llvm::OptionEffect::FileInput(path) => {
-                    ensure!(!path.is_empty(), "LLVM file input is empty");
-                    invocation.extra_inputs.insert(path.into());
-                }
-                llvm::OptionEffect::NoFileInput => {}
-                llvm::OptionEffect::InvocationReport => {
-                    // LLVM can write reports outside the selected object
-                    // directory, and compiler probes must not emit them.
-                    anyhow::bail!("Clang LLVM option {llvm_arg} writes an invocation report");
-                }
-                llvm::OptionEffect::Unknown => {
-                    // Unknown internal flags might read files or write side
-                    // outputs absent from Clang's ordinary depfile.
-                    anyhow::bail!("Clang LLVM option {llvm_arg} has no audited cache contract");
-                }
-            }
+            llvm_arguments.push(llvm_arg);
         }
+        // LLVM values can follow a second -mllvm rather than an equals sign.
+        invocation
+            .extra_inputs
+            .extend(llvm::file_inputs(&llvm_arguments, "Clang")?);
     }
     let mut cc1_depfile = None;
     if clang {

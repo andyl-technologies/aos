@@ -1,11 +1,63 @@
 //! File inputs and live outputs selected through internal LLVM options.
 
+use anyhow::{Result, ensure};
+use std::{collections::BTreeSet, path::PathBuf};
+
 /// Describes effects accache can account for without inspecting LLVM itself.
 pub(super) enum OptionEffect<'a> {
     FileInput(&'a str),
     NoFileInput,
+    NeedsValue,
     InvocationReport,
     Unknown,
+}
+
+/// Classifies a sequence because LLVM accepts a value in the next argument.
+pub(super) fn file_inputs(arguments: &[&str], compiler: &str) -> Result<BTreeSet<PathBuf>> {
+    let mut inputs = BTreeSet::new();
+    let mut index = 0;
+
+    while let Some(argument) = arguments.get(index) {
+        let mut effect = classify(argument);
+        if matches!(effect, OptionEffect::NeedsValue) {
+            let value = arguments
+                .get(index + 1)
+                .ok_or_else(|| anyhow::anyhow!("{compiler} LLVM option {argument} has no value"))?;
+            // Classifying the joined spelling keeps literal modes such as
+            // basic-block-sections=all identical across both LLVM forms.
+            let joined = format!("{argument}={value}");
+            effect = classify(&joined);
+            match effect {
+                OptionEffect::FileInput(path) => {
+                    ensure!(!path.is_empty(), "LLVM file input is empty");
+                    inputs.insert(path.into());
+                }
+                OptionEffect::NoFileInput => {}
+                _ => {
+                    anyhow::bail!("{compiler} LLVM option {argument} has no audited cache contract")
+                }
+            }
+            index += 2;
+            continue;
+        }
+
+        match effect {
+            OptionEffect::FileInput(path) => {
+                ensure!(!path.is_empty(), "LLVM file input is empty");
+                inputs.insert(path.into());
+            }
+            OptionEffect::NoFileInput => {}
+            OptionEffect::InvocationReport => {
+                anyhow::bail!("{compiler} LLVM option {argument} writes an invocation report");
+            }
+            OptionEffect::Unknown | OptionEffect::NeedsValue => {
+                anyhow::bail!("{compiler} LLVM option {argument} has no audited cache contract");
+            }
+        }
+        index += 1;
+    }
+
+    Ok(inputs)
 }
 
 pub(super) fn classify(argument: &str) -> OptionEffect<'_> {
@@ -60,6 +112,9 @@ pub(super) fn classify(argument: &str) -> OptionEffect<'_> {
             OptionEffect::FileInput(path)
         };
     }
+    if argument == "basic-block-sections" {
+        return OptionEffect::NeedsValue;
+    }
 
     for prefix in [
         "cgscc-inline-replay=",
@@ -91,6 +146,9 @@ pub(super) fn classify(argument: &str) -> OptionEffect<'_> {
         if let Some(path) = argument.strip_prefix(prefix) {
             return OptionEffect::FileInput(path);
         }
+        if Some(argument) == prefix.strip_suffix('=') {
+            return OptionEffect::NeedsValue;
+        }
     }
 
     if matches!(
@@ -99,7 +157,11 @@ pub(super) fn classify(argument: &str) -> OptionEffect<'_> {
     ) {
         // These scalar tuning options affect generated code, and the full
         // compiler argument remains in the action key.
-        return OptionEffect::NoFileInput;
+        return if argument.contains('=') {
+            OptionEffect::NoFileInput
+        } else {
+            OptionEffect::NeedsValue
+        };
     }
 
     OptionEffect::Unknown

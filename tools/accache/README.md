@@ -195,7 +195,10 @@ the separated and joined `-mllvm` spellings and a live pass report.
 Scalar `inline-threshold`, `preinline-threshold`, `unroll-count`, and
 `unroll-threshold` tuning is cacheable; oracles change inline and unroll
 settings and check distinct direct, sccache, and accache objects for Clang and
-Rust. LLVM's `chr-function-list` and
+Rust. Their `name=value` and separate `name value` forms are covered. LLVM
+file-input options also accept a separate value; accache fingerprints that
+path across Clang's repeated `-mllvm` and Rust's `-Cllvm-args` forwarding.
+LLVM's `chr-function-list` and
 `chr-module-list` read named files outside the depfile. Accache fingerprints
 those files and explains an edit as a miss, even when the selected test source
 produces the same object bytes.
