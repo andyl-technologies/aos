@@ -125,7 +125,9 @@ pub fn classify(
         invocation.execution_args = Some(expanded_args);
     }
     match kind {
-        "c" | "gcc" | "clang" => c::configure(&mut invocation, kind, compiler, args, manifest)?,
+        "c" | "gcc" | "clang" => {
+            c::configure(&mut invocation, kind, compiler, args, environment, manifest)?
+        }
         "rust" => rust::configure(&mut invocation, compiler, args, environment, manifest)?,
         _ => anyhow::bail!("unknown compiler adapter {kind}"),
     }

@@ -355,6 +355,11 @@ the old object. Accache fingerprints the selected file or directory, names the
 changed assembler in its miss explanation, and then warm-hits the new object.
 The public AOS cc-wrapper supplies its own earlier `-B` directory, so these
 cases register the AOS-built unwrapped GCC.
+Raw GCC also honors `COMPILER_PATH` when selecting an assembler. An oracle
+rebuilds `as` in a fixed search directory; pinned sccache replays the old
+object, while accache fingerprints files in the selected search directory,
+names `as` in its miss explanation, and warm-hits the replacement. Empty
+`COMPILER_PATH` segments select the working directory, as GCC does.
 Four more cases mutate a binary read by C inline assembly in GCC/Clang `.c`
 and `.i` compilations. Pinned sccache again replays stale objects; accache
 misses and names the changed binary input.
