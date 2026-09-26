@@ -205,6 +205,20 @@
     urls = ["${grpcJavaRegistryRoot}/patches/module_dot_bazel.patch"];
     hash = "sha256-TUbU6+Jm8Kj2MG5uY9bxXcESlNtR4a+dTwE0MJahrQU=";
   };
+
+  stardocRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/stardoc/0.7.1";
+  stardocSource = moduleSource {
+    name = "stardoc";
+    version = "0.7.1";
+    url = "https://github.com/bazelbuild/stardoc.git";
+    ref = "0.7.1";
+    rev = "2ac0981b7c35ff46cf66cc92467c37411c7bfacc";
+    hash = "sha256-orS7umDGwldVTLupd6J3nf3tDvtahmw1YN1y/aVUUa4=";
+  };
+  stardocModule = fetchurl {
+    urls = ["${stardocRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-NUj66k7l3aVYD5rxUOedD2rqk0/GDBzFD0792UIHWec=";
+  };
 in {
   rules_cc = moduleSource {
     name = "rules_cc";
@@ -611,6 +625,43 @@ in {
         script = ''
           patch --batch -p1 < ${grpcJavaPatch}
           cmp MODULE.bazel ${grpcJavaModule}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  stardoc = mkDerivation {
+    pname = "bazel-stardoc-bcr-source";
+    version = "0.7.1";
+    src = stardocSource;
+
+    buildDeps = [buildPackages.sed buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir stardoc-source
+          cp -a "$src"/. stardoc-source/
+          chmod -R u+w stardoc-source
+          cd stardoc-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          # The release packaging drops upstream's marked dev-only tail.
+          sed '/^### INTERNAL ONLY/,$d' MODULE.bazel > MODULE.bazel.released
+          cmp MODULE.bazel.released ${stardocModule}
+          mv MODULE.bazel.released MODULE.bazel
         '';
       }
       {
