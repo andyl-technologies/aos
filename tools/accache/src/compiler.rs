@@ -54,7 +54,7 @@ pub struct Invocation {
     pub optional_outputs: BTreeSet<String>,
     /// Expanded rustc arguments when sccache accepts a nested response file.
     pub execution_args: Option<Vec<String>>,
-    /// C/C++ arguments after omitting flags the pinned frontend leaves unhashed.
+    /// C/C++ arguments after omitting audited output-neutral flags.
     pub key_arguments: Option<Vec<String>>,
     /// Bounded compiler-generated side files whose names require compilation.
     pub dynamic_outputs: Option<DynamicOutputs>,

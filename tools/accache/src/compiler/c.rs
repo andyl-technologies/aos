@@ -32,6 +32,11 @@ pub(super) fn configure(
     let arguments: Vec<_> = args.iter().map(OsString::from).collect();
     let cwd = std::env::current_dir()?;
     let expanded = strings(gcc::ExpandIncludeFile::new(&cwd, &arguments))?;
+    if clang && expanded.iter().any(|arg| arg.starts_with("-parallel-jobs=")) {
+        // This flag is unhashed by the pinned ROCm frontend, but AOS Clang
+        // rejects it. A hit on a plain action would hide that compiler error.
+        anyhow::bail!("AOS Clang does not support -parallel-jobs");
+    }
     if !clang && expanded.iter().any(|arg| arg == "-wrapper") {
         // This program can change compiler and assembler behavior without
         // changing their inputs, and may have undeclared file effects.
@@ -728,11 +733,13 @@ fn c_key_arguments(
         let end = index + consumed;
         ensure!(end <= expanded.len(), "C/C++ argument parser advanced past argv");
 
-        // The parser, not a string filter, identifies unhashed flags. A token
-        // spelled "-pipe" can also be a value or a filename after "--".
+        // The parser, not a string filter, identifies -pipe. AOS Clang rejects
+        // its other unhashed option, -parallel-jobs=N; omitting that option
+        // could turn a compiler error into a hit on a successful plain action.
+        // A token spelled "-pipe" can also be a value or filename after "--".
         if !matches!(
             argument.get_data(),
-            Some(gcc::ArgData::UnhashedFlag | gcc::ArgData::Unhashed(_))
+            Some(gcc::ArgData::UnhashedFlag)
         ) {
             key_arguments.extend_from_slice(&expanded[index..end]);
         }
