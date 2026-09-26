@@ -57,7 +57,6 @@ pub mod controller_execution_argument_attempt;
 pub mod controller_execution_argument_receipt;
 pub mod controller_execution_observe_reservation;
 pub mod controller_execution_output_settlement;
-pub mod controller_storage_output_reserve_attempt;
 #[cfg(target_os = "linux")]
 pub mod controller_execution_preissue;
 #[cfg(target_os = "linux")]
@@ -66,6 +65,7 @@ pub mod controller_no_apply_settlement_cursor;
 pub mod controller_query;
 #[cfg(target_os = "linux")]
 pub mod controller_service;
+pub mod controller_storage_output_reserve_attempt;
 pub mod create_holder_proof;
 #[cfg(target_os = "linux")]
 pub mod destination_slot_effect;
