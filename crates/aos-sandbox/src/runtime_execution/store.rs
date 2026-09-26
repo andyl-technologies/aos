@@ -3816,7 +3816,8 @@ mod output_v2_tests {
         ));
 
         let mislabeled_preliminary = HostSettlementRecordV1 {
-            epoch: preliminary.epoch + 1,
+            epoch: committed.fields().commit_sequence,
+            commit_sequence: committed.fields().commit_sequence + 2,
             ..preliminary
         };
         let mislabeled_lease = JournalTransaction::new(

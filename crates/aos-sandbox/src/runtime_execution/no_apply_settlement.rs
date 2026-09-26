@@ -151,7 +151,7 @@ impl HostSettlementRecordV1 {
             controller_floor: None,
             controller_cas: None,
         };
-        if epoch < observed.marker_sequence
+        if epoch <= observed.marker_sequence
             || !preliminary_sequence_matches_epoch(epoch, commit_sequence)
             || !record.valid()
         {
@@ -434,7 +434,7 @@ pub(crate) fn validate_history(
         || preliminary.execution.as_bytes() != &marker.fields().execution_id
         || preliminary.operation.as_bytes() != &marker.fields().create_operation_id
         || preliminary.marker_digest != marker_digest(marker)
-        || preliminary.epoch < marker.fields().commit_sequence
+        || preliminary.epoch <= marker.fields().commit_sequence
         || !preliminary_sequence_matches_epoch(preliminary.epoch, preliminary.commit_sequence)
         || preliminary.commit_sequence > protected_sequence
     {
@@ -551,11 +551,11 @@ mod tests {
             HostSettlementRecordV1::preliminary(
                 observed,
                 archives,
-                marker.fields().commit_sequence - 1,
+                marker.fields().commit_sequence,
                 ObjectDigest::from_bytes([17; 32]),
                 [18; 32],
                 [19; 16],
-                marker.fields().commit_sequence + 1,
+                marker.fields().commit_sequence + 2,
             )
             .is_err()
         );
