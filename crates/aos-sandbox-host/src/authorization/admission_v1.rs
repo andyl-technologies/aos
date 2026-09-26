@@ -498,7 +498,47 @@ impl HostAuthorityV1 {
                 request,
             )
             .map_err(|_| HostAdmissionError::RequestMismatch)?;
+        self.admit_exact_mount_scope(
+            artifacts,
+            request,
+            request_body,
+            current_clock,
+            prior_fence,
+            semantics,
+        )
+    }
 
+    /// Admits only the separate method-45 Host namespace-identity purpose.
+    pub(crate) fn admit_mount_scope_identity(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: &aos_sandbox_protocol::mount_scope::ValidatedMountScopeRequest,
+        request_body: &[u8],
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
+        let semantics = aos_sandbox_protocol::semantics::mount_scope::
+            canonical_mount_scope_identity_semantics_v1(request)
+            .map_err(|_| HostAdmissionError::RequestMismatch)?;
+        self.admit_exact_mount_scope(
+            artifacts,
+            request,
+            request_body,
+            current_clock,
+            prior_fence,
+            semantics,
+        )
+    }
+
+    fn admit_exact_mount_scope(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: &aos_sandbox_protocol::mount_scope::ValidatedMountScopeRequest,
+        request_body: &[u8],
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+        semantics: aos_sandbox_protocol::semantics::mount_scope::CanonicalMountScopeSemanticsV1,
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
         let fence = request.fence();
         let assignment = fence
             .broker_assignment()
