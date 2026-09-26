@@ -190,6 +190,15 @@ release and platform context; package pages link back into that graph.
 aos hub docs abilities --registry core --release 2026.09 --platform x86_64-linux
 ```
 
+An enrolled deployment reporter can submit the planned selections of one
+checked effect plan to the private Hub overlay for an exact package reference
+using [`aos hub docs report`](../../users/aos/ability-inspection.md#report-planned-selections-to-hub).
+The command derives matching public exports from checked bindings and reports
+only `planned` state. Hub checks the reporter enrollment, exact package
+reference, increasing sequence, and bounded lifetime. A runtime reporter must
+attach separate execution and observation evidence before asserting committed
+or available state.
+
 `aos docs`, APM, native Hub, Worker Hub, and the editor consume one shared
 serializable view constructed from the checked package module projection and,
 where available, the final deployment projection. They do not own package to

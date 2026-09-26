@@ -21,6 +21,7 @@ pub(crate) mod hub_auth;
 pub(crate) mod hub_container;
 pub mod hub_cutover_verify;
 pub mod image;
+pub(crate) mod input;
 pub mod lint;
 pub mod maintain;
 pub mod prefetch;
