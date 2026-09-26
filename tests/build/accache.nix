@@ -27,6 +27,8 @@ in
       {
         name = "check";
         script = ''
+          ${pkgs.python3}/bin/python3 ${../../tools/accache/tests/frontend_tables.py} \
+            ${sccacheOracle.passthru.upstreamSource} ${../../tools/accache/frontend}
           ${pkgs.python3}/bin/python3 ${../../tools/accache/tests/integration.py} \
             ${pkgs.accache}/bin/accache ${pkgs.cc}/bin/gcc \
             ${pkgs.llvm}/bin/clang ${pkgs.rust}/bin/rustc
