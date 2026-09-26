@@ -1,5 +1,6 @@
 //! Binding-plan document identity and resource validation.
 
+use super::grants::{PackageProviderKind, package_supplies_binding};
 use super::*;
 
 pub(crate) fn validate_binding_document(
@@ -1060,6 +1061,41 @@ pub(super) fn validate_binding_inputs(
                 ),
             );
             continue;
+        }
+    }
+    // A pure provider has no live runtime inventory entry. Its exact selected
+    // package and enabled desired instance still authenticate provider-owned
+    // child requests.
+    for binding in &plan.bindings {
+        let Some(package_digest) = binding.provider_package else {
+            continue;
+        };
+        let Some(package_index) = input_index.packages.get(&package_digest) else {
+            continue;
+        };
+        let package = &inputs.packages[*package_index];
+        if package_supplies_binding(
+            package,
+            &input_index.package_catalogs[*package_index],
+            binding,
+        ) != Some(PackageProviderKind::PureComposition)
+        {
+            continue;
+        }
+        let selected_instance = input_index
+            .enabled_desired_by_instance
+            .get(&binding.provider)
+            .is_some_and(|indices| {
+                indices.iter().any(|index| {
+                    inputs.desired_state.instances[*index].package == Some(package_digest)
+                })
+            });
+        if selected_instance {
+            input_index
+                .provider_authors
+                .entry(binding.provider.clone())
+                .or_default()
+                .insert(package.package.name.clone());
         }
     }
     Some(input_index)
