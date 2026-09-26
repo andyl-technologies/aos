@@ -184,6 +184,8 @@ the wrong action. Do not run an unwrapped Ada binding generator concurrently
 in the same working directory.
 GCC `-time[=file]` bypasses caching because its timing output is invocation
 specific and the file form appends to an existing file.
+GCC `-fdump-analyzer-stderr` also bypasses because its trace contains process
+addresses that change between compiler invocations.
 
 ## Storage and concurrency
 

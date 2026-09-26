@@ -95,6 +95,10 @@ pub(super) fn configure(
                 arg != "-time" && !arg.starts_with("-time="),
                 "GCC timing output is not a replayable compiler artifact"
             );
+            ensure!(
+                arg != "-fdump-analyzer-stderr",
+                "GCC analyzer stderr contains invocation-specific addresses"
+            );
             if arg == "-fsave-optimization-record" {
                 optimization_record = true;
             } else if arg == "-fno-save-optimization-record" {
