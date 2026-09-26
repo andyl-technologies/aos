@@ -619,6 +619,7 @@ pub fn decode_request_envelope(
         BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
             | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
     ) {
         return Err(ProtocolValidationError::MethodMismatch);
     }
@@ -1279,12 +1280,17 @@ fn validate_role_methods(
                 !matches!(
                     method,
                     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+                        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
                         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
                 )
             }),
-            Audience::AUDIENCE_ROOT_MOUNT => methods
-                .iter()
-                .all(|method| *method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE),
+            Audience::AUDIENCE_ROOT_MOUNT => methods.iter().all(|method| {
+                matches!(
+                    method,
+                    BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+                        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+                )
+            }),
             Audience::AUDIENCE_STORAGE_BROKER => methods
                 .iter()
                 .all(|method| *method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP),
@@ -1333,6 +1339,7 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME
         | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
@@ -1844,6 +1851,7 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
                 | BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
                 | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
@@ -1945,6 +1953,7 @@ fn validate_canonical_methods(
             BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
                 | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
         ) {
             return Err(ProtocolValidationError::MethodMismatch);
         }
@@ -2248,6 +2257,45 @@ mod tests {
                 &[method],
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn host_identity_readback_cannot_enter_legacy_or_controller_profiles() {
+        let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1;
+
+        assert!(validate_method(Some(method), ProtocolId::HostBroker).is_ok());
+        assert_eq!(
+            validate_method(Some(method), ProtocolId::MountBroker),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+        assert_eq!(
+            validate_canonical_methods(&[method], ProtocolId::HostBroker, "Host methods"),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+        assert!(validate_outbound_carriers(method, &[]).is_ok());
+        assert!(
+            validate_outbound_carriers(
+                method,
+                &[BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_MOUNT_NAMESPACE]
+            )
+            .is_err()
+        );
+        assert!(
+            crate::authenticated_session::all_methods::authenticated_broker_method_adapter_v1(
+                method
+            )
+            .is_none()
+        );
+
+        let envelope = BrokerRequestEnvelope {
+            method: method.into(),
+            body: vec![1],
+            ..Default::default()
+        };
+        assert_eq!(
+            decode_request_envelope(&envelope.encode_to_vec(), ProtocolId::HostBroker, 0),
+            Err(ProtocolValidationError::MethodMismatch)
         );
     }
 

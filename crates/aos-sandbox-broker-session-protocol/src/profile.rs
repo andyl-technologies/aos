@@ -81,7 +81,7 @@ const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDis
 ///
 /// Registration is not production advertisement. Closed provisional carriers
 /// remain excluded until their protected issuers and Host owners are joined.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 42] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 43] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -124,6 +124,7 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 42] = [
     BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2,
     BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2,
     BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1,
+    BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -155,6 +156,7 @@ pub fn authenticated_broker_methods_for_role_v1(
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
                     | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
                     | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
+                    | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
             )
         })
         .filter(|method| {
@@ -408,6 +410,7 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
         | BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
         | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
@@ -459,7 +462,11 @@ pub const fn authenticated_broker_method_profile_v1(
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
     let (major, minor) = supported_broker_session_version_v1(protocol);
-    let audience = if matches!(method, BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE) {
+    let audience = if matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+    ) {
         Audience::AUDIENCE_ROOT_MOUNT
     } else if matches!(
         method,
@@ -490,6 +497,7 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
             | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
             | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
@@ -556,7 +564,8 @@ pub const fn authenticated_broker_method_profile_v1(
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE => {
             &HOST_PAYLOAD_SCOPE_RESPONSE_DESCRIPTOR_ROLES
         }
-        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE => {
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
             &HOST_MOUNT_SCOPE_RESPONSE_DESCRIPTOR_ROLES
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => {
@@ -1172,6 +1181,37 @@ mod tests {
                 Audience::AUDIENCE_ROOT_MOUNT,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn host_namespace_identity_readback_is_root_mount_only_and_not_advertised() {
+        let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1;
+        let profile = authenticated_broker_method_profile_v1(method).unwrap();
+        let root_mount = authenticated_broker_methods_for_role_v1(
+            BrokerSessionProtocolV1::Host,
+            Audience::AUDIENCE_ROOT_MOUNT,
+        );
+
+        assert_eq!(profile.protocol(), BrokerSessionProtocolV1::Host);
+        assert_eq!(profile.version(), (1, 0));
+        assert_eq!(profile.audience(), Audience::AUDIENCE_ROOT_MOUNT);
+        assert_eq!(
+            profile.authorization(),
+            BrokerSessionAuthorizationPresenceV1::Required
+        );
+        assert!(profile.request_descriptor_roles().is_empty());
+        assert_eq!(
+            profile.success_response_descriptor_roles(),
+            &HOST_MOUNT_SCOPE_RESPONSE_DESCRIPTOR_ROLES
+        );
+        assert!(!root_mount.contains(&method));
+        assert!(
+            !authenticated_broker_methods_for_role_v1(
+                BrokerSessionProtocolV1::Host,
+                Audience::AUDIENCE_NODE_CONTROLLER,
+            )
+            .contains(&method)
         );
     }
 

@@ -55,6 +55,7 @@ BROKER_METHOD_HOST_QUERY_NO_APPLY = 40;
 BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 = 42;
 BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 = 43;
 BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1 = 44;
+BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 = 45;
 message ReserveFuseWorkerIntentRequestV1 {
 RequestHeader header = 1;
 AssignmentFence fence = 2;
@@ -64,6 +65,17 @@ uint64 namespace_target_generation = 5;
 bytes namespace_allocation_digest = 6;
 bytes runtime_handle = 7;
 bytes payload_scope_handle = 8;
+message ObserveMountScopeIdentityResponseV1 {
+AssignmentFence fence = 1;
+bytes runtime_handle = 2;
+bytes payload_scope_handle = 3;
+bytes leader_cgroup_hint = 4;
+bytes host_boot_id = 5;
+bytes runtime_invocation_id = 6;
+uint64 mount_namespace_device = 7;
+uint64 mount_namespace_inode = 8;
+uint64 user_namespace_device = 9;
+uint64 user_namespace_inode = 10;
 message ObserveHostExecutionArgumentRequestV1 {
 RequestHeader header = 1;
 bytes canonical_attempt = 2;

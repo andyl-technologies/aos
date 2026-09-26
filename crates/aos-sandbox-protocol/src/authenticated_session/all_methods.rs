@@ -468,9 +468,10 @@ pub const fn authenticated_broker_method_adapter_v1(
         BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => {
             AuthenticatedBrokerMethodSemanticsV1::HostQueryNoApplySettlement
         }
-        // No typed request/response adapter exists until the protected issuer
-        // and independent Mount-side Host join are implemented together.
-        BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1 => return None,
+        // Neither provisional method admits traffic until its independent
+        // issuer, producer, and cross-owner proof are implemented together.
+        BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => return None,
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
     Some(AuthenticatedBrokerMethodAdapterV1 { profile, semantics })
@@ -1656,6 +1657,7 @@ fn validate_request_semantics(
             )
         }
         BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
         | BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
@@ -2192,6 +2194,7 @@ fn validate_success_semantics(
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
         BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
         | BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }

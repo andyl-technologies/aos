@@ -109,6 +109,8 @@ enum BrokerMethod {
   BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 = 43;
   // Dormant FUSE 3.0 Controller intent. No production endpoint advertises it.
   BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1 = 44;
+  // Closed Host-origin namespace readback, distinct from Host 1.0 MountScope.
+  BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 = 45;
 }
 
 // FUSE 3.0 Controller intent candidate. These fields become authority only
@@ -683,6 +685,23 @@ message ObserveMountScopeResponse {
   bytes runtime_handle = 2;
   bytes payload_scope_handle = 3;
   bytes leader_cgroup_hint = 4;
+}
+
+// A future RootMount-only Host readback. Host, not the request, supplies the
+// current retained nsfs identities and runtime invocation under an admitted
+// Host claim. The five descriptor roles equal ObserveMountScopeResponse; a
+// separate authenticated method and response type prevent silent widening.
+message ObserveMountScopeIdentityResponseV1 {
+  AssignmentFence fence = 1;
+  bytes runtime_handle = 2;
+  bytes payload_scope_handle = 3;
+  bytes leader_cgroup_hint = 4;
+  bytes host_boot_id = 5; // Exactly 16 nonzero bytes.
+  bytes runtime_invocation_id = 6; // Exactly 16 nonzero bytes.
+  uint64 mount_namespace_device = 7;
+  uint64 mount_namespace_inode = 8;
+  uint64 user_namespace_device = 9;
+  uint64 user_namespace_inode = 10;
 }
 
 // Storage-only, read-only current Host/Guardian cgroup query. The exact

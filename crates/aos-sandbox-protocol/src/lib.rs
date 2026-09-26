@@ -35,6 +35,7 @@ pub mod mount_fuse_reserve_intent;
 pub mod mount_manager_startup;
 mod mount_result;
 pub mod mount_scope;
+pub mod mount_scope_identity;
 mod mount_source_acquisition;
 pub mod mount_source_acquisition_state;
 pub mod mount_source_consumption_state;
