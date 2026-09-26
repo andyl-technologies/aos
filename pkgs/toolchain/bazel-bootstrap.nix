@@ -143,6 +143,7 @@ in
     passthru.offlineModules = helperScope.bazelOfflineModules;
     passthru.offlineSource = source;
     passthru.offlineNettyModules = helperScope.bazelNetty119;
+    passthru.offlineNettyNativeRepositories = helperScope.bazelNetty119NativeRepositories;
     passthru.offlineCommonProtos = helperScope.bazelCommonProtos241;
     passthru.offlineMavenSourceRepositories = mavenSourceRepositories;
     passthru.offlineRepositories =
@@ -150,6 +151,7 @@ in
       // {platforms = helperScope.bazelPlatformsSource;}
       // helperScope.bazelAsyncProfilerRepositories
       // helperScope.bazelNetty119.repositories
+      // helperScope.bazelNetty119NativeRepositories.repositories
       // {
         "rules_jvm_external++maven+com_google_api_grpc_proto_google_common_protos_2_41_0" = helperScope.bazelCommonProtos241.repository;
         "rules_jvm_external++maven+com_google_guava_listenablefuture_9999_0_empty_to_avoid_conflict_with_guava" = helperScope.bazelCommonProtos241.emptyListenableFuture;
