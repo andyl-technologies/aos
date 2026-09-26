@@ -7,6 +7,7 @@
   libseccomp,
   loaderName,
   loaderDeps ? [],
+  qualification,
 }: let
   sources = callPackage ./_glycin-sources.nix {};
 in
@@ -18,6 +19,7 @@ in
       role = "public-package";
     };
     pname = loaderName;
+    inherit qualification;
     inherit (sources) version src cargoDeps;
     buildDeps = [buildPackages.pkg-config];
     runtimeDeps = [libseccomp] ++ loaderDeps;
