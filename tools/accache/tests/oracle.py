@@ -1303,6 +1303,85 @@ def check_gcc_nested_specs(root, env, accache, sccache, gcc, hits):
              "artifacts": ["source.o"]} for revision in range(2)]
 
 
+def check_gcc_file_prefix_tool(root, env, accache, sccache, gcc, hits):
+    """Hash an assembler selected by the filename-prefix form of -B."""
+    fixture = "gcc-file-prefix-assembler"
+    work = root / fixture
+    work.mkdir()
+    (work / "tools").mkdir()
+    (work / "source.S").write_text(
+        ".globl answer\nanswer:\n .long VALUE\n")
+    assembler = subprocess.check_output(
+        [gcc, "-print-prog-name=as"], cwd=work, env=env, text=True).strip()
+    assert Path(assembler).is_file(), (fixture, assembler)
+    wrapper_source = work / "tool.c"
+    wrapper = work / "tools/prefix-as"
+    object_file = work / "source.o"
+    args = [gcc, "-B" + str(work / "tools/prefix-"),
+            "-c", "source.S", "-o", "source.o"]
+
+    def build_assembler(value):
+        # The generated executable delegates to AOS as but changes a symbol
+        # used only at assembly time, after preprocessing has finished.
+        wrapper_source.write_text(
+            "#include <stdlib.h>\n#include <unistd.h>\n"
+            "int main(int argc, char **argv) {\n"
+            "  char **next = calloc((size_t)argc + 3, sizeof(char *));\n"
+            "  if (!next) return 111;\n"
+            f"  next[0] = {json.dumps(assembler)};\n"
+            '  next[1] = "--defsym";\n'
+            f'  next[2] = "VALUE={value}";\n'
+            "  for (int i = 1; i < argc; ++i) next[i + 2] = argv[i];\n"
+            "  execv(next[0], next);\n"
+            "  return 127;\n}\n")
+        completed = subprocess.run([gcc, "tool.c", "-o", str(wrapper)],
+                                   cwd=work, env=env, capture_output=True, timeout=120)
+        assert completed.returncode == 0, (fixture, completed.stderr)
+
+    def compile_object(command):
+        object_file.unlink(missing_ok=True)
+        completed = subprocess.run([*command, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (fixture, command, completed.stderr)
+        return completed.stdout, completed.stderr, object_file.read_bytes()
+
+    results = []
+    first_object = None
+    for revision, value in enumerate([1, 2]):
+        build_assembler(value)
+        direct = compile_object([])
+        if first_object is None:
+            first_object = direct[2]
+            assert compile_object([sccache]) == direct, (fixture, "oracle cold")
+        else:
+            assert direct[2] != first_object, (fixture, "assembler edit had no effect")
+            before_hits = hits()
+            oracle = compile_object([sccache])
+            assert hits() > before_hits, (fixture, "oracle did not reuse stale object")
+            assert oracle[2] == first_object, (fixture, "oracle defect changed")
+
+        before_hits = hits()
+        assert compile_object([sccache])[2] == first_object, (fixture, "oracle warm")
+        assert hits() > before_hits, (fixture, "oracle did not hit")
+
+        assert compile_object([accache]) == direct, (fixture, revision, "cold")
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", (fixture, revision, cold)
+        if revision:
+            assert any("prefix-as" in item for item in cold["changes"]), cold
+        assert compile_object([accache]) == direct, (fixture, revision, "warm")
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", (fixture, revision, warm)
+
+        results.append({"fixture": fixture, "revision": revision,
+                        "oracle_hit": True, "accache": "hit",
+                        "oracle_stale_artifact": revision == 1,
+                        "artifacts": ["source.o"]})
+
+    print("PASS oracle", fixture, "assembler invalidation", flush=True)
+    return results
+
+
 def check_gcc_profile_note_outputs(root, env, accache, sccache, gcc, hits):
     """Restore a GCC coverage note written to an explicit path."""
     results = []
@@ -3627,7 +3706,7 @@ def check_unpacked_split_debug(root, env, accache, sccache, rustc, hits, crate_t
     return results
 
 
-def run_suite(root, accache, sccache, gcc, clang, rustc):
+def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
     root = Path(root)
     # Keep socket names short even under long Nix build-directory names.
     env = os.environ | {
@@ -3957,6 +4036,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
         results.append(check_assembler_include_invalidation(root, env, accache,
                                                             sccache, gcc, hits))
         results.extend(check_gcc_nested_specs(root, env, accache, sccache, gcc, hits))
+        results.extend(check_gcc_file_prefix_tool(root, env, accache,
+                                                  sccache, raw_gcc, hits))
         results.extend(check_gcc_profile_note_outputs(root, env, accache,
                                                       sccache, gcc, hits))
         results.extend(check_gcc_auto_profile_inputs(root, env, accache,

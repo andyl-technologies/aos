@@ -7,6 +7,7 @@ use anyhow::{Result, ensure};
 use std::{
     collections::BTreeSet,
     ffi::OsString,
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -318,14 +319,15 @@ pub(super) fn configure(
     {
         invocation.extension_reads(manifest)?;
     }
-    // Search roots selected through -B can contain an alternative assembler or
-    // specs file. Their contents matter even when the compiler path is fixed.
+    // -B can name a directory or a filename prefix for compiler subprograms.
+    // Their contents matter even when the compiler path is fixed.
     for arg in &common {
-        if let Some(path) = arg.strip_prefix("-B")
-            && !path.is_empty()
-            && Path::new(path).is_dir()
+        if let Some(prefix) = arg
+            .strip_prefix("-B")
+            .filter(|prefix| !prefix.is_empty())
+            .or_else(|| arg.strip_prefix("--prefix="))
         {
-            invocation.recursive_dirs.insert(PathBuf::from(path));
+            compiler_prefix_inputs(invocation, prefix)?;
         }
         for prefix in [
             "-specs=",
@@ -625,6 +627,39 @@ pub(super) fn configure(
         && let Some(object) = parsed.outputs.get("obj")
     {
         invocation.output(&object.path.with_extension("d"), false)?;
+    }
+    Ok(())
+}
+
+fn compiler_prefix_inputs(invocation: &mut Invocation, prefix: &str) -> Result<()> {
+    let path = Path::new(prefix);
+    if path.is_dir() {
+        invocation.recursive_dirs.insert(path.into());
+        return Ok(());
+    }
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("compiler prefix has no basename"))?;
+    let name = name.to_string_lossy();
+    if !parent.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(parent)? {
+        let entry = entry?;
+        if !entry.file_name().to_string_lossy().starts_with(name.as_ref()) {
+            continue;
+        }
+        let candidate = entry.path();
+        if candidate.is_dir() {
+            invocation.recursive_dirs.insert(candidate);
+        } else if candidate.is_file() {
+            invocation.extra_inputs.insert(candidate);
+        }
     }
     Ok(())
 }
