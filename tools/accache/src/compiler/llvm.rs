@@ -164,5 +164,11 @@ pub(super) fn classify(argument: &str) -> OptionEffect<'_> {
         };
     }
 
+    if matches!(name, "hot-cold-split" | "enable-merge-functions") {
+        // These switches select LLVM optimization passes without adding
+        // external reads or report files. Their spelling stays in the key.
+        return OptionEffect::NoFileInput;
+    }
+
     OptionEffect::Unknown
 }
