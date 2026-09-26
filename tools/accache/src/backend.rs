@@ -127,12 +127,25 @@ impl Backend {
     /// Returns an error for invalid action keys or filesystem locking failures.
     pub fn lock(&self, action: &str) -> Result<File> {
         self.path("ac", action)?;
+        self.lock_named(action)
+    }
+
+    /// Serializes actions that may write the same compiler-generated files.
+    ///
+    /// # Errors
+    /// Returns an error if the scope lock cannot be created or acquired.
+    pub fn lock_scope(&self, scope: &DynamicOutputs) -> Result<File> {
+        let identity = format!("{}\0{}", scope.directory, scope.prefix);
+        self.lock_named(&format!("scope-{}", hash(identity.as_bytes())))
+    }
+
+    fn lock_named(&self, name: &str) -> Result<File> {
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .open(self.state.join("locks").join(action))?;
+            .open(self.state.join("locks").join(name))?;
         lock.lock()?;
         Ok(lock)
     }

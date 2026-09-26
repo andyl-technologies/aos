@@ -113,7 +113,6 @@ pub fn classify(
     invocation.outputs.sort();
     invocation.outputs.dedup();
     ensure!(!invocation.outputs.is_empty(), "no compiler outputs");
-    invocation.dynamic_before = invocation.dynamic_snapshot()?;
     Ok(invocation)
 }
 
@@ -147,6 +146,15 @@ fn output_name(path: &Path) -> Result<String> {
 }
 
 impl Invocation {
+    /// Records the output scope immediately before a locked compiler action.
+    ///
+    /// # Errors
+    /// Returns an error if the compiler output directory cannot be inspected.
+    pub fn capture_dynamic_before(&mut self) -> Result<()> {
+        self.dynamic_before = self.dynamic_snapshot()?;
+        Ok(())
+    }
+
     fn dynamic_snapshot(&self) -> Result<BTreeMap<String, OutputStamp>> {
         let Some(dynamic) = &self.dynamic_outputs else {
             return Ok(BTreeMap::new());
