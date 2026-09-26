@@ -994,6 +994,51 @@ mod tests {
     }
 
     #[test]
+    fn injected_storage_output_owner_rejects_stale_claim_after_observation() {
+        let directory = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = directory.path().metadata().unwrap().uid();
+        let mut owner = DormantRuntimeExecutionOwnerV1::provisioned_protected_at_uid_for_test(
+            directory.path(),
+            uid,
+        )
+        .unwrap();
+        let claim = owner.claim().unwrap();
+        let boot = KernelBootId::current().unwrap().into_bytes();
+        let mut observed = false;
+        let mut validation_calls = 0;
+
+        let result = dispatch_host_storage_output_with_claim_for_test_v1(
+            &claim,
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT,
+            true,
+            false,
+            boot,
+            || {
+                observed = true;
+                Ok(vec![0x48])
+            },
+            || {
+                validation_calls += 1;
+                if validation_calls == 2 {
+                    Err(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness)
+                } else {
+                    Ok(())
+                }
+            },
+        );
+
+        assert!(observed);
+        assert_eq!(validation_calls, 2);
+        assert!(matches!(
+            result,
+            Err(HostExecutionHandoffErrorV1::Owner(
+                DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness
+            ))
+        ));
+    }
+
+    #[test]
     fn injected_storage_output_owner_keeps_authorization_and_descriptor_fences() {
         let directory = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
