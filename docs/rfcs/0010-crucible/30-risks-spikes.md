@@ -877,8 +877,9 @@ work.
 
 ### What to build / measure
 
-Boot a stock Linux `-smp 4` guest twice to a fixed icount horizon under the
-launch configuration above, capturing the **aggregate fingerprint** (all N vCPUs'
+Boot a Linux `-smp 4` guest built from the pinned AOS source with a test-only
+SMP configuration. Run it twice to a fixed icount horizon under the launch
+configuration above, capturing the **aggregate fingerprint** (all N vCPUs'
 register hashes + the RR cursor + the [DET-29] RAM hash) at a fixed
 icount cadence and at the horizon. The Phase-0 proof MAY use a diskless
 initramfs and MUST then assert `block_devices=0`, so S11 isolates the RR-TCG
@@ -1554,9 +1555,10 @@ The spike records `whitebox_on_trap_tested=true`,
 `fallback_adopted=none`.
 
 **RISK-25** is retired by `T-RISK-17`.
-`checks.crucible.phase0.s11MultiVcpuFingerprint` booted the stock Linux diskless
-initramfs twice under the normative `-accel sim,thread=single` path, including a
-bounded-scheduler-preemption run, with `vcpus=4`, `rr_switch_quantum=4096`,
+The earlier `checks.crucible.phase0.s11MultiVcpuFingerprint` artifact booted a
+stock Linux diskless initramfs twice under the normative
+`-accel sim,thread=single` path, including a bounded-scheduler-preemption run,
+with `vcpus=4`, `rr_switch_quantum=4096`,
 `cadence=100000000`, and an exact `horizon_icount=4000000000`. The sustained
 pthread spinlock workload reported affinity on vCPUs `0,1,2,3`; both runs
 produced 40 periodic samples plus a final aggregate at the exact observer
@@ -1568,7 +1570,13 @@ VMStop request. The run reported `aggregate_fingerprint_match=true`,
 `final_sample_exact_horizon=true`,
 `final_sample_fingerprint_compared=authoritative`,
 and `register_read_failures=0`. The four-vCPU sim execution is the sole S11
-validation path.
+validation path for that artifact. The current 50 ps/instruction fixture uses a
+test-only Linux SMP configuration, direct reset, and a guest-visible four-CPU MP
+table. It supplies the fixed 4 GHz TSC and APIC calibration values and skips
+Linux's legacy IRQ0 wiring self-check with `no_timer_check`; local APIC, IOAPIC,
+and SMP execution remain enabled. Its exact four-billion-instruction result
+must be requalified on the current QEMU and plugin artifacts before the
+historical hashes and counts can be cited as current release evidence.
 
 **RISK-26** is retired by `T-RISK-18` with live preemption:
 `checks.crucible.phase0.s12PreemptionDecision` scanned the current QEMU Nix
@@ -1814,8 +1822,8 @@ never tolerated). Results live in the decision register (31).
   block dependent Phase-1 work on the five ★ blockers, and add a new `RISK-n` row
   with an owning spike for any newly-discovered load-bearing assumption. —
   satisfies [RISK-1], [RISK-2], [RISK-3], [RISK-23], [RISK-24]; spec §30.1, §30.13.
-- [x] **T-RISK-17** Run **S11** (Phase-0 blocker ★ for [G-10]): boot a stock
-  Linux `-smp 4` diskless initramfs twice under `-accel sim,thread=single` with a
+- [x] **T-RISK-17** Run **S11** (Phase-0 blocker ★ for [G-10]): boot a Linux
+  `-smp 4` diskless initramfs twice under `-accel sim,thread=single` with a
   fixed `rr_switch_quantum`, S11-relevant §4.6 launch eliminations, and an
   asserted no-block-device launch; capture the **aggregate fingerprint** (all N
   vCPUs' nonempty register descriptor sets + RR cursor + RAM hash) at a cadence

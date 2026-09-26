@@ -26,6 +26,116 @@
   runTimeoutSeconds ? 2400,
 }: let
   boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
+  # Keep four runnable guest CPUs while skipping deployment-only drivers whose
+  # initialization does not contribute to the RR fingerprint proof at 50 ps.
+  s11Kernel = pkgs.mkDerivation {
+    pname = "crucible-phase0-s11-linux";
+    inherit (pkgs.linux) version src;
+
+    buildDeps = [
+      pkgs.bc
+      pkgs.bison
+      pkgs.elfutils
+      pkgs.flex
+      pkgs.gawk
+      pkgs.gnumake
+      pkgs.llvm
+      pkgs.openssl
+      pkgs.patch
+      pkgs.perl
+      pkgs.python3
+      pkgs.zlib
+    ];
+    hardeningDisable = ["all"];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf "$src"
+          cd linux-${pkgs.linux.version}
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          patch -p1 < ${../../pkgs/kernel/linux-gawk-array-argument.patch}
+          patch -p1 < ${./linux-tsc-known-frequency.patch}
+          patch -p1 < ${./phase0-s5-apic-known-period.patch}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          make ARCH=x86_64 LLVM=1 HOSTCC=cc HOSTCXX=c++ tinyconfig
+          cat > .s11.config <<'KCONFIG'
+          CONFIG_64BIT=y
+          CONFIG_X86_64=y
+          CONFIG_PRINTK=y
+          CONFIG_BINFMT_ELF=y
+          CONFIG_FUTEX=y
+          CONFIG_BLK_DEV_INITRD=y
+          CONFIG_RD_GZIP=y
+          CONFIG_MMU=y
+          CONFIG_TTY=y
+          CONFIG_SERIAL_8250=y
+          CONFIG_SERIAL_8250_CONSOLE=y
+          CONFIG_SMP=y
+          CONFIG_NR_CPUS=4
+          CONFIG_ACPI=y
+          CONFIG_PCI=y
+          CONFIG_MODULES=n
+          CONFIG_DEBUG_INFO_NONE=y
+          CONFIG_DEBUG_INFO_BTF=n
+          KCONFIG
+          scripts/kconfig/merge_config.sh -m .config .s11.config
+          make ARCH=x86_64 LLVM=1 HOSTCC=cc HOSTCXX=c++ olddefconfig
+
+          for option in \
+            CONFIG_BINFMT_ELF=y \
+            CONFIG_FUTEX=y \
+            CONFIG_BLK_DEV_INITRD=y \
+            CONFIG_SERIAL_8250_CONSOLE=y \
+            CONFIG_SMP=y \
+            CONFIG_NR_CPUS=4 \
+            CONFIG_X86_MPPARSE=y \
+            CONFIG_X86_LOCAL_APIC=y \
+            CONFIG_X86_IO_APIC=y \
+            CONFIG_ACPI=y; do
+            grep -Fxq "$option" .config || {
+              echo "S11 kernel option did not resolve: $option" >&2
+              exit 1
+            }
+          done
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          export LD_LIBRARY_PATH="${pkgs.elfutils}/lib:${pkgs.openssl}/lib:${pkgs.zlib}/lib"
+          make -j"$NIX_BUILD_CORES" ARCH=x86_64 LLVM=1 HOSTCC=cc HOSTCXX=c++ bzImage
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/boot"
+          cp arch/x86/boot/bzImage "$out/boot/vmlinuz-${pkgs.linux.version}"
+          cp System.map "$out/boot/System.map-${pkgs.linux.version}"
+          cp .config "$out/boot/config-${pkgs.linux.version}"
+        '';
+      }
+    ];
+  };
+  kernelCommandLine = lib.concatStringsSep " " [
+    "console=ttyS0 reboot=k panic=1 rdinit=/init"
+    "lpj=1 tsc_early_khz=4000000"
+    # The 50 ps clock makes Linux's legacy IOAPIC IRQ0 wiring self-check spend
+    # hundreds of millions of instructions in a TSC delay. S11 still boots
+    # with the local APIC, IOAPIC, and four CPUs; its proof is SMP/RR execution.
+    "no_timer_check"
+    "norandmaps random.trust_cpu=off"
+  ];
   workload = pkgs.mkDerivation {
     pname = "crucible-phase0-s11-workload";
     version = "0";
@@ -282,6 +392,11 @@
             if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
               puts("TEST_RESULT:PASS");
             } else {
+              fprintf(
+                stderr,
+                "CRUCIBLE_S11_CHILD_EXIT code=%d signal=%d\n",
+                WIFEXITED(status) ? WEXITSTATUS(status) : -1,
+                WIFSIGNALED(status) ? WTERMSIG(status) : -1);
               puts("TEST_RESULT:FAIL");
             }
             fflush(stdout);
@@ -319,8 +434,109 @@
       description = "Crucible Phase 0 S11 diskless initramfs";
     };
   };
+
+  # Skip SeaBIOS's calibration-heavy prefix while retaining the q35 devices
+  # and guest-driven AP INIT/SIPI sequence. This is the S5 reset image.
+  linuxReset = pkgs.mkDerivation {
+    pname = "crucible-phase0-s11-linux-reset";
+    version = "0";
+    src = null;
+
+    reset = builtins.readFile ./phase0-s5-linux-reset.S;
+    linker = builtins.readFile ./x86-direct-reset.ld;
+    passAsFile = ["reset" "linker"];
+    buildDeps = [pkgs.binutils];
+
+    phases = [
+      {
+        name = "build-linux-reset";
+        script = ''
+          cp "$resetPath" reset.S
+          as --32 reset.S -o reset.o
+          ld -m elf_i386 -T "$linkerPath" reset.o -o reset.elf
+          objcopy -O binary --gap-fill 0 reset.elf reset.bin
+          [ "$(wc -c < reset.bin)" -eq 65536 ]
+
+          mkdir -p "$out"
+          cp reset.bin "$out/"
+        '';
+      }
+    ];
+  };
+
+  mpTable = pkgs.mkDerivation {
+    pname = "crucible-phase0-s11-mp-table";
+    version = "0";
+    src = null;
+
+    generator = builtins.readFile ./phase0-s11-mptable.py;
+    passAsFile = ["generator"];
+    buildDeps = [pkgs.python3];
+
+    phases = [
+      {
+        name = "build-mp-table";
+        script = ''
+          mkdir -p "$out"
+          python3 "$generatorPath" "$out/mptable.bin"
+          [ "$(wc -c < "$out/mptable.bin")" -le 1024 ]
+        '';
+      }
+    ];
+  };
+
+  linuxImage = pkgs.mkDerivation {
+    pname = "crucible-phase0-s11-linux-image";
+    version = "0";
+    src = null;
+
+    KERNEL = builtins.toString s11Kernel;
+    INITRAMFS = "${initramfs}/initrd.img";
+    KERNEL_CMDLINE = kernelCommandLine;
+    buildDeps = [pkgs.coreutils pkgs.gawk];
+
+    phases = [
+      {
+        name = "prepare-linux-image";
+        script = ''
+          set -eu
+
+          vmlinuz=$(find "$KERNEL"/boot -maxdepth 1 -type f -name 'vmlinuz*' | head -1)
+          [ -n "$vmlinuz" ]
+          setup_sectors=$(od -An -tu1 -j 497 -N 1 "$vmlinuz" | tr -d ' ')
+          [ -n "$setup_sectors" ] && [ "$setup_sectors" -gt 0 ]
+          setup_blocks=$((setup_sectors + 1))
+
+          mkdir -p "$out"
+          dd if="$vmlinuz" of="$out/setup.bin" bs=512 count="$setup_blocks" status=none
+          dd if="$vmlinuz" of="$out/kernel.bin" bs=512 skip="$setup_blocks" status=none
+          cp "$INITRAMFS" "$out/initrd.img"
+          printf '%s\0' "$KERNEL_CMDLINE" > "$out/cmdline.bin"
+
+          # Linux boot-protocol fields match the fixed loader addresses below.
+          printf '\260' | dd of="$out/setup.bin" bs=1 seek=$((0x210)) conv=notrunc status=none
+          printf '\201' | dd of="$out/setup.bin" bs=1 seek=$((0x211)) conv=notrunc status=none
+          printf '\000\000\000\010' | dd of="$out/setup.bin" bs=1 seek=$((0x218)) conv=notrunc status=none
+          initrd_size=$(wc -c < "$out/initrd.img")
+          gawk -v size="$initrd_size" 'BEGIN {
+            for (byte = 0; byte < 4; byte++) {
+              printf "%c", int(size / (256 ^ byte)) % 256
+            }
+          }' > initrd-size.bin
+          dd if=initrd-size.bin of="$out/setup.bin" bs=1 seek=$((0x21c)) conv=notrunc status=none
+          printf '\000\376' | dd of="$out/setup.bin" bs=1 seek=$((0x224)) conv=notrunc status=none
+          printf '\000\000\002\000' | dd of="$out/setup.bin" bs=1 seek=$((0x228)) conv=notrunc status=none
+
+          [ "$(od -An -tx4 -j $((0x202)) -N 4 "$out/setup.bin" | tr -d ' ')" = 53726448 ]
+          [ "$(wc -c < "$out/kernel.bin")" -gt 0 ]
+          [ "$initrd_size" -gt 0 ]
+        '';
+      }
+    ];
+  };
 in
   assert runTimeoutSeconds > 60;
+  assert vcpuCount == 4;
     pkgs.mkDerivation {
       pname = "crucible-phase0-s11-multi-vcpu-fingerprint";
       version = "0";
@@ -340,7 +556,11 @@ in
         ++ qemuRuntimeDeps;
 
       INITRAMFS = "${initramfs}/initrd.img";
-      KERNEL = builtins.toString pkgs.linux;
+      KERNEL = builtins.toString s11Kernel;
+      KERNEL_APPEND = kernelCommandLine;
+      LINUX_RESET = "${linuxReset}/reset.bin";
+      MP_TABLE = "${mpTable}/mptable.bin";
+      LINUX_IMAGE = builtins.toString linuxImage;
       QEMU = "${qemuPackage}/bin/qemu-system-x86_64";
       QEMU_DATA_DIR = qemuDataDir;
       PLUGIN = "${tracePluginPackage}/lib/qemu/plugins/crucible-qemu-trace-plugin.so";
@@ -435,14 +655,25 @@ in
             trace_plugin_build_digest=$(sha256sum "$PLUGIN" | gawk '{ print $1 }')
             kernel_digest=$(sha256sum "$vmlinuz" | gawk '{ print $1 }')
             initramfs_digest=$(sha256sum "$INITRAMFS" | gawk '{ print $1 }')
+            reset_digest=$(sha256sum "$LINUX_RESET" | gawk '{ print $1 }')
+            mp_table_digest=$(sha256sum "$MP_TABLE" | gawk '{ print $1 }')
+            setup_digest=$(sha256sum "$LINUX_IMAGE/setup.bin" | gawk '{ print $1 }')
+            kernel_image_digest=$(sha256sum "$LINUX_IMAGE/kernel.bin" | gawk '{ print $1 }')
+            cmdline_digest=$(sha256sum "$LINUX_IMAGE/cmdline.bin" | gawk '{ print $1 }')
             seed_digest=$(sha256sum "$seed" | gawk '{ print $1 }')
             printf '%s\n' \
               "qemu_build_digest=$qemu_build_digest" \
               "trace_plugin_build_digest=$trace_plugin_build_digest" \
               "kernel_digest=$kernel_digest" \
               "initramfs_digest=$initramfs_digest" \
+              "reset_digest=$reset_digest" \
+              "mp_table_digest=$mp_table_digest" \
+              "setup_digest=$setup_digest" \
+              "kernel_image_digest=$kernel_image_digest" \
+              "cmdline_digest=$cmdline_digest" \
               "seed_digest=$seed_digest" \
               'machine=q35' \
+              'boot=direct_reset_linux_setup' \
               "accelerator=$ACCELERATOR" \
               "icount=shift=0,sleep=off,align=off,rr_switch_quantum=$RR_SWITCH_QUANTUM" \
               'cpu=qemu64' \
@@ -450,7 +681,7 @@ in
               "vcpus=$VCPU_COUNT" \
               'rtc=base=2026-01-01T00:00:00,clock=vm' \
               'seed=0x0010c011' \
-              'kernel_append=console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0' \
+              "kernel_append=$KERNEL_APPEND" \
               "plugin_cadence=$CADENCE" \
               "plugin_stop_at=$STOP_AT" \
               'plugin_fingerprint=aggregate' \
@@ -467,6 +698,11 @@ in
               "$trace_plugin_build_digest" \
               "$kernel_digest" \
               "$initramfs_digest" \
+              "$reset_digest" \
+              "$mp_table_digest" \
+              "$setup_digest" \
+              "$kernel_image_digest" \
+              "$cmdline_digest" \
               "$seed_digest" \
               "$launch_definition_digest"; do
               printf '%s\n' "$digest" | grep -E -q '^[0-9a-f]{64}$' \
@@ -665,9 +901,12 @@ in
                 -rtc base=2026-01-01T00:00:00,clock=vm \
                 -seed 0x0010c011 \
                 -fw_cfg name=opt/crucible/seed,file="$seed" \
-                -kernel "$vmlinuz" \
-                -initrd "$INITRAMFS" \
-                -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0" \
+                -bios "$LINUX_RESET" \
+                -device "loader,file=$MP_TABLE,addr=0x9fc00,force-raw=on" \
+                -device "loader,file=$LINUX_IMAGE/setup.bin,addr=0x10000,force-raw=on" \
+                -device "loader,file=$LINUX_IMAGE/kernel.bin,addr=0x100000,force-raw=on" \
+                -device "loader,file=$LINUX_IMAGE/cmdline.bin,addr=0x20000,force-raw=on" \
+                -device "loader,file=$LINUX_IMAGE/initrd.img,addr=0x8000000,force-raw=on" \
                 -chardev file,id=serial0,path="$serial_path" \
                 -serial chardev:serial0 \
                 -plugin "$plugin_arg"
@@ -743,14 +982,6 @@ in
                   bounded_preemption_finish "$TMPDIR/preemption-$label.log" \
                     || fail "QEMU guest $label scheduler adversary was incomplete"
                 fi
-                # Preserve the terminal CPU locations before QMP quit. This is
-                # read-only evidence for failures that occur before userspace
-                # can report through the serial console.
-                qmp_cmd \
-                  "$qmp_socket" \
-                  '{"execute":"human-monitor-command","arguments":{"command-line":"info registers -a"}}' \
-                  "$TMPDIR/qmp-registers-$label.json" \
-                  || true
                 qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" || true
                 bounded_preemption_wait_qemu \
                   || fail "QEMU guest $label exited unsuccessfully"
@@ -786,11 +1017,18 @@ in
             run_one a
             run_one b
 
+            # Each run reuses the same output and control paths. An exact argv
+            # match keeps the plugin's raw process attestation comparable.
+            if ! diff -u "$TMPDIR/qemu-args-a.txt" "$TMPDIR/qemu-args-b.txt" \
+              > "$TMPDIR/qemu-args.diff"; then
+              cat "$TMPDIR/qemu-args.diff" >&2
+              fail "S11 replay launch argv differs"
+            fi
+
             diagnose_guest_completion() {
               label="$1"
               serial="$TMPDIR/serial-$label.log"
               trace="$TMPDIR/trace-$label.jsonl"
-              registers="$TMPDIR/qmp-registers-$label.json"
 
               echo "S11 guest completion diagnostic for run $label" >&2
               echo "serial_bytes=$(wc -c < "$serial")" >&2
@@ -798,15 +1036,8 @@ in
               head -c 4096 "$serial" >&2 || true
               echo "serial_final_4096_bytes:" >&2
               tail -c 4096 "$serial" >&2 || true
-
-              if [ -s "$registers" ]; then
-                echo "terminal_cpu_registers:" >&2
-                jq -r -s \
-                  '[.[] | select(has("return"))][-1].return // "unavailable"' \
-                  "$registers" >&2 || true
-              else
-                echo "terminal_cpu_registers=unavailable" >&2
-              fi
+              echo "serial_final_nonblank_lines:" >&2
+              tr -d '\r' < "$serial" | awk 'NF' | tail -n 80 >&2 || true
 
               echo "first_trace_record:" >&2
               head -1 "$trace" | jq -c \
@@ -953,9 +1184,14 @@ in
 
             for label in a b; do
               if [ "$REQUIRE_GUEST_PASS" -eq 1 ]; then
-                if ! grep -q "TEST_RESULT:PASS" "$TMPDIR/serial-$label.log"; then
+                pass_count=$(
+                  tr -d '\r' < "$TMPDIR/serial-$label.log" \
+                    | grep -Ec '^TEST_RESULT:PASS$' || true
+                )
+                if [ "$pass_count" -ne 1 ] \
+                  || grep -q "TEST_RESULT:FAIL" "$TMPDIR/serial-$label.log"; then
                   diagnose_guest_completion "$label"
-                  fail "guest $label did not report TEST_RESULT:PASS"
+                  fail "guest $label did not report exactly one PASS with zero FAIL markers"
                 fi
                 grep -q "CRUCIBLE_S11_DONE" "$TMPDIR/serial-$label.log" \
                   || fail "guest $label did not run the SMP workload"
@@ -1007,12 +1243,20 @@ in
                   [ .[] | select((.kind // "sample") == "sample") ] as $samples
                   | [ .[] | select(.kind == "rr_switch") ] as $switches
                   | ($samples | length) >= 4
+                  and ([$samples[].process_argv_digest] | unique | length) == 1
                   and all($samples[]; (
                     .schema == "crucible.qemu.trace-fingerprint.v7"
                     and .tracked_vcpus == $vcpus
                     and .launch_definition_digest == $launch_definition_digest
                     and .qemu_build_digest == $qemu_build_digest
                     and .trace_plugin_build_digest == $trace_plugin_build_digest
+                    and .process_argv_attestation_version == 2
+                    and .process_argv_encoding == "raw-unix-argv-v2"
+                    and .process_argv_argc > 0
+                    and .process_argv_raw_bytes > 0
+                    and (.process_argv_digest | test("^[0-9a-f]{64}$"))
+                    and .process_argv_digest != "0000000000000000000000000000000000000000000000000000000000000000"
+                    and .process_argv_status == 0
                     and rr_cursor_expectation
                     and .sample_register_failures == 0
                     and .register_read_failures == 0
@@ -1338,6 +1582,14 @@ in
             final_register_hash=$(printf '%s' "$final_register_hashes" | sha256sum | gawk '{print $1}')
             final_register_counts=$(printf '%s\n' "$final_line" | jq -c '.register_counts')
             final_register_file_bytes=$(printf '%s\n' "$final_line" | jq -c '.register_file_bytes')
+            final_register_retired=$(printf '%s\n' "$final_line" | jq -c '.register_retired')
+            for final_sample in "$final_line" "$final_line_b"; do
+              printf '%s\n' "$final_sample" \
+                | jq -e --argjson vcpus "$VCPU_COUNT" \
+                  '(.register_retired | length) == $vcpus
+                   and all(.register_retired[]; . > 0)' >/dev/null \
+                || fail "an S11 vCPU retired no instructions by the final sample"
+            done
             final_ram_hash=$(printf '%s\n' "$final_line" | jq -r '.ram_digest')
             final_ram_bytes=$(printf '%s\n' "$final_line" | jq -r '.ram_bytes')
             final_rr_cursor=$(printf '%s\n' "$final_line" \
@@ -1570,6 +1822,8 @@ in
               echo final_register_hashes="$final_register_hashes"
               echo final_register_counts="$final_register_counts"
               echo final_register_file_bytes="$final_register_file_bytes"
+              echo final_per_vcpu_retired="$final_register_retired"
+              echo all_vcpus_retired=true
               echo final_ram_hash="$final_ram_hash"
               echo final_ram_bytes="$final_ram_bytes"
               echo device_event_capture=false
@@ -1586,6 +1840,11 @@ in
               echo launch_definition_digest="$launch_definition_digest"
               echo kernel_digest="$kernel_digest"
               echo initramfs_digest="$initramfs_digest"
+              echo reset_digest="$reset_digest"
+              echo mp_table_digest="$mp_table_digest"
+              echo setup_digest="$setup_digest"
+              echo kernel_image_digest="$kernel_image_digest"
+              echo cmdline_digest="$cmdline_digest"
               echo seed_digest="$seed_digest"
               echo provenance_digest_source=external-artifacts-and-canonical-launch-material
               echo embedded_zero_digests_sufficient=false
@@ -1600,15 +1859,6 @@ in
           '';
         }
       ];
-
-      passthru = {
-        crucibleSmpGuest = {
-          inherit initramfs;
-          kernel = pkgs.linux;
-          kernelAppend = "console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0";
-          stockEntropyKernelAppend = "console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0";
-        };
-      };
 
       meta = {
         description = "Crucible Phase 0 S11 multi-vCPU RR-TCG fingerprint spike";
