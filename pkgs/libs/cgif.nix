@@ -1,11 +1,26 @@
 ##! cgif — GIF encoding library used by libvips and Sharp.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
   stdenv,
 }: let
   version = "0.5.3";
+  probeSource = builtins.readFile ./_cgif-probe.c;
+  compileProbe = {
+    argv = [
+      "@cc@"
+      "-I@out@/include"
+      "-L@out@/lib"
+      "-Wl,-rpath,@out@/lib"
+      "@work@/probe.c"
+      "-lcgif"
+      "-o"
+      "@work@/probe"
+    ];
+    exit_code = 0;
+  };
 in
   mkDerivation {
     platformSupport = {
@@ -31,6 +46,41 @@ in
       role = "public-package";
     };
     pname = "cgif";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A one-pixel red image.";
+        operation = "Encode the image through the installed GIF library.";
+        expected = "The encoder writes a complete GIF image.";
+        files."probe.c" = probeSource;
+        artifacts = [];
+        steps = [
+          compileProbe
+          {
+            argv = ["@work@/probe"];
+            exit_code = 0;
+            stdout.exact = "cgif encoded one-pixel GIF\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "An output path whose parent directory does not exist.";
+        operation = "Ask the installed GIF library to create the image at that path.";
+        expected = "The encoder rejects the unavailable output path.";
+        files."probe.c" = probeSource;
+        artifacts = [];
+        steps = [
+          compileProbe
+          {
+            argv = ["@work@/probe" "invalid"];
+            exit_code = 0;
+            observes_rejection = true;
+            stdout.exact = "cgif rejected unavailable output path\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://github.com/dloebl/cgif/archive/refs/tags/v${version}.tar.gz"];
