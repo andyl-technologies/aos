@@ -462,20 +462,23 @@ in {
       })
       assert first_bytes[94] < 0.5, first_bytes
 
-      session_token = json.loads(client.succeed(textwrap.dedent(f"""
-          set -eu
-          cookie=$(cat /tmp/hybrid-cookie)
-          {CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' \\
-            -H "Cookie: $cookie" https://aos.andyl.org/-/instance \\
-            > /tmp/hybrid-instance.html
-          csrf=$({SED} -n 's/.*name="aos-session-csrf" content="\\([^"]*\\)".*/\\1/p' \\
-            /tmp/hybrid-instance.html | head -n1)
-          test -n "$csrf"
-          {CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' \\
-            -H "Cookie: $cookie" -H 'Origin: https://aos.andyl.org' \\
-            -H "x-aos-csrf: $csrf" -H 'x-aos-console-route: /-/instance' \\
-            https://aos.andyl.org/-/auth/session-token
-      """), timeout=120))["accessToken"]
+      def refresh_session_token():
+          return json.loads(client.succeed(textwrap.dedent(f"""
+              set -eu
+              cookie=$(cat /tmp/hybrid-cookie)
+              {CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' \\
+                -H "Cookie: $cookie" https://aos.andyl.org/-/instance \\
+                > /tmp/hybrid-instance.html
+              csrf=$({SED} -n 's/.*name="aos-session-csrf" content="\\([^"]*\\)".*/\\1/p' \\
+                /tmp/hybrid-instance.html | head -n1)
+              test -n "$csrf"
+              {CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' \\
+                -H "Cookie: $cookie" -H 'Origin: https://aos.andyl.org' \\
+                -H "x-aos-csrf: $csrf" -H 'x-aos-console-route: /-/instance' \\
+                https://aos.andyl.org/-/auth/session-token
+          """), timeout=120))["accessToken"]
+
+      session_token = refresh_session_token()
       whoami = json.loads(client.succeed(
           f"{CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' "
           f"-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
@@ -1393,6 +1396,8 @@ in {
           time.sleep(2)
       assert capability_state == "valid", capability_state
 
+      session_token = refresh_session_token()
+
       reviewed(
           "hybrid-oci-retention",
           "registry container retention set fleet/containers --untagged-grace 0s "
@@ -1530,20 +1535,7 @@ in {
 
       # The console token is deliberately short lived. Refresh it after the
       # long OCI phase before starting a new reviewed cache-GC workflow.
-      session_token = json.loads(client.succeed(textwrap.dedent(f"""
-          set -eu
-          cookie=$(cat /tmp/hybrid-cookie)
-          {CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' \\
-            -H "Cookie: $cookie" https://aos.andyl.org/-/instance \\
-            > /tmp/hybrid-gc-instance.html
-          csrf=$({SED} -n 's/.*name="aos-session-csrf" content="\\([^"]*\\)".*/\\1/p' \\
-            /tmp/hybrid-gc-instance.html | head -n1)
-          test -n "$csrf"
-          {CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' \\
-            -H "Cookie: $cookie" -H 'Origin: https://aos.andyl.org' \\
-            -H "x-aos-csrf: $csrf" -H 'x-aos-console-route: /-/instance' \\
-            https://aos.andyl.org/-/auth/session-token
-      """), timeout=120))["accessToken"]
+      session_token = refresh_session_token()
 
       # Publish a real NAR/narinfo pair so cache GC has a logical object and
       # placement evidence to delete, rather than only an orphan surface file.

@@ -3402,10 +3402,13 @@ impl Database {
                       placement_id, phase, expected_etag, expected_hash,
                       expected_size, expected_inventory_generation,
                       binding_id, binding_resource_version,
+                      delete_credential_purpose,
                       delete_credential_generation, estimated_reclaimable_bytes)
                      SELECT ?3, ?1, ?2, presence.surface_object_id,
                             presence.placement_id, ?6, ?7, ?8, ?9, ?10,
-                            ?11, ?12, ?13, ?14
+                            ?11, ?12,
+                            CASE WHEN binding.kind = 's3' THEN 'delete' ELSE NULL END,
+                            ?13, ?14
                      FROM object_placements presence
                      JOIN cache_gc_state state ON state.cache_id = presence.cache_id
                      JOIN surface_placements placement
@@ -6692,15 +6695,23 @@ impl Database {
                       surface_object_id, placement_id, phase, expected_etag,
                       expected_hash, expected_size, expected_inventory_generation,
                       binding_id, binding_resource_version,
+                      delete_credential_purpose,
                       delete_credential_generation,
                       state, active_slot, attempt_count, max_attempts,
                       confirmed_reclaimed_bytes, leaked_bytes, resource_version,
                       created_at)
                      SELECT ?1, ?2, ?3, 'binary_cache', cache.stable_id,
-                            ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                            ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                            action.delete_credential_purpose, ?13,
                             ?14, 1, 0, ?15, 0, 0, 1, ?16
                      FROM binary_caches cache
+                     JOIN cache_gc_plan_actions action
+                       ON action.action_id = ?1 AND action.cache_id = cache.id
+                      AND action.plan_id = ?17
                      WHERE cache.id = ?2
+                       AND action.binding_id = ?11
+                       AND action.binding_resource_version = ?12
+                       AND action.delete_credential_generation = ?13
                        AND EXISTS (SELECT 1 FROM cache_gc_apply_claims
                        WHERE cache_id = ?2 AND plan_id = ?17 AND claim_id = ?18)
                        AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs
@@ -6912,13 +6923,15 @@ impl Database {
              (request_id, cache_id, job_id, attempt_number, placement_id,
               surface_object_id, object_key, expected_etag, expected_hash,
               expected_size, expected_inventory_generation, binding_id,
-              binding_resource_version, delete_credential_generation,
+              binding_resource_version, delete_credential_purpose,
+              delete_credential_generation,
               state, requested_at)
              SELECT ?4, job.cache_id, job.job_id, job.attempt_count,
                     job.placement_id, job.surface_object_id, object.object_key,
                     job.expected_etag, job.expected_hash, job.expected_size,
                     job.expected_inventory_generation, job.binding_id,
-                    job.binding_resource_version, job.delete_credential_generation,
+                    job.binding_resource_version, job.delete_credential_purpose,
+                    job.delete_credential_generation,
                     'requested', ?5
              FROM object_deletion_jobs job
              JOIN surface_objects object ON object.id = job.surface_object_id
