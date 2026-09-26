@@ -422,6 +422,11 @@ def fixtures(gcc, clang, rustc):
         ("multiple-codegen-units", ["--emit=link,dep-info", "-C", "codegen-units=4"]),
         ("cfg-check", ["--emit=link,dep-info", '--cfg=feature="oracle"',
                        '--check-cfg=cfg(feature, values("oracle"))']),
+        ("remap-path-prefix", ["--emit=link,dep-info", "-Cdebuginfo=2",
+                               "--remap-path-prefix=library.rs=/virtual/library.rs"]),
+        ("remap-path-prefix-separated", ["--emit=link,dep-info", "-Cdebuginfo=2",
+                                         "--remap-path-prefix",
+                                         "library.rs=/virtual/library.rs"]),
     ]:
         yield Fixture("rust-" + name, rustc,
                       ["--crate-name=example", "--crate-type=rlib", "--out-dir=target", "library.rs", *flags],

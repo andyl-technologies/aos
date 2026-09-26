@@ -336,6 +336,8 @@ mutates that inner file and requires a miss with provenance naming the change.
 Cargo-style Rust cases cover extra filenames, metadata disambiguation, panic
 mode, multiple codegen units, and `--cfg` with `--check-cfg`; output names and
 bytes must match direct rustc and pinned sccache on cold and warm runs.
+Joined and separated `--remap-path-prefix` cases include debug information and
+an edited `include_str!` input, checking exact library and depfile replay.
 The frontend check also requires incremental Rust to bypass caching.
 An oracle case verifies that sccache's warm `-Csave-temps=yes` hit omits
 bitcode and saved metadata files while accache restores the complete file set
