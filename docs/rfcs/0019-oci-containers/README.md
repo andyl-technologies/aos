@@ -151,10 +151,11 @@ digest.
 
 ### Runtime package management
 
-The initial `aos` image includes the exact full `pkgs.aos` runtime closure. A
-container init program creates a daemonless single-user Nix database, loads the
-embedded registration stream, prepares writable APM/profile state, and then
-executes the requested command.
+The initial `aos` image includes the exact runtime closure of its selected
+package roots: a portable slice of the evaluated server package set, the AOS
+CLI outputs, and the runtime core. A container init program creates a
+daemonless single-user Nix database, loads the embedded registration stream,
+prepares writable APM/profile state, and then executes the requested command.
 
 The image initially runs as root because writing new paths into `/nix/store`
 and its database is part of the promised APM behavior. Ordinary application
