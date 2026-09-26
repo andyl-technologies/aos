@@ -1,5 +1,6 @@
 ##! JBIG-KIT — bi-level image compression and PBM conversion tools.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -39,6 +40,62 @@ in
       role = "public-package";
     };
     pname = "jbigkit";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A two-row, eight-pixel monochrome PBM image.";
+        operation = "Compress the bitmap to JBIG and decode it back to PBM.";
+        expected = "The decoded bitmap preserves both pixel rows.";
+        files."probe.pbm" = "P1\n8 2\n0 0 1 1 1 1 0 0\n0 1 0 0 0 0 1 0\n";
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/pbmtojbg" "probe.pbm" "probe.jbg"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = ["@out@/bin/jbgtopbm" "probe.jbg" "roundtrip.pbm"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                from pathlib import Path
+
+                bitmap = Path("roundtrip.pbm").read_bytes()
+                assert bitmap.startswith(b"P4\n")
+                assert bitmap.splitlines()[1:3] == [b"         8", b"         2"]
+                assert bitmap.endswith(bytes((0x3c, 0x42)))
+                print("jbigkit bitmap round trip passed")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "jbigkit bitmap round trip passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "A truncated JBIG stream.";
+        operation = "Attempt to decode it as a bitmap.";
+        expected = "The decoder rejects it with status 1.";
+        files."broken.jbg" = "not a JBIG stream\n";
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/jbgtopbm" "broken.jbg" "broken.pbm"];
+            exit_code = 1;
+            observes_rejection = true;
+            stdout.exact = "";
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://www.cl.cam.ac.uk/~mgk25/jbigkit/download/jbigkit-${version}.tar.gz"];
