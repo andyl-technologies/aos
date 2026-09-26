@@ -94,4 +94,3 @@ pub enum CCompilerKind {
     /// Tasking VX
     TaskingVX,
 }
-
