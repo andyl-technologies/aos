@@ -540,8 +540,7 @@ impl PlannerExecutionSupervisor<CanonicalFrontierPlanner> for DirectPlannerSuper
             }) => (branch_requests.len() + proposals.len()).max(1) as u64,
             _ => 1,
         };
-        let measured_fuel =
-            u64::from(request.invocation().scan_page().input_objects()) + output_count;
+        let measured_fuel = request.invocation().scan_page().input_objects() + output_count;
         Ok(SupervisedPlannerExecution::new(result, measured_fuel))
     }
 }
