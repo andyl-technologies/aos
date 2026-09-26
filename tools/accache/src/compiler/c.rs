@@ -517,10 +517,43 @@ pub(super) fn configure(
     // Diagnostics and auxiliary outputs from the probe belong to its private
     // temporary directory, never to the caller's final output destinations.
     let mut index = 0;
+    let clang_z_spellings = if clang {
+        let mut spellings = Vec::new();
+        for argument in ArgsIter::new(
+            expanded.iter().map(|arg| OsString::from(arg.as_str())),
+            (&gcc::ARGS[..], &clang::ARGS[..]),
+        )
+        .with_double_dashes()
+        {
+            if let Argument::WithValue("-z", _, disposition) = argument? {
+                spellings.push(matches!(disposition, ArgDisposition::CanBeConcatenated(_)));
+            }
+        }
+        spellings
+    } else {
+        Vec::new()
+    };
+    let mut clang_z_index = 0;
     let mut assembler_depfile = false;
     let mut assembler_listing_file = false;
     while index < common.len() {
         let arg = &common[index];
+        if clang && let Some(value) = arg.strip_prefix("-z") && !value.is_empty() {
+            // The pinned parser normalizes every two-letter option to a
+            // joined spelling. Clang accepts `-z now` but rejects `-znow`,
+            // so replay the original shape in the private dependency probe.
+            let separated = clang_z_spellings
+                .get(clang_z_index)
+                .ok_or_else(|| anyhow::anyhow!("Clang -z spelling was not preserved"))?;
+            clang_z_index += 1;
+            if *separated {
+                scan.extend(["-z".into(), value.into()]);
+            } else {
+                scan.push(arg.clone());
+            }
+            index += 1;
+            continue;
+        }
         if clang && arg == "-fplugin" && let Some(path) = common.get(index + 1) {
             // The pinned frontend normalizes this joined Clang option into
             // two argv entries. Clang rejects that form, so reconstruct the
@@ -679,6 +712,10 @@ pub(super) fn configure(
         scan.push(arg.clone());
         index += 1;
     }
+    ensure!(
+        clang_z_index == clang_z_spellings.len(),
+        "Clang -z spelling was not preserved"
+    );
     scan.extend(preprocessing);
     scan.extend(strings(parsed.arch_args)?);
     if parsed.language == Language::Assembler {
