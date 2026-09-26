@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use rusqlite::blob::ZeroBlob;
-use rusqlite::{Connection, DatabaseName, OptionalExtension, params};
+use rusqlite::{Connection, DatabaseName, OpenFlags, OptionalExtension, params};
 use rustix::fs::{FlockOperation, flock};
 
 use super::admin::{
@@ -40,6 +40,7 @@ pub struct SqliteBlobBackend {
     name: String,
     root: PathBuf,
     connection: Arc<Mutex<Connection>>,
+    read_connection: Arc<Mutex<Connection>>,
 }
 
 impl SqliteBlobBackend {
@@ -56,6 +57,18 @@ impl SqliteBlobBackend {
         let database_path = root.join(DATABASE_FILE);
         let connection = Connection::open(&database_path)
             .map_err(|source| database_error("open-sqlite-blob-database", source))?;
+        connection
+            .execute_batch("PRAGMA auto_vacuum=FULL;")
+            .map_err(|source| database_error("configure-sqlite-auto-vacuum", source))?;
+        let auto_vacuum: i64 = connection
+            .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+            .map_err(|source| database_error("read-sqlite-auto-vacuum-mode", source))?;
+        if auto_vacuum != 1 {
+            return Err(StoreError::InvalidComposition {
+                reason: "SQLite blob database requires FULL auto-vacuum",
+            });
+        }
+
         connection
             .execute_batch(
                 "PRAGMA journal_mode=WAL;
@@ -106,10 +119,18 @@ impl SqliteBlobBackend {
                 source,
             })?;
 
+        // A source handle may be read while the writer holds its connection
+        // through a conditional put or fenced repair. WAL readers need a
+        // separate connection so that same-store publication cannot deadlock.
+        let read_connection =
+            Connection::open_with_flags(&database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|source| database_error("open-sqlite-blob-reader", source))?;
+
         Ok(Self {
             name: name.into(),
             root,
             connection: Arc::new(Mutex::new(connection)),
+            read_connection: Arc::new(Mutex::new(read_connection)),
         })
     }
 
@@ -149,7 +170,12 @@ impl SqliteBlobBackend {
         id: ContentId,
         range: Option<ByteRange>,
     ) -> Result<BlobHandle, StoreError> {
-        let connection = self.lock_connection()?;
+        let connection = self
+            .read_connection
+            .lock()
+            .map_err(|_| StoreError::Poisoned {
+                operation: "lock-sqlite-blob-reader",
+            })?;
         let length: Option<i64> = connection
             .query_row(
                 "SELECT length(body) FROM objects WHERE id = ?1",
@@ -167,7 +193,7 @@ impl SqliteBlobBackend {
         validate_range(logical_length, range)?;
 
         let source: Arc<dyn BlobSource> = Arc::new(SqliteBlobSource {
-            connection: self.connection.clone(),
+            connection: self.read_connection.clone(),
             id,
             logical_length,
             range,
@@ -193,8 +219,8 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
             streaming_read: true,
             conditional_create: true,
             streaming_put: true,
-            repair_inventory: false,
-            planned_delete: false,
+            repair_inventory: true,
+            planned_delete: true,
         }
     }
 
@@ -329,6 +355,8 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
             .execute("DELETE FROM objects WHERE id = ?1", [id.encode()])
             .map_err(|source| database_error("delete-sqlite-blob-candidate", source))?;
         if removed == 0 {
+            drop(transaction);
+            checkpoint_reclaimed_pages(&self.connection)?;
             return Ok(PlannedDeleteDisposition::AlreadyAbsent);
         }
         advance_metadata(&transaction)?;
@@ -336,6 +364,7 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
             .commit()
             .map_err(|source| database_error("commit-sqlite-blob-delete", source))?;
         self.generation = self.generation.checked_add(1).ok_or(StoreError::Quota)?;
+        checkpoint_reclaimed_pages(&self.connection)?;
         Ok(PlannedDeleteDisposition::Deleted)
     }
 
@@ -560,6 +589,22 @@ fn advance_metadata(connection: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+fn checkpoint_reclaimed_pages(connection: &Connection) -> Result<(), StoreError> {
+    // A long-running WAL connection otherwise retains deleted bytes until a
+    // later checkpoint. Retry of an already absent candidate can finish a
+    // checkpoint that was busy after the durable delete committed.
+    let blocked: i64 = connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+        .map_err(|source| database_error("checkpoint-sqlite-blob-delete", source))?;
+    if blocked != 0 {
+        return Err(StoreError::StreamIo {
+            operation: "checkpoint-sqlite-blob-delete",
+            source: io::Error::new(io::ErrorKind::WouldBlock, "SQLite checkpoint is busy"),
+        });
+    }
+    Ok(())
+}
+
 fn metadata_checksum(instance: [u8; 32], generation: u64) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(METADATA_DOMAIN);
@@ -614,7 +659,30 @@ fn invalid_object_data() -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::MetadataExt;
+
     use super::*;
+
+    fn sqlite_file_census(root: &Path) -> (u64, u64) {
+        let mut allocated_blocks = 0;
+        let mut conservative_bytes = 0;
+        for entry in std::fs::read_dir(root).expect("read SQLite root") {
+            let entry = entry.expect("SQLite root entry");
+            File::open(entry.path())
+                .expect("open SQLite file")
+                .sync_all()
+                .expect("sync SQLite file before census");
+            let metadata = entry.metadata().expect("SQLite file metadata");
+            let blocks = metadata.blocks() * 512;
+            allocated_blocks += blocks;
+            conservative_bytes += blocks.max(metadata.len());
+        }
+        File::open(root)
+            .expect("open SQLite root")
+            .sync_all()
+            .expect("sync SQLite root before census");
+        (allocated_blocks, conservative_bytes)
+    }
 
     #[test]
     fn durable_put_reopens_with_authenticated_range_and_stable_inventory() {
@@ -622,6 +690,8 @@ mod tests {
         let bytes = b"authenticated SQLite campaign object";
         let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
         let backend = SqliteBlobBackend::open("sqlite-test", root.path()).expect("open database");
+        assert!(backend.capabilities().repair_inventory);
+        assert!(backend.capabilities().planned_delete);
 
         let receipt = backend
             .put_if_absent(id, &BlobHandle::from_bytes(bytes))
@@ -679,6 +749,40 @@ mod tests {
     }
 
     #[test]
+    fn same_backend_source_can_publish_another_schema_and_fenced_repair() {
+        let root = tempfile::tempdir().expect("temporary database root");
+        let bytes = b"same bytes, distinct authenticated schemas";
+        let original = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
+        let republished = ContentId::for_bytes(ObjectKind::CampaignFact, 2, bytes);
+        let repaired = ContentId::for_bytes(ObjectKind::CampaignFact, 3, bytes);
+        let backend = SqliteBlobBackend::open("sqlite-test", root.path()).expect("open database");
+        backend
+            .put_if_absent(original, &BlobHandle::from_bytes(bytes))
+            .expect("publish source object");
+
+        let source = backend.read(original, None).expect("same-backend source");
+        backend
+            .put_if_absent(republished, &source)
+            .expect("re-key same-backend source");
+        let mut fence = backend.acquire_inventory_fence().expect("repair fence");
+        fence
+            .repair_put_if_absent(&PhysicalRepairAuthority::new(), repaired, &source)
+            .expect("repair from same-backend source");
+        drop(fence);
+
+        for id in [original, republished, repaired] {
+            assert_eq!(
+                backend
+                    .read(id, None)
+                    .expect("published object handle")
+                    .read_all(1024)
+                    .expect("authenticated bytes"),
+                bytes
+            );
+        }
+    }
+
+    #[test]
     fn corruption_fails_closed_and_planned_delete_survives_reopen() {
         let root = tempfile::tempdir().expect("temporary database root");
         let bytes = b"immutable campaign object";
@@ -708,6 +812,7 @@ mod tests {
             .visit_inventory(&mut |_| Ok(()))
             .expect("inventory reads placement metadata");
         assert_eq!(summary.objects(), 1);
+        let initial_generation = summary.generation();
         assert!(matches!(
             fence.repair_put_if_absent(
                 &PhysicalRepairAuthority::new(),
@@ -720,6 +825,11 @@ mod tests {
             fence.delete_candidate(id).expect("durable planned delete"),
             PlannedDeleteDisposition::Deleted
         );
+        let deleted = fence
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("inventory after delete");
+        assert_eq!(deleted.objects(), 0);
+        assert_ne!(deleted.generation(), initial_generation);
         let repair = fence
             .repair_put_if_absent(
                 &PhysicalRepairAuthority::new(),
@@ -728,14 +838,36 @@ mod tests {
             )
             .expect("fenced absent-object repair");
         assert!(repair.is_durable());
+        let repaired = fence
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("inventory after repair");
+        assert_eq!(repaired.objects(), 1);
+        assert_ne!(repaired.generation(), deleted.generation());
         drop(fence);
         assert!(reopened.contains(id).expect("repair authenticates"));
+        drop(reopened);
+
+        let reopened = SqliteBlobBackend::open("sqlite-test", root.path())
+            .expect("reopen after fenced repair");
+        let mut fence = reopened
+            .acquire_inventory_fence()
+            .expect("repaired inventory fence");
+        let cold_repaired = fence
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("cold repaired inventory");
+        assert_eq!(cold_repaired.generation(), repaired.generation());
+        drop(fence);
+        assert!(reopened.contains(id).expect("cold repair authenticates"));
 
         let mut fence = reopened.acquire_inventory_fence().expect("delete fence");
         assert_eq!(
             fence.delete_candidate(id).expect("durable planned delete"),
             PlannedDeleteDisposition::Deleted
         );
+        let final_generation = fence
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("inventory after final delete")
+            .generation();
         drop(fence);
         drop(reopened);
 
@@ -745,13 +877,11 @@ mod tests {
         let mut fence = final_backend
             .acquire_inventory_fence()
             .expect("final inventory fence");
-        assert_eq!(
-            fence
-                .visit_inventory(&mut |_| Ok(()))
-                .expect("complete final inventory")
-                .objects(),
-            0
-        );
+        let final_inventory = fence
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("complete final inventory");
+        assert_eq!(final_inventory.objects(), 0);
+        assert_eq!(final_inventory.generation(), final_generation);
     }
 
     #[test]
@@ -794,5 +924,84 @@ mod tests {
             SqliteBlobBackend::open("sqlite-test", root.path()),
             Err(StoreError::InvalidComposition { .. })
         ));
+    }
+
+    #[test]
+    fn non_reclaiming_database_layout_fails_closed_on_reopen() {
+        let root = tempfile::tempdir().expect("temporary database root");
+        let connection = Connection::open(root.path().join(DATABASE_FILE))
+            .expect("create non-reclaiming database");
+        connection
+            .execute_batch("PRAGMA auto_vacuum=NONE; CREATE TABLE legacy (id INTEGER);")
+            .expect("persist non-reclaiming layout");
+        drop(connection);
+
+        assert!(matches!(
+            SqliteBlobBackend::open("sqlite-test", root.path()),
+            Err(StoreError::InvalidComposition { .. })
+        ));
+    }
+
+    #[test]
+    fn planned_deletes_reclaim_database_pages_after_cold_reopen() {
+        let root = tempfile::tempdir().expect("temporary database root");
+        let backend = SqliteBlobBackend::open("sqlite-test", root.path()).expect("open database");
+        let mut ids = Vec::new();
+        for ordinal in 0_u64..128 {
+            let mut bytes = vec![0_u8; 64 * 1024];
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(&ordinal.to_le_bytes());
+            hasher.finalize_xof().fill(&mut bytes);
+            let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, &bytes);
+            backend
+                .put_if_absent(id, &BlobHandle::from_bytes(bytes))
+                .expect("seed durable object");
+            ids.push(id);
+        }
+        drop(backend);
+        let seeded_database_bytes = std::fs::metadata(root.path().join(DATABASE_FILE))
+            .expect("seeded database metadata")
+            .len();
+        let (seeded_cold_blocks, seeded_cold_conservative) = sqlite_file_census(root.path());
+
+        let reopened =
+            SqliteBlobBackend::open("sqlite-test", root.path()).expect("reopen seeded database");
+        let (before_live_blocks, before_live_conservative) = sqlite_file_census(root.path());
+        let mut fence = reopened.acquire_inventory_fence().expect("delete fence");
+        for id in ids {
+            assert_eq!(
+                fence.delete_candidate(id).expect("planned delete"),
+                PlannedDeleteDisposition::Deleted
+            );
+        }
+        assert_eq!(
+            fence
+                .visit_inventory(&mut |_| Ok(()))
+                .expect("empty inventory")
+                .objects(),
+            0
+        );
+        let after_live_database_bytes = std::fs::metadata(root.path().join(DATABASE_FILE))
+            .expect("database metadata after planned deletes")
+            .len();
+        let after_live_wal_bytes =
+            std::fs::metadata(root.path().join(format!("{DATABASE_FILE}-wal")))
+                .expect("WAL metadata after truncate checkpoint")
+                .len();
+        let (after_live_blocks, after_live_conservative) = sqlite_file_census(root.path());
+        drop(fence);
+        drop(reopened);
+
+        let after_cold_database_bytes = std::fs::metadata(root.path().join(DATABASE_FILE))
+            .expect("cold database metadata")
+            .len();
+        let (after_cold_blocks, after_cold_conservative) = sqlite_file_census(root.path());
+        println!(
+            "sqlite_gc_reclaim seeded_database_bytes={seeded_database_bytes} after_live_database_bytes={after_live_database_bytes} after_live_wal_bytes={after_live_wal_bytes} after_cold_database_bytes={after_cold_database_bytes} seeded_cold_blocks={seeded_cold_blocks} seeded_cold_conservative={seeded_cold_conservative} before_live_blocks={before_live_blocks} before_live_conservative={before_live_conservative} after_live_blocks={after_live_blocks} after_live_conservative={after_live_conservative} after_cold_blocks={after_cold_blocks} after_cold_conservative={after_cold_conservative}"
+        );
+        assert!(seeded_database_bytes > 8 * 1024 * 1024);
+        assert!(after_live_database_bytes < seeded_database_bytes / 2);
+        assert_eq!(after_live_wal_bytes, 0);
+        assert_eq!(after_cold_database_bytes, after_live_database_bytes);
     }
 }
