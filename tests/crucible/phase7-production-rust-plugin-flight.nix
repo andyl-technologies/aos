@@ -6,8 +6,46 @@
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  repoRoot = ../..;
+  repoRootString = toString repoRoot;
+  source = builtins.path {
+    path = repoRoot;
+    name = "crucible-production-rust-flight-src";
+    # The suite retains its complete source. This package only compiles the
+    # workspace, the fixture embedded by daemon tests, and the QMP schema.
+    filter = path: _type: let
+      pathString = toString path;
+      base = baseNameOf path;
+      crates = "${repoRootString}/crates";
+      licenses = "${repoRootString}/LICENSES";
+    in
+      base
+      != ".git"
+      && base != "target"
+      && base != "__pycache__"
+      && !lib.hasSuffix ".pyc" base
+      && (
+        pathString
+        == repoRootString
+        || pathString == "${repoRootString}/LICENSE"
+        || pathString == crates
+        || lib.hasPrefix "${crates}/" pathString
+        || pathString == licenses
+        || lib.hasPrefix "${licenses}/" pathString
+        || pathString == "${repoRootString}/docs"
+        || pathString == "${repoRootString}/docs/rfcs"
+        || pathString == "${repoRootString}/docs/rfcs/0020-crucible-campaigns"
+        || pathString == "${repoRootString}/docs/rfcs/0020-crucible-campaigns/schema-registry.tsv"
+        || pathString == "${repoRootString}/tests"
+        || pathString == "${repoRootString}/tests/crucible"
+        || pathString == "${repoRootString}/tests/crucible/fixtures"
+        || pathString == "${repoRootString}/tests/crucible/fixtures/e2e-determinism.scenario.toml"
+      );
+  };
+  cargoDeps = import ./_cargo-deps.nix {
+    inherit pkgs lib;
+    src = source;
+  };
   guest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
   idleGuest = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
   blockRecoveryNanos = 5000000000;
