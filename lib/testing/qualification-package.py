@@ -860,6 +860,11 @@ class PackageScenario:
             for store_path in sorted(self.closure)
             if (pathlib.Path(store_path) / site_packages).is_dir()
         )
+        closure_include_path = ":".join(
+            str(pathlib.Path(store_path) / "include")
+            for store_path in sorted(self.closure)
+            if (pathlib.Path(store_path) / "include").is_dir()
+        )
         environment = {
             "HOME": str(work / "home"),
             "USER": os.environ["USER"],
@@ -883,6 +888,9 @@ class PackageScenario:
         }
         if closure_python_path:
             environment["PYTHONPATH"] = closure_python_path
+        if closure_include_path:
+            environment["C_INCLUDE_PATH"] = closure_include_path
+            environment["CPLUS_INCLUDE_PATH"] = closure_include_path
         pathlib.Path(environment["HOME"]).mkdir()
         pathlib.Path(environment["TMPDIR"]).mkdir()
         run([self.probe], environment=environment, cwd=work)
