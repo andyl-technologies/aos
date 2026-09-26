@@ -360,6 +360,10 @@ rebuilds `as` in a fixed search directory; pinned sccache replays the old
 object, while accache fingerprints files in the selected search directory,
 names `as` in its miss explanation, and warm-hits the replacement. Empty
 `COMPILER_PATH` segments select the working directory, as GCC does.
+Another oracle case starts with `as` in the second search directory, then
+adds `as` to the first directory without changing `COMPILER_PATH`. Direct GCC
+selects the new assembler. Accache must miss and name it in the explanation;
+pinned sccache replays the original object.
 Four more cases mutate a binary read by C inline assembly in GCC/Clang `.c`
 and `.i` compilations. Pinned sccache again replays stale objects; accache
 misses and names the changed binary input.
