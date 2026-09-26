@@ -11,6 +11,7 @@ pub(super) struct PlannerIssueProjection {
     pub proposals: Vec<ProposalId>,
     pub attempts: u64,
     pub deduplicated: u64,
+    pub closure_growth_upper: usize,
 }
 
 mod validation;
@@ -169,6 +170,7 @@ impl CampaignRepository {
             || prepared.proposals != published.proposals
             || prepared.attempts != published.attempts
             || prepared.deduplicated != published.deduplicated
+            || prepared.closure_growth_upper != published.closure_growth_upper
         {
             return Err(integrity("planner-issue-preflight-publication-mismatch"));
         }
@@ -648,6 +650,33 @@ impl CampaignRepository {
             self.frontier_index_after(prior_exploration, &projections, mode.publishes())?;
         exploration_upserts.insert(frontier_index_anchor_key(), next_frontier);
 
+        // Only this simple path has an audited proportional bound. The two
+        // owner roots are updated once per overlay key in finish_issue_root;
+        // frontier_index_after inserts one continuation; the planner successor
+        // inserts at most four coordination keys. Each insertion rewrites at
+        // most one 64-node trie path. The 64-record allowance covers the
+        // proposal, selection, path, attempt, admission, continuation, planner
+        // state/step/fact/snapshot, and any newly linked wrapper records.
+        // Linked request inputs and the budget/scan indexes are charged by
+        // prepare_local_successor_checkpoint separately.
+        let simple_finite_issue = matches!(selected_request.source(), CandidateSource::Finite(_))
+            && branch_requests.is_empty()
+            && proposals.len() == 1
+            && projections.len() == 1
+            && feedback_projection.is_none();
+        let closure_growth_upper = if simple_finite_issue {
+            exploration_upserts
+                .len()
+                .checked_add(accounting_upserts.len())
+                .and_then(|count| count.checked_add(projections.len()))
+                .and_then(|count| count.checked_add(4))
+                .and_then(|paths| paths.checked_mul(MERKLE_UPDATE_NODE_UPPER))
+                .and_then(|nodes| nodes.checked_add(64))
+                .ok_or_else(|| integrity("campaign-closure-object-limit"))?
+        } else {
+            MAX_PLANNER_ISSUE_SUCCESSOR_GROWTH
+        };
+
         let exploration =
             self.finish_issue_root(prior_exploration, &exploration_upserts, mode, true)?;
         let accounting =
@@ -660,6 +689,7 @@ impl CampaignRepository {
             proposals: proposal_ids,
             attempts,
             deduplicated,
+            closure_growth_upper,
         })
     }
 
