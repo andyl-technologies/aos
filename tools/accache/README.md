@@ -292,7 +292,8 @@ and `.i` compilations. Pinned sccache again replays stale objects; accache
 misses and names the changed binary input.
 Clang and Rust profile cases generate two real instrumentation profiles each
 and require a miss naming the changed `.profdata` file, followed by a warm hit
-for each profile.
+for each profile. Clang cases cover explicit, directory, and implicit default
+profile paths; each profile revision produces different object bytes.
 The dataflow-sanitizer ABI-list case changes a file absent from rustc's dep-info.
 Pinned sccache replays the old object, while accache misses and names the
 changed list before producing the new object.

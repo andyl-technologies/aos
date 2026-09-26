@@ -1371,61 +1371,80 @@ def check_inline_assembler_inputs(root, env, accache, sccache, gcc, clang, hits)
 
 def check_clang_profile_use(root, env, accache, sccache, clang, hits):
     """Track the profile data consumed by a cacheable Clang action."""
-    work = root / "clang-profile-use"
-    work.mkdir()
-    (work / "source.c").write_text(
-        "int branch(int x) { if (x > 100) return x * 3; return x + 1; }\n"
+    source = (
+        "__attribute__((noinline)) int slow(int x) {\n"
+        "    volatile int y = x;\n"
+        "    for (int i = 0; i < 3; ++i) y += i;\n"
+        "    return y;\n"
+        "}\n"
+        "int branch(int x) { if (x > 100) return slow(x); return x + 1; }\n"
         "int main(int argc, char **argv) { return branch(argc); }\n")
+    generator = root / "clang-profile-generator"
+    generator.mkdir()
+    (generator / "source.c").write_text(source)
     subprocess.run([clang, "-O2", "-fprofile-instr-generate", "source.c", "-o", "program"],
-                   cwd=work, env=env, check=True, capture_output=True)
+                   cwd=generator, env=env, check=True, capture_output=True)
     profdata = str(Path(clang).with_name("llvm-profdata"))
     profiles = []
     for name, arguments in [("low", []), ("high", ["x"] * 150)]:
-        raw = work / (name + ".profraw")
-        subprocess.run([str(work / "program"), *arguments], cwd=work,
+        raw = generator / (name + ".profraw")
+        subprocess.run([str(generator / "program"), *arguments], cwd=generator,
                        env=env | {"LLVM_PROFILE_FILE": str(raw)}, capture_output=True,
                        timeout=120)
-        merged = work / (name + ".profdata")
-        subprocess.run([profdata, "merge", "-o", str(merged), str(raw)], cwd=work,
+        merged = generator / (name + ".profdata")
+        subprocess.run([profdata, "merge", "-o", str(merged), str(raw)], cwd=generator,
                        env=env, check=True, capture_output=True)
         profiles.append(merged.read_bytes())
     assert profiles[0] != profiles[1], "profile runs produced identical input data"
 
-    object_file = work / "source.o"
-    profile_file = work / "profile.profdata"
-    args = [clang, "-O2", "-c", "source.c", "-fprofile-instr-use=profile.profdata",
-            "-o", "source.o"]
-
-    def compile_object(wrapper):
-        object_file.unlink(missing_ok=True)
-        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
-                                   capture_output=True, timeout=120)
-        assert completed.returncode == 0, (wrapper, completed.stderr)
-        return completed.stdout, completed.stderr, object_file.read_bytes()
-
     results = []
-    for revision, profile in enumerate(profiles):
-        profile_file.write_bytes(profile)
-        direct = compile_object([])
-        before_cold_hits = hits()
-        assert compile_object([sccache]) == direct
-        assert hits() == before_cold_hits, "sccache ignored the changed profile"
-        before_hits = hits()
-        assert compile_object([sccache]) == direct
-        assert hits() > before_hits, "sccache did not hit the profile action"
+    for fixture, option, filename in [
+        ("clang-profile-use", "-fprofile-instr-use=profile.profdata", "profile.profdata"),
+        ("clang-profile-instr-default", "-fprofile-instr-use", "default.profdata"),
+        ("clang-profile-use-directory", "-fprofile-use=.", "default.profdata"),
+        ("clang-profile-use-default", "-fprofile-use", "default.profdata"),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "source.c").write_text(source)
+        object_file = work / "source.o"
+        profile_file = work / filename
+        args = [clang, "-O2", "-c", "source.c", option, "-o", "source.o"]
 
-        assert compile_object([accache]) == direct
-        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
-        assert cold["outcome"] == "miss", cold
-        if revision:
-            assert any("profile.profdata" in item for item in cold["changes"]), cold
-        assert compile_object([accache]) == direct
-        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
-        assert warm["outcome"] == "hit", warm
-        results.append({"fixture": "clang-profile-use", "revision": revision,
-                        "oracle_hit": True, "accache": "hit", "artifacts": ["source.o"]})
+        def compile_object(wrapper):
+            object_file.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            return completed.stdout, completed.stderr, object_file.read_bytes()
 
-    print("PASS oracle Clang profile input invalidation", flush=True)
+        initial_object = None
+        for revision, profile in enumerate(profiles):
+            profile_file.write_bytes(profile)
+            direct = compile_object([])
+            if initial_object is None:
+                initial_object = direct[2]
+            else:
+                assert direct[2] != initial_object, (fixture, "profile had no effect")
+            before_cold_hits = hits()
+            assert compile_object([sccache]) == direct
+            assert hits() == before_cold_hits, (fixture, "sccache ignored the changed profile")
+            before_hits = hits()
+            assert compile_object([sccache]) == direct
+            assert hits() > before_hits, (fixture, "sccache did not hit the profile action")
+
+            assert compile_object([accache]) == direct
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert cold["outcome"] == "miss", (fixture, cold)
+            if revision:
+                assert any(filename in item for item in cold["changes"]), (fixture, cold)
+            assert compile_object([accache]) == direct
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert warm["outcome"] == "hit", (fixture, warm)
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": True, "accache": "hit", "artifacts": ["source.o"]})
+
+        print("PASS oracle Clang", fixture, "input invalidation", flush=True)
     return results
 
 
