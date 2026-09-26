@@ -285,8 +285,8 @@
       }
     '';
 
-    # The check phase enables the test-only backend and writes a feature-enabled
-    # binary to target/release. Rebuild the installed CLI without test features.
+    # The check phase enables the test-only backend. Rebuild the installed CLI
+    # without test features and record the example artifacts' exact paths.
     preInstall = ''
       cargo build \
         --release \
@@ -301,30 +301,44 @@
         --offline \
         -j$NIX_BUILD_CORES \
         -p crucible \
-        --example crucible-debugger-live-fixture
+        --example crucible-debugger-live-fixture \
+        --message-format=json-render-diagnostics \
+        > "$NIX_BUILD_TOP/crucible-debugger-example.jsonl"
+      jq -r '.message.rendered // empty' \
+        "$NIX_BUILD_TOP/crucible-debugger-example.jsonl" >&2
       cargo build \
         --release \
         --frozen \
         --offline \
         -j$NIX_BUILD_CORES \
         -p crucible-api \
-        --example crucible-e2e-determinism-scenario
+        --example crucible-e2e-determinism-scenario \
+        --message-format=json-render-diagnostics \
+        > "$NIX_BUILD_TOP/crucible-scenario-example.jsonl"
+      jq -r '.message.rendered // empty' \
+        "$NIX_BUILD_TOP/crucible-scenario-example.jsonl" >&2
     '';
 
     postInstall = ''
       test -x "$out/bin/crucible"
-      cp ${
-        if stdenv.isCross
-        then ''"target/$CARGO_BUILD_TARGET/release/examples/crucible-debugger-live-fixture"''
-        else "target/release/examples/crucible-debugger-live-fixture"
-      } \
-        "$out/bin/crucible-debugger-live-fixture"
-      cp ${
-        if stdenv.isCross
-        then ''"target/$CARGO_BUILD_TARGET/release/examples/crucible-e2e-determinism-scenario"''
-        else "target/release/examples/crucible-e2e-determinism-scenario"
-      } \
-        "$out/bin/crucible-e2e-determinism-scenario"
+      install_example() {
+        name="$1"
+        messages="$2"
+        executable=$(jq -rs --arg name "$name" '
+          [.[] | select(.reason == "compiler-artifact" and
+            .target.name == $name and .target.kind == ["example"] and
+            .executable != null) | .executable] | unique |
+          if length == 1 then .[0]
+          else error("expected exactly one executable for " + $name)
+          end
+        ' "$messages")
+        test -x "$executable"
+        cp "$executable" "$out/bin/$name"
+      }
+      install_example crucible-debugger-live-fixture \
+        "$NIX_BUILD_TOP/crucible-debugger-example.jsonl"
+      install_example crucible-e2e-determinism-scenario \
+        "$NIX_BUILD_TOP/crucible-scenario-example.jsonl"
       ${
         if stdenv.isCross
         then ''
