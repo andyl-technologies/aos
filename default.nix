@@ -562,7 +562,29 @@
   );
   qualificationPackageNames =
     pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
-  nativeAdapterMatrix = nativeAdapterMatrixCohort.nativeAdapterMatrix;
+  nativeAdapterPackages =
+    builtins.attrValues (builtins.listToAttrs (map
+      (package: {
+        name = builtins.unsafeDiscardStringContext (builtins.toString package);
+        value = package;
+      })
+      serverSystemState.qualificationProjection.packages));
+  nativeAdapterInterfaceRoots = map (package: package.contract.document) nativeAdapterPackages;
+  nativeAdapterMatrix = import ./qualification/modules/_native-adapter-matrix.nix {
+    inherit lib;
+    packages = nativeAdapterPackages;
+    regressions = [
+      "checks.fleet.runtime-module-composition"
+      "checks.fleet.k3s-control-plane-worker"
+      "checks.fleet.ability-native-power-loss"
+      "checks.fleet.system-image-rollback"
+    ];
+  };
+  nativeAdapterMatrixSpec = pkgs.writeTextFile {
+    name = "aos-native-adapter-matrix-spec";
+    destination = "/matrix-spec.json";
+    text = nativeAdapterMatrix.canonical_json;
+  };
   releaseQualification = import ./qualification {
     inherit lib nativeAdapterMatrix;
     packageNames = qualificationPackageNames;
@@ -662,12 +684,36 @@
       };
       report = {kind = "matrix";};
     };
-  nativeAdapterMatrixCohort = import ./tests/fleet/ability-native-power-loss.nix {
-    inherit lib mkAbilityQualificationProjection pkgs;
+  # The matrix's primary cohort follows the production runtime-module flight;
+  # exact per-cell audits run after its recovery and rollback checks.
+  nativeAdapterMatrixCohort = import ./tests/fleet/runtime-module-composition.nix {
+    inherit lib pkgs;
     mkSystem = mkFixtureSystem;
-    qualificationProjection = serverSystemState.qualificationProjection;
     qualificationImage = true;
+    additionalClosures = nativeAdapterInterfaceRoots ++ [nativeAdapterMatrixSpec pkgs.aos.testSupport];
   };
+  nativeAdapterMatrixAuditScript = ''
+    audit_roots = ${builtins.toJSON (map builtins.toString nativeAdapterInterfaceRoots)}
+    audit_spec = ${builtins.toJSON "${nativeAdapterMatrixSpec}/matrix-spec.json"}
+
+    def run_native_adapter_audit(binary, output):
+        arguments = " ".join(
+            shlex.quote(value) for value in [audit_spec, output, *audit_roots]
+        )
+        runtime.succeed(f"{binary} {arguments}", timeout=1800)
+        return json.loads(runtime.succeed(
+            f"{COREUTILS}/cat {shlex.quote(output)}"
+        ))
+
+    NATIVE_ADAPTER_MATRIX_RUNTIME_AUDIT = run_native_adapter_audit(
+        "${pkgs.aos.testSupport}/bin/aos-ability-authority-audit",
+        "/var/lib/aos/qualification-native-adapter-runtime.json",
+    )
+    NATIVE_ADAPTER_MATRIX_INTERRUPTION_AUDIT = run_native_adapter_audit(
+        "${pkgs.aos.testSupport}/bin/aos-ability-interruption-audit",
+        "/var/lib/aos/qualification-native-adapter-interruption.json",
+    )
+  '';
   nativeEffectBoundaryCells = import ./tests/fleet/_ability-effect-boundary-cells.nix {
     inherit lib;
     matrix = nativeAdapterMatrix.spec;
@@ -814,7 +860,7 @@
           }
         ];
 
-      inherit (nativeAdapterMatrixCohort) testScript;
+      testScript = nativeAdapterMatrixCohort.testScript + nativeAdapterMatrixAuditScript;
       inherit (nativeAdapterMatrixCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };
     ability-native-recovery = mkNativeAbilityScenario {
