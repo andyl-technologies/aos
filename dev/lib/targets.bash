@@ -77,10 +77,10 @@ aos_dev_target_attr() {
 
 aos_dev_validate_target() {
   local category=$1 name=$2
-  # Exact dotted check paths go straight to Nix. Listing their scope would
-  # evaluate the check once here and again for the actual build.
-  if [[ $category == checks && $name == *.* ]]; then
-    [[ $name =~ ^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$ ]] || \
+  # Exact check paths go straight to Nix. Listing checks first would evaluate
+  # unrelated check trees before Nix evaluates the requested target.
+  if [[ $category == checks ]]; then
+    [[ $name =~ ^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$ ]] || \
       aos_dev_error "invalid check target '$name'"
     return
   fi
