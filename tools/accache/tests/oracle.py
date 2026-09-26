@@ -1707,6 +1707,63 @@ def check_clang_layout_seed(root, env, accache, sccache, clang, hits):
     return results
 
 
+def check_clang_warning_mappings(root, env, accache, sccache, clang, hits):
+    """Invalidate cached diagnostics when a suppression mapping changes."""
+    work = root / "clang-warning-mappings"
+    work.mkdir()
+    (work / "source.c").write_text(
+        "int answer(void) { int unused; return 42; }\n")
+    mapping_file = work / "mappings.txt"
+    object_file = work / "source.o"
+    depfile = work / "source.d"
+    args = [clang, "-c", "source.c", "-o", "source.o", "-Wunused-variable",
+            "--warning-suppression-mappings=mappings.txt", "-MD", "-MF", "source.d"]
+
+    def compile_object(wrapper):
+        object_file.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        return (completed.stdout, completed.stderr,
+                object_file.read_bytes(), depfile.read_bytes())
+
+    results = []
+    first_object = None
+    for revision, contents in enumerate(["# no suppression\n",
+                                         "[unused-variable]\nsrc:*\n"]):
+        mapping_file.write_text(contents)
+        direct = compile_object([])
+        assert b"mappings.txt" not in direct[3], "dep-info listed warning mapping"
+        assert (b"unused variable" in direct[1]) == (revision == 0), direct[1]
+        if first_object is None:
+            first_object = direct[2]
+        else:
+            assert direct[2] == first_object, "mapping edit changed object bytes"
+
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() == before_hits, "sccache ignored the changed mapping"
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() > before_hits, "sccache did not warm-hit"
+
+        assert compile_object([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", (revision, cold)
+        if revision:
+            assert any("mappings.txt" in item for item in cold["changes"]), cold
+        assert compile_object([accache]) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", (revision, warm)
+        results.append({"fixture": "clang-warning-mappings", "revision": revision,
+                        "oracle_hit": True, "accache": "hit",
+                        "artifacts": ["source.o", "source.d"]})
+
+    print("PASS oracle clang-warning-mappings diagnostic invalidation", flush=True)
+    return results
+
+
 def check_rust_native_archives(root, env, accache, sccache, gcc, rustc, hits):
     """Hash native archives for joined and separated Rust library flags."""
     results = []
@@ -2814,6 +2871,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                         sccache, clang, hits))
         results.extend(check_clang_layout_seed(root, env, accache,
                                                sccache, clang, hits))
+        results.extend(check_clang_warning_mappings(root, env, accache,
+                                                    sccache, clang, hits))
         results.extend(check_clang_pass_plugin(root, env, accache,
                                                sccache, clang, hits))
         results.extend(check_clang_frontend_plugin(root, env, accache,
