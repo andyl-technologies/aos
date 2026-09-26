@@ -81,6 +81,7 @@ def fixtures(gcc, clang, rustc):
             ("pedantic", ["-pedantic"]),
             ("w-pedantic", ["-Wpedantic"]),
             ("werror-pedantic", ["-Werror=pedantic"]),
+            ("pedantic-errors", ["-pedantic-errors"]),
             ("trigraphs", ["-trigraphs"]),
             ("nostdinc", ["-nostdinc"]),
             ("nostdinc-cxx", ["-nostdinc++"]),
@@ -97,6 +98,10 @@ def fixtures(gcc, clang, rustc):
                 ("param", ["--param", "max-inline-insns-single=30"]),
                 ("working-directory", ["-fworking-directory"]),
                 ("no-working-directory", ["-fno-working-directory"]),
+                ("isysroot", ["-isysroot", "."]),
+                ("imultilib", ["-imultilib", "."]),
+                ("xlinker", ["-Xlinker", "-z"]),
+                ("linker-option", ["-z", "now"]),
             ]
         else:
             frontend_options = [
@@ -109,11 +114,22 @@ def fixtures(gcc, clang, rustc):
                 ("suppressed-optimization-record", ["-foptimization-record-passes=inline",
                                                      "-fno-save-optimization-record"]),
                 ("debug-compilation-dir", ["-fdebug-compilation-dir=."]),
+                ("iframework", ["-iframework", "."]),
+                ("stdlib", ["-stdlib=libstdc++"]),
+                ("install-name", ["-install_name", "name"]),
+                ("unknown-cuda-warning", ["-Wno-unknown-cuda-version"]),
+                ("debug-info-kind", ["-debug-info-kind=limited"]),
+                ("codeview", ["-gcodeview"]),
+                ("constructor-aliases", ["-mconstructor-aliases"]),
+                ("mlir", ["-mmlir", "test"]),
+                ("external-assembler-spelling", ["-no-integrated-as"]),
+                ("xlinker", ["-Xlinker", "-z"]),
             ]
         for suffix, flags in frontend_options:
             fixture = name + "-frontend-" + suffix
             yield Fixture(fixture, compiler,
-                          base + flags + ["-frandom-seed=" + fixture], c_sources,
+                          base + flags + ["-frandom-seed=" + fixture,
+                                          "-fdiagnostics-color=always"], c_sources,
                           {"value.h": "#define VALUE 73\n"},
                           cacheable=suffix != "save-optimization-record")
 
@@ -736,6 +752,61 @@ def check_clang_driver_dependency_file(root, env, accache, sccache, clang):
                         "artifacts": sorted(expected)})
 
     print("PASS oracle clang-driver-dependency-file passthrough", flush=True)
+    return results
+
+
+def check_clang_separated_linker_option(root, env, accache, sccache, clang):
+    """Keep Clang's accepted -z spelling distinct from sccache's rewrite."""
+    fixture = "clang-separated-linker-option"
+    work = root / fixture
+    work.mkdir()
+    (work / "source.c").write_text('#include "value.h"\nint answer(void) { return VALUE; }\n')
+    args = [clang, "-c", "source.c", "-o", "source.o", "-z", "now",
+            "-fdiagnostics-color=always", "-frandom-seed=" + fixture]
+    results = []
+
+    def compile_object(wrapper, arguments=args):
+        (work / "source.o").unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *arguments], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        artifact = (work / "source.o").read_bytes() if (work / "source.o").exists() else None
+        return completed, artifact
+
+    for revision, value in enumerate([42, 73]):
+        (work / "value.h").write_text(f"#define VALUE {value}\n")
+        direct, object_bytes = compile_object([])
+        assert direct.returncode == 0 and object_bytes, (fixture, revision, direct.stderr)
+
+        oracle, oracle_object = compile_object([sccache])
+        assert (oracle.returncode == 1 and oracle_object is None
+                and b"unknown argument: '-znow'" in oracle.stderr), (
+                    fixture, revision, oracle.returncode, oracle.stderr)
+
+        for outcome in ["miss", "hit"]:
+            actual, artifact = compile_object([accache])
+            assert (actual.returncode, actual.stdout, actual.stderr, artifact) == (
+                direct.returncode, direct.stdout, direct.stderr, object_bytes), (
+                    fixture, revision, outcome, actual.stderr)
+            event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert event["outcome"] == outcome, (fixture, revision, event)
+
+        # A joined spelling is an error in this Clang. It must not reuse the
+        # successful separated action if a frontend normalizes both forms.
+        joined = [arg for arg in args if arg not in {"-z", "now"}]
+        joined.insert(5, "-znow")
+        rejected, rejected_object = compile_object([accache], joined)
+        assert (rejected.returncode == 1 and rejected_object is None
+                and b"unknown argument: '-znow'" in rejected.stderr), (
+                    fixture, revision, rejected.returncode, rejected.stderr)
+        event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert event["outcome"] != "hit", (fixture, revision, event)
+
+        results.append({"fixture": fixture, "revision": revision,
+                        "oracle_hit": False, "accache": "hit",
+                        "oracle_error": "unknown argument: '-znow'",
+                        "artifacts": ["source.o"]})
+
+    print("PASS oracle", fixture, "direct output and key separation", flush=True)
     return results
 
 
@@ -5418,6 +5489,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
         results.extend(check_clang_hip_default_cuid(root, env, accache,
                                                     sccache, clang, hits))
         results.extend(check_clang_driver_dependency_file(root, env, accache,
+                                                          sccache, clang))
+        results.extend(check_clang_separated_linker_option(root, env, accache,
                                                           sccache, clang))
         results.extend(check_clang_cc1_dependency_file(root, env, accache,
                                                        sccache, clang, hits))
