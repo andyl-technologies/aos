@@ -1161,25 +1161,26 @@
 
     # Named outputs are fresh derivation attrsets. Preserve the package-level
     # dependency and execution contract when consumers select one directly.
-    outputMetadata = {
-      inherit meta;
-      inherit version runtimeDeps propagatedDeps;
-      pname = effectivePname;
-      platforms = derivationPlatforms;
-      constraints = {
-        build = buildPlatform.constraints;
-        execute = ourExecute;
-        target =
-          if meta ? target
-          then codeTargetPlatform.constraints
-          else null;
-      };
-    }
-    // (
-      if normalizedPlatformSupport == null
-      then {}
-      else {platformSupport = normalizedPlatformSupport;}
-    );
+    outputMetadata =
+      {
+        inherit meta;
+        inherit version runtimeDeps propagatedDeps;
+        pname = effectivePname;
+        platforms = derivationPlatforms;
+        constraints = {
+          build = buildPlatform.constraints;
+          execute = ourExecute;
+          target =
+            if meta ? target
+            then codeTargetPlatform.constraints
+            else null;
+        };
+      }
+      // (
+        if normalizedPlatformSupport == null
+        then {}
+        else {platformSupport = normalizedPlatformSupport;}
+      );
     annotatedOutputs = builtins.listToAttrs (
       builtins.map (output: {
         name = output;
