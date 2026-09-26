@@ -89,6 +89,9 @@
   googleAuthRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelGoogleAuth123;
   };
+  googleHttpModernRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelGoogleHttp1433;
+  };
   protobufJava = helperScope.bazelProtobufJava;
   protobufJavaUtil = helperScope.bazelProtobufJavaUtil;
   grpcJavaPlugin =
@@ -159,11 +162,13 @@ in
     passthru.offlineGoogleHttpRepositories = googleHttpRepositories;
     passthru.offlineTomcatAnnotationRepositories = tomcatAnnotationRepositories;
     passthru.offlineGoogleAuthRepositories = googleAuthRepositories;
+    passthru.offlineGoogleHttpModernRepositories = googleHttpModernRepositories;
     passthru.offlineRepositories =
       mavenSourceRepositories
       // googleHttpRepositories
       // tomcatAnnotationRepositories
       // googleAuthRepositories
+      // googleHttpModernRepositories
       // {platforms = helperScope.bazelPlatformsSource;}
       // helperScope.bazelAsyncProfilerRepositories
       // helperScope.bazelNetty119.repositories
