@@ -6,7 +6,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
-use std::time::Instant;
 
 use crucible::{
     Decision, NetworkFaultSelectable, NodeTemplate, ObservableEventPayload, QuantumOutcome,
@@ -123,7 +122,6 @@ pub(super) fn west_convergence_marker_seen(entries: &[SchedulerEventLogEntry]) -
 /// Owns the audited concurrent prefix before west reports route convergence.
 pub(super) struct EnvoyParallelBoot {
     active: bool,
-    started: Instant,
     next_progress_quanta: u64,
     observable_events: u64,
     nodes: BTreeMap<String, NodeBootProgress>,
@@ -181,7 +179,6 @@ impl EnvoyParallelBoot {
         }
         Self {
             active,
-            started: Instant::now(),
             next_progress_quanta: 1,
             observable_events: 0,
             nodes: [
@@ -272,8 +269,7 @@ impl EnvoyParallelBoot {
             .join(" ");
         let _ = writeln!(
             std::io::stderr().lock(),
-            "CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 elapsed_ms={} quanta={} frontier_ps={} observable_events={} converged={converged} nodes={nodes}",
-            self.started.elapsed().as_millis(),
+            "CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 quanta={} frontier_ps={} observable_events={} converged={converged} nodes={nodes}",
             completed_quanta,
             outcome.frontier.ticks,
             self.observable_events,
