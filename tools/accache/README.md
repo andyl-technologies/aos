@@ -112,10 +112,13 @@ Incremental Rust, executable/proc-macro compilation, ordinary linking, and
 upstream parser exclusions bypass. Frontend parsing compatibility is not a
 claim of support for every compiler/version/platform, nor for arbitrary new
 side-effect flags. This package targets the AOS Linux compiler toolchains.
-Rust `-Csave-temps=yes` also bypasses: it creates temporary bitcode, object,
-and metadata files whose names are not available before compilation. Pinned
-sccache accepts this flag but its warm hit drops those files. Accache preserves
-them by running rustc for each invocation. `-Csave-temps=no` remains cacheable.
+Rust `-Csave-temps=yes` also bypasses: it creates bitcode, object, and randomly
+named metadata files. In a shared target directory, a directory snapshot cannot
+safely attribute those files to one action when compilers run concurrently.
+Pinned sccache accepts this flag but its warm hit drops those files. Accache
+preserves them by running rustc for each invocation. `-Csave-temps=no` remains
+cacheable. GCC dump, optimization report, and SARIF file options also bypass
+because they write side files outside the pinned frontend's output list.
 
 ## Storage and concurrency
 

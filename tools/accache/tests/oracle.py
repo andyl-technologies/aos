@@ -72,6 +72,16 @@ def fixtures(gcc, clang, rustc):
             yield Fixture("gcc-aux-info", compiler,
                           base + ["-aux-info", "source.aux"], c_sources,
                           {"value.h": "#define VALUE 73\n"})
+            yield Fixture("gcc-tree-dump", compiler,
+                          base + ["-fdump-tree-original"], c_sources,
+                          {"value.h": "#define VALUE 73\n"}, cacheable=False)
+            yield Fixture("gcc-opt-report", compiler,
+                          base + ["-O2", "-fopt-info-optimized=report.txt"], c_sources,
+                          {"value.h": "#define VALUE 73\n"}, cacheable=False)
+            yield Fixture("gcc-sarif-report", compiler,
+                          base + ["-fdiagnostics-format=sarif-file"], c_sources,
+                          cacheable=False,
+                          nondeterministic_outputs={"source.c.sarif"})
         else:
             yield Fixture("clang-serialized-diagnostics", compiler,
                           base + ["--serialize-diagnostics", "source.dia"], c_sources,
@@ -635,6 +645,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     assert "source.d" not in actual[3], "oracle defect changed; remove this exception"
                 missing_oracle_side_files = {
                     "gcc-aux-info": "source.aux",
+                    "gcc-opt-report": "report.txt",
+                    "gcc-sarif-report": "source.c.sarif",
                     "clang-serialized-diagnostics": "source.dia",
                 }
                 if (side_file := missing_oracle_side_files.get(fixture.name)) and label == "sccache warm vs direct":
@@ -644,6 +656,13 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     expected = (*expected[:3], {key: value for key, value in expected[3].items()
                                                if key != side_file})
                     assert side_file not in actual[3], (
+                        "oracle defect changed; remove this exception")
+                if fixture.name == "gcc-tree-dump" and label == "sccache warm vs direct":
+                    dump_files = {path for path in expected[3] if path.endswith(".original")}
+                    assert len(dump_files) == 1, ("unexpected GCC dump files", expected[3])
+                    expected = (*expected[:3], {key: value for key, value in expected[3].items()
+                                               if key not in dump_files})
+                    assert dump_files.isdisjoint(actual[3]), (
                         "oracle defect changed; remove this exception")
                 if (fixture.name in {"rust-staticlib-metadata-only", "rust-staticlib-all-outputs"}
                         and label == "sccache warm vs direct"):
@@ -687,10 +706,13 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                 before_hits = hits()
                 oracle_warm = invoke([sccache])
                 compare(baseline, oracle_warm, "sccache warm vs direct" if baseline is direct else "sccache warm vs cold")
-                for path in fixture.nondeterministic_outputs:
-                    assert oracle_warm[3][path] == oracle_cold[3][path], (
-                        fixture.name, "sccache did not replay the cold PCH")
+                if fixture.cacheable:
+                    for path in fixture.nondeterministic_outputs:
+                        assert oracle_warm[3][path] == oracle_cold[3][path], (
+                            fixture.name, "sccache did not replay the cold PCH")
                 oracle_hit = hits() > before_hits
+                if fixture.name in {"gcc-tree-dump", "gcc-opt-report", "gcc-sarif-report"}:
+                    assert oracle_hit, (fixture.name, "sccache report omission was not a hit")
 
                 accache_cold = invoke([accache])
                 compare(baseline, accache_cold, "accache cold vs baseline")
@@ -700,9 +722,10 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                         fixture.name, "inner response edit was not tracked", cold_event)
                 accache_warm = invoke([accache])
                 compare(baseline, accache_warm, "accache warm vs baseline")
-                for path in fixture.nondeterministic_outputs:
-                    assert accache_warm[3][path] == accache_cold[3][path], (
-                        fixture.name, "accache did not replay the cold PCH")
+                if fixture.cacheable:
+                    for path in fixture.nondeterministic_outputs:
+                        assert accache_warm[3][path] == accache_cold[3][path], (
+                            fixture.name, "accache did not replay the cold PCH")
                 warm_event = json.loads(subprocess.check_output([accache, "explain"], env=env))
                 if fixture.cacheable:
                     assert cold_event["outcome"] == "miss", (fixture.name, cold_event)

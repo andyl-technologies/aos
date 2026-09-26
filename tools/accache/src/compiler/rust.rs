@@ -19,11 +19,12 @@ pub(super) fn configure(
         &std::env::current_dir()?,
         &arguments,
     ))?;
-    // save-temps writes bitcode, object, and temporary metadata paths that
-    // --print=file-names cannot enumerate. A hit would silently omit them.
+    // save-temps writes bitcode, object, and randomly named metadata files.
+    // A shared target can have concurrent writers, so a directory snapshot
+    // cannot safely attribute these files to this action for replay.
     ensure!(
         !saves_temporary_outputs(&expanded),
-        "save-temps writes unenumerated compiler outputs"
+        "save-temps side outputs cannot be attributed in a shared target"
     );
     let mut print_args = invocation
         .execution_args
