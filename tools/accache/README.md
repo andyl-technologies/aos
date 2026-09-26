@@ -187,6 +187,9 @@ names containing spaces.
 The nested Rust response fixture uses pinned sccache as its output reference:
 direct rustc rejects an inner `@file`, while sccache expands it. The fixture
 mutates that inner file and requires a miss with provenance naming the change.
+Cargo-style Rust cases cover extra filenames, metadata disambiguation, panic
+mode, multiple codegen units, and `--cfg` with `--check-cfg`; output names and
+bytes must match direct rustc and pinned sccache on cold and warm runs.
 The frontend check also requires incremental Rust to bypass caching.
 An oracle case verifies that sccache's warm `-Csave-temps=yes` hit omits
 bitcode files while accache runs rustc and preserves them on both invocations.

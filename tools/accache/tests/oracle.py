@@ -156,6 +156,12 @@ def fixtures(gcc, clang, rustc):
         ("optimized", ["--emit=link,dep-info", "-Copt-level=3", "--codegen=target-cpu=x86-64", "-Ctarget-feature=+sse2"]),
         ("debug", ["--emit=link,dep-info", "-Cdebuginfo=2", "-Csplit-debuginfo=packed"]),
         ("diagnostics", ["--emit=link,dep-info", "--error-format=json", "--json=diagnostic-rendered-ansi,artifacts"]),
+        ("extra-filename", ["--emit=link,dep-info", "-Cextra-filename=-abc123"]),
+        ("metadata-disambiguator", ["--emit=link,dep-info", "-C", "metadata=oracle123"]),
+        ("panic-abort", ["--emit=link,dep-info", "-Cpanic=abort"]),
+        ("multiple-codegen-units", ["--emit=link,dep-info", "-C", "codegen-units=4"]),
+        ("cfg-check", ["--emit=link,dep-info", '--cfg=feature="oracle"',
+                       '--check-cfg=cfg(feature, values("oracle"))']),
     ]:
         yield Fixture("rust-" + name, rustc,
                       ["--crate-name=example", "--crate-type=rlib", "--out-dir=target", "library.rs", *flags],
