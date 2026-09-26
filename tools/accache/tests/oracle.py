@@ -1711,6 +1711,72 @@ def check_clang_xray_lists(root, env, accache, sccache, clang, hits):
     return results
 
 
+def check_clang_profile_list(root, env, accache, sccache, clang, hits):
+    """Invalidate profile instrumentation when its selection list changes."""
+    work = root / "clang-profile-list"
+    work.mkdir()
+    (work / "source.c").write_text(
+        "__attribute__((noinline)) int tracked(int x) { return x + 1; }\n"
+        "__attribute__((noinline)) int other(int x) { return x + 2; }\n")
+    list_file = work / "list.txt"
+    object_file = work / "source.o"
+    depfile = work / "source.d"
+    args = [clang, "-O1", "-c", "source.c", "-fprofile-instr-generate",
+            "-fprofile-list=list.txt", "-MD", "-MF", "source.d",
+            "-o", "source.o"]
+
+    def compile_object(wrapper):
+        object_file.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        return (completed.stdout, completed.stderr,
+                object_file.read_bytes(), depfile.read_bytes())
+
+    results = []
+    first_object = None
+    for revision, contents in enumerate(["fun:tracked\n", "fun:other\n"]):
+        list_file.write_text(contents)
+        direct = compile_object([])
+        assert b"list.txt" in direct[3], "profile list absent from dep-info"
+        if first_object is None:
+            first_object = direct[2]
+        else:
+            assert direct[2] != first_object, "profile list edit had no effect"
+
+        before_hits = hits()
+        oracle = compile_object([sccache])
+        if revision:
+            # The pinned frontend does not classify this accepted Clang option
+            # as a file input, so its warm hit returns the prior object.
+            assert oracle[:2] == direct[:2] and oracle[3] == direct[3]
+            assert oracle[2] == first_object != direct[2]
+            assert hits() > before_hits, "sccache did not reuse its stale object"
+        else:
+            assert oracle == direct
+            assert hits() == before_hits, "sccache unexpectedly warm-hit"
+        before_hits = hits()
+        assert compile_object([sccache]) == oracle
+        assert hits() > before_hits, "sccache did not warm-hit"
+
+        assert compile_object([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", (revision, cold)
+        if revision:
+            assert any("list.txt" in item for item in cold["changes"]), cold
+        assert compile_object([accache]) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", (revision, warm)
+        results.append({"fixture": "clang-profile-list", "revision": revision,
+                        "oracle_hit": True, "oracle_stale_artifact": bool(revision),
+                        "accache": "hit",
+                        "artifacts": ["source.o", "source.d"]})
+
+    print("PASS oracle clang-profile-list invalidation", flush=True)
+    return results
+
+
 def check_clang_layout_seed(root, env, accache, sccache, clang, hits):
     """Track a layout seed file omitted from Clang's dependency output."""
     work = root / "clang-layout-seed"
@@ -2933,6 +2999,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                         sccache, clang, hits))
         results.extend(check_clang_xray_lists(root, env, accache,
                                               sccache, clang, hits))
+        results.extend(check_clang_profile_list(root, env, accache,
+                                                sccache, clang, hits))
         results.extend(check_clang_layout_seed(root, env, accache,
                                                sccache, clang, hits))
         results.extend(check_clang_warning_mappings(root, env, accache,

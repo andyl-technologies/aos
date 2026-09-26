@@ -311,6 +311,10 @@ produce the direct compiler's changed object.
 Three XRay cases change the always-instrument, never-instrument, and attribute
 list files. Clang includes these files in its depfile; both caches miss on an
 edit and restore the changed object and depfile on a warm hit.
+A Clang profile-selection case changes `-fprofile-list=path` between two
+functions. The edit changes instrumentation and object bytes. Pinned sccache
+replays its stale object, while accache fingerprints the list, misses with its
+path in the explanation, and restores the new object and depfile on a warm hit.
 A Clang pass-plugin case rebuilds an LLVM plugin at the same path with different
 code. Both caches miss on the changed plugin, warm-hit on a repeat, and produce
 the direct compiler's changed object.
