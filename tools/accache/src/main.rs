@@ -176,10 +176,11 @@ fn prepare(backend: &Backend, compiler: &str, args: &[String]) -> Result<Prepare
     let environment = model::environment(&manifest)?;
     let invocation = compiler::classify(kind, compiler, args, &environment, &manifest)?;
     let inputs = invocation.discover(compiler, args, &environment)?;
+    let key_arguments = invocation.key_arguments.as_deref().unwrap_or(args);
     let identity = Identity {
         adapter: invocation.kind.clone(),
         compiler: compiler.into(),
-        arguments: args.to_vec(),
+        arguments: key_arguments.to_vec(),
         cwd: env::current_dir()?
             .to_str()
             .context("non-UTF-8 working directory")?
@@ -209,10 +210,14 @@ fn prepare(backend: &Backend, compiler: &str, args: &[String]) -> Result<Prepare
         .encode_to_vec(),
     )?;
     let execution_args = invocation.execution_args.as_deref().unwrap_or(args);
+    let command_arguments = invocation
+        .key_arguments
+        .as_deref()
+        .unwrap_or(execution_args);
     let command = backend.put(
         &proto::Command {
             arguments: std::iter::once(compiler.to_owned())
-                .chain(execution_args.iter().cloned())
+                .chain(command_arguments.iter().cloned())
                 .collect(),
             environment_variables: environment
                 .iter()

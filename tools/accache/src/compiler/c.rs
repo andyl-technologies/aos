@@ -2,7 +2,12 @@
 
 use super::{Invocation, llvm, parsed, strings};
 use crate::model::{self, DynamicOutputs, Manifest};
-use accache_frontend::compiler::{Language, c::CCompilerKind, clang, gcc};
+use accache_frontend::compiler::{
+    Language,
+    args::{ArgDisposition, ArgParseError, ArgsIter, Argument},
+    c::CCompilerKind,
+    clang, gcc,
+};
 use anyhow::{Result, ensure};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -49,6 +54,27 @@ pub(super) fn configure(
             CCompilerKind::Gcc,
         )
     })?;
+    let key_arguments = if clang {
+        c_key_arguments(
+            &expanded,
+            ArgsIter::new(
+                expanded.iter().map(|arg| OsString::from(arg.as_str())),
+                (&gcc::ARGS[..], &clang::ARGS[..]),
+            )
+            .with_double_dashes(),
+        )?
+    } else {
+        c_key_arguments(
+            &expanded,
+            ArgsIter::new(
+                expanded.iter().map(|arg| OsString::from(arg.as_str())),
+                &gcc::ARGS[..],
+            ),
+        )?
+    };
+    if key_arguments.len() != expanded.len() {
+        invocation.key_arguments = Some(key_arguments);
+    }
     ensure!(
         !expanded
             .iter()
@@ -684,6 +710,36 @@ pub(super) fn configure(
         invocation.output(&object.path.with_extension("d"), false)?;
     }
     Ok(())
+}
+
+fn c_key_arguments(
+    expanded: &[String],
+    parsed: impl Iterator<Item = std::result::Result<Argument<gcc::ArgData>, ArgParseError>>,
+) -> Result<Vec<String>> {
+    let mut key_arguments = Vec::with_capacity(expanded.len());
+    let mut index = 0;
+    for argument in parsed {
+        let argument = argument?;
+        let consumed = match argument {
+            Argument::WithValue(_, _, ArgDisposition::Separated)
+            | Argument::WithValue(_, _, ArgDisposition::CanBeConcatenated(_)) => 2,
+            _ => 1,
+        };
+        let end = index + consumed;
+        ensure!(end <= expanded.len(), "C/C++ argument parser advanced past argv");
+
+        // The parser, not a string filter, identifies unhashed flags. A token
+        // spelled "-pipe" can also be a value or a filename after "--".
+        if !matches!(
+            argument.get_data(),
+            Some(gcc::ArgData::UnhashedFlag | gcc::ArgData::Unhashed(_))
+        ) {
+            key_arguments.extend_from_slice(&expanded[index..end]);
+        }
+        index = end;
+    }
+    ensure!(index == expanded.len(), "C/C++ argument parser missed argv");
+    Ok(key_arguments)
 }
 
 fn compiler_prefix_inputs(invocation: &mut Invocation, prefix: &str) -> Result<()> {

@@ -95,7 +95,7 @@ pub struct Identity {
     pub adapter: String,
     /// Executable named by the manifest.
     pub compiler: String,
-    /// Original compiler argument vector, without wrapper arguments.
+    /// Compiler arguments used for the cache key, without unhashed flags.
     pub arguments: Vec<String>,
     /// Absolute compiler working directory.
     pub cwd: String,

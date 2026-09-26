@@ -3245,6 +3245,51 @@ def check_clang_module_file(root, env, accache, sccache, clang, hits, named):
     return results
 
 
+def check_c_unhashed_pipe(root, env, accache, sccache, gcc, clang, hits):
+    """Reuse an object when only the frontend's unhashed -pipe flag changes."""
+    results = []
+    for label, compiler in [("gcc", gcc), ("clang", clang)]:
+        fixture = label + "-unhashed-pipe"
+        work = root / fixture
+        work.mkdir()
+        (work / "source.c").write_text("int answer(void) { return 42; }\n")
+        object_file = work / "source.o"
+        args = [compiler, "-c", "source.c", "-o", "source.o",
+                "-frandom-seed=" + fixture]
+
+        def compile_object(wrapper, pipe=False):
+            object_file.unlink(missing_ok=True)
+            command = [*wrapper, *args, *(["-pipe"] if pipe else [])]
+            completed = subprocess.run(command, cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, command, completed.stderr)
+            return completed.stdout, completed.stderr, object_file.read_bytes()
+
+        direct = compile_object([])
+        assert compile_object([], pipe=True) == direct, (fixture, "-pipe changed output")
+
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() == before_hits, (fixture, "sccache entry already existed")
+        assert compile_object([sccache], pipe=True) == direct
+        assert hits() > before_hits, (fixture, "sccache keyed -pipe")
+
+        assert compile_object([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", (fixture, cold)
+        assert compile_object([accache], pipe=True) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", (fixture, warm)
+        assert warm["action"] == cold["action"], (fixture, cold, warm)
+        assert warm["command"][-1] == "-pipe", (fixture, warm)
+        assert "-pipe" not in warm["identity"]["arguments"], (fixture, warm)
+        results.extend({"fixture": fixture, "revision": revision,
+                        "oracle_hit": True, "accache": "hit", "artifacts": ["source.o"]}
+                       for revision in range(2))
+        print("PASS oracle", fixture, "unhashed -pipe equivalence", flush=True)
+    return results
+
+
 def check_rust_llvm_plugin(root, env, accache, sccache, rustc, clang, hits):
     """Track an LLVM pass plugin omitted from rustc dep-info."""
     work = root / "rust-llvm-plugin"
@@ -4528,6 +4573,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
         for named in [True, False]:
             results.extend(check_clang_module_file(root, env, accache,
                                                    sccache, clang, hits, named))
+        results.extend(check_c_unhashed_pipe(root, env, accache,
+                                            sccache, gcc, clang, hits))
         results.extend(check_clang_llvm_file_inputs(root, env, accache,
                                                     sccache, clang, hits))
         results.extend(check_clang_llvm_report_passthrough(root, env, accache,
