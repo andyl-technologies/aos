@@ -208,7 +208,8 @@ impl VerifiedControllerHoldReadbackV1 {
 /// The signing key must be loaded from a distinct Controller-only credential.
 /// This function never accepts a caller-supplied hold or source commitment.
 /// The exact fixed journal path, current Create join, hold, and sequence are
-/// checked before and after signing. No production path calls this yet.
+/// checked before and after signing. The held V7 terminal flight uses this
+/// receipt only as nonauthorizing Root-row evidence.
 ///
 /// # Errors
 ///
