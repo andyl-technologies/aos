@@ -1643,15 +1643,17 @@ fn current_root_binding_chain(
     if bindings.len() > MAXIMUM_POLICY_BINDINGS {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
+    let binding_epochs: BTreeSet<_> = bindings
+        .iter()
+        .map(|(binding, head)| (*head, binding.root_generation))
+        .collect();
     for (key, value) in authority.records()? {
         if !key.starts_with(PROOF_KEY_PREFIX) {
             continue;
         }
         let proof = RootQualifiedProofV1::decode(value)?;
         if key != proof_key(proof.binding).as_slice()
-            || !bindings.iter().any(|(binding, head)| {
-                proof.binding == *head && proof.epoch == binding.root_generation
-            })
+            || !binding_epochs.contains(&(proof.binding, proof.epoch))
         {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
