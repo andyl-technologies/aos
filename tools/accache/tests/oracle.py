@@ -3290,6 +3290,46 @@ def check_c_unhashed_pipe(root, env, accache, sccache, gcc, clang, hits):
     return results
 
 
+def check_clang_unsupported_parallel_jobs(root, env, accache, sccache, clang, hits):
+    """Preserve AOS Clang's error for an upstream-unhashed unsupported flag."""
+    fixture = "clang-unsupported-parallel-jobs"
+    work = root / fixture
+    work.mkdir()
+    (work / "source.c").write_text("int answer(void) { return 42; }\n")
+    object_file = work / "source.o"
+    args = [clang, "-c", "source.c", "-o", "source.o",
+            "-frandom-seed=" + fixture]
+
+    def compile_object(wrapper, parallel=False):
+        object_file.unlink(missing_ok=True)
+        command = [*wrapper, *args, *(["-parallel-jobs=2"] if parallel else [])]
+        completed = subprocess.run(command, cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        artifact = object_file.read_bytes() if object_file.exists() else None
+        return completed.returncode, completed.stdout, completed.stderr, artifact
+
+    plain = compile_object([])
+    invalid = compile_object([], parallel=True)
+    assert plain[0] == 0 and plain[3] is not None, (fixture, plain)
+    assert invalid[0] != 0 and invalid[3] is None, (fixture, invalid)
+    assert b"unknown argument: '-parallel-jobs=2'" in invalid[2], (fixture, invalid)
+
+    before_hits = hits()
+    assert compile_object([sccache]) == plain
+    assert hits() == before_hits, (fixture, "sccache entry already existed")
+    assert compile_object([sccache], parallel=True) == plain
+    assert hits() > before_hits, (fixture, "sccache did not replay its invalid action")
+
+    assert compile_object([accache]) == plain
+    assert compile_object([accache], parallel=True) == invalid
+    bypass = json.loads(subprocess.check_output([accache, "explain"], env=env))
+    assert bypass["outcome"] == "bypass", (fixture, bypass)
+    assert bypass["command"][-1] == "-parallel-jobs=2", (fixture, bypass)
+    print("PASS oracle", fixture, "invalid option passthrough", flush=True)
+    return {"fixture": fixture, "revision": 0, "oracle_wrong_success": True,
+            "accache": "bypass", "artifacts": []}
+
+
 def check_rust_llvm_plugin(root, env, accache, sccache, rustc, clang, hits):
     """Track an LLVM pass plugin omitted from rustc dep-info."""
     work = root / "rust-llvm-plugin"
@@ -4575,6 +4615,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                                                    sccache, clang, hits, named))
         results.extend(check_c_unhashed_pipe(root, env, accache,
                                             sccache, gcc, clang, hits))
+        results.append(check_clang_unsupported_parallel_jobs(
+            root, env, accache, sccache, clang, hits))
         results.extend(check_clang_llvm_file_inputs(root, env, accache,
                                                     sccache, clang, hits))
         results.extend(check_clang_llvm_report_passthrough(root, env, accache,
