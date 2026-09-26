@@ -1,0 +1,28 @@
+--- a/org.jacoco.agent.rt/src/org/jacoco/agent/rt/internal/CoverageTransformer.java
++++ b/org.jacoco.agent.rt/src/org/jacoco/agent/rt/internal/CoverageTransformer.java
+@@ -29,6 +29,9 @@ public class CoverageTransformer implements ClassFileTransformer {
+ 
+ 	private static final String AGENT_PREFIX;
+ 
++	private static final CodeSource AGENT_CODE_SOURCE = CoverageTransformer.class
++			.getProtectionDomain().getCodeSource();
++
+ 	static {
+ 		final String name = CoverageTransformer.class.getName();
+ 		AGENT_PREFIX = toVMName(name.substring(0, name.lastIndexOf('.')));
+@@ -114,6 +117,15 @@ public class CoverageTransformer implements ClassFileTransformer {
+ 	boolean filter(final ClassLoader loader, final String classname,
+ 			final ProtectionDomain protectionDomain) {
++		// This source build keeps ASM and JaCoCo core in the agent JAR.
++		// Instrumenting that archive would recursively instrument the runtime.
++		if (AGENT_CODE_SOURCE != null && protectionDomain != null
++				&& protectionDomain.getCodeSource() != null
++				&& AGENT_CODE_SOURCE.getLocation().equals(
++						protectionDomain.getCodeSource().getLocation())) {
++			return false;
++		}
++
+		if (loader == null) {
+			if (!inclBootstrapClasses) {
+				return false;
+			}
