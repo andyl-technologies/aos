@@ -5,7 +5,7 @@ aos_dev_cache_record_builds() {
   local output_file=$1 attr=$2 output deriver timestamp backend descriptor binding expected actual
   [[ -n $attr ]] || return 0
   [[ $aos_dev_go_cache == true || $aos_dev_bazel_cache == true || \
-     $aos_dev_rust_target_cache == true ]] || return 0
+     $aos_dev_rust_target_cache == true || ${aos_dev_accache:-false} == true ]] || return 0
   [[ ! -L $aos_dev_cache_dir/builds.tsv ]] || aos_dev_error 'cache build journal must not be a symlink'
   command -v nix-store >/dev/null 2>&1 || return 0
 
@@ -13,8 +13,13 @@ aos_dev_cache_record_builds() {
   while IFS= read -r output; do
     [[ $output == /nix/store/* ]] || continue
     deriver=$(nix-store --query --deriver "$output" 2>/dev/null) || continue
-    for backend in go bazel rust; do
+    for backend in go bazel rust accache; do
       case $backend in
+        accache)
+          [[ ${aos_dev_accache:-false} == true ]] || continue
+          binding=ACCACHE_DIR
+          expected=$aos_dev_accache_path
+          ;;
         go)
           [[ $aos_dev_go_cache == true ]] || continue
           binding=GOCACHE
@@ -58,7 +63,7 @@ Usage: bash ./aos-dev cache $1 <command> [options]
 
 Commands:
   status                 Show disk use and number of stored entries
-  entries [--limit N]    Show recent target trees (Rust) or files (Go/Bazel)
+  entries [--limit N]    Show recent target trees (Rust) or files (Go/Bazel/accache)
   intermediates [--limit N]
                          Show Rust crate fingerprints and incremental trees
   builds [--limit N]     Show aos-dev build requests made with this cache enabled
@@ -75,7 +80,8 @@ derivers, not a claimed mapping from every hashed cache entry to a derivation.
 It cannot identify transitive builds or builds made outside aos-dev.
 Compact removes empty directories (only whole empty Rust target trees);
 backend cache records cannot be repacked in place. Cargo may serialize builds
-that use the same target tree.
+that use the same target tree. Accache cleanup removes disposable action/CAS
+records; its separate state directory retains locks and invocation provenance.
 HELP
 }
 

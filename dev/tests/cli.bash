@@ -160,6 +160,44 @@ if grep -Fq -- 'sharedGoCacheDir' "$AOS_DEV_TEST_LOG"; then
   exit 1
 fi
 
+# Compiler caching is independently opt-in and obeys release isolation.
+: > "$AOS_DEV_TEST_LOG"
+AOS_DEV_ACCACHE_DIR=/custom/actions AOS_DEV_ACCACHE_STATE_DIR=/custom/action-state \
+  AOS_DEV_CACHE_DIR="$scratch/compiler-cache" \
+  bash "$root/aos-dev" --accache --no-go-cache --no-bazel-cache --no-rust-target-cache \
+    --no-rust-incremental build package alpha --no-out-link >/dev/null
+grep -Fq -- '--argstr sharedAccacheDir /custom/actions' "$AOS_DEV_TEST_LOG"
+grep -Fq -- '--argstr sharedAccacheStateDir /custom/action-state' "$AOS_DEV_TEST_LOG"
+grep -Fq -- "/custom/actions=$scratch/compiler-cache/accache" "$AOS_DEV_TEST_LOG"
+
+: > "$AOS_DEV_TEST_LOG"
+bash "$root/aos-dev" --release --accache build package alpha --no-out-link >/dev/null
+if grep -Eq 'sharedAccache|extra-sandbox-paths' "$AOS_DEV_TEST_LOG"; then
+  echo 'release mode enabled the compiler action cache' >&2
+  exit 1
+fi
+
+# XDG storage works without a writable /var/tmp and preserves the explicit
+# override for developers who intentionally keep their prior cache location.
+(
+  unset AOS_DEV_CACHE_DIR
+  export XDG_CACHE_HOME="$scratch/xdg-cache"
+  # Model the parent modes independently of this test sandbox's /build mode.
+  stat() { printf '755\n'; }
+  source "$root/dev/lib/cache.bash"
+  test "$aos_dev_cache_dir" = "$scratch/xdg-cache/aos-dev"
+  unset XDG_CACHE_HOME
+  source "$root/dev/lib/cache.bash"
+  test "$aos_dev_cache_dir" = "$HOME/.cache/aos-dev"
+  export XDG_CACHE_HOME="$scratch/xdg-cache"
+  stat() { printf '700\n'; }
+  source "$root/dev/lib/cache.bash"
+  test "$aos_dev_cache_dir" = "/var/tmp/aos-dev-cache-$(id -u)"
+  export AOS_DEV_CACHE_DIR="$scratch/explicit-cache"
+  source "$root/dev/lib/cache.bash"
+  test "$aos_dev_cache_dir" = "$scratch/explicit-cache"
+)
+
 export AOS_DEV_CACHE_DIR="$scratch/maintenance"
 
 # Init and doctor only inspect the daemon and local directories; neither
@@ -174,6 +212,20 @@ bash "$root/aos-dev" cache init > "$scratch/init.out"
 bash "$root/aos-dev" cache doctor > "$scratch/doctor.out"
 grep -Fq 'Go, Bazel, and Rust cache directories and ACLs are ready' "$scratch/doctor.out"
 test ! -s "$AOS_DEV_TEST_LOG"
+
+# Action-cache cleanup may evict blobs during builds, but must never unlink
+# a held action lock or discard the separate provenance history.
+mkdir -p "$AOS_DEV_CACHE_DIR/accache/cas/ab" "$AOS_DEV_CACHE_DIR/accache-state/locks"
+printf blob > "$AOS_DEV_CACHE_DIR/accache/cas/ab/old"
+printf lock > "$AOS_DEV_CACHE_DIR/accache-state/locks/held"
+touch -t 200001010000 "$AOS_DEV_CACHE_DIR/accache/cas/ab/old"
+accache_preview=$(bash "$root/aos-dev" cache accache prune --before 2001-01-01 --dry-run)
+printf '%s\n' "$accache_preview" | grep -Fq 'would remove'
+test -e "$AOS_DEV_CACHE_DIR/accache/cas/ab/old"
+bash "$root/aos-dev" cache accache prune --before 2001-01-01 >/dev/null
+test ! -e "$AOS_DEV_CACHE_DIR/accache/cas/ab/old"
+bash "$root/aos-dev" cache clear accache >/dev/null
+test -e "$AOS_DEV_CACHE_DIR/accache-state/locks/held"
 
 # The journal identifies direct build requests and their derivers, without
 # pretending that opaque Go/Bazel file keys identify a particular package.
