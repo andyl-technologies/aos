@@ -73,6 +73,49 @@ def fixtures(gcc, clang, rustc):
                           base + flags + ["-frandom-seed=" + name + "-" + suffix], c_sources,
                           {"value.h": "#define VALUE 73\n"})
 
+        # These accepted frontend options do not create extra artifacts, but
+        # their spelling and argument shape still have to reach the compiler.
+        # Edit the included header to test the dependency probe as well.
+        for suffix, flags in [
+            ("pedantic", ["-pedantic"]),
+            ("w-pedantic", ["-Wpedantic"]),
+            ("werror-pedantic", ["-Werror=pedantic"]),
+            ("trigraphs", ["-trigraphs"]),
+            ("nostdinc", ["-nostdinc"]),
+            ("nostdinc-cxx", ["-nostdinc++"]),
+            ("no-diagnostics-color", ["-fno-diagnostics-color"]),
+            ("assertion", ["-AFOO=BAR"]),
+        ]:
+            fixture = name + "-frontend-" + suffix
+            yield Fixture(fixture, compiler,
+                          base + flags + ["-frandom-seed=" + fixture], c_sources,
+                          {"value.h": "#define VALUE 73\n"})
+
+        if name == "gcc":
+            frontend_options = [
+                ("param", ["--param", "max-inline-insns-single=30"]),
+                ("working-directory", ["-fworking-directory"]),
+                ("no-working-directory", ["-fno-working-directory"]),
+            ]
+        else:
+            frontend_options = [
+                ("color-diagnostics", ["-fcolor-diagnostics"]),
+                ("no-color-diagnostics", ["-fno-color-diagnostics"]),
+                ("integrated-assembler", ["-fintegrated-as"]),
+                ("relax-all", ["-mrelax-all"]),
+                ("optimization-record-passes", ["-foptimization-record-passes=inline"]),
+                ("save-optimization-record", ["-fsave-optimization-record"]),
+                ("suppressed-optimization-record", ["-foptimization-record-passes=inline",
+                                                     "-fno-save-optimization-record"]),
+                ("debug-compilation-dir", ["-fdebug-compilation-dir=."]),
+            ]
+        for suffix, flags in frontend_options:
+            fixture = name + "-frontend-" + suffix
+            yield Fixture(fixture, compiler,
+                          base + flags + ["-frandom-seed=" + fixture], c_sources,
+                          {"value.h": "#define VALUE 73\n"},
+                          cacheable=suffix != "save-optimization-record")
+
         bypass_modes = [
             ("syntax-only", ["-fsyntax-only"]),
             ("save-temps", ["-save-temps=obj"]),
@@ -5108,6 +5151,7 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                     "gcc-html-state-diagrams": {"state.html"},
                     "gcc-html-graph-details": {"details.html"},
                     "clang-serialized-diagnostics": {"source.dia"},
+                    "clang-frontend-optimization-record-passes": {"source.opt.yaml"},
                     "gcc-wa-depfile": {"asm.d"},
                     "gcc-wa-mixed-depfile": {"asm.d"},
                     "gcc-xassembler-depfile": {"asm.d"},
