@@ -59,10 +59,17 @@ const MAXIMUM_STRING_BYTES: usize = 64 * 1024;
 const MAXIMUM_DEPTH: usize = 64;
 
 mod model;
+mod project_authorization_source_v2;
 pub use model::{
     PreparedPublisherPolicyRevisionV1, PublisherControllerHeadV1, PublisherPolicyError,
     PublisherPolicyLimits, PublisherProjectCacheDomainHeadV1, PublisherProjectRevocationHeadV1,
     PublisherResourceBindingV1, PublisherRevocationHeadV1,
+};
+pub use project_authorization_source_v2::{
+    PinnedPublisherProjectAuthorizationIssuerV2, ProjectAuthorizationSourceErrorV2,
+    ProjectAuthorizationSourceExpectedV2, VerifiedPublisherProjectAuthorizationSourceV2,
+    encode_project_authorization_issuer_credential_v2,
+    verify_current_project_authorization_source_v2,
 };
 
 /// Provides exclusive access to validated current publisher policy state.
