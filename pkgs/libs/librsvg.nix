@@ -10,6 +10,7 @@
   cairo,
   dav1d,
   freetype,
+  fontconfig,
   gdk-pixbuf,
   harfbuzz,
   libxml2,
@@ -69,8 +70,10 @@ in
       buildPackages.gi-docgen
       buildPackages.docutils
     ];
+    # rsvg-convert links Fontconfig directly; relying on Pango's transitive
+    # dependency lets the reference scrubber erase its runtime search path.
     runtimeDeps =
-      [glib cairo dav1d freetype gdk-pixbuf harfbuzz libxml2 pango]
+      [glib cairo dav1d freetype fontconfig gdk-pixbuf harfbuzz libxml2 pango]
       ++ (
         if stdenv.hostPlatform.isLinux
         then [util-linux]
