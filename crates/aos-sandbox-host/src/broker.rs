@@ -57,6 +57,9 @@ use aos_sandbox_protocol::host_output::{
     ValidatedHostOutputQueryRequestV1, ValidatedHostOutputReserveRequestV1,
     decode_host_output_query_request_v1, decode_host_output_reserve_request_v1,
 };
+use aos_sandbox_protocol::host_storage_output_readback::{
+    decode_host_storage_output_readback_request_v1, host_storage_output_readback_grant_v1,
+};
 use aos_sandbox_protocol::semantics::{
     CanonicalHostAttachGateSemanticsV1, CanonicalHostExecutionArgumentSemanticsV1,
     CanonicalHostExecutionSemanticsV1, CanonicalHostOutputSemanticsV1,
@@ -106,6 +109,7 @@ use crate::state::{
     Admission, CompletedGuardianLineage, GuardianLineage, HostAction, HostState, HostStateStore,
     RuntimeEffectQuery, host_execution_receipt_digest,
 };
+use crate::storage_output_readback::protected_storage_output_readback_body_v1;
 use crate::worker::{
     CompletedRuntimeProof, GuardianObservation, GuardianObservedState, HostRuntimeIdentity,
     HostWorker, ObservedRuntimeState, PinnedLeader, PinnedPayloadLeader, WorkerObservation,
@@ -654,6 +658,101 @@ where
             assignment,
             runtime_handle: claim.currentness().runtime().handle(),
         })
+    }
+
+    /// Observes the original Host output pair under one signed Storage session.
+    ///
+    /// The request's Controller records remain structural until this Host plan
+    /// and current lease pass admission. The returned body is signed only by
+    /// the caller's protected broker-session outcome commit.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign authenticated method, stale Host boot/assignment,
+    /// invalid Host grant or lease, absent original pair, or changed readback.
+    pub fn observe_storage_output<F>(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        authenticated: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+        mut trusted_clock: F,
+    ) -> Result<Vec<u8>>
+    where
+        F: FnMut() -> Result<RawPairedClockSample>,
+    {
+        if authenticated.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            || authenticated.method() != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
+        {
+            return Err(HostError::Fence(
+                "Host Storage output readback method is invalid",
+            ));
+        }
+        let artifacts = authenticated.authorization().ok_or(HostError::Fence(
+            "Host Storage output readback plan is absent",
+        ))?;
+        self.ensure_healthy()?;
+        claim
+            .revalidate()
+            .map_err(|_| HostError::Fence("protected Host output claim is stale"))?;
+        let admission_clock = trusted_clock()?;
+        if admission_clock.host_boot_id() != protected_boot_id
+            || claim.host_verifier().boot_id() != protected_boot_id
+        {
+            return Err(HostError::Fence(
+                "Host Storage output readback boot changed",
+            ));
+        }
+
+        let request = decode_host_storage_output_readback_request_v1(
+            authenticated.exact_body(),
+            authenticated.peer(),
+            authenticated.peer_policy(),
+            admission_clock.boottime_nanoseconds(),
+        )?;
+        let request_id = authenticated.request_id();
+        if request.header().request_id() != &request_id
+            || request.header().deadline_boottime_nanoseconds()
+                != authenticated.deadline_boottime_nanoseconds()
+        {
+            return Err(HostError::Fence(
+                "Host Storage output readback header changed",
+            ));
+        }
+        let assignment = execution_assignment(claim)?;
+        let grant = host_storage_output_readback_grant_v1(
+            assignment,
+            request_id,
+            authenticated.exact_body(),
+        )?;
+        let prior_fence = self
+            .state
+            .prior_authorization(assignment.sandbox().as_bytes())
+            .ok_or(HostError::Fence(
+                "Host Storage output readback base fence is absent",
+            ))?;
+        let admitted = self.authority.admit_storage_output_readback(
+            artifacts,
+            assignment,
+            request_id,
+            authenticated.exact_body(),
+            &grant,
+            request.header().deadline_boottime_nanoseconds(),
+            &admission_clock,
+            prior_fence,
+        )?;
+        self.authority
+            .check_before_effect(&admitted.effect, &mut || {
+                trusted_clock().map_err(|_| aos_sandbox_broker::BrokerAdmissionError::FenceRejected)
+            })?;
+        let body = protected_storage_output_readback_body_v1(claim, &request, protected_boot_id)?;
+        self.authority
+            .check_before_effect(&admitted.effect, &mut || {
+                trusted_clock().map_err(|_| aos_sandbox_broker::BrokerAdmissionError::FenceRejected)
+            })?;
+        claim
+            .revalidate()
+            .map_err(|_| HostError::Fence("protected Host output changed after readback"))?;
+        Ok(body)
     }
 
     /// Reserves one signed Host execution grant in the shared Host lease fence.
@@ -5883,6 +5982,119 @@ mod tests {
                 .is_err()
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn storage_output_readback_requires_exact_signed_plan_and_current_base_fence() {
+        let fixture = AuthorityFixture::new();
+        let authority = fixture.authority();
+        let base_body = request(1, 1, 4);
+        let base_request =
+            decode_runtime_request(&base_body, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
+                .unwrap();
+        let assignment = base_request.fence().broker_assignment().unwrap();
+        let base_artifacts = fixture.artifacts(&base_body, 1);
+        let base = authority
+            .admit(
+                &base_artifacts,
+                &base_request,
+                &base_body,
+                ProtocolVersion::new(1, 0),
+                &clock(),
+                None,
+            )
+            .unwrap();
+        let base_fence = authority
+            .seal_fence(assignment.sandbox().as_bytes(), &base.fence)
+            .unwrap();
+
+        let body = b"canonical method-48 request";
+        let grant = BrokerGrant::new(
+            BrokerVerb::HostObserveStorageOutput,
+            BrokerGrantTarget::Assignment,
+            aos_sandbox_core::BrokerArgumentCommitment::for_canonical_bytes(body),
+            4 * 1_024,
+            0,
+        )
+        .unwrap();
+        let plan = BrokerAuthorizationPlan::new(
+            BrokerAudience::Host,
+            ProtocolId::HostBroker,
+            ProtocolVersion::new(1, 0),
+            assignment,
+            TEST_NODE,
+            fixture.lease_signer.clone(),
+            vec![grant.clone()],
+            ObjectDigest::from_bytes([48; 32]),
+            fixture.revocation_scope,
+            100,
+            300,
+            Vec::new(),
+        )
+        .unwrap();
+        let plan_bytes = encode_broker_authorization_plan(&plan);
+        let plan_signature = signed_object(
+            &plan_bytes,
+            PortableMediaType::BrokerAuthorizationPlan,
+            fixture.plan_scope,
+            fixture.plan_signer.clone(),
+            SignaturePurpose::BrokerAuthorization,
+            &fixture.plan_policy_descriptor,
+            &fixture.plan_key,
+        );
+        let artifacts = validated_artifacts(BrokerAuthorizationArtifactsV1 {
+            broker_plan: plan_bytes,
+            broker_plan_signature: plan_signature,
+            ownership_lease: base_artifacts.ownership_lease().to_vec(),
+            ownership_lease_signature: base_artifacts.ownership_lease_signature().to_vec(),
+            ..Default::default()
+        });
+        let admit = |request_body: &[u8], semantic: &BrokerGrant, prior: &[u8], deadline| {
+            authority.admit_storage_output_readback(
+                &artifacts,
+                assignment,
+                [72; 16],
+                request_body,
+                semantic,
+                deadline,
+                &clock(),
+                prior,
+            )
+        };
+
+        let accepted = admit(body, &grant, &base_fence, 200).unwrap();
+        assert!(
+            authority
+                .check_before_effect(&accepted.effect, &mut || Ok(clock()))
+                .is_ok()
+        );
+        let foreign_body = b"canonical method-48 requesu";
+        let foreign_grant = BrokerGrant::new(
+            BrokerVerb::HostObserveStorageOutput,
+            BrokerGrantTarget::Assignment,
+            aos_sandbox_core::BrokerArgumentCommitment::for_canonical_bytes(foreign_body),
+            4 * 1_024,
+            0,
+        )
+        .unwrap();
+        assert!(admit(foreign_body, &foreign_grant, &base_fence, 200).is_err());
+        assert!(admit(body, &grant, &base_fence, TEST_BOOTTIME_NANOSECONDS).is_err());
+        assert!(admit(body, &grant, b"foreign base fence", 200).is_err());
+
+        let wrong_verb = BrokerGrant::new(
+            BrokerVerb::HostQueryExecutionOutput,
+            BrokerGrantTarget::Assignment,
+            grant.argument_commitment(),
+            4 * 1_024,
+            0,
+        )
+        .unwrap();
+        assert!(admit(body, &wrong_verb, &base_fence, 200).is_err());
+        assert!(
+            authority
+                .check_before_effect(&accepted.effect, &mut || Ok(clock_at(300, 200)))
+                .is_err()
+        );
     }
 
     #[tokio::test]

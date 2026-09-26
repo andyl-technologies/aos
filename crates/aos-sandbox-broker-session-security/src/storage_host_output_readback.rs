@@ -1,9 +1,9 @@
 //! Protected, same-session Storage readback of a Host output reservation.
 //!
 //! This is a necessary observation, never Storage writer admission. Method 48
-//! remains absent from production hello and Host dispatch; a future Controller
-//! issuer must sign it from AOSCST01, and the Host responder must read its
-//! protected AOSEOR02/AOSHOP01 pair before this can participate in AOSEOR03.
+//! remains absent from production hello; a future Controller issuer must sign
+//! it from AOSCST01 before the closed Host responder can participate in any
+//! AOSEOR03 admission.
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox_linux::boot::KernelBootId;
@@ -25,8 +25,8 @@ use crate::{
 /// Retains one signed Host terminal and the move-only protected session head.
 ///
 /// The checked scalar readback is not a Storage output writer permit. Its
-/// Controller AOSCST01-based issuance and exact Host protected read must still
-/// be supplied by separately closed production owners.
+/// Controller AOSCST01-based issuance and a held Storage writer admission are
+/// still absent from the production path.
 #[must_use = "revalidate the signed Host terminal before any future Storage join"]
 pub struct ProtectedHostStorageOutputReadbackV1 {
     outcome: AuthenticatedBrokerMethodOutcomeV1,

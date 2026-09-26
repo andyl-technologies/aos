@@ -1869,6 +1869,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
                     | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+                    | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
                     | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY

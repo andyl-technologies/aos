@@ -268,6 +268,32 @@ impl BrokerAuthority {
         self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
     }
 
+    /// Verifies one read-only Host observation of an original Storage reserve.
+    ///
+    /// The exact Controller Host-audience grant may rotate away from the base
+    /// plan, but its assignment and lease must remain on the protected fence.
+    /// No Host or Storage output record is written by this admission.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign verb or target, invalid signatures, changed lease,
+    /// or an inexact request commitment.
+    pub fn admit_host_storage_output_readback(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Host
+            || request.verb != BrokerVerb::HostObserveStorageOutput
+            || request.target != BrokerGrantTarget::Assignment
+        {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
+        self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
+    }
+
     /// Verifies one read-only Storage capture candidate on its retained fence.
     ///
     /// The exact Controller plan may differ from the shared Storage base plan,

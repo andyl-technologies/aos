@@ -179,6 +179,15 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
     let artifacts = request
         .authorization()
         .ok_or(HostExecutionHandoffErrorV1::Conflict)?;
+    if method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT {
+        if execution_spec_content.is_some() {
+            return Err(HostExecutionHandoffErrorV1::Conflict);
+        }
+        let body = host.observe_authenticated_storage_output(&claim, request, protected_boot_id)?;
+        claim.revalidate()?;
+        check_kernel_boot(protected_boot_id)?;
+        return Ok(body);
+    }
     if method == BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE {
         agent
             .as_ref()

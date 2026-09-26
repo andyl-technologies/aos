@@ -2,8 +2,8 @@
 //!
 //! This owner rereads AOSEOR02/AOSHOP01 from the protected Host journal and
 //! compares the original Controller AOSCIA01/AOSCIS01 fields. It produces only
-//! a canonical response body. Method 48 has no production Host dispatcher or
-//! Controller signer, so this body is not a signed same-session observation.
+//! a canonical response body. The closed method-48 broker-session dispatch
+//! signs that body, but production hello and Controller issuance stay disabled.
 
 use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, HostExecutionOutputReservationStatusV1, HostExecutionOutputReservationV1,
@@ -20,9 +20,9 @@ use crate::{HostError, Result};
 
 /// Builds a nonauthorizing Host response from the exact protected output pair.
 ///
-/// A future method-48 handler must verify the Controller Host-audience plan,
-/// retain the authenticated Storage session, and recheck the Host journal
-/// before signing this body. This function does not dispatch a method.
+/// The method-48 handler verifies the Controller Host-audience plan and retains
+/// the authenticated Storage session before signing this body. This function
+/// alone neither authenticates the request nor dispatches a method.
 ///
 /// # Errors
 ///

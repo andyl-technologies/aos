@@ -244,6 +244,22 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
         protected_boot_id: [u8; 16],
     ) -> Result<HostAttachReadOnlyProofV1, DormantHostBrokerCallErrorV1>;
 
+    /// Verifies method 48 and reads the exact protected original Host pair.
+    ///
+    /// The response body is not an authenticated terminal until the caller
+    /// commits and signs it on the same Storage-owned broker session.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an inexact signed Host plan, stale lease or boot, or changed
+    /// protected output custody.
+    fn observe_authenticated_storage_output(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+    ) -> Result<Vec<u8>, DormantHostBrokerCallErrorV1>;
+
     /// Completes an exact Host authorization reservation after protected readback.
     ///
     /// # Errors
@@ -588,6 +604,29 @@ where
                     Ok(sample)
                 },
             )
+            .map_err(Into::into)
+    }
+
+    fn observe_authenticated_storage_output(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+    ) -> Result<Vec<u8>, DormantHostBrokerCallErrorV1> {
+        let last_boottime = &mut self.last_boottime_nanoseconds;
+        self.broker
+            .observe_storage_output(claim, request, protected_boot_id, || {
+                let sample = crate::service::trusted_paired_clock_sample()?;
+                if sample.host_boot_id() != protected_boot_id
+                    || last_boottime.is_some_and(|floor| sample.boottime_nanoseconds() < floor)
+                {
+                    return Err(HostError::Fence(
+                        "Host Storage output readback clock is stale",
+                    ));
+                }
+                *last_boottime = Some(sample.boottime_nanoseconds());
+                Ok(sample)
+            })
             .map_err(Into::into)
     }
 
