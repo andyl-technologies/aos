@@ -459,6 +459,20 @@ impl QemuLiveHostIoRuntime {
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    fn renew_advance_completion_poll(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if self.advance_wait_deadline.start(timeout) {
+            Ok(())
+        } else {
+            Err(QemuAsyncDriverRuntimeError::new(
+                "renew advance completion poll",
+                "timeout deadline overflow",
+            ))
+        }
+    }
+
     #[cfg(test)]
     fn service_ninep_io_for_test(
         &mut self,

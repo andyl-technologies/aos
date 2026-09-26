@@ -159,6 +159,7 @@ pub struct QemuLiveNodeStepGateConfig {
     accelerator: bool,
     queue_capacity: u32,
     completion_timeout: Duration,
+    unbounded_advance_completion: bool,
     console_capture: bool,
     rr_control_boundary_trace: bool,
     runtime_determinism_trace: bool,
@@ -318,6 +319,7 @@ impl QemuLiveNodeStepGateConfig {
             accelerator: false,
             queue_capacity: GATE_QUEUE_CAPACITY,
             completion_timeout: Duration::from_secs(240),
+            unbounded_advance_completion: false,
             console_capture: false,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
@@ -377,6 +379,7 @@ impl QemuLiveNodeStepGateConfig {
             accelerator: false,
             queue_capacity: GATE_QUEUE_CAPACITY,
             completion_timeout: Duration::from_secs(240),
+            unbounded_advance_completion: false,
             console_capture: false,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
@@ -601,6 +604,13 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub const fn with_completion_timeout(mut self, completion_timeout: Duration) -> Self {
         self.completion_timeout = completion_timeout;
+        self
+    }
+
+    /// Selects renewable advance polling while keeping lifecycle waits bounded.
+    #[must_use]
+    pub const fn with_unbounded_advance_completion(mut self, enabled: bool) -> Self {
+        self.unbounded_advance_completion = enabled;
         self
     }
 
@@ -1429,7 +1439,10 @@ fn build_live_node_with_authority(
         shmem_config,
         GateSendAuthorizer,
         gate_shutdown_policy(),
-        gate_async_policy(config.completion_timeout),
+        gate_async_policy(
+            config.completion_timeout,
+            config.unbounded_advance_completion,
+        ),
         QemuCrashDetector::new(identity.crash_detector),
         runtime,
     );

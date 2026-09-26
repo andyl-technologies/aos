@@ -916,6 +916,25 @@ where
             })
             .collect::<Vec<_>>();
         let mut assembly = QemuHotForkWorldAssembly::new(continuation);
+        // Fix the policy before launching any child, so an already-expired
+        // watchdog cannot leave an unadmitted process outside quarantine.
+        let async_policy = match context.remaining_host_watchdog() {
+            Some(remaining) if remaining.is_zero() => {
+                quarantine_failed_assembly(source_world, resources, assembly, None);
+                return ProductionLifecycleStartOutcome::failed(
+                    AttemptWorkerFailure::Terminal(
+                        QemuProductionHotForkWorldLifecycleFactoryError::Assembly(String::from(
+                            "assignment host watchdog expired before child launch",
+                        )),
+                    ),
+                    CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
+                );
+            }
+            Some(remaining) => {
+                QemuAsyncDriverPolicy::new(remaining, remaining, remaining, remaining)
+            }
+            None => self.async_policy.with_unbounded_advance_completion(),
+        };
         let mut staged: Vec<ProductionStagedChild<R::Guard>> = Vec::new();
         for (node, (service_state, generation)) in boundaries {
             match service_state {
@@ -1064,7 +1083,7 @@ where
             if let Err(error) = child.install_scheduler_node(
                 node.clone(),
                 self.shutdown_policy,
-                self.async_policy,
+                async_policy,
                 QemuCrashDetector::new(node.name.clone()),
             ) {
                 let message = error.to_string();
