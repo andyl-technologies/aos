@@ -410,7 +410,8 @@ driver form and a header mutation.
 C++20 consumer cases rebuild a PCM at the same path and verify that both
 `-fmodule-file=name=path` and `-fmodule-file=path` invalidate both caches.
 Accache names the PCM in its miss explanation. The unnamed form also checks
-Clang's warning on cold and warm calls.
+Clang's warning on cold and warm calls. A reduced-BMI module oracle checks
+restoration of both its object and PCM after a source edit and on a warm hit.
 GCC include-search fixtures cover `-idirafter`, both `-iwithprefix` placements,
 and `-nostdinc` with an explicit include directory. Each edits the selected
 header and compares direct, sccache, and accache outputs through a miss and

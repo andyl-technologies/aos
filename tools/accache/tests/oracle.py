@@ -441,6 +441,12 @@ def fixtures(gcc, clang, rustc):
     yield Fixture("clang-module-side-output", clang,
                   ["-std=c++20", "-c", "module.cppm", "-fmodule-output=example.pcm", "-o", "module.o", "-fdiagnostics-color=always"],
                   {"module.cppm": "export module example; export int answer() { return 42; }\n"})
+    yield Fixture("clang-module-reduced-bmi", clang,
+                  ["-std=c++20", "-c", "module.cppm", "-fmodule-output=example.pcm",
+                   "-fmodules-reduced-bmi", "-o", "module.o",
+                   "-fdiagnostics-color=always"],
+                  {"module.cppm": "export module example; export int answer() { return 42; }\n"},
+                  {"module.cppm": "export module example; export int answer() { return 73; }\n"})
 
     rust_sources = {"library.rs": 'pub fn answer() -> &\'static str { include_str!("value.txt") }\n', "value.txt": "first"}
     for name, flags in [
