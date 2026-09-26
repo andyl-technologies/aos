@@ -93,7 +93,17 @@ in
           rm -f icu4c/data/out/tmp/icudata.lst \
             icu4c/data/out/tmp/icudt78l.dat icu4c/data/packagedata
           rm -rf icu4c/data/out/icu4j
-          make -C icu4c/data JAR=${buildJdk}/bin/jar icu4j-data
+
+          # The data tools compile a temporary ELF library with ICU4C's
+          # native compiler. Do not pass target C flags into that compiler.
+          (
+            unset AOS_CROSS_COMPILING AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+            unset AOS_OBJECT_FORMAT AOS_HARDENING_ENABLE AOS_HARDENING_DISABLE
+            unset NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS
+            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH
+            unset LIBRARY_PATH CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
+            make -C icu4c/data JAR=${buildJdk}/bin/jar icu4j-data
+          )
 
           ${buildJdk}/bin/jar tf icu4c/data/out/icu4j/icudata.jar > data-members
           for resource in ucase.icu uprops.icu ubidi.icu nfc.nrm; do
