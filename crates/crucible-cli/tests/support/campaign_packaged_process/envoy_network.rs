@@ -19,10 +19,18 @@ pub(super) struct FlightProgress {
     pub(super) configuration: String,
 }
 
-#[test]
-#[ignore = "requires packaged QEMU and a dedicated five-guest cgroup and project quota"]
-fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<dyn Error>> {
-    let fixture = FlightFixture::new()?;
+pub(super) struct EnvoyCampaignFlight {
+    pub(super) generated: Value,
+    pub(super) lineage: PathBuf,
+    pub(super) policy: PathBuf,
+    pub(super) authority: PathBuf,
+    pub(super) service: CampaignServiceChild,
+}
+
+pub(super) fn start_envoy_campaign(
+    fixture: &FlightFixture,
+    hot_fork: bool,
+) -> Result<EnvoyCampaignFlight, Box<dyn Error>> {
     let kernel = required_path("CRUCIBLE_KERNEL")?;
     let root_image = required_path("CRUCIBLE_ROOT_IMAGE")?;
     let generated = run_json(
@@ -46,6 +54,75 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         "materialize the five-node Envoy fixture",
     )?;
     let manifest = json_path(&generated, "manifest")?;
+    let lineage = json_path(&generated, "lineage")?;
+    let policy = compile_bounded_policy(fixture, &generated)?;
+    println!("envoy_five_node_fixture={generated}");
+
+    let mut importer = fixture.start_service(Some(&manifest))?;
+    run_json(
+        connected_campaign(fixture)
+            .args(["create", CAMPAIGN, "--lineage"])
+            .arg(&lineage)
+            .arg("--policy")
+            .arg(&policy),
+        "create imported five-node campaign",
+    )?;
+    importer.stop()?;
+
+    let authority = component_authority(fixture)?;
+    let hot_fork_deployment = hot_fork
+        .then(|| product_hot_fork_deployment(fixture))
+        .transpose()?;
+    let service =
+        start_packaged_network_service(fixture, &authority, hot_fork_deployment.as_deref())?;
+    let initial = campaign_status(fixture)?;
+    run_json(
+        connected_campaign(fixture)
+            .args([
+                "budget",
+                CAMPAIGN,
+                "--expected",
+                &json_string(&initial, "snapshot")?,
+                "--command",
+            ])
+            .arg("71".repeat(32))
+            .args(["add", "12", "--proposals", "12"]),
+        "grant bounded five-node campaign budget",
+    )?;
+    let budgeted = campaign_status(fixture)?;
+    run_json(
+        connected_campaign(fixture)
+            .args([
+                "start",
+                CAMPAIGN,
+                "--expected",
+                &json_string(&budgeted, "snapshot")?,
+                "--command",
+            ])
+            .arg("72".repeat(32)),
+        "start five-node campaign",
+    )?;
+
+    Ok(EnvoyCampaignFlight {
+        generated,
+        lineage,
+        policy,
+        authority,
+        service,
+    })
+}
+
+#[test]
+#[ignore = "requires packaged QEMU and a dedicated five-guest cgroup and project quota"]
+fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<dyn Error>> {
+    let fixture = FlightFixture::new()?;
+    let EnvoyCampaignFlight {
+        generated,
+        lineage,
+        policy,
+        authority,
+        mut service,
+    } = start_envoy_campaign(&fixture, true)?;
     // The exported scenario supplies the exact guest group identity; all
     // campaign reads and mutations below still go through the public CLI.
     let scenario =
@@ -71,52 +148,6 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         0,
     )?);
     let followup_recovery = recovery_argument(&scenario, RETAIN_AND_PROBE)?;
-    let lineage = json_path(&generated, "lineage")?;
-    let policy = compile_bounded_policy(&fixture, &generated)?;
-    println!("envoy_five_node_fixture={generated}");
-
-    let mut importer = fixture.start_service(Some(&manifest))?;
-    run_json(
-        connected_campaign(&fixture)
-            .args(["create", CAMPAIGN, "--lineage"])
-            .arg(&lineage)
-            .arg("--policy")
-            .arg(&policy),
-        "create imported five-node campaign",
-    )?;
-    importer.stop()?;
-
-    let authority = component_authority(&fixture)?;
-    let hot_fork_deployment = product_hot_fork_deployment(&fixture)?;
-    let mut service =
-        start_packaged_network_service(&fixture, &authority, Some(&hot_fork_deployment))?;
-    let initial = campaign_status(&fixture)?;
-    run_json(
-        connected_campaign(&fixture)
-            .args([
-                "budget",
-                CAMPAIGN,
-                "--expected",
-                &json_string(&initial, "snapshot")?,
-                "--command",
-            ])
-            .arg("71".repeat(32))
-            .args(["add", "12", "--proposals", "12"]),
-        "grant bounded five-node campaign budget",
-    )?;
-    let budgeted = campaign_status(&fixture)?;
-    run_json(
-        connected_campaign(&fixture)
-            .args([
-                "start",
-                CAMPAIGN,
-                "--expected",
-                &json_string(&budgeted, "snapshot")?,
-                "--command",
-            ])
-            .arg("72".repeat(32)),
-        "start five-node campaign",
-    )?;
 
     let genesis = json_string(&generated, "configuration")?;
     let discovery_attempt = initial_discovery_attempt(&lineage, &policy)?;
@@ -821,7 +852,7 @@ pub(super) fn wait_for_request_attempt(
     })
 }
 
-fn require_network_effect(
+pub(super) fn require_network_effect(
     explanations: &[&Value],
     kind: &str,
     segments: &[&str],
@@ -859,7 +890,7 @@ fn require_network_effect(
     Err(format!("attempts lack applied {kind} effect on {segments:?}: {explanations:?}").into())
 }
 
-fn require_semantic_marker(
+pub(super) fn require_semantic_marker(
     explanation: &Value,
     name: &str,
     node: &str,
@@ -878,7 +909,7 @@ fn require_semantic_marker(
     Ok(())
 }
 
-fn require_measured_backup_route(explanation: &Value) -> Result<(), Box<dyn Error>> {
+pub(super) fn require_measured_backup_route(explanation: &Value) -> Result<(), Box<dyn Error>> {
     let evidence = &explanation["effect_evidence"];
     assert_eq!(
         evidence["schema"],
