@@ -1644,6 +1644,21 @@ in {
       bootstrap_gc = json.loads(client.succeed(hub_command(
           "cache gc plan create fleet/objects"
       ), timeout=180))["data"]["plan"]
+      marker_query = (
+          "SELECT COUNT(*) FROM binding_credential_revisions marker "
+          "JOIN bindings binding ON binding.id = marker.binding_id "
+          "WHERE binding.kind = 'deployment_r2' "
+          "AND marker.purpose = 'delete' AND marker.generation = 1 "
+          "AND marker.validation_state = 'invalid' "
+          "AND NOT EXISTS (SELECT 1 FROM binding_credential_heads head "
+          "WHERE head.binding_id = marker.binding_id "
+          "AND head.purpose = marker.purpose)"
+      )
+      marker_count = int(native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          f"-c {shlex.quote(marker_query)}"
+      ).strip())
+      assert marker_count == 1, marker_count
       ack_plan = json.loads(client.succeed(hub_command(
           "cache gc first-sweep plan-acknowledgement fleet/objects "
           f"--gc-plan-id {shlex.quote(bootstrap_gc['plan_id'])} "

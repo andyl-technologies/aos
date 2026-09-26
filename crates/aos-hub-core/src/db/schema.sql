@@ -3366,8 +3366,7 @@ CREATE TABLE cache_gc_plan_actions(
   expected_inventory_generation INTEGER NOT NULL,
   binding_id INTEGER NOT NULL,
   binding_resource_version INTEGER NOT NULL,
-  -- Deployment R2 uses a validated delete capability and no credential revision.
-  delete_credential_purpose KEYTEXT16 DEFAULT 'delete',
+  delete_credential_purpose KEYTEXT16 NOT NULL DEFAULT 'delete',
   delete_credential_generation INTEGER NOT NULL,
   estimated_reclaimable_bytes INTEGER NOT NULL,
   UNIQUE(action_id, plan_id, cache_id),
@@ -3379,10 +3378,7 @@ CREATE TABLE cache_gc_plan_actions(
   CHECK(expected_inventory_generation > 0),
   CHECK(binding_id > 0 AND binding_resource_version > 0
     AND delete_credential_generation > 0),
-  CHECK((delete_credential_purpose IS NOT NULL
-      AND delete_credential_purpose = 'delete')
-    OR (delete_credential_purpose IS NULL
-      AND delete_credential_generation = 1)),
+  CHECK(delete_credential_purpose = 'delete'),
   CHECK(estimated_reclaimable_bytes >= 0),
   FOREIGN KEY(plan_id, cache_id) REFERENCES cache_gc_plans(plan_id, cache_id),
   FOREIGN KEY(surface_object_id, cache_id) REFERENCES surface_objects(id, cache_id),
@@ -3406,7 +3402,7 @@ CREATE TABLE object_deletion_jobs(
   expected_inventory_generation INTEGER NOT NULL,
   binding_id INTEGER NOT NULL,
   binding_resource_version INTEGER NOT NULL,
-  delete_credential_purpose KEYTEXT16 DEFAULT 'delete',
+  delete_credential_purpose KEYTEXT16 NOT NULL DEFAULT 'delete',
   delete_credential_generation INTEGER NOT NULL,
   state KEYTEXT16 NOT NULL,
   active_slot INTEGER,
@@ -3449,10 +3445,7 @@ OR(state IN('succeeded', 'abandoned', 'cancelled') AND active_slot IS NULL)),
   REFERENCES binary_caches(id, stable_id),
   FOREIGN KEY(surface_object_id, cache_id) REFERENCES surface_objects(id, cache_id),
   FOREIGN KEY(placement_id, cache_id) REFERENCES surface_placements(id, cache_id),
-  CHECK((delete_credential_purpose IS NOT NULL
-      AND delete_credential_purpose = 'delete')
-    OR (delete_credential_purpose IS NULL
-      AND delete_credential_generation = 1)),
+  CHECK(delete_credential_purpose = 'delete'),
   FOREIGN KEY(binding_id, delete_credential_purpose, delete_credential_generation)
   REFERENCES binding_credential_revisions(binding_id, purpose, generation)
 );
@@ -4368,7 +4361,7 @@ CREATE TABLE object_deletion_attempt_receipts(
   expected_inventory_generation INTEGER NOT NULL,
   binding_id INTEGER NOT NULL,
   binding_resource_version INTEGER NOT NULL,
-  delete_credential_purpose KEYTEXT16 DEFAULT 'delete',
+  delete_credential_purpose KEYTEXT16 NOT NULL DEFAULT 'delete',
   delete_credential_generation INTEGER NOT NULL,
   state KEYTEXT16 NOT NULL,
   outcome KEYTEXT32,
@@ -4387,10 +4380,7 @@ CREATE TABLE object_deletion_attempt_receipts(
   CHECK(expected_inventory_generation > 0),
   CHECK(binding_id > 0 AND binding_resource_version > 0
     AND delete_credential_generation > 0),
-  CHECK((delete_credential_purpose IS NOT NULL
-      AND delete_credential_purpose = 'delete')
-    OR (delete_credential_purpose IS NULL
-      AND delete_credential_generation = 1)),
+  CHECK(delete_credential_purpose = 'delete'),
   CHECK(state IN('requested', 'responded', 'finalized')),
   CHECK(outcome IS NULL OR outcome IN(
     'deleted', 'not_found', 'precondition_failed', 'backend_error')),
