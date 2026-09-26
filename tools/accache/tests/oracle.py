@@ -447,6 +447,23 @@ def fixtures(gcc, clang, rustc):
         yield Fixture(name + "-preprocess-only", compiler, ["-E", "source.c"], c_sources, cacheable=False)
         yield Fixture(name + "-unknown-invalid", compiler, base + ["-faccache-intentionally-invalid"],
                       c_sources, cacheable=False, exit_code=1)
+        if name == "gcc":
+            yield Fixture("gcc-frontend-unsupported-vfs-stat-cache", compiler,
+                          base + ["-ivfsstatcache", "."], c_sources,
+                          cacheable=False, exit_code=1)
+        else:
+            for suffix, flags in [
+                ("dependent-lib", ["--dependent-lib=unused"]),
+                ("reduced-bmi-precompile", ["--precompile-reduced-bmi"]),
+                ("cuda-variadic", ["-fcuda-allow-variadic-functions"]),
+                ("assignment-tracking", ["-fexperimental-assignment-tracking=1"]),
+                ("no-pch-timestamp", ["-fno-pch-timestamp"]),
+                ("ctor-homing", ["-fuse-ctor-homing"]),
+                ("no-opaque-pointers", ["-no-opaque-pointers"]),
+                ("verify", ["-verify"]),
+            ]:
+                yield Fixture("clang-frontend-unsupported-" + suffix, compiler,
+                              base + flags, c_sources, cacheable=False, exit_code=1)
 
     # The AOS Clang supports host-only CUDA and HIP without an SDK. These
     # modes use separate driver paths but still need header invalidation and
@@ -462,6 +479,19 @@ def fixtures(gcc, clang, rustc):
                        "-fdiagnostics-color=always"],
                       {"source." + extension: '#include "value.h"\n'
                                                'int answer(void) { return VALUE; }\n',
+                       "value.h": "#define VALUE 42\n"},
+                      {"value.h": "#define VALUE 73\n"})
+    for suffix, flag in [
+        ("hip-path", "--hip-path=."),
+        ("rocm-path", "--rocm-path=."),
+        ("hip-device-lib-path", "--hip-device-lib-path=."),
+    ]:
+        yield Fixture("clang-hip-host-" + suffix, clang,
+                      ["-x", "hip", "--offload-host-only", "-nogpuinc", "-nogpulib",
+                       "-fuse-cuid=none", flag, "-c", "source.hip", "-o", "source.o",
+                       "-MD", "-MF", "source.d", "-fdiagnostics-color=always"],
+                      {"source.hip": '#include "value.h"\n'
+                                     'int answer(void) { return VALUE; }\n',
                        "value.h": "#define VALUE 42\n"},
                       {"value.h": "#define VALUE 73\n"})
 
@@ -653,6 +683,12 @@ def fixtures(gcc, clang, rustc):
         ("print-cfg", ["--print", "cfg"]),
     ]:
         yield Fixture("rust-query-" + name, rustc, arguments, {}, cacheable=False)
+    for name, arguments in [
+        ("removed-pretty", ["--pretty", "expanded"]),
+        ("removed-unpretty", ["--unpretty", "expanded"]),
+    ]:
+        yield Fixture("rust-query-" + name, rustc, arguments, {},
+                      cacheable=False, exit_code=1)
 
 
 def snapshot(work):
