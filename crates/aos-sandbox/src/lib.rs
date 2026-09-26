@@ -61,6 +61,7 @@ pub mod controller_execution_output_settlement;
 pub mod controller_execution_preissue;
 #[cfg(target_os = "linux")]
 pub mod controller_execution_spec_attempt;
+pub mod controller_no_apply_settlement_cursor;
 pub mod controller_query;
 #[cfg(target_os = "linux")]
 pub mod controller_service;

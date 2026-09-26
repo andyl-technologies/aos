@@ -12,6 +12,11 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox::controller_execution_argument_attempt::{
     ControllerExecutionArgumentAttemptV1, read_historical_controller_execution_argument_attempt_v1,
 };
+use aos_sandbox::controller_no_apply_settlement_cursor::{
+    ControllerNoApplyCursorStateV1, ControllerNoApplySettlementCursorV1,
+    observe_controller_no_apply_preliminary_v1, read_controller_no_apply_settlement_cursor_v1,
+    reserve_controller_no_apply_settlement_cursor_v1,
+};
 use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox::{EffectFailure, Journal};
@@ -138,6 +143,7 @@ fn preliminary_matches_archive(
 struct SettlementExchangeContextV2 {
     method: SettlementMethodV2,
     archive: VerifiedControllerNoApplyArchiveV2,
+    cursor: ControllerNoApplySettlementCursorV1,
     exact_body: Vec<u8>,
     validated_preliminary: Option<ValidatedHostNoApplySettlementRequestV2>,
 }
@@ -242,19 +248,83 @@ impl ControllerHostNoApplyExchangeV2 {
                 self.exchange.mark_failed();
                 retryable("Host preliminary request needs protected recovery")
             })?;
-        let exact_body =
-            issued.ok_or_else(|| retryable("Host preliminary request was not issued"))?;
-        let validated_preliminary = validated_preliminary
-            .ok_or_else(|| retryable("Host preliminary request was not validated"))?;
+        let exact_body = issued.ok_or_else(|| {
+            self.exchange.mark_failed();
+            retryable("Host preliminary request was not issued")
+        })?;
+        let validated_preliminary = validated_preliminary.ok_or_else(|| {
+            self.exchange.mark_failed();
+            retryable("Host preliminary request was not validated")
+        })?;
+        let candidate = ControllerNoApplySettlementCursorV1::from_signed_preliminary_request(
+            &archive.source,
+            archive.marker,
+            archive.archive_head,
+            archive.signed_terminal_outcome,
+            preparation.signed_request(),
+            &validated_preliminary,
+        )
+        .map_err(|_| {
+            self.exchange.mark_failed();
+            retryable("signed Host preliminary cursor is invalid")
+        })?;
         self.exchange.start(
             SettlementExchangeContextV2 {
                 method: SettlementMethodV2::Preliminary,
-                archive,
+                archive: archive.clone(),
+                cursor: candidate,
                 exact_body,
                 validated_preliminary: Some(validated_preliminary),
             },
             preparation,
         );
+        let current =
+            verify_archive(session, controller, assignment, source, clock).map_err(|error| {
+                self.exchange.mark_failed();
+                error
+            })?;
+        if current != archive {
+            self.exchange.mark_failed();
+            return Err(retryable(
+                "H/T archive changed before Controller cursor append",
+            ));
+        }
+        let cursor = reserve_controller_no_apply_settlement_cursor_v1(
+            controller,
+            &archive.source,
+            candidate,
+        )
+        .map_err(|_| {
+            self.exchange.mark_failed();
+            retryable("Controller preliminary cursor needs cold readback")
+        })?;
+        let Some(context) = self.exchange.context_mut() else {
+            self.exchange.mark_failed();
+            return Err(retryable("retained Host preliminary request is absent"));
+        };
+        context.cursor = cursor;
+        let sealed =
+            verify_archive(session, controller, assignment, source, clock).map_err(|error| {
+                self.exchange.mark_failed();
+                error
+            })?;
+        let readback = read_controller_no_apply_settlement_cursor_v1(
+            controller,
+            source,
+            archive.marker,
+            archive.archive_head,
+            archive.signed_terminal_outcome,
+        )
+        .map_err(|_| {
+            self.exchange.mark_failed();
+            retryable("Controller preliminary cursor changed before Host send")
+        })?;
+        if sealed != archive || readback != Some(cursor) {
+            self.exchange.mark_failed();
+            return Err(retryable(
+                "Controller and Host cut changed before Host send",
+            ));
+        }
         self.drain(session, controller, assignment, clock)?
             .ok_or_else(|| retryable(ERRORS.absent))
     }
@@ -275,6 +345,20 @@ impl ControllerHostNoApplyExchangeV2 {
             return Err(retryable("another Host settlement request retains custody"));
         }
         let archive = verify_archive(session, controller, assignment, source, clock)?;
+        let cursor = read_controller_no_apply_settlement_cursor_v1(
+            controller,
+            source,
+            archive.marker,
+            archive.archive_head,
+            archive.signed_terminal_outcome,
+        )
+        .map_err(|_| retryable("Controller preliminary cursor is not current"))?
+        .ok_or_else(|| retryable("Controller preliminary cursor is absent"))?;
+        if verify_archive(session, controller, assignment, source, clock)? != archive {
+            return Err(retryable(
+                "H/T archive changed around Controller cursor readback",
+            ));
+        }
         let sample = clock().map_err(|_| retryable("protected Controller clock is unavailable"))?;
         let mut issued = None;
         let preparation = session
@@ -312,11 +396,15 @@ impl ControllerHostNoApplyExchangeV2 {
                 self.exchange.mark_failed();
                 retryable("Host settlement query needs protected recovery")
             })?;
-        let exact_body = issued.ok_or_else(|| retryable("Host settlement query was not issued"))?;
+        let exact_body = issued.ok_or_else(|| {
+            self.exchange.mark_failed();
+            retryable("Host settlement query was not issued")
+        })?;
         self.exchange.start(
             SettlementExchangeContextV2 {
                 method: SettlementMethodV2::Query,
                 archive,
+                cursor,
                 exact_body,
                 validated_preliminary: None,
             },
@@ -358,11 +446,79 @@ impl ControllerHostNoApplyExchangeV2 {
                 "Controller no-Apply archive changed after Host response",
             ));
         }
-        let observation = classify_outcome(&context, outcome);
-        if observation.is_err() {
+        let observation = classify_outcome(&context, outcome).map_err(|error| {
             self.exchange.mark_failed();
+            error
+        })?;
+        let current_cursor = read_controller_no_apply_settlement_cursor_v1(
+            controller,
+            &context.archive.source,
+            context.archive.marker,
+            context.archive.archive_head,
+            context.archive.signed_terminal_outcome,
+        )
+        .map_err(|_| {
+            self.exchange.mark_failed();
+            retryable("Controller preliminary cursor changed after Host response")
+        })?
+        .ok_or_else(|| {
+            self.exchange.mark_failed();
+            retryable("Controller preliminary cursor disappeared")
+        })?;
+        if current_cursor != context.cursor {
+            self.exchange.mark_failed();
+            return Err(retryable("Controller preliminary cursor was replaced"));
         }
-        observation.map(Some)
+        let retained = if let Some(stage) = observation.preliminary() {
+            observe_controller_no_apply_preliminary_v1(
+                controller,
+                &context.archive.source,
+                context.cursor,
+                observation.outcome(),
+                stage,
+            )
+            .map_err(|_| {
+                self.exchange.mark_failed();
+                retryable("signed Host preliminary needs Controller cursor readback")
+            })?
+        } else {
+            if context.cursor.state() != ControllerNoApplyCursorStateV1::Requested {
+                self.exchange.mark_failed();
+                return Err(retryable(
+                    "Host history rolled back below Controller cursor",
+                ));
+            }
+            context.cursor
+        };
+        let final_archive = verify_archive(
+            session,
+            controller,
+            assignment,
+            &context.archive.source,
+            clock,
+        )
+        .map_err(|error| {
+            self.exchange.mark_failed();
+            error
+        })?;
+        if final_archive != context.archive
+            || read_controller_no_apply_settlement_cursor_v1(
+                controller,
+                &context.archive.source,
+                context.archive.marker,
+                context.archive.archive_head,
+                context.archive.signed_terminal_outcome,
+            )
+            .ok()
+            .flatten()
+                != Some(retained)
+        {
+            self.exchange.mark_failed();
+            return Err(retryable(
+                "Controller and Host preliminary changed after cursor append",
+            ));
+        }
+        Ok(Some(observation))
     }
 }
 

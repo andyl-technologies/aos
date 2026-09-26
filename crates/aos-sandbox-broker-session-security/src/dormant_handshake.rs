@@ -941,6 +941,17 @@ pub enum DormantBrokerRequestPreparationV1 {
     },
 }
 
+impl DormantBrokerRequestPreparationV1 {
+    /// Borrows the exact signed request retained across protected preparation ambiguity.
+    pub(crate) const fn signed_request(&self) -> &AuthenticatedBrokerMethodRequestV1 {
+        match self {
+            Self::Prepared(request) => &request.0,
+            Self::InitializationRecoveryRequired { request, .. }
+            | Self::SuccessorRecoveryRequired { request, .. } => &request.0,
+        }
+    }
+}
+
 /// Classifies descriptor-request preparation without losing FD custody.
 #[must_use = "recover ambiguity before sending any descriptor"]
 pub enum DormantBrokerDescriptorRequestPreparationV1 {

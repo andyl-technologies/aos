@@ -1916,6 +1916,10 @@ where
             self.validate_public_operation_authorizations()?;
             validate_runtime_authority_operations(&self.journal)?;
             create_failure::validate_all_prepare_floors(&self.journal)?;
+            crate::controller_no_apply_settlement_cursor::validate_all_controller_no_apply_cursors_v1(
+                &self.journal,
+            )
+            .map_err(|_| ReconcilerError::CorruptLedger("Controller no-Apply settlement cursor is corrupt"))?;
             if self
                 .journal
                 .records(RecordNamespace::SandboxSpec)

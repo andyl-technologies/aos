@@ -257,6 +257,8 @@ pub enum RecordNamespace {
     ControllerExecutionObserveReservation = 71,
     /// Controller-held prepare floor for an exact failed-before-commit Create.
     ControllerCreateFailurePrepare = 72,
+    /// Controller-owned signed Host no-Apply request and historical stage cursor.
+    ControllerNoApplySettlementCursor = 73,
 }
 
 impl RecordNamespace {
@@ -334,6 +336,7 @@ impl RecordNamespace {
             70 => Ok(Self::SourceDomainPolicyHold),
             71 => Ok(Self::ControllerExecutionObserveReservation),
             72 => Ok(Self::ControllerCreateFailurePrepare),
+            73 => Ok(Self::ControllerNoApplySettlementCursor),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -4465,6 +4468,7 @@ mod tests {
             RecordNamespace::SourceDomainPolicyHold,
             RecordNamespace::ControllerExecutionObserveReservation,
             RecordNamespace::ControllerCreateFailurePrepare,
+            RecordNamespace::ControllerNoApplySettlementCursor,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = namespace as u8;
