@@ -781,6 +781,87 @@ fn directory_ref_inventory_waits_for_cross_instance_publication() {
 }
 
 #[test]
+fn directory_exact_replay_does_not_advance_physical_inventory_generation() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = temp.path().join("blobs");
+    let blobs = DirectoryBlobBackend::new("directory-replay", &root);
+    let bytes = b"durable campaign metadata";
+    let id = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, bytes);
+
+    put_bytes(&blobs, id, bytes).expect("put durable object");
+    let inventory_state = root.join(".inventory-admin/state-v1");
+    let before = fs::read(&inventory_state).expect("initial inventory state");
+    put_bytes(&blobs, id, bytes).expect("replay exact durable object");
+    let after_replay = fs::read(&inventory_state).expect("replayed inventory state");
+    assert_eq!(after_replay, before);
+
+    // A fresh owner authenticates the object and may replay it after the
+    // earlier owner exits without any additional inventory transition.
+    let reopened = DirectoryBlobBackend::new("directory-replay", &root);
+    assert!(reopened.contains(id).expect("cold contains"));
+    assert_eq!(read_bytes(&reopened, id, None).expect("cold read"), bytes);
+    put_bytes(&reopened, id, bytes).expect("retry after cold reopen");
+    assert_eq!(
+        fs::read(&inventory_state).expect("retried inventory state"),
+        before
+    );
+
+    let other_bytes = b"second durable campaign object";
+    let other_id = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, other_bytes);
+    put_bytes(&reopened, other_id, other_bytes).expect("put new durable object");
+    let after_new_object = fs::read(&inventory_state).expect("advanced inventory state");
+    assert_ne!(after_new_object, before);
+
+    fs::write(object_path(&root, id), b"corrupt").expect("inject corrupt existing object");
+    assert!(matches!(
+        put_bytes(&reopened, id, bytes),
+        Err(StoreError::Corrupt { id: corrupt }) if corrupt == id
+    ));
+    assert_eq!(
+        fs::read(&inventory_state).expect("inventory after rejected replay"),
+        after_new_object
+    );
+}
+
+#[test]
+fn directory_replay_completes_interrupted_object_publication() {
+    let temp = TempDir::new().expect("temporary directory");
+    let root = temp.path().join("blobs");
+    let blobs = DirectoryBlobBackend::new("directory-interrupted", &root);
+    let bytes = b"published before directory sync";
+    let id = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 1, bytes);
+
+    // Model a writer that persisted its inventory generation and linked the
+    // complete staged object, then exited before syncing the containing dir.
+    let lock = blobs.acquire_inventory_lock().expect("inventory lock");
+    let mut state = blobs
+        .load_or_create_inventory_state()
+        .expect("initial inventory state");
+    blobs
+        .advance_inventory_state(&mut state)
+        .expect("persist publication generation");
+    let path = object_path(&root, id);
+    let parent = path.parent().expect("object directory");
+    fs::create_dir_all(parent).expect("create object directory");
+    let staging = parent.join(".interrupted-staging");
+    fs::write(&staging, bytes).expect("write staged bytes");
+    fs::hard_link(&staging, &path).expect("publish staged object");
+    fs::remove_file(&staging).expect("remove staging name");
+    drop(lock);
+
+    let inventory_state = root.join(".inventory-admin/state-v1");
+    let before = fs::read(&inventory_state).expect("precommitted inventory state");
+    let reopened = DirectoryBlobBackend::new("directory-interrupted", &root);
+    put_bytes(&reopened, id, bytes).expect("retry interrupted publication");
+    assert_eq!(
+        fs::read(&inventory_state).expect("inventory after retry"),
+        before
+    );
+    assert!(reopened.contains(id).expect("cold contains after retry"));
+    assert_eq!(read_bytes(&reopened, id, None).expect("cold read"), bytes);
+}
+
+#[test]
 fn directory_administration_is_persistent_fenced_and_fail_closed() {
     let temp = TempDir::new().expect("temporary directory");
     let root = temp.path().join("blobs");
