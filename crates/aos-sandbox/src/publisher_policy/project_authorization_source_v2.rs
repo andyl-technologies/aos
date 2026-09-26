@@ -2,8 +2,8 @@
 //!
 //! A privileged administrative signer, distinct from the Controller seed
 //! signer, may assert seven initial-tree limits against one current protected
-//! publisher head. This verifier does not install credentials, retain the
-//! packet, spend an epoch, or authorize a Source journal append.
+//! publisher head. Packet verification alone does not install credentials,
+//! retain the packet, spend an epoch, or authorize a Source journal append.
 //!
 //! ```text
 //! AOSPSC02 | version:u16be | reserved:u16be | signer-generation:u64be |
@@ -22,6 +22,7 @@ use thiserror::Error;
 
 use crate::hierarchy::model::TreeLimitsV1;
 use crate::journal::RecordNamespace;
+use crate::public_api_session::PinnedSystemdCredential;
 use crate::role_credential::{
     ROLE_CREDENTIAL_BYTES, decode_role_credential, encode_role_credential,
 };
@@ -46,6 +47,9 @@ pub(super) const PACKET_DOMAIN: &[u8] = b"aos.sandbox.publisher-project-authoriz
 /// Reports an invalid or stale signed project authorization source.
 #[derive(Debug, Error)]
 pub enum ProjectAuthorizationSourceErrorV2 {
+    /// The fixed privileged issuer credential is missing or has changed.
+    #[error("project authorization issuer credential is unavailable")]
+    Credential,
     /// A source packet, issuer credential, or tree limit is noncanonical.
     #[error("invalid project authorization source")]
     NonCanonical,
@@ -67,6 +71,37 @@ pub enum ProjectAuthorizationSourceErrorV2 {
 pub struct PinnedPublisherProjectAuthorizationIssuerV2 {
     generation: u64,
     key: VerifyingKey,
+}
+
+/// Holds the fixed systemd issuer pin and its protected file identity.
+///
+/// The Controller obtains this credential by its fixed name. A packet or
+/// caller cannot select the trust root used for a retained decision.
+pub(super) struct ProtectedProjectAuthorizationIssuerV2 {
+    credential: PinnedSystemdCredential,
+    pin: PinnedPublisherProjectAuthorizationIssuerV2,
+}
+
+impl ProtectedProjectAuthorizationIssuerV2 {
+    pub(super) fn from_systemd_credentials() -> Result<Self, ProjectAuthorizationSourceErrorV2> {
+        let credential = PinnedSystemdCredential::load_project_authorization_issuer_v2()
+            .map_err(|_| ProjectAuthorizationSourceErrorV2::Credential)?;
+        let pin = PinnedPublisherProjectAuthorizationIssuerV2::decode(credential.bytes())?;
+        credential
+            .recheck()
+            .map_err(|_| ProjectAuthorizationSourceErrorV2::Credential)?;
+        Ok(Self { credential, pin })
+    }
+
+    pub(super) fn pin(&self) -> &PinnedPublisherProjectAuthorizationIssuerV2 {
+        &self.pin
+    }
+
+    pub(super) fn recheck(&self) -> Result<(), ProjectAuthorizationSourceErrorV2> {
+        self.credential
+            .recheck()
+            .map_err(|_| ProjectAuthorizationSourceErrorV2::Credential)
+    }
 }
 
 impl PinnedPublisherProjectAuthorizationIssuerV2 {
@@ -536,6 +571,20 @@ mod tests {
             encode_project_authorization_issuer_credential_v2(7, &key.verifying_key()).unwrap();
         credential[79] ^= 1;
         assert!(PinnedPublisherProjectAuthorizationIssuerV2::decode(&credential).is_err());
+        assert!(PinnedPublisherProjectAuthorizationIssuerV2::decode(&credential[..79]).is_err());
+        assert!(
+            encode_project_authorization_issuer_credential_v2(0, &key.verifying_key()).is_err()
+        );
+
+        let source_seed_credential =
+            crate::hierarchy::source_seed::encode_controller_source_tree_seed_credential_v1(
+                7,
+                &key.verifying_key(),
+            )
+            .unwrap();
+        assert!(
+            PinnedPublisherProjectAuthorizationIssuerV2::decode(&source_seed_credential).is_err()
+        );
     }
 
     #[test]

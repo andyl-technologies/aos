@@ -27,7 +27,8 @@ use crate::journal::{CommitResult, Journal, JournalRecord, RecordNamespace};
 
 use super::project_authorization_source_v2::{
     HEAD_DOMAIN, PACKET_BYTES, PACKET_DOMAIN, PinnedPublisherProjectAuthorizationIssuerV2,
-    ProjectAuthorizationSourceErrorV2, ProjectAuthorizationSourceExpectedV2, REVISION_DOMAIN,
+    ProjectAuthorizationSourceErrorV2, ProjectAuthorizationSourceExpectedV2,
+    ProtectedProjectAuthorizationIssuerV2, REVISION_DOMAIN,
     VerifiedPublisherProjectAuthorizationSourceV2, commitment,
     parse_unverified_project_authorization_claims_v2,
     verify_current_project_authorization_source_v2,
@@ -267,17 +268,44 @@ pub(super) fn validate_rows_and_heads(
 }
 
 impl PublisherPolicyStore<'_> {
-    /// Retains a signed administrative decision without authorizing Source.
+    /// Retains a signed decision using the fixed privileged issuer credential.
     ///
-    /// This owner-internal method does not load the fixed issuer credential.
-    /// Its caller-provided pin is suitable only for a closed precursor until
-    /// privileged credential custody and a protected issuer are wired.
+    /// The credential is rechecked around the protected journal transaction.
+    /// This is an owner-internal retention step, not Source append authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent, malformed, or replaced issuer custody and all invalid
+    /// packet, current-head, or journal states.
+    pub(super) fn retain_project_authorization_from_fixed_issuer_v2(
+        &mut self,
+        transaction_id: [u8; 16],
+        project: ProjectId,
+        request_id: [u8; 16],
+        packet: &[u8],
+    ) -> Result<ProjectAuthorizationRetentionV2, ProjectAuthorizationSourceErrorV2> {
+        let issuer = ProtectedProjectAuthorizationIssuerV2::from_systemd_credentials()?;
+        issuer.recheck()?;
+        let result = self.retain_project_authorization_source_v2(
+            transaction_id,
+            project,
+            request_id,
+            packet,
+            issuer.pin(),
+        )?;
+        issuer.recheck()?;
+        Ok(result)
+    }
+
+    /// Retains a signed administrative decision with an already checked pin.
+    ///
+    /// Only the fixed-credential entry point may call this in production.
     ///
     /// # Errors
     ///
     /// Rejects changed publisher heads, signer/request/epoch reuse, malformed
     /// rows, or journal errors. An I/O error requires a fresh protected reopen.
-    pub(super) fn retain_project_authorization_source_v2(
+    fn retain_project_authorization_source_v2(
         &mut self,
         transaction_id: [u8; 16],
         project: ProjectId,

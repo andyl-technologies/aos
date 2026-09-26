@@ -131,6 +131,9 @@
     "publisher-policy-v1.cbor:/run/credentials/@system/${cfg.credentials.publisherPolicy}"
     "publisher-policy-source-public-key-v1:/run/credentials/@system/${cfg.credentials.publisherPolicySourcePublicKey}"
   ];
+  projectAuthorizationIssuerCredential =
+    lib.optional (cfg.credentials.projectAuthorizationIssuer != null)
+    "project-authorization-issuer-v2:/run/credentials/@system/${cfg.credentials.projectAuthorizationIssuer}";
 in {
   options.aos.sandbox.controllerService = {
     enable = lib.mkEnableOption "the production unprivileged sandbox node controller";
@@ -224,6 +227,11 @@ in {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
           default = null;
           description = "Dedicated 32-byte Ed25519 verifier for the publisher-policy source.";
+        };
+        projectAuthorizationIssuer = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Optional separately provisioned 80-byte AOSPAK02 project-authorization issuer pin; absence keeps protected project-authorization retention closed.";
         };
         publicApiEntitlements = lib.mkOption {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
@@ -494,7 +502,8 @@ in {
           ++ bootstrapCredentials
           ++ operatorRecoveryCredentials
           ++ publisherScopeCredential
-          ++ publisherPolicySourceCredentials;
+          ++ publisherPolicySourceCredentials
+          ++ projectAuthorizationIssuerCredential;
         Restart = "on-failure";
         RestartSec = "2s";
         TimeoutStartSec = "90s";

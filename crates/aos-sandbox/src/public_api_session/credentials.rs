@@ -27,9 +27,10 @@ const ENTITLEMENT_NAME: &str = "public-api-entitlements";
 const ENTITLEMENT_KEY_NAME: &str = "public-api-entitlement-public-key";
 const OPERATOR_RECOVERY_KEY_NAME: &str = "operator-recovery-controller-key-v1";
 const OPERATOR_STORAGE_OWNER_KEY_NAME: &str = "operator-recovery-storage-owner-key-v1";
+const PROJECT_AUTHORIZATION_ISSUER_NAME: &str = "project-authorization-issuer-v2";
 
 /// Retains one fixed protected credential and rejects replacement before use.
-pub(crate) struct PinnedOperatorRecoveryKeyV1 {
+pub(crate) struct PinnedSystemdCredential {
     name: &'static str,
     path: PathBuf,
     uid: u32,
@@ -38,7 +39,10 @@ pub(crate) struct PinnedOperatorRecoveryKeyV1 {
     bytes: Zeroizing<Vec<u8>>,
 }
 
-impl PinnedOperatorRecoveryKeyV1 {
+/// Existing operator recovery callers share the same protected file custody.
+pub(crate) type PinnedOperatorRecoveryKeyV1 = PinnedSystemdCredential;
+
+impl PinnedSystemdCredential {
     /// Opens the dedicated controller recovery key from systemd credentials.
     pub(crate) fn load() -> Result<Self, PublicApiSessionError> {
         Self::load_named(OPERATOR_RECOVERY_KEY_NAME)
@@ -47,6 +51,11 @@ impl PinnedOperatorRecoveryKeyV1 {
     /// Opens the independently pinned Storage owner public key.
     pub(crate) fn load_storage_owner_public() -> Result<Self, PublicApiSessionError> {
         Self::load_named(OPERATOR_STORAGE_OWNER_KEY_NAME)
+    }
+
+    /// Opens the separate public project-authorization issuer pin.
+    pub(crate) fn load_project_authorization_issuer_v2() -> Result<Self, PublicApiSessionError> {
+        Self::load_named(PROJECT_AUTHORIZATION_ISSUER_NAME)
     }
 
     fn load_named(name: &'static str) -> Result<Self, PublicApiSessionError> {
@@ -297,6 +306,8 @@ mod tests {
         )
         .unwrap();
         let uid = rustix::process::geteuid().as_raw();
+        assert!(read_one(&descriptor, PROJECT_AUTHORIZATION_ISSUER_NAME, uid).is_err());
+
         let path = directory.path().join("credential");
         std::fs::write(&path, b"protected bytes").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
