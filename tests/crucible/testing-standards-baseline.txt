@@ -29,6 +29,10 @@
 # The exact-finding VM fixture polls one retained relay and packaged QEMU
 # process under deadlines. The worker watchdog fixtures use fixed deadlines
 # to exercise cancellation and child reaping, then assert the terminal state.
+# The Envoy resource audit samples the same ten retained QEMU processes until
+# the specified topology appears and checks their exit under fixed deadlines.
+# The lifecycle `retry` variable names a modeled guest execution-quanta choice;
+# its submission is single-shot and every unmet observation fails the test.
 crucible-api	src/vm_lifecycle/checkpoint_store/tests	retry	1
 crucible-api	src/vm_lifecycle/checkpoint_store/storage/tests	std::thread::sleep	1
 crucible-api	src/vm_lifecycle/checkpoint_store/storage/tests	thread::sleep	1
@@ -56,6 +60,9 @@ crucible-cli	tests/campaign_store_process	thread::sleep	1
 crucible-cli	tests/campaign_store_process/finding_exact_vm	thread::sleep	1
 crucible-cli	tests/support/campaign_packaged_process	thread::sleep	1
 crucible-cli	tests/support/campaign_packaged_process/guest_choice	retry	1
+crucible-cli	tests/support/campaign_packaged_process/guest_choice/lifecycle	retry	1
+crucible-cli	tests/support/campaign_packaged_process/envoy_network/resource_audit	std::thread::sleep	1
+crucible-cli	tests/support/campaign_packaged_process/envoy_network/resource_audit	thread::sleep	1
 crucible-cli	tests/support/campaign_packaged_process/guest_choice/maintenance_transfer	retry	1
 crucible-daemon	src/campaign_bootstrap/tests	thread::sleep	1
 crucible-daemon	src/campaign_transfer/tests	retry	1
