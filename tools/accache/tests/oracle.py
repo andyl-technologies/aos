@@ -37,6 +37,7 @@ class Fixture:
     nondeterministic_outputs: set[str] = field(default_factory=set)
     direct_exit_code: int | None = None
     oracle_input_invalidation: bool = False
+    oracle_bypass: bool = False
 
 
 def fixtures(gcc, clang, rustc):
@@ -451,6 +452,21 @@ def fixtures(gcc, clang, rustc):
             yield Fixture("gcc-frontend-unsupported-vfs-stat-cache", compiler,
                           base + ["-ivfsstatcache", "."], c_sources,
                           cacheable=False, exit_code=1)
+            for suffix, flags, exit_code in [
+                ("long-save-temps-cwd", ["--save-temps=cwd"], 1),
+                ("short-save-temps-cwd", ["-save-temps=cwd"], 0),
+                ("no-line-markers", ["-P"], 0),
+                ("modules-ts", ["-fmodules-ts"], 0),
+                ("no-profile-generate", ["-fno-profile-generate"], 0),
+                ("no-profile-use", ["-fno-profile-use"], 0),
+                ("repository", ["-frepo"], 0),
+                ("index-store-path", ["-index-store-path", "index"], 1),
+            ]:
+                yield Fixture("gcc-frontend-bypass-" + suffix, compiler,
+                              base + flags + ["-fdiagnostics-color=always"], c_sources,
+                              {"value.h": "#define VALUE 73\n"},
+                              cacheable=False, exit_code=exit_code,
+                              oracle_bypass=True)
         else:
             for suffix, flags in [
                 ("dependent-lib", ["--dependent-lib=unused"]),
@@ -461,9 +477,56 @@ def fixtures(gcc, clang, rustc):
                 ("ctor-homing", ["-fuse-ctor-homing"]),
                 ("no-opaque-pointers", ["-no-opaque-pointers"]),
                 ("verify", ["-verify"]),
+                ("gcc-toolchain", ["-gcc-toolchain", "."]),
+                ("plugin-arg", ["-plugin-arg-test=unused"]),
+                ("verify-pch", ["-verify-pch"]),
+                ("winsysroot", ["/winsysroot", "."]),
             ]:
                 yield Fixture("clang-frontend-unsupported-" + suffix, compiler,
                               base + flags, c_sources, cacheable=False, exit_code=1)
+            for suffix, flags in [
+                ("embed-dir", ["--embed-dir=."]),
+                ("symbol-graph-dir", ["--symbol-graph-dir=out"]),
+                ("dependency-dot", ["-dependency-dot", "out.dot"]),
+                ("dsym-dir", ["-dsym-dir", "out"]),
+                ("builtin-module-map", ["-fbuiltin-module-map"]),
+                ("codegen-data", ["-fcodegen-data-generate=out"]),
+                ("cxx-modules", ["-fcxx-modules"]),
+                ("implicit-modules", ["-fimplicit-modules"]),
+                ("memory-profile", ["-fmemory-profile=out"]),
+                ("modules-cache-path", ["-fmodules-cache-path=out"]),
+                ("modules-user-build-path", ["-fmodules-user-build-path", "out"]),
+                ("no-profile-instr-generate", ["-fno-profile-instr-generate"]),
+                ("no-profile-instr-use", ["-fno-profile-instr-use"]),
+                ("prebuilt-implicit-modules", ["-fprebuilt-implicit-modules"]),
+                ("prebuilt-module-path", ["-fprebuilt-module-path=out"]),
+                ("thin-link-bitcode", ["-fthin-link-bitcode=out"]),
+                ("module-dependency-dir", ["-module-dependency-dir", "out"]),
+            ]:
+                yield Fixture("clang-frontend-bypass-" + suffix, compiler,
+                              base + flags + ["-fdiagnostics-color=always"], c_sources,
+                              {"value.h": "#define VALUE 73\n"},
+                              cacheable=False, oracle_bypass=True)
+            yield Fixture("clang-frontend-bypass-config", compiler,
+                          base + ["--config=./compiler.cfg", "-fdiagnostics-color=always"],
+                          c_sources | {"compiler.cfg": "-O0\n"},
+                          {"compiler.cfg": "-O3\n"},
+                          cacheable=False, oracle_bypass=True)
+            for suffix, flags in [
+                ("analyze", ["--analyze"]),
+                ("analyzer-output", ["--analyze", "--analyzer-output", "text"]),
+            ]:
+                yield Fixture("clang-frontend-bypass-" + suffix, compiler,
+                              base + flags + ["-fdiagnostics-color=always"],
+                              {"source.c": "int answer(void) { int *p = 0; return *p; }\n"},
+                              cacheable=False, oracle_bypass=True)
+            yield Fixture("clang-frontend-bypass-module-header", compiler,
+                          ["-std=c++20", "-x", "c++-header", "-c",
+                           "-fmodule-header=user", "source.hpp", "-o", "source.pcm",
+                           "-fdiagnostics-color=always"],
+                          {"source.hpp": "inline int answer() { return 42; }\n"},
+                          {"source.hpp": "inline int answer() { return 73; }\n"},
+                          cacheable=False, oracle_bypass=True)
 
     # The AOS Clang supports host-only CUDA and HIP without an SDK. These
     # modes use separate driver paths but still need header invalidation and
@@ -5387,6 +5450,19 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                     assert "target/libexample.rmeta" not in actual[3], (
                         "oracle defect changed; remove this exception")
                 for field, left, right in zip(["exit", "stdout", "stderr", "artifacts"], expected, actual):
+                    if (fixture.name in {"clang-frontend-unsupported-gcc-toolchain",
+                                         "clang-frontend-unsupported-winsysroot"}
+                            and field == "stderr" and label.startswith("sccache ")):
+                        # The pinned parser consumes the path after either
+                        # rejected option and loses the unused-input warning.
+                        error = (b"clang: error: unknown argument: '-gcc-toolchain'\n"
+                                 if fixture.name.endswith("gcc-toolchain") else
+                                 b"clang: error: no such file or directory: '/winsysroot'\n")
+                        warning = (b"clang: warning: .: 'linker' input unused "
+                                   b"[-Wunused-command-line-argument]\n")
+                        assert left == error + warning
+                        assert right == error
+                        continue
                     if (fixture.name == "gcc-dump-internal-locations"
                             and field == "stderr" and label.startswith("sccache ")):
                         # sccache compiles preprocessed source, whose stripped
@@ -5453,6 +5529,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                             assert oracle_warm[3][path] == oracle_cold[3][path], (
                                 fixture.name, "sccache did not replay the cold artifact")
                 oracle_hit = hits() > before_hits
+                if fixture.oracle_bypass:
+                    assert not oracle_hit, (fixture.name, "pinned sccache cached a bypass mode")
                 if fixture.name in {"gcc-tree-dump", "gcc-multiple-dumps",
                                     "gcc-tree-all-dumps", "gcc-statistics-dump",
                                     "gcc-debug-dumps", "gcc-joined-debug-dumps",
