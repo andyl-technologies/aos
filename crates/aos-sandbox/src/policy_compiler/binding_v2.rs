@@ -60,12 +60,18 @@ use super::{
     verify_signed_project_policy_source_v2,
 };
 
+mod ack;
 mod hold;
 mod producer;
 mod proof;
 
 use hold::{HOLD_KEY, RootBindingHoldV1, current_hold, release_hold};
 use proof::{PROOF_KEY_PREFIX, RootQualifiedProofV1, proof_key};
+
+pub use ack::{
+    RootEffectAckErrorV1, RootEffectAckV1, acknowledge_fixed_closed_root_effect_v1,
+    recover_fixed_closed_root_effect_ack_v1,
+};
 
 pub use producer::{
     propose_closed_current_create_explicit_policy_binding_v2,
@@ -1740,7 +1746,9 @@ pub(super) fn ensure_root_binding_unheld(
     authority: &ProtectedJournalAuthority<'_>,
 ) -> Result<(), PolicyCompilerJournalErrorV1> {
     let (head, next_epoch, count) = current_root_binding_chain(authority)?;
-    if current_hold(authority, head, next_epoch, count)?.is_some_and(|hold| hold.held) {
+    if current_hold(authority, head, next_epoch, count)?.is_some_and(|hold| hold.held)
+        || authority.get(ack::ACK_KEY)?.is_some()
+    {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
     Ok(())
@@ -1868,6 +1876,10 @@ fn recover_closed_binding_decision_with_proof_from_authority(
         .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
     let record = decode_closed_policy_binding_v2(&key, encoded)?;
     let hold = hold.ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    // An ACK cannot survive an unproven release through the inert path.
+    if !hold.held && authority.get(ack::ACK_KEY)?.is_some() {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
     if record.root_generation != epoch
         || hold.binding != binding
         || hold.epoch != epoch
@@ -2197,7 +2209,11 @@ mod tests {
     use crate::cache_residency::{
         encode_cache_owner_readback_signer_credential_v1, sign_test_cache_owner_readback_v2,
     };
-    use crate::journal::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
+    use crate::journal::{
+        ControllerPolicyEffectAckV1, Journal, JournalRecord, JournalTransaction, RecordNamespace,
+    };
+    use crate::policy_compiler::controller_effect_ack_readback::sign_test_controller_effect_ack_readback_v1;
+    use crate::policy_compiler::controller_hold_readback::encode_controller_hold_signer_credential_v1;
     use crate::policy_compiler::protected_owner::{
         ProtectedPolicyPublicationVerifierV1, policy_authority_journal_limits,
     };
@@ -3015,12 +3031,16 @@ mod tests {
         let proposed = binding.encode().expect("closed proposal");
         let source_key = SigningKey::from_bytes(&[41; 32]);
         let cache_key = SigningKey::from_bytes(&[42; 32]);
+        let controller_key = SigningKey::from_bytes(&[52; 32]);
         let source_pin =
             encode_source_hold_readback_signer_credential_v1(3, &source_key.verifying_key())
                 .expect("Source pin");
         let cache_pin =
             encode_cache_owner_readback_signer_credential_v1(4, &cache_key.verifying_key())
                 .expect("Cache pin");
+        let controller_pin =
+            encode_controller_hold_signer_credential_v1(5, &controller_key.verifying_key())
+                .expect("Controller pin");
         let mut root = open_test_root(directory.path());
         root.claim_protected_authority(RecordNamespace::DesiredState)
             .expect("root authority")
@@ -3037,6 +3057,11 @@ mod tests {
                             RecordNamespace::DesiredState,
                             CACHE_PIN_KEY.to_vec(),
                             cache_pin.to_vec(),
+                        ),
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            super::super::controller_hold_pin::CONTROLLER_HOLD_PIN_KEY.to_vec(),
+                            controller_pin.to_vec(),
                         ),
                     ],
                 )
@@ -3291,7 +3316,7 @@ mod tests {
         drop(root);
 
         let mut cold_root = open_test_root(directory.path());
-        let authority = cold_root
+        let mut authority = cold_root
             .claim_protected_authority(RecordNamespace::DesiredState)
             .expect("cold Root replay");
         let (head, next_epoch, count) =
@@ -3352,6 +3377,153 @@ mod tests {
             proof.cache_packet.as_bytes(),
             Sha256::digest(cache_packet).as_slice()
         );
+        let controller_hold = ControllerPolicyHoldV1::new(
+            binding.operation,
+            binding.sandbox,
+            source_hold.controller_source(),
+            committed.binding(),
+            committed.handoff_epoch(),
+        )
+        .expect("held Controller claim");
+        let expected_ack = ControllerPolicyEffectAckV1::new(
+            controller_hold,
+            binding.accepted_generation,
+            binding.effect_transaction,
+            proof_digest.expect("qualified Root proof"),
+        )
+        .expect("exact Controller ACK");
+        let lost_packet = std::cell::RefCell::new(None);
+        assert!(
+            ack::acknowledge_in_authority(
+                &mut authority,
+                committed.binding(),
+                committed.handoff_epoch(),
+                1234,
+                || Ok([53; 16]),
+                |challenge| {
+                    *lost_packet.borrow_mut() = Some(
+                        sign_test_controller_effect_ack_readback_v1(
+                            expected_ack,
+                            1234,
+                            challenge,
+                            5,
+                            &controller_key,
+                        )
+                        .expect("first signed receipt")
+                        .to_vec(),
+                    );
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "lost receipt",
+                    ))
+                },
+            )
+            .is_err()
+        );
+        drop(authority);
+        drop(cold_root);
+
+        let mut cold_root = open_test_root(directory.path());
+        let mut authority = cold_root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("cold Root after lost receipt");
+        assert_eq!(
+            ack::current_ack(&authority, committed.binding(), committed.handoff_epoch()).unwrap(),
+            None
+        );
+        assert!(
+            ack::acknowledge_in_authority(
+                &mut authority,
+                committed.binding(),
+                committed.handoff_epoch(),
+                1234,
+                || Ok([54; 16]),
+                |_| Ok(lost_packet.borrow().as_ref().expect("lost packet").clone()),
+            )
+            .is_err()
+        );
+        let stale_ack = ControllerPolicyEffectAckV1::new(
+            controller_hold,
+            binding.accepted_generation + 1,
+            binding.effect_transaction,
+            expected_ack.root_proof(),
+        )
+        .expect("stale generation ACK");
+        assert!(
+            ack::acknowledge_in_authority(
+                &mut authority,
+                committed.binding(),
+                committed.handoff_epoch(),
+                1234,
+                || Ok([55; 16]),
+                |challenge| Ok(sign_test_controller_effect_ack_readback_v1(
+                    stale_ack,
+                    1234,
+                    challenge,
+                    5,
+                    &controller_key,
+                )
+                .expect("signed stale receipt")
+                .to_vec()),
+            )
+            .is_err()
+        );
+        let root_ack = ack::acknowledge_in_authority(
+            &mut authority,
+            committed.binding(),
+            committed.handoff_epoch(),
+            1234,
+            || Ok([56; 16]),
+            |challenge| {
+                Ok(sign_test_controller_effect_ack_readback_v1(
+                    expected_ack,
+                    1234,
+                    challenge,
+                    5,
+                    &controller_key,
+                )
+                .expect("signed exact receipt")
+                .to_vec())
+            },
+        )
+        .expect("durable Root ACK");
+        assert_eq!(
+            root_ack.controller_ack(),
+            expected_ack.record_digest().unwrap()
+        );
+        assert_eq!(root_ack.root_proof(), expected_ack.root_proof());
+        assert!(ensure_root_binding_unheld(&authority).is_err());
+        drop(authority);
+        drop(cold_root);
+
+        let mut cold_root = open_test_root(directory.path());
+        let mut authority = cold_root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("cold Root ACK replay");
+        assert_eq!(
+            ack::current_ack(&authority, committed.binding(), committed.handoff_epoch()).unwrap(),
+            Some(root_ack)
+        );
+        assert_eq!(
+            ack::acknowledge_in_authority(
+                &mut authority,
+                committed.binding(),
+                committed.handoff_epoch(),
+                1234,
+                || panic!("idempotent replay cannot spend a new challenge"),
+                |_| panic!("idempotent replay cannot request a new receipt"),
+            )
+            .unwrap(),
+            root_ack
+        );
+        assert!(
+            ack::current_ack(
+                &authority,
+                committed.binding(),
+                committed.handoff_epoch() + 1
+            )
+            .is_err()
+        );
         drop(authority);
         drop(cold_root);
 
@@ -3388,6 +3560,56 @@ mod tests {
             )
             .is_err()
         );
+        drop(authority);
+        drop(cold_root);
+
+        let mut altered_root = open_test_root(directory.path());
+        altered_root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("protected Root writer")
+            .commit(
+                &JournalTransaction::new(
+                    [56; 16],
+                    vec![
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            SOURCE_HOLD_PIN_KEY.to_vec(),
+                            source_pin.to_vec(),
+                        ),
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            HOLD_KEY.to_vec(),
+                            RootBindingHoldV1 {
+                                held: false,
+                                ..hold
+                            }
+                            .encode()
+                            .expect("released test record")
+                            .to_vec(),
+                        ),
+                    ],
+                )
+                .expect("offline mutation transaction"),
+            )
+            .expect("offline mutation fixture");
+        drop(altered_root);
+
+        let mut cold_root = open_test_root(directory.path());
+        let authority = cold_root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("cold Root writer");
+        assert!(
+            recover_closed_binding_decision_with_proof_from_authority(
+                &authority,
+                committed.binding(),
+                committed.handoff_epoch(),
+            )
+            .is_err()
+        );
+        assert!(
+            ack::current_ack(&authority, committed.binding(), committed.handoff_epoch()).is_err()
+        );
+        assert!(ensure_root_binding_unheld(&authority).is_err());
     }
 
     #[test]

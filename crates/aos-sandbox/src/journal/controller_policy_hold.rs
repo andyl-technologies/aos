@@ -93,6 +93,17 @@ impl ControllerPolicyEffectAckV1 {
         self.root_proof
     }
 
+    /// Returns the digest of the exact canonical durable ACK record.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a malformed or released acknowledgment.
+    pub fn record_digest(self) -> Result<ObjectDigest, JournalError> {
+        Ok(ObjectDigest::from_bytes(
+            Sha256::digest(self.encode()?).into(),
+        ))
+    }
+
     fn validate(self) -> Result<(), JournalError> {
         self.hold.validate()?;
         if !self.hold.held

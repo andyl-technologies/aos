@@ -15,6 +15,7 @@ mod cache_readback_session;
 mod cache_root_settlement;
 mod compiler;
 mod controller_adapter;
+mod controller_effect_ack_readback;
 mod controller_hold_pin;
 mod controller_hold_readback;
 mod controller_readback_session;
@@ -49,14 +50,15 @@ pub use authority::{
 pub use binding_v2::{
     CLOSED_POLICY_BINDING_BYTES_V2, ClosedPolicyBindingDecisionV2, ClosedPolicyEffectHandoffV2,
     ClosedPolicyRootCacheCutV2, ClosedPolicyRootCasBaseV2, ClosedPolicyRootCasObservationV2,
-    ClosedPolicyRootSessionV2, ClosedPolicyRootSignerJoinV2, StagedClosedPolicyRootBaseV2,
-    StagedClosedPolicySignerChallengeV2, closed_policy_binding_digest_v2,
+    ClosedPolicyRootSessionV2, ClosedPolicyRootSignerJoinV2, RootEffectAckErrorV1, RootEffectAckV1,
+    StagedClosedPolicyRootBaseV2, StagedClosedPolicySignerChallengeV2,
+    acknowledge_fixed_closed_root_effect_v1, closed_policy_binding_digest_v2,
     closed_policy_effect_handoff_v2, compare_closed_policy_binding_hold_claims_v2,
     propose_closed_current_create_explicit_policy_binding_v2,
     propose_closed_current_create_policy_binding_v2,
     read_fixed_inert_closed_policy_binding_hold_v1,
-    recover_fixed_closed_policy_binding_decision_v2, release_fixed_closed_policy_cache_hold_v1,
-    release_fixed_closed_policy_controller_hold_v1,
+    recover_fixed_closed_policy_binding_decision_v2, recover_fixed_closed_root_effect_ack_v1,
+    release_fixed_closed_policy_cache_hold_v1, release_fixed_closed_policy_controller_hold_v1,
     release_fixed_closed_policy_source_domain_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
     require_no_fixed_closed_policy_binding_hold_v1, staged_closed_policy_signer_challenge_v2,
@@ -82,6 +84,11 @@ pub use cache_readback_session::{
 pub use compiler::{PolicyCompilationError, PolicyCompilerV1};
 pub use controller_adapter::{
     PolicyCompilerControllerCommitV1, policy_compiler_controller_commit_v1,
+};
+pub use controller_effect_ack_readback::{
+    CONTROLLER_EFFECT_ACK_READBACK_BYTES_V1, ControllerEffectAckChallengeV1,
+    ControllerEffectAckReadbackErrorV1, VerifiedControllerEffectAckV1,
+    sign_fixed_controller_effect_ack_readback_v1, verify_controller_effect_ack_readback_v1,
 };
 pub use controller_hold_pin::{ControllerHoldPinErrorV1, admit_fixed_controller_hold_pin_v1};
 pub use controller_hold_readback::{
