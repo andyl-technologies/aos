@@ -14,7 +14,10 @@ case " $* " in
   *' category checks '*) printf 'eval\nbuild' ;;
   *' category images '*) printf 'server:qcow2' ;;
   *' category containers '*) printf 'aos:oci' ;;
-  *' category builds '*) printf 'server:toplevel' ;;
+  *' category builds '*)
+    [[ ${AOS_DEV_TEST_BLOCK_BUILD_LIST:-0} != 1 ]] || exit 19
+    printf 'server:toplevel'
+    ;;
   *) exit 1 ;;
 esac
 MOCK
@@ -96,6 +99,12 @@ if bash "$root/aos-dev" --release build check 'build..invalid' --no-out-link >/d
 fi
 test "$(bash "$root/aos-dev" --release build package alpha --no-out-link)" = /tmp/aos-dev-test-output
 grep -Fq -- '-A pkgs.alpha --no-out-link' "$AOS_DEV_TEST_LOG"
+test "$(AOS_DEV_TEST_BLOCK_BUILD_LIST=1 bash "$root/aos-dev" --release build build server:toplevel --no-out-link)" = /tmp/aos-dev-test-output
+grep -Fq -- '-A systems.server.build.toplevel --no-out-link' "$AOS_DEV_TEST_LOG"
+if bash "$root/aos-dev" --release build build 'server:..invalid' --no-out-link >/dev/null 2>&1; then
+  echo 'malformed system build target was accepted' >&2
+  exit 1
+fi
 if grep -Fq -- 'sharedBuildCache' "$AOS_DEV_TEST_LOG"; then
   echo 'release command enabled shared cache' >&2
   exit 1

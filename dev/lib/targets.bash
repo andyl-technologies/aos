@@ -78,11 +78,16 @@ aos_dev_target_attr() {
 
 aos_dev_validate_target() {
   local category=$1 name=$2
-  # Exact check paths go straight to Nix. Listing checks first would evaluate
-  # unrelated check trees before Nix evaluates the requested target.
+  # Exact check and system-build paths go straight to Nix. Listing first would
+  # evaluate unrelated outputs before Nix evaluates the requested target.
   if [[ $category == checks ]]; then
     [[ $name =~ ^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$ ]] || \
       aos_dev_error "invalid check target '$name'"
+    return
+  fi
+  if [[ $category == builds ]]; then
+    [[ $name =~ ^[A-Za-z0-9_-]+:[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$ ]] || \
+      aos_dev_error "invalid system build target '$name'"
     return
   fi
 
