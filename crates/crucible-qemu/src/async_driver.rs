@@ -31,6 +31,8 @@ pub struct QemuAsyncDriverPolicy {
     pub process_event_timeout: Duration,
     /// Timeout for the plugin to publish one quantum completion report.
     pub advance_completion_timeout: Duration,
+    /// Renews advance polling slices instead of treating one slice as a host deadline.
+    pub unbounded_advance_completion: bool,
 }
 
 #[path = "async_driver/policy.rs"]
@@ -106,6 +108,17 @@ pub trait QemuAsyncCrashEscalationTarget {
 pub trait QemuAsyncNodeStepTarget: QemuAsyncCrashEscalationTarget {
     /// Opaque token returned after publishing a scheduler ceiling.
     type PendingQuantum;
+
+    /// Reports an owned QEMU child exit while an advance was pending.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverTargetError`] when child status cannot be read.
+    fn child_exit_status(
+        &mut self,
+    ) -> Result<Option<std::process::ExitStatus>, QemuAsyncDriverTargetError> {
+        Ok(None)
+    }
 
     /// Starts one shared-memory quantum.
     ///

@@ -1913,9 +1913,9 @@ pub(crate) fn config_for_assignment_host_watchdog(
     context: &AttemptExecutionContext,
 ) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
     let Some(remaining) = context.remaining_host_watchdog() else {
-        // The fixed per-operation ceiling remains transport/lifecycle safety,
-        // independent of any optional campaign assignment watchdog.
-        return Ok(config);
+        // Campaign advances use virtual bounds. The finite per-operation
+        // ceiling remains a polling slice and transport/lifecycle safety bound.
+        return Ok(config.with_unbounded_advance_completion());
     };
     if remaining.is_zero() {
         return Err(QemuAttemptProductionVmLifecycleError::HostWatchdogExpired);

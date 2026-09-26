@@ -383,6 +383,25 @@ pub trait QemuHostIoRuntime: Send {
         timeout: Duration,
     ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError>;
 
+    /// Renews only the polling deadline of an already-published quantum.
+    ///
+    /// The runtime must retain the pending quantum and all one-shot wake and
+    /// publication fences. Other wait classes cannot be renewed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when renewal is unsupported or
+    /// the new finite slice cannot be represented.
+    fn renew_advance_completion_poll(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "renew advance completion poll",
+            "runtime does not support renewal",
+        ))
+    }
+
     /// Wakes QEMU and waits for one lossless fault-command result.
     ///
     /// Implementations must use `timeout` only as a host-liveness bound. The

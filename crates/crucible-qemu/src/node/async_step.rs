@@ -25,6 +25,14 @@ impl QemuAsyncCrashEscalationTarget for QemuNodeAsyncStepTarget<'_> {
 impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
     type PendingQuantum = QemuNodePendingQuantum;
 
+    fn child_exit_status(
+        &mut self,
+    ) -> Result<Option<std::process::ExitStatus>, QemuAsyncDriverTargetError> {
+        self.child
+            .try_wait_natural_exit()
+            .map_err(|error| QemuAsyncDriverTargetError::new("poll QEMU child", error.to_string()))
+    }
+
     fn start_quantum(
         &mut self,
         horizon: ExecutionHorizon,

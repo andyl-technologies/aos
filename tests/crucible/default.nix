@@ -1184,6 +1184,7 @@ in rec {
         "checks.crucible.phase5.gates.exactClosureStreaming" = phase5.gates.exactClosureStreaming;
         "checks.crucible.phase5.gates.campaignStoreComposition" = phase5.gates.campaignStoreComposition;
         "checks.crucible.phase5.gates.campaignStoreEquivalence" = phase5.gates.campaignStoreEquivalence;
+        "checks.crucible.phase5.gates.campaignPolicyTimeoutVm" = phase5.gates.campaignPolicyTimeoutVm;
         "checks.crucible.phase7.gates.hotForkIsolation.rawGate" = phase7.gates.hotForkIsolation.rawGate;
         "checks.crucible.phase7.gates.hotForkScaling.rawGate" = phase7.gates.hotForkScaling.rawGate;
         "checks.crucible.phase7.gates.hostCloneCost.rawGate" = phase7.gates.hostCloneCost.rawGate;

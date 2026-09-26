@@ -163,6 +163,7 @@ pub struct ProductionVmLifecycleConfig {
     maximum_host_workers: usize,
     rendezvous_interval_ticks: Option<u64>,
     completion_timeout: Duration,
+    unbounded_advance_completion: bool,
     coverage: QemuLaunchPluginSwitch,
     debug_gateway_executable: Option<PathBuf>,
     debug: Option<ProductionVmDebugConfig>,
