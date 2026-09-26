@@ -140,4 +140,3 @@ e820_entries:
 .section .reset, "ax"
     ljmp $0xf000, $boot
     .fill 11, 1, 0
-
