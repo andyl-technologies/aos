@@ -17,6 +17,7 @@
   interfaceIdentity,
   coreInterfaceModule,
   normalizePackageOutputSelectors,
+  lifetime,
 }: let
   strictSubmodule = options:
     moduleTypes.submodule {
@@ -1263,20 +1264,10 @@
         ++ methodOutputs
       )
       ++ parentLifetime;
-    lifetimeRank = {
-      attempt = 0;
-      transaction = 1;
-      instance = 2;
-      persistent = 3;
-    };
-    longerLifetime = current: candidate:
-      if lifetimeRank.${candidate} > lifetimeRank.${current}
-      then candidate
-      else current;
   in
     if outputLifetimes == []
     then throw "Ability request '${request.requirement}' has no selected interface output lifetime."
-    else builtins.foldl' longerLifetime "attempt" outputLifetimes;
+    else builtins.foldl' lifetime.longest "attempt" outputLifetimes;
 
   normalizeRequest = request: let
     requirement =

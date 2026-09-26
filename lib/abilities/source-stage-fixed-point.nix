@@ -4,6 +4,7 @@
   guaranteeIdentity,
   normalizePackageOutputSelectors,
   normalizeRequirement,
+  lifetime,
 }: let
   normalizeOwnedValue = owner: value:
     if owner == null
@@ -53,12 +54,6 @@
       then {}
       else {inherit package;}
     );
-  lifetimeRank = {
-    attempt = 0;
-    transaction = 1;
-    instance = 2;
-    persistent = 3;
-  };
   resolveRequestValue = requestName: recipientLifetime: trail: value:
     if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
     then let
@@ -72,7 +67,7 @@
       then throw "source-stage request '${requestName}' references absent planning output '${reference}'"
       else if output.phase != "planning"
       then throw "source-stage request '${requestName}' references non-planning output '${reference}'"
-      else if lifetimeRank.${output.lifetime} < lifetimeRank.${recipientLifetime}
+      else if !lifetime.outlivesOrEquals output.lifetime recipientLifetime
       then throw "source-stage request '${requestName}' outlives output '${reference}'"
       else if builtins.elem reference trail
       then throw "source-stage request '${requestName}' has an output cycle through '${reference}'"

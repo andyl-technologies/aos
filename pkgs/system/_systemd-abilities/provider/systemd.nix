@@ -1125,12 +1125,6 @@
     if builtins.length candidates == 1
     then builtins.head candidates
     else throw "systemd static rendering needs one declared output '${requestName}.${outputName}'";
-  staticLifetimeRank = {
-    attempt = 0;
-    transaction = 1;
-    instance = 2;
-    persistent = 3;
-  };
   # Runtime outputs are materialized by the live provider, not a build-time unit.
   staticValueFor = recipientLifetime: trail: value:
     if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
@@ -1143,7 +1137,7 @@
     in
       if builtins.elem reference trail
       then throw "systemd static rendering has a planning-output cycle at '${reference}'"
-      else if staticLifetimeRank.${descriptor.lifetime} < staticLifetimeRank.${recipientLifetime}
+      else if !lib.abilities.lifetime.outlivesOrEquals descriptor.lifetime recipientLifetime
       then throw "systemd static rendering cannot retain '${reference}' beyond its output lifetime"
       else if descriptor.phase == "runtime"
       then {

@@ -12,6 +12,7 @@
   ...
 }: let
   abilities = config.aos.abilities;
+  lifetime = lib.abilities.lifetime;
   authoredRequests = abilities.requests;
   resolvedRequests = abilityResolution.requests or {};
   resolvedRequirements = abilityResolution.requirements or {};
@@ -26,12 +27,6 @@
     abilityIdentityKeyFor "aos.ability.request-output-key/v1" {
       inherit request output;
     };
-  lifetimeRank = {
-    attempt = 0;
-    transaction = 1;
-    instance = 2;
-    persistent = 3;
-  };
 
   fail = message: throw "ability composition: ${message}";
   implementationPackage = name: implementation:
@@ -584,7 +579,7 @@
       reference = "${requestName}.${value.output}";
       descriptor = outputDescriptorFor requestName value.output;
     in
-      if lifetimeRank.${descriptor.lifetime} < lifetimeRank.${recipientLifetime}
+      if !lifetime.outlivesOrEquals descriptor.lifetime recipientLifetime
       then fail "composition resultOf '${reference}' cannot outlive its ${descriptor.lifetime} output"
       else if descriptor.phase == "runtime"
       then value // {request = requestName;}

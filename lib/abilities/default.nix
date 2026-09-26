@@ -10,6 +10,7 @@
 }: let
   moduleOptionTypes = types;
   schemas = import ./schema.nix;
+  lifetime = import ./lifetime.nix;
   abilityTypes = import ./types.nix {
     inherit mkOption schemas;
     moduleTypes = moduleOptionTypes;
@@ -27,7 +28,7 @@
     import ./package-projection.nix {inherit lib abilities;};
   sourceStageFixedPoint = abilities:
     import ./source-stage-fixed-point.nix {
-      inherit abilities guaranteeIdentity normalizeRequirement;
+      inherit abilities guaranteeIdentity normalizeRequirement lifetime;
       inherit (packageOutputSelectors) normalizePackageOutputSelectors;
     };
   packageAbilitiesFromProjection = projection: {
@@ -694,7 +695,7 @@
     lifetime =
       requireChoice
       "${context} lifetime"
-      ["attempt" "transaction" "instance" "persistent"]
+      lifetime.values
       checked.lifetime;
   };
 
@@ -822,6 +823,7 @@ in rec {
     packageOutputSelectorsFor
     packageProjectionFor
     sourceStageFixedPoint
+    lifetime
     packageAbilitiesFromProjection
     packageForDeclarationAuthority
     checkedProviderModuleEvaluation
@@ -858,6 +860,7 @@ in rec {
         identityKeyFor
         interfaceIdentity
         normalizePackageOutputSelectors
+        lifetime
         ;
       coreInterfaceModule = interfaceRegistry.module;
       moduleTypes = moduleOptionTypes;
@@ -1075,7 +1078,7 @@ in rec {
       key = requireLocalKey "resource key" checked.resource.key;
     };
     operations = localSortedStrings "resource operations" checked.operations;
-    lifetime = requireChoice "resource lifetime" ["attempt" "transaction" "instance" "persistent"] checked.lifetime;
+    lifetime = requireChoice "resource lifetime" lifetime.values checked.lifetime;
   };
 
   artifactReference = args: let
