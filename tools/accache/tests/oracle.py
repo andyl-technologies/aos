@@ -116,6 +116,25 @@ def fixtures(gcc, clang, rustc):
             yield Fixture("gcc-explicit-tree-dump", compiler,
                           base + ["-fdump-tree-original=report.txt"], c_sources,
                           {"value.h": "#define VALUE 73\n"})
+            yield Fixture("gcc-go-spec", compiler,
+                          base + ["-fdump-go-spec=spec.go"],
+                          {"source.c": '#include "value.h"\n'
+                                       'struct point { int x; };\n'
+                                       'int answer(void) { return VALUE; }\n',
+                           "value.h": "#define VALUE 42\n"},
+                          {"value.h": "#define VALUE 73\n"})
+            yield Fixture("gcc-optimization-record", compiler,
+                          base + ["-O2", "-fsave-optimization-record"], c_sources,
+                          {"value.h": "#define VALUE 73\n"},
+                          nondeterministic_outputs={"source.c.opt-record.json.gz"})
+            for suffix, option in [
+                ("default", "-fdump-final-insns"),
+                ("dot", "-fdump-final-insns=."),
+                ("explicit", "-fdump-final-insns=final.gkd"),
+            ]:
+                yield Fixture("gcc-final-insns-" + suffix, compiler,
+                              base + ["-O2", option], c_sources,
+                              {"value.h": "#define VALUE 73\n"})
             yield Fixture("gcc-opt-report", compiler,
                           base + ["-O2", "-fopt-info-optimized=report.txt"],
                           {"source.c": ('#include "value.h"\n'
@@ -343,46 +362,103 @@ def check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits):
     return results
 
 
-def check_ada_spec_passthrough(root, env, accache, sccache, gcc, hits):
-    """Keep header-derived Ada specs outside the bounded object dump scope."""
-    work = root / "gcc-ada-spec"
-    work.mkdir()
-    (work / "objects").mkdir()
-    (work / "header.h").write_text("struct point { int x; int y; };\n")
-    (work / "source.c").write_text(
-        '#include "header.h"\n'
-        'int answer(void) { struct point p = {1, 2}; return p.x; }\n')
-    args = [gcc, "-c", "source.c", "-o", "objects/source.o", "-fdump-ada-spec"]
+def check_ada_specs(root, env, accache, sccache, gcc, hits):
+    """Restore header-derived Ada specs omitted by pinned sccache warm hits."""
+    results = []
+    for name, flags in [
+        ("gcc-ada-spec", ["-fdump-ada-spec"]),
+        ("gcc-ada-spec-slim", ["-fdump-ada-spec-slim"]),
+        ("gcc-ada-spec-parent", ["-fdump-ada-spec", "-fada-spec-parent=Bindings"]),
+    ]:
+        work = root / name
+        work.mkdir()
+        (work / "objects").mkdir()
+        (work / "source.c").write_text(
+            '#include "header.h"\n'
+            'int answer(void) { struct point p = {1, 2}; return p.x; }\n')
+        args = [gcc, "-c", "source.c", "-o", "objects/source.o", *flags]
 
-    def compile_object(wrapper):
-        for path in work.rglob("*"):
-            if path.is_file() and path.name not in {"source.c", "header.h"}:
-                path.unlink()
-        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
-                                   capture_output=True, timeout=120)
-        assert completed.returncode == 0, (wrapper, completed.stderr)
-        files = snapshot(work)
-        files.pop("source.c")
-        files.pop("header.h")
-        return completed.stdout, completed.stderr, files
+        def compile_object(wrapper):
+            for path in work.rglob("*"):
+                if path.is_file() and path.name not in {"source.c", "header.h"}:
+                    path.unlink()
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (name, wrapper, completed.stderr)
+            files = snapshot(work)
+            files.pop("source.c")
+            files.pop("header.h")
+            return completed.stdout, completed.stderr, files
 
-    direct = compile_object([])
-    assert {"header_h.ads", "source_c.ads", "objects/source.o"} == set(direct[2])
-    assert compile_object([sccache]) == direct
-    before_hits = hits()
-    oracle_warm = compile_object([sccache])
-    oracle_hit = hits() > before_hits
+        for revision, fields in enumerate(["int x;", "int x; int y;"]):
+            (work / "header.h").write_text(f"struct point {{ {fields} }};\n")
+            direct = compile_object([])
+            ada_files = {path for path in direct[2] if path.endswith(".ads")}
+            assert ada_files and "objects/source.o" in direct[2], (name, direct[2])
 
-    for _ in range(2):
-        assert compile_object([accache]) == direct
-        event = json.loads(subprocess.check_output([accache, "explain"], env=env))
-        assert event["outcome"] == "bypass" and "untracked side output" in event["reason"], event
+            oracle_cold = compile_object([sccache])
+            assert oracle_cold == direct, (name, revision, "sccache cold", oracle_cold, direct)
+            before_hits = hits()
+            oracle_warm = compile_object([sccache])
+            assert hits() > before_hits, (name, revision, "sccache did not hit")
+            assert ada_files.isdisjoint(oracle_warm[2]), (name, revision, oracle_warm[2])
 
-    print("PASS oracle GCC Ada spec passthrough", flush=True)
-    return {"fixture": "gcc-ada-spec", "revision": 0,
-            "oracle_hit": oracle_hit, "accache": "bypass",
-            "oracle_missing_artifacts": sorted(set(direct[2]) - set(oracle_warm[2])),
-            "artifacts": sorted(direct[2])}
+            assert compile_object([accache]) == direct, (name, revision, "accache cold")
+            cold_event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert cold_event["outcome"] == "miss", (name, revision, cold_event)
+            assert compile_object([accache]) == direct, (name, revision, "accache warm")
+            warm_event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert warm_event["outcome"] == "hit", (name, revision, warm_event)
+
+            results.append({"fixture": name, "revision": revision,
+                            "oracle_hit": True, "accache": "hit",
+                            "oracle_missing_artifacts": sorted(ada_files),
+                            "artifacts": sorted(direct[2])})
+
+        print("PASS oracle", name, flush=True)
+    return results
+
+
+def check_gcc_timing_passthrough(root, env, accache, sccache, gcc, hits):
+    """Keep per-invocation timing streams and append-only timing files live."""
+    results = []
+    for name, flag in [("gcc-time-stderr", "-time"),
+                       ("gcc-time-file", "-time=timings.txt")]:
+        work = root / name
+        work.mkdir()
+        (work / "source.c").write_text("int answer(void) { return 42; }\n")
+        args = [gcc, "-c", "source.c", "-o", "source.o", flag]
+        timing = work / "timings.txt"
+
+        def compile_object(wrapper):
+            (work / "source.o").unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (name, wrapper, completed.stderr)
+            return (completed.stdout, completed.stderr,
+                    (work / "source.o").read_bytes())
+
+        direct = compile_object([])
+        assert direct[2], (name, "direct compiler produced no object")
+        assert compile_object([sccache])[2] == direct[2]
+        before_hits = hits()
+        assert compile_object([sccache])[2] == direct[2]
+        oracle_hit = hits() > before_hits
+
+        for _ in range(2):
+            previous_size = timing.stat().st_size if timing.exists() else 0
+            assert compile_object([accache])[2] == direct[2]
+            event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert event["outcome"] == "bypass" and "timing output" in event["reason"], event
+            if timing.exists():
+                assert timing.stat().st_size > previous_size, (name, "timing append was skipped")
+
+        assert timing.exists() == (name == "gcc-time-file"), name
+        results.append({"fixture": name, "revision": 0, "oracle_hit": oracle_hit,
+                        "accache": "bypass", "oracle_missing_artifacts": [],
+                        "artifacts": ["source.o"] + (["timings.txt"] if timing.exists() else [])})
+        print("PASS oracle", name, flush=True)
+    return results
 
 
 def check_saved_temporaries(root, env, accache, sccache, rustc, hits):
@@ -919,6 +995,11 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                 missing_oracle_side_files = {
                     "gcc-aux-info": {"source.aux"},
                     "gcc-explicit-tree-dump": {"report.txt"},
+                    "gcc-go-spec": {"spec.go"},
+                    "gcc-optimization-record": {"source.c.opt-record.json.gz"},
+                    "gcc-final-insns-default": {"source.c.gkd"},
+                    "gcc-final-insns-dot": {"source.c.gkd"},
+                    "gcc-final-insns-explicit": {"final.gkd"},
                     "gcc-opt-report": {"report.txt"},
                     "gcc-sarif-report": {"source.c.sarif"},
                     "gcc-sarif-nested-output": {"objects/source.c.c.sarif"},
@@ -1011,6 +1092,15 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                 direct = invoke([])
                 if fixture.name == "gcc-opt-report":
                     assert direct[3]["report.txt"][0], "GCC optimization report is empty"
+                if fixture.name == "gcc-go-spec":
+                    assert direct[3]["spec.go"][0], "GCC Go specification is empty"
+                if fixture.name == "gcc-optimization-record":
+                    assert direct[3]["source.c.opt-record.json.gz"][0], (
+                        "GCC optimization record is empty")
+                if fixture.name.startswith("gcc-final-insns-"):
+                    report = ("final.gkd" if fixture.name.endswith("explicit") else
+                              "source.c.gkd")
+                    assert direct[3][report][0], "GCC final instruction dump is empty"
                 oracle_cold = invoke([sccache])
                 if fixture.direct_exit_code is None:
                     compare(direct, oracle_cold, "sccache cold vs direct")
@@ -1038,6 +1128,10 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                     "gcc-analyzer-exploded-nodes-3",
                                     "gcc-analyzer-state-purge", "gcc-analyzer-supergraph",
                                     "gcc-analyzer-json",
+                                    "gcc-go-spec",
+                                    "gcc-optimization-record",
+                                    "gcc-final-insns-default", "gcc-final-insns-dot",
+                                    "gcc-final-insns-explicit",
                                     "gcc-explicit-tree-dump",
                                     "gcc-opt-report", "gcc-sarif-report",
                                     "gcc-sarif-nested-output", "gcc-add-sarif-output",
@@ -1075,7 +1169,9 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
             print("PASS oracle", fixture.name, flush=True)
 
         results.extend(check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits))
-        results.append(check_ada_spec_passthrough(root, env, accache, sccache, gcc, hits))
+        results.extend(check_ada_specs(root, env, accache, sccache, gcc, hits))
+        results.extend(check_gcc_timing_passthrough(root, env, accache,
+                                                   sccache, gcc, hits))
         results.append(check_saved_temporaries(root, env, accache, sccache, rustc, hits))
         results.append(check_assembler_include_invalidation(root, env, accache,
                                                             sccache, gcc, hits))
