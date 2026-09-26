@@ -736,11 +736,12 @@ in
         PATH=/unreachable "$packageRuntime/bin/aos-package-runtime" __eval --help > /dev/null
       ''}
 
-          # This deterministic signer/fixture process exists only for the
-          # isolated fleet release exercise. Keep it out of every shipped CLI
-          # output and expose it solely through the explicit testSupport output.
+          # Release qualification fixtures belong only in the testSupport
+          # output, outside every shipped CLI and package runtime closure.
           mkdir -p "$testSupport/bin"
           mv "$out/bin/aos-release-fleet-fixture" "$testSupport/bin/"
+          mv "$out/bin/aos-ability-interruption-audit" "$testSupport/bin/"
+          test -x "$testSupport/bin/aos-ability-interruption-audit"
 
           # The common fixup phase visits only the primary output. Strip every
           # shipped executable here so the split-output closure checks inspect

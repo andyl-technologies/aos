@@ -102,7 +102,7 @@ in {
       fixture.extraClosures
       ++ additionalClosures
       ++ authorityInterfaceRoots
-      ++ [authorityMatrixSpec];
+      ++ [authorityMatrixSpec pkgs.aos.testSupport];
     varSizeMiB = 8192;
     memoryMiB = 4096;
   };
@@ -127,6 +127,7 @@ in {
       PACKAGE_RUNTIME = ${packageRuntime}
       RUNTIME_AUDIT_MATRIX_SPEC = ${builtins.toJSON "${authorityMatrixSpec}/matrix-spec.json"}
       RUNTIME_AUDIT_INTERFACE_ROOTS = ${builtins.toJSON (map builtins.toString authorityInterfaceRoots)}
+      INTERRUPTION_AUDIT = "${pkgs.aos.testSupport}/bin/aos-ability-interruption-audit"
       SYSTEMCTL = "${pkgs.systemd}/bin/systemctl"
       SYSTEMD_RUN = "${pkgs.systemd}/bin/systemd-run"
       FLOCK = "${pkgs.util-linux}/bin/flock"
@@ -2125,7 +2126,7 @@ in {
           ]
       )
       runtime.succeed(
-          f"{Path(PACKAGE_RUNTIME).parent}/aos-ability-interruption-audit "
+          f"{INTERRUPTION_AUDIT} "
           f"{interruption_arguments}",
           timeout=1800,
       )
@@ -2141,7 +2142,7 @@ in {
         fixture.extraClosures
         ++ additionalClosures
         ++ authorityInterfaceRoots
-        ++ [authorityMatrixSpec observerController];
+        ++ [authorityMatrixSpec observerController pkgs.aos.testSupport];
       setupBody = fixture.qualificationSetupBody + observerHostModule;
     };
   }
