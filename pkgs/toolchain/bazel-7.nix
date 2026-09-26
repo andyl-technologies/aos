@@ -242,7 +242,8 @@
   };
   bazelPcollections = import ./_bazel-pcollections.nix {
     mkDerivation = buildPackages.mkDerivation;
-    inherit fetchgit buildPackages;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages;
   };
   bazelListenableFutureEmpty = import ./_bazel-listenablefuture-empty.nix {
     mkDerivation = buildPackages.mkDerivation;
