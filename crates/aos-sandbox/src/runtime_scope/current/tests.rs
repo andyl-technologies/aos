@@ -459,12 +459,14 @@ fn controller_node_validation_checks_every_current_runtime_binding() {
 #[test]
 fn controller_currentness_receipt_requires_exact_cold_replayed_head() {
     let directory = tempfile::tempdir().unwrap();
+    let controller_uid = std::fs::metadata(directory.path()).unwrap().uid();
     let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
     let selection = activate(&mut reconciler, 1, bind(None), false);
     let signer = SigningKey::from_bytes(&[0x35; 32]);
     let receipt = ControllerRuntimeCurrentnessReceiptV1::issue_at_uid_for_test(
         reconciler.journal_mut(),
         directory.path(),
+        controller_uid,
         selection.sandbox,
         7,
         &signer,
@@ -475,13 +477,20 @@ fn controller_currentness_receipt_requires_exact_cold_replayed_head() {
     let mut cold = open(directory.path());
     let recovered = ControllerRuntimeCurrentnessReceiptV1::decode(receipt.as_bytes()).unwrap();
     recovered
-        .verify_replayed_at_uid_for_test(&mut cold, directory.path(), 7, &signer.verifying_key())
+        .verify_replayed_at_uid_for_test(
+            &mut cold,
+            directory.path(),
+            controller_uid,
+            7,
+            &signer.verifying_key(),
+        )
         .unwrap();
     assert!(
         recovered
             .verify_replayed_at_uid_for_test(
                 &mut cold,
                 directory.path(),
+                controller_uid,
                 8,
                 &signer.verifying_key(),
             )
@@ -492,6 +501,7 @@ fn controller_currentness_receipt_requires_exact_cold_replayed_head() {
             .verify_replayed_at_uid_for_test(
                 &mut cold,
                 directory.path(),
+                controller_uid,
                 7,
                 &SigningKey::from_bytes(&[0x36; 32]).verifying_key(),
             )
@@ -506,6 +516,7 @@ fn controller_currentness_receipt_requires_exact_cold_replayed_head() {
             .verify_replayed_at_uid_for_test(
                 &mut cold,
                 directory.path(),
+                controller_uid,
                 7,
                 &signer.verifying_key(),
             )
@@ -520,6 +531,7 @@ fn controller_currentness_receipt_requires_exact_cold_replayed_head() {
             .verify_replayed_at_uid_for_test(
                 reconciler.journal_mut(),
                 directory.path(),
+                controller_uid,
                 7,
                 &signer.verifying_key(),
             )
@@ -530,6 +542,7 @@ fn controller_currentness_receipt_requires_exact_cold_replayed_head() {
 #[test]
 fn controller_currentness_receipt_rejects_noncanonical_or_revoked_state() {
     let directory = tempfile::tempdir().unwrap();
+    let controller_uid = std::fs::metadata(directory.path()).unwrap().uid();
     let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
     let selection = activate(&mut reconciler, 1, bind(None), false);
     let signer = SigningKey::from_bytes(&[0x37; 32]);
@@ -537,6 +550,7 @@ fn controller_currentness_receipt_rejects_noncanonical_or_revoked_state() {
         ControllerRuntimeCurrentnessReceiptV1::issue_at_uid_for_test(
             reconciler.journal_mut(),
             directory.path(),
+            controller_uid,
             selection.sandbox,
             0,
             &signer,
@@ -547,6 +561,7 @@ fn controller_currentness_receipt_rejects_noncanonical_or_revoked_state() {
     let receipt = ControllerRuntimeCurrentnessReceiptV1::issue_at_uid_for_test(
         reconciler.journal_mut(),
         directory.path(),
+        controller_uid,
         selection.sandbox,
         1,
         &signer,
@@ -567,6 +582,7 @@ fn controller_currentness_receipt_rejects_noncanonical_or_revoked_state() {
         ControllerRuntimeCurrentnessReceiptV1::issue_at_uid_for_test(
             reconciler.journal_mut(),
             directory.path(),
+            controller_uid,
             selection.sandbox,
             1,
             &signer,
@@ -578,6 +594,7 @@ fn controller_currentness_receipt_rejects_noncanonical_or_revoked_state() {
             .verify_replayed_at_uid_for_test(
                 reconciler.journal_mut(),
                 directory.path(),
+                controller_uid,
                 1,
                 &signer.verifying_key(),
             )
@@ -588,27 +605,26 @@ fn controller_currentness_receipt_rejects_noncanonical_or_revoked_state() {
 #[test]
 fn controller_currentness_receipt_rejects_orphaned_writer_after_root_replacement() {
     let directory = tempfile::tempdir().unwrap();
+    let controller_uid = std::fs::metadata(directory.path()).unwrap().uid();
     let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
     let selection = activate(&mut reconciler, 1, bind(None), false);
     let signer = SigningKey::from_bytes(&[0x38; 32]);
     let receipt = ControllerRuntimeCurrentnessReceiptV1::issue_at_uid_for_test(
         reconciler.journal_mut(),
         directory.path(),
+        controller_uid,
         selection.sandbox,
         1,
         &signer,
     )
     .unwrap();
 
-    let orphaned = directory.path().with_extension("orphaned");
-    std::fs::rename(directory.path(), &orphaned).unwrap();
-    std::fs::create_dir(directory.path()).unwrap();
-    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-
+    let wrong_uid = controller_uid.wrapping_add(1);
     assert!(
         ControllerRuntimeCurrentnessReceiptV1::issue_at_uid_for_test(
             reconciler.journal_mut(),
             directory.path(),
+            wrong_uid,
             selection.sandbox,
             1,
             &signer,
@@ -620,6 +636,35 @@ fn controller_currentness_receipt_rejects_orphaned_writer_after_root_replacement
             .verify_replayed_at_uid_for_test(
                 reconciler.journal_mut(),
                 directory.path(),
+                wrong_uid,
+                1,
+                &signer.verifying_key(),
+            )
+            .is_err()
+    );
+
+    let orphaned = directory.path().with_extension("orphaned");
+    std::fs::rename(directory.path(), &orphaned).unwrap();
+    std::fs::create_dir(directory.path()).unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    assert!(
+        ControllerRuntimeCurrentnessReceiptV1::issue_at_uid_for_test(
+            reconciler.journal_mut(),
+            directory.path(),
+            controller_uid,
+            selection.sandbox,
+            1,
+            &signer,
+        )
+        .is_err()
+    );
+    assert!(
+        receipt
+            .verify_replayed_at_uid_for_test(
+                reconciler.journal_mut(),
+                directory.path(),
+                controller_uid,
                 1,
                 &signer.verifying_key(),
             )
@@ -632,6 +677,7 @@ fn controller_currentness_receipt_rejects_orphaned_writer_after_root_replacement
         .verify_replayed_at_uid_for_test(
             reconciler.journal_mut(),
             directory.path(),
+            controller_uid,
             1,
             &signer.verifying_key(),
         )

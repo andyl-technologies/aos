@@ -40,9 +40,14 @@ const CONTROLLER_ROOT: &str = "/var/lib/aos/sandboxd";
 const CONTROLLER_JOURNAL: &str = "controller.journal";
 
 enum ControllerRoot {
-    Production,
+    Production {
+        configured_uid: u32,
+    },
     #[cfg(test)]
-    Test(PathBuf),
+    Test {
+        directory: PathBuf,
+        configured_uid: u32,
+    },
 }
 
 /// Reports a malformed, stale, or unauthenticated closed Controller receipt.
@@ -69,15 +74,17 @@ pub(crate) struct ControllerRuntimeCurrentnessReceiptV1 {
 impl ControllerRuntimeCurrentnessReceiptV1 {
     /// Signs the current Controller head under one already-held journal writer.
     ///
-    /// The caller must independently own the dedicated signing credential.
-    /// This closed entry point has no production caller or effect consumer.
+    /// The caller must independently own the dedicated signing credential and
+    /// supply the Controller UID from privileged service configuration. This
+    /// closed entry point has no production caller or effect consumer.
     ///
     /// # Errors
     ///
     /// Rejects zero signer generation, absent or revoked current assignment,
-    /// malformed protected replay, or lost journal custody.
+    /// malformed protected replay, mismatched configured UID, or lost custody.
     pub(crate) fn issue(
         journal: &mut Journal,
+        configured_uid: u32,
         sandbox: SandboxId,
         signer_generation: u64,
         signer: &SigningKey,
@@ -87,7 +94,7 @@ impl ControllerRuntimeCurrentnessReceiptV1 {
             sandbox,
             signer_generation,
             signer,
-            &ControllerRoot::Production,
+            &ControllerRoot::Production { configured_uid },
         )
     }
 
@@ -101,6 +108,7 @@ impl ControllerRuntimeCurrentnessReceiptV1 {
     pub(crate) fn issue_at_uid_for_test(
         journal: &mut Journal,
         root: &Path,
+        configured_uid: u32,
         sandbox: SandboxId,
         signer_generation: u64,
         signer: &SigningKey,
@@ -110,7 +118,10 @@ impl ControllerRuntimeCurrentnessReceiptV1 {
             sandbox,
             signer_generation,
             signer,
-            &ControllerRoot::Test(root.to_path_buf()),
+            &ControllerRoot::Test {
+                directory: root.to_path_buf(),
+                configured_uid,
+            },
         )
     }
 
@@ -159,18 +170,21 @@ impl ControllerRuntimeCurrentnessReceiptV1 {
 
     /// Verifies the independent key pin, signature, and exact cold-replayed head.
     ///
-    /// The verifier key and generation must come from outside this journal and
-    /// packet. Exact journal-sequence matching conservatively expires receipts
-    /// after any later Controller append. A compaction must still replay to the
-    /// same complete namespace and exact sequence to preserve one.
+    /// The verifier key, generation, and configured Controller UID must come
+    /// from outside this journal and packet. Exact journal-sequence matching
+    /// conservatively expires receipts after any later Controller append. A
+    /// compaction must still replay to the same complete namespace and exact
+    /// sequence to preserve one.
     ///
     /// # Errors
     ///
     /// Rejects a stale signer generation, invalid signature, changed journal
-    /// sequence or current head, revoked assignment, or failed protected replay.
+    /// sequence or current head, revoked assignment, mismatched configured UID,
+    /// or failed protected replay.
     pub(crate) fn verify_replayed(
         &self,
         journal: &mut Journal,
+        configured_uid: u32,
         pinned_generation: u64,
         pinned_verifier: &VerifyingKey,
     ) -> Result<(), ControllerRuntimeCurrentnessReceiptErrorV1> {
@@ -178,7 +192,7 @@ impl ControllerRuntimeCurrentnessReceiptV1 {
             journal,
             pinned_generation,
             pinned_verifier,
-            &ControllerRoot::Production,
+            &ControllerRoot::Production { configured_uid },
         )
     }
 
@@ -192,6 +206,7 @@ impl ControllerRuntimeCurrentnessReceiptV1 {
         &self,
         journal: &mut Journal,
         root: &Path,
+        configured_uid: u32,
         pinned_generation: u64,
         pinned_verifier: &VerifyingKey,
     ) -> Result<(), ControllerRuntimeCurrentnessReceiptErrorV1> {
@@ -199,7 +214,10 @@ impl ControllerRuntimeCurrentnessReceiptV1 {
             journal,
             pinned_generation,
             pinned_verifier,
-            &ControllerRoot::Test(root.to_path_buf()),
+            &ControllerRoot::Test {
+                directory: root.to_path_buf(),
+                configured_uid,
+            },
         )
     }
 
@@ -297,22 +315,27 @@ fn validate_root(
     journal: &Journal,
     root: &ControllerRoot,
 ) -> Result<(), ControllerRuntimeCurrentnessReceiptErrorV1> {
-    let owner_uid = journal.protected_owner_uid()?;
     match root {
-        ControllerRoot::Production => journal.require_protected_named_location(
-            Path::new(CONTROLLER_ROOT),
-            CONTROLLER_JOURNAL,
-            owner_uid,
-            crate::controller_service::journal::production_journal_limits(),
-        )?,
+        ControllerRoot::Production { configured_uid } => {
+            journal.require_protected_named_location(
+                Path::new(CONTROLLER_ROOT),
+                CONTROLLER_JOURNAL,
+                *configured_uid,
+                crate::controller_service::journal::production_journal_limits(),
+            )?;
+        }
         #[cfg(test)]
-        ControllerRoot::Test(directory) => journal
-            .require_protected_named_location_at_uid_for_test(
+        ControllerRoot::Test {
+            directory,
+            configured_uid,
+        } => {
+            journal.require_protected_named_location_at_uid_for_test(
                 directory,
                 CONTROLLER_JOURNAL,
-                owner_uid,
+                *configured_uid,
                 crate::JournalLimits::default(),
-            )?,
+            )?;
+        }
     }
     Ok(())
 }
