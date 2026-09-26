@@ -518,6 +518,37 @@ def fixtures(gcc, clang, rustc):
         yield Fixture("rust-" + name, rustc,
                       ["--crate-name=example", "--crate-type=rlib", "--out-dir=target", "library.rs", *flags],
                       rust_sources, {"value.txt": "second"})
+    lint_sources = {
+        "library.rs": ('fn unused() {}\n'
+                       'pub fn answer() -> &\'static str { include_str!("value.txt") }\n'),
+        "value.txt": "first",
+    }
+    for name, flags in [
+        ("allow-lint", ["--allow=dead_code"]),
+        ("short-allow-lint", ["-Adead_code"]),
+        ("warn-lint", ["--warn=dead_code"]),
+        ("short-warn-lint", ["-Wdead_code"]),
+        ("cap-lints", ["--warn=dead_code", "--cap-lints=allow"]),
+        ("diagnostic-width", ["--warn=dead_code", "--diagnostic-width=40"]),
+        ("color-always", ["--warn=dead_code", "--color=always"]),
+        ("color-never", ["--warn=dead_code", "--color=never"]),
+    ]:
+        yield Fixture("rust-frontend-" + name, rustc,
+                      ["--crate-name=lint_example", "--crate-type=rlib",
+                       "--emit=link,dep-info", "--out-dir=target", "library.rs", *flags],
+                      lint_sources, {"value.txt": "second"})
+    for name, flags in [
+        ("deny-lint", ["--deny=dead_code"]),
+        ("short-deny-lint", ["-Ddead_code"]),
+        ("forbid-lint", ["--forbid=dead_code"]),
+        ("short-forbid-lint", ["-Fdead_code"]),
+    ]:
+        # Failed compilations must keep their diagnostics live on repetition.
+        yield Fixture("rust-frontend-" + name, rustc,
+                      ["--crate-name=lint_example", "--crate-type=rlib",
+                       "--emit=link,dep-info", "--out-dir=target", "library.rs", *flags],
+                      lint_sources, {"value.txt": "second"},
+                      cacheable=False, exit_code=1)
     yield Fixture("rust-staticlib", rustc,
                   ["--crate-name=example", "--crate-type=staticlib", "--emit=link,dep-info", "--out-dir=target", "library.rs"],
                   rust_sources)
@@ -586,6 +617,13 @@ def fixtures(gcc, clang, rustc):
                   precompile=["--crate-name=numbers", "--crate-type=proc-macro", "macro.rs",
                               "-o", "libnumbers.so"])
     yield Fixture("rust-query", rustc, ["--version", "--verbose"], {}, cacheable=False)
+    for name, arguments in [
+        ("help", ["--help"]),
+        ("short-version", ["-V"]),
+        ("explain", ["--explain", "E0308"]),
+        ("print-cfg", ["--print", "cfg"]),
+    ]:
+        yield Fixture("rust-query-" + name, rustc, arguments, {}, cacheable=False)
 
 
 def snapshot(work):
