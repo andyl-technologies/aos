@@ -54,6 +54,8 @@ pub struct Invocation {
     pub optional_outputs: BTreeSet<String>,
     /// Expanded rustc arguments when sccache accepts a nested response file.
     pub execution_args: Option<Vec<String>>,
+    /// C/C++ arguments after omitting flags the pinned frontend leaves unhashed.
+    pub key_arguments: Option<Vec<String>>,
     /// Bounded compiler-generated side files whose names require compilation.
     pub dynamic_outputs: Option<DynamicOutputs>,
     /// Rust's selected output directory, shared by all compiler calls in a Cargo target.
@@ -93,6 +95,7 @@ pub fn classify(
         outputs: Vec::new(),
         optional_outputs: BTreeSet::new(),
         execution_args: None,
+        key_arguments: None,
         dynamic_outputs: None,
         rust_output_directory: None,
         rust_save_temps: false,

@@ -120,6 +120,10 @@ hits, and rebuilds when its contents change. Literal nested `@` arguments
 inside shell argfiles run directly through rustc.
 Other compiler arguments are passed unchanged. Unsupported invocations run
 the compiler and record a bypass reason. Non-UTF-8 arguments also run unchanged.
+The C/C++ action key omits options the pinned frontend marks unhashed, such
+as `-pipe`. The compiler still receives the original command, which each
+provenance event records. The local-only action command uses the normalized
+arguments; a remote execution backend would need to honor that distinction.
 
 Covered output families include ordinary C/C++ objects, depfiles (including
 GCC/Clang `-Wp,-MD` and `-Wp,-MMD` and GCC `-Xpreprocessor -MD`), split debug
