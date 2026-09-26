@@ -204,7 +204,8 @@ in {
       hostStoreMount = true;
       hostAliases = ["aos.andyl.org"];
       imageDiskMiB = 16384;
-      memoryMiB = 4096;
+      memoryMiB = 8192;
+      vcpuCount = 4;
       varProvisioning = "repart";
     };
   };
@@ -431,7 +432,7 @@ in {
           cookie=$(cat /tmp/hybrid-cookie)
           attempt=0
           while test "$attempt" -lt 100; do
-            {CURL} -sS -o /dev/null -w '%{{time_starttransfer}} %{{http_code}}\\n' \\
+            {CURL} -sS -o /dev/null -w '%{{time_starttransfer}} %{{http_code}} %{{time_connect}} %{{time_appconnect}}\\n' \\
               -H 'cf-connecting-ip: 192.0.2.10' -H "Cookie: $cookie" \\
               https://aos.andyl.org/-/instance
             attempt=$((attempt + 1))
@@ -440,11 +441,13 @@ in {
       assert len(samples) == 100, samples
       assert all(sample.split()[1] == "200" for sample in samples), samples
       first_bytes = sorted(float(sample.split()[0]) for sample in samples)
+      baseline_tls = sorted(float(sample.split()[3]) for sample in samples)
       print("hybrid authenticated page TTFB seconds:", {
           "p50": statistics.median(first_bytes),
           "p95": first_bytes[94],
           "p99": first_bytes[98],
           "max": first_bytes[99],
+          "tls_p95": baseline_tls[94],
       })
       assert first_bytes[94] < 0.5, first_bytes
 
@@ -888,7 +891,7 @@ in {
           ).digest()).rstrip(b"=").decode()
           compact = payload + "." + signature
           native_page_commands.append(
-              f"{CURL} -sS -o /dev/null -w '%{{time_starttransfer}} %{{http_code}}\\n' "
+              f"{CURL} -sS -o /dev/null -w '%{{time_starttransfer}} %{{http_code}} %{{time_connect}} %{{time_appconnect}}\\n' "
               f"-H 'x-aos-hybrid-ingress: {compact}' -H \"Cookie: $cookie\" "
               "https://aos.staging.andyl.org/-/instance"
           )
@@ -899,7 +902,7 @@ in {
           'native_pid=$!',
           'attempt=0',
           'while test "$attempt" -lt 25; do',
-          f"{CURL} -sS -o /dev/null -w '%{{time_starttransfer}} %{{http_code}}\\n' "
+          f"{CURL} -sS -o /dev/null -w '%{{time_starttransfer}} %{{http_code}} %{{time_connect}} %{{time_appconnect}}\\n' "
           "-H 'cf-connecting-ip: 192.0.2.10' -H \"Cookie: $cookie\" "
           "https://aos.andyl.org/-/instance >> /tmp/hybrid-parallel-pages",
           'attempt=$((attempt + 1))',
@@ -928,11 +931,13 @@ in {
       assert len(loaded_samples) == 25, loaded_samples
       assert all(sample.split()[1] == "200" for sample in loaded_samples), loaded_samples
       loaded_first_bytes = sorted(float(sample.split()[0]) for sample in loaded_samples)
+      loaded_tls = sorted(float(sample.split()[3]) for sample in loaded_samples)
       print("hybrid authenticated page TTFB during parallel uploads:", {
           "p50": statistics.median(loaded_first_bytes),
           "p95": loaded_first_bytes[23],
           "max": loaded_first_bytes[24],
           "p95_ratio": loaded_first_bytes[23] / first_bytes[94],
+          "tls_p95": loaded_tls[23],
       })
       native_samples = client.succeed("cat /tmp/hybrid-native-pages").splitlines()
       assert len(native_samples) == 25, native_samples
@@ -947,8 +952,10 @@ in {
       # Local Wrangler serializes R2 emulation and Worker execution in one VM.
       # The signed direct probe isolates Native and PostgreSQL responsiveness.
       assert native_first_bytes[23] < 0.5, native_first_bytes
-      assert statistics.median(loaded_first_bytes) < 0.5, loaded_first_bytes
-      assert loaded_first_bytes[23] < 2.0, loaded_first_bytes
+      loaded_page_gate = (
+          loaded_first_bytes[23] < 0.5
+          and loaded_first_bytes[23] <= first_bytes[94] * 1.25
+      )
 
       parallel_ticket_ids = [upload["uploadTicketId"] for upload in parallel_uploads]
       assert all(
@@ -1374,6 +1381,141 @@ in {
           time.sleep(2)
       assert capability_state == "valid", capability_state
 
+      reviewed(
+          "hybrid-oci-retention",
+          "registry container retention set fleet/containers --untagged-grace 0s "
+          "--deleted-tag-history 0s --recent-manual-tag-revisions 0 "
+          "--retain-referrers disabled",
+      )
+      retention = json.loads(client.succeed(hub_command(
+          "registry container retention show fleet/containers"
+      )))["data"]["policy"]
+      # A retention update advances the OCI mutation epoch. GC must review a
+      # provider enumeration sealed against that new epoch.
+      current_inventory_query = (
+          "SELECT COUNT(*) FROM oci_provider_inventory_heads head "
+          "JOIN oci_provider_inventory_generations generation "
+          "ON generation.id = head.generation_id "
+          "JOIN surface_placements placement ON placement.id = head.placement_id "
+          "JOIN surface_placement_observations observation "
+          "ON observation.placement_id = placement.id "
+          "JOIN bindings binding ON binding.id = placement.binding_id "
+          "JOIN binding_write_state write_state ON write_state.binding_id = binding.id "
+          "JOIN oci_registry_state state ON state.registry_id = head.registry_id "
+          "WHERE placement.prefix = 'registries/fleet-containers' "
+          "AND generation.state = 'complete' "
+          "AND generation.captured_mutation_epoch = state.mutation_epoch "
+          "AND generation.placement_resource_version = placement.resource_version "
+          "AND generation.placement_write_spec_version = placement.write_spec_version "
+          "AND generation.placement_observation_version = observation.observation_version "
+          "AND generation.binding_resource_version = binding.resource_version "
+          "AND generation.binding_write_revision = write_state.current_write_revision"
+      )
+      native.wait_until_succeeds(
+          f"test \"$({POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          f"-c {shlex.quote(current_inventory_query)})\" = 1",
+          timeout=180,
+      )
+      gc_result = json.loads(client.succeed(hub_command(
+          "registry container gc plan fleet/containers "
+          f"--if-version {shlex.quote(retention['resource_version'])} "
+          "--idempotency-key hybrid-oci-gc-plan"
+      ), timeout=180))["data"]
+      gc_plan = gc_result["plan"]
+      gc_run = gc_result["run"]
+      assert not gc_result.get("blockers", []), gc_result
+      candidate_count = int(gc_run["candidate_object_count"])
+      assert candidate_count >= 1, gc_run
+      assert int(gc_run["placement_action_count"]) >= 1, gc_run
+      client.succeed(hub_command(
+          "registry container gc apply",
+          " ".join([
+              "--plan-id", shlex.quote(gc_plan["plan_id"]),
+              "--confirm-hash", shlex.quote(gc_plan["confirmation_hash"]),
+              "--idempotency-key hybrid-oci-gc-apply --yes",
+          ]),
+      ), timeout=120)
+      gc_run_id = gc_run["run_id"]
+      gc_status_query = (
+          "SELECT state || ':' || deleted_object_count FROM oci_gc_runs "
+          f"WHERE id = '{gc_run_id}'"
+      )
+      try:
+          native.wait_until_succeeds(
+              f"test \"$({POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+              f"-c {shlex.quote(gc_status_query)})\" = "
+              f"'complete:{candidate_count}'",
+              timeout=240,
+          )
+      except Exception:
+          run_status_sql = (
+              "SELECT state, last_error FROM oci_gc_runs "
+              f"WHERE id = {repr(gc_run_id)}"
+          )
+          action_status_sql = (
+              "SELECT state, last_error FROM oci_gc_placement_actions "
+              f"WHERE run_id = {repr(gc_run_id)}"
+          )
+          print("hybrid OCI GC run after timeout:", native.succeed(
+              f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -c "
+              f"{shlex.quote(run_status_sql)}"
+          ))
+          print("hybrid OCI GC actions after timeout:", native.succeed(
+              f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -c "
+              f"{shlex.quote(action_status_sql)}"
+          ))
+          raise
+
+      registry_selector = native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At -F ' ' "
+          "-c \"SELECT p.id, p.resource_version, b.id, b.resource_version, p.prefix "
+          "FROM surface_placements p JOIN bindings b ON b.id = p.binding_id "
+          "WHERE p.name = 'primary' AND p.prefix = 'registries/fleet-containers'\""
+      ).strip().split()
+      assert len(registry_selector) == 5, registry_selector
+      head_time = int(time.time())
+      deleted_head_plan = {
+          **cache_verification_plan,
+          "plan_id": "7" * 32,
+          "issued_at": head_time,
+          "expires_at": head_time + 30,
+          "placement_id": int(registry_selector[0]),
+          "placement_resource_version": int(registry_selector[1]),
+          "binding_id": int(registry_selector[2]),
+          "binding_resource_version": int(registry_selector[3]),
+          "placement_prefix": registry_selector[4],
+          "operation": {
+              "kind": "head",
+              "path": f"oci/blobs/sha256/{publication_digest}",
+          },
+      }
+      for attempt in range(3):
+          head_time = int(time.time())
+          deleted_head_plan["issued_at"] = head_time
+          deleted_head_plan["expires_at"] = head_time + 30
+          head_body, head_signature = sign_storage_plan(deleted_head_plan)
+          try:
+              deleted_head = json.loads(client.succeed(
+                  f"{CURL} -fsS -X POST -H 'content-type: application/json' "
+                  f"-H 'x-aos-storage-work-signature: {head_signature}' "
+                  f"--data-binary {shlex.quote(head_body.decode())} "
+                  "https://aos.andyl.org/_internal/storage/v1/execute",
+                  timeout=60,
+              ))
+              break
+          except Exception:
+              if attempt < 2:
+                  time.sleep(2)
+                  continue
+              print("hybrid Worker log after OCI GC:", worker.succeed(
+                  "tail -n 120 /var/lib/hybrid-worker/wrangler.log"
+              ))
+              print("hybrid Worker kernel log after OCI GC:", worker.succeed(
+                  "journalctl -k --no-pager -n 60"
+              ))
+              raise
+      assert deleted_head["outcome"]["kind"] == "not_found", deleted_head
+
       invalid_plan_time = int(time.time())
       rejected_plans = [
           {
@@ -1484,6 +1626,12 @@ in {
           "https://aos.andyl.org/-/instance | "
           f"{GREP} -q '<html'",
           timeout=180,
+      )
+      assert loaded_page_gate, (
+          "authenticated page p95 regressed during parallel uploads",
+          first_bytes[94],
+          loaded_first_bytes[23],
+          native_first_bytes[23],
       )
     '';
 }

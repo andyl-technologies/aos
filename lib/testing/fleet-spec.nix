@@ -250,6 +250,16 @@
         '';
       };
 
+      vcpuCount = mkOption {
+        type = positiveInt;
+        default = 2;
+        description = ''
+          Number of virtual CPUs handed to this machine's QEMU. Increase it
+          when the guest runs several independently scheduled services, such
+          as a Worker runner and a local object-store emulator.
+        '';
+      };
+
       varSizeMiB = mkOption {
         type = positiveInt;
         default = 256;

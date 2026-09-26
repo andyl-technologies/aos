@@ -102,6 +102,7 @@
       extraDisks = m.extraDisks or [];
       expectAgent = m.expectAgent or true;
       memoryMiB = m.memoryMiB or 2048;
+      vcpuCount = m.vcpuCount or 2;
       tpm = m.tpm or false;
       hostAliases = m.hostAliases or [];
       name = mname;
@@ -360,7 +361,7 @@
           m.extraDisks;
       in
         {
-          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB expectAgent hostStoreMount;
+          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB vcpuCount expectAgent hostStoreMount;
           extraDisks = resolvedExtraDisks;
           inherit metadataISO;
           system = effectiveSystem;
@@ -402,8 +403,8 @@
     # qemu. The driver consumes this JSON and starts each VM in order,
     # then exposes each machine to the testScript as a Python global
     # named after `mb.name` (e.g. controlplane, worker). Per-machine RAM
-    # comes from the spec's `memoryMiB` (default 2 GiB); vCPU count is a
-    # uniform 2 per machine.
+    # comes from the spec's `memoryMiB` (default 2 GiB), and CPU count from
+    # `vcpuCount` (default 2).
     manifest =
       {
         inherit name timeout;
@@ -420,7 +421,7 @@
                 inherit (mb) name mac ip;
                 transport = "qemu";
                 memory_mib = mb.memoryMiB;
-                vcpu_count = 2;
+                vcpu_count = mb.vcpuCount;
                 # vTPM (RFC-0006 phase 3): when set, the driver launches a
                 # per-machine swtpm and wires QEMU's tpm-tis to it.
                 tpm = mb.tpm;
@@ -639,7 +640,7 @@
               -machine q35,accel=kvm \
               -cpu host \
               -m ${toString mb.memoryMiB} \
-              -smp 2 \
+              -smp ${toString mb.vcpuCount} \
               -nographic \
               -kernel "''${VMLINUZ_${mb.name}}" \
               -initrd "''${INITRD_${mb.name}}" \
