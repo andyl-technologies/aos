@@ -1323,7 +1323,8 @@ def build_gcc_assembler(work, env, gcc, assembler, wrapper, value):
 
 def check_gcc_compiler_prefix(root, env, accache, sccache, gcc, hits,
                               fixture, option, directory=False, separated=False,
-                              compiler_path=False, exec_prefix=False):
+                              compiler_path=False, exec_prefix=False,
+                              exec_prefix_target_bin=False):
     """Hash an assembler selected by a GCC option or environment prefix."""
     work = root / fixture
     work.mkdir()
@@ -1355,6 +1356,13 @@ def check_gcc_compiler_prefix(root, env, accache, sccache, gcc, hits,
         subprograms = toolchain / "libexec/gcc" / relative
         subprograms.mkdir(parents=True)
         (subprograms / "cc1").symlink_to(frontend)
+        if exec_prefix_target_bin:
+            target = subprocess.check_output(
+                [gcc, "-dumpmachine"], cwd=work, env=env, text=True).strip()
+            version = subprocess.check_output(
+                [gcc, "-dumpfullversion"], cwd=work, env=env, text=True).strip()
+            subprograms = toolchain / target / "bin" / target / version
+            subprograms.mkdir(parents=True)
         wrapper = subprograms / "as"
         compile_env = env | {"GCC_EXEC_PREFIX": str(toolchain / "lib/gcc") + "/"}
 
@@ -4134,6 +4142,10 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                 fixture, option, directory, separated, compiler_path, exec_prefix))
         results.extend(check_gcc_compiler_path_precedence(
             root, env, accache, sccache, raw_gcc, hits))
+        results.extend(check_gcc_compiler_prefix(
+            root, env, accache, sccache, raw_gcc, hits,
+            "gcc-exec-prefix-target-bin-assembler", "", exec_prefix=True,
+            exec_prefix_target_bin=True))
         results.extend(check_gcc_profile_note_outputs(root, env, accache,
                                                       sccache, gcc, hits))
         results.extend(check_gcc_auto_profile_inputs(root, env, accache,

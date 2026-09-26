@@ -364,11 +364,12 @@ Another oracle case starts with `as` in the second search directory, then
 adds `as` to the first directory without changing `COMPILER_PATH`. Direct GCC
 selects the new assembler. Accache must miss and name it in the explanation;
 pinned sccache replays the original object.
-GCC also derives subprogram paths from `GCC_EXEC_PREFIX`. A raw GCC oracle
-keeps the environment value and `cc1` fixed while rebuilding `as` in the
-derived `libexec/gcc` tree. Accache fingerprints that tree, names the changed
-assembler in its miss explanation, and warm-hits the new object; pinned
-sccache replays the old one.
+GCC also derives subprogram paths from `GCC_EXEC_PREFIX`. Raw GCC oracles keep
+the environment value and `cc1` fixed while rebuilding `as` in either the
+derived `libexec/gcc` tree or a target-specific `bin` directory. Accache asks
+GCC for its program search directories, fingerprints their entries, names the
+changed assembler in its miss explanation, and warm-hits the new object;
+pinned sccache replays the old one.
 Four more cases mutate a binary read by C inline assembly in GCC/Clang `.c`
 and `.i` compilations. Pinned sccache again replays stale objects; accache
 misses and names the changed binary input.
