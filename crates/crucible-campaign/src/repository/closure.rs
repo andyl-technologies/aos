@@ -1255,7 +1255,7 @@ impl CampaignRepository {
                 "planner-step-transition-validated-record-mismatch",
             ));
         }
-        self.validate_builtin_planner_step(&request, &step)?;
+        self.validate_builtin_planner_step(request, step)?;
         if request.expected_snapshot()
             != CampaignSnapshotId::from_content_id(parent.envelope.content_id())?
         {
@@ -1311,7 +1311,7 @@ impl CampaignRepository {
             ));
         }
         if matches!(step.disposition(), PlannerDisposition::Issue { .. }) {
-            self.validate_planner_issue_projection(parent, child, &step)?;
+            self.validate_planner_issue_projection(parent, child, step)?;
         } else if prior_roots.exploration != next_roots.exploration
             || prior_roots.accounting != next_roots.accounting
         {
