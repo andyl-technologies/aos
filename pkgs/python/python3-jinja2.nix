@@ -1,5 +1,6 @@
 ##! jinja2 Python module built from its source distribution.
 {
+  lib,
   mkDerivation,
   fetchurl,
   python3,
@@ -30,6 +31,62 @@ mkDerivation {
     role = "public-package";
   };
   pname = "python3-jinja2";
+  qualification.packageProbe = lib.qualification.commandProbe {
+    primary = {
+      input = "A template variable containing HTML markup.";
+      operation = "Render the template with Jinja2 autoescaping enabled.";
+      expected = "The markup is escaped in the rendered output.";
+      files = {};
+      artifacts = [];
+      steps = [
+        {
+          argv = [
+            "@python@"
+            "-c"
+            ''
+              from jinja2 import Environment
+
+              template = Environment(autoescape=True).from_string("Hello {{ name }}")
+              assert template.render(name="<AOS>") == "Hello &lt;AOS&gt;"
+              print("jinja2 escaped template passed")
+            ''
+          ];
+          exit_code = 0;
+          stdout.exact = "jinja2 escaped template passed\n";
+          stderr.exact = "";
+        }
+      ];
+    };
+    badInput = {
+      input = "A template with an unterminated expression.";
+      operation = "Parse the malformed template through Jinja2.";
+      expected = "Jinja2 rejects it with TemplateSyntaxError.";
+      files = {};
+      artifacts = [];
+      steps = [
+        {
+          argv = [
+            "@python@"
+            "-c"
+            ''
+              from jinja2 import Environment, TemplateSyntaxError
+
+              try:
+                  Environment().from_string("{{ name")
+              except TemplateSyntaxError:
+                  print("jinja2 rejected malformed template")
+              else:
+                  raise SystemExit(1)
+            ''
+          ];
+          exit_code = 0;
+          observes_rejection = true;
+          stdout.exact = "jinja2 rejected malformed template\n";
+          stderr.exact = "";
+        }
+      ];
+    };
+  };
   version = "3.1.6";
   src = fetchurl {
     urls = ["https://files.pythonhosted.org/packages/df/bf/f7da0350254c0ed7c72f3e33cef02e048281fec7ecec5f032d4aac52226b/jinja2-3.1.6.tar.gz"];
