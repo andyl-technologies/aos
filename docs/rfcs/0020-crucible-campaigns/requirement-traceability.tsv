@@ -251,7 +251,7 @@ CMEAS-13	T-CAM-3.5,T-CAM-8.2	gate:campaign-replay
 CMEAS-14	T-CAM-3.4,T-CAM-8.2	gate:campaign-model
 CSEC-1	T-CAM-1.6,T-CAM-4.9	gate:content-address,gate:campaign-component-contract
 CSEC-2	T-CAM-2.4,T-CAM-2.5	gate:typed-choice,gate:abi-conformance
-CSEC-3	T-CAM-2.4,T-CAM-2.5	gate:typed-choice,gate:abi-conformance
+CSEC-3	T-CAM-2.4,T-CAM-2.5	gate:campaign-policy-timeout-real-qemu,gate:typed-choice,gate:abi-conformance
 CSEC-4	T-CAM-4.1,T-CAM-4.9	gate:lazy-frontier,gate:campaign-component-contract
 CSEC-5	T-CAM-4.5	gate:control-responsiveness,gate:lazy-frontier
 CSEC-6	T-CAM-6.4,T-CAM-7.1	gate:hot-fork-isolation

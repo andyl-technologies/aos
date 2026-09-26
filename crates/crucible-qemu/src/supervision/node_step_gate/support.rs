@@ -383,13 +383,21 @@ pub(super) fn gate_shutdown_policy() -> QemuShutdownPolicy {
 }
 
 /// Returns an async-driver policy whose lifecycle and advance budgets share the configured bound.
-pub(super) fn gate_async_policy(completion_timeout: Duration) -> QemuAsyncDriverPolicy {
-    QemuAsyncDriverPolicy::new(
+pub(super) fn gate_async_policy(
+    completion_timeout: Duration,
+    unbounded_advance_completion: bool,
+) -> QemuAsyncDriverPolicy {
+    let policy = QemuAsyncDriverPolicy::new(
         completion_timeout,
         completion_timeout,
         completion_timeout,
         completion_timeout,
-    )
+    );
+    if unbounded_advance_completion {
+        policy.with_unbounded_advance_completion()
+    } else {
+        policy
+    }
 }
 
 #[path = "support/tail.rs"]

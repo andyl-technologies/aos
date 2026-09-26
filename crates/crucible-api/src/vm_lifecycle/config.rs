@@ -27,6 +27,12 @@ impl ProductionVmLifecycleConfig {
         self.completion_timeout
     }
 
+    /// Reports whether advance polling has no host deadline.
+    #[must_use]
+    pub const fn unbounded_advance_completion(&self) -> bool {
+        self.unbounded_advance_completion
+    }
+
     /// Returns the terminal shared-timeline tick ceiling for this lifecycle.
     #[must_use]
     pub const fn run_ceiling_ticks(&self) -> u64 {
@@ -149,6 +155,7 @@ impl ProductionVmLifecycleConfig {
             maximum_host_workers: quantum_loop::MAX_PRODUCTION_QEMU_HOST_WORKERS,
             rendezvous_interval_ticks: None,
             completion_timeout: Duration::from_secs(240),
+            unbounded_advance_completion: false,
             coverage: QemuLaunchPluginSwitch::Off,
             debug_gateway_executable: None,
             debug: None,
@@ -269,6 +276,13 @@ impl ProductionVmLifecycleConfig {
     #[must_use]
     pub const fn with_completion_timeout(mut self, timeout: Duration) -> Self {
         self.completion_timeout = timeout;
+        self
+    }
+
+    /// Keeps lifecycle transport bounds but renews quantum polling slices.
+    #[must_use]
+    pub const fn with_unbounded_advance_completion(mut self) -> Self {
+        self.unbounded_advance_completion = true;
         self
     }
 

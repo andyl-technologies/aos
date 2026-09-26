@@ -102,7 +102,34 @@ fn explicit_assignment_watchdog_supersedes_default_qemu_operation_timeout() {
 
     assert!(configured.completion_timeout() > Duration::from_secs(240));
     assert!(configured.completion_timeout() <= Duration::from_secs(600));
+    assert!(!configured.unbounded_advance_completion());
     assert!(!watchdog.stop());
+}
+
+#[test]
+fn campaign_without_host_watchdog_retains_transport_bounds_only() {
+    let context = AttemptExecutionContext::new(
+        AttemptResourceLimits::new(1, 1024, 2048, 2).expect("resources"),
+        ExecutionRetentionIntent::RetainOnFailure,
+        ExecutionCancellation::default(),
+        ExecutionCheckpointRequest::default(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+    );
+    let default = crucible_api::ProductionVmLifecycleConfig::new(
+        "qemu",
+        "plugin",
+        "kernel",
+        "root",
+        "run-state",
+    );
+
+    assert!(!default.unbounded_advance_completion());
+    let configured =
+        crate::qemu_campaign_lifecycle::config_for_assignment_host_watchdog(default, &context)
+            .expect("campaign lifecycle without host watchdog");
+
+    assert_eq!(configured.completion_timeout(), Duration::from_secs(240));
+    assert!(configured.unbounded_advance_completion());
 }
 
 #[derive(Debug)]

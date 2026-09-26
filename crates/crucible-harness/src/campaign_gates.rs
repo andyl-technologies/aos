@@ -247,6 +247,16 @@ const TYPED_CHOICE_PRODUCT_CHECKPOINT_SELECTORS: &[ExactSelector] = &[ExactSelec
     name: "packaged::guest_choice::public_guest_choices_survive_exact_checkpoint_and_daemon_restart",
 }];
 
+const CAMPAIGN_POLICY_TIMEOUT_SELECTORS: &[ExactSelector] = &[ExactSelector {
+    source: "crates/crucible-cli/tests/support/campaign_packaged_process.rs",
+    name: "packaged::public_packaged_executor_retains_policy_timeout_causal_evidence",
+}];
+
+const CAMPAIGN_POLICY_TIMEOUT_NIX_SOURCES: &[&str] = &[
+    "tests/crucible/phase4-packaged-campaign-vm.nix",
+    "tests/crucible/phase5-campaign-policy-timeout-vm.nix",
+];
+
 const TYPED_CHOICE_SCHEDULE_SELECTORS: &[ExactSelector] = &[ExactSelector {
     source: "crates/crucible/src/tests/model_core.rs",
     name: "tests::model_core::campaign_selection_decision_is_strict_and_changes_schedule_identity",
@@ -426,6 +436,27 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
             },
         }],
         "checks.crucible.phase9.gates.campaignOperationalContinuity",
+    ),
+    automated(
+        "gate:campaign-policy-timeout-real-qemu",
+        "crucible-cli",
+        &[CampaignGateTarget {
+            package: "crucible-cli",
+            kind: CampaignGateTargetKind::IntegrationExact {
+                test_target: "campaign_store_process",
+                selectors: CAMPAIGN_POLICY_TIMEOUT_SELECTORS,
+                nix_sources: CAMPAIGN_POLICY_TIMEOUT_NIX_SOURCES,
+                runner: "campaign-store-process-flight",
+                evidence: &[
+                    "gate=gate:campaign-policy-timeout-real-qemu",
+                    "modeled_campaign_virtual_time_timeout=true",
+                    "typed_policy_timeout_authenticated=true",
+                    "retained_causal_marker_authenticated=true",
+                ],
+                ignored: true,
+            },
+        }],
+        "checks.crucible.phase5.gates.campaignPolicyTimeoutVm",
     ),
     automated(
         "gate:campaign-replay",
