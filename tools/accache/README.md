@@ -355,6 +355,10 @@ the old object. Accache fingerprints the selected file or directory, names the
 changed assembler in its miss explanation, and then warm-hits the new object.
 The public AOS cc-wrapper supplies its own earlier `-B` directory, so these
 cases register the AOS-built unwrapped GCC.
+Another raw GCC case starts with a missing `-B` filename prefix and falls back
+to `COMPILER_PATH`, then adds a prefixed assembler. Accache detects the new
+subprogram, misses, and warm-hits the changed object; pinned sccache replays
+the fallback assembler's object.
 Raw GCC also honors `COMPILER_PATH` when selecting an assembler. An oracle
 rebuilds `as` in a fixed search directory; pinned sccache replays the old
 object, while accache fingerprints files in the selected search directory,
