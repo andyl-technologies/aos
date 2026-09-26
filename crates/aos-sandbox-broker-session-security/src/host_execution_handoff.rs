@@ -124,6 +124,17 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
     if claim.host_verifier().boot_id() != protected_boot_id {
         return Err(HostExecutionHandoffErrorV1::KernelBoot);
     }
+    if method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT {
+        return dispatch_host_storage_output_with_claim_v1(
+            &claim,
+            method,
+            request.authorization().is_some(),
+            execution_spec_content.is_some(),
+            protected_boot_id,
+            || host.observe_authenticated_storage_output(&claim, request, protected_boot_id),
+            || Ok(()),
+        );
+    }
     if method == BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 {
         if request.authorization().is_some() {
             return Err(HostExecutionHandoffErrorV1::Conflict);
@@ -179,15 +190,6 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
     let artifacts = request
         .authorization()
         .ok_or(HostExecutionHandoffErrorV1::Conflict)?;
-    if method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT {
-        if execution_spec_content.is_some() {
-            return Err(HostExecutionHandoffErrorV1::Conflict);
-        }
-        let body = host.observe_authenticated_storage_output(&claim, request, protected_boot_id)?;
-        claim.revalidate()?;
-        check_kernel_boot(protected_boot_id)?;
-        return Ok(body);
-    }
     if method == BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE {
         agent
             .as_ref()
@@ -543,6 +545,79 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
     Ok(encoded)
 }
 
+// Production reaches this path only after opening the fixed protected owner.
+// The test-only entry can lend a normally provisioned claim without replacing
+// the production opener or weakening the Host grant and lease admission.
+fn dispatch_host_storage_output_with_claim_v1<F, R>(
+    claim: &DormantRuntimeExecutionClaimV1<'_>,
+    method: BrokerMethod,
+    authorized: bool,
+    descriptor_present: bool,
+    protected_boot_id: [u8; 16],
+    observe: F,
+    mut revalidate: R,
+) -> Result<Vec<u8>, HostExecutionHandoffErrorV1>
+where
+    F: FnOnce() -> Result<Vec<u8>, aos_sandbox_host::DormantHostBrokerCallErrorV1>,
+    R: FnMut() -> Result<(), DormantRuntimeExecutionOwnerErrorV1>,
+{
+    validate_storage_output_claim_v1(claim, protected_boot_id, &mut revalidate)?;
+    if method != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
+        || !authorized
+        || descriptor_present
+    {
+        return Err(HostExecutionHandoffErrorV1::Conflict);
+    }
+
+    let body = observe()?;
+    validate_storage_output_claim_v1(claim, protected_boot_id, &mut revalidate)?;
+    Ok(body)
+}
+
+fn validate_storage_output_claim_v1<R>(
+    claim: &DormantRuntimeExecutionClaimV1<'_>,
+    protected_boot_id: [u8; 16],
+    revalidate: &mut R,
+) -> Result<(), HostExecutionHandoffErrorV1>
+where
+    R: FnMut() -> Result<(), DormantRuntimeExecutionOwnerErrorV1>,
+{
+    check_kernel_boot(protected_boot_id)?;
+    // The injected test validator can only add a failure. The real protected
+    // claim is always revalidated before and after the Host observation.
+    claim.revalidate()?;
+    revalidate()?;
+    if claim.host_verifier().boot_id() != protected_boot_id {
+        return Err(HostExecutionHandoffErrorV1::KernelBoot);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn dispatch_host_storage_output_with_claim_for_test_v1<F, R>(
+    claim: &DormantRuntimeExecutionClaimV1<'_>,
+    method: BrokerMethod,
+    authorized: bool,
+    descriptor_present: bool,
+    protected_boot_id: [u8; 16],
+    observe: F,
+    revalidate: R,
+) -> Result<Vec<u8>, HostExecutionHandoffErrorV1>
+where
+    F: FnOnce() -> Result<Vec<u8>, aos_sandbox_host::DormantHostBrokerCallErrorV1>,
+    R: FnMut() -> Result<(), DormantRuntimeExecutionOwnerErrorV1>,
+{
+    dispatch_host_storage_output_with_claim_v1(
+        claim,
+        method,
+        authorized,
+        descriptor_present,
+        protected_boot_id,
+        observe,
+        revalidate,
+    )
+}
+
 fn output_reservation_response(
     locator: HostOutputReservationLocatorV1,
     receipt: Option<ProtectedHostOutputReservationV1>,
@@ -861,12 +936,103 @@ fn terminal_guest_result(
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use aos_sandbox_linux::boot::KernelBootId;
     use aos_sandbox_protocol::host_output::{
         HostOutputReservationStatusV1, decode_host_output_reservation_response_v1,
         host_output_locator_from_source_v1,
     };
 
     use super::*;
+
+    #[test]
+    fn injected_storage_output_owner_rejects_foreign_boot_and_stale_claim_before_observation() {
+        let directory = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = directory.path().metadata().unwrap().uid();
+        let mut owner = DormantRuntimeExecutionOwnerV1::provisioned_protected_at_uid_for_test(
+            directory.path(),
+            uid,
+        )
+        .unwrap();
+        let claim = owner.claim().unwrap();
+        let boot = KernelBootId::current().unwrap().into_bytes();
+        let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT;
+        let never_observe = || -> Result<_, aos_sandbox_host::DormantHostBrokerCallErrorV1> {
+            panic!("a rejected claim cannot reach Host observation")
+        };
+
+        let mut foreign_boot = boot;
+        foreign_boot[0] ^= 0x80;
+        assert!(matches!(
+            dispatch_host_storage_output_with_claim_for_test_v1(
+                &claim,
+                method,
+                true,
+                false,
+                foreign_boot,
+                never_observe,
+                || Ok(()),
+            ),
+            Err(HostExecutionHandoffErrorV1::KernelBoot)
+        ));
+        assert!(matches!(
+            dispatch_host_storage_output_with_claim_for_test_v1(
+                &claim,
+                method,
+                true,
+                false,
+                boot,
+                never_observe,
+                || Err(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness),
+            ),
+            Err(HostExecutionHandoffErrorV1::Owner(
+                DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness
+            ))
+        ));
+    }
+
+    #[test]
+    fn injected_storage_output_owner_keeps_authorization_and_descriptor_fences() {
+        let directory = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = directory.path().metadata().unwrap().uid();
+        let mut owner = DormantRuntimeExecutionOwnerV1::provisioned_protected_at_uid_for_test(
+            directory.path(),
+            uid,
+        )
+        .unwrap();
+        let claim = owner.claim().unwrap();
+        let boot = KernelBootId::current().unwrap().into_bytes();
+        let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT;
+        let never_observe = || -> Result<_, aos_sandbox_host::DormantHostBrokerCallErrorV1> {
+            panic!("a rejected shape cannot reach Host observation")
+        };
+
+        for (candidate_method, authorized, descriptor_present) in [
+            (
+                BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT,
+                true,
+                false,
+            ),
+            (method, false, false),
+            (method, true, true),
+        ] {
+            assert!(matches!(
+                dispatch_host_storage_output_with_claim_for_test_v1(
+                    &claim,
+                    candidate_method,
+                    authorized,
+                    descriptor_present,
+                    boot,
+                    never_observe,
+                    || Ok(()),
+                ),
+                Err(HostExecutionHandoffErrorV1::Conflict)
+            ));
+        }
+    }
 
     #[test]
     fn output_absence_echoes_exact_original_locator_without_commit_fields() {
