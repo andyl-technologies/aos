@@ -23,6 +23,9 @@ functions. Tests requiring sccache's process mock/server implementations were
 not copied. The Nix real-compiler suite exercises the pinned, unmodified
 sccache executable as an independent oracle, rather than treating these
 extracted tests as sufficient evidence of behavioral compatibility.
+The Nix check also compares the extracted argument tables with the pinned
+source tarball: all 86 GCC, 100 Clang, and 37 Rust entries must match after
+ignoring only comments and formatting.
 
 ## Updating
 

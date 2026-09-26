@@ -21,4 +21,5 @@ in
     buildNoDefaultFeatures = true;
     cargoFlags = "--bin sccache";
     doCheck = false;
+    passthru.upstreamSource = src;
   }
