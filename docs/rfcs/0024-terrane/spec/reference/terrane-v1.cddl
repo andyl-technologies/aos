@@ -1,0 +1,505 @@
+; Terrane Specification 1.0-draft-1 — canonical object schemas (RFC 8610 CDDL)
+;
+; This file is normative for every CBOR-encoded immutable and record in a
+; terrane-v1 store (00-conventions.md CONV-3, 04-content-model.md OBJ-4,
+; 06-tree-format.md TREE-25..28). Encoding rules beyond CDDL:
+;
+;   * deterministic CBOR per RFC 8949 §4.2: definite lengths only, shortest
+;     integer and length encodings, no floats, bignums, tags, or indefinite
+;     items, simple values limited to true/false/null where a type permits;
+;   * map keys are unsigned integers unless a type says otherwise, sorted by
+;     encoded bytes ascending; duplicate keys are a decode error;
+;   * unknown map keys are a decode error (TREE-26);
+;   * decoder limits (§limits) are enforced before any allocation (TREE-27).
+;
+; Identity of an immutable is BLAKE3-256 over
+;   domain-string || 0x00 || encoded-bytes
+; with the domain strings registered in reference/bucket-key-registry.md
+; (04-content-model.md OBJ-2). Refs and records are not content-addressed.
+;
+; Binary (non-CBOR) formats are given at the end as commented field tables:
+; the pack file (12-pack-format.md), the block-device superblock and slab
+; header (16-blockdev-backend.md), and the gear table (05-chunking.md).
+
+; ---------------------------------------------------------------------------
+; Common types
+; ---------------------------------------------------------------------------
+
+digest32   = bstr .size 32              ; a terrane-v1 identity (OBJ-1)
+pack-id    = bstr .size 16              ; random pack identifier (PACK-2)
+key-bytes  = bstr .size (0..4096)       ; tree key or key suffix (TREE-6)
+name       = tstr .size (1..255)        ; registered attribute/property name
+timestamp  = uint                       ; seconds since the Unix epoch
+duration   = uint                       ; seconds
+epoch      = uint                       ; writer or collector fencing epoch
+generation = uint                       ; merged-index generation (PACK-17)
+cycle      = uint                       ; garbage-collection cycle (GC-15)
+
+; A descriptor carries an identity outside a store (04-content-model.md
+; OBJ-6, OBJ-7). algorithm is "blake3" for terrane-v1.
+descriptor = [
+  algorithm: tstr,
+  domain:    tstr,
+  digest:    bstr,
+  size:      uint,
+]
+
+; Locality label (19-tiering-and-topology.md TOPO-1).
+locality = {
+  ? 1 => tstr,                          ; region
+  ? 2 => tstr,                          ; zone
+  ? 3 => tstr,                          ; host
+}
+
+; Property map carried on root nodes and tree entries (08-properties.md,
+; TREE-13, TREE-33). Keys are registered property names
+; (reference/property-registry.md); values are the property's registered type.
+property-map   = { * name => property-value }
+property-value = tstr / uint / bool / [ * property-value ]
+               / { * name => property-value }
+
+; ---------------------------------------------------------------------------
+; Manifest — domain terrane-manifest-v1 (04-content-model.md OBJ-13..OBJ-18)
+; ---------------------------------------------------------------------------
+
+manifest = {
+  1 => uint,                            ; size: total plaintext bytes (OBJ-15)
+  2 => [ + chunk-ref ],                 ; chunks in file order (CDC-19)
+  3 => { + tstr => bstr },              ; plaintext hashes by registered name;
+                                        ; "blake3" REQUIRED (OBJ-14)
+  ? 4 => tstr,                          ; media type (OBJ-18)
+}
+chunk-ref = [ digest: digest32, len: uint ]
+
+; ---------------------------------------------------------------------------
+; Tree node — domain terrane-node-v1 (06-tree-format.md)
+; ---------------------------------------------------------------------------
+
+node = {
+  1 => uint,                            ; level, 0 for a leaf (TREE-17)
+  2 => [ * leaf-item ] / [ * child-ref ],
+  ? 3 => property-map,                  ; root node only (TREE-33)
+}
+leaf-item = [ key-suffix: key-bytes, shared: uint, entry ]        ; TREE-18
+child-ref = [ last-key: key-bytes, child: digest32,
+              count: uint, weight: uint ]            ; TREE-17, TREE-20
+
+; Entry types (06-tree-format.md §Entries, TREE-30..32):
+;   1 file, 2 dir, 3 symlink, 4 tree, 5 whiteout, 6 conflict, 7 index
+entry = {
+  1 => entry-type,
+  ? 2 => uint,                          ; mode: low 12 bits of st_mode (TREE-7)
+  ? 3 => uint,                          ; size (file)
+  ? 4 => content-ref,                   ; content (file) (TREE-8)
+  ? 5 => bstr .size (0..4096),          ; symlink target (TREE-12)
+  ? 6 => digest32,                      ; root (tree) (TREE-13)
+  ? 7 => property-map,                  ; props (tree) (TREE-13)
+  ? 8 => key-bytes,                     ; link-id (file) (TREE-11)
+  ? 9 => { * name => any },             ; attrs (TREE-14)
+  ? 10 => xattr-map,                    ; xattrs (TREE-15)
+  ? 11 => provenance-ref,               ; introducing commit (TREE-16, PROV-7)
+  ? 12 => [ 2* entry ],                 ; candidates (conflict) (TREE-31)
+  ? 13 => entry / null,                 ; base (conflict) (TREE-31)
+  ? 14 => [ + digest32 ],               ; targets (index) (TREE-32)
+}
+entry-type  = 1 / 2 / 3 / 4 / 5 / 6 / 7
+content-ref = [ 0, chunk: digest32 ]    ; inline single chunk (OBJ-16)
+            / [ 1, manifest: digest32 ] ; object manifest
+provenance-ref = digest32               ; identity of a commit (PROV-7)
+xattr-map = { * bstr .size (1..255) => bstr .size (0..65536) }
+
+; ---------------------------------------------------------------------------
+; Commit — domain terrane-commit-v1 (09-refs-and-commits.md §Commit object,
+; 23-provenance-and-trust.md PROV-1..PROV-6)
+; ---------------------------------------------------------------------------
+
+; The signature preimage is the commit encoded with key 8 absent (PROV-3).
+; The identity is the hash of the encoding including key 8.
+commit = {
+  1 => digest32,                        ; tree root (REF-8)
+  2 => [ * digest32 ],                  ; parents, ours first (REF-8, PROV-5)
+  3 => provenance,                      ; PROV-1
+  4 => timestamp,                       ; advisory (REF-11)
+  5 => tstr,                            ; message, MAY be empty
+  6 => profile-pair,                    ; REF-9
+  ? 7 => [ + pack-location ],           ; packs this commit first wrote (REF-10)
+  ? 8 => bstr .size 64,                 ; Ed25519 signature (PROV-2)
+}
+
+provenance = {
+  1 => tstr,                            ; issuer identifier
+  2 => bstr .size 16,                   ; token identifier
+  3 => tstr,                            ; subject principal name
+  4 => principal-kind,
+  ? 5 => tstr,                          ; workload identity claim
+  6 => tstr,                            ; process descriptor
+  7 => timestamp,                       ; commit time as observed
+  8 => epoch,                           ; writer epoch of the ref at commit
+  9 => commit-source,                   ; PROV-6
+  ? 10 => token,                        ; embedded public token chain (PROV-2)
+}
+principal-kind = 1 / 2 / 3              ; human, workload, service
+commit-source  = 1 / 2 / 3 / 4 / 5 / 6  ; built, uploaded, imported, merged,
+                                        ; derived, migrated
+
+profile-pair = {
+  1 => uint,                            ; tree-format version, 1
+  2 => tstr,                            ; chunk profile name (e.g. "cdc-1m")
+  ? 3 => recipe,                        ; when materialized from a composite
+  ? 4 => bool,                          ; conflicted (REF-9)
+  ? 5 => lease,                         ; job or exposure lease
+  ? 6 => property-map,                  ; required-property snapshot
+}
+lease = { 1 => tstr, 2 => timestamp }   ; owner, expiry
+
+pack-location = [ pack-id, locality ]
+
+; ---------------------------------------------------------------------------
+; Refs and reflog (09-refs-and-commits.md §Ref record, §Reflog)
+; ---------------------------------------------------------------------------
+
+RefRecord = {
+  1 => digest32,                        ; commit
+  2 => uint,                            ; seq, 1 for the first write (REF-5)
+  3 => epoch,                           ; writer_epoch (REF-6)
+  4 => locality,                        ; home (REF-7)
+  ? 5 => ref-policy,
+}
+ref-policy = {
+  ? 1 => bool,                          ; multi_writer (REF-17)
+  ? 2 => [ + merge-policy ],            ; merge policy list (ALG-17)
+  ? 3 => retain,                        ; retention override
+  ? 4 => bool,                          ; conflicted
+  ? 5 => SnapshotEnvelope,              ; annotated tag (REF-20)
+}
+merge-policy = "prefer-ours" / "prefer-theirs" / "prefer-trusted"
+             / "prefer-newer" / "keep-conflict" / "error"
+retain = "gc" / "lease" / "forever" / [ "ttl", duration ]
+
+RefLogRecord = {
+  1 => RefRecord,                       ; the new record (REF-21)
+  2 => digest32 / null,                 ; previous commit
+  3 => tstr,                            ; principal
+  4 => reflog-reason,
+  5 => timestamp,
+}
+reflog-reason = "commit" / "merge" / "fold" / "rollback"
+              / "job-checkpoint" / "migrate"
+
+SnapshotEnvelope = {
+  1 => tstr,                            ; tag name
+  2 => digest32,                        ; commit
+  3 => { * tstr => any },               ; attestation data
+  4 => tstr,                            ; signer key identifier
+  5 => bstr .size 64,                   ; Ed25519 signature over keys 1..4
+}
+
+; ---------------------------------------------------------------------------
+; Derived data (10-derived-data.md)
+; ---------------------------------------------------------------------------
+
+; Domain terrane-attr-v1, keyed by (object hash, attribute name) (DRV-1).
+AttrRecord = {
+  1 => digest32,                        ; object (manifest or inline chunk)
+  2 => name,                            ; attribute name, e.g. "hash.sha256"
+  3 => any,                             ; value, in the attribute's type
+  4 => tstr,                            ; producing function "name/version"
+  5 => provenance-ref,                  ; commit that produced it (PROV-9)
+}
+
+; Domain terrane-memo-v1 (ALG-28..30, DRV-19).
+recipe = {
+  1 => recipe-op,
+  2 => [ * digest32 ],                  ; inputs in operand order
+  ? 3 => { * tstr => any },             ; operation arguments (matchers, policy)
+}
+recipe-op = "graft" / "split" / "flatten" / "overlay" / "merge"
+          / "filter" / "map" / "union" / "difference" / "intersection"
+          / "index" / "realize"
+memo = {
+  1 => digest32,                        ; recipe hash
+  2 => digest32,                        ; resulting root
+}
+
+; ---------------------------------------------------------------------------
+; Containers (12-pack-format.md)
+; ---------------------------------------------------------------------------
+
+; Domain terrane-bundle-v1 (PACK-24..26).
+bundle = {
+  1 => digest32,                        ; the commit the bundle serves
+  2 => [ * bundle-object ],             ; root first (PACK-25)
+}
+bundle-object = [ kind: pack-kind, hash: digest32, bytes: bstr ]
+pack-kind = 0 / 1 / 2 / 3 / 4 / 5 / 6   ; chunk, manifest, node, commit,
+                                        ; bundle, filter, index copy
+
+; Domain terrane-filter-v1 (PACK-21..23). One filter per merged shard.
+filter = {
+  1 => 1 / 2,                           ; kind: ribbon, cuckoo
+  2 => epoch,
+  3 => uint,                            ; shard, first byte of the hash
+  4 => uint,                            ; entry count
+  5 => uint,                            ; fingerprint bits
+  6 => bstr,                            ; filter body, kind-specific
+}
+
+; objects/index/<generation>/MANIFEST (13-bucket-layout.md BKT-4).
+IndexGenerationManifest = {
+  1 => generation,
+  2 => [ * shard-entry ],
+  3 => timestamp,                       ; written at
+  4 => cycle,                           ; collection cycle that produced it
+}
+shard-entry = [ shard: uint, idx-hash: digest32, idx-size: uint,
+                flt-hash: digest32, flt-size: uint ]
+
+; ---------------------------------------------------------------------------
+; Store records (13-bucket-layout.md, 17-garbage-collection.md)
+; ---------------------------------------------------------------------------
+
+; CAPABILITIES key (BKT-10..12, STORE-12).
+Capabilities = {
+  1 => uint,                            ; layout version, 1
+  2 => bool,                            ; create-if-absent honored
+  3 => bool,                            ; compare-and-swap honored
+  4 => bool,                            ; ranged GET
+  5 => bool,                            ; presigned URLs available
+  6 => 1 / 2,                           ; refs mode: multi-writer, single-writer
+  7 => timestamp,                       ; probed at
+  ? 8 => store-profile,                 ; OBJ-8
+}
+store-profile = {
+  1 => tstr,                            ; identity profile name, "terrane-v1"
+  2 => tstr,                            ; digest algorithm, "blake3"
+  3 => tstr,                            ; chunk profile name
+  4 => bstr .size 32,                   ; chunk seed (CDC-2)
+}
+
+; gc/lease (GC-22..23).
+GcLease = {
+  1 => tstr,                            ; holder identity
+  2 => epoch,
+  3 => timestamp,                       ; expiry
+}
+
+; trash/<cycle>/<pack-id> (GC-15).
+Tombstone = {
+  1 => pack-id,
+  2 => cycle,
+  3 => timestamp,                       ; tombstoned at
+  4 => uint,                            ; index entries removed
+}
+
+; ---------------------------------------------------------------------------
+; Capability token (22-authentication-and-authorization.md AUTH-7..AUTH-18)
+; ---------------------------------------------------------------------------
+
+; A token is a chain of blocks. The authority block's signature covers its
+; encoding with key 12 absent. Each attenuation block's signature covers the
+; previous block's signature bytes followed by the block's encoding with its
+; signature key absent, and is made with the private half of the previous
+; block's next-key. Domain terrane-policy-v1 when hashed.
+token = [ authority-block, * attenuation-block ]
+
+authority-block = {
+  1 => tstr,                            ; issuer identifier
+  2 => tstr,                            ; issuer key identifier (AUTH-13)
+  3 => tstr,                            ; subject principal name
+  4 => principal-kind,
+  5 => [ * tstr ],                      ; group claims
+  6 => timestamp,                       ; not-after
+  ? 7 => timestamp,                     ; not-before
+  8 => bstr .size 16,                   ; token identifier
+  9 => [ + grant ],                     ; initial grant set (AUTH-19)
+  ? 10 => tstr,                         ; workload identity claim
+  11 => bstr .size 32,                  ; next-key: Ed25519 public key
+  12 => bstr .size 64,                  ; signature by the issuer key
+}
+attenuation-block = {
+  ? 1 => timestamp,                     ; not-after, only earlier (AUTH-14)
+  ? 2 => timestamp,                     ; not-before, only later
+  ? 3 => [ + grant ],                   ; narrowed grants
+  ? 4 => [ + caveat ],                  ; added caveats (AUTH-17)
+  5 => bstr .size 32,                   ; next-key
+  6 => bstr .size 64,                   ; signature by the previous next-key
+}
+grant = [ pattern: tstr, verbs: uint ]  ; verbs bitmask: read=1, fork=2,
+                                        ; commit=4, tag=8, admin=16
+caveat = [ "before", timestamp ]
+       / [ "after", timestamp ]
+       / [ "ref", tstr ]
+       / [ "root", tstr ]
+       / [ "verb", uint ]
+       / [ "domain", tstr ]
+       / [ "surface", tstr ]
+       / [ "locality", locality ]
+       / [ "epoch", tstr, epoch ]
+
+; ---------------------------------------------------------------------------
+; Policy objects (31-routing-rulesets.md RULE-25..27, 23 PROV-11)
+; Domain terrane-policy-v1.
+; ---------------------------------------------------------------------------
+
+ruleset = {
+  1 => uint,                            ; ruleset schema version, 1
+  ? 2 => digest32,                      ; parent ruleset (RULE-27)
+  3 => [ * rule ],                      ; ordered (RULE-1)
+  4 => { * tstr => [ * set-member ] },  ; policy sets (RULE-3)
+  5 => { * tstr => selector },          ; provenance selectors (RULE-4)
+}
+rule = {
+  1 => tstr,                            ; id, unique within the ruleset
+  2 => 1 / 2 / 3,                       ; when: on_realize, on_commit, on_access
+  3 => matcher,
+  4 => action,
+  ? 5 => int,                           ; priority, default 0
+}
+set-member = [ 0, path: bstr ]          ; exact path
+           / [ 1, glob: tstr ]          ; glob over paths
+           / [ 2, hash: digest32 ]      ; content hash
+
+matcher = [ "path_prefix", bstr ]
+        / [ "path_glob", tstr ]
+        / [ "basename_set", [ + bstr ] ]
+        / [ "layout", tstr ]
+        / [ "content_magic", tstr ]     ; a registered class.magic value
+        / [ "set_member", tstr ]
+        / [ "closure_child_of", matcher ]
+        / [ "object_attr", name, tstr ] ; value or glob
+        / [ "provenance", tstr ]        ; selector name
+        / [ "all", [ + matcher ] ]
+        / [ "any", [ + matcher ] ]
+        / [ "not", matcher ]
+
+action = [ "remap", remap-args ]
+       / [ "bind", bind-args ]
+       / [ "guard", "allow" / "deny" ]
+       / [ "tag", name, any ]
+       / [ "prefetch", prefetch-args ]
+remap-args = {
+  1 => object-ref,                      ; blessed target (RULE-10)
+  ? 2 => bool,                          ; keep_original, default true
+}
+bind-args = {
+  1 => object-ref / tstr,               ; blessed object or source name
+}
+prefetch-args = {
+  1 => "entry" / "directory" / "closure",
+  2 => "high" / "normal" / "low",
+  ? 3 => uint,                          ; byte cap
+}
+object-ref = [ commit: digest32, path: bstr ]
+
+; Trust selector AST (PROV-11).
+selector = [ "issuer", tstr ]
+         / [ "subject", tstr ]
+         / [ "kind", "human" / "workload" / "service" ]
+         / [ "group", tstr ]
+         / [ "source", tstr ]
+         / [ "signed-by-key", tstr ]
+         / [ "accepted-by", selector ]
+         / [ "attested", tstr ]
+         / [ "attr-by", name, selector ]
+         / [ "all", [ + selector ] ]
+         / [ "any", [ + selector ] ]
+         / [ "not", selector ]
+         / [ "preset", "any" / "signed-baseline" / "strict" / "attested" ]
+
+; ---------------------------------------------------------------------------
+; Limits (TREE-27, TREE-29). A decoder enforces these before allocation.
+; ---------------------------------------------------------------------------
+;
+;   key length                         4 096 bytes
+;   path component                       255 bytes
+;   symlink target                     4 096 bytes
+;   xattr name / value               255 B / 64 KiB
+;   attributes per entry                 256
+;   encoded node                      64 KiB plus framing
+;   tree depth                            16 levels
+;   tree-entry nesting                    64
+;   parents per commit                   256
+;   grants per token block               256; blocks per token 16
+;   rules per ruleset                  4 096; matcher depth 16
+;   bundle objects                   1 048 576; bundle bytes 1 GiB
+;   manifest chunks                  ceil(size / min chunk) + 1 (CDC-17)
+
+; ---------------------------------------------------------------------------
+; Binary formats (not CBOR). Little-endian throughout.
+; ---------------------------------------------------------------------------
+;
+; Pack file (12-pack-format.md). Domain terrane-pack-v1 over the whole file.
+;
+;   header (24 bytes)
+;     0   4  magic       ASCII "TRPK"
+;     4   2  version     1
+;     6   2  flags       bit0 bodies compressed by default; bit1 meta pack
+;     8  16  pack id
+;   bodies                concatenated entry bodies, codec byte first
+;   index preamble (12 bytes)
+;     0   4  magic       ASCII "TRIX"
+;     4   8  count
+;   index entry (56 bytes each, sorted by hash ascending)
+;     0  32  hash
+;    32   8  offset
+;    40   4  body length
+;    44   4  uncompressed length
+;    48   1  codec       0 raw, 1 zstd, 2 zstd+dictionary
+;    49   1  kind        pack-kind above
+;    50   2  dictionary id
+;    52   4  reserved    zero
+;   footer (16 bytes)
+;     0   8  index offset
+;     8   4  CRC32C over index preamble and entries
+;    12   4  magic       ASCII "TRPE"
+;
+; Merged index shard entry (72 bytes; PACK-17..18), same preamble as a pack
+; index:
+;     0  32  hash
+;    32  16  pack id
+;    48   8  offset
+;    56   4  body length
+;    60   4  uncompressed length
+;    64   1  codec
+;    65   1  kind
+;    66   1  state       0 live, 1 tombstone
+;    67   5  reserved
+;
+; Chunk body (05-chunking.md §Compression):
+;     0   1  codec
+;     1  32  dictionary identity      (codec 2 only)
+;     -   -  zstd frame or raw plaintext
+;
+; Block-device superblock (16-blockdev-backend.md BLK-1..BLK-3), one device
+; block, both slots identical in layout:
+;     0   8  magic       ASCII "TRBLKSB1"
+;     8   4  version     1
+;    12   4  block size  bytes
+;    16  32  store identity (digest32)
+;    48   8  generation
+;    56   8  index region offset
+;    64   8  index region length
+;    72   8  current index generation offset
+;    80   8  current index generation length
+;    88   8  log head offset
+;    96   8  free-list head slab
+;   104   8  flags
+;   112   8  timestamp
+;   120   8  slab size
+;   128  32  BLAKE3 over bytes 0..128
+;   160   -  zero to end of block
+;
+; Slab header (BLK-4):
+;     0   8  magic       ASCII "TRBLKSL1"
+;     8   8  slab index
+;    16   8  run length in slabs
+;    24   4  pack count
+;    28   4  reserved
+;    32  16  pack id[i]           repeated pack count times, followed by
+;     -   8  pack offset[i]       and
+;     -   8  pack length[i]
+;     -  32  BLAKE3 over the header
+;
+; Gear table (05-chunking.md CDC-1; reference/golden-vectors.md §gear-table):
+;   bytes  = BLAKE3-XOF("terrane-gear-v1" || 0x00 || seed, 2048 bytes)
+;   gear[i] = u64le(bytes[8i .. 8i+8])   for i in 0..256
