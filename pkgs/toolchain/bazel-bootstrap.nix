@@ -148,6 +148,7 @@ in
     # overrides while fetching the remaining graph with downloads disabled.
     passthru.offlineModules = helperScope.bazelOfflineModules;
     passthru.offlineSource = source;
+    passthru.offlineSource8Prepared = helperScope.bazelSource8Prepared;
     passthru.offlineNettyModules = helperScope.bazelNetty119;
     passthru.offlineNettyNativeRepositories = helperScope.bazelNetty119NativeRepositories;
     passthru.offlineCommonProtos = helperScope.bazelCommonProtos241;
