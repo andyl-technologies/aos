@@ -412,6 +412,9 @@ C++20 consumer cases rebuild a PCM at the same path and verify that both
 Accache names the PCM in its miss explanation. The unnamed form also checks
 Clang's warning on cold and warm calls. A reduced-BMI module oracle checks
 restoration of both its object and PCM after a source edit and on a warm hit.
+An explicit `-fmodule-map-file` oracle edits a module map, then makes it
+invalid. Clang lists the map in its depfile; both caches miss after the edit,
+and accache returns Clang's error instead of a stale object for the invalid map.
 GCC include-search fixtures cover `-idirafter`, both `-iwithprefix` placements,
 and `-nostdinc` with an explicit include directory. Each edits the selected
 header and compares direct, sccache, and accache outputs through a miss and
