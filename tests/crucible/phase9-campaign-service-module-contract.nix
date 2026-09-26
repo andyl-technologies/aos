@@ -23,6 +23,11 @@
     stateDirectory = "/var/lib/crucible-campaign";
   };
   invalid = [
+    (evaluate {listenAddress = "0.0.0.0:18080";})
+    (evaluate {listenAddress = "localhost:18080";})
+    (evaluate {listenAddress = "127.0.0.1:0";})
+    (evaluate {listenAddress = "127.0.0.1:65536";})
+    (evaluate {listenAddress = "127.0.0.1:18080\nextra";})
     (evaluate {socketPath = "/";})
     (evaluate {socketPath = "relative.sock";})
     (evaluate {socketPath = "/run/crucible-campaign/../escape.sock";})
