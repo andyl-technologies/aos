@@ -252,21 +252,21 @@ fn qemu_fuzz_campaign_stop_label(stop: &StopOutcome) -> String {
     match stop {
         StopOutcome::Reached(condition) => format!("reached:{condition:?}"),
         StopOutcome::BoundedPrimaryReached { stop, proof } => format!(
-            "bounded-primary-reached:{:?}:frontier-ns={}:quanta={}",
+            "bounded-primary-reached:{:?}:frontier-ps={}:quanta={}",
             stop.primary(),
-            proof.frontier_nanoseconds(),
+            proof.frontier_picoseconds(),
             proof.completed_quanta()
         ),
         StopOutcome::BoundedPrimaryTimeout { stop, proof } => format!(
-            "bounded-primary-timeout:{:?}:frontier-ns={}:quanta={}",
+            "bounded-primary-timeout:{:?}:frontier-ps={}:quanta={}",
             stop.primary(),
-            proof.frontier_nanoseconds(),
+            proof.frontier_picoseconds(),
             proof.completed_quanta()
         ),
         StopOutcome::PolicyTimeout { stop, kind, proof } => format!(
-            "policy-timeout:{kind:?}:{:?}:frontier-ns={}:quanta={}",
+            "policy-timeout:{kind:?}:{:?}:frontier-ps={}:quanta={}",
             stop.primary(),
-            proof.frontier_nanoseconds(),
+            proof.frontier_picoseconds(),
             proof.completed_quanta()
         ),
         StopOutcome::TerminalSuccess => String::from("terminal-success"),
@@ -699,7 +699,7 @@ fn qemu_fuzz_timeout_budget(
         StopOutcome::PolicyTimeout { stop, kind, .. } => match (stop, kind) {
             (
                 StopCondition::Bounded {
-                    virtual_time_nanoseconds: Some(limit),
+                    virtual_time_picoseconds: Some(limit),
                     ..
                 },
                 PolicyTimeoutKind::VirtualTime,

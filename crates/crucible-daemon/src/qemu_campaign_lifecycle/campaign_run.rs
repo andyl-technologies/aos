@@ -351,7 +351,7 @@ impl GuardedDefaultCampaignRunRequest {
     ) -> Self {
         self.initial_schedule = schedule;
         self.initial_replay_closure = Some(closure);
-        self.discovery_stop = StopCondition::VirtualTimeNanoseconds(checkpoint.virtual_time.ticks);
+        self.discovery_stop = StopCondition::VirtualTimePicoseconds(checkpoint.virtual_time.ticks);
         self.resume_source = Some(GuardedDefaultCampaignResumeSource {
             checkpoint,
             final_stop,

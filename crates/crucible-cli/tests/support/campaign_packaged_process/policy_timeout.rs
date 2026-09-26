@@ -7,7 +7,7 @@ use super::*;
 use crucible_campaign::{ObservationId, PolicyTimeoutKind, StopOutcome};
 use crucible_core::{FailureClusterReportFailure, FailureTimeoutBudgetKind};
 
-const POLICY_DEADLINE_NS: u64 = 2_000_000;
+const POLICY_DEADLINE_PS: u64 = 2_000_000;
 const TIMEOUT_FAILURE_CLASS: &str = "qemu.virtual-time-timeout";
 
 pub(super) fn grant_finding_queries(fixture: &FlightFixture) -> Result<(), Box<dyn Error>> {
@@ -26,7 +26,7 @@ pub(super) fn grant_finding_queries(fixture: &FlightFixture) -> Result<(), Box<d
 pub(super) fn validate(fixture: &FlightFixture, explanation: &Value) -> Result<(), Box<dyn Error>> {
     let observation_id = json_string(&explanation["observation"], "id")?;
     let label = json_string(&explanation["observation"], "stop")?;
-    if !label.starts_with("policy-timeout:VirtualTime:next-choice:frontier-ns=2000000:quanta=") {
+    if !label.starts_with("policy-timeout:VirtualTime:next-choice:frontier-ps=2000000:quanta=") {
         return Err(format!("packaged timeout returned a different stop: {label}").into());
     }
 
@@ -44,7 +44,7 @@ pub(super) fn validate(fixture: &FlightFixture, explanation: &Value) -> Result<(
         return Err("packaged timeout did not publish a typed policy outcome".into());
     };
     if *kind != PolicyTimeoutKind::VirtualTime
-        || proof.frontier_nanoseconds() != POLICY_DEADLINE_NS
+        || proof.frontier_picoseconds() != POLICY_DEADLINE_PS
         || proof.completed_quanta() == 0
         || !matches!(stop.primary(), crucible_campaign::StopCondition::NextChoice)
     {
@@ -95,13 +95,13 @@ pub(super) fn validate(fixture: &FlightFixture, explanation: &Value) -> Result<(
         return Err("packaged policy timeout replay retained a different failure".into());
     };
     if timeout.budget_kind != FailureTimeoutBudgetKind::VirtualTime
-        || timeout.configured_limit != Some(POLICY_DEADLINE_NS)
-        || timeout.at_virtual_time.ticks != POLICY_DEADLINE_NS
+        || timeout.configured_limit != Some(POLICY_DEADLINE_PS)
+        || timeout.at_virtual_time.ticks != POLICY_DEADLINE_PS
         || timeout.event_kind != "execution_budget_exhausted"
         || !native_replay.causal_entries().iter().any(|entry| {
             entry.event_payload().kind() == "execution_budget_exhausted"
                 && entry.event_payload().string("budget_kind") == Some("virtual-time")
-                && entry.at().ticks == POLICY_DEADLINE_NS
+                && entry.at().ticks == POLICY_DEADLINE_PS
         })
     {
         return Err(

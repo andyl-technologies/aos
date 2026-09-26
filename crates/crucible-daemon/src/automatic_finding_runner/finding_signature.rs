@@ -423,7 +423,7 @@ mod timeout_tests {
     fn policy_timeout_classes_keep_virtual_and_quantum_causes_distinct() {
         let stop = StopCondition::Bounded {
             primary: Box::new(StopCondition::Terminal),
-            virtual_time_nanoseconds: Some(10),
+            virtual_time_picoseconds: Some(10),
             execution_quanta: Some(2),
         };
         let proof = BoundedStopProof::new(10, 2);

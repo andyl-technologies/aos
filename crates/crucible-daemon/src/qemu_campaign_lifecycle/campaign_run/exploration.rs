@@ -275,7 +275,7 @@ where
     let mut stop_conditions = match discovery_stop.primary() {
         StopCondition::NamedBoundary(name) => BTreeSet::from([name.clone()]),
         StopCondition::NextChoice
-        | StopCondition::VirtualTimeNanoseconds(_)
+        | StopCondition::VirtualTimePicoseconds(_)
         | StopCondition::EventCount(_)
         | StopCondition::Terminal
         | StopCondition::ExecutionQuanta(_)

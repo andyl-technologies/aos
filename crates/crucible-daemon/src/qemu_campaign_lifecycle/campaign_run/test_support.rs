@@ -455,7 +455,7 @@ fn run_guarded_default_campaign_test_fixture_with_trace_inner(
 > {
     let offer_choice = offer_choice.unwrap_or_else(|| !request.scenario.selectables().is_empty());
     let (quantum_nanoseconds, marker) = match &request.discovery_stop {
-        StopCondition::VirtualTimeNanoseconds(deadline) if *deadline > 0 => (
+        StopCondition::VirtualTimePicoseconds(deadline) if *deadline > 0 => (
             *deadline,
             MarkerId::from_name("guarded-campaign-save-fixture-quantum"),
         ),

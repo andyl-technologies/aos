@@ -7,7 +7,7 @@ fn default_run_reports_attempt_timeout_and_bounded_primary_separately() {
     let mut plan = default_run_plan();
     plan.max_virtual_time_ticks = Some(10);
     let primary =
-        StopCondition::bounded(StopCondition::VirtualTimeNanoseconds(10), Some(20), Some(8))
+        StopCondition::bounded(StopCondition::VirtualTimePicoseconds(10), Some(20), Some(8))
             .or_panic("bounded default stop");
     let reached = StopOutcome::BoundedPrimaryReached {
         stop: primary,
@@ -21,7 +21,7 @@ fn default_run_reports_attempt_timeout_and_bounded_primary_separately() {
 
     plan.max_virtual_time_ticks = Some(30);
     let policy_stop =
-        StopCondition::bounded(StopCondition::VirtualTimeNanoseconds(30), Some(20), Some(8))
+        StopCondition::bounded(StopCondition::VirtualTimePicoseconds(30), Some(20), Some(8))
             .or_panic("policy-preempted default stop");
     let policy = StopOutcome::PolicyTimeout {
         stop: policy_stop,
@@ -49,7 +49,7 @@ fn batch_campaign_route_accepts_exact_semantic_stops() {
     assert!(batch_campaign_run_eligible(&plan));
     assert_eq!(
         guarded_discovery_stop(&plan).or_panic("virtual-time stop"),
-        StopCondition::VirtualTimeNanoseconds(1)
+        StopCondition::VirtualTimePicoseconds(1)
     );
 
     let cli = Cli::parse_from([
@@ -68,12 +68,12 @@ fn batch_campaign_route_accepts_exact_semantic_stops() {
         .or_panic("virtual-time run should produce an invocation plan");
     assert_eq!(
         guarded_discovery_stop(&plan).or_panic("converted virtual-time stop"),
-        StopCondition::VirtualTimeNanoseconds(2_000_000)
+        StopCondition::VirtualTimePicoseconds(2_000_000)
     );
     assert_eq!(
         campaign_stop_status(
             &plan,
-            &StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(2_000_000)),
+            &StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(2_000_000)),
         )
         .or_panic("reached deadline status"),
         (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
@@ -134,7 +134,7 @@ fn batch_campaign_route_accepts_exact_semantic_stops() {
     assert_eq!(
         guarded_discovery_stop(&plan).or_panic("combined stop"),
         StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_nanoseconds: 2_000_000,
+            virtual_time_picoseconds: 2_000_000,
             execution_quanta: 1,
         }
     );
@@ -142,7 +142,7 @@ fn batch_campaign_route_accepts_exact_semantic_stops() {
         campaign_stop_status(
             &plan,
             &StopOutcome::Reached(StopCondition::VirtualTimeOrExecutionQuanta {
-                virtual_time_nanoseconds: 2_000_000,
+                virtual_time_picoseconds: 2_000_000,
                 execution_quanta: 1,
             }),
         )
@@ -255,7 +255,7 @@ fn campaign_save_schedule_taxonomy_admits_typed_selections() {
 fn campaign_virtual_time_save_exports_closure_for_resume_and_replay_readers() {
     assert_campaign_save_exports_closure(
         &["--at", "virtual-time", "--max-virtual-time", "2ms"],
-        StopCondition::VirtualTimeNanoseconds(2_000_000),
+        StopCondition::VirtualTimePicoseconds(2_000_000),
         false,
     );
 }
@@ -284,7 +284,7 @@ fn campaign_marker_save_after_a_typed_choice_exports_a_portable_resume() {
 fn campaign_virtual_time_save_after_a_typed_choice_exports_a_portable_resume() {
     assert_campaign_save_exports_closure(
         &["--at", "virtual-time", "--max-virtual-time", "2ticks"],
-        StopCondition::VirtualTimeNanoseconds(2),
+        StopCondition::VirtualTimePicoseconds(2),
         true,
     );
 }
