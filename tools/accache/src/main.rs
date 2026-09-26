@@ -253,7 +253,7 @@ fn resolve_compiler(compiler: &str) -> Result<String> {
 
 fn execute(backend: &Backend, args: &[String], prepared: Prepared, start: Instant) -> Result<i32> {
     let Prepared {
-        invocation,
+        mut invocation,
         environment,
         identity,
         action,
@@ -266,6 +266,35 @@ fn execute(backend: &Backend, args: &[String], prepared: Prepared, start: Instan
     event.changes = report::changes(backend, &identity)
         .unwrap_or_else(|error| vec![format!("prior provenance unavailable: {error}")]);
     event.identity = Some(identity.clone());
+    // The source-built Cargo phase holds its target-tree lock across the
+    // package build. This finer lock also coordinates accache clients that
+    // share an output stem, including clients outside Cargo. Take the output
+    // snapshot only after acquiring it, before any restore or compilation.
+    let scope_lock = invocation
+        .dynamic_outputs
+        .as_ref()
+        .map(|scope| backend.lock_scope(scope))
+        .transpose();
+    let scope_lock = match scope_lock {
+        Ok(lock) => lock,
+        Err(error) => {
+            event.outcome = "bypass".into();
+            event.reason = format!("dynamic output scope unavailable: {error:#}");
+            let status = passthrough(compiler, args)?;
+            event.duration_ms = start.elapsed().as_millis();
+            record(backend, &event);
+            return Ok(status);
+        }
+    };
+    let _scope_lock = scope_lock;
+    if let Err(error) = invocation.capture_dynamic_before() {
+        event.outcome = "bypass".into();
+        event.reason = format!("dynamic output scope unavailable: {error:#}");
+        let status = passthrough(compiler, args)?;
+        event.duration_ms = start.elapsed().as_millis();
+        record(backend, &event);
+        return Ok(status);
+    }
     // Keep the descriptor alive until publishing finishes. Independent actions
     // never share a lock, and another process always rechecks after acquiring it.
     let lock = backend.lock(&action);

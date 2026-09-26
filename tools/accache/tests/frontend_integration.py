@@ -111,6 +111,53 @@ def suite(root):
     assert "save-temps" in saved_temporaries["reason"], saved_temporaries
     assert list((work / "target").rglob("*.bc")), "rustc did not save temporary bitcode"
     print("PASS Rust save-temps passthrough", flush=True)
+
+    # Both actions write the same .dwo output scope. A warm hit after they
+    # compile concurrently must restore the files from its own source.
+    concurrent_target = work / "target" / "concurrent"
+    concurrent_target.mkdir()
+    concurrent_cases = []
+    for name, answer in [("first", 11), ("second", 29)]:
+        source = work / f"concurrent-{name}.rs"
+        source.write_text(f"pub fn answer() -> u32 {{ {answer} }}\n")
+        args = ["--crate-name=concurrent_debug", "--crate-type=rlib",
+                "--emit=link,dep-info", "--out-dir=target/concurrent",
+                source.name, "-Cdebuginfo=2", "-Csplit-debuginfo=unpacked",
+                "-Ccodegen-units=4"]
+        concurrent_cases.append((name, args))
+
+    def concurrent_outputs():
+        return {path.name: path.read_bytes() for path in concurrent_target.iterdir()
+                if path.is_file()}
+
+    def clear_concurrent_outputs():
+        for path in concurrent_target.iterdir():
+            if path.is_file():
+                path.unlink()
+
+    direct_outputs = {}
+    for name, args in concurrent_cases:
+        result = subprocess.run([rustc, *args], cwd=work, env=env,
+                                capture_output=True, timeout=120)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        direct_outputs[name] = concurrent_outputs()
+        assert any(path.endswith(".dwo") for path in direct_outputs[name])
+        clear_concurrent_outputs()
+
+    workers = [subprocess.Popen([binary, rustc, *args], cwd=work,
+                                env=env | {"ACCACHE_VERBOSE": "1"},
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+               for _, args in concurrent_cases]
+    for worker in workers:
+        _, stderr = worker.communicate(timeout=120)
+        assert worker.returncode == 0 and b"accache: miss:" in stderr, stderr
+
+    for name, args in concurrent_cases:
+        clear_concurrent_outputs()
+        _, restored = invoke(rustc, args, "hit")
+        assert concurrent_outputs() == direct_outputs[name], (name, restored)
+    print("PASS concurrent Rust split-debug output attribution", flush=True)
+
     _, incremental = invoke(rustc,
                             ["--crate-name=incremental_example", "--crate-type=rlib",
                              "--emit=link,dep-info", "--out-dir=target", "library.rs",
