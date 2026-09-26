@@ -312,6 +312,14 @@ pub(super) fn configure(
     let mut assembler_listing_file = false;
     while index < common.len() {
         let arg = &common[index];
+        if clang && arg == "-fplugin" && let Some(path) = common.get(index + 1) {
+            // The pinned frontend normalizes this joined Clang option into
+            // two argv entries. Clang rejects that form, so reconstruct the
+            // original spelling for the private dependency probe.
+            scan.push(format!("-fplugin={path}"));
+            index += 2;
+            continue;
+        }
         if arg == "-Xassembler" && common.get(index + 1).is_some_and(|next| next == "--MD") {
             ensure!(
                 parsed.uses_external_assembler && !assembler_depfile,
