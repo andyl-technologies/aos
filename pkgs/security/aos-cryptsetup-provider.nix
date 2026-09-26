@@ -89,10 +89,6 @@ in
 
     preBuild = staticBuildSetup;
 
-    preInstall = ''
-      cp "target/$CARGO_BUILD_TARGET/release/aos-cryptsetup-provider" target/release/
-    '';
-
     postInstall = ''
       test -x "$out/bin/aos-cryptsetup-provider"
       if patchelf --print-interpreter "$out/bin/aos-cryptsetup-provider" \

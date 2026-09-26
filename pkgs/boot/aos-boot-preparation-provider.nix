@@ -88,10 +88,6 @@ in
 
     preBuild = staticBuildSetup;
 
-    preInstall = ''
-      cp "target/$CARGO_BUILD_TARGET/release/aos-boot-preparation-provider" target/release/
-    '';
-
     postInstall = ''
       test -x "$out/bin/aos-boot-preparation-provider"
       if patchelf --print-interpreter "$out/bin/aos-boot-preparation-provider" \

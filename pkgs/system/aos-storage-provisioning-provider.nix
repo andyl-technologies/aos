@@ -88,11 +88,6 @@ in
     abilities = ./_aos-storage-provisioning-provider;
     preBuild = staticBuildSetup;
 
-    preInstall = ''
-      cp "target/$CARGO_BUILD_TARGET/release/aos-storage-provisioning-provider" target/release/
-      cp "target/$CARGO_BUILD_TARGET/release/aos-storage-provisioning-marker-observer" target/release/
-    '';
-
     postInstall = ''
       test -x "$out/bin/aos-storage-provisioning-provider"
       test -x "$out/bin/aos-storage-provisioning-marker-observer"

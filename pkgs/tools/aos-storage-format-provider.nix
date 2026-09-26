@@ -89,10 +89,6 @@ in
 
     preBuild = staticBuildSetup;
 
-    preInstall = ''
-      cp "target/$CARGO_BUILD_TARGET/release/aos-storage-format-provider" target/release/
-    '';
-
     postInstall = ''
       test -x "$out/bin/aos-storage-format-provider"
       if patchelf --print-interpreter "$out/bin/aos-storage-format-provider" \

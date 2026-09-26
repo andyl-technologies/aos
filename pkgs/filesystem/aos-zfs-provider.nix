@@ -90,13 +90,6 @@ in
     abilities = ./_aos-zfs-provider;
     preBuild = staticBuildSetup;
 
-    preInstall = ''
-      cp "target/$CARGO_BUILD_TARGET/release/aos-zfs-pool-provider" target/release/
-      cp "target/$CARGO_BUILD_TARGET/release/aos-zfs-dataset-provider" target/release/
-      cp "target/$CARGO_BUILD_TARGET/release/aos-zfs-memory-policy" target/release/
-      cp "target/$CARGO_BUILD_TARGET/release/aos-zfs-maintenance" target/release/
-    '';
-
     postInstall = ''
       for provider in aos-zfs-pool-provider aos-zfs-dataset-provider aos-zfs-memory-policy aos-zfs-maintenance; do
         test -x "$out/bin/$provider"

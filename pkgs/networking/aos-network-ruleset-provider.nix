@@ -91,10 +91,6 @@ in
 
     preBuild = staticBuildSetup;
 
-    preInstall = ''
-      cp "target/$CARGO_BUILD_TARGET/release/aos-network-ruleset-provider" target/release/
-    '';
-
     postInstall = ''
       test -x "$out/bin/aos-network-ruleset-provider"
       if patchelf --print-interpreter "$out/bin/aos-network-ruleset-provider" \

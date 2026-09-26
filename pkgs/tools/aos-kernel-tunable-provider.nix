@@ -89,10 +89,6 @@ in
 
     preBuild = staticBuildSetup;
 
-    preInstall = ''
-      cp "target/$CARGO_BUILD_TARGET/release/aos-kernel-tunable-provider" target/release/
-    '';
-
     postInstall = ''
       test -x "$out/bin/aos-kernel-tunable-provider"
       if patchelf --print-interpreter "$out/bin/aos-kernel-tunable-provider" \
