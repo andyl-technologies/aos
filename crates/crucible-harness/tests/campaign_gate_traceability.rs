@@ -51,9 +51,7 @@ const RFC_SOURCES: &[&str] = &[
     include_str!("../../../docs/rfcs/0020-crucible-campaigns/11-implementation-plan.md"),
     include_str!("../../../docs/rfcs/0020-crucible-campaigns/12-decisions-and-open-questions.md"),
     include_str!("../../../docs/rfcs/0020-crucible-campaigns/13-worked-network-campaign.md"),
-    include_str!(
-        "../../../docs/rfcs/0020-crucible-campaigns/14-automated-release-validation.md"
-    ),
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/14-automated-release-validation.md"),
 ];
 
 #[test]
@@ -545,7 +543,7 @@ fn every_rfc_requirement_has_an_executable_gate_contract() -> Result<(), Box<dyn
     let mut mapped = BTreeSet::new();
     let mut failures = BTreeSet::new();
 
-    validate_evaluated_nix_targets(&mut failures);
+    validate_evaluated_nix_targets(&default_nix, &mut failures);
 
     for (line_number, line) in TRACEABILITY.lines().enumerate() {
         if line.is_empty() || line.starts_with('#') {
@@ -610,14 +608,29 @@ fn every_rfc_requirement_has_an_executable_gate_contract() -> Result<(), Box<dyn
     Ok(())
 }
 
-fn validate_evaluated_nix_targets(failures: &mut BTreeSet<String>) {
+fn validate_evaluated_nix_targets(default_nix: &str, failures: &mut BTreeSet<String>) {
     let Ok(evaluated) = std::env::var("AUTOMATED_TARGETS") else {
         return;
     };
-    let evaluated = evaluated
+    let mut evaluated = evaluated
         .split(',')
         .filter(|target| !target.is_empty())
         .collect::<BTreeSet<_>>();
+    let deferred = std::env::var("DEFERRED_AUTOMATED_TARGETS").unwrap_or_default();
+    for target in deferred.split(',').filter(|target| !target.is_empty()) {
+        if target != "checks.crucible.phase9.gates.campaignReleaseAcceptance" {
+            failures.insert(format!("{target}: unsupported deferred Nix target"));
+            continue;
+        }
+        if !default_nix
+            .contains("campaignReleaseAcceptance = import ./phase9-campaign-release-acceptance.nix")
+        {
+            failures.insert(format!(
+                "{target}: deferred Nix target has no live aggregate declaration"
+            ));
+        }
+        evaluated.insert(target);
+    }
     let cataloged = campaign_gates()
         .iter()
         .map(|gate| {
@@ -628,7 +641,7 @@ fn validate_evaluated_nix_targets(failures: &mut BTreeSet<String>) {
 
     for missing in cataloged.difference(&evaluated) {
         failures.insert(format!(
-            "{missing}: automated catalog target was not evaluated by Nix"
+            "{missing}: automated catalog target was not evaluated or verified by Nix"
         ));
     }
     for extra in evaluated.difference(&cataloged) {
@@ -711,7 +724,13 @@ fn automated_contract_failures(
         }
     }
 
-    if !default_nix.contains(&format!("\"{nix_attr}\" =")) {
+    let declared = if nix_attr == "checks.crucible.phase9.gates.campaignReleaseAcceptance" {
+        default_nix
+            .contains("campaignReleaseAcceptance = import ./phase9-campaign-release-acceptance.nix")
+    } else {
+        default_nix.contains(&format!("\"{nix_attr}\" ="))
+    };
+    if !declared {
         failures.push(format!(
             "{gate}: evaluated Nix target {nix_attr} is not registered"
         ));

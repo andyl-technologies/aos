@@ -709,6 +709,9 @@
   crucibleFleetRunner = import ./tests/crucible/_fleet-runner.nix {inherit pkgs lib;};
 
   crucibleFleetChecks = {
+    # Release and CI must build the live aggregate, including its required
+    # claims and packaged-QEMU evidence, before claiming campaign acceptance.
+    crucible-campaign-release-acceptance = crucibleChecks.phase9.gates.campaignReleaseAcceptance;
     # Preserve the established fleet check name as the same derivation as the
     # canonical Phase 4 gate. One execution therefore supplies both check-tree
     # surfaces and one retained evidence bundle.
