@@ -1,0 +1,157 @@
+--- a/src/com/werken/xpath/ElementNamespaceContext.java
++++ b/src/com/werken/xpath/ElementNamespaceContext.java
+@@ -62,12 +62,12 @@
+ 
+       lineage.push(_element);
+ 
+-      Element elem = _element.getParent();
++      Element elem = _element.getParentElement();
+ 
+       while (elem != null)
+       {
+         lineage.push(elem);
+-        elem = elem.getParent();
++        elem = elem.getParentElement();
+       }
+ 
+       List      nsList = null;
+--- a/src/com/werken/xpath/Test.java
++++ b/src/com/werken/xpath/Test.java
+@@ -17,7 +17,7 @@
+  */
+ public class Test
+ {
+-  public static void main(String[] args)
++  public static void main(String[] args) throws java.io.IOException
+   {
+ 
+     System.out.println("werken xpath -- test driver\n");
+--- a/src/com/werken/xpath/function/StringFunction.java
++++ b/src/com/werken/xpath/function/StringFunction.java
+@@ -71,7 +71,7 @@
+ 
+   public static String evaluate(Element elem)
+   {
+-    List content = elem.getMixedContent();
++    List content = elem.getContent();
+ 
+     Iterator contentIter = content.iterator();
+     Object each = null;
+--- a/src/com/werken/xpath/impl/NodeTypeStep.java
++++ b/src/com/werken/xpath/impl/NodeTypeStep.java
+@@ -84,16 +84,16 @@
+     {
+       if ( isAbsolute() )
+       {
+-        results.addAll(  applyToNodes( ((Element)node).getDocument().getMixedContent() ) );
++        results.addAll(  applyToNodes( ((Element)node).getDocument().getContent() ) );
+       }
+       else
+       {
+-        results.addAll( applyToNodes( ((Element)node).getMixedContent() ) );
++        results.addAll( applyToNodes( ((Element)node).getContent() ) );
+       }
+     }
+     else if ( node instanceof Document )
+     {
+-      results.addAll( applyToNodes( ((Document)node).getMixedContent() ) );
++      results.addAll( applyToNodes( ((Document)node).getContent() ) );
+     }
+ 
+     return results;
+--- a/src/com/werken/xpath/impl/ParentStep.java
++++ b/src/com/werken/xpath/impl/ParentStep.java
+@@ -50,7 +50,7 @@
+ 
+       if ( each instanceof Element )
+       {
+-        parent = ((Element)each).getParent();
++        parent = ((Element)each).getParentElement();
+ 
+         if (parent != null)
+         {
+--- a/src/com/werken/xpath/impl/UnAbbrStep.java
++++ b/src/com/werken/xpath/impl/UnAbbrStep.java
+@@ -175,7 +175,7 @@
+       }
+     }
+ 
+-    return aggregateResults;;
++    return aggregateResults;
+   }
+ 
+   private List applyPredicates(List nodeSet,
+@@ -227,7 +227,7 @@
+ 
+     if ( node instanceof Element )
+     {
+-      List children = ((Element)node).getMixedContent();
++      List children = ((Element)node).getContent();
+       
+       results.addAll( applyTo( children,
+                                support,
+@@ -235,7 +235,7 @@
+     }
+     else if ( node instanceof Document )
+     {
+-      List children = ((Document)node).getMixedContent();
++      List children = ((Document)node).getContent();
+       
+       results.addAll( applyTo( children,
+                                support,
+@@ -256,7 +256,7 @@
+ 
+     if ( node instanceof Element )
+     {
+-      List children = ((Element)node).getMixedContent();
++      List children = ((Element)node).getContent();
+       
+       results.addAll( applyTo( children,
+                                support,
+@@ -264,7 +264,7 @@
+     }
+     else if ( node instanceof Document )
+     {
+-      List children = ((Document)node).getMixedContent();
++      List children = ((Document)node).getContent();
+ 
+       results.addAll( applyTo( children,
+                                support,
+--- a/src/com/werken/xpath/util/Partition.java
++++ b/src/com/werken/xpath/util/Partition.java
+@@ -67,7 +67,7 @@
+ 
+   public static List followingSiblings(Element node)
+   {
+-    Element parent = node.getParent();
++    Element parent = node.getParentElement();
+ 
+     if (parent == null)
+     {
+@@ -95,7 +95,7 @@
+ 
+   public static List preceedingSiblings(Element node)
+   {
+-    Element parent = node.getParent();
++    Element parent = node.getParentElement();
+ 
+     if (parent == null)
+     {
+@@ -137,7 +137,7 @@
+       results.addAll( Partition.descendants( each ) );
+     }
+ 
+-    Element parent = node.getParent();
++    Element parent = node.getParentElement();
+ 
+     if (parent != null)
+     {
+@@ -170,7 +170,7 @@
+       results.addAll( Partition.descendants( each ) );
+     }
+ 
+-    Element parent = node.getParent();
++    Element parent = node.getParentElement();
+ 
+     if (parent != null)
+     {

@@ -1295,6 +1295,11 @@ in {
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
   checks = rec {
+    bootstrap.kotlin-java = import ./pkgs/toolchain/_kotlin-bootstrap-2011.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
     image-matrix = testing.mkImageMatrix {
       systems = discoverSystems;
       sourceIdentity = toString pkgs.aos.src;
