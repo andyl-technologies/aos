@@ -306,6 +306,11 @@ Rust extern cases mutate an rlib absent from the consumer's dep-info. Explicit
 `--extern dep=path` forms miss on that edit and warm-hit in both caches. Bare
 `--extern dep` with `-Lcrate=.` remains direct passthrough because the pinned
 frontend rejects extern arguments without an explicit path.
+Two Rust custom-target cases change the CPU in a JSON target specification
+absent from rustc's dep-info. A self-contained `no_core` crate avoids building
+another target toolchain. Both caches miss on the target edit, warm-hit on a
+repeat, and produce the direct compiler's changed rlib; accache names the JSON
+file in its miss explanation.
 The dataflow-sanitizer ABI-list case changes a file absent from rustc's dep-info.
 Pinned sccache replays the old object, while accache misses and names the
 changed list before producing the new object.
