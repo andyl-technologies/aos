@@ -149,5 +149,5 @@
     "rules_jvm_external++maven+io_netty_netty_handler_4_1_119_Final" = mavenRepository "handler" handler;
   };
 in {
-  inherit common base codec transportExtras handler codecHttp repositories;
+  inherit common base codecJavaDeps codec transportExtras handler codecHttp repositories;
 }
