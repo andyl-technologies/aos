@@ -333,6 +333,7 @@ pub(super) fn configure(
             "-fauto-profile=",
             "-fprofile-list=",
             "-fprofile-remapping-file=",
+            "-fprofile-sample-use=",
         ] {
             if let Some(path) = arg.strip_prefix(prefix) {
                 invocation.extra_inputs.insert(path.into());
