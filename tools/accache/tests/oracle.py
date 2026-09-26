@@ -387,6 +387,15 @@ def fixtures(gcc, clang, rustc):
                        "value.h": "#define VALUE 42\n"},
                       {"value.h": "#define VALUE 73\n"})
 
+    for option, spelling in [("hot-cold-split", "separated"),
+                             ("enable-merge-functions", "joined")]:
+        forwarded = (["-mllvm", "-" + option] if spelling == "separated"
+                     else ["-mllvm=-" + option])
+        yield Fixture("clang-llvm-" + option + "-boolean", clang,
+                      ["-O2", "-c", "source.c", "-o", "source.o",
+                       "-MD", "-MF", "source.d", *forwarded],
+                      c_sources, {"value.h": "#define VALUE 73\n"})
+
     for extension, language in [("m", "objc"), ("mm", "objcxx"),
                                 ("mi", "objc-preprocessed"), ("mii", "objcxx-preprocessed")]:
         yield Fixture("clang-" + language, clang,
@@ -441,6 +450,10 @@ def fixtures(gcc, clang, rustc):
         ("multiple-codegen-units", ["--emit=link,dep-info", "-C", "codegen-units=4"]),
         ("cfg-check", ["--emit=link,dep-info", '--cfg=feature="oracle"',
                        '--check-cfg=cfg(feature, values("oracle"))']),
+        ("llvm-hot-cold-split", ["--emit=link,dep-info", "-Copt-level=2",
+                                 "-Cllvm-args=-hot-cold-split"]),
+        ("llvm-enable-merge-functions", ["--emit=link,dep-info", "-Copt-level=2",
+                                         "-Cllvm-args=-enable-merge-functions"]),
         ("remap-path-prefix", ["--emit=link,dep-info", "-Cdebuginfo=2",
                                "--remap-path-prefix=library.rs=/virtual/library.rs"]),
         ("remap-path-prefix-separated", ["--emit=link,dep-info", "-Cdebuginfo=2",
