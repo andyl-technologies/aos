@@ -3183,17 +3183,19 @@ static FrontendPluginRegistry::Add<StampAction> X("accache-stamp", "accache test
     return results
 
 
-def check_clang_named_module_file(root, env, accache, sccache, clang, hits):
-    """Invalidate a C++20 consumer when a named PCM input changes."""
-    fixture = "clang-named-module-file"
+def check_clang_module_file(root, env, accache, sccache, clang, hits, named):
+    """Invalidate a C++20 consumer for both PCM path spellings."""
+    fixture = "clang-" + ("named" if named else "unnamed") + "-module-file"
     work = root / fixture
     work.mkdir()
     (work / "consumer.cpp").write_text(
         "import example;\nint answer() { return value; }\n")
     pcm = work / "example.pcm"
     object_file = work / "consumer.o"
+    module_option = ("-fmodule-file=example=example.pcm" if named
+                     else "-fmodule-file=example.pcm")
     args = [clang, "-std=c++20", "-c", "consumer.cpp",
-            "-fmodule-file=example=example.pcm", "-o", "consumer.o"]
+            module_option, "-o", "consumer.o"]
 
     def compile_object(command):
         object_file.unlink(missing_ok=True)
@@ -4523,8 +4525,9 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                                                sccache, clang, hits))
         results.extend(check_clang_frontend_plugin(root, env, accache,
                                                    sccache, clang, hits))
-        results.extend(check_clang_named_module_file(root, env, accache,
-                                                     sccache, clang, hits))
+        for named in [True, False]:
+            results.extend(check_clang_module_file(root, env, accache,
+                                                   sccache, clang, hits, named))
         results.extend(check_clang_llvm_file_inputs(root, env, accache,
                                                     sccache, clang, hits))
         results.extend(check_clang_llvm_report_passthrough(root, env, accache,

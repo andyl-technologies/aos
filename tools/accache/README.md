@@ -325,9 +325,10 @@ exercise corruption, concurrent identical requests, PCH/modules, native
 libraries, proc macro file reads, persistent target paths, and source/header
 names containing spaces. Clang PCH coverage includes its `-Xclang -emit-pch`
 driver form and a header mutation.
-A C++20 consumer case rebuilds a named PCM at the same path and verifies that
-`-fmodule-file=name=path` invalidates both caches, with accache naming the PCM
-in its miss explanation.
+C++20 consumer cases rebuild a PCM at the same path and verify that both
+`-fmodule-file=name=path` and `-fmodule-file=path` invalidate both caches.
+Accache names the PCM in its miss explanation. The unnamed form also checks
+Clang's warning on cold and warm calls.
 GCC include-search fixtures cover `-idirafter`, both `-iwithprefix` placements,
 and `-nostdinc` with an explicit include directory. Each edits the selected
 header and compares direct, sccache, and accache outputs through a miss and
