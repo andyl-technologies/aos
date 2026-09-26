@@ -13,13 +13,15 @@
 //! contents after overwrite. The current Tree body is always revalidated.
 
 use std::collections::BTreeMap;
-#[cfg(test)]
 use std::path::Path;
+#[cfg(test)]
 use std::path::PathBuf;
 
 use aos_sandbox_core::{ObjectDigest, ProjectId, Revision};
 
-use crate::journal::{Journal, JournalLimits};
+#[cfg(test)]
+use crate::journal::JournalLimits;
+use crate::journal::{Journal, JournalError};
 use crate::lifecycle::protected_journal_adapter::decode_reducer_payload_with_validator;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use crate::lifecycle::protected_journal_join::{
@@ -333,9 +335,30 @@ pub(super) struct ClosedSourceTreeAppendAuthorityV1 {
     expected_source_uid: u32,
 }
 
-struct HeldSourceLocationV1 {
-    directory: PathBuf,
-    limits: JournalLimits,
+enum HeldSourceLocationV1 {
+    Fixed,
+    #[cfg(test)]
+    Test(PathBuf),
+}
+
+impl HeldSourceLocationV1 {
+    fn recheck(&self, journal: &Journal, expected_uid: u32) -> Result<(), JournalError> {
+        match self {
+            Self::Fixed => journal.require_protected_named_location(
+                Path::new(PROTECTED_SOURCE_DOMAIN_ROOT),
+                PROTECTED_SOURCE_DOMAIN_JOURNAL,
+                expected_uid,
+                source_domain_journal_limits(),
+            ),
+            #[cfg(test)]
+            Self::Test(directory) => journal.require_protected_named_location_at_uid_for_test(
+                directory,
+                PROTECTED_SOURCE_DOMAIN_JOURNAL,
+                expected_uid,
+                JournalLimits::default(),
+            ),
+        }
+    }
 }
 
 /// Holds the Source writer for an atomic Tree-plus-lineage append.
@@ -355,11 +378,7 @@ impl<'owner> ClosedSourceTreeLineageWriterV1<'owner> {
         source: &'owner mut ProtectedSourceDomainJournalOwnerV1,
         authority: &'owner ClosedSourceTreeAppendAuthorityV1,
     ) -> Result<Self, HierarchyProtectedJournalErrorV1> {
-        let location = HeldSourceLocationV1 {
-            directory: PathBuf::from(PROTECTED_SOURCE_DOMAIN_ROOT),
-            limits: source_domain_journal_limits(),
-        };
-        Self::claim_journal(source.journal(), authority, location)
+        Self::claim_journal(source.journal(), authority, HeldSourceLocationV1::Fixed)
     }
 
     fn claim_journal(
@@ -367,12 +386,7 @@ impl<'owner> ClosedSourceTreeLineageWriterV1<'owner> {
         authority: &'owner ClosedSourceTreeAppendAuthorityV1,
         location: HeldSourceLocationV1,
     ) -> Result<Self, HierarchyProtectedJournalErrorV1> {
-        journal.require_protected_named_location(
-            &location.directory,
-            PROTECTED_SOURCE_DOMAIN_JOURNAL,
-            authority.expected_source_uid,
-            location.limits,
-        )?;
+        location.recheck(journal, authority.expected_source_uid)?;
         let validator = recover_hierarchy_replay_validator_for_closed_lineage_v1(journal)?;
         let claimed = claim_hierarchy_protected_journal_v1(journal, validator.clone())?;
         verify_closed_tree_lineage_projection_v1(&claimed.replay()?, &validator)?;
@@ -390,11 +404,11 @@ impl<'owner> ClosedSourceTreeLineageWriterV1<'owner> {
         authority: &'owner ClosedSourceTreeAppendAuthorityV1,
         directory: &Path,
     ) -> Result<Self, HierarchyProtectedJournalErrorV1> {
-        let location = HeldSourceLocationV1 {
-            directory: directory.to_path_buf(),
-            limits: JournalLimits::default(),
-        };
-        Self::claim_journal(source.journal(), authority, location)
+        Self::claim_journal(
+            source.journal(),
+            authority,
+            HeldSourceLocationV1::Test(directory.to_path_buf()),
+        )
     }
 
     /// Appends an empty initial Tree and its exact seed-bearing link together.
@@ -497,13 +511,27 @@ impl<'owner> ClosedSourceTreeLineageWriterV1<'owner> {
         let prepared = self
             .journal
             .plan(transaction_id, vec![tree_envelope, lineage_envelope])?;
-        self.journal.commit_at_named_location(
-            prepared,
-            &self.location.directory,
-            PROTECTED_SOURCE_DOMAIN_JOURNAL,
-            self.authority.expected_source_uid,
-            self.location.limits,
-        )
+        let expected_uid = self.authority.expected_source_uid;
+        match &self.location {
+            HeldSourceLocationV1::Fixed => self.journal.commit_at_named_location(
+                prepared,
+                Path::new(PROTECTED_SOURCE_DOMAIN_ROOT),
+                PROTECTED_SOURCE_DOMAIN_JOURNAL,
+                expected_uid,
+                source_domain_journal_limits(),
+            ),
+            #[cfg(test)]
+            HeldSourceLocationV1::Test(directory) => {
+                self.journal.commit_with_test_check(prepared, |journal| {
+                    journal.require_protected_named_location_at_uid_for_test(
+                        directory,
+                        PROTECTED_SOURCE_DOMAIN_JOURNAL,
+                        expected_uid,
+                        JournalLimits::default(),
+                    )
+                })
+            }
+        }
     }
 }
 
