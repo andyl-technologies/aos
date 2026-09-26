@@ -55,7 +55,9 @@ pub use capacity_reservation::{
     GlobalCapacityReservationRequestV1, GlobalCapacityReservationV1,
     PreparedGlobalCapacityReservationV1,
 };
-pub use controller_policy_hold::{ControllerPolicyEffectAckV1, ControllerPolicyHoldV1};
+pub use controller_policy_hold::{
+    ControllerPolicyEffectAckV1, ControllerPolicyHoldV1, ControllerPolicyV8AttemptV1,
+};
 pub(crate) use host_currentness_fence::HostCurrentnessFenceV1;
 pub(crate) use host_execution_fence::HostExecutionFenceV1;
 pub use source_domain_challenge::SourceDomainChallengeV1;

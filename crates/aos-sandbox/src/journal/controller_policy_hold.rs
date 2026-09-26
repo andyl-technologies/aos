@@ -4,6 +4,9 @@
 //! AOSCTH01 | version=1 | phase=held|released | reserved[5]=0 |
 //! operation[16] | sandbox[16] | source[32] | binding[32] | epoch[8] |
 //! SHA-256[32]
+//! AOSQ8A01 | version=1 | state=terminal-prepared | reserved[5]=0 |
+//! operation[16] | sandbox[16] | source[32] | binding[32] | epoch[8] |
+//! exact-Root-terminal-digest[32] | SHA-256[32]
 //! AOSCTA01 | version=1 | state=acknowledged-no-Apply | reserved[5]=0 |
 //! operation[16] | sandbox[16] | source[32] | binding[32] | epoch[8] |
 //! accepted-generation[8] | effect-transaction[16] | Root-proof-digest[32] |
@@ -32,6 +35,106 @@ const ACK_MAGIC: &[u8; 8] = b"AOSCTA01";
 const ACK_CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.controller-policy-effect-ack.v1\0";
 const ACK_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.controller-policy-effect-ack-transaction.v1\0";
 const ACK_RECORD_BYTES: usize = 208;
+const V8_ATTEMPT_KEY: &[u8] = b"\0aos-controller-policy-v8-attempt-v1\0";
+const V8_ATTEMPT_MAGIC: &[u8; 8] = b"AOSQ8A01";
+const V8_ATTEMPT_CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.controller-policy-v8-attempt.v1\0";
+const V8_ATTEMPT_TRANSACTION_DOMAIN: &[u8] =
+    b"aos.sandbox.controller-policy-v8-attempt-transaction.v1\0";
+const V8_ATTEMPT_RECORD_BYTES: usize = 184;
+
+/// Retains the exact V8 terminal digest before sending it to held Root.
+///
+/// This row is crash-replay custody only. It neither proves Root committed
+/// nor grants owner release, publication, Create, or Apply.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ControllerPolicyV8AttemptV1 {
+    hold: ControllerPolicyHoldV1,
+    terminal: ObjectDigest,
+}
+
+impl ControllerPolicyV8AttemptV1 {
+    /// Constructs an exact terminal attempt under a retained Controller hold.
+    ///
+    /// # Errors
+    ///
+    /// Rejects released custody or an absent terminal digest.
+    pub fn new(hold: ControllerPolicyHoldV1, terminal: ObjectDigest) -> Result<Self, JournalError> {
+        let attempt = Self { hold, terminal };
+        attempt.validate()?;
+        Ok(attempt)
+    }
+
+    /// Returns the held Create and proposed Root binding.
+    #[must_use]
+    pub const fn hold(self) -> ControllerPolicyHoldV1 {
+        self.hold
+    }
+
+    /// Returns the exact Controller-predicted AOSSFT01 digest.
+    #[must_use]
+    pub const fn terminal(self) -> ObjectDigest {
+        self.terminal
+    }
+
+    fn validate(self) -> Result<(), JournalError> {
+        self.hold.validate()?;
+        if !self.hold.held || self.terminal.as_bytes() == &[0; 32] {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
+    fn encode(self) -> Result<[u8; V8_ATTEMPT_RECORD_BYTES], JournalError> {
+        self.validate()?;
+        let mut bytes = [0; V8_ATTEMPT_RECORD_BYTES];
+        bytes[..8].copy_from_slice(V8_ATTEMPT_MAGIC);
+        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        bytes[10] = 1;
+        bytes[16..32].copy_from_slice(self.hold.operation.as_bytes());
+        bytes[32..48].copy_from_slice(self.hold.sandbox.as_bytes());
+        bytes[48..80].copy_from_slice(self.hold.source.as_bytes());
+        bytes[80..112].copy_from_slice(self.hold.binding.as_bytes());
+        bytes[112..120].copy_from_slice(&self.hold.epoch.to_be_bytes());
+        bytes[120..152].copy_from_slice(self.terminal.as_bytes());
+        let checksum = Sha256::new()
+            .chain_update(V8_ATTEMPT_CHECKSUM_DOMAIN)
+            .chain_update(&bytes[..152])
+            .finalize();
+        bytes[152..].copy_from_slice(&checksum);
+        Ok(bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
+        if bytes.len() != V8_ATTEMPT_RECORD_BYTES
+            || bytes.get(..8) != Some(V8_ATTEMPT_MAGIC.as_slice())
+            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
+            || bytes[10] != 1
+            || bytes[11..16] != [0; 5]
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let attempt = Self::new(
+            ControllerPolicyHoldV1::new(
+                OperationId::from_bytes(take_attempt::<16>(bytes, 16)?),
+                SandboxId::from_bytes(take_attempt::<16>(bytes, 32)?),
+                ObjectDigest::from_bytes(take_attempt::<32>(bytes, 48)?),
+                ObjectDigest::from_bytes(take_attempt::<32>(bytes, 80)?),
+                u64::from_be_bytes(take_attempt::<8>(bytes, 112)?),
+            )?,
+            ObjectDigest::from_bytes(take_attempt::<32>(bytes, 120)?),
+        )?;
+        if attempt.encode()?.as_slice() != bytes {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(attempt)
+    }
+}
+
+fn take_attempt<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], JournalError> {
+    bytes[offset..offset + N]
+        .try_into()
+        .map_err(|_| JournalError::ProtectedBoundary)
+}
 
 /// Records that Controller durably received one exact qualified Root decision.
 ///
@@ -348,6 +451,7 @@ fn current(
 ) -> Result<Option<ControllerPolicyHoldV1>, JournalError> {
     let mut hold = None;
     let mut ack = None;
+    let mut attempt = None;
     for ((_, key), value) in state
         .range((RecordNamespace::ControllerPolicyHold, Vec::new())..)
         .take_while(|((namespace, _), _)| *namespace == RecordNamespace::ControllerPolicyHold)
@@ -355,10 +459,18 @@ fn current(
         match key.as_slice() {
             KEY if hold.is_none() => hold = Some(ControllerPolicyHoldV1::decode(value)?),
             ACK_KEY if ack.is_none() => ack = Some(ControllerPolicyEffectAckV1::decode(value)?),
+            V8_ATTEMPT_KEY if attempt.is_none() => {
+                attempt = Some(ControllerPolicyV8AttemptV1::decode(value)?)
+            }
             _ => return Err(JournalError::ProtectedBoundary),
         }
     }
     if ack.is_some_and(|ack| hold != Some(ack.hold)) {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    if attempt.is_some_and(|attempt| {
+        hold != Some(attempt.hold) || ack.is_some() || !attempt.hold.is_held()
+    }) {
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(hold)
@@ -371,6 +483,19 @@ fn current_ack(
     state
         .get(&(RecordNamespace::ControllerPolicyHold, ACK_KEY.to_vec()))
         .map(|bytes| ControllerPolicyEffectAckV1::decode(bytes))
+        .transpose()
+}
+
+fn current_v8_attempt(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+) -> Result<Option<ControllerPolicyV8AttemptV1>, JournalError> {
+    current(state)?;
+    state
+        .get(&(
+            RecordNamespace::ControllerPolicyHold,
+            V8_ATTEMPT_KEY.to_vec(),
+        ))
+        .map(|bytes| ControllerPolicyV8AttemptV1::decode(bytes))
         .transpose()
 }
 
@@ -436,6 +561,27 @@ fn ack_transaction(ack: ControllerPolicyEffectAckV1) -> Result<JournalTransactio
     )
 }
 
+fn v8_attempt_transaction(
+    attempt: ControllerPolicyV8AttemptV1,
+) -> Result<JournalTransaction, JournalError> {
+    let bytes = attempt.encode()?;
+    let digest = Sha256::new()
+        .chain_update(V8_ATTEMPT_TRANSACTION_DOMAIN)
+        .chain_update(bytes)
+        .finalize();
+    let id = digest[..16]
+        .try_into()
+        .map_err(|_| JournalError::ProtectedBoundary)?;
+    JournalTransaction::new(
+        id,
+        vec![JournalRecord::put(
+            RecordNamespace::ControllerPolicyHold,
+            V8_ATTEMPT_KEY.to_vec(),
+            bytes.to_vec(),
+        )],
+    )
+}
+
 fn ensure_controller(journal: &Journal) -> Result<(), JournalError> {
     journal.ensure_protected_authority()?;
     if journal
@@ -467,6 +613,7 @@ impl Journal {
         if !hold.is_held()
             || current(&self.state)?.is_some_and(ControllerPolicyHoldV1::is_held)
             || current_ack(&self.state)?.is_some()
+            || current_v8_attempt(&self.state)?.is_some()
         {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -477,6 +624,10 @@ impl Journal {
             [1; 16],
             ObjectDigest::from_bytes([1; 32]),
         )?)?;
+        let attempt = v8_attempt_transaction(ControllerPolicyV8AttemptV1::new(
+            hold,
+            ObjectDigest::from_bytes([1; 32]),
+        )?)?;
         let release = transaction(ControllerPolicyHoldV1 {
             held: false,
             ..hold
@@ -484,7 +635,7 @@ impl Journal {
         // All later Controller commits are fenced, so this reserves the
         // bounded journal room for one effect ACK and exact cold release.
         self.preflight_transactions_with_capacity_scope(
-            &[acquire.clone(), ack, release],
+            &[acquire.clone(), ack, attempt, release],
             None,
             false,
             true,
@@ -522,6 +673,57 @@ impl Journal {
         current_ack(&self.state)
     }
 
+    /// Reads the exact protected V8 pre-send attempt under Controller custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected, malformed, released, or mixed hold state.
+    pub fn controller_policy_v8_attempt_v1(
+        &self,
+    ) -> Result<Option<ControllerPolicyV8AttemptV1>, JournalError> {
+        ensure_controller(self)?;
+        current_v8_attempt(&self.state)
+    }
+
+    /// Retains the exact V8 terminal digest before sending it to Root.
+    ///
+    /// An ambiguous append is recovered by reopening this same protected
+    /// Controller journal. Identical replay is idempotent; a second terminal
+    /// attempt is forbidden while the first remains unresolved.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale hold, prior ACK or different attempt, unsafe journal,
+    /// exhausted reserved capacity, or failed durable readback.
+    pub fn record_controller_policy_v8_attempt_v1(
+        &mut self,
+        attempt: ControllerPolicyV8AttemptV1,
+    ) -> Result<(), JournalError> {
+        ensure_controller(self)?;
+        attempt.validate()?;
+        if current(&self.state)? != Some(attempt.hold) || current_ack(&self.state)?.is_some() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        match current_v8_attempt(&self.state)? {
+            Some(prior) if prior == attempt => return Ok(()),
+            Some(_) => return Err(JournalError::ProtectedBoundary),
+            None => {}
+        }
+        self.commit_with_capacity_scope(
+            &v8_attempt_transaction(attempt)?,
+            None,
+            false,
+            true,
+            false,
+            false,
+            false,
+        )?;
+        if current_v8_attempt(&self.state)? != Some(attempt) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
     /// Durably acknowledges one qualified Root decision while Controller stays held.
     ///
     /// The caller must retain the all-owner cut through authenticated Root
@@ -539,7 +741,7 @@ impl Journal {
     ) -> Result<(), JournalError> {
         ensure_controller(self)?;
         ack.validate()?;
-        if current(&self.state)? != Some(ack.hold) {
+        if current(&self.state)? != Some(ack.hold) || current_v8_attempt(&self.state)?.is_some() {
             return Err(JournalError::ProtectedBoundary);
         }
         match current_ack(&self.state)? {
@@ -572,6 +774,7 @@ impl Journal {
         if !expected.held
             || current(&self.state)? != Some(expected)
             || current_ack(&self.state)?.is_some()
+            || current_v8_attempt(&self.state)?.is_some()
         {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -769,6 +972,88 @@ mod tests {
 
         assert!(current(&state).is_err());
         assert!(current_ack(&state).is_err());
+    }
+
+    #[test]
+    fn v8_terminal_attempt_is_durable_exact_and_fences_release() {
+        let directory = TestDirectory::new();
+        let expected = hold();
+        let attempt =
+            ControllerPolicyV8AttemptV1::new(expected, ObjectDigest::from_bytes([28; 32]))
+                .expect("canonical V8 attempt");
+        let changed =
+            ControllerPolicyV8AttemptV1::new(expected, ObjectDigest::from_bytes([29; 32]))
+                .expect("different terminal");
+        let mut controller = directory.open();
+        assert!(
+            controller
+                .record_controller_policy_v8_attempt_v1(attempt)
+                .is_err()
+        );
+        controller
+            .acquire_controller_policy_hold_v1(expected)
+            .unwrap();
+        controller
+            .record_controller_policy_v8_attempt_v1(attempt)
+            .unwrap();
+        assert!(
+            controller
+                .record_controller_policy_v8_attempt_v1(changed)
+                .is_err()
+        );
+        assert!(
+            controller
+                .acknowledge_controller_policy_effect_v1(acknowledgement(expected))
+                .is_err()
+        );
+        assert!(
+            controller
+                .release_controller_policy_hold_after_root_readback_v1(expected)
+                .is_err()
+        );
+        assert!(controller.commit(&ordinary_transaction()).is_err());
+        drop(controller);
+
+        let mut reopened = directory.open();
+        assert_eq!(
+            reopened.controller_policy_v8_attempt_v1().unwrap(),
+            Some(attempt)
+        );
+        reopened
+            .record_controller_policy_v8_attempt_v1(attempt)
+            .unwrap();
+        assert!(
+            reopened
+                .record_controller_policy_v8_attempt_v1(changed)
+                .is_err()
+        );
+        assert_eq!(reopened.records(RecordNamespace::Effect).count(), 0);
+
+        let mut encoded = attempt.encode().unwrap();
+        encoded[120] ^= 1;
+        assert!(ControllerPolicyV8AttemptV1::decode(&encoded).is_err());
+        let mut state = BTreeMap::new();
+        state.insert(
+            (RecordNamespace::ControllerPolicyHold, KEY.to_vec()),
+            ControllerPolicyHoldV1 {
+                held: false,
+                ..expected
+            }
+            .encode()
+            .unwrap()
+            .to_vec(),
+        );
+        state.insert(
+            (
+                RecordNamespace::ControllerPolicyHold,
+                V8_ATTEMPT_KEY.to_vec(),
+            ),
+            attempt.encode().unwrap().to_vec(),
+        );
+        assert!(
+            current(&state).is_err(),
+            "released hold cannot replay with attempt"
+        );
     }
 
     #[test]

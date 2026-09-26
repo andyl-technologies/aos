@@ -688,6 +688,9 @@ impl ClosedPolicyRootSessionV2<'_> {
     /// The fixed and per-binding proof rows must agree with the signed
     /// terminal, current pins, Root challenge rows, and fixed Cache replay.
     /// This historical decision is not a release or effect capability.
+    /// It must not be called under a Controller-retained Cache writer; that
+    /// caller uses the historical Root-only replay below and independently
+    /// checks Cache under its earlier-acquired writer barrier.
     ///
     /// # Errors
     ///
@@ -933,7 +936,7 @@ fn take_claim<const N: usize>(
 mod tests {
     use std::{fs, os::unix::fs::PermissionsExt};
 
-    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{Signer as _, SigningKey};
 
     use crate::cache_residency::{
         CacheOwnerReadbackChallengeV1, PinnedCacheOwnerReadbackSignerV1,
@@ -967,12 +970,83 @@ mod tests {
             .expect("protected terminal row");
     }
 
+    fn historical_signed_sources(
+        binding: &mut ClosedPolicyRootBindingV2,
+    ) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+        let deployment_key = SigningKey::from_bytes(&[71; 32]);
+        let project_key = SigningKey::from_bytes(&[72; 32]);
+        let mut deployment = vec![0; 160];
+        deployment[..8].copy_from_slice(b"AOSPDH01");
+        deployment[8..16].copy_from_slice(&1_u64.to_be_bytes());
+        deployment[16..24].copy_from_slice(&10_i64.to_be_bytes());
+        deployment[24..32].copy_from_slice(&30_i64.to_be_bytes());
+        let mut signed_deployment = b"aos.sandbox.policy-deployment-head.v1\0".to_vec();
+        signed_deployment.extend_from_slice(&deployment);
+        deployment.extend_from_slice(&deployment_key.sign(&signed_deployment).to_bytes());
+        binding.compiler_head = ObjectDigest::from_bytes(Sha256::digest(&deployment).into());
+
+        let input = serde_json::to_vec(&serde_json::json!({
+            "generation": 1,
+            "input": {
+                "accounting": vec![serde_json::json!({"kind": "inherit"}); 22],
+                "advisory_actions": [],
+                "cache_domain": "project",
+                "grants": [],
+                "namespace_rules": [],
+                "portable": vec![serde_json::json!({"kind": "inherit"}); 16],
+                "revocation": {"grace_nanos": 0, "mode": "deny-new"},
+            },
+            "magic": "AOSPPL02",
+            "project_id": binding.project.to_string(),
+        }))
+        .expect("canonical project input");
+        let mut project = b"AOSPPH02".to_vec();
+        project.extend_from_slice(binding.project.as_bytes());
+        project.extend_from_slice(&1_u64.to_be_bytes());
+        project.extend_from_slice(&10_i64.to_be_bytes());
+        project.extend_from_slice(&30_i64.to_be_bytes());
+        project.extend_from_slice(&binding.publisher_generation.to_be_bytes());
+        project.extend_from_slice(binding.publisher_head.as_bytes());
+        project.extend_from_slice(&Sha256::digest(&input));
+        for head in [
+            binding.ancestry_head,
+            binding.compiler_head,
+            binding.cache_domain_head,
+            binding.revocation_head,
+        ] {
+            project.extend_from_slice(head.as_bytes());
+        }
+        project.extend_from_slice(&binding.deployment_signer_generation.to_be_bytes());
+        project.extend_from_slice(&binding.project_signer_generation.to_be_bytes());
+        assert_eq!(project.len(), 264);
+        let mut signed_project = b"aos.sandbox.policy-project-head.v2\0".to_vec();
+        signed_project.extend_from_slice(&project);
+        project.extend_from_slice(&project_key.sign(&signed_project).to_bytes());
+        binding.project_policy_head = ObjectDigest::from_bytes(Sha256::digest(&project).into());
+        binding.project_policy_input = ObjectDigest::from_bytes(Sha256::digest(&input).into());
+        let issuer = Sha256::new()
+            .chain_update(ISSUER_DOMAIN)
+            .chain_update(1234_u32.to_be_bytes())
+            .chain_update(1235_u32.to_be_bytes())
+            .finalize();
+        binding.issuer_owner.copy_from_slice(&issuer[..16]);
+        let pins = encode_policy_signer_pins_v1(
+            binding.deployment_signer_generation,
+            &deployment_key.verifying_key(),
+            binding.project_signer_generation,
+            &project_key.verifying_key(),
+        )
+        .expect("historical signer pins");
+        (deployment, project, input, pins)
+    }
+
     #[test]
     fn signed_terminal_cold_replay_fences_forgery_pin_rotation_and_superseded_source() {
         let directory = tempfile::tempdir().expect("protected test directory");
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
             .expect("private directory");
-        let binding = cas_fixture();
+        let mut binding = cas_fixture();
+        let (deployment, project, input, pins) = historical_signed_sources(&mut binding);
         let proposed = binding.encode().expect("proposal");
         let binding_digest = closed_policy_binding_digest_v2(&proposed).expect("binding digest");
         let controller_key = SigningKey::from_bytes(&[51; 32]);
@@ -986,11 +1060,33 @@ mod tests {
             .commit(
                 &JournalTransaction::new(
                     [1; 16],
-                    vec![JournalRecord::put(
-                        RecordNamespace::DesiredState,
-                        CONTROLLER_HOLD_PIN_KEY.to_vec(),
-                        pin.to_vec(),
-                    )],
+                    vec![
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            CONTROLLER_HOLD_PIN_KEY.to_vec(),
+                            pin.to_vec(),
+                        ),
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            HEAD_KEY.to_vec(),
+                            deployment,
+                        ),
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            HEAD_KEY_V2.to_vec(),
+                            project,
+                        ),
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            INPUT_KEY_V2.to_vec(),
+                            input,
+                        ),
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            SIGNER_PINS_KEY.to_vec(),
+                            pins,
+                        ),
+                    ],
                 )
                 .expect("pin transaction"),
             )
@@ -1540,6 +1636,47 @@ mod tests {
                 .expect("historical Root-only cold replay"),
             Some(committed)
         );
+        drop(session);
+        drop(root);
+        let mut root = open_test_root(directory.path());
+        let exact = recover_committed_source_held_binding_in_journal_v2(
+            &mut root,
+            binding_digest,
+            binding.handoff_epoch,
+            next_terminal.digest(),
+            1234,
+            1235,
+        )
+        .expect("credential-independent cold recovery")
+        .expect("committed Root CAS");
+        assert_eq!(exact.0, committed);
+        assert_eq!(
+            exact.1,
+            ObjectDigest::from_bytes(Sha256::digest(&consumed).into())
+        );
+        assert_eq!(exact.2, held_observation.1);
+        assert!(
+            recover_committed_source_held_binding_in_journal_v2(
+                &mut root,
+                binding_digest,
+                binding.handoff_epoch,
+                ObjectDigest::from_bytes([99; 32]),
+                1234,
+                1235,
+            )
+            .is_err()
+        );
+        drop(root);
+
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("cold Root authority after authenticated replay");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
         assert!(
             session
                 .recover_committed_source_held_binding_with_observation(

@@ -1065,7 +1065,7 @@ fn decode_enforcement(name: &str) -> Result<HardEnforcementV1, PolicyDeploymentH
     }
 }
 
-fn verify_historical_packet(
+pub(super) fn verify_historical_packet(
     packet: &[u8],
     verifying_key: &VerifyingKey,
 ) -> Result<(), PolicyDeploymentHeadErrorV1> {

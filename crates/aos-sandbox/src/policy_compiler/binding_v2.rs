@@ -44,6 +44,7 @@ use super::cache_journal_readback::read_fixed_policy_cache_hold_v1;
 use super::cache_readback_pin::CACHE_PIN_KEY;
 use super::deployment_head::{
     HEAD_KEY, PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, SIGNER_PINS_KEY, encode_policy_signer_pins_v1,
+    verify_historical_packet,
 };
 use super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
 use super::protected_owner::{
@@ -1053,6 +1054,28 @@ impl ClosedPolicyRootSessionV2<'_> {
         Ok(())
     }
 
+    /// Returns the project of a staged held-flight proposal without opening Cache.
+    ///
+    /// The Source signer needs this fixed project while Controller retains the
+    /// protected Cache writer. The physical Cache packet is verified later in
+    /// the same Root session, before the proposal can reach a closed CAS.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale stage or a malformed or foreign proposal.
+    pub fn staged_source_project_without_cache_v5(
+        &self,
+        proposed: &[u8],
+        staged: StagedClosedPolicyRootBaseV2,
+    ) -> Result<ProjectId, PolicyCompilerJournalErrorV1> {
+        self.validate_staged_closed_binding_base(staged)?;
+        let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
+        if !self.identity.matches(&binding) {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        Ok(binding.project)
+    }
+
     /// Commits an inert Q04 binding only against the exact staged Root base.
     ///
     /// This method holds the Root writer across stage validation and the
@@ -1147,8 +1170,10 @@ impl ClosedPolicyRootSessionV2<'_> {
     /// Joins a Root-last spent Source challenge to the V2 named signer view.
     ///
     /// The caller retains every other owner writer while this inert session
-    /// checks current Root issuance, Source/Cache pins and packets, protected
-    /// Cache replay, and the exact staged proposal. No CAS occurs here.
+    /// checks current Root issuance, Source/Cache pins and packets, and the
+    /// exact staged proposal. Controller's retained barrier checks protected
+    /// Cache currentness; Root cannot reopen that writer's journal here.
+    /// No CAS occurs here.
     ///
     /// # Errors
     ///
@@ -1168,19 +1193,7 @@ impl ClosedPolicyRootSessionV2<'_> {
         cache_owner_uid: u32,
     ) -> Result<ClosedPolicyRootSignerJoinV2, PolicyCompilerJournalErrorV1> {
         self.require_spent_source_challenge_v1(proposed, staged, source_challenge, source_issue)?;
-        let observed = read_fixed_policy_cache_hold_v1()
-            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
         let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
-        let cache_cut = self.prepare_cache_cut_with_observation(&binding, observed.hold)?;
-        if !expected_source.is_held()
-            || expected_source.operation() != binding.operation
-            || expected_source.sandbox() != binding.sandbox
-            || expected_source.ancestry() != binding.ancestry_head
-            || expected_source.binding() != cache_cut.binding()
-            || expected_source.epoch() != cache_cut.epoch()
-        {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
 
         let source_pin = self
             .authority
@@ -1215,8 +1228,13 @@ impl ClosedPolicyRootSessionV2<'_> {
             cache_owner_uid,
         )
         .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-        if physical_cache.hold() != observed.hold
-            || physical_cache.quota_digest() != observed.replay.quota_digest
+        let cache_cut = self.prepare_cache_cut_with_observation(&binding, physical_cache.hold())?;
+        if !expected_source.is_held()
+            || expected_source.operation() != binding.operation
+            || expected_source.sandbox() != binding.sandbox
+            || expected_source.ancestry() != binding.ancestry_head
+            || expected_source.binding() != cache_cut.binding()
+            || expected_source.epoch() != cache_cut.epoch()
         {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
@@ -2004,6 +2022,161 @@ pub fn read_fixed_inert_closed_policy_binding_hold_v1()
             root_generation: hold.epoch,
             handoff_epoch: hold.epoch,
         }))
+}
+
+/// Replays one committed, still-held Source/Cache Root CAS from protected history.
+///
+/// This read-only path uses the historically pinned signer keys and signed
+/// project source already retained by Root. It cannot admit a fresh decision
+/// after a deployment credential rotation, and does not release any owner.
+///
+/// # Errors
+///
+/// Rejects a missing or forged signer pin, signed head, terminal, consumed
+/// proof, or held decision. Current Cache replay remains the responsibility
+/// of the authenticated Controller's retained earlier-acquired writer barrier.
+pub fn recover_fixed_committed_source_held_binding_v2(
+    binding: ObjectDigest,
+    epoch: u64,
+    terminal: ObjectDigest,
+    controller_uid: u32,
+    controller_gid: u32,
+) -> Result<
+    Option<(ClosedPolicyRootCasObservationV2, ObjectDigest, ObjectDigest)>,
+    PolicyCompilerJournalErrorV1,
+> {
+    let (mut journal, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    recover_committed_source_held_binding_in_journal_v2(
+        &mut journal,
+        binding,
+        epoch,
+        terminal,
+        controller_uid,
+        controller_gid,
+    )
+}
+
+fn recover_committed_source_held_binding_in_journal_v2(
+    journal: &mut Journal,
+    binding: ObjectDigest,
+    epoch: u64,
+    terminal: ObjectDigest,
+    controller_uid: u32,
+    controller_gid: u32,
+) -> Result<
+    Option<(ClosedPolicyRootCasObservationV2, ObjectDigest, ObjectDigest)>,
+    PolicyCompilerJournalErrorV1,
+> {
+    if binding.as_bytes() == &[0; 32] || epoch == 0 || terminal.as_bytes() == &[0; 32] {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    let namespace = RecordNamespace::DesiredState;
+    let pins = journal
+        .get(namespace, SIGNER_PINS_KEY)
+        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    if pins.len() != 120 {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    let deployment_generation = u64::from_be_bytes(
+        pins[8..16]
+            .try_into()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
+    );
+    let deployment_key = VerifyingKey::from_bytes(
+        &pins[16..48]
+            .try_into()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
+    )
+    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    let project_generation = u64::from_be_bytes(
+        pins[48..56]
+            .try_into()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
+    );
+    let project_key = VerifyingKey::from_bytes(
+        &pins[56..88]
+            .try_into()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
+    )
+    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    if encode_policy_signer_pins_v1(
+        deployment_generation,
+        &deployment_key,
+        project_generation,
+        &project_key,
+    )
+    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
+    .as_slice()
+        != pins
+    {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    let deployment = journal
+        .get(namespace, HEAD_KEY)
+        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
+        .to_vec();
+    verify_historical_packet(&deployment, &deployment_key)
+        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    let project = journal
+        .get(namespace, HEAD_KEY_V2)
+        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
+        .to_vec();
+    let input = journal
+        .get(namespace, INPUT_KEY_V2)
+        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
+        .to_vec();
+    let issued = i64::from_be_bytes(
+        project
+            .get(32..40)
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
+            .try_into()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
+    );
+    let verified = verify_signed_project_policy_source_v2(&project, &input, &project_key, issued)
+        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    if verified.head().prerequisite_claims()[1].as_bytes() != Sha256::digest(&deployment).as_slice()
+        || verified.head().deployment_signer_generation() != deployment_generation
+        || verified.head().project_signer_generation() != project_generation
+    {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+
+    with_closed_policy_binding_session_in_journal_v2(
+        journal,
+        &deployment,
+        deployment_generation,
+        &deployment_key,
+        verified.head().into(),
+        Some((&project, &input)),
+        project_generation,
+        &project_key,
+        controller_uid,
+        controller_gid,
+        |session| {
+            let committed = session
+                .recover_committed_source_held_binding_historical_v2(terminal, controller_uid)?;
+            let Some(committed) = committed else {
+                return Ok(None);
+            };
+            if committed.binding() != binding || committed.handoff_epoch() != epoch {
+                return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+            }
+            let proof_bytes = session
+                .authority
+                .get(&held_cas_proof_key(binding))?
+                .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+            let proof = RootHeldProofV2::decode(proof_bytes)?;
+            Ok(Some((
+                committed,
+                ObjectDigest::from_bytes(Sha256::digest(proof_bytes).into()),
+                proof.quota,
+            )))
+        },
+    )?
 }
 
 /// Replays an exact inert Q04 decision after an ambiguous response.
@@ -2835,6 +3008,72 @@ mod tests {
     }
 
     #[test]
+    fn historical_held_cas_replay_rejects_missing_or_forged_root_signer_sources() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let mut journal = open_test_root(directory.path());
+        let binding = ObjectDigest::from_bytes([61; 32]);
+        let terminal = ObjectDigest::from_bytes([62; 32]);
+        let replay = |journal: &mut Journal| {
+            recover_committed_source_held_binding_in_journal_v2(
+                journal, binding, 1, terminal, 1234, 1235,
+            )
+        };
+        assert!(
+            replay(&mut journal).is_err(),
+            "missing pins must fail closed"
+        );
+
+        let deployment_key = SigningKey::from_bytes(&[63; 32]).verifying_key();
+        let project_key = SigningKey::from_bytes(&[64; 32]).verifying_key();
+        let mut pins = encode_policy_signer_pins_v1(2, &deployment_key, 3, &project_key)
+            .expect("protected signer pins");
+        pins[95] ^= 1;
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [70; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        SIGNER_PINS_KEY.to_vec(),
+                        pins,
+                    )],
+                )
+                .expect("forged pin transaction"),
+            )
+            .expect("raw forged pin row");
+        assert!(replay(&mut journal).is_err(), "forged pin must fail closed");
+
+        let pins = encode_policy_signer_pins_v1(2, &deployment_key, 3, &project_key)
+            .expect("restored protected pins");
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [71; 16],
+                    vec![
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            SIGNER_PINS_KEY.to_vec(),
+                            pins,
+                        ),
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            HEAD_KEY.to_vec(),
+                            b"unsigned deployment".to_vec(),
+                        ),
+                    ],
+                )
+                .expect("unsigned head transaction"),
+            )
+            .expect("raw unsigned head row");
+        assert!(
+            replay(&mut journal).is_err(),
+            "unsigned head must fail closed"
+        );
+    }
+
+    #[test]
     fn explicit_root_session_cas_requires_exact_source_bytes_and_pinned_generations() {
         let directory = tempfile::tempdir().expect("protected test directory");
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
@@ -3106,6 +3345,25 @@ mod tests {
         assert_eq!(first.issue_epoch(), 1);
         assert_eq!(first.challenge(), [7; 16]);
         assert!(session.validate_staged_closed_binding_base(first).is_ok());
+        assert_eq!(
+            session
+                .staged_source_project_without_cache_v5(
+                    &binding.encode().expect("staged proposal"),
+                    first,
+                )
+                .expect("project does not reopen Cache"),
+            binding.project,
+        );
+        let mut foreign = binding.clone();
+        foreign.project = ProjectId::from_bytes([79; 16]);
+        assert!(
+            session
+                .staged_source_project_without_cache_v5(
+                    &foreign.encode().expect("foreign proposal"),
+                    first,
+                )
+                .is_err()
+        );
         drop(session);
         drop(root);
 
@@ -3125,6 +3383,14 @@ mod tests {
             .expect("superseding stage");
         assert_eq!(second.issue_epoch(), 2);
         assert!(session.validate_staged_closed_binding_base(first).is_err());
+        assert!(
+            session
+                .staged_source_project_without_cache_v5(
+                    &binding.encode().expect("stale proposal"),
+                    first,
+                )
+                .is_err()
+        );
         drop(session);
 
         let authority = root

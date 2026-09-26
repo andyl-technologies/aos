@@ -49,6 +49,11 @@
 //! AOSPHF7D | client_nonce[16] | SHA256(AOSSFT01)[32] | EOF
 //! AOSPHQ7R | client_nonce[16] | reserved[8] | SHA256(AOSSFT01)[32] | EOF
 //! AOSPHR7R | client_nonce[16] | SHA256(AOSSFT01)[32] | EOF
+//! AOSPHQ8F/AOSPHF8C/AOSPHF8S use the V7 held challenge and preview payloads.
+//! AOSPHF8T | client_nonce[16] | AOSCTW01[248] | EOF
+//! AOSPHF8D | client_nonce[16] | binding[32] | epoch[8] | SHA256(AOSSFT01)[32] | SHA256(AOSPCP02)[32] | quota[32] | EOF
+//! AOSPHQ8R | client_nonce[16] | reserved[8] | binding[32] | epoch[8] | SHA256(AOSSFT01)[32] | EOF
+//! AOSPHR8R | client_nonce[16] | binding[32] | epoch[8] | SHA256(AOSSFT01)[32] | SHA256(AOSPCP02)[32] | quota[32] | EOF
 //! ```
 
 use std::{
@@ -59,7 +64,9 @@ use std::{
 };
 
 use aos_sandbox::cache_residency::CLOSED_CACHE_OWNER_READBACK_BYTES_V2;
-use aos_sandbox::journal::{Journal, ProtectedJournalNamesV1, SourceDomainPolicyHoldV1};
+use aos_sandbox::journal::{
+    ControllerPolicyV8AttemptV1, Journal, ProtectedJournalNamesV1, SourceDomainPolicyHoldV1,
+};
 use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2,
     ClosedPolicyRootCasObservationV2, ClosedSourceTerminalClaimV1,
@@ -163,6 +170,22 @@ pub const POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V7: &[u8; 8] = b"AOSPHF7D";
 pub const POLICY_BINDING_SOURCE_FLIGHT_REPLAY_QUERY_MAGIC_V7: &[u8; 8] = b"AOSPHQ7R";
 /// Confirms the exact current protected V7 row on cold replay.
 pub const POLICY_BINDING_SOURCE_FLIGHT_REPLAY_REPLY_MAGIC_V7: &[u8; 8] = b"AOSPHR7R";
+/// Opens the distinct held-writer Source/Cache Root CAS flight.
+pub const POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V8: &[u8; 8] = b"AOSPHQ8F";
+/// Announces Root's last-acquired Source challenge for V8.
+pub const POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V8: &[u8; 8] = b"AOSPHF8C";
+/// Returns held Cache and Source named-writer evidence for V8.
+pub const POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V8: &[u8; 8] = b"AOSPHF8S";
+/// Reports a still-held preview before Controller terminal postflight.
+pub const POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V8: &[u8; 8] = b"AOSPHF8R";
+/// Carries the Controller-only signed terminal under all held writers.
+pub const POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V8: &[u8; 8] = b"AOSPHF8T";
+/// Reports only the durable, still-held Root CAS and exact consumed proof.
+pub const POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V8: &[u8; 8] = b"AOSPHF8D";
+/// Requests read-only committed CAS replay after an ambiguous V8 completion.
+pub const POLICY_BINDING_SOURCE_FLIGHT_REPLAY_QUERY_MAGIC_V8: &[u8; 8] = b"AOSPHQ8R";
+/// Reports the exact committed held decision from protected Root history.
+pub const POLICY_BINDING_SOURCE_FLIGHT_REPLAY_REPLY_MAGIC_V8: &[u8; 8] = b"AOSPHR8R";
 const PACKET_BYTES: usize = 224;
 const PROJECT_PACKET_BYTES: usize = 312;
 const EXPLICIT_PROJECT_PACKET_BYTES: usize = 328;
@@ -187,6 +210,7 @@ const CLOSED_BINDING_FLIGHT_REPLY_BYTES: usize = CLOSED_BINDING_PREVIEW_REPLY_BY
 const SOURCE_FLIGHT_CHALLENGE_BYTES_V5: usize = CLOSED_BINDING_FLIGHT_CHALLENGE_BYTES + 16 + 32 + 8;
 const SOURCE_FLIGHT_REPLY_BYTES_V5: usize = CLOSED_BINDING_FLIGHT_REPLY_BYTES + 8 + 48;
 const SOURCE_FLIGHT_TERMINAL_BYTES_V6: usize = 8 + 16 + 32;
+const SOURCE_FLIGHT_CAS_RECEIPT_BYTES_V8: usize = 8 + 16 + 32 + 8 + 32 + 32 + 32;
 
 /// Reports root-owned fields required to propose a closed binding.
 ///
@@ -594,6 +618,243 @@ impl PendingClosedPolicySourceWriterFlightV7 {
     }
 }
 
+/// Reports a durable, still-held Root CAS without granting release or Create.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
+pub struct ClosedPolicyHeldCasCompletionV8 {
+    flight: ClosedPolicySourceWriterFlightV5,
+    terminal: ObjectDigest,
+    proof: ObjectDigest,
+    quota: ObjectDigest,
+}
+
+/// Reports exact, historical Root-held CAS custody after a cold replay.
+///
+/// This is not a fresh Source/Cache writer proof or release capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
+pub struct ClosedPolicyHeldCasReplayV8 {
+    binding: ObjectDigest,
+    epoch: u64,
+    terminal: ObjectDigest,
+    proof: ObjectDigest,
+    quota: ObjectDigest,
+}
+
+impl ClosedPolicyHeldCasReplayV8 {
+    /// Returns the exact committed Root binding.
+    #[must_use]
+    pub const fn binding(self) -> ObjectDigest {
+        self.binding
+    }
+
+    /// Returns the retained handoff epoch.
+    #[must_use]
+    pub const fn epoch(self) -> u64 {
+        self.epoch
+    }
+
+    /// Returns the Controller-signed terminal digest.
+    #[must_use]
+    pub const fn terminal(self) -> ObjectDigest {
+        self.terminal
+    }
+
+    /// Returns the consumed AOSPCP02 digest.
+    #[must_use]
+    pub const fn proof(self) -> ObjectDigest {
+        self.proof
+    }
+
+    /// Returns the Root-retained complete Cache quota envelope.
+    #[must_use]
+    pub const fn quota(self) -> ObjectDigest {
+        self.quota
+    }
+}
+
+impl ClosedPolicyHeldCasCompletionV8 {
+    /// Returns the same-cut signer preview retained through Root CAS.
+    #[must_use]
+    pub const fn flight(self) -> ClosedPolicySourceWriterFlightV5 {
+        self.flight
+    }
+
+    /// Returns the exact Controller-signed terminal row digest.
+    #[must_use]
+    pub const fn terminal(self) -> ObjectDigest {
+        self.terminal
+    }
+
+    /// Returns the consumed per-binding AOSPCP02 digest.
+    #[must_use]
+    pub const fn proof(self) -> ObjectDigest {
+        self.proof
+    }
+
+    /// Returns the exact complete Cache quota envelope retained in AOSPCP02.
+    #[must_use]
+    pub const fn quota(self) -> ObjectDigest {
+        self.quota
+    }
+}
+
+/// Retains the V8 Root connection until Cache and Controller postflight pass.
+pub struct PendingClosedPolicySourceWriterFlightV8 {
+    stream: UnixStream,
+    nonce: [u8; 16],
+    claim: ClosedSourceTerminalClaimV1,
+    flight: ClosedPolicySourceWriterFlightV5,
+}
+
+impl PendingClosedPolicySourceWriterFlightV8 {
+    /// Returns the Root preview for held owner postflight.
+    #[must_use]
+    pub const fn preview(&self) -> ClosedPolicySourceWriterFlightV5 {
+        self.flight
+    }
+
+    /// Completes the exact held Root CAS after all local owner postflight.
+    ///
+    /// A lost reply is resolved by protected committed-head replay while the
+    /// Controller, Source, protected Cache, and physical Cache writers remain
+    /// held. This receipt cannot release any owner or open public Create.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale Controller hold, mismatched or ambiguous Root receipt,
+    /// absent committed CAS, or failed authenticated replay.
+    pub fn finish(
+        mut self,
+        controller: &mut Journal,
+        signer_generation: u64,
+        signing_key: &SigningKey,
+    ) -> io::Result<ClosedPolicyHeldCasCompletionV8> {
+        let packet = sign_fixed_controller_hold_readback_v1(
+            controller,
+            self.claim
+                .controller_challenge()
+                .map_err(io::Error::other)?,
+            signer_generation,
+            signing_key,
+        )
+        .map_err(io::Error::other)?;
+        let terminal = self
+            .claim
+            .record_digest_for_packet(&packet)
+            .map_err(io::Error::other)?;
+        let binding = self.flight.preview().binding();
+        let epoch = self.flight.preview().epoch();
+        let hold = controller
+            .controller_policy_hold_v1()
+            .map_err(io::Error::other)?
+            .filter(|hold| hold.is_held() && hold.binding() == binding && hold.epoch() == epoch)
+            .ok_or_else(invalid_receipt)?;
+        let attempt = ControllerPolicyV8AttemptV1::new(hold, terminal).map_err(io::Error::other)?;
+        controller
+            .record_controller_policy_v8_attempt_v1(attempt)
+            .map_err(io::Error::other)?;
+        let completion = (|| -> io::Result<(ObjectDigest, ObjectDigest)> {
+            self.stream
+                .write_all(POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V8)?;
+            self.stream.write_all(&self.nonce)?;
+            self.stream.write_all(&packet)?;
+            self.stream.shutdown(std::net::Shutdown::Write)?;
+            read_exact_held_cas_receipt_v8(
+                &mut self.stream,
+                POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V8,
+                self.nonce,
+                binding,
+                epoch,
+                terminal,
+            )
+        })();
+        drop(self.stream);
+        let (proof, quota) = match completion {
+            Ok(receipt) => receipt,
+            Err(_) => {
+                let replay = recover_committed_source_held_binding_v8(binding, epoch, terminal)?;
+                (replay.proof(), replay.quota())
+            }
+        };
+        Ok(ClosedPolicyHeldCasCompletionV8 {
+            flight: self.flight,
+            terminal,
+            proof,
+            quota,
+        })
+    }
+}
+
+/// Replays one exact protected held CAS from the authenticated Root endpoint.
+///
+/// The caller must separately retain Controller, Source, and Cache writers and
+/// compare their current cut. This Root-only result never releases custody.
+///
+/// # Errors
+///
+/// Rejects missing or mismatched committed history, a substituted Root peer,
+/// malformed framing, or an ambiguous transport outcome.
+pub fn recover_committed_source_held_binding_v8(
+    binding: ObjectDigest,
+    epoch: u64,
+    terminal: ObjectDigest,
+) -> io::Result<ClosedPolicyHeldCasReplayV8> {
+    let (mut stream, nonce) = connect_policy_query_at_with_reserved(
+        Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2),
+        POLICY_BINDING_SOURCE_FLIGHT_REPLAY_QUERY_MAGIC_V8,
+        Duration::from_secs(180),
+        [0; 8],
+    )?;
+    stream.write_all(binding.as_bytes())?;
+    stream.write_all(&epoch.to_be_bytes())?;
+    stream.write_all(terminal.as_bytes())?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let (proof, quota) = read_exact_held_cas_receipt_v8(
+        &mut stream,
+        POLICY_BINDING_SOURCE_FLIGHT_REPLAY_REPLY_MAGIC_V8,
+        nonce,
+        binding,
+        epoch,
+        terminal,
+    )?;
+    Ok(ClosedPolicyHeldCasReplayV8 {
+        binding,
+        epoch,
+        terminal,
+        proof,
+        quota,
+    })
+}
+
+fn read_exact_held_cas_receipt_v8(
+    stream: &mut UnixStream,
+    magic: &[u8; 8],
+    nonce: [u8; 16],
+    binding: ObjectDigest,
+    epoch: u64,
+    terminal: ObjectDigest,
+) -> io::Result<(ObjectDigest, ObjectDigest)> {
+    let mut reply = [0; SOURCE_FLIGHT_CAS_RECEIPT_BYTES_V8];
+    stream.read_exact(&mut reply)?;
+    let mut trailing = [0];
+    if stream.read(&mut trailing)? != 0
+        || &reply[..8] != magic
+        || reply[8..24] != nonce
+        || reply[24..56] != binding.as_bytes()[..]
+        || reply[56..64] != epoch.to_be_bytes()
+        || reply[64..96] != terminal.as_bytes()[..]
+        || reply[96..128] == [0; 32]
+        || reply[128..] == [0; 32]
+    {
+        return Err(invalid_receipt());
+    }
+    Ok((
+        ObjectDigest::from_bytes(reply[96..128].try_into().map_err(|_| invalid_receipt())?),
+        ObjectDigest::from_bytes(reply[128..].try_into().map_err(|_| invalid_receipt())?),
+    ))
+}
+
 fn replay_staged_source_terminal_digest_v7(expected: ObjectDigest) -> io::Result<()> {
     let (mut stream, nonce) = connect_policy_query_at_with_reserved(
         Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2),
@@ -855,6 +1116,90 @@ pub fn begin_staged_source_writer_held_flight_v7(
         ProtectedJournalNamesV1,
     )>,
 ) -> io::Result<PendingClosedPolicySourceWriterFlightV7> {
+    let (stream, nonce, claim, flight) = begin_staged_source_writer_signed_flight(
+        staged,
+        proposed,
+        source_hold,
+        read_held,
+        SignedFlightMagics {
+            query: POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V7,
+            challenge: POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V7,
+            submit: POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V7,
+            reply: POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V7,
+        },
+    )?;
+    Ok(PendingClosedPolicySourceWriterFlightV7 {
+        stream,
+        nonce,
+        claim,
+        flight,
+    })
+}
+
+/// Begins the separate held-writer V8 Root CAS flight.
+///
+/// # Errors
+///
+/// Rejects a stale Root stage, held source, signer packet, or named writer.
+pub fn begin_staged_source_writer_held_flight_v8(
+    staged: StagedClosedPolicyRootBaseV2,
+    proposed: &[u8],
+    source_hold: SourceDomainPolicyHoldV1,
+    read_held: impl FnOnce(
+        StagedClosedPolicySignerChallengeV2,
+        SourceHoldReadbackChallengeV1,
+        u64,
+    ) -> io::Result<(
+        [u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
+        ProtectedJournalNamesV1,
+    )>,
+) -> io::Result<PendingClosedPolicySourceWriterFlightV8> {
+    let (stream, nonce, claim, flight) = begin_staged_source_writer_signed_flight(
+        staged,
+        proposed,
+        source_hold,
+        read_held,
+        SignedFlightMagics {
+            query: POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V8,
+            challenge: POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V8,
+            submit: POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V8,
+            reply: POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V8,
+        },
+    )?;
+    Ok(PendingClosedPolicySourceWriterFlightV8 {
+        stream,
+        nonce,
+        claim,
+        flight,
+    })
+}
+
+struct SignedFlightMagics {
+    query: &'static [u8; 8],
+    challenge: &'static [u8; 8],
+    submit: &'static [u8; 8],
+    reply: &'static [u8; 8],
+}
+
+fn begin_staged_source_writer_signed_flight(
+    staged: StagedClosedPolicyRootBaseV2,
+    proposed: &[u8],
+    source_hold: SourceDomainPolicyHoldV1,
+    read_held: impl FnOnce(
+        StagedClosedPolicySignerChallengeV2,
+        SourceHoldReadbackChallengeV1,
+        u64,
+    ) -> io::Result<(
+        [u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
+        ProtectedJournalNamesV1,
+    )>,
+    magics: SignedFlightMagics,
+) -> io::Result<(
+    UnixStream,
+    [u8; 16],
+    ClosedSourceTerminalClaimV1,
+    ClosedPolicySourceWriterFlightV5,
+)> {
     if proposed.len() != CLOSED_POLICY_BINDING_BYTES_V2 || !source_hold.is_held() {
         return Err(invalid_receipt());
     }
@@ -866,7 +1211,7 @@ pub fn begin_staged_source_writer_held_flight_v7(
         staged_closed_policy_signer_challenge_v2(staged, proposed).map_err(io::Error::other)?;
     let (mut stream, nonce) = connect_policy_query_at_with_reserved(
         Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2),
-        POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V7,
+        magics.query,
         Duration::from_secs(180),
         [0; 8],
     )?;
@@ -882,14 +1227,14 @@ pub fn begin_staged_source_writer_held_flight_v7(
     stream.read_exact(&mut challenge)?;
     let (source_challenge, source_issue) = decode_source_flight_challenge(
         &challenge,
-        POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V7,
+        magics.challenge,
         nonce,
         cache_challenge.nonce(),
         cache_challenge.cut(),
         cache_challenge.issue_epoch(),
     )?;
     let (cache_packet, names) = read_held(cache_challenge, source_challenge, source_issue)?;
-    stream.write_all(POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V7)?;
+    stream.write_all(magics.submit)?;
     stream.write_all(&nonce)?;
     stream.write_all(&cache_packet)?;
     stream.write_all(&names.to_bytes())?;
@@ -898,7 +1243,7 @@ pub fn begin_staged_source_writer_held_flight_v7(
     stream.read_exact(&mut reply)?;
     let flight = decode_source_flight_reply(
         &reply,
-        POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V7,
+        magics.reply,
         nonce,
         binding,
         staged.base().next_generation(),
@@ -919,12 +1264,7 @@ pub fn begin_staged_source_writer_held_flight_v7(
         nonce,
     )
     .map_err(io::Error::other)?;
-    Ok(PendingClosedPolicySourceWriterFlightV7 {
-        stream,
-        nonce,
-        claim,
-        flight,
-    })
+    Ok((stream, nonce, claim, flight))
 }
 
 fn decode_source_flight_challenge_v5(
@@ -1927,7 +2267,8 @@ fn invalid_receipt() -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{Cursor, Write as _};
+    use std::os::unix::net::UnixStream;
 
     use aos_sandbox::policy_compiler::ClosedPolicyBindingDecisionV2;
     use aos_sandbox_core::ProjectId;
@@ -2284,6 +2625,71 @@ mod tests {
                 super::read_exact_terminal_digest_v7(&mut client, magic, nonce, digest).is_err()
             );
         }
+    }
+
+    #[test]
+    fn v8_completion_and_replay_require_exact_committed_receipt() {
+        let nonce = [7; 16];
+        let binding = ObjectDigest::from_bytes([8; 32]);
+        let terminal = ObjectDigest::from_bytes([9; 32]);
+        let proof = ObjectDigest::from_bytes([10; 32]);
+        let quota = ObjectDigest::from_bytes([12; 32]);
+        let epoch = 11_u64;
+        let mut frame = [0; super::SOURCE_FLIGHT_CAS_RECEIPT_BYTES_V8];
+        frame[..8].copy_from_slice(super::POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V8);
+        frame[8..24].copy_from_slice(&nonce);
+        frame[24..56].copy_from_slice(binding.as_bytes());
+        frame[56..64].copy_from_slice(&epoch.to_be_bytes());
+        frame[64..96].copy_from_slice(terminal.as_bytes());
+        frame[96..128].copy_from_slice(proof.as_bytes());
+        frame[128..].copy_from_slice(quota.as_bytes());
+
+        let parse = |bytes: &[u8], magic: &[u8; 8]| {
+            let (mut root, mut controller) = UnixStream::pair().expect("V8 receipt pair");
+            root.write_all(bytes).expect("V8 receipt");
+            root.shutdown(std::net::Shutdown::Write)
+                .expect("receipt EOF");
+            super::read_exact_held_cas_receipt_v8(
+                &mut controller,
+                magic,
+                nonce,
+                binding,
+                epoch,
+                terminal,
+            )
+        };
+        assert_eq!(
+            parse(&frame, super::POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V8)
+                .expect("exact held CAS"),
+            (proof, quota)
+        );
+        assert!(
+            parse(
+                &frame,
+                super::POLICY_BINDING_SOURCE_FLIGHT_REPLAY_REPLY_MAGIC_V8
+            )
+            .is_err()
+        );
+        for offset in [0, 8, 24, 56, 64] {
+            let mut altered = frame;
+            altered[offset] ^= 1;
+            assert!(parse(&altered, super::POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V8).is_err());
+        }
+        for range in [96..128, 128..160] {
+            let mut absent = frame;
+            absent[range].fill(0);
+            assert!(parse(&absent, super::POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V8).is_err());
+        }
+        let mut trailing = frame.to_vec();
+        trailing.push(0);
+        assert!(parse(&trailing, super::POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V8).is_err());
+        assert!(
+            parse(
+                &frame[..frame.len() - 1],
+                super::POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V8
+            )
+            .is_err()
+        );
     }
 
     #[test]

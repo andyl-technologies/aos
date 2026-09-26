@@ -43,12 +43,15 @@ use crate::cache_signer_exchange::request_controller_q04_cache_signer_readback_v
 use crate::controller_hold_credential::with_process_controller_hold_signer_v1;
 use crate::policy_authority_client::{
     ClosedPolicyBindingClientObservationV4, ClosedPolicyBindingPreviewV4,
-    ClosedPolicyBindingSignerFlightV4, ClosedPolicySourceWriterFlightV5,
+    ClosedPolicyBindingSignerFlightV4, ClosedPolicyHeldCasCompletionV8,
+    ClosedPolicyHeldCasReplayV8, ClosedPolicySourceWriterFlightV5,
     PendingClosedPolicySourceWriterFlightV6, PendingClosedPolicySourceWriterFlightV7,
-    begin_staged_source_writer_held_flight_v6, begin_staged_source_writer_held_flight_v7,
+    PendingClosedPolicySourceWriterFlightV8, begin_staged_source_writer_held_flight_v6,
+    begin_staged_source_writer_held_flight_v7, begin_staged_source_writer_held_flight_v8,
     commit_closed_policy_binding_v4, commit_staged_closed_policy_signer_flight_v4,
     inspect_staged_closed_policy_signer_flight_v4, inspect_staged_source_writer_flight_v5,
     preview_staged_closed_policy_binding_v4, recover_closed_policy_binding_decision_v5,
+    recover_committed_source_held_binding_v8,
 };
 use crate::policy_root_ack_client::acknowledge_held_root_effect_v1;
 
@@ -530,6 +533,190 @@ pub fn inspect_fixed_parentless_create_source_writer_signed_flight_v7(
     controller_gid: u32,
     cache_signer: &PinnedCacheOwnerReadbackSignerV1,
 ) -> io::Result<ClosedPolicySourceWriterFlightV5> {
+    match inspect_fixed_parentless_create_signed_flight(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        staged,
+        proposed,
+        cache_signer_uid,
+        controller_gid,
+        cache_signer,
+        false,
+    )? {
+        SignedFlightCompletion::V7(flight) => Ok(flight),
+        SignedFlightCompletion::V8(_) => Err(invalid_cut()),
+    }
+}
+
+/// Commits a closed V8 Root CAS only inside the held terminal continuation.
+///
+/// The distinct V8 receipt and its cold replay remain nonauthorizing. Every
+/// Controller, Source, protected Cache, and physical Cache writer stays held
+/// until Root has durably committed and answered (or replay has resolved).
+///
+/// # Errors
+///
+/// Rejects changed owner currentness, Source names, signed terminal, Root
+/// proof, or missing exact committed replay after an ambiguous completion.
+#[allow(clippy::too_many_arguments)]
+pub fn commit_fixed_parentless_create_source_writer_held_cas_v8(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    staged: StagedClosedPolicyRootBaseV2,
+    proposed: &[u8],
+    cache_signer_uid: u32,
+    controller_gid: u32,
+    cache_signer: &PinnedCacheOwnerReadbackSignerV1,
+) -> io::Result<ClosedPolicyHeldCasCompletionV8> {
+    match inspect_fixed_parentless_create_signed_flight(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        staged,
+        proposed,
+        cache_signer_uid,
+        controller_gid,
+        cache_signer,
+        true,
+    )? {
+        SignedFlightCompletion::V8(committed) => Ok(committed),
+        SignedFlightCompletion::V7(_) => Err(invalid_cut()),
+    }
+}
+
+/// Cold-replays only an exact durably prepared and committed V8 held decision.
+///
+/// Controller reacquires its own, Source, protected Cache, and physical Cache
+/// writers before Root. Its pre-send attempt supplies the exact terminal
+/// digest even after process death. Root verifies its historical CAS; this
+/// bridge compares the proposal, held owner claims, and complete current
+/// Cache quota envelope under those writers. The result is still historical
+/// custody, not a transferable same-cut grant or owner-release capability.
+///
+/// # Errors
+///
+/// Rejects absent or changed attempt, local owner cut, Root proposal, Cache
+/// quota, committed terminal/proof, or ambiguous authenticated replay.
+pub fn recover_fixed_parentless_create_source_writer_held_cas_v8(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<ClosedPolicyHeldCasReplayV8> {
+    let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
+    let attempt = controller
+        .controller_policy_v8_attempt_v1()
+        .map_err(io::Error::other)?
+        .filter(|attempt| attempt.hold() == controller_hold)
+        .ok_or_else(invalid_cut)?;
+
+    with_current_create_cache_signer_barrier_v5(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |controller, _, _, _, held| -> io::Result<_> {
+            if controller
+                .controller_policy_v8_attempt_v1()
+                .map_err(io::Error::other)?
+                != Some(attempt)
+            {
+                return Err(invalid_cut());
+            }
+            let (decision, proposed, _) = recover_closed_policy_binding_decision_v5(
+                controller_hold.binding(),
+                controller_hold.epoch(),
+            )?;
+            if !matches!(decision, ClosedPolicyBindingDecisionV2::CommittedHeld(_)) {
+                return Err(invalid_cut());
+            }
+            let proposed = proposed.ok_or_else(invalid_cut)?;
+            compare_closed_policy_binding_hold_claims_v2(
+                &proposed,
+                controller_hold,
+                source_hold,
+                held.hold(),
+            )
+            .map_err(io::Error::other)?;
+            let replay = recover_committed_source_held_binding_v8(
+                controller_hold.binding(),
+                controller_hold.epoch(),
+                attempt.terminal(),
+            )?;
+            if replay.quota() != held.quota_digest() {
+                return Err(invalid_cut());
+            }
+            Ok(replay)
+        },
+    )
+    .map_err(io::Error::other)?
+}
+
+enum PendingSignedFlight {
+    V7(PendingClosedPolicySourceWriterFlightV7),
+    V8(PendingClosedPolicySourceWriterFlightV8),
+}
+
+impl PendingSignedFlight {
+    fn preview(&self) -> ClosedPolicySourceWriterFlightV5 {
+        match self {
+            Self::V7(pending) => pending.preview(),
+            Self::V8(pending) => pending.preview(),
+        }
+    }
+
+    fn finish(
+        self,
+        controller: &mut Journal,
+        generation: u64,
+        key: &ed25519_dalek::SigningKey,
+    ) -> io::Result<SignedFlightCompletion> {
+        match self {
+            Self::V7(pending) => pending
+                .finish(controller, generation, key)
+                .map(SignedFlightCompletion::V7),
+            Self::V8(pending) => pending
+                .finish(controller, generation, key)
+                .map(SignedFlightCompletion::V8),
+        }
+    }
+}
+
+enum SignedFlightCompletion {
+    V7(ClosedPolicySourceWriterFlightV5),
+    V8(ClosedPolicyHeldCasCompletionV8),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn inspect_fixed_parentless_create_signed_flight(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    staged: StagedClosedPolicyRootBaseV2,
+    proposed: &[u8],
+    cache_signer_uid: u32,
+    controller_gid: u32,
+    cache_signer: &PinnedCacheOwnerReadbackSignerV1,
+    commit_cas: bool,
+) -> io::Result<SignedFlightCompletion> {
     let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
 
     with_current_create_cache_signer_terminal_barrier_v6(
@@ -548,30 +735,41 @@ pub fn inspect_fixed_parentless_create_source_writer_signed_flight_v7(
                 held.hold(),
             )?;
             let mut recorded = None;
-            let outcome: io::Result<PendingClosedPolicySourceWriterFlightV7> =
+            let mut read_held = |cache_challenge, source_challenge, root_issue| {
+                let row = record_current_source_signer_challenge_v1(
+                    source_writer,
+                    source.project(),
+                    source_challenge,
+                )
+                .map_err(io::Error::other)?;
+                recorded = Some((row, root_issue));
+                let cache_packet = request_verified_held_cache_packet(
+                    physical,
+                    held,
+                    cache_challenge,
+                    cache_signer_uid,
+                    controller_gid,
+                    cache_signer,
+                )?;
+                Ok((cache_packet, row.names()))
+            };
+            let outcome = if commit_cas {
+                begin_staged_source_writer_held_flight_v8(
+                    staged,
+                    proposed,
+                    source_hold,
+                    &mut read_held,
+                )
+                .map(PendingSignedFlight::V8)
+            } else {
                 begin_staged_source_writer_held_flight_v7(
                     staged,
                     proposed,
                     source_hold,
-                    |cache_challenge, source_challenge, root_issue| {
-                        let row = record_current_source_signer_challenge_v1(
-                            source_writer,
-                            source.project(),
-                            source_challenge,
-                        )
-                        .map_err(io::Error::other)?;
-                        recorded = Some((row, root_issue));
-                        let cache_packet = request_verified_held_cache_packet(
-                            physical,
-                            held,
-                            cache_challenge,
-                            cache_signer_uid,
-                            controller_gid,
-                            cache_signer,
-                        )?;
-                        Ok((cache_packet, row.names()))
-                    },
-                );
+                    &mut read_held,
+                )
+                .map(PendingSignedFlight::V7)
+            };
             if let Some((row, _)) = recorded {
                 require_current_source_signer_challenge_v1(source_writer, source.project(), row)
                     .map_err(io::Error::other)?;
@@ -591,15 +789,20 @@ pub fn inspect_fixed_parentless_create_source_writer_signed_flight_v7(
             {
                 return Err(invalid_cut());
             }
-            Ok((pending, row, source.project()))
+            Ok((pending, row, source.project(), held.quota_digest()))
         },
         |controller, source_writer, prepared| -> io::Result<_> {
-            let (pending, row, project) = prepared?;
+            let (pending, row, project, quota) = prepared?;
             require_current_source_signer_challenge_v1(source_writer, project, row)
                 .map_err(io::Error::other)?;
-            with_process_controller_hold_signer_v1(|generation, key| {
+            let completion = with_process_controller_hold_signer_v1(|generation, key| {
                 pending.finish(controller, generation, key)
-            })
+            })?;
+            if matches!(completion, SignedFlightCompletion::V8(receipt) if receipt.quota() != quota)
+            {
+                return Err(invalid_cut());
+            }
+            Ok(completion)
         },
     )
     .map_err(io::Error::other)?

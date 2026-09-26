@@ -892,8 +892,9 @@ pub fn with_current_create_cache_signer_barrier_v5<R>(
 /// replay, clock, four named writers, hold, and physical flock before
 /// `terminal` runs. Controller and Source names, accepted Create, publisher,
 /// ancestry, and held claims are then rechecked before that continuation.
-/// The continuation may only acknowledge an inert observation; it cannot
-/// release an owner, publish a binding, or dispatch an effect.
+/// The continuation may acknowledge an inert observation or commit a closed
+/// Root CAS while all writers remain held. It cannot release an owner, publish
+/// a binding, open Create, or dispatch an effect.
 ///
 /// # Errors
 ///
