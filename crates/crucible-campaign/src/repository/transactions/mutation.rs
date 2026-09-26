@@ -98,6 +98,11 @@ impl CampaignRepository {
                 .merkle
                 .insert(exploration.content_id(), key, proposal_content)?;
         }
+        exploration = self.merkle.insert(
+            exploration.content_id(),
+            proposal_head_key(proposal.request()),
+            proposal_content,
+        )?;
         let frontier_index = self
             .merkle
             .get(
@@ -107,7 +112,8 @@ impl CampaignRepository {
             .ok_or_else(|| integrity("current-campaign-frontier-index-is-missing"))?;
         let request = self.read_branch_request(proposal.request().content_id())?;
         let prior_state = self.continuation_state(
-            super::projection::CandidateViewRoots::from_roots(current.snapshot.roots()),
+            super::projection::CandidateViewRoots::from_roots(current.snapshot.roots())
+                .with_request_admissions(self.parent_budget_ledger(&current)?.request_admissions()),
             proposal.request(),
             &request,
         )?;
@@ -308,7 +314,8 @@ impl CampaignRepository {
                 current.snapshot.roots().observations,
                 current.snapshot.roots().corpus,
                 current.snapshot.roots().accounting,
-            ),
+            )
+            .with_request_admissions(self.parent_budget_ledger(&current)?.request_admissions()),
             proposal_record.request(),
             &request,
         )?;
@@ -319,12 +326,15 @@ impl CampaignRepository {
             prior_state,
         )?;
         let next_state = self.continuation_state(
+            // The child ledger is published after this frontier projection.
+            // Authenticate every prior ordinal against the unpublished view.
             super::projection::CandidateViewRoots::new(
                 exploration,
                 current.snapshot.roots().observations,
                 current.snapshot.roots().corpus,
                 accounting,
-            ),
+            )
+            .with_unpublished_accounting(),
             proposal_record.request(),
             &request,
         )?;

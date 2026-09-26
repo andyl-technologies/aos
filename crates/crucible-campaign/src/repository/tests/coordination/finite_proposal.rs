@@ -67,10 +67,20 @@ fn finite_proposal_is_an_exact_indexed_delta_and_replays_before_staleness() {
     assert_eq!(
         repository
             .merkle
+            .get(
+                next.exploration,
+                proposal_head_key(request.id().expect("request id"))
+            )
+            .expect("proposal head lookup"),
+        Some(accepted.proposal.content_id())
+    );
+    assert_eq!(
+        repository
+            .merkle
             .inspect_shallow(next.exploration)
             .expect("exploration root")
             .entry_count(),
-        7
+        8
     );
 
     let replay = repository

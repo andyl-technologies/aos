@@ -1289,6 +1289,12 @@ fn proposal_ordinal_key(request: BranchRequestId, ordinal: u64) -> CampaignHash 
     CampaignHash::derive("crucible.campaign-proposal-request-ordinal.v1", &bytes)
 }
 
+fn proposal_head_key(request: BranchRequestId) -> CampaignHash {
+    // Each accepted proposal successor proves its predecessor and advances
+    // this exact request-local head in the authenticated exploration root.
+    map_key_content("exploration.request-proposal-head.v1", request.content_id())
+}
+
 fn proposal_value_key(request: BranchRequestId, value: &crate::ChoiceValue) -> CampaignHash {
     let request = request.content_id().encode();
     let value = crate::codec::encode(value);

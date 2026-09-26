@@ -54,7 +54,8 @@ impl CampaignRepository {
         }
         let inputs = self.derive_finite_expansion_inputs(&view, branch_point)?;
         let (continuations, next_after) = self.finite_continuation_page(
-            CandidateViewRoots::from_planning_view(&view),
+            CandidateViewRoots::from_roots(loaded.snapshot.roots())
+                .with_request_admissions(self.parent_budget_ledger(&loaded)?.request_admissions()),
             inputs.requests,
             page_after,
             page_size,
@@ -1478,7 +1479,7 @@ impl CampaignRepository {
         )
     }
 
-    pub(super) fn continuation_progress(
+    pub(in crate::repository) fn continuation_progress(
         &self,
         view: CandidateViewRoots,
         request_id: BranchRequestId,
@@ -1493,23 +1494,120 @@ impl CampaignRepository {
             .count()
             .unwrap_or(maximum_proposals)
             .min(maximum_proposals);
+        // Snapshot-bound callers supply the ledger index that each successor
+        // recomputes from admitted proposals. Cold ancestry checks every
+        // predecessor and exact root delta, so the head ordinal and indexed
+        // admission count replace a history-wide scan without losing density.
+        let (proposed, pending) =
+            if let ContinuationProgressBasis::Indexed(admissions_root) = view.progress_basis {
+                let head = self
+                    .merkle
+                    .get(view.exploration, proposal_head_key(request_id))?;
+                let proposed = match head {
+                    Some(content) => {
+                        let proposal = self.read_proposal(content)?;
+                        let ordinal = proposal.ordinal();
+                        if proposal.request() != request_id
+                            || ordinal == 0
+                            || ordinal > check_count
+                            || self
+                                .merkle
+                                .get(view.exploration, proposal_ordinal_key(request_id, ordinal))?
+                                != Some(content)
+                            || self.merkle.get(
+                                view.exploration,
+                                map_key_content("exploration.proposal", content),
+                            )? != Some(content)
+                        {
+                            return Err(integrity("finite-expansion-proposal-index-mismatch"));
+                        }
+                        if ordinal < check_count
+                            && self
+                                .merkle
+                                .get(
+                                    view.exploration,
+                                    proposal_ordinal_key(request_id, ordinal + 1),
+                                )?
+                                .is_some()
+                        {
+                            return Err(integrity("finite-expansion-proposal-head-is-stale"));
+                        }
+                        ordinal
+                    }
+                    None => {
+                        if self
+                            .merkle
+                            .get(view.exploration, proposal_ordinal_key(request_id, 1))?
+                            .is_some()
+                        {
+                            return Err(integrity("finite-expansion-proposal-head-is-missing"));
+                        }
+                        0
+                    }
+                };
+                let admitted = match self
+                    .merkle
+                    .get(admissions_root, request_admissions_key(request_id))?
+                {
+                    Some(root) => self.merkle.inspect_shallow(root)?.entry_count(),
+                    None => 0,
+                };
+                if admitted > proposed {
+                    return Err(integrity("finite-expansion-admission-index-mismatch"));
+                }
+                (proposed, admitted != proposed)
+            } else if matches!(
+                view.progress_basis,
+                ContinuationProgressBasis::UnpublishedAccounting
+            ) {
+                self.scan_continuation_progress(view, request_id, check_count)?
+            } else {
+                return Err(integrity("continuation-progress-requires-admissions-basis"));
+            };
+
+        Ok(ContinuationProgress {
+            profile,
+            proposed,
+            pending,
+            next_candidate: if profile == CandidateSourceProfile::CorpusMutation
+                && proposed < maximum_proposals
+            {
+                self.corpus_mutation_next_candidate(
+                    request,
+                    domain,
+                    view,
+                    proposed
+                        .checked_add(1)
+                        .ok_or_else(|| integrity("planner-candidate-ordinal-overflow"))?,
+                )?
+            } else {
+                None
+            },
+        })
+    }
+
+    fn scan_continuation_progress(
+        &self,
+        view: CandidateViewRoots,
+        request_id: BranchRequestId,
+        check_count: u64,
+    ) -> Result<(u64, bool), CampaignRepositoryError> {
         let mut proposed = 0_u64;
         let mut pending = false;
-
         for ordinal in 1..=check_count {
-            let Some(proposal_content) = self
+            let Some(content) = self
                 .merkle
                 .get(view.exploration, proposal_ordinal_key(request_id, ordinal))?
             else {
                 break;
             };
-            let proposal = self.read_proposal(proposal_content)?;
+            let proposal = self.read_proposal(content)?;
             if proposal.request() != request_id
                 || proposal.ordinal() != ordinal
                 || self.merkle.get(
                     view.exploration,
-                    map_key_content("exploration.proposal", proposal_content),
-                )? != Some(proposal_content)
+                    map_key_content("exploration.proposal", content),
+                )? != Some(content)
             {
                 return Err(integrity("finite-expansion-proposal-index-mismatch"));
             }
@@ -1517,7 +1615,7 @@ impl CampaignRepository {
 
             let Some(admission_content) = self.merkle.get(
                 view.accounting,
-                map_key_content("accounting.proposal-admission", proposal_content),
+                map_key_content("accounting.proposal-admission", content),
             )?
             else {
                 pending = true;
@@ -1541,30 +1639,11 @@ impl CampaignRepository {
                     return Err(integrity("finite-expansion-discovery-admission"));
                 }
             };
-            if admitted_proposal.content_id() != proposal_content {
+            if admitted_proposal.content_id() != content {
                 return Err(integrity("finite-expansion-proposal-admission-mismatch"));
             }
         }
-
-        Ok(ContinuationProgress {
-            profile,
-            proposed,
-            pending,
-            next_candidate: if profile == CandidateSourceProfile::CorpusMutation
-                && proposed < maximum_proposals
-            {
-                self.corpus_mutation_next_candidate(
-                    request,
-                    domain,
-                    view,
-                    proposed
-                        .checked_add(1)
-                        .ok_or_else(|| integrity("planner-candidate-ordinal-overflow"))?,
-                )?
-            } else {
-                None
-            },
-        })
+        Ok((proposed, pending))
     }
 
     /// Returns whether the next exact ordinal requires progressive PUCT input.
