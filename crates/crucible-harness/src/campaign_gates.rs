@@ -247,6 +247,16 @@ const TYPED_CHOICE_PRODUCT_CHECKPOINT_SELECTORS: &[ExactSelector] = &[ExactSelec
     name: "packaged::guest_choice::public_guest_choices_survive_exact_checkpoint_and_daemon_restart",
 }];
 
+const CAMPAIGN_PACKAGED_LIFECYCLE_SELECTORS: &[ExactSelector] = &[ExactSelector {
+    source: "crates/crucible-cli/tests/support/campaign_packaged_process/guest_choice/lifecycle.rs",
+    name: "packaged::guest_choice::lifecycle::public_packaged_campaign_lifecycle_uses_only_cli",
+}];
+
+const CAMPAIGN_PACKAGED_LIFECYCLE_NIX_SOURCES: &[&str] = &[
+    "tests/crucible/phase4-packaged-campaign-lifecycle-vm.nix",
+    "tests/crucible/phase4-packaged-campaign-vm.nix",
+];
+
 const CAMPAIGN_POLICY_TIMEOUT_SELECTORS: &[ExactSelector] = &[ExactSelector {
     source: "crates/crucible-cli/tests/support/campaign_packaged_process.rs",
     name: "packaged::public_packaged_executor_retains_policy_timeout_causal_evidence",
@@ -728,6 +738,31 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
             },
         }],
         "checks.crucible.phase2.gates.typedChoiceProductCheckpoint",
+    ),
+    automated(
+        "gate:campaign-packaged-lifecycle",
+        "crucible-cli",
+        &[CampaignGateTarget {
+            package: "crucible-cli",
+            kind: CampaignGateTargetKind::IntegrationExact {
+                test_target: "campaign_store_process",
+                selectors: CAMPAIGN_PACKAGED_LIFECYCLE_SELECTORS,
+                nix_sources: CAMPAIGN_PACKAGED_LIFECYCLE_NIX_SOURCES,
+                runner: "campaign-store-process-flight",
+                evidence: &[
+                    "gate=gate:campaign-packaged-lifecycle",
+                    "tasks=T-CAM-4.8",
+                    "campaign_lifecycle_lazy_widening=true",
+                    "campaign_lifecycle_finite_branch_deduplication=true",
+                    "campaign_lifecycle_live_status_explanation=true",
+                    "campaign_lifecycle_bounded_pressure=true",
+                    "campaign_lifecycle_pause_restart_resume=true",
+                    "campaign_lifecycle_steering_graceful_stop=true",
+                ],
+                ignored: true,
+            },
+        }],
+        "checks.crucible.phase4.gates.campaignLifecycle",
     ),
     automated(
         "gate:world-fork-atomicity",

@@ -3,6 +3,7 @@
   pkgs,
   lib,
   guestChoice ? false,
+  campaignLifecycle ? false,
   envoyNetwork ? false,
   envoyKnownFinding ? false,
   hotForkFlight ? false,
@@ -186,6 +187,8 @@
       then "crucible-campaign-envoy-known-finding"
       else if envoyNetwork
       then "crucible-campaign-envoy-network"
+      else if campaignLifecycle
+      then "crucible-packaged-campaign-lifecycle"
       else if guestChoice
       then "crucible-packaged-campaign-choice"
       else if findingForkWrite
@@ -450,6 +453,38 @@
           ${pkgs.grep}/bin/grep -Fq \
             'test result: ok. 1 passed; 0 failed; 0 ignored;' "$envoy_log"
           printf '%s\n' 'gate=gate:campaign-envoy-network-five-vm'
+        ''
+        else if campaignLifecycle
+        then ''
+          export CRUCIBLE_INITRD=${networkChoiceInitramfs}/initrd.img
+          lifecycle_selector=packaged::guest_choice::lifecycle::public_packaged_campaign_lifecycle_uses_only_cli
+          lifecycle_log=/tmp/campaign-lifecycle-flight.log
+          ${flight}/bin/campaign-store-process-flight --ignored --list \
+            > /tmp/campaign-lifecycle-list.log 2>&1
+          test "$(${pkgs.grep}/bin/grep -Fxc \
+            "$lifecycle_selector: test" /tmp/campaign-lifecycle-list.log || true)" -eq 1
+
+          # Discovery, two choice scans, and three bounded attempts can use
+          # their full independent waits before the host watchdog fires.
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 2400 \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
+            "$lifecycle_selector" --nocapture > "$lifecycle_log" 2>&1; then
+            cat "$lifecycle_log"
+            exit 1
+          fi
+          cat "$lifecycle_log"
+          ${pkgs.grep}/bin/grep -Fxq 'campaign_lifecycle_lazy_widening=true' "$lifecycle_log"
+          ${pkgs.grep}/bin/grep -Fxq 'campaign_lifecycle_finite_branch_deduplication=true' "$lifecycle_log"
+          ${pkgs.grep}/bin/grep -Fxq 'campaign_lifecycle_live_status_explanation=true' "$lifecycle_log"
+          ${pkgs.grep}/bin/grep -Fxq 'campaign_lifecycle_bounded_pressure=true' "$lifecycle_log"
+          ${pkgs.grep}/bin/grep -Fxq 'campaign_lifecycle_pause_restart_resume=true' "$lifecycle_log"
+          ${pkgs.grep}/bin/grep -Fxq 'campaign_lifecycle_steering_graceful_stop=true' "$lifecycle_log"
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' "$lifecycle_log"
+          printf '%s\n' \
+            'gate=gate:campaign-packaged-lifecycle' \
+            'tasks=T-CAM-4.8' \
+            'proven=lazy-widening,finite-branching,edge-deduplication,live-status-and-explanation,bounded-pressure,pause-restart-resume,steering,graceful-stop'
         ''
         else if guestChoice
         then ''

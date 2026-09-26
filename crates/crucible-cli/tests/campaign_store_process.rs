@@ -934,6 +934,11 @@ campaign = "*"
 
 [[grants]]
 principal = "{PRINCIPAL}"
+operation = "derive-campaign"
+campaign = "*"
+
+[[grants]]
+principal = "{PRINCIPAL}"
 operation = "apply-campaign-command"
 campaign = "*"
 
@@ -970,6 +975,11 @@ campaign = "*"
 [[grants]]
 principal = "{PRINCIPAL}"
 operation = "query-campaign-graph"
+campaign = "*"
+
+[[grants]]
+principal = "{PRINCIPAL}"
+operation = "query-campaign-request-attempts"
 campaign = "*"
 
 [[grants]]
