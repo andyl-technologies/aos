@@ -1631,6 +1631,64 @@ def check_clang_sanitizer_ignorelist(root, env, accache, sccache, clang, hits):
     return results
 
 
+def check_clang_layout_seed(root, env, accache, sccache, clang, hits):
+    """Track a layout seed file omitted from Clang's dependency output."""
+    work = root / "clang-layout-seed"
+    work.mkdir()
+    (work / "source.c").write_text(
+        "struct __attribute__((randomize_layout)) S { int a,b,c,d,e,f,g,h,i,j,k,l; };\n"
+        "int offsets(void) { return __builtin_offsetof(struct S,a)"
+        "+2*__builtin_offsetof(struct S,b)+3*__builtin_offsetof(struct S,c); }\n")
+    seed_file = work / "seed.txt"
+    object_file = work / "source.o"
+    depfile = work / "source.d"
+    args = [clang, "-O2", "-c", "source.c",
+            "-frandomize-layout-seed-file=seed.txt", "-MD", "-MF", "source.d",
+            "-o", "source.o"]
+
+    def compile_object(wrapper):
+        object_file.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        return (completed.stdout, completed.stderr,
+                object_file.read_bytes(), depfile.read_bytes())
+
+    results = []
+    first_object = None
+    for revision, seed in enumerate(["0123456789abcdef", "fedcba9876543210"]):
+        seed_file.write_text(seed + "\n")
+        direct = compile_object([])
+        assert b"seed.txt" not in direct[3], "dep-info listed layout seed"
+        if first_object is None:
+            first_object = direct[2]
+        else:
+            assert direct[2] != first_object, "layout seed edit had no effect"
+
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() == before_hits, "sccache ignored the changed layout seed"
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() > before_hits, "sccache did not warm-hit"
+
+        assert compile_object([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", (revision, cold)
+        if revision:
+            assert any("seed.txt" in item for item in cold["changes"]), cold
+        assert compile_object([accache]) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", (revision, warm)
+        results.append({"fixture": "clang-layout-seed", "revision": revision,
+                        "oracle_hit": True, "accache": "hit",
+                        "artifacts": ["source.o", "source.d"]})
+
+    print("PASS oracle clang-layout-seed input invalidation", flush=True)
+    return results
+
+
 def check_rust_native_archives(root, env, accache, sccache, gcc, rustc, hits):
     """Hash native archives for joined and separated Rust library flags."""
     results = []
@@ -2627,6 +2685,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                clang, hits))
         results.extend(check_clang_sanitizer_ignorelist(root, env, accache,
                                                         sccache, clang, hits))
+        results.extend(check_clang_layout_seed(root, env, accache,
+                                               sccache, clang, hits))
         results.extend(check_clang_pass_plugin(root, env, accache,
                                                sccache, clang, hits))
         results.extend(check_rust_native_archives(root, env, accache, sccache,
