@@ -2253,13 +2253,28 @@ class Scenario:
 
 
 def check_detail(check):
-    if check == "native-adapter-matrix":
-        return (
-            "The package-derived native-adapter matrix bound every applicable "
-            "durability and authority cell plus every exact provider-contract "
-            "exclusion to the adapter interface name, ABI, and descriptor."
-        )
+    if check in GENERATED_CHECK_DETAILS:
+        return GENERATED_CHECK_DETAILS[check]
+    for prefix, detail in GENERATED_CHECK_PREFIX_DETAILS.items():
+        if check.startswith(prefix):
+            return detail
     return CHECK_DETAILS[check]
+
+
+GENERATED_CHECK_DETAILS = {
+    "native-adapter-matrix": (
+        "The package-derived native-adapter matrix bound every applicable "
+        "durability and authority cell plus every exact provider-contract "
+        "exclusion to the adapter interface name, ABI, and descriptor."
+    ),
+}
+
+GENERATED_CHECK_PREFIX_DETAILS = {
+    "container-execution-surface-v1-sha256-": (
+        "The selected package declarations and execution-stage policy produced "
+        "the exact container execution surface identified by this digest."
+    ),
+}
 
 
 CHECK_DETAILS = {

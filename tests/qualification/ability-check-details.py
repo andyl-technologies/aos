@@ -8,38 +8,33 @@ import sys
 
 def check_details(path):
     module = ast.parse(pathlib.Path(path).read_text())
-    assignments = [
-        statement
-        for statement in module.body
-        if isinstance(statement, ast.Assign)
-        and any(
-            isinstance(target, ast.Name) and target.id == "CHECK_DETAILS"
-            for target in statement.targets
-        )
-    ]
-    assert len(assignments) == 1, assignments
-    details = ast.literal_eval(assignments[0].value)
-    assert isinstance(details, dict), type(details)
-    assert all(
-        isinstance(check, str)
-        and check
-        and isinstance(detail, str)
-        and detail
-        for check, detail in details.items()
-    ), details
-    prefixes = {
-        argument.value
-        for statement in module.body
-        if isinstance(statement, ast.FunctionDef) and statement.name == "check_detail"
-        for node in ast.walk(statement)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "startswith"
-        and len(node.args) == 1
-        for argument in node.args
-        if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
-    }
-    return details, prefixes
+    def assignment(name):
+        matches = [
+            statement
+            for statement in module.body
+            if isinstance(statement, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == name
+                for target in statement.targets
+            )
+        ]
+        assert len(matches) == 1, (name, matches)
+        values = ast.literal_eval(matches[0].value)
+        assert isinstance(values, dict), (name, type(values))
+        assert all(
+            isinstance(check, str)
+            and check
+            and isinstance(detail, str)
+            and detail
+            for check, detail in values.items()
+        ), (name, values)
+        return values
+
+    details = assignment("CHECK_DETAILS")
+    generated = assignment("GENERATED_CHECK_DETAILS")
+    prefixes = assignment("GENERATED_CHECK_PREFIX_DETAILS")
+    assert not details.keys() & generated.keys()
+    return details | generated, prefixes
 
 
 contract = json.loads(pathlib.Path(sys.argv[1]).read_text())
