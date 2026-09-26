@@ -839,6 +839,7 @@ in
     };
 
     inherit version;
+    passBuildScriptAsFile = true;
 
     src = fetchurl {
       urls = [
