@@ -1567,18 +1567,16 @@ impl DeterministicLaunchProfile {
         material
     }
 
-    /// Returns canonical scenario hash material after validating node shifts.
+    /// Returns canonical scenario hash material after validating node IDs.
     ///
-    /// Node shift declarations are sorted by node identifier before they enter
+    /// Fixed node tick scales are sorted by node identifier before they enter
     /// the material so callers do not have to preserve a host-dependent
     /// iteration order.
     ///
     /// # Errors
     ///
-    /// Returns [`LaunchProfileError`] when a node identifier is not stable text,
-    /// a node is declared more than once, a node requests an unsupported fixed
-    /// shift, or a node shift differs from the scenario-wide launch-profile
-    /// shift.
+    /// Returns [`LaunchProfileError`] when a node identifier is not stable text
+    /// or a node is declared more than once.
     pub fn scenario_hash_material_for_nodes(
         &self,
         node_ids: &[crucible::NodeId],
@@ -1643,14 +1641,12 @@ impl DeterministicLaunchProfile {
         self.rr_switch_quantum
     }
 
-    /// Validates that every node launch declaration uses this profile's shift.
+    /// Validates each node identifier before rendering its fixed tick scale.
     ///
     /// # Errors
     ///
-    /// Returns [`LaunchProfileError`] when a node identifier is not stable text,
-    /// a node is declared more than once, a node requests an unsupported fixed
-    /// shift, or a node shift differs from the scenario-wide launch-profile
-    /// shift.
+    /// Returns [`LaunchProfileError`] when a node identifier is not stable text
+    /// or a node is declared more than once.
     pub fn validate_node_ids(
         &self,
         node_ids: &[crucible::NodeId],
