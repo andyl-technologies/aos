@@ -244,6 +244,16 @@ pub(super) fn configure(
         ] {
             if let Some(path) = arg.strip_prefix(prefix) {
                 invocation.extra_inputs.insert(path.into());
+                if matches!(prefix, "-specs=" | "--specs=") {
+                    // GCC specs can include other specs files, including files
+                    // that affect only assembly and leave -E output unchanged.
+                    invocation.extension_reads(manifest)?;
+                    let parent = Path::new(path)
+                        .parent()
+                        .filter(|parent| !parent.as_os_str().is_empty())
+                        .unwrap_or(Path::new("."));
+                    invocation.recursive_dirs.insert(parent.into());
+                }
             }
         }
     }

@@ -937,6 +937,67 @@ def check_assembler_include_invalidation(root, env, accache, sccache, gcc, hits)
             "oracle_stale_artifact": "source.o", "artifacts": ["source.o"]}
 
 
+def check_gcc_nested_specs(root, env, accache, sccache, gcc, hits):
+    """Track GCC specs included outside the preprocessor's dependency output."""
+    work = root / "gcc-nested-specs"
+    work.mkdir()
+    specs_dir = root / "gcc-nested-specs-files"
+    specs_dir.mkdir()
+    (work / "source.S").write_text(".globl answer\nanswer:\n .long VALUE\n")
+    top = specs_dir / "top.specs"
+    nested = specs_dir / "nested.specs"
+    top.write_text(f"%include <{nested}>\n")
+    object_file = work / "source.o"
+    args = [gcc, "-c", "source.S", "-o", "source.o", "-specs=" + str(top)]
+
+    def compile_object(wrapper):
+        object_file.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        return completed.stdout, completed.stderr, object_file.read_bytes()
+
+    def preprocessed_source():
+        completed = subprocess.run([gcc, "-E", "source.S", "-specs=" + str(top)],
+                                   cwd=work, env=env, capture_output=True, timeout=120)
+        assert completed.returncode == 0, completed.stderr
+        return completed.stdout
+
+    nested.write_text("*asm:\n--defsym=VALUE=1\n")
+    original_preprocessed = preprocessed_source()
+    direct_old = compile_object([])
+    assert compile_object([sccache]) == direct_old
+    before_hits = hits()
+    assert compile_object([sccache]) == direct_old
+    assert hits() > before_hits, "sccache did not hit the original specs action"
+    assert compile_object([accache]) == direct_old
+    assert compile_object([accache]) == direct_old
+    warm_old = json.loads(subprocess.check_output([accache, "explain"], env=env))
+    assert warm_old["outcome"] == "hit", warm_old
+
+    nested.write_text("*asm:\n--defsym=VALUE=2\n")
+    assert preprocessed_source() == original_preprocessed, "assembler specs changed -E output"
+    direct_new = compile_object([])
+    assert direct_new[2] != direct_old[2], "nested specs changed no object bytes"
+    before_hits = hits()
+    assert compile_object([sccache])[2] == direct_old[2], "sccache specs defect changed"
+    assert hits() > before_hits, "sccache did not reuse its stale specs action"
+
+    assert compile_object([accache]) == direct_new
+    cold_new = json.loads(subprocess.check_output([accache, "explain"], env=env))
+    assert cold_new["outcome"] == "miss", cold_new
+    assert any("nested.specs" in item for item in cold_new["changes"]), cold_new
+    assert compile_object([accache]) == direct_new
+    warm_new = json.loads(subprocess.check_output([accache, "explain"], env=env))
+    assert warm_new["outcome"] == "hit", warm_new
+
+    print("PASS oracle GCC nested specs invalidation", flush=True)
+    return [{"fixture": "gcc-nested-specs", "revision": revision,
+             "oracle_hit": True, "accache": "hit",
+             "oracle_stale_artifact": revision == 1,
+             "artifacts": ["source.o"]} for revision in range(2)]
+
+
 def check_field_named_include(root, env, accache, sccache, gcc, clang, hits):
     """A C field named include must not trigger an assembler dependency probe."""
     results = []
@@ -1717,6 +1778,7 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
         results.append(check_saved_temporaries(root, env, accache, sccache, rustc, hits))
         results.append(check_assembler_include_invalidation(root, env, accache,
                                                             sccache, gcc, hits))
+        results.extend(check_gcc_nested_specs(root, env, accache, sccache, gcc, hits))
         results.extend(check_field_named_include(root, env, accache, sccache,
                                                  gcc, clang, hits))
         results.append(check_absolute_inline_assembler_input(root, env, accache,
