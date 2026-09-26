@@ -61,7 +61,8 @@
         assert result.returncode == 0, result.stderr
         header = next(pathlib.Path("target").rglob("aos_c_probe.h"))
         pkgconfig = next(pathlib.Path("target").rglob("aos_c_probe.pc"))
-        library = next(pathlib.Path("target").rglob("libaos_c_probe.so"))
+        suffix = ".dylib" if environment["AOS_QUALIFICATION_PLATFORM"].endswith("-darwin") else ".so"
+        library = next(pathlib.Path("target").rglob("libaos_c_probe" + suffix))
         assert "aos_add" in header.read_text()
         assert "aos_c_probe" in pkgconfig.read_text()
 
