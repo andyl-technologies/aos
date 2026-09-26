@@ -62,7 +62,7 @@ pkgs.mkDerivation {
         assert planner * 100 < guest * 5, (planner, guest)
 
         assert re.search(r"^campaign_million_profile admissions=1000000 requests=62500 request_size=16 ", profile)
-        for field in ("objects", "index_bytes", "logical_bytes", "physical_bytes", "peak_rss_kib", "cold_claimable"):
+        for field in ("objects", "index_bytes", "logical_bytes", "physical_bytes", "coordinator_peak_rss_kib", "planner_worker_peak_rss_kib", "combined_peak_rss_upper_bound_kib", "cold_claimable"):
             assert re.search(rf"\b{field}=[1-9][0-9]*\b", profile), field
         PY
 
