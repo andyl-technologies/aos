@@ -1076,7 +1076,12 @@ mod tests {
 
     #[test]
     fn platform_configuration_is_closed() -> Result<()> {
-        let executable = std::env::current_exe()?;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let executable = directory.path().join("qualification-executor");
+        std::fs::copy(std::env::current_exe()?, &executable)?;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o500))?;
         let all = Platform::ALL
             .into_iter()
             .map(|platform| format!("{platform}={}", executable.display()))
