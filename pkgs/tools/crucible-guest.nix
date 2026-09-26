@@ -8,6 +8,7 @@
   fetchCargoVendor,
   patchelf,
   glibc,
+  sqliteStatic,
 }: let
   version = "0.1.0";
   src = import ./crucible/_source.nix {inherit lib;};
@@ -25,6 +26,14 @@
     .${
       stdenv.hostPlatform.system
     };
+  cargoEnv = {
+    # Guest tests transitively use CAS. Force its SQLite dependency to link
+    # the AOS-built archive even when Cargo enables bundled bindings.
+    SQLITE3_LIB_DIR = "${sqliteStatic}/lib";
+    SQLITE3_INCLUDE_DIR = "${sqliteStatic}/include";
+    SQLITE3_STATIC = "1";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+  };
   staticBuildSetup = ''
     target_triple="${
       if stdenv.isCross
@@ -49,12 +58,12 @@
     family = "crucible-static-guest-release-and-test";
     target = targetTriple;
     rustflags = "-C target-feature=+crt-static -C relocation-model=static";
-    nativeInputs = map toString [patchelf];
+    nativeInputs = map toString [patchelf sqliteStatic];
     licenseScope = "Apache-2.0";
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "crucible-static-guest-artifacts";
-    inherit version cargoDeps cargoArtifactContract;
+    inherit version cargoDeps cargoArtifactContract cargoEnv;
     src = mkCargoDummySource {
       srcRoot = ../../crates;
       name = "crucible-static-guest-dummy-source";
@@ -66,21 +75,21 @@
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-guest"
     ];
     preBuild = staticBuildSetup;
-    buildDeps = [patchelf];
+    buildDeps = [patchelf sqliteStatic];
   };
 in
   mkCargoPackage {
     pname = "crucible-guest";
     inherit version src;
 
-    inherit cargoDeps cargoArtifacts cargoArtifactContract;
+    inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
 
     cargoFlags = "-p crucible-guest --bin crucible-guest";
     cargoTestFlags = "-p crucible-guest";
     doCheck = true;
-    buildDeps = [patchelf];
+    buildDeps = [patchelf sqliteStatic];
     runtimeDeps = [];
 
     preBuild = ''

@@ -1683,6 +1683,7 @@
       crucible-controller = callPackage ./tools/crucible/crucible.nix {
         controllerOnly = true;
       };
+      sqliteStatic = callPackage ./db/sqlite.nix {enableStatic = true;};
 
       # Interpreter-free git for the system image (shares git.nix's source and
       # version). Used by apm/apr's runtimeTools and the server profile so the
