@@ -85,6 +85,8 @@ test "$(bash "$root/aos-dev" list check build.aos-dev)" = $'build.aos-dev-cli\nb
 test "$(bash "$root/aos-dev" list check build.aos-dev-cli)" = 'build.aos-dev-cli'
 test "$(bash "$root/aos-dev" --release build check build.aos-dev-cli --no-out-link)" = /tmp/aos-dev-test-output
 grep -Fq -- '-A checks.build.aos-dev-cli --no-out-link' "$AOS_DEV_TEST_LOG"
+test "$(bash "$root/aos-dev" --release build check package-documentation --no-out-link)" = /tmp/aos-dev-test-output
+grep -Fq -- '-A checks.package-documentation --no-out-link' "$AOS_DEV_TEST_LOG"
 if bash "$root/aos-dev" --release build check 'build..invalid' --no-out-link >/dev/null 2>&1; then
   echo 'malformed check target was accepted' >&2
   exit 1
