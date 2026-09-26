@@ -84,6 +84,11 @@
     fetchurl = buildPackages.fetchurl;
     inherit buildPackages bazelMavenBootstrap bazelAvalonApi bazelMailApi bazelLog4j;
   };
+  bazelVelocity = import ./_bazel-velocity.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit fetchgit buildPackages bazelMavenBootstrap bazelLog4j bazelAvalonApi bazelLegacyJavaHttp;
+  };
   bazelGoogleHttp = import ./_bazel-google-http.nix {
     mkDerivation = buildPackages.mkDerivation;
     fetchurl = buildPackages.fetchurl;
@@ -281,6 +286,7 @@
       bazelMailApi
       bazelLog4j
       bazelLegacyJavaHttp
+      bazelVelocity
       bazelGoogleHttp
       bazelGoogleJavaFormat
       bazelByteBuddy114

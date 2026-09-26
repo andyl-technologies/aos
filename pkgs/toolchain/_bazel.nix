@@ -41,6 +41,7 @@
   bazelMailApi ? null,
   bazelLog4j ? null,
   bazelLegacyJavaHttp ? null,
+  bazelVelocity ? null,
   bazelGoogleHttp ? null,
   bazelGoogleJavaFormat ? null,
   bazelByteBuddy114 ? null,
@@ -1288,6 +1289,7 @@ in
       ++ lib.optional (bazelMailApi != null) bazelMailApi
       ++ lib.optional (bazelLog4j != null) bazelLog4j
       ++ lib.optional (bazelLegacyJavaHttp != null) bazelLegacyJavaHttp
+      ++ lib.optional (bazelVelocity != null) bazelVelocity
       ++ lib.optional (bazelGoogleHttp != null) bazelGoogleHttp
       ++ lib.optional (bazelGoogleJavaFormat != null) bazelGoogleJavaFormat
       ++ lib.optional (bazelByteBuddy114 != null) bazelByteBuddy114
@@ -1384,6 +1386,11 @@ in
             mkdir -p derived/maven/commons-logging/commons-logging/1.2
             cp ${bazelLegacyJavaHttp}/maven/commons-logging/commons-logging/1.2/commons-logging-1.2.jar \
               derived/maven/commons-logging/commons-logging/1.2/commons-logging-1.2.jar
+          ''}
+          ${lib.optionalString (bazelVelocity != null) ''
+            mkdir -p derived/maven/org/apache/velocity/velocity/1.7
+            cp ${bazelVelocity}/maven/org/apache/velocity/velocity/1.7/velocity-1.7.jar \
+              derived/maven/org/apache/velocity/velocity/1.7/velocity-1.7.jar
           ''}
           ${lib.optionalString (bazelGoogleHttp != null) ''
             for target in \
