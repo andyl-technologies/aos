@@ -3,6 +3,12 @@
   packageName,
   packageProbe,
 }: let
+  toolMarkers = {
+    bash = "@bash@";
+    "c-compiler" = "@cc@";
+    "cxx-compiler" = "@cxx@";
+    python = "@python@";
+  };
   renderFragment = fragment:
     if fragment.kind == "literal"
     then fragment.text
@@ -13,18 +19,15 @@
       else "@output:${fragment.artifact.output}@"
     else if fragment.kind == "artifact-path"
     then
-      (if fragment.artifact.output == "out"
-       then "@out@"
-       else "@output:${fragment.artifact.output}@")
+      (
+        if fragment.artifact.output == "out"
+        then "@out@"
+        else "@output:${fragment.artifact.output}@"
+      )
       + "/${fragment.path}"
     else if fragment.kind == "work-path"
     then "@work@/${fragment.path}"
-    else {
-      bash = "@bash@";
-      "c-compiler" = "@cc@";
-      "cxx-compiler" = "@cxx@";
-      python = "@python@";
-    }.${fragment.tool};
+    else toolMarkers.${fragment.tool};
   renderTemplate = template:
     builtins.concatStringsSep "" (map renderFragment template.fragments);
   renderOptionalTemplate = template:
