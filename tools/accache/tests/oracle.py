@@ -1475,6 +1475,73 @@ def check_gcc_compiler_path_precedence(root, env, accache, sccache, gcc, hits):
     return results
 
 
+def check_gcc_file_prefix_precedence(root, env, accache, sccache, gcc, hits):
+    """Invalidate a -B lookup when a prefixed assembler appears later."""
+    fixture = "gcc-file-prefix-precedence"
+    work = root / fixture
+    preferred = work / "preferred"
+    fallback = work / "fallback"
+    preferred.mkdir(parents=True)
+    fallback.mkdir()
+    (work / "source.S").write_text(".globl answer\nanswer:\n .long VALUE\n")
+
+    assembler = subprocess.check_output(
+        [gcc, "-print-prog-name=as"], cwd=work, env=env, text=True).strip()
+    assert Path(assembler).is_file(), (fixture, assembler)
+    build_gcc_assembler(work, env, gcc, assembler, fallback / "as", 1)
+
+    selected = preferred / "prefix-as"
+    args = [gcc, "-B" + str(preferred / "prefix-"),
+            "-c", "source.S", "-o", "source.o"]
+    compile_env = env | {"COMPILER_PATH": str(fallback)}
+    object_file = work / "source.o"
+
+    def compile_object(command):
+        object_file.unlink(missing_ok=True)
+        completed = subprocess.run([*command, *args], cwd=work, env=compile_env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (fixture, command, completed.stderr)
+        return completed.stdout, completed.stderr, object_file.read_bytes()
+
+    results = []
+    first_object = None
+    for revision in range(2):
+        if revision:
+            build_gcc_assembler(work, env, gcc, assembler, selected, 2)
+
+        direct = compile_object([])
+        if first_object is None:
+            first_object = direct[2]
+            assert compile_object([sccache]) == direct, (fixture, "oracle cold")
+        else:
+            assert direct[2] != first_object, (fixture, "search order had no effect")
+            before_hits = hits()
+            oracle = compile_object([sccache])
+            assert hits() > before_hits, (fixture, "oracle did not reuse stale object")
+            assert oracle[2] == first_object, (fixture, "oracle defect changed")
+
+        before_hits = hits()
+        assert compile_object([sccache])[2] == first_object, (fixture, "oracle warm")
+        assert hits() > before_hits, (fixture, "oracle did not hit")
+
+        assert compile_object([accache]) == direct, (fixture, revision, "cold")
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=compile_env))
+        assert cold["outcome"] == "miss", (fixture, revision, cold)
+        if revision:
+            assert any(str(selected) in item for item in cold["changes"]), cold
+        assert compile_object([accache]) == direct, (fixture, revision, "warm")
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=compile_env))
+        assert warm["outcome"] == "hit", (fixture, revision, warm)
+
+        results.append({"fixture": fixture, "revision": revision,
+                        "oracle_hit": True, "accache": "hit",
+                        "oracle_stale_artifact": revision == 1,
+                        "artifacts": ["source.o"]})
+
+    print("PASS oracle", fixture, "search precedence", flush=True)
+    return results
+
+
 def check_gcc_subprogram_wrapper(root, env, accache, sccache, gcc, hits):
     """Preserve a GCC -wrapper program's effects on each invocation."""
     fixture = "gcc-subprogram-wrapper"
@@ -4329,6 +4396,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                 root, env, accache, sccache, raw_gcc, hits,
                 fixture, option, directory, separated, compiler_path, exec_prefix))
         results.extend(check_gcc_compiler_path_precedence(
+            root, env, accache, sccache, raw_gcc, hits))
+        results.extend(check_gcc_file_prefix_precedence(
             root, env, accache, sccache, raw_gcc, hits))
         results.extend(check_gcc_subprogram_wrapper(
             root, env, accache, sccache, raw_gcc, hits))
