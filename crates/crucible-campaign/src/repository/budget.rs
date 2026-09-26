@@ -35,9 +35,10 @@ pub(super) struct ExpectedBudgetSuccessor {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
     use crate::CampaignCommandId;
-    use std::time::Instant;
 
     #[test]
     fn local_budget_witness_uses_one_ledger_derivation_per_successor() {
@@ -50,7 +51,6 @@ mod tests {
             let mut parent = created.snapshot_id();
 
             BUDGET_STAGE_COUNTS.with(|counts| counts.set((0, 0)));
-            let started = Instant::now();
             for ordinal in 0..count {
                 let request = ControlRequest {
                     command: CampaignCommandId::from_hash(CampaignHash::derive(
@@ -67,12 +67,7 @@ mod tests {
                     .expect("grant successor")
                     .new_snapshot;
             }
-            let elapsed = started.elapsed();
             let (derivations, cold_validations) = BUDGET_STAGE_COUNTS.with(|counts| counts.get());
-            eprintln!(
-                "budget witness N{count}: derivations={derivations} cold_validations={cold_validations} elapsed_ms={:.3}",
-                elapsed.as_secs_f64() * 1_000.0
-            );
             assert_eq!(derivations, count);
             assert_eq!(cold_validations, 0);
         }
@@ -441,6 +436,20 @@ impl CampaignRepository {
             fact,
         };
         Ok((snapshot, witness))
+    }
+
+    pub(super) fn cover_local_budget_growth(
+        &self,
+        parent: &LoadedSnapshot,
+        witness: &mut ExpectedBudgetSuccessor,
+    ) -> Result<(), CampaignRepositoryError> {
+        if witness.parent != parent.snapshot.id()? {
+            return Err(integrity("local-successor-budget-witness-parent-mismatch"));
+        }
+        // The simple planner issue's authenticated owner delta already covers
+        // the ledger and both request-index roots as one deduplicated union.
+        witness.closure_growth_upper = 0;
+        Ok(())
     }
 
     /// Checks that the stored child names exactly the locally constructed ledger.

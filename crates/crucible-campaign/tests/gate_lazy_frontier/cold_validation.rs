@@ -1,6 +1,7 @@
 //! Cold ancestry validation across retained planner requests.
 
 use super::*;
+use crucible_campaign::{CampaignBudgetLedger, CampaignStoreError, ObjectEnvelope};
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, PutReceipt,
     StoreError,
@@ -115,9 +116,14 @@ fn cold_reopen_matches_snapshot_and_rejects_corrupt_planner_inputs() -> Result<(
         .repository
         .load_planner_step_at(last.new_snapshot, last.step)?;
     let request = fixture.repository.load_planner_request(step.request())?;
+    let ledger_id = expected_head.snapshot().budget_ledger().content_id();
+    let ledger_bytes = fixture.blobs.read(ledger_id, None)?.read_all(64 * 1024)?;
+    let ledger_envelope = ObjectEnvelope::from_canonical_bytes(&ledger_bytes)?;
+    let ledger = CampaignBudgetLedger::from_canonical_bytes(ledger_envelope.body())?;
     for corrupted in [
         step.request().content_id(),
         request.invocation_id()?.content_id(),
+        ledger.request_admissions(),
     ] {
         let faulty = reopened_repository(
             &fixture,
@@ -126,10 +132,19 @@ fn cold_reopen_matches_snapshot_and_rejects_corrupt_planner_inputs() -> Result<(
                 corrupted,
             }),
         )?;
-        assert!(matches!(
-            faulty.project_claimable_attempts(campaign, None, 7),
-            Err(CampaignRepositoryError::Store(StoreError::Corrupt { id })) if id == corrupted
-        ));
+        let outcome = faulty.project_claimable_attempts(campaign, None, 7);
+        assert!(
+            matches!(
+                &outcome,
+                Err(
+                    CampaignRepositoryError::Store(StoreError::Corrupt { id })
+                        | CampaignRepositoryError::Merkle(CampaignStoreError::Store(
+                            StoreError::Corrupt { id }
+                        ))
+                ) if *id == corrupted
+            ),
+            "corruption at {corrupted} was not rejected as corrupt: {outcome:?}"
+        );
     }
     Ok(())
 }
