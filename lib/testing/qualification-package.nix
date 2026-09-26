@@ -13,6 +13,18 @@
   sortedPackageNames = builtins.sort builtins.lessThan packageNames;
   mkPackageProbe = import ./qualification-package-probe.nix {inherit pkgs lib;};
   packageProbeSpec = import ./qualification-package-spec.nix {inherit lib;};
+  containsRustHarness = value:
+    if builtins.isList value
+    then builtins.any containsRustHarness value
+    else if builtins.isAttrs value
+    then
+      if (value.kind or null) == "harness"
+      then (value.tool or null) == "rust-compiler"
+      else builtins.any containsRustHarness (builtins.attrValues value)
+    else false;
+  requiresRustCompiler = builtins.any (packageName:
+    containsRustHarness pkgs.${packageName}.contract.value.qualification.package_probe)
+  sortedPackageNames;
   probeFor = packageName: let
     package = pkgs.${packageName};
     contract = package.contract or (throw "qualification package '${packageName}' has no contract");
@@ -85,7 +97,11 @@
     export AOS_QUALIFICATION_CXX=${lib.escapeShellArg "${pkgs.cc}/bin/c++"}
     export AOS_QUALIFICATION_PERL=${lib.escapeShellArg "${pkgs.perl}/bin/perl"}
     export AOS_QUALIFICATION_PYTHON=${lib.escapeShellArg "${pkgs.python3}/bin/python3"}
-    export AOS_QUALIFICATION_RUSTC=${lib.escapeShellArg "${pkgs.rust}/bin/rustc"}
+    ${
+      if requiresRustCompiler
+      then ''export AOS_QUALIFICATION_RUSTC=${lib.escapeShellArg "${pkgs.rust}/bin/rustc"}''
+      else ''unset AOS_QUALIFICATION_RUSTC''
+    }
 
     umask 077
     mkdir -p \
