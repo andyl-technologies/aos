@@ -63,6 +63,7 @@ use super::{
 };
 
 mod ack;
+mod held_proof;
 mod hold;
 mod producer;
 mod proof;

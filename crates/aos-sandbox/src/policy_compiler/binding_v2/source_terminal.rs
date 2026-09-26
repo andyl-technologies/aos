@@ -26,6 +26,7 @@ use crate::policy_compiler::controller_hold_readback::{
 };
 use crate::policy_compiler::source_hold_readback::SourceHoldReadbackChallengeV1;
 
+use super::held_proof::{KEY as HELD_PROOF_KEY, RECORD_BYTES as HELD_PROOF_BYTES, RootHeldProofV2};
 use super::*;
 
 const KEY: &[u8] = b"\0aos-policy-compiler-source-terminal-v1\0";
@@ -226,6 +227,7 @@ impl ClosedSourceTerminalClaimV1 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClosedSourceTerminalRecordV1 {
     digest: ObjectDigest,
+    held_proof: Option<ObjectDigest>,
 }
 
 impl ClosedSourceTerminalRecordV1 {
@@ -234,13 +236,20 @@ impl ClosedSourceTerminalRecordV1 {
     pub const fn digest(self) -> ObjectDigest {
         self.digest
     }
+
+    /// Returns an exact nonauthorizing AOSPCP02 companion when one was joined.
+    #[must_use]
+    pub const fn held_proof_digest(self) -> Option<ObjectDigest> {
+        self.held_proof
+    }
 }
 
 impl ClosedPolicyRootSessionV2<'_> {
     /// Records a Controller-only signed terminal receipt under the held Root writer.
     ///
     /// The caller retains every Controller, Source, Cache-journal, and physical
-    /// Cache writer across this call. This protected row is nonauthorizing.
+    /// Cache writer across this call. This V1 row lacks AOSPCP02 and is not
+    /// used by the live V7 daemon; it is nonauthorizing.
     ///
     /// # Errors
     ///
@@ -254,6 +263,61 @@ impl ClosedPolicyRootSessionV2<'_> {
         current_controller_credential: &[u8],
         controller_packet: &[u8],
     ) -> Result<ClosedSourceTerminalRecordV1, PolicyCompilerJournalErrorV1> {
+        self.record_terminal(
+            claim,
+            joined,
+            controller_uid,
+            current_controller_credential,
+            controller_packet,
+            None,
+        )
+    }
+
+    /// Atomically retains the signed V7 terminal and protected Cache/Source join.
+    ///
+    /// The caller retains Controller, Source, protected Cache, and physical Cache
+    /// writers through this call. AOSPCP02 is historical evidence only: it does
+    /// not confer CAS, release, Create, Apply, or effect authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed fixed Cache replay, stale Root or signer cut, changed
+    /// current pin, or incomplete protected transaction/readback.
+    pub fn record_staged_source_terminal_with_held_proof_v2(
+        &mut self,
+        claim: ClosedSourceTerminalClaimV1,
+        joined: ClosedPolicyRootSignerJoinV2,
+        controller_uid: u32,
+        current_controller_credential: &[u8],
+        controller_packet: &[u8],
+    ) -> Result<ClosedSourceTerminalRecordV1, PolicyCompilerJournalErrorV1> {
+        let before = read_fixed_policy_cache_hold_v1()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let record = self.record_terminal(
+            claim,
+            joined,
+            controller_uid,
+            current_controller_credential,
+            controller_packet,
+            Some((before.hold, before.replay.quota_digest)),
+        )?;
+        let after = read_fixed_policy_cache_hold_v1()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if after.hold != before.hold || after.replay.quota_digest != before.replay.quota_digest {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        Ok(record)
+    }
+
+    fn record_terminal(
+        &mut self,
+        claim: ClosedSourceTerminalClaimV1,
+        joined: ClosedPolicyRootSignerJoinV2,
+        controller_uid: u32,
+        current_controller_credential: &[u8],
+        controller_packet: &[u8],
+        cache_observation: Option<(CachePolicyHoldV1, ObjectDigest)>,
+    ) -> Result<ClosedSourceTerminalRecordV1, PolicyCompilerJournalErrorV1> {
         self.validate_terminal_claim(claim, joined)?;
         if self.authority.get(CONTROLLER_HOLD_PIN_KEY)? != Some(current_controller_credential) {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
@@ -264,25 +328,48 @@ impl ClosedPolicyRootSessionV2<'_> {
             current_controller_credential,
             controller_packet,
         )?;
+        let terminal_digest = ObjectDigest::from_bytes(Sha256::digest(bytes).into());
+        let held_proof = cache_observation
+            .map(|(hold, quota)| {
+                if joined.physical_cache().hold() != hold
+                    || joined.physical_cache().quota_digest() != quota
+                {
+                    return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+                }
+                self.expected_held_proof(claim, terminal_digest, hold, quota)
+            })
+            .transpose()?;
         let transaction_digest = Sha256::new()
             .chain_update(TRANSACTION_DOMAIN)
             .chain_update(bytes)
+            .chain_update(held_proof.as_ref().map_or(&[][..], |row| row.as_slice()))
             .finalize();
         let transaction_id: [u8; 16] = transaction_digest[..16]
             .try_into()
             .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-        let transaction = JournalTransaction::new(
-            transaction_id,
-            vec![JournalRecord::put(
+        let mut records = vec![JournalRecord::put(
+            RecordNamespace::DesiredState,
+            KEY.to_vec(),
+            bytes.to_vec(),
+        )];
+        if let Some(proof) = held_proof {
+            records.push(JournalRecord::put(
                 RecordNamespace::DesiredState,
-                KEY.to_vec(),
-                bytes.to_vec(),
-            )],
-        )?;
+                HELD_PROOF_KEY.to_vec(),
+                proof.to_vec(),
+            ));
+        }
+        let transaction = JournalTransaction::new(transaction_id, records)?;
         self.authority.commit(&transaction)?;
-        let record = self
-            .recover_staged_source_terminal_v1(claim, controller_uid)?
-            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let record = match cache_observation {
+            Some(observation) => self.recover_terminal_with_held_proof_observation(
+                claim,
+                controller_uid,
+                observation,
+            )?,
+            None => self.recover_staged_source_terminal_v1(claim, controller_uid)?,
+        }
+        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
         self.postcommit = Some(self.authority.snapshot()?);
         Ok(record)
     }
@@ -335,7 +422,117 @@ impl ClosedPolicyRootSessionV2<'_> {
         }
         Ok(Some(ClosedSourceTerminalRecordV1 {
             digest: ObjectDigest::from_bytes(Sha256::digest(row).into()),
+            held_proof: None,
         }))
+    }
+
+    /// Cold-replays the exact terminal and its protected Cache/Source companion.
+    ///
+    /// Root replays the current fixed Cache hold and quota envelope. Source
+    /// writer continuity still requires a fresh held-owner barrier before CAS;
+    /// this historical comparison alone is nonauthorizing.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a missing or changed companion, pin, Root stage, Source issue,
+    /// terminal signature, protected Cache hold, or quota replay.
+    pub fn recover_staged_source_terminal_with_held_proof_v2(
+        &self,
+        claim: ClosedSourceTerminalClaimV1,
+        controller_uid: u32,
+    ) -> Result<Option<ClosedSourceTerminalRecordV1>, PolicyCompilerJournalErrorV1> {
+        let observed = read_fixed_policy_cache_hold_v1()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        self.recover_terminal_with_held_proof_observation(
+            claim,
+            controller_uid,
+            (observed.hold, observed.replay.quota_digest),
+        )
+    }
+
+    fn recover_terminal_with_held_proof_observation(
+        &self,
+        claim: ClosedSourceTerminalClaimV1,
+        controller_uid: u32,
+        (hold, quota): (CachePolicyHoldV1, ObjectDigest),
+    ) -> Result<Option<ClosedSourceTerminalRecordV1>, PolicyCompilerJournalErrorV1> {
+        let Some(mut terminal) = self.recover_staged_source_terminal_v1(claim, controller_uid)?
+        else {
+            return Ok(None);
+        };
+        let proof = self.expected_held_proof(claim, terminal.digest, hold, quota)?;
+        if self.authority.get(HELD_PROOF_KEY)? != Some(proof.as_slice()) {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        terminal.held_proof = Some(ObjectDigest::from_bytes(Sha256::digest(proof).into()));
+        Ok(Some(terminal))
+    }
+
+    fn expected_held_proof(
+        &self,
+        claim: ClosedSourceTerminalClaimV1,
+        terminal: ObjectDigest,
+        hold: CachePolicyHoldV1,
+        quota: ObjectDigest,
+    ) -> Result<[u8; HELD_PROOF_BYTES], PolicyCompilerJournalErrorV1> {
+        let binding = ClosedPolicyRootBindingV2::decode(&claim.proposed)?;
+        if !hold.is_held()
+            || hold.binding() != claim.source_hold.binding()
+            || hold.epoch() != claim.source_hold.epoch()
+            || hold.project() != binding.project
+            || hold.partition() != binding.physical_partition
+            || hold.cache_head() != binding.physical_cache_head
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let source_pin = self
+            .authority
+            .get(SOURCE_HOLD_PIN_KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let cache_pin = self
+            .authority
+            .get(CACHE_PIN_KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let controller_pin = self
+            .authority
+            .get(CONTROLLER_HOLD_PIN_KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let source_signer = PinnedSourceHoldReadbackSignerV1::decode(source_pin)
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let cache_signer = PinnedCacheOwnerReadbackSignerV1::decode(cache_pin)
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let controller_signer = PinnedControllerHoldSignerV1::decode(controller_pin)
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if source_signer.verifying_key() == cache_signer.verifying_key()
+            || source_signer.verifying_key() == controller_signer.verifying_key()
+            || cache_signer.verifying_key() == controller_signer.verifying_key()
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+
+        RootHeldProofV2 {
+            terminal,
+            binding: hold.binding(),
+            epoch: hold.epoch(),
+            stage_nonce: claim.staged.challenge(),
+            stage_issue: claim.staged.issue_epoch(),
+            source_nonce: claim.source_challenge.nonce(),
+            source_issue: claim.source_issue,
+            names: claim.names,
+            source_packet: claim.source_packet,
+            cache_packet: claim.cache_packet,
+            source_pin: ObjectDigest::from_bytes(Sha256::digest(source_pin).into()),
+            cache_pin: ObjectDigest::from_bytes(Sha256::digest(cache_pin).into()),
+            controller_pin: ObjectDigest::from_bytes(Sha256::digest(controller_pin).into()),
+            source_generation: source_signer.generation(),
+            cache_generation: cache_signer.generation(),
+            controller_generation: controller_signer.generation(),
+            project: hold.project(),
+            partition: hold.partition(),
+            cache_head: hold.cache_head(),
+            quota,
+        }
+        .encode()
     }
 
     /// Cold-replays only the exact current row identified by a client digest.
@@ -363,6 +560,37 @@ impl ClosedPolicyRootSessionV2<'_> {
             self.postcommit = Some(self.authority.snapshot()?);
         }
         Ok(record)
+    }
+
+    /// Replays a V7 terminal digest only when its AOSPCP02 join remains exact.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent or changed protected Cache/Source proof and all V1
+    /// terminal replay failures. This does not admit a new CAS or effect.
+    pub fn recover_current_source_terminal_digest_with_held_proof_v2(
+        &mut self,
+        digest: ObjectDigest,
+        controller_uid: u32,
+    ) -> Result<Option<ClosedSourceTerminalRecordV1>, PolicyCompilerJournalErrorV1> {
+        let Some(terminal) =
+            self.recover_current_source_terminal_digest_v1(digest, controller_uid)?
+        else {
+            return Ok(None);
+        };
+        let row = self
+            .authority
+            .get(KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let claim =
+            ClosedSourceTerminalClaimV1::decode(&row[16..16 + CLAIM_BYTES], self.current_base()?)?;
+        let joined = self
+            .recover_staged_source_terminal_with_held_proof_v2(claim, controller_uid)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if joined.digest() != terminal.digest() {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        Ok(Some(joined))
     }
 
     fn validate_terminal_claim(
@@ -467,6 +695,7 @@ mod tests {
     use crate::policy_compiler::controller_hold_readback::{
         encode_controller_hold_signer_credential_v1, sign_test_controller_hold_readback_v1,
     };
+    use crate::policy_compiler::source_hold_readback::encode_source_hold_readback_signer_credential_v1;
 
     use super::*;
 
@@ -648,6 +877,128 @@ mod tests {
             expected.digest(),
             ObjectDigest::from_bytes(Sha256::digest(row).into())
         );
+        assert!(expected.held_proof_digest().is_none());
+        assert!(
+            session
+                .recover_terminal_with_held_proof_observation(
+                    claim,
+                    1234,
+                    (
+                        matching_cache_hold(&binding),
+                        ObjectDigest::from_bytes([54; 32])
+                    ),
+                )
+                .is_err(),
+            "a historical terminal without AOSPCP02 cannot replay as a held join"
+        );
+        let source_key = SigningKey::from_bytes(&[55; 32]);
+        let source_pin =
+            encode_source_hold_readback_signer_credential_v1(7, &source_key.verifying_key())
+                .expect("Source-only pin");
+        session
+            .authority
+            .commit(
+                &JournalTransaction::new(
+                    [11; 16],
+                    vec![
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            SOURCE_HOLD_PIN_KEY.to_vec(),
+                            source_pin.to_vec(),
+                        ),
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            CACHE_PIN_KEY.to_vec(),
+                            cache_pin.to_vec(),
+                        ),
+                    ],
+                )
+                .expect("independent signer pins"),
+            )
+            .expect("protected signer pins");
+        let held_observation = (
+            matching_cache_hold(&binding),
+            ObjectDigest::from_bytes([54; 32]),
+        );
+        assert!(
+            session
+                .record_terminal(
+                    claim,
+                    joined,
+                    1234,
+                    &pin,
+                    &packet,
+                    Some((held_observation.0, ObjectDigest::from_bytes([56; 32]))),
+                )
+                .is_err(),
+            "Root must reject a Cache quota not signed by the physical owner"
+        );
+        let joined_record = session
+            .record_terminal(claim, joined, 1234, &pin, &packet, Some(held_observation))
+            .expect("atomic terminal and AOSPCP02 join");
+        assert_eq!(joined_record.digest(), expected.digest());
+        assert!(joined_record.held_proof_digest().is_some());
+        assert!(
+            session
+                .recover_terminal_with_held_proof_observation(
+                    claim,
+                    1234,
+                    (
+                        matching_cache_hold(&binding),
+                        ObjectDigest::from_bytes([56; 32])
+                    ),
+                )
+                .is_err(),
+            "changed protected Cache quota must not cold-replay"
+        );
+        let proof = session
+            .authority
+            .get(HELD_PROOF_KEY)
+            .expect("held proof key")
+            .expect("protected proof")
+            .to_vec();
+        let mut forged_proof = proof.clone();
+        forged_proof[184] ^= 1;
+        let last = forged_proof.len() - 32;
+        let checksum = Sha256::new()
+            .chain_update(b"aos.sandbox.policy-compiler.held-proof.v2\0")
+            .chain_update(&forged_proof[..last])
+            .finalize();
+        forged_proof[last..].copy_from_slice(&checksum);
+        session
+            .authority
+            .commit(
+                &JournalTransaction::new(
+                    [12; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        HELD_PROOF_KEY.to_vec(),
+                        forged_proof,
+                    )],
+                )
+                .expect("forged proof transaction"),
+            )
+            .expect("raw forged proof row");
+        assert!(
+            session
+                .recover_terminal_with_held_proof_observation(claim, 1234, held_observation)
+                .is_err(),
+            "a checksummed but substituted proof must fail closed"
+        );
+        session
+            .authority
+            .commit(
+                &JournalTransaction::new(
+                    [13; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        HELD_PROOF_KEY.to_vec(),
+                        proof,
+                    )],
+                )
+                .expect("restore proof transaction"),
+            )
+            .expect("restored protected proof");
         assert_eq!(current_root_binding_chain(&session.authority).unwrap().2, 0);
         drop(session);
         drop(root);
@@ -667,6 +1018,52 @@ mod tests {
                 .expect("cold exact replay"),
             Some(expected)
         );
+        assert_eq!(
+            session
+                .recover_terminal_with_held_proof_observation(claim, 1234, held_observation)
+                .expect("cold held proof replay"),
+            Some(joined_record)
+        );
+        let rotated_source_key = SigningKey::from_bytes(&[57; 32]);
+        let rotated_source_pin = encode_source_hold_readback_signer_credential_v1(
+            8,
+            &rotated_source_key.verifying_key(),
+        )
+        .expect("rotated Source pin");
+        session
+            .authority
+            .commit(
+                &JournalTransaction::new(
+                    [14; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        SOURCE_HOLD_PIN_KEY.to_vec(),
+                        rotated_source_pin.to_vec(),
+                    )],
+                )
+                .expect("Source pin rotation transaction"),
+            )
+            .expect("rotated Source pin");
+        assert!(
+            session
+                .recover_terminal_with_held_proof_observation(claim, 1234, held_observation)
+                .is_err(),
+            "a rotated Source-only signer must invalidate the held proof"
+        );
+        session
+            .authority
+            .commit(
+                &JournalTransaction::new(
+                    [15; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        SOURCE_HOLD_PIN_KEY.to_vec(),
+                        source_pin.to_vec(),
+                    )],
+                )
+                .expect("Source pin restoration transaction"),
+            )
+            .expect("restored Source pin");
         assert_eq!(
             session
                 .recover_current_source_terminal_digest_v1(expected.digest(), 1234)

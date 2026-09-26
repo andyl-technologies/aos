@@ -1984,7 +1984,10 @@ fn serve_closed_source_terminal_replay_v7(
         controller_uid,
         controller_gid,
         now_unix_seconds,
-        |session| session.recover_current_source_terminal_digest_v1(digest, controller_uid),
+        |session| {
+            session
+                .recover_current_source_terminal_digest_with_held_proof_v2(digest, controller_uid)
+        },
     )??
     .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "V7 terminal row absent"))?;
     stream.write_all(POLICY_BINDING_SOURCE_FLIGHT_REPLAY_REPLY_MAGIC_V7)?;
@@ -2165,7 +2168,7 @@ fn serve_closed_binding_source_writer_flight_v5(
                         "Controller pin unavailable",
                     )
                 })?;
-                let record = session.record_staged_source_terminal_v1(
+                let record = session.record_staged_source_terminal_with_held_proof_v2(
                     claim,
                     joined,
                     controller_uid,
