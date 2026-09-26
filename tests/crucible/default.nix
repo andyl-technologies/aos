@@ -790,6 +790,7 @@ in rec {
     qemuHostOwnerVm = import ./phase4-qemu-host-owner-vm.nix {inherit pkgs lib;};
     packagedCampaignVm = import ./phase4-packaged-campaign-vm.nix {inherit pkgs lib;};
     packagedCampaignChoiceVm = import ./phase4-packaged-campaign-choice-vm.nix {inherit pkgs lib;};
+    packagedCampaignLifecycleVm = import ./phase4-packaged-campaign-lifecycle-vm.nix {inherit pkgs lib;};
     packagedCampaignEnvoyNetworkVm = import ./phase4-packaged-campaign-envoy-network-vm.nix {inherit pkgs lib;};
     packagedCampaignMaterializationVm = import ./phase4-packaged-campaign-materialization-vm.nix {inherit pkgs lib;};
     eventGraphControlFlow = import ./phase4-event-graph-control-flow.nix {
@@ -1175,6 +1176,7 @@ in rec {
         "checks.crucible.phase4.gates.attemptIdempotence" = phase4.gates.attemptIdempotence;
         "checks.crucible.phase4.gates.branchPointModel" = phase4.gates.branchPointModel;
         "checks.crucible.phase4.gates.campaignMutationScaling" = phase4.gates.campaignMutationScaling;
+        "checks.crucible.phase4.gates.campaignLifecycle" = phase4.gates.campaignLifecycle;
         "checks.crucible.phase4.gates.campaignReplay.rawGate" = phase4.gates.campaignReplay.rawGate;
         "checks.crucible.phase4.gates.campaignStatistics" = phase4.gates.campaignStatistics;
         "checks.crucible.phase4.gates.controlResponsiveness" = phase4.gates.controlResponsiveness;
@@ -1297,6 +1299,11 @@ in rec {
           dependencies = [attemptIdempotence.rawGate];
         };
         dependencies = [attemptIdempotence];
+      };
+      campaignLifecycle = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase4.gates.campaignLifecycle";
+        gate = phase4.packagedCampaignLifecycleVm;
+        dependencies = [phase2.gates.typedChoice];
       };
       campaignReplay = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.campaignReplay";
@@ -3085,6 +3092,7 @@ in rec {
           phase4.gates.attemptIdempotence
           phase4.gates.branchPointModel
           phase4.gates.campaignMutationScaling
+          phase4.gates.campaignLifecycle
           phase4.gates.campaignReplay
           phase4.gates.campaignStatistics
           phase4.gates.controlResponsiveness
@@ -3136,6 +3144,20 @@ in rec {
             gate = "gate:typed-choice-product-checkpoint";
             result = phase2.gates.typedChoiceProductCheckpoint.rawGate;
             requiredLines = ["gate=gate:typed-choice-product-checkpoint"];
+          }
+          {
+            gate = "gate:campaign-packaged-lifecycle";
+            result = phase4.gates.campaignLifecycle.rawGate;
+            requiredLines = [
+              "gate=gate:campaign-packaged-lifecycle"
+              "tasks=T-CAM-4.8"
+              "campaign_lifecycle_lazy_widening=true"
+              "campaign_lifecycle_finite_branch_deduplication=true"
+              "campaign_lifecycle_live_status_explanation=true"
+              "campaign_lifecycle_bounded_pressure=true"
+              "campaign_lifecycle_pause_restart_resume=true"
+              "campaign_lifecycle_steering_graceful_stop=true"
+            ];
           }
           {
             gate = "gate:campaign-replay";
