@@ -55,7 +55,9 @@ in
       pname = "crucible-phase6-checkpoint-materialization";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [pkgs.rust pkgs.sed];
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      buildDeps = [pkgs.pkg-config pkgs.rust pkgs.sed pkgs.sqlite];
+      runtimeDeps = [pkgs.sqlite];
       DEPENDENCIES = builtins.concatStringsSep ":" dependencies;
       phases = [
         {
