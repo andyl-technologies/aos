@@ -11,6 +11,7 @@ in
       authoritativeAttr = "checks.crucible.phase2.gates.typedChoice";
       inherit authority;
       name = "native-typed-choice";
+      sqliteRequired = true;
       cargoBuildCommands = [
         "test --frozen --offline --no-run -p crucible-campaign --lib --test gate_typed_choice"
         "test --frozen --offline --no-run -p crucible-protocol --lib"

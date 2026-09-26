@@ -12,11 +12,13 @@
   installedTests,
   runtimeCommands,
   executionFamily ? "native-runtime",
+  sqliteRequired ? false,
 }: let
   source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
   controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
   cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;
   cargoArtifactContract = controllerArtifacts.passthru.cargoArtifactContract;
+  sqliteInputs = lib.optionals sqliteRequired [pkgs.sqlite];
   artifacts = pkgs.mkCargoArtifacts {
     pname = "crucible-${name}-mode-artifacts";
     version = "0";
@@ -29,8 +31,8 @@
     cargoArtifacts = controllerArtifacts;
     cargoEnv = cargoArtifactContract.cargoEnv;
     cargoRoot = "crates";
-    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf];
-    runtimeDeps = [pkgs.openssl];
+    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf] ++ sqliteInputs;
+    runtimeDeps = [pkgs.openssl] ++ sqliteInputs;
   };
   executor = pkgs.mkCargoPackage {
     pname = "crucible-${name}-mode-executor";
@@ -42,8 +44,8 @@
     cargoRoot = "crates";
     installBins = false;
     doCheck = false;
-    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf];
-    runtimeDeps = [pkgs.openssl];
+    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf] ++ sqliteInputs;
+    runtimeDeps = [pkgs.openssl] ++ sqliteInputs;
     postInstall = ''
       set -eu
       messages="$NIX_BUILD_TOP/cargo-build-messages.jsonl"

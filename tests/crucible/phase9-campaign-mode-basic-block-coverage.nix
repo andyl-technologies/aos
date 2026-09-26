@@ -13,6 +13,7 @@ in
         authoritativeAttr = "checks.crucible.phase6.basicBlockCoverage";
         executionFamily = "qemu-runtime";
         name = "basic-block-coverage";
+        sqliteRequired = true;
         cargoBuildCommands = [
           "test --frozen --offline --release --no-run -p crucible --test gate_basic_block_coverage"
           "test --frozen --offline --release --no-run -p crucible-qemu --lib"

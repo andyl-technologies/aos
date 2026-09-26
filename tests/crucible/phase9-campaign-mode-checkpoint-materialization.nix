@@ -13,6 +13,7 @@ in
         authoritativeAttr = "checks.crucible.phase6.checkpointMaterialization";
         executionFamily = "qemu-runtime";
         name = "checkpoint-materialization";
+        sqliteRequired = true;
         cargoBuildCommands = [
           "test --frozen --offline --release --no-run -p crucible --test gate_checkpoint_materialization"
         ];

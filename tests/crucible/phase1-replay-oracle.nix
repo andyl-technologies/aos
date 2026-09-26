@@ -888,15 +888,19 @@ in
       pname = "crucible-phase1-replay-oracle";
       version = "0";
       src = crucibleSrc;
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
 
       buildDeps =
         [
           pkgs.coreutils
           pkgs.grep
+          pkgs.pkg-config
           pkgs.rust
           pkgs.sed
+          pkgs.sqlite
         ]
         ++ dependencies;
+      runtimeDeps = [pkgs.sqlite];
 
       phases = [
         {

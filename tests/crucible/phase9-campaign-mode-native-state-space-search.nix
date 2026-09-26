@@ -11,6 +11,7 @@ in
       authoritativeAttr = "checks.crucible.phase6.stateSpaceSearch";
       inherit authority;
       name = "native-state-space-search";
+      sqliteRequired = true;
       cargoBuildCommands = [
         "test --frozen --offline --no-run -p crucible --lib --test gate_state_space_search"
       ];
