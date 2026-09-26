@@ -625,7 +625,8 @@ fn cold_validation_rejects_a_forged_capture_successor_while_paused() {
             roots,
             transition,
         )
-        .expect("forged successor");
+        .expect("forged successor")
+        .0;
     let forged_content = repository
         .put_snapshot(&forged)
         .expect("publish forged successor");

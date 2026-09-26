@@ -359,7 +359,7 @@ impl CampaignRepository {
         next_roots.accounting = accounting;
         next_roots.coordination =
             self.coordination_with_parent_result(current_content, &current)?;
-        let next = self.budgeted_successor(
+        let (next, budget_witness) = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),
@@ -372,6 +372,7 @@ impl CampaignRepository {
             next_content,
             None,
             MAX_SIMPLE_SUCCESSOR_GROWTH,
+            &budget_witness,
         )?;
 
         match self
@@ -473,7 +474,7 @@ impl CampaignRepository {
         let mut roots = current.snapshot.roots();
         roots.accounting = accounting;
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
-        let next = self.budgeted_successor(
+        let (next, budget_witness) = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),
@@ -486,6 +487,7 @@ impl CampaignRepository {
             next_content,
             None,
             MAX_SIMPLE_SUCCESSOR_GROWTH,
+            &budget_witness,
         )?;
 
         match self
@@ -603,7 +605,7 @@ impl CampaignRepository {
         let mut roots = current.snapshot.roots();
         roots.accounting = accounting;
         roots.coordination = self.coordination_with_parent_result(current_content, &current)?;
-        let next = self.budgeted_successor(
+        let (next, budget_witness) = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),
@@ -616,6 +618,7 @@ impl CampaignRepository {
             next_content,
             None,
             MAX_SIMPLE_SUCCESSOR_GROWTH,
+            &budget_witness,
         )?;
 
         match self
