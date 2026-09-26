@@ -192,7 +192,7 @@ fn node_continuation_codec_round_trips_complete_state() {
         last_observed_time: VirtualTime { ticks: 70 },
         logical_time_calibration: crate::QemuLogicalTimeCalibration {
             logical_icount: 70,
-            raw_icount: 65,
+            raw_icount: 1,
         },
         console_observation_boundary: VirtualTime { ticks: 69 },
         pending_preemption: Some(PreemptionDecision {
@@ -431,7 +431,7 @@ fn node_continuation_codec_rejects_wrong_binding_and_trailing_bytes() {
         last_observed_time: VirtualTime { ticks: 1 },
         logical_time_calibration: crate::QemuLogicalTimeCalibration {
             logical_icount: 1,
-            raw_icount: 1,
+            raw_icount: 0,
         },
         console_observation_boundary: VirtualTime { ticks: 1 },
         pending_preemption: None,
@@ -538,7 +538,7 @@ fn node_checkpoint_with_inbound_ring(
         last_observed_time: VirtualTime { ticks: 1 },
         logical_time_calibration: crate::QemuLogicalTimeCalibration {
             logical_icount: 1,
-            raw_icount: 1,
+            raw_icount: 0,
         },
         console_observation_boundary: VirtualTime { ticks: 1 },
         pending_preemption: None,

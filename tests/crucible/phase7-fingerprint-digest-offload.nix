@@ -60,9 +60,9 @@
     live=${lib.escapeShellArg liveLog}
     grep -Fxq 'rust_plugin_loaded=true' "$live"
     grep -Fxq 'sample_stream_restart_identical=true' "$live"
-    grep -Fxq 'on_demand_worker_acknowledgements=24' "$live"
+    grep -Fxq 'on_demand_worker_acknowledgements=14' "$live"
     grep -Fxq 'on_demand_boundary_stream_bit_identical=true' "$live"
-    grep -Fxq 'sample_target_icounts=2000000,2000001,4000000,8000000' "$live"
+    grep -Fxq 'sample_target_picoseconds=2000000,2000001,2000051,4000000,8000000' "$live"
     grep -Fxq 'bounded_scheduler_preemption_applied=true' "$live"
     grep -Fxq 'component_failures=0' "$live"
 
@@ -83,7 +83,7 @@
     live_production_fingerprint_run=true
     run_twice_fingerprints_identical=true
     on_demand_sample_coordinates_unchanged=true
-    authenticated_on_demand_requests_acknowledged=24
+    authenticated_on_demand_requests_acknowledged=14
     on_demand_boundary_stream_bit_identical=true
     RESULT
   '';

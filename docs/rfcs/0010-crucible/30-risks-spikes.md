@@ -860,7 +860,7 @@ restatement of Contract A is false and [G-10]/[G-11] cannot be built.
 ### Assumption under test
 
 An SMP guest under `-accel sim,thread=single`, `-smp N`, `-icount shift=0`, a
-fixed content-addressed `rr_switch_quantum` in node-icount, the S11-relevant
+fixed content-addressed `rr_switch_quantum` in retired instructions, the S11-relevant
 §4.6 launch eliminations (`-cpu` pin, fixed RTC epoch, deterministic seed,
 `nokaslr`/`norandmaps`, no interactive input), and plugin-visible fingerprint
 capture, produces a **bit-identical aggregate-icount instruction stream AND
@@ -1020,7 +1020,7 @@ question. This spike measures the trade and resolves D-25.
 
 ### Assumption under test
 
-There exists an `rr_switch_quantum` value (in node-icount) small enough to surface
+There exists an `rr_switch_quantum` value (in retired instructions) small enough to surface
 realistic intra-VM races yet large enough not to crater multi-vCPU throughput
 below the [`25-performance-targets.md`](25-performance-targets.md) budget. The
 choice is **correctness-neutral**: every fixed quantum is deterministic, so this
@@ -1326,15 +1326,18 @@ real host-core perf measurement, and `gate:perf-bench` land.
 Rust-plugin production flight. `checks.crucible.phase7.productionRustPluginFlight`
 runs the diskless four-vCPU guest in reference and host-preempted variants,
 samples the production
-`FingerprintSample` stream at aggregate node icounts `2000000`, `2000001`,
-`4000000`, and `8000000`, applies bounded host-scheduler preemption, and
+`FingerprintSample` stream at aggregate node picoseconds `2000000`,
+`2000001`, `2000051`, `4000000`, and `8000000`, applies bounded
+host-scheduler preemption, and
 requires identical boundary streams across restart. The adjacent pre-preemption
-samples authenticate a one-instruction RR-cursor advance and a changed owning
-vCPU register digest. It reports `rust_plugin_loaded=true`,
+samples authenticate a one-picosecond timer-phase change without retirement;
+the following 50-picosecond span authenticates one raw retirement, one
+RR-cursor advance, and a changed owning vCPU register digest. It reports
+`rust_plugin_loaded=true`,
 `sample_stream_restart_identical=true`,
 `on_demand_boundary_stream_bit_identical=true`, `component_failures=0`,
 `per_vcpu_register_files_present=true`, and
-`aggregate_icount_equals_target=true`, and
+`sample_logical_picoseconds_equal_target=true`, and
 `instruction_exact_localization=one-instruction-window`. The paired
 `checks.crucible.phase2.qemuFingerprintProjectionManifest` gate requires the
 current schema-v4 provider manifest. T-DET-8 and T-QEMU-11 are complete; the

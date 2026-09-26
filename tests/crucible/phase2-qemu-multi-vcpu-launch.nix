@@ -115,7 +115,7 @@
       }
       {
         label = "canonical args pin RR quantum";
-        needle = "\"shift={},sleep=off,align=off,rr_switch_quantum={}\",";
+        needle = "\"shift={ICOUNT_SHIFT},sleep=off,align=off,rr_switch_quantum={}\",";
       }
       {
         label = "scenario material hashes selected vCPU count";
@@ -135,7 +135,7 @@
       }
       {
         label = "scenario material records RR units";
-        needle = "\"rr_switch_quantum_units=node-icount\".to_owned(),";
+        needle = "\"rr_switch_quantum_units=retired-instructions\".to_owned(),";
       }
       {
         label = "scenario material records ascending vCPU rotation";
@@ -147,7 +147,7 @@
       }
       {
         label = "scenario material records per-vCPU TSC source";
-        needle = "\"per_vcpu_tsc_source=node-icount\".to_owned(),";
+        needle = "\"per_vcpu_tsc_source=logical-picoseconds-div-250\".to_owned(),";
       }
       {
         label = "scenario material records per-vCPU RNG source";
@@ -155,7 +155,7 @@
       }
       {
         label = "scenario material records per-vCPU RNG timing axis";
-        needle = "\"per_vcpu_rng_timing_axis=node-icount\".to_owned(),";
+        needle = "\"per_vcpu_rng_timing_axis=raw-retirement-rr-order\".to_owned(),";
       }
       {
         label = "scenario material records deterministic secondary vCPU bringup";
@@ -255,7 +255,7 @@
       }
       {
         label = "multi-vCPU per-vCPU TSC assertion";
-        needle = "material.contains(\"per_vcpu_tsc_source=node-icount\")";
+        needle = "material.contains(\"per_vcpu_tsc_source=logical-picoseconds-div-250\")";
       }
       {
         label = "multi-vCPU per-vCPU RNG assertion";
@@ -263,7 +263,7 @@
       }
       {
         label = "multi-vCPU per-vCPU RNG timing assertion";
-        needle = "material.contains(\"per_vcpu_rng_timing_axis=node-icount\")";
+        needle = "material.contains(\"per_vcpu_rng_timing_axis=raw-retirement-rr-order\")";
       }
       {
         label = "multi-vCPU deterministic secondary bringup assertion";
@@ -387,13 +387,13 @@ in
             smp_vcpus=N>=1
             smp_default=1
             smp_multi_vcpu_test=4
-            rr_switch_quantum=content-addressed-node-icount
+            rr_switch_quantum=content-addressed-retired-instructions
             rr_switch_quantum_current_qemu_option=rr_switch_quantum
             rr_vcpu_rotation=ascending-vcpu-id
             cpu_model_scope=uniform-all-vcpus
-            per_vcpu_tsc_source=node-icount
+            per_vcpu_tsc_source=logical-picoseconds-div-250
             per_vcpu_rng_source=scenario-seed-and-run-seed
-            per_vcpu_rng_timing_axis=node-icount
+            per_vcpu_rng_timing_axis=raw-retirement-rr-order
             vcpu_topology=fixed-at-genesis
             runtime_cpu_hotplug=false
             secondary_vcpu_bringup=rr-sim-tcg-icount-deterministic

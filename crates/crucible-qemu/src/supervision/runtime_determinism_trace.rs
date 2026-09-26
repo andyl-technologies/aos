@@ -52,12 +52,12 @@ pub struct QemuRuntimeDeterminismIdleRecord {
     pub sequence: u64,
     /// Raw retired-instruction count.
     pub raw_icount: u64,
-    /// Current QEMU virtual time in nanoseconds.
-    pub virtual_ns: i64,
-    /// Requested virtual-time target in nanoseconds.
-    pub target_ns: i64,
+    /// Current QEMU virtual time in picoseconds.
+    pub virtual_ps: i64,
+    /// Requested logical simulation tick in picoseconds.
+    pub target_tick: i64,
     /// Earliest virtual deadline, or `-1` when none is armed.
-    pub deadline_ns: i64,
+    pub deadline_ps: i64,
     /// RR owner index, or `u64::MAX` when no RR CPU owns the boundary.
     pub rr_owner: u64,
     /// Position within the RR quantum.
@@ -109,10 +109,10 @@ pub struct QemuRuntimeDeterminismTimerRecord {
     pub scope: QemuRuntimeDeterminismTimerScope,
     /// Callback thread class.
     pub owner: QemuRuntimeDeterminismTimerOwner,
-    /// Timer expiry in virtual nanoseconds.
-    pub expire_ns: i64,
-    /// Current virtual time in nanoseconds.
-    pub current_ns: i64,
+    /// Timer expiry in virtual picoseconds.
+    pub expire_ps: i64,
+    /// Current virtual time in picoseconds.
+    pub current_ps: i64,
     /// Raw retired-instruction count.
     pub raw_icount: u64,
 }
@@ -205,9 +205,9 @@ fn validate_idle_sequences(
             continue;
         };
         pending = match (pending, record.phase) {
-            (None, QemuRuntimeDeterminismIdlePhase::Request) => Some(record.target_ns),
+            (None, QemuRuntimeDeterminismIdlePhase::Request) => Some(record.target_tick),
             (Some(target), QemuRuntimeDeterminismIdlePhase::Complete)
-                if record.target_ns == target =>
+                if record.target_tick == target =>
             {
                 None
             }
@@ -250,9 +250,9 @@ fn parse_idle(
         phase,
         seq,
         raw,
-        virtual_ns,
-        target_ns,
-        deadline_ns,
+        virtual_ps,
+        target_tick,
+        deadline_ps,
         rr_owner,
         rr_cursor,
         cpu_count,
@@ -278,9 +278,9 @@ fn parse_idle(
         phase,
         sequence: decimal(seq, "seq", line)?,
         raw_icount: decimal(raw, "raw", line)?,
-        virtual_ns: signed(virtual_ns, "virtual_ns", line)?,
-        target_ns: signed(target_ns, "target_ns", line)?,
-        deadline_ns: signed(deadline_ns, "deadline_ns", line)?,
+        virtual_ps: signed(virtual_ps, "virtual_ps", line)?,
+        target_tick: signed(target_tick, "target_tick", line)?,
+        deadline_ps: signed(deadline_ps, "deadline_ps", line)?,
         rr_owner: decimal(rr_owner, "rr_owner", line)?,
         rr_cursor: decimal(rr_cursor, "rr_cursor", line)?,
         cpu_count: decimal(cpu_count, "cpu_count", line)?,
@@ -300,9 +300,9 @@ fn parse_idle(
         (1_u64 << record.cpu_count) - 1
     };
     if record.sequence == 0
-        || record.target_ns < 0
-        || record.virtual_ns < 0
-        || record.deadline_ns < -1
+        || record.target_tick < 0
+        || record.virtual_ps < 0
+        || record.deadline_ps < -1
         || record.halted & !valid_cpu_mask != 0
         || record.work & !valid_cpu_mask != 0
         || record.exit & !valid_cpu_mask != 0
@@ -328,8 +328,8 @@ fn parse_timer(
         list,
         scope,
         owner,
-        expire_ns,
-        current_ns,
+        expire_ps,
+        current_ps,
         raw,
     ] = fields.as_slice()
     else {
@@ -354,8 +354,8 @@ fn parse_timer(
         list: decimal(list, "list", line)?,
         scope,
         owner,
-        expire_ns: signed(expire_ns, "expire_ns", line)?,
-        current_ns: signed(current_ns, "current_ns", line)?,
+        expire_ps: signed(expire_ps, "expire_ps", line)?,
+        current_ps: signed(current_ps, "current_ps", line)?,
         raw_icount: decimal(raw, "raw", line)?,
     };
     if record.sequence == 0
@@ -376,12 +376,12 @@ fn canonical_idle(record: QemuRuntimeDeterminismIdleRecord) -> String {
         QemuRuntimeDeterminismIdlePhase::Complete => "complete",
     };
     format!(
-        "{IDLE_EVENT} phase={phase} seq={} raw={} virtual_ns={} target_ns={} deadline_ns={} rr_owner={} rr_cursor={} cpu_count={} halted={:#x} work={:#x} exit={:#x} interrupt={:#x} stop={:#x} state={}",
+        "{IDLE_EVENT} phase={phase} seq={} raw={} virtual_ps={} target_tick={} deadline_ps={} rr_owner={} rr_cursor={} cpu_count={} halted={:#x} work={:#x} exit={:#x} interrupt={:#x} stop={:#x} state={}",
         record.sequence,
         record.raw_icount,
-        record.virtual_ns,
-        record.target_ns,
-        record.deadline_ns,
+        record.virtual_ps,
+        record.target_tick,
+        record.deadline_ps,
         record.rr_owner,
         record.rr_cursor,
         record.cpu_count,
@@ -404,12 +404,12 @@ fn canonical_timer(record: QemuRuntimeDeterminismTimerRecord) -> String {
         QemuRuntimeDeterminismTimerOwner::Host => "host",
     };
     format!(
-        "{TIMER_EVENT} seq={} timer={} list={} scope={scope} owner={owner} expire_ns={} current_ns={} raw={}",
+        "{TIMER_EVENT} seq={} timer={} list={} scope={scope} owner={owner} expire_ps={} current_ps={} raw={}",
         record.sequence,
         record.timer,
         record.list,
-        record.expire_ns,
-        record.current_ns,
+        record.expire_ps,
+        record.current_ps,
         record.raw_icount,
     )
 }
@@ -480,9 +480,9 @@ mod tests {
     use super::*;
 
     const EXACT: &str = concat!(
-        "crucible_sim_determinism_idle phase=request seq=1 raw=8000000 virtual_ns=9000000 target_ns=10000000 deadline_ns=9500000 rr_owner=2 rr_cursor=17 cpu_count=4 halted=0xf work=0x0 exit=0x0 interrupt=0x0 stop=0x0 state=2\n",
-        "crucible_sim_determinism_timer seq=2 timer=31 list=2 scope=global owner=rr expire_ns=9500000 current_ns=9500000 raw=8000000\n",
-        "crucible_sim_determinism_idle phase=complete seq=3 raw=8000000 virtual_ns=10000000 target_ns=10000000 deadline_ns=-1 rr_owner=18446744073709551615 rr_cursor=17 cpu_count=4 halted=0xe work=0x0 exit=0x0 interrupt=0x4 stop=0x0 state=2\n",
+        "crucible_sim_determinism_idle phase=request seq=1 raw=8000000 virtual_ps=400000000 target_tick=400001000 deadline_ps=400000500 rr_owner=2 rr_cursor=17 cpu_count=4 halted=0xf work=0x0 exit=0x0 interrupt=0x0 stop=0x0 state=2\n",
+        "crucible_sim_determinism_timer seq=2 timer=31 list=2 scope=global owner=rr expire_ps=400000500 current_ps=400000500 raw=8000000\n",
+        "crucible_sim_determinism_idle phase=complete seq=3 raw=8000000 virtual_ps=400001000 target_tick=400001000 deadline_ps=-1 rr_owner=18446744073709551615 rr_cursor=17 cpu_count=4 halted=0xe work=0x0 exit=0x0 interrupt=0x4 stop=0x0 state=2\n",
     );
 
     #[test]
@@ -508,6 +508,21 @@ mod tests {
     }
 
     #[test]
+    fn exact_trace_preserves_subnanosecond_timer_time() {
+        let trace = EXACT.replace(
+            "expire_ps=400000500 current_ps=400000500",
+            "expire_ps=400000501 current_ps=400000501",
+        );
+        let records = parse_qemu_runtime_determinism_trace(&trace)
+            .unwrap_or_else(|error| panic!("picosecond timer should decode: {error}"));
+
+        let QemuRuntimeDeterminismTraceRecord::Timer(timer) = records[1] else {
+            panic!("second row should be a timer");
+        };
+        assert_eq!(timer.expire_ps, 400_000_501);
+    }
+
+    #[test]
     fn trace_rejects_torn_noncanonical_and_nonmonotonic_rows() {
         for trace in [
             EXACT.trim_end().to_owned(),
@@ -519,7 +534,8 @@ mod tests {
             EXACT.replace("scope=global owner=rr", "scope=global owner=host"),
             EXACT.replace("halted=0xf", "halted=0x10"),
             EXACT.replace("phase=request", "phase=complete"),
-            EXACT.replacen("target_ns=10000000", "target_ns=10000001", 1),
+            EXACT.replacen("target_tick=400001000", "target_tick=400001001", 1),
+            EXACT.replace("virtual_ps=400000000", "virtual_ns=400000000"),
         ] {
             assert!(parse_qemu_runtime_determinism_trace(&trace).is_err());
         }

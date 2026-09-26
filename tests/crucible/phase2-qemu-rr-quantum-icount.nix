@@ -219,7 +219,7 @@ in
             launch_result="${qemuMultiVcpuLaunch}/result"
             require_line "$launch_result" "PASS"
             require_line "$launch_result" "smp_multi_vcpu_test=4"
-            require_line "$launch_result" "rr_switch_quantum=content-addressed-node-icount"
+            require_line "$launch_result" "rr_switch_quantum=content-addressed-retired-instructions"
             require_line "$launch_result" "rr_vcpu_rotation=ascending-vcpu-id"
             require_line "$launch_result" "rejects_mttcg=true"
             require_line "$launch_result" "rejects_unpinned_rr_switch_quantum=true"

@@ -109,7 +109,7 @@ impl ContractAConfig {
         self.vcpu_count
     }
 
-    /// Returns the fixed RR switch quantum in aggregate node-icount units.
+    /// Returns the fixed RR switch quantum in retired instructions.
     #[must_use]
     pub fn rr_switch_quantum(&self) -> u64 {
         self.rr_switch_quantum

@@ -103,7 +103,7 @@ fn retained_control_boundary_trace_accepts_only_the_prepared_inode() -> Result<(
 
 #[test]
 fn retained_runtime_trace_accepts_only_its_prepared_inode() -> Result<(), Box<dyn Error>> {
-    let trace = "crucible_sim_determinism_timer seq=1 timer=3 list=1 scope=global owner=rr expire_ns=10 current_ns=10 raw=80\n";
+    let trace = "crucible_sim_determinism_timer seq=1 timer=3 list=1 scope=global owner=rr expire_ps=10 current_ps=10 raw=80\n";
     let fixture = TraceRetentionFixture::new()?;
     fixture.prepared.prepare_runtime_determinism_trace()?;
     std::fs::write(fixture.runtime_trace_path(), trace)?;
