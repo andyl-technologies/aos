@@ -45,24 +45,26 @@ in
     # dnstap generates C sources with protoc-c on the build machine.
     buildDeps = [gnumake perl pkg-config cmocka tzdata buildPackages.protobuf-c];
     # Linux capabilities have no Darwin equivalent in BIND's privilege code.
-    runtimeDeps = lib.optional (!stdenv.hostPlatform.isDarwin) libcap ++ [
-      libidn2
-      libmaxminddb
-      libtool
-      libxml2
-      openssl
-      liburcu
-      libuv
-      nghttp2
-      jemalloc
-      krb5
-      fstrm
-      protobuf-c
-      lmdb
-      json-c
-      zlib
-      readline
-    ];
+    runtimeDeps =
+      lib.optional (!stdenv.hostPlatform.isDarwin) libcap
+      ++ [
+        libidn2
+        libmaxminddb
+        libtool
+        libxml2
+        openssl
+        liburcu
+        libuv
+        nghttp2
+        jemalloc
+        krb5
+        fstrm
+        protobuf-c
+        lmdb
+        json-c
+        zlib
+        readline
+      ];
     propagatedDeps = [];
 
     phases = [
