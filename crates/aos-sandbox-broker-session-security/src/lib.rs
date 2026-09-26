@@ -118,6 +118,9 @@ mod storage_create_preparation;
 mod storage_host_consumer_client;
 mod storage_host_output_readback;
 
+#[cfg(test)]
+mod test_signed_endpoint;
+
 pub use cache_directory_source::{
     DirectoryPortableObjectSource, PortableObjectReader, ProjectSealedViewObjectSourceV1,
     ProjectSealedViewSourceErrorV1,

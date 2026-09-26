@@ -18,12 +18,11 @@ use aos_sandbox::Journal;
 use aos_sandbox::controller_execution_preissue::ControllerExecutionReserveSourceV1;
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionDurableEndpointV1, BrokerSessionDurableHistoryV1, BrokerSessionDurableRecordV1,
-    BrokerSessionKeyUsageV1, BrokerSessionOutcomeCompanionV1, BrokerSessionPeerBindingV1,
-    BrokerSessionProtectedBindingsV1, BrokerSessionProtocolV1, BrokerSessionRequestCompanionV1,
-    BrokerSessionSignerReferenceV1, BrokerSessionTrafficStateV1, VerifiedBrokerSessionTranscriptV1,
-    decode_canonical_client_hello_v1, decode_canonical_request_v1, decode_canonical_response_v1,
-    decode_canonical_server_hello_v1, maximum_broker_session_request_bytes_v1,
-    verify_broker_session_transcript_v1,
+    BrokerSessionOutcomeCompanionV1, BrokerSessionPeerBindingV1, BrokerSessionProtectedBindingsV1,
+    BrokerSessionProtocolV1, BrokerSessionRequestCompanionV1, BrokerSessionTrafficStateV1,
+    VerifiedBrokerSessionTranscriptV1, decode_canonical_client_hello_v1,
+    decode_canonical_request_v1, decode_canonical_response_v1, decode_canonical_server_hello_v1,
+    maximum_broker_session_request_bytes_v1, verify_broker_session_transcript_v1,
 };
 use aos_sandbox_core::format::{
     descriptor_for_bytes, encode_broker_authorization_plan, encode_ownership_lease,
@@ -67,7 +66,6 @@ use aos_sandbox_protocol::storage_output_reserve::{
     StorageOutputReserveRecordsV1, storage_output_reserve_grant_v1,
 };
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
-use ed25519_dalek::SigningKey;
 use rustix::time::{ClockId, clock_gettime};
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
@@ -75,10 +73,11 @@ use tempfile::TempDir;
 use super::super::{JournalOwnerV1, ProtectedEndpointV1};
 use super::*;
 use crate::endpoint::{ProtectedBrokerSessionBrokerV1, ProtectedBrokerSessionClientV1};
-use crate::manifest::{
-    BrokerSessionSecurityAudienceV1, BrokerSessionSecurityKeyPinV1, BrokerSessionSecurityManifestV1,
-};
+use crate::manifest::BrokerSessionSecurityAudienceV1;
 use crate::recovery::HistoricalSessionCheckpointV1;
+use crate::test_signed_endpoint::{
+    TestEndpointRole, install_endpoint, manifest_and_secrets_for_audience,
+};
 
 const ORIGINAL_ID: [u8; 16] = [7; 16];
 const TERMINAL_ID: [u8; 16] = [9; 16];
@@ -105,29 +104,10 @@ impl Fixture {
         for path in [&client_path, &broker_path, &journal_path] {
             fs::create_dir(path).unwrap();
         }
-        let (manifest, secrets) = manifest_and_secrets(audience);
-        write_protected(
-            &client_path.join("broker-session-manifest"),
-            &manifest.encode(),
-        );
-        write_protected(
-            &broker_path.join("broker-session-manifest"),
-            &manifest.encode(),
-        );
-        for (name, index) in [
-            ("client-hello-signing-key", 0),
-            ("client-record-signing-key", 2),
-        ] {
-            write_protected(&client_path.join(name), &secrets[index]);
-        }
-        for (name, index) in [
-            ("broker-hello-signing-key", 1),
-            ("broker-outcome-signing-key", 3),
-        ] {
-            write_protected(&broker_path.join(name), &secrets[index]);
-        }
-        fs::set_permissions(&client_path, fs::Permissions::from_mode(0o500)).unwrap();
-        fs::set_permissions(&broker_path, fs::Permissions::from_mode(0o500)).unwrap();
+        let (manifest, secrets) =
+            manifest_and_secrets_for_audience(BrokerSessionProtocolV1::Host, audience);
+        install_endpoint(&client_path, &manifest, &secrets, TestEndpointRole::Client);
+        install_endpoint(&broker_path, &manifest, &secrets, TestEndpointRole::Broker);
         fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o700)).unwrap();
         Self {
             _temporary: temporary,
@@ -144,68 +124,6 @@ impl Fixture {
     fn broker(&self) -> ProtectedBrokerSessionBrokerV1 {
         ProtectedBrokerSessionBrokerV1::load(&self.broker_path).unwrap()
     }
-}
-
-fn write_protected(path: &Path, bytes: &[u8]) {
-    fs::write(path, bytes).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o400)).unwrap();
-}
-
-fn manifest_and_secrets(
-    audience: BrokerSessionSecurityAudienceV1,
-) -> (BrokerSessionSecurityManifestV1, [[u8; 48]; 4]) {
-    let usages = [
-        BrokerSessionKeyUsageV1::ClientHello,
-        BrokerSessionKeyUsageV1::BrokerHello,
-        BrokerSessionKeyUsageV1::ClientRecord,
-        BrokerSessionKeyUsageV1::BrokerOutcome,
-    ];
-    let mut secrets = [[0_u8; 48]; 4];
-    let pins = core::array::from_fn(|index| {
-        let byte = index as u8;
-        let seed = [byte + 1; 32];
-        let key_id = [0x50 + byte; 16];
-        secrets[index][..16].copy_from_slice(&key_id);
-        secrets[index][16..].copy_from_slice(&seed);
-        let key = SigningKey::from_bytes(&seed);
-        let signer = BrokerSessionSignerReferenceV1::for_signing_key(
-            [0x30 + byte; 16],
-            10 + index as u64,
-            [0x40 + byte; 32],
-            key_id,
-            20 + index as u64,
-            usages[index],
-            &key,
-        )
-        .unwrap();
-        BrokerSessionSecurityKeyPinV1::new(
-            signer,
-            key.verifying_key().to_bytes(),
-            1,
-            1,
-            false,
-            None,
-        )
-        .unwrap()
-    });
-    let manifest = BrokerSessionSecurityManifestV1::new(
-        BrokerSessionProtocolV1::Host,
-        audience,
-        1,
-        0,
-        [1; 16],
-        [2; 16],
-        1,
-        [3; 32],
-        1,
-        [4; 32],
-        1,
-        [5; 32],
-        [6; 16],
-        pins,
-    )
-    .unwrap();
-    (manifest, secrets)
 }
 
 fn feature(namespace: &str) -> Feature {
