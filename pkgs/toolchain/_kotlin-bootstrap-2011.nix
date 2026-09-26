@@ -83,6 +83,10 @@
     // gitInputs);
 
   sourceArchives = {
+    asm4 = fetchurl {
+      urls = ["https://repo.maven.apache.org/maven2/org/ow2/asm/asm/4.0/asm-4.0-sources.jar"];
+      hash = "sha256-tNGaKoN3PVGJF/mZCcm4j2XUkG7fATaxNTiATgztQAs=";
+    };
     jsr305 = fetchurl {
       urls = ["https://repo.maven.apache.org/maven2/com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2-sources.jar"];
       hash = "sha256-HJ6F4nLQcIxqWR3HSCjHFgMFO0jMda6DzOVpEqKqBjs=";
@@ -180,6 +184,26 @@ in
           mkdir -p sources classes
           ${unpackArchives}
 
+          # Kotlin's 2013 compiler imports JetBrains' relocated ASM 4 API.
+          # Relocate upstream Java sources before javac, without a binary JAR.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_root = Path("sources/asm4/org/objectweb/asm")
+          target_root = Path("sources/asm4-relocated/org/jetbrains/asm4")
+          omitted_components = {"attrs", "optimizer", "xml"}
+
+          for source in source_root.rglob("*.java"):
+              relative = source.relative_to(source_root)
+              if relative.parts[0] in omitted_components:
+                  continue
+              target = target_root / relative
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_text(
+                  source.read_text().replace("org.objectweb.asm", "org.jetbrains.asm4")
+              )
+          PY
+
           python3 - kotlin idea asm <<'PY'
           from pathlib import Path
           import sys
@@ -223,6 +247,11 @@ in
           mkdir -p classes/asm
           javac -source 7 -target 7 -proc:none \
             -d classes/asm @asm-files
+
+          find sources/asm4-relocated -name '*.java' | LC_ALL=C sort > asm4-files
+          mkdir -p classes/asm4
+          javac -source 7 -target 7 -proc:none \
+            -d classes/asm4 @asm4-files
 
           find sources/trove/src/gnu/trove -name '*.java' \
             ! -path '*/benchmark/*' | LC_ALL=C sort > trove-files
@@ -295,6 +324,28 @@ in
             > smoke.log 2>&1
           test -f smoke-classes/namespace.class
           test ! -s smoke.log
+
+          cat > Asm4Smoke.java <<'JAVA'
+          import org.jetbrains.asm4.ClassWriter;
+          import org.jetbrains.asm4.Opcodes;
+
+          final class Asm4Smoke {
+              public static void main(String[] args) {
+                  ClassWriter writer = new ClassWriter(0);
+                  writer.visit(Opcodes.V1_6, Opcodes.ACC_PUBLIC,
+                          "Asm4Generated", null, "java/lang/Object", null);
+                  writer.visitEnd();
+                  byte[] generated = writer.toByteArray();
+                  if (generated.length < 4 || generated[0] != (byte) 0xca
+                          || generated[1] != (byte) 0xfe) {
+                      throw new AssertionError("ASM 4 did not emit a Java class");
+                  }
+              }
+          }
+          JAVA
+          ${buildJdk}/bin/javac -proc:none -cp classes/asm4 \
+            -d smoke-classes Asm4Smoke.java
+          ${buildJdk}/bin/java -cp smoke-classes:classes/asm4 Asm4Smoke
         '';
       }
       {
@@ -305,7 +356,7 @@ in
             "$root/deps" "$out/share/licenses/kotlin-bootstrap"
           cp -R kotlin/dist/classes/runtime "$root/dist/classes/"
           cp -R kotlin/stdlib/ktSrc "$root/stdlib/"
-          for dependency in asm trove pico guava jsr305 cli jna; do
+          for dependency in asm asm4 trove pico guava jsr305 cli jna; do
             cp -R "classes/$dependency" "$root/deps/$dependency"
           done
           cp asm/LICENSE.txt "$out/share/licenses/kotlin-bootstrap/ASM-LICENSE.txt"
@@ -316,7 +367,7 @@ in
           export JAVA_HOME=${buildJdk}
           root="${placeholder "out"}/share/kotlin-bootstrap"
           classpath="$root/dist/classes/runtime"
-          for dependency in asm trove pico guava jsr305 cli jna; do
+          for dependency in asm asm4 trove pico guava jsr305 cli jna; do
             classpath="$classpath:$root/deps/$dependency"
           done
           exec ${buildJdk}/bin/java -cp "$classpath" \
