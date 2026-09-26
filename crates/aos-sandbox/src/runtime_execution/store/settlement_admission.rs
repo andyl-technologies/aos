@@ -4,7 +4,7 @@
 //! Effect['w' | execution:16] =
 //! AOSCHA01 | version:u16be | reserved[6]=0 | execution:16 |
 //! store-binding:32 | preliminary-digest:32 | signed-request-digest:32 |
-//! original-session:32 | source-digest:32 | handoff-digest:32 |
+//! settlement-session:32 | source-digest:32 | handoff-digest:32 |
 //! Host-boot:16 | admitted-boottime:u64be | original-deadline:u64be |
 //! commit-sequence:u64be | HostState-cut:32 | SHA256(domain || preceding):32
 //! ```
@@ -14,7 +14,7 @@
 //! Controller disposition, or permission to ignore a changed HostState cut.
 //! Storage can verify the Effect sequence and retained stage, but not the
 //! caller-supplied trusted clock sample, signed method-42 packet, or HostState
-//! cut. No production issuer is wired to this dormant append in this version.
+//! cut. The live Host owner must rejoin those under retained writer claims.
 
 use super::*;
 
@@ -200,7 +200,6 @@ impl JournalRuntimeExecutionStoreV1<'_> {
     /// An interrupted stage-to-witness gap remains ineligible for historical
     /// recovery. The caller must supply the trusted original admission sample
     /// and verify the current HostState cut while retaining the Host owner.
-    #[allow(dead_code, reason = "historical recovery transport remains closed")]
     pub(crate) fn append_host_settlement_admission_witness_v1(
         &mut self,
         witness: HostSettlementAdmissionWitnessV1,

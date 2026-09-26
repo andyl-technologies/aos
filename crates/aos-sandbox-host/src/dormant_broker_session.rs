@@ -198,6 +198,9 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
 
     /// Appends or exactly replays one signed preliminary Host settlement.
     ///
+    /// A successful response requires its immediate protected admission
+    /// witness; a stage-only crash or expired replay stays quarantined.
+    ///
     /// # Errors
     ///
     /// Rejects stale boot, signature-bound request, Host custody, or uncertain

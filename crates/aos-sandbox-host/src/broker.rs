@@ -1358,7 +1358,7 @@ where
             .map_err(|_| HostError::Fence("Host preliminary cut changed"))
     }
 
-    /// Retains the first Host settlement stage from a signed Controller request.
+    /// Retains the first Host settlement stage and its admission witness.
     ///
     /// The signed request authenticates the Controller's H/T assertions; Host
     /// independently rejoins its current marker and completed handoff before
@@ -1384,15 +1384,34 @@ where
                 "Host settlement request is not authenticated",
             ));
         }
+        if now_boottime_nanoseconds == 0
+            || now_boottime_nanoseconds >= authenticated.deadline_boottime_nanoseconds()
+        {
+            return Err(HostError::Fence(
+                "Host preliminary admission clock is stale",
+            ));
+        }
         let request = decode_host_no_apply_settlement_request_v2(
             authenticated.exact_body(),
             authenticated.peer(),
             authenticated.peer_policy(),
             now_boottime_nanoseconds,
         )?;
+        if request.header().request_id() != &authenticated.request_id()
+            || request.header().deadline_boottime_nanoseconds()
+                != authenticated.deadline_boottime_nanoseconds()
+            || request.challenge() != authenticated.request_id()
+        {
+            return Err(HostError::Fence("Host preliminary signed header changed"));
+        }
         if let Some(replayed) =
             self.match_no_apply_preliminary_v2(claim, &request, authenticated.session_binding())?
         {
+            claim
+                .ensure_host_settlement_admission_witness_v1(authenticated, &replayed)
+                .map_err(|_| {
+                    HostError::Fence("Host preliminary witness needs protected recovery")
+                })?;
             return Ok(Some(replayed));
         }
         let Some(prepared) =
@@ -1409,6 +1428,9 @@ where
         if readback.as_slice() != committed.as_slice() {
             return Err(HostError::Fence("Host preliminary readback changed"));
         }
+        claim
+            .ensure_host_settlement_admission_witness_v1(authenticated, &readback)
+            .map_err(|_| HostError::Fence("Host preliminary witness needs protected recovery"))?;
         Ok(Some(readback))
     }
 
