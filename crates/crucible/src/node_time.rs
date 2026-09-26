@@ -1,6 +1,6 @@
 //! Scheduler-local mapping between backend counters and logical time.
 //!
-//! A replacement backend may begin at a different retired-instruction counter
+//! A replacement backend may begin at a different node-local counter
 //! after restore. [`NodeTimeMapping`] preserves the committed logical-time
 //! boundary while rebasing that physical counter origin. Guest clock faults are
 //! applied by the signal-driven QEMU adapter and never alter this scheduler map.
