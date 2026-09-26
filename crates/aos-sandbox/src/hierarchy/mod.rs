@@ -18,4 +18,5 @@ mod protected_evidence;
 pub mod protected_journal;
 pub mod realizer;
 pub mod recovery;
+pub mod source_seed;
 pub mod state;
