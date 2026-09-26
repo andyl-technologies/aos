@@ -1528,6 +1528,173 @@ in {
               raise
       assert deleted_head["outcome"]["kind"] == "not_found", deleted_head
 
+      # The console token is deliberately short lived. Refresh it after the
+      # long OCI phase before starting a new reviewed cache-GC workflow.
+      session_token = json.loads(client.succeed(textwrap.dedent(f"""
+          set -eu
+          cookie=$(cat /tmp/hybrid-cookie)
+          {CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' \\
+            -H "Cookie: $cookie" https://aos.andyl.org/-/instance \\
+            > /tmp/hybrid-gc-instance.html
+          csrf=$({SED} -n 's/.*name="aos-session-csrf" content="\\([^"]*\\)".*/\\1/p' \\
+            /tmp/hybrid-gc-instance.html | head -n1)
+          test -n "$csrf"
+          {CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' \\
+            -H "Cookie: $cookie" -H 'Origin: https://aos.andyl.org' \\
+            -H "x-aos-csrf: $csrf" -H 'x-aos-console-route: /-/instance' \\
+            https://aos.andyl.org/-/auth/session-token
+      """), timeout=120))["accessToken"]
+
+      # Publish a real NAR/narinfo pair so cache GC has a logical object and
+      # placement evidence to delete, rather than only an orphan surface file.
+      gc_store_hash = "fleetgc000000000000000000000000"
+      gc_nar_path = f"nar/{gc_store_hash}-payload.nar"
+      gc_nar_bytes = b"hybrid-cache-gc-nar"
+      gc_nar_digest = hashlib.sha256(gc_nar_bytes).hexdigest()
+      client.succeed(
+          f"printf %s {shlex.quote(gc_nar_bytes.decode())} > /tmp/hybrid-gc-nar"
+      )
+      gc_upload_status = client.succeed(
+          f"{CURL} -sS -o /tmp/hybrid-gc-upload.response -w '%{{http_code}}' "
+          "-X POST -H 'cf-connecting-ip: 192.0.2.10' "
+          "-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
+          f"-H 'Authorization: Bearer {session_token}' "
+          f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'path': gc_nar_path, 'size': len(gc_nar_bytes)}))} "
+          "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
+          timeout=60,
+      ).strip()
+      if gc_upload_status != "200":
+          print("cache GC NAR admission response:", client.succeed(
+              "cat /tmp/hybrid-gc-upload.response"
+          ))
+          print("Native journal at cache GC admission:", native.succeed(
+              "journalctl -u aos-hub.service -p err --no-pager -n 40"
+          ))
+          print("Worker log at cache GC admission:", worker.succeed(
+              "tail -n 100 /var/lib/hybrid-worker/wrangler.log"
+          ))
+      assert gc_upload_status == "200", gc_upload_status
+      gc_upload = json.loads(client.succeed("cat /tmp/hybrid-gc-upload.response"))
+      client.succeed(
+          f"{CURL} -fsS -X PUT -H 'cf-connecting-ip: 192.0.2.10' "
+          f"-H 'Authorization: Bearer {session_token}' "
+          f"--data-binary @/tmp/hybrid-gc-nar {shlex.quote(gc_upload['uploadUrl'])}",
+          timeout=60,
+      )
+      gc_narinfo = (
+          f"StorePath: /nix/store/{gc_store_hash}-hybrid-gc\n"
+          f"URL: {gc_nar_path}\n"
+          "Compression: none\n"
+          f"FileHash: sha256:{gc_nar_digest}\n"
+          f"FileSize: {len(gc_nar_bytes)}\n"
+          f"NarHash: sha256:{gc_nar_digest}\n"
+          f"NarSize: {len(gc_nar_bytes)}\n"
+      )
+      gc_registration = json.loads(client.succeed(
+          f"{CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' "
+          "-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
+          f"-H 'Authorization: Bearer {session_token}' "
+          f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'narinfos': [{'storeHash': gc_store_hash, 'narinfo': gc_narinfo}]}))} "
+          "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/RegisterCacheNarinfos",
+          timeout=60,
+      ))
+      assert int(gc_registration["registered"]) == 1, gc_registration
+
+      gc_replica = json.loads(client.succeed(hub_command(
+          "placement show cache:fleet/objects replica"
+      )))["data"]["placement"]
+      reviewed(
+          "hybrid-cache-gc-replicate",
+          "placement replicate cache:fleet/objects --from primary --to replica "
+          "--wait --timeout 5m "
+          f"--if-version {shlex.quote(gc_replica['resource_version'])}",
+          timeout=360,
+      )
+
+      gc_policy = json.loads(client.succeed(hub_command(
+          "cache gc policy show fleet/objects"
+      )))["data"]["policy"]
+      reviewed(
+          "hybrid-cache-gc-policy",
+          "cache gc policy set fleet/objects --unreferenced-grace 0s "
+          "--schedule 3600 --deletion-concurrency 2 "
+          "--retry-initial 2s --retry-max 30s --retry-max-attempts 5 "
+          "--tombstone-retention 24h "
+          f"--if-version {shlex.quote(gc_policy['resource_version'])}",
+      )
+      gc_inventory_query = (
+          "SELECT COUNT(*) FROM cache_objects object "
+          "JOIN binary_caches cache ON cache.id = object.cache_id "
+          f"WHERE cache.slug = 'fleet/objects' AND object.store_hash = '{gc_store_hash}' "
+          "AND object.lifecycle_state = 'active'"
+      )
+      native.wait_until_succeeds(
+          f"test \"$({POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          f"-c {shlex.quote(gc_inventory_query)})\" = 1",
+          timeout=180,
+      )
+      gc_placement_query = (
+          "SELECT COUNT(*) FROM object_placements presence "
+          "JOIN surface_objects object ON object.id = presence.surface_object_id "
+          "JOIN cache_gc_state state ON state.cache_id = presence.cache_id "
+          "JOIN binary_caches cache ON cache.id = presence.cache_id "
+          "WHERE cache.slug = 'fleet/objects' "
+          f"AND object.object_key IN ('{gc_store_hash}.narinfo', '{gc_nar_path}') "
+          "AND presence.state = 'present' "
+          "AND presence.observed_inventory_generation = state.inventory_generation"
+      )
+      native.wait_until_succeeds(
+          f"test \"$({POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          f"-c {shlex.quote(gc_placement_query)})\" = 4",
+          timeout=180,
+      )
+
+      bootstrap_gc = json.loads(client.succeed(hub_command(
+          "cache gc plan create fleet/objects"
+      ), timeout=180))["data"]["plan"]
+      ack_plan = json.loads(client.succeed(hub_command(
+          "cache gc first-sweep plan-acknowledgement fleet/objects "
+          f"--gc-plan-id {shlex.quote(bootstrap_gc['plan_id'])} "
+          "--idempotency-key hybrid-cache-gc-ack-plan"
+      )))["data"]["plan"]
+      client.succeed(hub_command(
+          "cache gc first-sweep acknowledge fleet/objects",
+          " ".join([
+              "--ack-plan-id", shlex.quote(ack_plan["plan_id"]),
+              "--confirm-hash", shlex.quote(ack_plan["confirmation_hash"]),
+              "--idempotency-key hybrid-cache-gc-ack-apply --yes",
+          ]),
+      ))
+      gc_delete_plan = json.loads(client.succeed(hub_command(
+          "cache gc plan create fleet/objects"
+      ), timeout=180))["data"]["plan"]
+      gc_detail = json.loads(client.succeed(hub_command(
+          f"cache gc plan show fleet/objects {shlex.quote(gc_delete_plan['plan_id'])}"
+      )))["data"]["plan"]
+      assert any(candidate["store_hash"] == gc_store_hash for candidate in gc_detail["candidates"]), gc_detail
+      assert len(gc_detail["placement_actions"]) >= 2, gc_detail
+      gc_operation = json.loads(client.succeed(hub_command(
+          "cache gc run fleet/objects",
+          " ".join([
+              "--plan-id", shlex.quote(gc_delete_plan["plan_id"]),
+              "--confirm-hash", shlex.quote(gc_delete_plan["confirmation_hash"]),
+              "--idempotency-key hybrid-cache-gc-run --yes",
+          ]),
+      )))["data"]["operation"]
+      gc_operation_id = gc_operation["operation_id"]
+      gc_run = json.loads(client.succeed(hub_command(
+          f"cache gc runs watch fleet/objects {shlex.quote(gc_operation_id)} --timeout 3m"
+      ), timeout=240))["data"]
+      assert gc_run["terminal"], gc_run
+      gc_jobs = json.loads(client.succeed(hub_command(
+          f"cache gc jobs list fleet/objects {shlex.quote(gc_operation_id)}"
+      )))["data"]["jobs"]
+      assert len(gc_jobs) >= 2, gc_jobs
+      assert all(job["state"] == "succeeded" for job in gc_jobs), gc_jobs
+      for path in (f"{gc_store_hash}.narinfo", gc_nar_path):
+          head = probe_work({"kind": "head", "path": path})
+          assert head["outcome"]["kind"] == "not_found", (path, head)
+
       invalid_plan_time = int(time.time())
       rejected_plans = [
           {

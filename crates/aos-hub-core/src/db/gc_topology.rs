@@ -1160,6 +1160,9 @@ impl Database {
 
     /// Creates one durable cache-write fence pinned to reconciled physical identity.
     ///
+    /// An in-progress inventory does not block admission. Its atomic publish
+    /// rejects active tickets, while a completed write advances the cache epoch.
+    ///
     /// # Errors
     ///
     /// Returns an error for stale authority, invalid identity, another active
@@ -1244,8 +1247,6 @@ impl Database {
                        AND (owner.org_id IS NULL OR org.deleted_at IS NULL)
                        AND (owner.org_id = ?6
                          OR (owner.org_id IS NULL AND CAST(?6 AS BIGINT) IS NULL)))
-                   AND NOT EXISTS (SELECT 1 FROM cache_inventory_generations inventory
-                     WHERE inventory.cache_id = ?2 AND inventory.state = 'building')
                    AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
                      JOIN surface_objects object
                        ON object.id = job.surface_object_id
@@ -1366,10 +1367,13 @@ impl Database {
 
     /// Creates a durable direct-origin PUT fence with exact write and presign pins.
     ///
+    /// Inventory publication rejects an active ticket, so a scan can be
+    /// discarded without delaying a client upload.
+    ///
     /// # Errors
     ///
     /// Returns an error for stale authority, an invalid presign credential,
-    /// inventory/deletion overlap, another same-key write, or database failure.
+    /// deletion overlap, another same-key write, or database failure.
     #[allow(clippy::too_many_arguments)]
     pub async fn begin_presigned_cache_write_ticket(
         &self,
@@ -1457,8 +1461,6 @@ impl Database {
                    AND (owner.org_id IS NULL OR org.deleted_at IS NULL)
                    AND (owner.org_id = ?5
                      OR (owner.org_id IS NULL AND CAST(?5 AS BIGINT) IS NULL)))
-               AND NOT EXISTS (SELECT 1 FROM cache_inventory_generations inventory
-                 WHERE inventory.cache_id = ?2 AND inventory.state = 'building')
                AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
                  JOIN surface_objects object ON object.id = job.surface_object_id
                    AND object.cache_id = job.cache_id
@@ -5697,6 +5699,8 @@ impl Database {
                  WHERE cache_id = ?1 AND generation = ?2 AND state = 'building'
                    AND owner_token = ?5
                    AND lease_expires_at > ?4
+                   AND NOT EXISTS (SELECT 1 FROM cache_write_tickets ticket
+                     WHERE ticket.cache_id = ?1 AND ticket.active_cache_slot = 1)
                    AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
                      WHERE job.cache_id = ?1 AND job.active_slot = 1)
                    AND EXISTS (SELECT 1 FROM cache_inventory_placement_scans scan
@@ -11627,6 +11631,97 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn inventory_publication_waits_for_a_write_admitted_during_scan() {
+        let db = gc_fixture().await;
+        install_inventory_placement(&db).await;
+
+        db.begin_cache_inventory_topology(1, 2, 0, "inventory-owner", 10, 100)
+            .await
+            .unwrap();
+        db.stage_cache_inventory_manifest(1, 2, 1, "inventory-owner", "empty", 0, 20)
+            .await
+            .unwrap();
+        db.backend
+            .checked_batch(&[
+                Statement::new(
+                    "INSERT INTO binding_credential_revisions
+                     (binding_id, purpose, generation, secret_version_ref,
+                      validation_state, validated_at, credential_fingerprint,
+                      created_by, created_at)
+                     VALUES (1, 'write', 1, 'write-secret', 'valid', 1,
+                       'write-fingerprint', 'test', 1)",
+                    vec![],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO binding_write_revisions
+                     (binding_id, revision, write_credential_version_ref,
+                      writes_supported, conditional_writes_supported,
+                      revision_fingerprint, capability_fingerprint, created_at,
+                      write_credential_purpose, write_credential_generation)
+                     VALUES (1, 1, 'write-secret', 1, 1,
+                       'write-revision', 'write-capability', 1, 'write', 1)",
+                    vec![],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO cache_write_tickets
+                 (ticket_id, cache_id, object_key, declared_size, upload_kind,
+                  placement_id, placement_resource_version,
+                  placement_write_spec_version, binding_id,
+                  binding_resource_version, binding_write_revision,
+                  write_credential_purpose, write_credential_generation,
+                  starting_inventory_generation, state, active_cache_slot,
+                  expires_at, created_at)
+                 VALUES ('concurrent-upload', 1, 'nar/new.nar', 1, 'single',
+                   1, 1, 1, 1, 1, 1, 'write', 1, 1, 'observing', 1, 100, 20)",
+                    vec![],
+                )
+                .expecting(1),
+            ])
+            .await
+            .unwrap();
+
+        assert!(db
+            .publish_cache_inventory_topology(
+                1,
+                2,
+                "inventory-owner",
+                "empty-inventory",
+                0,
+                "inventory-with-upload",
+                21,
+            )
+            .await
+            .is_err());
+        let state = db.cache_gc_topology_state(1).await.unwrap().unwrap();
+        assert_eq!(state.inventory_generation, 1);
+
+        db.backend
+            .execute(
+                "UPDATE cache_write_tickets
+                 SET state = 'failed', active_cache_slot = NULL, finished_at = 22
+                 WHERE ticket_id = 'concurrent-upload'",
+                &[],
+            )
+            .await
+            .unwrap();
+        db.publish_cache_inventory_topology(
+            1,
+            2,
+            "inventory-owner",
+            "empty-inventory",
+            0,
+            "inventory-after-upload",
+            23,
+        )
+        .await
+        .unwrap();
+        let state = db.cache_gc_topology_state(1).await.unwrap().unwrap();
+        assert_eq!(state.inventory_generation, 2);
     }
 
     #[tokio::test]
