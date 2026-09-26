@@ -12,14 +12,18 @@
   sharedBazelCacheDir ? null,
   sharedRustTargetDir ? null,
   sharedRustIncremental ? false,
+  sharedAccacheDir ? null,
+  sharedAccacheStateDir ? null,
   ordinaryToolchainPackages ? null,
-}: let
+}:
+assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   anySharedCache =
     sharedGoCacheDir
     != null
     || sharedBazelCacheDir != null
     || sharedRustTargetDir != null
-    || sharedRustIncremental;
+    || sharedRustIncremental
+    || sharedAccacheDir != null;
   fetchurl = lib.fetchurl;
   fetchgit = lib.fetchgit;
   mkUpstream = import ./build-support/_upstream.nix {
@@ -586,6 +590,18 @@
       }
     );
 
+  # Explicit application opt-in for C/C++ builders. mkCargoPackage uses the
+  # same manifest primitive below; toolchain packages never acquire a wrapper.
+  mkAccacheEnvironment = import ./build-support/_accache.nix {
+    inherit lib;
+    mkDerivation = rawMkDerivation;
+    jq = resolvedBuildPackages.jq;
+    accache =
+      if ordinaryToolchainPackages != null
+      then ordinaryToolchainPackages.accache
+      else resolvedBuildPackages.accache;
+  };
+
   # Attrs that mkCargoPackage consumes (not passed to mkDerivation)
   cargoSpecificAttrs = [
     "cargoDeps"
@@ -849,6 +865,22 @@
       if sharedCargoTarget
       then null
       else inheritedArtifacts;
+    cacheRustActions =
+      sharedAccacheDir
+      != null
+      && sharedAccacheStateDir != null
+      && (args.sharedBuildCache or true)
+      && !isToolchainName (args.pname or args.name or "")
+      && (args.pname or "") != "accache";
+    rustActionEnvironment = mkAccacheEnvironment {
+      compilers = {"${builtins.unsafeDiscardStringContext (toString cargoBuildTool)}/bin/rustc" = "rust";};
+      roots =
+        [cargoBuildTool]
+        ++ builtins.map spliceBuildDependency (args.buildDeps or [])
+        ++ (args.runtimeDeps or []);
+      cacheDir = sharedAccacheDir;
+      stateDir = sharedAccacheStateDir;
+    };
     cargoBuildOnlyReferences =
       [args.cargoDeps cargoBuildTool]
       ++ lib.optional stdenv.isCross cargoBuildToolchain
@@ -887,6 +919,7 @@
         mkDerivation (
           restArgs
           // cargoBuildToolchainEnv
+          // lib.optionalAttrs cacheRustActions rustActionEnvironment
           // lib.optionalAttrs sharedCargoTarget {
             CARGO_TARGET_DIR = cargoTargetDir;
           }
@@ -1574,6 +1607,7 @@
       inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream lib packageNames allPackageNames;
       inherit maintenanceInventory;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
+      inherit mkAccacheEnvironment;
       inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
       inherit (cargoArtifactsSupport) mkCargoDummySource;
       inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;

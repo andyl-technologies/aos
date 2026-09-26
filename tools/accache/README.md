@@ -1,0 +1,172 @@
+# accache
+
+A daemonless compiler action cache for AOS Nix application builds. Every
+invocation opens the shared directories itself. There is no host service,
+socket, daemon lifecycle, or shared in-memory compiler configuration.
+
+## Development use
+
+```sh
+bash ./aos-dev --accache cache init
+bash ./aos-dev --accache build package aos --no-out-link
+bash ./aos-dev --release build package aos --no-out-link
+```
+
+Accache is opt-in. `--no-accache` disables it; release mode disables all shared
+cache configuration. Existing Go, Bazel, Cargo target, and Rust incremental
+options remain independent. Rust incremental compiler invocations bypass
+accache and continue using the configured persistent incremental directory.
+GCC, LLVM, Rust, Go, Java, and other toolchain builds keep their ordinary
+identities. Building accache itself also has shared caching disabled.
+
+`mkCargoPackage` configures `RUSTC_WRAPPER` for application builds when both
+`sharedAccacheDir` and `sharedAccacheStateDir` are configured. C/C++ builders
+can use `pkgs.mkAccacheEnvironment` with their exact compiler paths and roots;
+it supplies CMake compiler launchers. Other build systems must invoke
+`accache /absolute/compiler/path ...` explicitly. This first integration does
+not replace every invocation of `cc` globally.
+
+The CLI mounts `AOS_DEV_ACCACHE_DIR` and `AOS_DEV_ACCACHE_STATE_DIR` (defaults:
+`/aos-build-cache/accache` and `/aos-build-cache/accache-state`) into the sandbox.
+They map to `accache` and `accache-state` under `AOS_DEV_CACHE_DIR`, defaulting
+to `${XDG_CACHE_HOME:-$HOME/.cache}/aos-dev` when its parents are traversable.
+Private homes automatically fall back to `/var/tmp/aos-dev-cache-UID`; no root
+setup is required. To keep physical storage under a private XDG directory,
+an administrator can optionally
+bind-mount that XDG directory at a traversable alias and set
+`AOS_DEV_CACHE_DIR` to the alias; home permissions can remain private.
+Existing `/var/tmp/aos-dev-cache-UID` trees are left intact; set
+`AOS_DEV_CACHE_DIR` explicitly to keep using one. Derivations
+receive the configured paths in environment variables; the host backing
+path does not enter their identities.
+
+## Compiler contract
+
+The Nix helper constructs `ACCACHE_MANIFEST` from the daemon's realized
+reference graph. Each compiler, wrapper, loader, sysroot, and transitive
+library in the declared closure contributes its store path and NAR hash.
+
+```json
+{
+  "schema": 1,
+  "compilers": {"/nix/store/…/bin/rustc": "rust"},
+  "closure": [{"path": "/nix/store/…", "narHash": "sha256:…"}],
+  "remove_environment": ["out", "src", "NIX_BUILD_TOP"],
+  "read_roots": ["."]
+}
+```
+
+Compiler arguments, current directory, effective environment, discovered file
+contents, CPU features, output names, and the manifest participate in the key.
+Dependency discovery runs on every lookup. Creating a newly preferred header
+or changing `__has_include` results therefore invalidates the action even if
+previously discovered files did not change. Discovery repeats after a miss;
+changing inputs prevent publication.
+
+`remove_environment` removes variables from **execution and hashing**. It
+cannot hide a variable from the key while leaving it visible to the compiler.
+The helper removes derivation bookkeeping and inherited jobserver variables.
+Packages using those variables intentionally must override the list.
+
+Proc macro consumers, compiler plugins, and raw Clang assembly need declared
+`read_roots`; those trees are hashed recursively. Cargo's `OUT_DIR` and
+`CARGO_MANIFEST_DIR` are also covered for proc macro consumers. Native library
+search directories and explicit library/module/profile inputs are tracked.
+The package author must declare every extension-readable mutable input and
+must not cache compiler extensions with undeclared side effects. This is an
+input contract, not an additional filesystem sandbox. Full tree hashing can
+produce conservative misses and can be expensive for large generated trees.
+
+## Frontend compatibility
+
+The complete pinned sccache GCC/Clang/Rust argument tables and parsers are
+extracted into [frontend](frontend/UPSTREAM.md). Original compiler arguments
+are passed unchanged, including response files. Unsupported invocations run
+the compiler and record a bypass reason. Non-UTF-8 arguments also run unchanged.
+
+Covered output families include ordinary C/C++ objects, depfiles, split debug
+files, coverage notes, preprocessed source, assembly, PCH, explicit Clang
+modules, serialized Clang diagnostics, and nonincremental Rust rlib/staticlib,
+metadata, and dep-info. Rust extern/native dependencies and proc macro
+consumers are covered by the input contract above.
+
+Incremental Rust, executable/proc-macro compilation, ordinary linking, and
+upstream parser exclusions bypass. Frontend parsing compatibility is not a
+claim of support for every compiler/version/platform, nor for arbitrary new
+side-effect flags. This package targets the AOS Linux compiler toolchains.
+
+## Storage and concurrency
+
+```text
+cache/ac/<first-two-hex>/<sha256>     REAPI ActionResult
+cache/cas/<first-two-hex>/<sha256>    content-addressed blobs
+state/locks/<action>                 per-action OS file lock
+state/events/<unique>.json          immutable invocation provenance
+state/latest/<slot>                 prior identity for explanations
+```
+
+The cache uses Bazel's disk layout and REAPI v2 protobuf field numbers. Action
+inputs currently describe a local Nix inventory; they are **not yet a remote
+executor input tree**. Remote cache transports and remote execution are not
+implemented. Bazel and accache do not share compiler action keys.
+
+Atomic renames publish blobs before action results. Readers verify content
+digests and the expected output set, then stage independent output copies.
+A missing/corrupt entry causes recompilation. Per-action locks collapse
+concurrent identical misses; different actions do not share a global lock.
+Different toolchains and worktrees can use the same directories because their
+contracts and inputs partition the keys. Absolute Cargo target destinations
+are mapped through the current invocation, never trusted from cache data.
+
+Use shared cache roots only among trusted build users. Content hashing detects
+accidental corruption; it is not authentication against malicious writers.
+Default ACLs configured by `cache init` allow different Nix build users to
+write entries. Restored artifacts respect destination ACLs and the build umask.
+`aos-dev cache accache` provides status, entries, builds, prune, compact, and
+clear commands. Global usage/prune/clear include the action cache. Cleanup
+leaves the separate state directory intact, retaining provenance and locks.
+Do not unlink active lock files or remove the state tree during builds.
+
+## Inspection
+
+```sh
+ACCACHE_DIR=/path/cache ACCACHE_STATE_DIR=/path/state accache stats
+ACCACHE_DIR=/path/cache ACCACHE_STATE_DIR=/path/state accache explain
+ACCACHE_DIR=/path/cache ACCACHE_STATE_DIR=/path/state accache explain ACTION_SHA256
+ACCACHE_DIR=/path/cache ACCACHE_STATE_DIR=/path/state accache provenance
+```
+
+Stats and explanations are JSON; provenance is JSON Lines. Events distinguish
+hits, misses, bypasses, failed compilation, unstable inputs, and write errors.
+They retain arguments, input hashes, effective environment hashes, timestamps,
+and the build output path when available. `ACCACHE_DERIVATION` optionally
+records a `.drv` path without making it an action-key input. The build output
+can also be resolved to its deriver using Nix. Command blobs contain the actual
+effective environment; treat cache storage with the same care as build inputs.
+
+`ACCACHE_VERBOSE=1` prints each outcome. `ACCACHE_DISABLE=1` or an absent
+`ACCACHE_DIR` runs the compiler directly.
+
+## Validation
+
+```sh
+bash ./aos-dev --release build check build.accache --no-out-link
+```
+
+`checks.build.accache` builds the compiler wrapper and a pinned, test-only
+sccache executable from source. Its private sccache server runs inside the test
+sandbox and is stopped in `finally`. No developer cache/server is used.
+
+The suite compares direct compilation, sccache, and accache using identical
+paths, flags, working directories, and environments. It checks exit status,
+stdout, stderr, the complete generated-file inventory, executable bits, and
+artifact bytes. It deletes outputs before warm runs, asserts cache hits, and
+changes dependencies to require misses. Separate tests exercise corruption,
+concurrent identical requests, PCH/modules, native libraries, proc macro file
+reads, and persistent target paths.
+
+One explicit oracle discrepancy is asserted: pinned sccache omits implicit
+`.d` outputs on warm `-MMD` hits without `-MF`. Accache must still match direct
+compilation, including that file. The exception applies only to the oracle's
+known missing file and fails if its behavior changes; no accache result is
+normalized to accommodate it.

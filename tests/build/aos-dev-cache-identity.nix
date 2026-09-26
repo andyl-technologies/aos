@@ -3,6 +3,11 @@
   system,
   crossSystem,
 }: let
+  compilerShared = import ../.. {
+    inherit system crossSystem;
+    sharedAccacheDir = "/custom/compiler-cache";
+    sharedAccacheStateDir = "/custom/compiler-state";
+  };
   plain = import ../.. {inherit system crossSystem;};
   shared = import ../.. {
     inherit system crossSystem;
@@ -46,6 +51,12 @@
     rustCacheDir = "/aos-build-cache/rust";
   };
 in
+  assert builtins.all (name: plain.pkgs.${name}.drvPath == compilerShared.pkgs.${name}.drvPath)
+  ["accache" "rust" "go" "llvm" "gcc-libs" "openjdk" "bazel"];
+  assert compilerShared.pkgs.aos.ACCACHE_DIR == "/custom/compiler-cache";
+  assert compilerShared.pkgs.aos.ACCACHE_STATE_DIR == "/custom/compiler-state";
+  assert !(plain.pkgs.aos ? ACCACHE_MANIFEST);
+  assert !(compilerShared.pkgs.rust ? ACCACHE_MANIFEST);
   assert cacheMountProbe.builder == "${plain.stdenv.bootstrap.bash}/bin/bash";
   assert plain.stdenv.cc.drvPath == shared.stdenv.cc.drvPath;
   assert plain.pkgs.gcc-libs.drvPath == shared.pkgs.gcc-libs.drvPath;

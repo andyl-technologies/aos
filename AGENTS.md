@@ -162,9 +162,12 @@ target directory, and Rust incremental compilation. Leading `--no-go-cache`,
 `--no-bazel-cache`, `--no-rust-target-cache`, and `--no-rust-incremental` flags
 control them independently. Cache paths inside the sandbox are configured by
 `AOS_DEV_GO_CACHE_DIR`, `AOS_DEV_BAZEL_CACHE_DIR`, and
-`AOS_DEV_RUST_TARGET_DIR`; `AOS_DEV_CACHE_DIR` selects their host storage root.
+`AOS_DEV_RUST_TARGET_DIR`; `AOS_DEV_CACHE_DIR` selects their host storage root
+(XDG cache by default, with `/var/tmp` fallback for private homes).
 The CLI passes each enabled path to the matching language builder. Generic
-packages and toolchains keep their ordinary derivation identities.
+packages and toolchains keep their ordinary derivation identities. Opt-in
+`--accache` adds daemonless Rust action caching; see
+[`tools/accache/README.md`](tools/accache/README.md) for coverage and diagnostics.
 
 Run `cache init` once per machine; it sets up directories and ACLs without
 building a compiler or starting a host service. The host cache path must be

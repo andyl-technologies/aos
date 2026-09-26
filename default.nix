@@ -34,13 +34,17 @@
   sharedBazelCacheDir ? null,
   sharedRustTargetDir ? null,
   sharedRustIncremental ? false,
-}: let
+  sharedAccacheDir ? null,
+  sharedAccacheStateDir ? null,
+}:
+assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   anySharedCache =
     sharedGoCacheDir
     != null
     || sharedBazelCacheDir != null
     || sharedRustTargetDir != null
-    || sharedRustIncremental;
+    || sharedRustIncremental
+    || sharedAccacheDir != null;
   lib = import ./lib {
     inherit system;
     # Every Nix builder executes on buildPlatform, including during a cross
@@ -147,6 +151,8 @@
           sharedBazelCacheDir
           sharedRustTargetDir
           sharedRustIncremental
+          sharedAccacheDir
+          sharedAccacheStateDir
           ;
         ordinaryToolchainPackages = ordinaryFirmwareToolchainPackages;
         stdenv = firmwareStdenv;
@@ -166,6 +172,8 @@
       sharedBazelCacheDir
       sharedRustTargetDir
       sharedRustIncremental
+      sharedAccacheDir
+      sharedAccacheStateDir
       ordinaryToolchainPackages
       ;
   };
@@ -1467,6 +1475,10 @@ in {
         pkgs = buildPackages;
       };
       aos-dev-cli = import ./tests/build/aos-dev-cli.nix {inherit pkgs;};
+      accache = import ./tests/build/accache.nix {
+        inherit lib;
+        pkgs = buildPackages;
+      };
       aos-dev-cache-identity = import ./tests/build/aos-dev-cache-identity.nix {
         inherit pkgs system crossSystem;
       };
@@ -1547,7 +1559,7 @@ in {
       ) (builtins.attrNames discoverSystems));
     in
       {
-        inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-dev-cache-identity;
+        inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-dev-cache-identity accache;
         inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-support package-root-image runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
@@ -1560,7 +1572,7 @@ in {
               then [bootstrap-seed]
               else []
             )
-            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-dev-cache-identity critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-hosted-toolchain linux-workerd package-platform-support package-root-image runtime-python-outputs structured-attrs-export systemd-verity]
+            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-dev-cache-identity accache critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-hosted-toolchain linux-workerd package-platform-support package-root-image runtime-python-outputs structured-attrs-export systemd-verity]
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
             ++ builtins.attrValues linux-hosted-rust

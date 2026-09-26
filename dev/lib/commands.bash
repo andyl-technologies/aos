@@ -160,7 +160,7 @@ aos_dev_completion() {
 _aos_dev_complete() {
   local current=${COMP_WORDS[COMP_CWORD]}
   if (( COMP_CWORD == 1 )); then
-    COMPREPLY=( $(compgen -W 'list build run all fmt release cache completion help --release --no-cache --cache --cache-dir --go-cache --no-go-cache --bazel-cache --no-bazel-cache --rust-target-cache --no-rust-target-cache --rust-incremental --no-rust-incremental' -- "$current") )
+    COMPREPLY=( $(compgen -W 'list build run all fmt release cache completion help --release --no-cache --cache --cache-dir --go-cache --no-go-cache --bazel-cache --no-bazel-cache --rust-target-cache --no-rust-target-cache --rust-incremental --no-rust-incremental --accache --no-accache' -- "$current") )
   elif (( COMP_CWORD == 2 )); then
     COMPREPLY=( $(compgen -W 'package image container check build eval packages images containers checks builds evals ci format nix rust go bazel all init doctor verify-mount status usage entries intermediates builds prune compact clear' -- "$current") )
   elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == build || ${COMP_WORDS[1]} == run ]]; then
@@ -179,6 +179,7 @@ aos_dev_main() {
   aos_dev_bazel_cache=true
   aos_dev_rust_target_cache=true
   aos_dev_rust_incremental=true
+  aos_dev_accache=false
   while (( $# > 0 )); do
     case $1 in
       --release|--no-cache) aos_dev_mode=release; shift ;;
@@ -189,6 +190,8 @@ aos_dev_main() {
         aos_dev_rust_incremental=true
         shift
         ;;
+      --accache) aos_dev_accache=true; shift ;;
+      --no-accache) aos_dev_accache=false; shift ;;
       --go-cache) aos_dev_go_cache=true; shift ;;
       --no-go-cache) aos_dev_go_cache=false; shift ;;
       --bazel-cache) aos_dev_bazel_cache=true; shift ;;
