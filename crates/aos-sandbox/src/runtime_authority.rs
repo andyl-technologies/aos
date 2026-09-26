@@ -27,10 +27,18 @@ use crate::publication::{
 };
 use crate::{Journal, JournalError, JournalRecord, RecordNamespace};
 
+#[allow(
+    dead_code,
+    reason = "the signed Controller receipt has no production consumer yet"
+)]
+mod currentness_receipt;
 mod format;
 mod model;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use currentness_receipt::ControllerRuntimeCurrentnessReceiptV1;
 
 use format::{
     binding_digest, decode_binding, decode_head, decode_pending, encode_binding, encode_head,
