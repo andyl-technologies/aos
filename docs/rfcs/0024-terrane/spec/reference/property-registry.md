@@ -142,6 +142,22 @@ schema that requires them, not by recomputation.
 | (bare) | `uid`, `gid` | live-filesystem adapters (TREE-9) |
 | (bare) | `zstd-dictionary` | dictionary identity (CDC-9) |
 
+## Reserved names
+
+These names are reserved for the native working tree described informally
+in [`../40-risks-and-open-questions.md`](../40-risks-and-open-questions.md)
+§Informative: the shape of a native working tree. A 1.0 implementation MUST
+NOT assign them another meaning. They are not defined by this version.
+
+| Name | Kind | Intended meaning |
+| --- | --- | --- |
+| `owner`, `group` | attribute | principal-named ownership for roots homed away from the pool that presents them, mapped to numeric ids at the graft |
+| `idmap` | graft property | the user and group identity mapping applied when a root is grafted, realized as an idmapped mount |
+| `bsd.flags` | attribute | BSD `chflags` bits, stored as an integer |
+| `record-size` | property | the granularity at which a live tree buffers small overwrites before rechunking |
+| `mount.nosuid`, `mount.nodev`, `mount.noexec` | graft property | per-graft mount attributes, today set per exposure (FUSE-43) |
+| `native` | surface name | an in-kernel client surface |
+
 ## Media types
 
 Media types for Terrane objects. Object identity never depends on a media

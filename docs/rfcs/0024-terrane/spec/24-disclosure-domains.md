@@ -34,7 +34,10 @@ never leak a private byte.
 
 - **[DOM-1]** Every root MUST have an effective `domain` property. Its
   value is one of `public`, `tenant:<name>`, `group:<name>`, or
-  `private:<id>`, where `<id>` is unique to the root. A tree with no
+  `private:<id>`, where `<id>` is unique to the root. On a host with
+  several local users, a user's own roots are `private:<principal>` by
+  default so that dedup and kernel-object sharing never cross users, a
+  boundary that POSIX mode bits alone do not give. A tree with no
   explicit `domain` on any ancestor MUST be treated as `private:<root
   identity>`. *Gate:* `gate:dom-default-private`.
 - **[DOM-2]** `domain` inherits to descendant roots. A descendant MAY set

@@ -268,6 +268,39 @@ What 1.0 deliberately leaves additive room for:
   as an extension of the mode table in
   [`20-consistency.md`](20-consistency.md).
 
+How such a pool joins a larger namespace needs no new mechanism. The
+pool's root tree is a tree of roots: every subtree with its own home,
+policy, or authority is a `tree` entry, and the root's `home` property says
+whether it is pool-homed (a live tree whose ref lives in the superblock),
+homed at a remote authority and written by this host (a live tree whose
+commits forward one ref CAS), or homed remotely and only read here (a
+cached bundle that follows its ref and faults bytes on demand). Keys are
+relative to their root, so a root's identity does not depend on where a
+pool grafts it, and each graft's own `props` scope domain, replication,
+trust, mount attributes, and identity mapping for that graft only
+([`06-tree-format.md`](06-tree-format.md) TREE-13). The pool root tree is
+itself a commit on a ref, so a machine's whole layout has history and a
+fleet layout change is a merge. The superblock holds only the pool's local
+refs and the identity of the pool-root ref. A write beneath a read-only
+remote root either fails or, by mount option, forks the root into a
+host-owned branch and continues.
+
+Local users compose with this in two layers. POSIX permissions, ACLs,
+capabilities, and labels are stored as `mode`, the `uid` and `gid`
+attributes, and extended attributes, and the kernel checks them exactly as
+any local filesystem does. Roots homed away from the pool would carry
+principal-named `owner` and `group` attributes mapped to numeric ids by an
+`idmap` graft property, so numbers never travel between machines. Fetching
+is authorized per user, not per machine: an upcall carries the requesting
+uid and the daemon fetches with that user's token. Privacy across users on
+one machine is the `domain` boundary of
+[`24-disclosure-domains.md`](24-disclosure-domains.md), not the mode bits:
+a user's private roots never share sealed objects or page cache with
+anything, so identical bytes leak nothing by timing. The names these
+additions need are reserved in
+[`reference/property-registry.md`](reference/property-registry.md)
+§Reserved names.
+
 Two costs would remain by design: sharing stays chunk-granular
 ([`01-goals-nongoals-invariants.md`](01-goals-nongoals-invariants.md)
 NG-7), so a record-size property would bound the rechunk cost of small
