@@ -225,6 +225,33 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn admission_clock_reads_current_kernel_boot_and_monotonic_boottime() {
+        use aos_sandbox_linux::boot::KernelBootId;
+
+        let first = read_kernel_admission_clock().expect("first kernel sample");
+        let second = read_kernel_admission_clock().expect("second kernel sample");
+        let current_boot = KernelBootId::current()
+            .expect("current kernel boot")
+            .into_bytes();
+        let future_deadline = second
+            .boottime_nanoseconds
+            .checked_add(1_000_000_000)
+            .expect("future deadline");
+
+        assert_eq!(first.host_boot_id, current_boot);
+        assert_eq!(second.host_boot_id, current_boot);
+        assert!(first.boottime_nanoseconds > 0);
+        assert!(first.boottime_nanoseconds <= second.boottime_nanoseconds);
+        assert!(live_admission_clock(second, current_boot, future_deadline));
+        assert!(!live_admission_clock(
+            second,
+            current_boot,
+            second.boottime_nanoseconds
+        ));
+    }
+
     #[test]
     fn admission_clock_rejects_reboot_and_expired_second_sample() {
         assert!(live_admission_clock(sample([2; 16], 49), [2; 16], 50));

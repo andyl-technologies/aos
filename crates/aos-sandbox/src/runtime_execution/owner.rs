@@ -564,6 +564,50 @@ impl DormantRuntimeExecutionOwnerV1 {
         })
     }
 
+    /// Opens all four protected owner journals in a private test directory.
+    ///
+    /// This opener retains final-directory, file-owner, and journal replay
+    /// checks, but omits production root-ancestry validation. It is unavailable
+    /// in production builds and never provisions authority or creates a claim.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unsafe directory or journal, a held lock, or corrupt replay.
+    #[cfg(all(
+        target_os = "linux",
+        any(test, all(feature = "test-fixtures", debug_assertions))
+    ))]
+    #[doc(hidden)]
+    pub fn open_protected_at_uid_for_test(
+        directory: &Path,
+        expected_uid: u32,
+    ) -> Result<Self, DormantRuntimeExecutionOwnerErrorV1> {
+        let limits = JournalLimits::default();
+        let (peer_journal, _) =
+            Journal::open_protected_at_uid(directory, PEER_JOURNAL_NAME, limits, expected_uid)?;
+        let (execution_journal, _) = Journal::open_protected_at_uid(
+            directory,
+            EXECUTION_JOURNAL_NAME,
+            limits,
+            expected_uid,
+        )?;
+        let (agent_journal, _) =
+            Journal::open_protected_at_uid(directory, AGENT_JOURNAL_NAME, limits, expected_uid)?;
+        let (lifecycle_journal, _) = Journal::open_protected_at_uid(
+            directory,
+            LIFECYCLE_JOURNAL_NAME,
+            limits,
+            expected_uid,
+        )?;
+
+        Ok(Self {
+            peer_journal,
+            execution_journal,
+            agent_journal,
+            lifecycle_journal,
+        })
+    }
+
     /// Claims current runtime execution authority from protected Host state.
     ///
     /// The returned claim keeps the exact peer/currentness journal borrowed,
@@ -5184,5 +5228,56 @@ mod accepted_output_currentness_tests {
                 Err(DormantRuntimeExecutionOwnerErrorV1::AcceptedOutputClaimMismatch)
             ));
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod protected_owner_test_opener_tests {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn private_owner_opener_replays_four_journals_without_minting_a_claim() {
+        let directory = TempDir::new_in(std::env::current_dir().expect("current directory"))
+            .expect("test directory");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let uid = directory.path().metadata().expect("metadata").uid();
+
+        let mut owner =
+            DormantRuntimeExecutionOwnerV1::open_protected_at_uid_for_test(directory.path(), uid)
+                .expect("four protected journals");
+        assert!(matches!(
+            owner.claim(),
+            Err(DormantRuntimeExecutionOwnerErrorV1::MissingCurrentness)
+        ));
+        drop(owner);
+
+        let mut cold =
+            DormantRuntimeExecutionOwnerV1::open_protected_at_uid_for_test(directory.path(), uid)
+                .expect("cold replay of four protected journals");
+        assert!(matches!(
+            cold.claim(),
+            Err(DormantRuntimeExecutionOwnerErrorV1::MissingCurrentness)
+        ));
+        drop(cold);
+
+        assert!(
+            DormantRuntimeExecutionOwnerV1::open_protected_at_uid_for_test(
+                directory.path(),
+                uid.wrapping_add(1),
+            )
+            .is_err()
+        );
+
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("make directory unsafe");
+        assert!(
+            DormantRuntimeExecutionOwnerV1::open_protected_at_uid_for_test(directory.path(), uid)
+                .is_err()
+        );
     }
 }
