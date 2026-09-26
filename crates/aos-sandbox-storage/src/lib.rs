@@ -61,6 +61,8 @@ pub mod execution_output_credential;
 pub mod existing_output_query;
 mod guest_root_attempt;
 #[cfg(target_os = "linux")]
+mod held_output_session;
+#[cfg(target_os = "linux")]
 mod held_snapshot_tree;
 #[cfg(feature = "held-tree-fixture")]
 pub use held_snapshot_tree::run_bound_held_snapshot_tree_fixture;

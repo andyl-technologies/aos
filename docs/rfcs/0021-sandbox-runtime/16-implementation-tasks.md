@@ -9283,9 +9283,20 @@ typed response binds the nonce and complete accepted-output fields to the
 MAC-verified row, including zero-byte Stream/PTY rows; it does not reserve a
 row, inspect a capture dataset, or survive as a lease after the callback.
 No production original-reserve verifier can yet mint AOSEOR03, and no
-bidirectional held session retains Storage alongside the earlier Controller,
-environment, and Host writers through settlement. Public Create, Observe, and
-Host Apply remain closed.
+coordinated Controller→environment→Host→Storage cut invokes this callback.
+
+An opt-in zero-byte AOSEOR03 held readback flight for future Stream/PTY use now
+shares the authenticated Host/Storage existing-output socket under a distinct
+fixed-size protocol. Storage retains its exclusive writer from exact row/head
+proof through a same-peer, nonce- and proof-bound Settle or Abort terminal and
+read-only acknowledgement;
+timeout or disconnect releases the hold without an acknowledgement. The
+dormant Host client authenticates both proof and acknowledgement against the
+same live Storage service. Settle carries only an opaque caller digest: it
+does not verify earlier owner writers, mint an AOSEOR03 row, authorize a Host
+effect, or persist a cross-owner decision. No production caller invokes the
+flight under an ordered Controller→environment→Host cut. Public Create,
+Observe, and Host Apply remain closed.
 
 Host can now query this exact row after a completed, current ReserveOutput and
 an explicitly supplied v2 claim expectation, then authenticate and retain the

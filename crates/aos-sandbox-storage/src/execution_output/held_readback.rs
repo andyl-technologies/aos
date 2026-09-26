@@ -165,14 +165,45 @@ impl ExecutionOutputLedgerV1 {
             return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
         }
         let request_digest = held_request_digest(&request, expected);
+        Self::with_held_guard(held, |held| {
+            inspect(StorageHeldOutputResponseV1 {
+                nonce: request.nonce,
+                request_digest,
+                held,
+            })
+        })
+    }
+
+    /// Holds an exact existing row/head through one read-only session callback.
+    ///
+    /// The transport must independently authenticate its peer and bind its
+    /// begin, proof, and terminal records. This callback only preserves the
+    /// Storage writer and rechecks the exact row before releasing it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent, deleted, changed, or replaced protected Storage state.
+    pub(crate) fn with_held_existing_output_for_session<T>(
+        &self,
+        execution: [u8; 16],
+        create: [u8; 16],
+        record_digest: ObjectDigest,
+        expected_journal_sequence: u64,
+        inspect: impl FnOnce(&HeldExecutionOutputReadbackV1<'_>) -> T,
+    ) -> Result<T, ExecutionOutputLedgerErrorV1> {
+        let held = self.hold_existing_output_for_query(execution, create, record_digest)?;
+        if held.readback().journal_sequence() != expected_journal_sequence {
+            return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
+        }
+        Self::with_held_guard(held, inspect)
+    }
+
+    fn with_held_guard<T>(
+        held: HeldExecutionOutputReadbackV1<'_>,
+        inspect: impl FnOnce(&HeldExecutionOutputReadbackV1<'_>) -> T,
+    ) -> Result<T, ExecutionOutputLedgerErrorV1> {
         held.revalidate()?;
-
-        let result = inspect(StorageHeldOutputResponseV1 {
-            nonce: request.nonce,
-            request_digest,
-            held: &held,
-        });
-
+        let result = inspect(&held);
         held.revalidate()?;
         Ok(result)
     }
@@ -467,6 +498,77 @@ mod tests {
         ));
         fs::remove_file(&lock).unwrap();
         fs::rename(&old_lock, &lock).unwrap();
+    }
+
+    #[test]
+    fn held_session_keeps_exact_zero_byte_row_and_head_through_callback() {
+        let directory = TempDir::new().unwrap();
+        let mut ledger = protected_ledger(&directory);
+        let expected = record(1, 0);
+        ledger.reserve_record(expected.clone()).unwrap();
+        let retained = ledger.read_exact_record_for_barrier(&expected).unwrap();
+
+        let observed = ledger
+            .with_held_existing_output_for_session(
+                expected.execution,
+                expected.create,
+                retained.record_digest(),
+                retained.journal_sequence(),
+                |held| {
+                    held.revalidate().unwrap();
+                    *held.readback()
+                },
+            )
+            .unwrap();
+        assert_eq!(observed, retained);
+
+        ledger.reserve_record(record(2, 0)).unwrap();
+        let mut invoked = false;
+        assert!(matches!(
+            ledger.with_held_existing_output_for_session(
+                expected.execution,
+                expected.create,
+                retained.record_digest(),
+                retained.journal_sequence(),
+                |_| {
+                    invoked = true;
+                },
+            ),
+            Err(ExecutionOutputLedgerErrorV1::NotCurrent)
+        ));
+        assert!(!invoked);
+    }
+
+    #[test]
+    fn held_session_rejects_writer_replacement_after_terminal_callback() {
+        let directory = TempDir::new().unwrap();
+        let mut ledger = protected_ledger(&directory);
+        let expected = record(1, 0);
+        ledger.reserve_record(expected.clone()).unwrap();
+        let retained = ledger.read_exact_record_for_barrier(&expected).unwrap();
+        let journal = directory.path().join("output.journal");
+        let old_journal = directory.path().join("output.journal.old");
+
+        let result = ledger.with_held_existing_output_for_session(
+            expected.execution,
+            expected.create,
+            retained.record_digest(),
+            retained.journal_sequence(),
+            |_| {
+                fs::rename(&journal, &old_journal).unwrap();
+                fs::write(&journal, []).unwrap();
+                fs::set_permissions(&journal, fs::Permissions::from_mode(0o600)).unwrap();
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(ExecutionOutputLedgerErrorV1::Journal(
+                JournalError::StaleAuthoritySnapshot
+            ))
+        ));
+        fs::remove_file(&journal).unwrap();
+        fs::rename(&old_journal, &journal).unwrap();
     }
 
     #[test]

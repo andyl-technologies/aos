@@ -1,17 +1,20 @@
-//! Authenticated, read-only Host query of one retained AOSEOR03 row.
+//! Authenticated Host readback of one retained AOSEOR03 row.
 //!
-//! The response is a Storage-local observation. No Create, Observe, ZFS, or
-//! Host effect is admitted by this endpoint.
+//! The existing one-shot query and distinct bidirectional held session share
+//! one fixed Host socket and peer verifier. Neither admits Create, Observe,
+//! ZFS, or a Host effect.
 
 use std::path::Path;
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use aos_sandbox_protocol::storage_existing_output::{
-    ExistingOutputRequestV1, ExistingOutputResponseV1, REQUEST_BYTES,
+    ExistingOutputRequestV1, ExistingOutputResponseV1,
 };
+use aos_sandbox_protocol::storage_held_output_session::{BEGIN_BYTES, HeldOutputBeginV1};
 
 use crate::execution_output_credential::StorageExecutionOutputCustodyV1;
+use crate::held_output_session::serve_held_output_session;
 use crate::peer::HostRootExportPeerVerifier;
 use crate::root_export::receive_request;
 use crate::service::StorageServiceError;
@@ -20,7 +23,7 @@ use crate::transport::boottime;
 const RECEIVE_NANOSECONDS: u64 = 5_000_000_000;
 const MAXIMUM_QUERY_NANOSECONDS: u64 = 10_000_000_000;
 
-/// Serves one Host query against the already-open protected Storage writer.
+/// Serves one Host query or closed held session against the protected writer.
 ///
 /// # Errors
 ///
@@ -51,7 +54,7 @@ pub fn serve_existing_output_query_once(
     let receive_deadline = boottime()?
         .checked_add(RECEIVE_NANOSECONDS)
         .ok_or(StorageServiceError::Clock)?;
-    let packet = match receive_request(&mut connection, receive_deadline, REQUEST_BYTES) {
+    let packet = match receive_request(&mut connection, receive_deadline, BEGIN_BYTES) {
         Ok(packet) => packet,
         Err(()) => return Ok(()),
     };
@@ -65,6 +68,17 @@ pub fn serve_existing_output_query_once(
         || !record.descriptors().is_empty()
     {
         return Ok(());
+    }
+    if let Ok(begin) = HeldOutputBeginV1::decode(record.payload()) {
+        drop(record);
+        return serve_held_output_session(
+            &mut connection,
+            verifier,
+            execution,
+            custody,
+            state_root,
+            begin,
+        );
     }
     let request = match ExistingOutputRequestV1::decode(record.payload()) {
         Ok(request) => request,
