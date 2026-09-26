@@ -4,9 +4,10 @@
 //! epoch head in a single protected journal transaction. Historical rows
 //! replay against their immutable AOSPOLR1 revision and reconstructable
 //! AOSPOLH1 pointer; a current read separately rejects a later publisher
-//! head. Cold load cannot reverify the signature without a fixed issuer pin;
-//! retained rows are not authority. No Source seed or Create capability is
-//! issued here.
+//! head. Cold load validates structure only. The current authenticated read
+//! separately obtains the fixed issuer credential and reverifies the exact
+//! packet; retained rows alone are not authority. No Source seed or Create
+//! capability is issued here.
 //!
 //! ```text
 //! project-auth/row/<project:16><request:16> =
@@ -268,6 +269,63 @@ pub(super) fn validate_rows_and_heads(
 }
 
 impl PublisherPolicyStore<'_> {
+    /// Authenticates the current retained decision with the fixed issuer pin.
+    ///
+    /// Structural journal replay does not establish the AOSPSC02 signature.
+    /// A future Source consumer must use this read while retaining the
+    /// Controller writer, then keep that writer through its Source append.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing or replaced credential custody, a changed publisher
+    /// head, invalid signature, or a retained row inconsistent with its packet.
+    pub(crate) fn current_authenticated_project_authorization_from_fixed_issuer_v2(
+        &self,
+        project: ProjectId,
+    ) -> Result<
+        Option<VerifiedPublisherProjectAuthorizationSourceV2>,
+        ProjectAuthorizationSourceErrorV2,
+    > {
+        let issuer = ProtectedProjectAuthorizationIssuerV2::from_systemd_credentials()?;
+        issuer.recheck()?;
+        let current = self.current_authenticated_project_authorization_v2(project, issuer.pin())?;
+        issuer.recheck()?;
+        Ok(current)
+    }
+
+    fn current_authenticated_project_authorization_v2(
+        &self,
+        project: ProjectId,
+        issuer: &PinnedPublisherProjectAuthorizationIssuerV2,
+    ) -> Result<
+        Option<VerifiedPublisherProjectAuthorizationSourceV2>,
+        ProjectAuthorizationSourceErrorV2,
+    > {
+        let Some(row) = self.current_retained_project_authorization_v2(project)? else {
+            return Ok(None);
+        };
+        let floor = row
+            .epoch
+            .checked_sub(1)
+            .ok_or(PublisherPolicyError::CorruptState)?;
+        let expected = ProjectAuthorizationSourceExpectedV2::new(project, row.request_id, floor)?;
+        let verified =
+            verify_current_project_authorization_source_v2(self, &row.packet, issuer, expected)?;
+        if verified.project() != row.project
+            || verified.request_id() != row.request_id
+            || verified.epoch() != row.epoch
+            || verified.issuer_generation() != row.issuer_generation
+            || verified.publisher_generation() != row.publisher_generation
+            || verified.publisher_head_digest() != row.publisher_head_digest
+            || verified.publisher_revision_digest() != row.publisher_revision_digest
+            || verified.packet_digest() != row.packet_digest
+            || verified.limits() != row.limits
+        {
+            return Err(PublisherPolicyError::CorruptState.into());
+        }
+        Ok(Some(verified))
+    }
+
     /// Retains a signed decision using the fixed privileged issuer credential.
     ///
     /// The credential is rechecked around the protected journal transaction.
@@ -391,7 +449,7 @@ impl PublisherPolicyStore<'_> {
     ///
     /// Rejects a malformed retained pair, missing policy, or changed pointer
     /// or revision bytes.
-    pub(super) fn current_retained_project_authorization_v2(
+    fn current_retained_project_authorization_v2(
         &self,
         project: ProjectId,
     ) -> Result<Option<RetainedProjectAuthorizationRowV2>, ProjectAuthorizationSourceErrorV2> {
@@ -519,6 +577,13 @@ mod tests {
         let mut reopened = directory.open();
         let mut store =
             PublisherPolicyStore::load(&mut reopened, PublisherPolicyLimits::default()).unwrap();
+        let authenticated = store
+            .current_authenticated_project_authorization_v2(project, &pin(&signer))
+            .unwrap()
+            .unwrap();
+        assert_eq!(authenticated.request_id(), [4; 16]);
+        assert_eq!(authenticated.epoch(), 9);
+        assert_eq!(authenticated.limits(), current.limits);
         assert_eq!(
             store
                 .retain_project_authorization_source_v2(
@@ -604,6 +669,10 @@ mod tests {
             PublisherPolicyStore::load(&mut reopened, PublisherPolicyLimits::default()).unwrap();
         assert!(matches!(
             store.current_retained_project_authorization_v2(project),
+            Err(ProjectAuthorizationSourceErrorV2::Stale)
+        ));
+        assert!(matches!(
+            store.current_authenticated_project_authorization_v2(project, &pin(&signer)),
             Err(ProjectAuthorizationSourceErrorV2::Stale)
         ));
         assert!(matches!(
@@ -753,5 +822,76 @@ mod tests {
                 Err(PublisherPolicyError::CorruptState)
             ));
         }
+    }
+
+    #[test]
+    fn cold_current_read_rejects_rotated_issuer_and_rechecks_packet_signature() {
+        let directory = TestDirectory::new();
+        let project = ProjectId::from_bytes([1; 16]);
+        let signer = SigningKey::from_bytes(&[2; 32]);
+        let mut journal = directory.open();
+        let mut store = initial_store(&mut journal, project);
+        let signed = packet(&store, project, [4; 16], 9, &signer);
+        store
+            .retain_project_authorization_source_v2(
+                [5; 16],
+                project,
+                [4; 16],
+                &signed,
+                &pin(&signer),
+            )
+            .unwrap();
+        drop(store);
+        drop(journal);
+
+        let mut reopened = directory.open();
+        let store =
+            PublisherPolicyStore::load(&mut reopened, PublisherPolicyLimits::default()).unwrap();
+        let rotated = SigningKey::from_bytes(&[3; 32]);
+        assert!(matches!(
+            store.current_authenticated_project_authorization_v2(project, &pin(&rotated)),
+            Err(ProjectAuthorizationSourceErrorV2::Signature)
+        ));
+        drop(store);
+        drop(reopened);
+
+        let mut journal = directory.open();
+        let key = row_key(project, [4; 16]);
+        let mut row =
+            decode_row(journal.get(RecordNamespace::PublisherPolicy, &key).unwrap()).unwrap();
+        row.packet[PACKET_BYTES - 1] ^= 1;
+        row.packet_digest = commitment(PACKET_DOMAIN, &row.packet);
+        let row_bytes = encode_row(&row);
+        let head = RetainedProjectAuthorizationHeadV2 {
+            project,
+            epoch: row.epoch,
+            request_id: row.request_id,
+            row_digest: commitment(ROW_DOMAIN, &row_bytes),
+        };
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [6; 16],
+                    vec![
+                        JournalRecord::put(RecordNamespace::PublisherPolicy, key, row_bytes),
+                        JournalRecord::put(
+                            RecordNamespace::PublisherPolicy,
+                            head_key(project),
+                            encode_head(head),
+                        ),
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(journal);
+
+        let mut reopened = directory.open();
+        let store =
+            PublisherPolicyStore::load(&mut reopened, PublisherPolicyLimits::default()).unwrap();
+        assert!(matches!(
+            store.current_authenticated_project_authorization_v2(project, &pin(&signer)),
+            Err(ProjectAuthorizationSourceErrorV2::Signature)
+        ));
     }
 }
