@@ -59,6 +59,11 @@
     fetchurl = buildPackages.fetchurl;
     inherit buildPackages bazelZstdJni155;
   };
+  bazelJimfs = import ./_bazel-jimfs.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelMavenBootstrap;
+  };
   bazelLogkit = import ./_bazel-logkit.nix {
     mkDerivation = buildPackages.mkDerivation;
     fetchurl = buildPackages.fetchurl;
@@ -282,6 +287,7 @@
     inherit
       bazelAsm
       bazelMavenBootstrap
+      bazelJimfs
       bazelAvalonApi
       bazelMailApi
       bazelLog4j

@@ -37,6 +37,7 @@
   llvm,
   bazelAsm ? null,
   bazelMavenBootstrap ? null,
+  bazelJimfs ? null,
   bazelAvalonApi ? null,
   bazelMailApi ? null,
   bazelLog4j ? null,
@@ -1285,6 +1286,7 @@ in
       ]
       ++ lib.optional (bazelAsm != null) bazelAsm
       ++ lib.optional (bazelMavenBootstrap != null) bazelMavenBootstrap
+      ++ lib.optional (bazelJimfs != null) bazelJimfs
       ++ lib.optional (bazelAvalonApi != null) bazelAvalonApi
       ++ lib.optional (bazelMailApi != null) bazelMailApi
       ++ lib.optional (bazelLog4j != null) bazelLog4j
@@ -1366,6 +1368,12 @@ in
             mkdir -p derived/maven
             cp -a ${bazelMavenBootstrap}/maven/. derived/maven/
             chmod -R u+w derived/maven
+          ''}
+          ${lib.optionalString (bazelJimfs != null) ''
+            # Retain Jimfs's optional Unicode path handling with source-built
+            # ICU4J classes and generated resource data.
+            mkdir -p derived/maven
+            cp -a ${bazelJimfs}/maven/. derived/maven/
           ''}
           ${lib.optionalString (bazelAvalonApi != null) ''
             mkdir -p derived/maven/logkit/logkit/1.0.1
