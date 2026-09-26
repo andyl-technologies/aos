@@ -35,6 +35,7 @@ pub(super) struct ExpectedBudgetSuccessor {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- budget fixtures pinpoint invalid expectations.
     #![allow(clippy::expect_used)]
 
     use super::*;
