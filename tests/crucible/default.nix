@@ -61,6 +61,42 @@
       rawGate = gate;
       passthru.rawGate = gate;
     };
+  qualifiedRawGate = {
+    attrPath,
+    rawAttrPath,
+    gateName,
+    gate,
+    dependencies ? [],
+  }: let
+    gateSlug = builtins.replaceStrings [":" "." "/"] ["-" "-" "-"] gateName;
+    qualified = pkgs.mkDerivation {
+      pname = "crucible-${gateSlug}-qualified";
+      version = "0";
+      src = null;
+      buildDeps = [pkgs.coreutils pkgs.grep pkgs.sed gate] ++ dependencies;
+      phases = [
+        {
+          name = "certify-raw-gate-evidence";
+          script = ''
+            set -eu
+            test "$(grep -Fxc PASS ${gate}/result)" -eq 1
+            test "$(grep -Fxc 'gate=${gateName}' ${gate}/result)" -eq 1
+            test "$(grep -Fxc 'check=${rawAttrPath}' ${gate}/result)" -eq 1
+            test "$(grep -c '^check=' ${gate}/result)" -eq 1
+            for dependency in ${builtins.concatStringsSep " " (map toString dependencies)}; do
+              test "$(grep -Fxc PASS "$dependency/result")" -eq 1
+            done
+
+            mkdir -p "$out/evidence"
+            cp ${gate}/result "$out/evidence/raw.result"
+            sed 's|^check=.*$|check=${attrPath}|' ${gate}/result > "$out/result"
+            test "$(grep -Fxc 'check=${attrPath}' "$out/result")" -eq 1
+          '';
+        }
+      ];
+    };
+  in
+    qualified // {rawGate = gate;};
   campaignModeBaseSystem = mkSystem {
     modules = [../../systems/server.nix];
     systemName = "campaign-mode-matrix";
@@ -2877,35 +2913,27 @@ in rec {
       dependencies = [phase2.qemuFingerprintStateDomains];
     };
     gates = rec {
-      hotForkIsolation = redBeforeAdvance {
+      hotForkIsolation = qualifiedRawGate {
         attrPath = "checks.crucible.phase7.gates.hotForkIsolation";
+        rawAttrPath = "checks.crucible.phase7.gates.hotForkIsolation.rawGate";
+        gateName = "gate:hot-fork-isolation";
         gate = import ./phase7-crucible-hot-fork-isolation.nix {
           inherit pkgs;
           attrPath = "checks.crucible.phase7.gates.hotForkIsolation.rawGate";
-          taskIds = [];
+          taskIds = ["T-CAM-7.1" "T-CAM-7.3" "T-CAM-7.6"];
           nativeIsolation = phase7.qemuHotForkAtomicWorldVm;
         };
-        dependencies = [phase7.qemuHotForkAtomicWorldVm];
-        phase = "phase7";
-        reason = "canonical native isolation evidence has not passed on the frozen artifact";
-        taskIds = ["T-CAM-7.1" "T-CAM-7.3" "T-CAM-7.6"];
-        gateName = "gate:hot-fork-isolation";
-        owner = "crucible-daemon";
       };
-      hotForkScaling = redBeforeAdvance {
+      hotForkScaling = qualifiedRawGate {
         attrPath = "checks.crucible.phase7.gates.hotForkScaling";
-        # lint needle: hotForkScaling = import ./phase7-qemu-hot-fork-scaling-vm.nix
+        rawAttrPath = "checks.crucible.phase7.gates.hotForkScaling.rawGate";
+        gateName = "gate:hot-fork-scaling";
         gate = import ./phase7-qemu-hot-fork-scaling-vm.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase7.gates.hotForkScaling.rawGate";
           taskIds = ["T-CAM-7.1" "T-CAM-7.3" "T-CAM-7.6"];
         };
         dependencies = [phase7.qemuHotForkAtomicWorldVm];
-        phase = "phase7";
-        reason = "canonical production QEMU scaling evidence has not passed on the frozen artifact";
-        taskIds = ["T-CAM-7.1" "T-CAM-7.3" "T-CAM-7.6"];
-        gateName = "gate:hot-fork-scaling";
-        owner = "crucible-daemon";
       };
       hostCloneCost = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.hostCloneCost";
