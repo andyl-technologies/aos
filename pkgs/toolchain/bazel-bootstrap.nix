@@ -137,9 +137,11 @@ in
     # overrides while fetching the remaining graph with downloads disabled.
     passthru.offlineModules = helperScope.bazelOfflineModules;
     passthru.offlineSource = source;
+    passthru.offlineNettyModules = helperScope.bazelNetty119;
     passthru.offlineRepositories =
       {platforms = helperScope.bazelPlatformsSource;}
       // helperScope.bazelAsyncProfilerRepositories
+      // helperScope.bazelNetty119.repositories
       // {"grpc++grpc_repo_deps_ext+com_github_cncf_xds" = helperScope.bazelGrpcXdsSource;};
 
     buildDeps =
