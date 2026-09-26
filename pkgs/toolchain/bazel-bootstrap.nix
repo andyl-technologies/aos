@@ -76,9 +76,12 @@
     then callHelper ./_bazel-maven-bootstrap.nix {includeModernLibraries = true;}
     else helperScope.bazelMavenBootstrap;
   mavenSourceRepositories = callHelper ./_bazel-maven-source-repositories.nix {
-    mavenBootstrap = callHelper ./_bazel-maven-bootstrap.nix {
+    mavenPackage = callHelper ./_bazel-maven-bootstrap.nix {
       includeModernLibraries = true;
     };
+  };
+  googleHttpRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelGoogleHttp;
   };
   protobufJava = helperScope.bazelProtobufJava;
   protobufJavaUtil = helperScope.bazelProtobufJavaUtil;
@@ -146,8 +149,10 @@ in
     passthru.offlineNettyNativeRepositories = helperScope.bazelNetty119NativeRepositories;
     passthru.offlineCommonProtos = helperScope.bazelCommonProtos241;
     passthru.offlineMavenSourceRepositories = mavenSourceRepositories;
+    passthru.offlineGoogleHttpRepositories = googleHttpRepositories;
     passthru.offlineRepositories =
       mavenSourceRepositories
+      // googleHttpRepositories
       // {platforms = helperScope.bazelPlatformsSource;}
       // helperScope.bazelAsyncProfilerRepositories
       // helperScope.bazelNetty119.repositories

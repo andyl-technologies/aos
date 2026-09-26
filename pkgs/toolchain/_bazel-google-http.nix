@@ -126,6 +126,8 @@ in
     inherit version;
     src = builtins.head (builtins.map (source: source.src) sources);
 
+    passthru.sourceTargets = builtins.map (source: source.target) sources;
+
     buildDeps = [
       buildJdk
       buildPackages.unzip
