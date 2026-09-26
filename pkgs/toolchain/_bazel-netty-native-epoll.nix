@@ -7,8 +7,8 @@
   bazelNettyTransportExtras,
   bazelNettyCommon,
   bazelNettyBase,
+  version ? "4.1.93.Final",
 }: let
-  version = "4.1.93.Final";
   buildJdk = buildPackages.openjdk-21;
   architecture =
     if stdenv.hostPlatform.system == "x86_64-linux"
@@ -34,7 +34,6 @@ in
 
     buildDeps = [
       buildJdk
-      bazelNettyNativeUnix
       bazelNettyTransportExtras
       bazelNettyCommon
       bazelNettyBase
