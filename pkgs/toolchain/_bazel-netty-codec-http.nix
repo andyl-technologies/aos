@@ -8,12 +8,13 @@
   bazelNettyCodec,
   bazelNettyCodecJavaDeps,
   bazelNettyHandler,
+  version ? "4.1.93.Final",
+  sourceHash ? "sha256-4Lw39eGpqROB5iaJFVX54sSYZLxyS98cjVXGi6nArJk=",
 }: let
-  version = "4.1.93.Final";
   buildJdk = buildPackages.openjdk-17;
   source = fetchurl {
     urls = ["https://repo.maven.apache.org/maven2/io/netty/netty-codec-http/${version}/netty-codec-http-${version}-sources.jar"];
-    hash = "sha256-4Lw39eGpqROB5iaJFVX54sSYZLxyS98cjVXGi6nArJk=";
+    hash = sourceHash;
   };
 in
   mkDerivation {
