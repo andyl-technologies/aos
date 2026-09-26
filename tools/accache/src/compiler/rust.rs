@@ -1,7 +1,7 @@
 //! Rust output discovery, native dependencies, and extension read contracts.
 
 use super::{Invocation, parsed, strings};
-use crate::model::{Manifest, command};
+use crate::model::{DynamicOutputs, Manifest, command};
 use accache_frontend::compiler::rust;
 use anyhow::{Result, ensure};
 use std::{collections::BTreeMap, ffi::OsString, path::Path};
@@ -33,7 +33,8 @@ pub(super) fn configure(
     print_args.push("--print=file-names".into());
     let names = command(compiler, &print_args, environment).output()?;
     ensure!(names.status.success(), "rustc output discovery failed");
-    for name in String::from_utf8(names.stdout)?.lines() {
+    let printed_names = String::from_utf8(names.stdout)?;
+    for name in printed_names.lines() {
         let name = Path::new(name);
         ensure!(
             name.components().count() == 1,
@@ -45,6 +46,28 @@ pub(super) fn configure(
         if parsed.emit.contains("metadata") {
             invocation.output(&parsed.output_dir.join(name.with_extension("rmeta")), false)?;
         }
+    }
+    if parsed.emit.contains("link") && unpacked_split_debug(&expanded) {
+        // rustc does not list .dwo files in --print=file-names. Their leading
+        // stem follows the reported library name, while the CGU hash varies.
+        let library = printed_names
+            .lines()
+            .find(|name| name.ends_with(".rlib") || name.ends_with(".a"))
+            .ok_or_else(|| anyhow::anyhow!("unpacked debug has no library output name"))?;
+        let stem = Path::new(library)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| stem.strip_prefix("lib"))
+            .ok_or_else(|| anyhow::anyhow!("unexpected Rust library output name"))?;
+        invocation.dynamic_outputs = Some(DynamicOutputs {
+            directory: parsed
+                .output_dir
+                .canonicalize()?
+                .to_string_lossy()
+                .into_owned(),
+            prefix: format!("{stem}."),
+            suffix: ".dwo".into(),
+        });
     }
     for extra in [parsed.dep_info.as_ref(), parsed.gcno.as_ref()]
         .into_iter()
@@ -125,4 +148,21 @@ fn saves_temporary_outputs(args: &[String]) -> bool {
         }
     }
     enabled
+}
+
+fn unpacked_split_debug(args: &[String]) -> bool {
+    let mut unpacked = false;
+    for (index, arg) in args.iter().enumerate() {
+        let value = if matches!(arg.as_str(), "-C" | "--codegen") {
+            args.get(index + 1).map(String::as_str)
+        } else {
+            arg.strip_prefix("-C")
+                .or_else(|| arg.strip_prefix("--codegen="))
+        };
+        if let Some(setting) = value.and_then(|value| value.strip_prefix("split-debuginfo=")) {
+            // rustc uses the last setting when a codegen option repeats.
+            unpacked = setting == "unpacked";
+        }
+    }
+    unpacked
 }

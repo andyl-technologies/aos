@@ -103,6 +103,20 @@ pub struct Identity {
     pub outputs: Vec<String>,
     /// Outputs whose absence is a valid, restorable result.
     pub optional_outputs: Vec<String>,
+    /// Compiler-generated side files discovered after a successful action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_outputs: Option<DynamicOutputs>,
+}
+
+/// Bounds dynamic side files to one compiler output directory and name shape.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DynamicOutputs {
+    /// Absolute output directory selected by the compiler invocation.
+    pub directory: String,
+    /// Filename prefix derived from rustc's reported library filename.
+    pub prefix: String,
+    /// Filename suffix produced by the selected compiler mode.
+    pub suffix: String,
 }
 
 impl Identity {
@@ -129,6 +143,9 @@ impl Identity {
         }
         if self.adapter != prior.adapter {
             changed.push("compiler adapter version".into());
+        }
+        if self.dynamic_outputs != prior.dynamic_outputs {
+            changed.push("dynamic output scope".into());
         }
         for name in self.environment.keys().chain(prior.environment.keys()) {
             if self.environment.get(name) != prior.environment.get(name) {

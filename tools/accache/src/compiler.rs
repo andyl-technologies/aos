@@ -10,7 +10,7 @@ mod rust;
 
 use crate::{
     backend::safe_output,
-    model::{Manifest, command, fingerprint, hash},
+    model::{DynamicOutputs, Manifest, command, fingerprint, hash},
 };
 use accache_frontend::compiler::CompilerArguments;
 use anyhow::{Result, ensure};
@@ -18,8 +18,19 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     fs,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
+
+// File timestamps and inode distinguish an output rewritten with identical
+// bytes from an unrelated stale file in a persistent Cargo target directory.
+#[derive(Clone, Eq, PartialEq)]
+struct OutputStamp {
+    inode: u64,
+    size: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
 
 /// Holds discovered outputs and the probes needed to recompute action inputs.
 pub struct Invocation {
@@ -31,6 +42,9 @@ pub struct Invocation {
     pub optional_outputs: BTreeSet<String>,
     /// Expanded rustc arguments when sccache accepts a nested response file.
     pub execution_args: Option<Vec<String>>,
+    /// Bounded compiler-generated side files whose names require compilation.
+    pub dynamic_outputs: Option<DynamicOutputs>,
+    dynamic_before: BTreeMap<String, OutputStamp>,
     scan_args: Option<Vec<String>>,
     assembly_scan_args: Option<Vec<String>>,
     scan_stdout: bool,
@@ -59,6 +73,8 @@ pub fn classify(
         outputs: Vec::new(),
         optional_outputs: BTreeSet::new(),
         execution_args: None,
+        dynamic_outputs: None,
+        dynamic_before: BTreeMap::new(),
         scan_args: None,
         assembly_scan_args: None,
         scan_stdout: false,
@@ -89,6 +105,7 @@ pub fn classify(
     invocation.outputs.sort();
     invocation.outputs.dedup();
     ensure!(!invocation.outputs.is_empty(), "no compiler outputs");
+    invocation.dynamic_before = invocation.dynamic_snapshot()?;
     Ok(invocation)
 }
 
@@ -122,6 +139,70 @@ fn output_name(path: &Path) -> Result<String> {
 }
 
 impl Invocation {
+    fn dynamic_snapshot(&self) -> Result<BTreeMap<String, OutputStamp>> {
+        let Some(dynamic) = &self.dynamic_outputs else {
+            return Ok(BTreeMap::new());
+        };
+        let mut files = BTreeMap::new();
+        for entry in fs::read_dir(&dynamic.directory)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with(&dynamic.prefix) || !name.ends_with(&dynamic.suffix) {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(entry.path())?;
+            ensure!(metadata.is_file(), "dynamic output is not a regular file");
+            files.insert(
+                entry.path().to_string_lossy().into_owned(),
+                OutputStamp {
+                    inode: metadata.ino(),
+                    size: metadata.len(),
+                    mtime: (metadata.mtime(), metadata.mtime_nsec()),
+                    ctime: (metadata.ctime(), metadata.ctime_nsec()),
+                },
+            );
+        }
+        Ok(files)
+    }
+
+    /// Returns side files created or rewritten by this compiler invocation.
+    ///
+    /// # Errors
+    /// Returns an error if the compiler output directory cannot be inspected.
+    pub fn new_dynamic_outputs(&self) -> Result<Vec<String>> {
+        Ok(self
+            .dynamic_snapshot()?
+            .into_iter()
+            .filter(|(path, stamp)| self.dynamic_before.get(path) != Some(stamp))
+            .map(|(path, _)| path)
+            .collect())
+    }
+
+    fn is_output_path(&self, path: &Path) -> Result<bool> {
+        let cwd = std::env::current_dir()?;
+        if self
+            .outputs
+            .iter()
+            .any(|output| cwd.join(output) == cwd.join(path))
+        {
+            return Ok(true);
+        }
+        let Some(dynamic) = &self.dynamic_outputs else {
+            return Ok(false);
+        };
+        let Some(parent) = path.parent() else {
+            return Ok(false);
+        };
+        if parent.canonicalize()? != Path::new(&dynamic.directory) {
+            return Ok(false);
+        }
+        let Some(name) = path.file_name() else {
+            return Ok(false);
+        };
+        let name = name.to_string_lossy();
+        Ok(name.starts_with(&dynamic.prefix) && name.ends_with(&dynamic.suffix))
+    }
+
     fn output(&mut self, path: &Path, optional: bool) -> Result<()> {
         let path = output_name(path)?;
         if optional {
@@ -273,12 +354,7 @@ impl Invocation {
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
             let path = entry.path();
-            let cwd = std::env::current_dir()?;
-            if self
-                .outputs
-                .iter()
-                .any(|output| cwd.join(output) == cwd.join(&path))
-            {
+            if self.is_output_path(&path)? {
                 continue;
             }
             if path.is_dir() {

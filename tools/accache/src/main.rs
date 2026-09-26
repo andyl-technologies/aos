@@ -24,7 +24,7 @@ use std::{
 use anyhow::{Context, Result};
 use prost::Message;
 
-use backend::Backend;
+use backend::{Backend, PublicationOutputs};
 use model::{Identity, Manifest};
 use report::Event;
 
@@ -167,6 +167,7 @@ fn prepare(backend: &Backend, compiler: &str, args: &[String]) -> Result<Prepare
         inputs,
         outputs: invocation.outputs.clone(),
         optional_outputs: invocation.optional_outputs.iter().cloned().collect(),
+        dynamic_outputs: invocation.dynamic_outputs.clone(),
     };
     // The inventory node is deliberately versioned as a local-only action.
     // It is valid REAPI storage, but not a claim that a remote executor can
@@ -200,6 +201,13 @@ fn prepare(backend: &Backend, compiler: &str, args: &[String]) -> Result<Prepare
                 .outputs
                 .iter()
                 .map(|path| backend::wire_output(path))
+                .chain(
+                    identity
+                        .dynamic_outputs
+                        .as_ref()
+                        .map(backend::wire_dynamic_root)
+                        .map(Ok),
+                )
                 .collect::<Result<_>>()?,
         }
         .encode_to_vec(),
@@ -262,12 +270,18 @@ fn execute(backend: &Backend, args: &[String], prepared: Prepared, start: Instan
     // never share a lock, and another process always rechecks after acquiring it.
     let lock = backend.lock(&action);
     if lock.is_ok() {
-        match backend.restore(&action, &invocation.outputs, &invocation.optional_outputs) {
-            Ok(result) => {
-                io::stdout().write_all(&result.stdout_raw)?;
-                io::stderr().write_all(&result.stderr_raw)?;
+        match backend.restore(
+            &action,
+            &invocation.outputs,
+            &invocation.optional_outputs,
+            invocation.dynamic_outputs.as_ref(),
+        ) {
+            Ok(restored) => {
+                io::stdout().write_all(&restored.result.stdout_raw)?;
+                io::stderr().write_all(&restored.result.stderr_raw)?;
                 event.outcome = "hit".into();
                 event.reason = "validated action result and all output blobs".into();
+                event.artifacts = restored.paths;
                 event.duration_ms = start.elapsed().as_millis();
                 record(backend, &event);
                 return Ok(0);
@@ -288,16 +302,26 @@ fn execute(backend: &Backend, args: &[String], prepared: Prepared, start: Instan
         // input must not publish a result under the pre-compilation identity.
         match invocation.discover(compiler, args, &environment) {
             Ok(inputs) if inputs == identity.inputs => {
-                if let Err(error) = backend.publish(
-                    &action,
-                    &invocation.outputs,
-                    &invocation.optional_outputs,
-                    result.stdout,
-                    result.stderr,
-                ) {
-                    event.outcome = "write-error".into();
-                    event.reason =
-                        format!("compilation succeeded; cache publication failed: {error:#}");
+                let publication = invocation.new_dynamic_outputs().and_then(|dynamic_files| {
+                    backend.publish(
+                        &action,
+                        PublicationOutputs {
+                            fixed: &invocation.outputs,
+                            optional: &invocation.optional_outputs,
+                            dynamic: invocation.dynamic_outputs.as_ref(),
+                            generated: &dynamic_files,
+                        },
+                        result.stdout,
+                        result.stderr,
+                    )
+                });
+                match publication {
+                    Ok(paths) => event.artifacts = paths,
+                    Err(error) => {
+                        event.outcome = "write-error".into();
+                        event.reason =
+                            format!("compilation succeeded; cache publication failed: {error:#}");
+                    }
                 }
             }
             _ => {

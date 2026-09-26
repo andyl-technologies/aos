@@ -42,6 +42,9 @@ pub struct Event {
     pub identity: Option<Identity>,
     /// Differences from the last invocation targeting the same outputs.
     pub changes: Vec<String>,
+    /// Actual files published or restored by this action.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<String>,
     /// Original wrapper arguments, also retained when discovery bypasses.
     #[serde(default)]
     pub command: Vec<String>,
@@ -67,6 +70,7 @@ impl Event {
             output: std::env::var("out").ok(),
             identity: None,
             changes: Vec::new(),
+            artifacts: Vec::new(),
             command: std::env::args_os()
                 .skip(1)
                 .map(|arg| arg.to_string_lossy().into_owned())

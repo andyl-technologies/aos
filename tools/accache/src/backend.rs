@@ -22,7 +22,7 @@ use anyhow::{Result, ensure};
 use prost::Message;
 
 use crate::{
-    model::hash,
+    model::{DynamicOutputs, hash},
     proto::{ActionResult, Digest, OutputFile},
 };
 
@@ -32,6 +32,26 @@ pub struct Backend {
     pub root: PathBuf,
     /// Canonical directory containing locks and provenance, outside the CAS.
     pub state: PathBuf,
+}
+
+/// Describes the fixed and compiler-generated files published for one action.
+pub struct PublicationOutputs<'a> {
+    /// Output paths known before compilation.
+    pub fixed: &'a [String],
+    /// Fixed output paths that may legitimately be absent.
+    pub optional: &'a BTreeSet<String>,
+    /// Scope of compiler-generated output names, when one is enabled.
+    pub dynamic: Option<&'a DynamicOutputs>,
+    /// Files observed to be created or rewritten by this compilation.
+    pub generated: &'a [String],
+}
+
+/// Contains validated cached bytes and the paths restored for this invocation.
+pub struct RestoredAction {
+    /// Cache result containing compiler stdout and stderr.
+    pub result: ActionResult,
+    /// Validated local output paths restored from the result.
+    pub paths: Vec<String>,
 }
 
 impl Backend {
@@ -127,7 +147,8 @@ impl Backend {
         action: &str,
         outputs: &[String],
         optional: &BTreeSet<String>,
-    ) -> Result<ActionResult> {
+        dynamic: Option<&DynamicOutputs>,
+    ) -> Result<RestoredAction> {
         let path = self.path("ac", action)?;
         let bytes = fs::read(&path)?;
         let result = ActionResult::decode(bytes.as_slice())?;
@@ -135,10 +156,19 @@ impl Backend {
             result.encode_to_vec() == bytes && result.exit_code == 0,
             "unsupported or unsuccessful action result"
         );
-        let destinations: std::collections::BTreeMap<_, _> = outputs
+        let fixed_destinations: std::collections::BTreeMap<_, _> = outputs
             .iter()
-            .map(|path| Ok((wire_output(path)?, path)))
+            .map(|path| Ok((wire_output(path)?, path.to_owned())))
             .collect::<Result<_>>()?;
+        let mut destinations = fixed_destinations.clone();
+        for file in &result.output_files {
+            if !destinations.contains_key(&file.path) {
+                let destination = dynamic
+                    .and_then(|scope| dynamic_destination(scope, &file.path))
+                    .ok_or_else(|| anyhow::anyhow!("unexpected cached output"))?;
+                destinations.insert(file.path.clone(), destination);
+            }
+        }
         let actual: BTreeSet<_> = result
             .output_files
             .iter()
@@ -146,10 +176,9 @@ impl Backend {
             .collect();
         ensure!(
             actual.len() == result.output_files.len()
-                && actual.iter().all(|path| destinations.contains_key(*path))
-                && destinations
+                && fixed_destinations
                     .iter()
-                    .all(|(wire, path)| actual.contains(wire.as_str()) || optional.contains(*path)),
+                    .all(|(wire, path)| actual.contains(wire.as_str()) || optional.contains(path)),
             "cached output set differs from invocation"
         );
         let mut staged = Vec::new();
@@ -196,7 +225,17 @@ impl Backend {
             temporary.persist(destination)?;
         }
         touch(&path)?;
-        Ok(result)
+        let paths = result
+            .output_files
+            .iter()
+            .map(|file| {
+                destinations
+                    .get(&file.path)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("missing restored destination"))
+            })
+            .collect::<Result<_>>()?;
+        Ok(RestoredAction { result, paths })
     }
 
     /// Stores successful compiler outputs before publishing their action result.
@@ -207,19 +246,19 @@ impl Backend {
     pub fn publish(
         &self,
         action: &str,
-        outputs: &[String],
-        optional: &BTreeSet<String>,
+        outputs: PublicationOutputs<'_>,
         stdout: Vec<u8>,
         stderr: Vec<u8>,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         let mut files = Vec::new();
-        for output in outputs {
+        let mut paths = Vec::new();
+        for output in outputs.fixed {
             let path = safe_output(output)?;
             let metadata = match fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(error)
                     if error.kind() == std::io::ErrorKind::NotFound
-                        && optional.contains(output) =>
+                        && outputs.optional.contains(output) =>
                 {
                     continue;
                 }
@@ -231,6 +270,21 @@ impl Backend {
                 digest: Some(self.put(&fs::read(path)?)?),
                 is_executable: metadata.permissions().mode() & 0o111 != 0,
             });
+            paths.push(output.clone());
+        }
+        for output in outputs.generated {
+            let scope = outputs
+                .dynamic
+                .ok_or_else(|| anyhow::anyhow!("undeclared dynamic output"))?;
+            let path = safe_output(output)?;
+            let metadata = fs::symlink_metadata(&path)?;
+            ensure!(metadata.is_file(), "dynamic output is not a regular file");
+            files.push(OutputFile {
+                path: wire_dynamic_output(scope, &path)?,
+                digest: Some(self.put(&fs::read(path)?)?),
+                is_executable: metadata.permissions().mode() & 0o111 != 0,
+            });
+            paths.push(output.clone());
         }
         atomic(
             &self.path("ac", action)?,
@@ -241,7 +295,8 @@ impl Backend {
                 stderr_raw: stderr,
             }
             .encode_to_vec(),
-        )
+        )?;
+        Ok(paths)
     }
 }
 
@@ -292,6 +347,53 @@ pub fn wire_output(value: &str) -> Result<String> {
     ))
 }
 
+/// Names one bounded output directory in the local REAPI command.
+pub fn wire_dynamic_root(scope: &DynamicOutputs) -> String {
+    format!(
+        "outputs/{}",
+        hash(Path::new(&scope.directory).as_os_str().as_encoded_bytes())
+    )
+}
+
+fn wire_dynamic_output(scope: &DynamicOutputs, path: &Path) -> Result<String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("dynamic output has no parent"))?
+        .canonicalize()?;
+    ensure!(
+        parent == Path::new(&scope.directory),
+        "dynamic output escaped its directory"
+    );
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("invalid dynamic output filename"))?;
+    ensure!(
+        name.starts_with(&scope.prefix) && name.ends_with(&scope.suffix),
+        "dynamic output name is outside its declared scope"
+    );
+    Ok(format!("{}/{name}", wire_dynamic_root(scope)))
+}
+
+fn dynamic_destination(scope: &DynamicOutputs, wire: &str) -> Option<String> {
+    let root = wire_dynamic_root(scope);
+    let name = wire.strip_prefix(&format!("{root}/"))?;
+    if name.contains('/')
+        || name == "."
+        || name == ".."
+        || !name.starts_with(&scope.prefix)
+        || !name.ends_with(&scope.suffix)
+    {
+        return None;
+    }
+    Some(
+        Path::new(&scope.directory)
+            .join(name)
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
 /// Publishes a complete file with an atomic rename in the destination filesystem.
 ///
 /// # Errors
@@ -307,4 +409,34 @@ pub fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     temporary.write_all(bytes)?;
     temporary.persist(path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dynamic_destination, wire_dynamic_root};
+    use crate::model::DynamicOutputs;
+
+    #[test]
+    fn dynamic_cache_paths_cannot_escape_the_declared_output_scope() {
+        let scope = DynamicOutputs {
+            directory: "/build/target".into(),
+            prefix: "example.".into(),
+            suffix: ".dwo".into(),
+        };
+        let root = wire_dynamic_root(&scope);
+        let expected = "/build/target/example.hash-cgu.0.rcgu.dwo";
+
+        assert_eq!(
+            dynamic_destination(&scope, &format!("{root}/example.hash-cgu.0.rcgu.dwo")),
+            Some(expected.into())
+        );
+        for wire in [
+            format!("{root}/../example.hash-cgu.0.rcgu.dwo"),
+            format!("{root}/subdir/example.hash-cgu.0.rcgu.dwo"),
+            format!("{root}/other.hash-cgu.0.rcgu.dwo"),
+            "outputs/other/example.hash-cgu.0.rcgu.dwo".into(),
+        ] {
+            assert!(dynamic_destination(&scope, &wire).is_none(), "{wire}");
+        }
+    }
 }
