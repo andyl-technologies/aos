@@ -68,7 +68,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // This covers the complete comment-free V1 schema rather than a sample of
     // declarations: every method tag, enum value, message field/type/
     // cardinality/oneof, reserved tag, and RPC signature are compatibility-owned.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0xb415_eefa_c918_81fb;
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0xc5d7_02e4_aa8e_dfff;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(

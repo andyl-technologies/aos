@@ -465,6 +465,7 @@ mod tests {
             BrokerVerb::StorageRepairWorkspacePin,
             BrokerVerb::StorageReserveExecutionCapture,
             BrokerVerb::StorageReserveExecutionOutput,
+            BrokerVerb::StorageQueryExecutionOutput,
             BrokerVerb::StorageQueryExecutionCapture,
             BrokerVerb::StorageCaptureCandidateReadback,
             BrokerVerb::NetworkPrepare,
@@ -507,6 +508,7 @@ mod tests {
                 | BrokerVerb::StoragePrepareCatalog
                 | BrokerVerb::StorageReserveExecutionCapture
                 | BrokerVerb::StorageReserveExecutionOutput
+                | BrokerVerb::StorageQueryExecutionOutput
                 | BrokerVerb::StorageQueryExecutionCapture
                 | BrokerVerb::StorageCaptureCandidateReadback
                 | BrokerVerb::NetworkPrepare

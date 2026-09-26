@@ -81,7 +81,7 @@ const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDis
 ///
 /// Registration is not production advertisement. Closed provisional carriers
 /// remain excluded until their protected issuers and Host owners are joined.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 44] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 45] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -126,6 +126,7 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 44] = [
     BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1,
     BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT,
+    BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -159,6 +160,7 @@ pub fn authenticated_broker_methods_for_role_v1(
                     | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
                     | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+                    | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
             )
         })
         .filter(|method| {
@@ -464,6 +466,7 @@ pub const fn authenticated_broker_method_profile_v1(
         // The Storage method remains unnegotiable until its same-session Host
         // proof and protected writer admission are implemented.
         BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
     let (major, minor) = supported_broker_session_version_v1(protocol);
@@ -1061,15 +1064,19 @@ mod tests {
     #[test]
     fn storage_output_reserve_remains_unnegotiable() {
         let method = BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT;
+        let query = BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT;
         let audience = Audience::AUDIENCE_NODE_CONTROLLER;
         let protocol = BrokerSessionProtocolV1::Storage;
 
         assert!(authenticated_broker_method_profile_v1(method).is_none());
+        assert!(authenticated_broker_method_profile_v1(query).is_none());
         assert!(!authenticated_broker_methods_for_role_v1(protocol, audience).contains(&method));
+        assert!(!authenticated_broker_methods_for_role_v1(protocol, audience).contains(&query));
 
         let client = production_broker_client_hello_v1(protocol, audience, RESPONSE_MAXIMUM)
             .expect("existing Storage hello remains available");
         assert!(!client.required_methods.contains(&method.into()));
+        assert!(!client.required_methods.contains(&query.into()));
     }
 
     #[test]

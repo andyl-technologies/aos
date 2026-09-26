@@ -476,10 +476,11 @@ pub const fn authenticated_broker_method_adapter_v1(
         BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => {
             AuthenticatedBrokerMethodSemanticsV1::HostQueryNoApplySettlement
         }
-        // These provisional mutations remain closed until their independent
+        // These provisional carriers remain closed until their independent
         // issuers and cross-owner currentness joins exist.
         BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
-        | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT => return None,
+        | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT => return None,
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
     Some(AuthenticatedBrokerMethodAdapterV1 { profile, semantics })
@@ -1677,6 +1678,7 @@ fn validate_request_semantics(
         }
         BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
         | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
@@ -2226,6 +2228,7 @@ fn validate_success_semantics(
         }
         BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
         | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }

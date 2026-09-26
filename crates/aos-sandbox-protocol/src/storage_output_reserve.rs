@@ -6,10 +6,13 @@
 //! Host readback, and the exclusively held Storage output writer. No production
 //! method advertises or dispatches this request yet.
 
-use aos_proto::aos::sandbox::local::v1::{Audience, ReserveStorageExecutionOutputRequestV1};
+use aos_proto::aos::sandbox::local::v1::{
+    Audience, QueryStorageExecutionOutputRequestV1, ReserveStorageExecutionOutputRequestV1,
+};
 use aos_sandbox_core::{
     AssignmentEpoch, BrokerArgumentCommitment, BrokerAssignment, BrokerGrant, BrokerGrantTarget,
-    BrokerVerb, DesiredGeneration, IncarnationId, ObjectDigest, ProtocolId, SandboxId,
+    BrokerVerb, DesiredGeneration, IncarnationId, ObjectDigest, ProtocolId, ProtocolVersion,
+    SandboxId,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -31,6 +34,7 @@ const PREISSUE_DOMAIN: &[u8] = b"aos.sandbox.controller-execution-preissue.v1\0"
 const SOURCE_DOMAIN: &[u8] = b"aos.sandbox.controller-execution-reserve-source.v1\0";
 const SETTLEMENT_DOMAIN: &[u8] = b"aos.sandbox.controller-output-settlement.v1\0";
 const GRANT_DOMAIN: &[u8] = b"aos.sandbox.storage.output-reserve-grant.v1\0";
+const QUERY_GRANT_DOMAIN: &[u8] = b"aos.sandbox.storage.output-query-grant.v1\0";
 const MAXIMUM_BODY_BYTES: usize = 4 * 1_024;
 
 /// Keeps structurally matched original Controller records under one request.
@@ -39,6 +43,7 @@ pub struct StorageOutputReserveRecordsV1 {
     attempt: [u8; CONTROLLER_OUTPUT_ATTEMPT_BYTES_V1],
     settlement: [u8; CONTROLLER_OUTPUT_SETTLEMENT_BYTES_V1],
     locator: HostOutputReservationLocatorV1,
+    assignment: BrokerAssignment,
     deadline_boottime_nanoseconds: u64,
 }
 
@@ -108,6 +113,7 @@ impl StorageOutputReserveRecordsV1 {
             attempt,
             settlement,
             locator,
+            assignment: host_assignment,
             deadline_boottime_nanoseconds,
         })
     }
@@ -116,6 +122,12 @@ impl StorageOutputReserveRecordsV1 {
     #[must_use]
     pub const fn host_locator(&self) -> HostOutputReservationLocatorV1 {
         self.locator
+    }
+
+    /// Returns the assignment embedded in the original Controller source.
+    #[must_use]
+    pub const fn assignment(&self) -> BrokerAssignment {
+        self.assignment
     }
 
     /// Returns the Controller preissue deadline shared by both owner records.
@@ -142,6 +154,55 @@ impl StorageOutputReserveRecordsV1 {
 pub struct ValidatedStorageOutputReserveRequestV1 {
     header: ValidatedHeader,
     records: StorageOutputReserveRecordsV1,
+}
+
+/// Retains a fresh read-only query and its original reserve identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedStorageOutputQueryRequestV1 {
+    header: ValidatedHeader,
+    original_request_id: [u8; 16],
+    original_body: Vec<u8>,
+    original_plan_digest: ObjectDigest,
+    original_semantic_digest: ObjectDigest,
+    records: StorageOutputReserveRecordsV1,
+}
+
+impl ValidatedStorageOutputQueryRequestV1 {
+    /// Returns the fresh authenticated query header.
+    #[must_use]
+    pub const fn header(&self) -> &ValidatedHeader {
+        &self.header
+    }
+
+    /// Returns the immutable original method-46 request ID.
+    #[must_use]
+    pub const fn original_request_id(&self) -> [u8; 16] {
+        self.original_request_id
+    }
+
+    /// Borrows the exact original method-46 body for protected lookup.
+    #[must_use]
+    pub fn original_body(&self) -> &[u8] {
+        &self.original_body
+    }
+
+    /// Returns the original signed-plan digest for exact replay comparison.
+    #[must_use]
+    pub const fn original_plan_digest(&self) -> ObjectDigest {
+        self.original_plan_digest
+    }
+
+    /// Returns the original signed semantic commitment digest.
+    #[must_use]
+    pub const fn original_semantic_digest(&self) -> ObjectDigest {
+        self.original_semantic_digest
+    }
+
+    /// Borrows structural source records; these do not authorize mutation.
+    #[must_use]
+    pub const fn records(&self) -> &StorageOutputReserveRecordsV1 {
+        &self.records
+    }
 }
 
 impl ValidatedStorageOutputReserveRequestV1 {
@@ -254,6 +315,144 @@ pub fn storage_output_reserve_grant_v1(
         0,
     )
     .map_err(|_| invalid())
+}
+
+/// Parses a fresh historical query without admitting a Storage effect.
+///
+/// The original reserve deadline may have elapsed; only the query header must
+/// still be live. Storage must compare every original field with its protected
+/// attempt before returning a historical observation.
+///
+/// # Errors
+///
+/// Rejects a noncanonical query, reused reserve ID, stale query header, or
+/// substituted original body, plan digest, or semantic commitment.
+pub fn decode_storage_output_query_request_v1(
+    body: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+) -> Result<ValidatedStorageOutputQueryRequestV1, ProtocolValidationError> {
+    let (query, original_id, records, original_semantic_digest) = parse_query_parts(body)?;
+    let header = validate_request_header(
+        query
+            .header
+            .as_option()
+            .ok_or(ProtocolValidationError::MissingField("header"))?,
+        peer,
+        policy,
+        ProtocolId::StorageBroker,
+        now_boottime_nanoseconds,
+    )?;
+    if header.request_id() == &original_id
+        || header.protocol_version() != ProtocolVersion::new(1, 0)
+    {
+        return Err(invalid());
+    }
+    let original_plan_digest = ObjectDigest::from_bytes(
+        query.original_signed_plan_digest[..]
+            .try_into()
+            .map_err(|_| invalid())?,
+    );
+    Ok(ValidatedStorageOutputQueryRequestV1 {
+        header,
+        original_request_id: original_id,
+        original_body: query.canonical_original_reserve_request,
+        original_plan_digest,
+        original_semantic_digest,
+        records,
+    })
+}
+
+/// Compiles a distinct read-only query grant over a fresh signed request.
+///
+/// # Errors
+///
+/// Rejects a query whose original reserve body, original plan digest, or
+/// semantic commitment does not exactly match its embedded identity.
+pub fn storage_output_query_grant_v1(
+    assignment: BrokerAssignment,
+    request_id: [u8; 16],
+    body: &[u8],
+) -> Result<BrokerGrant, ProtocolValidationError> {
+    let (query, original_id, records, _) = parse_query_parts(body)?;
+    let header = query.header.as_option().ok_or_else(invalid)?;
+    if request_id == [0; 16]
+        || header.request_id != request_id
+        || request_id == original_id
+        || assignment != records.assignment()
+    {
+        return Err(invalid());
+    }
+    let mut statement = Vec::with_capacity(QUERY_GRANT_DOMAIN.len() + 1 + 16 + body.len());
+    statement.extend_from_slice(QUERY_GRANT_DOMAIN);
+    statement.push(1);
+    statement.extend_from_slice(&request_id);
+    statement.extend_from_slice(body);
+    BrokerGrant::new(
+        BrokerVerb::StorageQueryExecutionOutput,
+        BrokerGrantTarget::Assignment,
+        BrokerArgumentCommitment::for_canonical_bytes(&statement),
+        MAXIMUM_BODY_BYTES as u32,
+        0,
+    )
+    .map_err(|_| invalid())
+}
+
+fn parse_query_parts(
+    body: &[u8],
+) -> Result<
+    (
+        QueryStorageExecutionOutputRequestV1,
+        [u8; 16],
+        StorageOutputReserveRecordsV1,
+        ObjectDigest,
+    ),
+    ProtocolValidationError,
+> {
+    if body.is_empty() || body.len() > MAXIMUM_BODY_BYTES {
+        return Err(invalid());
+    }
+    let query = QueryStorageExecutionOutputRequestV1::decode_from_slice(body)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !query.__buffa_unknown_fields.is_empty() || query.encode_to_vec() != body {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
+    let header = query.header.as_option().ok_or_else(invalid)?;
+    if header.protocol_major != 1
+        || header.protocol_minor != 0
+        || header.audience.as_known() != Some(Audience::AUDIENCE_NODE_CONTROLLER)
+        || header.deadline_boottime_nanoseconds == 0
+        || query.original_signed_plan_digest.len() != 32
+        || query.original_signed_plan_digest == [0; 32]
+        || query.original_semantic_request_digest.len() != 32
+    {
+        return Err(invalid());
+    }
+    let original = ReserveStorageExecutionOutputRequestV1::decode_from_slice(
+        &query.canonical_original_reserve_request,
+    )
+    .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    let original_header = original.header.as_option().ok_or_else(invalid)?;
+    let original_id: [u8; 16] = original_header
+        .request_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| invalid())?;
+    let records = StorageOutputReserveRecordsV1::from_canonical_records(
+        &original.canonical_controller_attempt,
+        &original.canonical_controller_settlement,
+    )?;
+    let original_grant = storage_output_reserve_grant_v1(
+        records.assignment(),
+        original_id,
+        &query.canonical_original_reserve_request,
+    )?;
+    let semantic_digest = original_grant.argument_commitment().digest();
+    if query.original_semantic_request_digest != *semantic_digest.as_bytes() {
+        return Err(invalid());
+    }
+    Ok((query, original_id, records, semantic_digest))
 }
 
 fn read_u64(bytes: &[u8]) -> Result<u64, ProtocolValidationError> {
@@ -478,6 +677,78 @@ mod tests {
         changed.header = Some(changed_header).into();
         assert!(
             storage_output_reserve_grant_v1(assignment, [19; 16], &changed.encode_to_vec(),)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cold_query_has_distinct_grant_and_preserves_expired_original() {
+        let (original, assignment) = fixture();
+        let original_body = original.encode_to_vec();
+        let reserve =
+            storage_output_reserve_grant_v1(assignment, [18; 16], &original_body).unwrap();
+        let query = QueryStorageExecutionOutputRequestV1 {
+            header: Some(RequestHeader {
+                protocol_major: 1,
+                request_id: vec![19; 16],
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: 1_100,
+                maximum_response_bytes: 4_096,
+                ..Default::default()
+            })
+            .into(),
+            canonical_original_reserve_request: original_body,
+            original_signed_plan_digest: vec![20; 32],
+            original_semantic_request_digest: reserve
+                .argument_commitment()
+                .digest()
+                .as_bytes()
+                .to_vec(),
+            ..Default::default()
+        };
+        let body = query.encode_to_vec();
+        let grant = storage_output_query_grant_v1(assignment, [19; 16], &body).unwrap();
+        assert_eq!(grant.verb(), BrokerVerb::StorageQueryExecutionOutput);
+        assert_ne!(grant.argument_commitment(), reserve.argument_commitment());
+
+        let peer = PeerCredentials {
+            uid: 1,
+            gid: 2,
+            pid: None,
+        };
+        let policy = PeerPolicy {
+            uid: 1,
+            gid: Some(2),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        };
+        let decoded = decode_storage_output_query_request_v1(&body, peer, policy, 1_000).unwrap();
+        assert_eq!(decoded.original_request_id(), [18; 16]);
+        assert_eq!(
+            decoded.original_plan_digest(),
+            ObjectDigest::from_bytes([20; 32])
+        );
+        assert!(decode_storage_output_query_request_v1(&body, peer, policy, 1_100).is_err());
+
+        let mut reused_id = query.clone();
+        let mut header = reused_id.header.as_option().unwrap().clone();
+        header.request_id = vec![18; 16];
+        reused_id.header = Some(header).into();
+        assert!(
+            storage_output_query_grant_v1(assignment, [18; 16], &reused_id.encode_to_vec())
+                .is_err()
+        );
+
+        let mut substituted = query.clone();
+        substituted.original_semantic_request_digest[0] ^= 1;
+        assert!(
+            storage_output_query_grant_v1(assignment, [19; 16], &substituted.encode_to_vec())
+                .is_err()
+        );
+
+        let mut substituted = query;
+        substituted.canonical_original_reserve_request[0] ^= 1;
+        assert!(
+            storage_output_query_grant_v1(assignment, [19; 16], &substituted.encode_to_vec())
                 .is_err()
         );
     }

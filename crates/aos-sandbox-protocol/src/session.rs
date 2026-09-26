@@ -1367,6 +1367,7 @@ fn validate_outbound_carriers(
             roles == crate::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES
         }
         BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_UNSPECIFIED => false,
     };
     if valid {
@@ -2190,6 +2191,19 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn storage_output_attempt_and_query_remain_closed_to_sessions() {
+        for method in [
+            BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT,
+            BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT,
+        ] {
+            assert!(matches!(
+                validate_method(Some(method), ProtocolId::StorageBroker),
+                Err(ProtocolValidationError::MethodMismatch)
+            ));
+        }
+    }
 
     fn feature(namespace: &str) -> FeatureRef {
         FeatureRef::new(namespace, 1, 0)

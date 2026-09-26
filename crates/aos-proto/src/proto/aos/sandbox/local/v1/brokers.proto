@@ -113,6 +113,8 @@ enum BrokerMethod {
   BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 = 45;
   // Closed Storage logical output reserve; no production hello advertises it.
   BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT = 46;
+  // Closed read-only historical query of the original Storage reserve attempt.
+  BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT = 47;
 }
 
 // FUSE 3.0 Controller intent candidate. These fields become authority only
@@ -396,6 +398,15 @@ message ReserveStorageExecutionOutputRequestV1 {
   RequestHeader header = 1;
   bytes canonical_controller_attempt = 2; // Exact 816-byte AOSCIA01.
   bytes canonical_controller_settlement = 3; // Exact 208-byte AOSCIS01.
+}
+
+// A fresh read-only request refers to the exact original method-46 body and
+// signed plan. It cannot be interpreted as a new reserve attempt.
+message QueryStorageExecutionOutputRequestV1 {
+  RequestHeader header = 1;
+  bytes canonical_original_reserve_request = 2;
+  bytes original_signed_plan_digest = 3; // Exact 32-byte digest.
+  bytes original_semantic_request_digest = 4; // Exact 32-byte grant digest.
 }
 
 // AOSSCG01 is a structural, 512-byte Storage capture source. It embeds the

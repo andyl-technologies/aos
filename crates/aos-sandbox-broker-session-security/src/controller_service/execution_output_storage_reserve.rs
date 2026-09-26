@@ -2,8 +2,8 @@
 //!
 //! This source consists of the existing protected AOSCIA01 and AOSCIS01
 //! records. It cannot be sent by the current production Controller: original
-//! Storage request custody, same-session Host proof, and Storage dispatch are
-//! still closed. Signing establishes Controller issuance only.
+//! same-session Host proof and Storage dispatch are still closed. Signing and
+//! protected one-shot custody establish Controller issuance only.
 
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerAuthorizationArtifactsV1, ReserveStorageExecutionOutputRequestV1,
@@ -12,6 +12,7 @@ use aos_sandbox::controller_execution_output_settlement::read_current_controller
 use aos_sandbox::controller_execution_preissue::{
     ControllerExecutionPreissueV1, prepare_execution_reserve_source_v1,
 };
+use aos_sandbox::controller_storage_output_reserve_attempt::retain_controller_storage_output_reserve_attempt_v1;
 use aos_sandbox::environment::EnvironmentProtectedJournalOwnerV1;
 use aos_sandbox::execution_parent_resource::ExecutionParentResourceSourceV1;
 use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
@@ -49,8 +50,8 @@ impl SignedStorageOutputReserveV1 {
 /// Signs one current, zero-byte Controller source for the Storage audience.
 ///
 /// The original Storage request ID comes from the authenticated session
-/// coordinates. No service routes this body to Storage until the Host proof
-/// and durable original-attempt recovery protocol are implemented.
+/// coordinates. No service routes this body to Storage until same-session
+/// Host proof and protected Storage writer admission are implemented.
 ///
 /// # Errors
 ///
@@ -225,6 +226,8 @@ where
             "Storage output reserve source changed before send",
         ));
     }
+    retain_controller_storage_output_reserve_attempt_v1(controller, &body, &signed)
+        .map_err(|_| retryable("original Storage output attempt needs protected cold query"))?;
     Ok(SignedStorageOutputReserveV1 {
         body,
         authorization: BrokerAuthorizationArtifactsV1 {
