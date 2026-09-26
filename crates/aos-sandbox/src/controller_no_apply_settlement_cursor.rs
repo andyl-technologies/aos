@@ -178,10 +178,9 @@ impl ControllerNoApplySettlementCursorV1 {
     ) -> Result<Self, ControllerNoApplySettlementCursorErrorV1> {
         let original = validated.original();
         let fields = marker.fields();
-        let body = SettleHostExecutionNoApplyRequestV2::decode_from_slice(
-            signed_request.exact_body(),
-        )
-        .map_err(|_| ControllerNoApplySettlementCursorErrorV1::NotCurrent)?;
+        let body =
+            SettleHostExecutionNoApplyRequestV2::decode_from_slice(signed_request.exact_body())
+                .map_err(|_| ControllerNoApplySettlementCursorErrorV1::NotCurrent)?;
         let header = body
             .header
             .as_option()
@@ -613,8 +612,7 @@ fn cold_response_matches(
     if !query.__buffa_unknown_fields.is_empty()
         || query.encode_to_vec() != outcome.request().exact_body()
         || header.request_id.as_slice() != outcome.request().request_id().as_slice()
-        || header.deadline_boottime_nanoseconds
-            != outcome.request().deadline_boottime_nanoseconds()
+        || header.deadline_boottime_nanoseconds != outcome.request().deadline_boottime_nanoseconds()
         || header.maximum_response_bytes != outcome.request().maximum_response_bytes()
         || query.canonical_attempt != source.canonical_bytes()
         || query.original_session_binding != cursor.marker.fields().original_session_binding
@@ -767,7 +765,9 @@ mod tests {
         .unwrap()
     }
 
-    fn cursor(source: &ControllerExecutionArgumentAttemptV1) -> ControllerNoApplySettlementCursorV1 {
+    fn cursor(
+        source: &ControllerExecutionArgumentAttemptV1,
+    ) -> ControllerNoApplySettlementCursorV1 {
         ControllerNoApplySettlementCursorV1 {
             execution: source.execution(),
             operation: source.create_operation(),
@@ -825,7 +825,9 @@ mod tests {
                 28 => changed.operation = OperationId::from_bytes([22; 16]),
                 44 => changed.marker_digest = ObjectDigest::from_bytes([22; 32]),
                 108 => changed.archives.original_h_head = ObjectDigest::from_bytes([22; 32]),
-                140 => changed.archives.signed_terminal_outcome = ObjectDigest::from_bytes([22; 32]),
+                140 => {
+                    changed.archives.signed_terminal_outcome = ObjectDigest::from_bytes([22; 32])
+                }
                 212 => changed.session_binding = [22; 32],
                 244 => changed.challenge = [22; 16],
                 _ => unreachable!(),
@@ -839,16 +841,31 @@ mod tests {
         let historical_cut = cursor.historical_cut().unwrap();
         assert_eq!(historical_cut.controller_preparation_sequence, 20);
         assert_eq!(historical_cut.host_epoch, 11);
-        assert_eq!(historical_cut.host_pre_lease_cut, ObjectDigest::from_bytes([21; 32]));
+        assert_eq!(
+            historical_cut.host_pre_lease_cut,
+            ObjectDigest::from_bytes([21; 32])
+        );
         let canonical = cursor.encode();
         assert_eq!(canonical.len(), BYTES);
-        assert_eq!(ControllerNoApplySettlementCursorV1::decode(source.execution().as_bytes(), &canonical).unwrap(), cursor);
+        assert_eq!(
+            ControllerNoApplySettlementCursorV1::decode(source.execution().as_bytes(), &canonical)
+                .unwrap(),
+            cursor
+        );
         for offset in [0, 10, 12, 44, 76, 460, 524, 540, 644, 645, BYTES - 1] {
             let mut changed = canonical.clone();
             changed[offset] ^= 1;
-            assert!(ControllerNoApplySettlementCursorV1::decode(source.execution().as_bytes(), &changed).is_err());
+            assert!(
+                ControllerNoApplySettlementCursorV1::decode(
+                    source.execution().as_bytes(),
+                    &changed
+                )
+                .is_err()
+            );
         }
-        assert!(ControllerNoApplySettlementCursorV1::decode([24; 16].as_slice(), &canonical).is_err());
+        assert!(
+            ControllerNoApplySettlementCursorV1::decode([24; 16].as_slice(), &canonical).is_err()
+        );
     }
 
     #[test]
@@ -857,8 +874,12 @@ mod tests {
         fs::set_permissions(directory.path(), Permissions::from_mode(0o700)).unwrap();
         let uid = fs::metadata(directory.path()).unwrap().uid();
         let (mut controller, _) = Journal::open_protected_at_uid(
-            directory.path(), "controller.journal", JournalLimits::default(), uid,
-        ).unwrap();
+            directory.path(),
+            "controller.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
         let source = source();
         let original = JournalTransaction::new(
             [30; 16],
@@ -867,17 +888,31 @@ mod tests {
                 source.execution().as_bytes().to_vec(),
                 source.canonical_bytes().to_vec(),
             )],
-        ).unwrap();
+        )
+        .unwrap();
         controller.commit(&original).unwrap();
         let candidate = cursor(&source);
 
-        assert!(read_controller_no_apply_settlement_cursor_v1(
-            &controller, &source, candidate.marker, candidate.archive_head,
-            candidate.signed_terminal_outcome,
-        ).unwrap().is_none());
-        let retained = reserve_controller_no_apply_settlement_cursor_v1(&mut controller, &source, candidate).unwrap();
+        assert!(
+            read_controller_no_apply_settlement_cursor_v1(
+                &controller,
+                &source,
+                candidate.marker,
+                candidate.archive_head,
+                candidate.signed_terminal_outcome,
+            )
+            .unwrap()
+            .is_none()
+        );
+        let retained =
+            reserve_controller_no_apply_settlement_cursor_v1(&mut controller, &source, candidate)
+                .unwrap();
         assert!(retained.controller_preparation_sequence() > 0);
-        assert_eq!(reserve_controller_no_apply_settlement_cursor_v1(&mut controller, &source, candidate).unwrap(), retained);
+        assert_eq!(
+            reserve_controller_no_apply_settlement_cursor_v1(&mut controller, &source, candidate)
+                .unwrap(),
+            retained
+        );
         let mut foreign = candidate;
         foreign.request_id = [25; 16];
         assert!(matches!(
@@ -887,16 +922,33 @@ mod tests {
         drop(controller);
 
         let (mut reopened, _) = Journal::open_protected_at_uid(
-            directory.path(), "controller.journal", JournalLimits::default(), uid,
-        ).unwrap();
-        assert_eq!(read_controller_no_apply_settlement_cursor_v1(
-            &reopened, &source, retained.marker, retained.archive_head,
-            retained.signed_terminal_outcome,
-        ).unwrap(), Some(retained));
-        assert!(read_controller_no_apply_settlement_cursor_v1(
-            &reopened, &source, retained.marker,
-            ObjectDigest::from_bytes([26; 32]), retained.signed_terminal_outcome,
-        ).is_err());
+            directory.path(),
+            "controller.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+        assert_eq!(
+            read_controller_no_apply_settlement_cursor_v1(
+                &reopened,
+                &source,
+                retained.marker,
+                retained.archive_head,
+                retained.signed_terminal_outcome,
+            )
+            .unwrap(),
+            Some(retained)
+        );
+        assert!(
+            read_controller_no_apply_settlement_cursor_v1(
+                &reopened,
+                &source,
+                retained.marker,
+                ObjectDigest::from_bytes([26; 32]),
+                retained.signed_terminal_outcome,
+            )
+            .is_err()
+        );
         validate_all_controller_no_apply_cursors_v1(&reopened).unwrap();
 
         let mut corrupt = retained.encode();
@@ -908,7 +960,8 @@ mod tests {
                 source.execution().as_bytes().to_vec(),
                 corrupt,
             )],
-        ).unwrap();
+        )
+        .unwrap();
         reopened.commit(&replacement).unwrap();
         assert!(validate_all_controller_no_apply_cursors_v1(&reopened).is_err());
     }
