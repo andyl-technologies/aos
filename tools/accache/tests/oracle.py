@@ -998,6 +998,67 @@ def check_gcc_nested_specs(root, env, accache, sccache, gcc, hits):
              "artifacts": ["source.o"]} for revision in range(2)]
 
 
+def check_gcc_profile_note_outputs(root, env, accache, sccache, gcc, hits):
+    """Restore a GCC coverage note written to an explicit path."""
+    results = []
+    cases = [
+        ("explicit", ["--coverage", "-fprofile-note=notes/custom.gcno"], True),
+        ("last-wins", ["--coverage", "-fprofile-note=notes/old.gcno",
+                       "-fprofile-note=notes/custom.gcno"], True),
+        ("inactive", ["-fprofile-note=notes/custom.gcno"], False),
+    ]
+    for name, flags, writes_note in cases:
+        work = root / f"gcc-profile-note-{name}"
+        work.mkdir()
+        (work / "notes").mkdir()
+        (work / "source.c").write_text("int answer(void) { return 42; }\n")
+        # A fixed seed makes GCC's coverage notes byte-comparable across runs.
+        args = [gcc, "-c", "source.c", "-o", "source.o",
+                "-frandom-seed=profile-note-" + name, *flags]
+
+        def compile_object(wrapper):
+            for path in [work / "source.o", work / "source.gcno",
+                         work / "notes/custom.gcno", work / "notes/old.gcno"]:
+                path.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            artifacts = {path: contents for path, contents in snapshot(work).items()
+                         if path.endswith((".o", ".gcno"))}
+            return completed.returncode, completed.stdout, completed.stderr, artifacts
+
+        direct = compile_object([])
+        expected = {"source.o", "notes/custom.gcno"} if writes_note else {"source.o"}
+        assert direct[0] == 0 and set(direct[3]) == expected, (name, direct[2], direct[3])
+
+        oracle_cold = compile_object([sccache])
+        before_hits = hits()
+        oracle_warm = compile_object([sccache])
+        if writes_note:
+            for oracle in [oracle_cold, oracle_warm]:
+                assert (oracle[0] == 254
+                        and b"failed to zip up compiler outputs" in oracle[2]
+                        and oracle[3] == direct[3]), (name, oracle[0], oracle[2][:300])
+            assert hits() == before_hits, (name, "sccache cached a failed action")
+        else:
+            assert oracle_cold == direct and oracle_warm == direct, name
+            assert hits() > before_hits, (name, "sccache did not cache the plain object")
+
+        assert compile_object([accache]) == direct, (name, "cold")
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", (name, cold)
+        assert compile_object([accache]) == direct, (name, "warm")
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", (name, warm)
+        assert set(warm["artifacts"]) == expected, (name, warm)
+
+        results.append({"fixture": "gcc-profile-note-" + name, "revision": 0,
+                        "oracle_exit_code": 254 if writes_note else 0,
+                        "accache": "hit", "artifacts": sorted(expected)})
+        print("PASS oracle GCC profile note", name, flush=True)
+
+    return results
+
+
 def check_field_named_include(root, env, accache, sccache, gcc, clang, hits):
     """A C field named include must not trigger an assembler dependency probe."""
     results = []
@@ -1779,6 +1840,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
         results.append(check_assembler_include_invalidation(root, env, accache,
                                                             sccache, gcc, hits))
         results.extend(check_gcc_nested_specs(root, env, accache, sccache, gcc, hits))
+        results.extend(check_gcc_profile_note_outputs(root, env, accache,
+                                                      sccache, gcc, hits))
         results.extend(check_field_named_include(root, env, accache, sccache,
                                                  gcc, clang, hits))
         results.append(check_absolute_inline_assembler_input(root, env, accache,

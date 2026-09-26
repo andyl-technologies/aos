@@ -128,6 +128,8 @@ optimization remarks, or live timing reports bypass the cache so each
 invocation produces its own report. Alternate split-debug and temporary-file
 directories also bypass because their side files fall outside the ordinary
 output directory.
+GCC coverage notes honor `-fprofile-note=path`, including the last path when
+the option repeats. Without coverage instrumentation the option adds no output.
 GNU assembler `--MD` output forwarded through `-Wa` or `-Xassembler` is
 tracked for GCC and Clang with an external assembler. Clang's generated
 assembly path can make that depfile nondeterministic; a warm hit restores the
@@ -288,6 +290,9 @@ for each profile.
 The dataflow-sanitizer ABI-list case changes a file absent from rustc's dep-info.
 Pinned sccache replays the old object, while accache misses and names the
 changed list before producing the new object.
+GCC `-fprofile-note=path` oracle cases confirm that pinned sccache fails to
+publish a relocated coverage note, while accache restores both the object and
+the named note on a warm hit. The flag without coverage remains cacheable.
 
 The suite asserts several pinned sccache output omissions: implicit `.d` files
 on warm `-MMD` hits without `-MF`, GCC `-aux-info` files, Clang serialized
