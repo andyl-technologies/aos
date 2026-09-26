@@ -1115,13 +1115,14 @@ genuinely unresolved and is tracked as a spike in
 - **Resolution:** S12/S13 now compose the modeled known-race discrimination
   witness with exact live QEMU commanded-preemption application across the full
   quantum sweep. D-36 promotes `4096` into the final shipped default.
-- **Current evidence:**
-  `checks.crucible.phase0.s11MultiVcpuFingerprint` reports a matching sim-mode
+- **Evidence on the prior artifact:**
+  `checks.crucible.phase0.s11MultiVcpuFingerprint` reported a matching sim-mode
   horizon fingerprint on the exact four-vCPU path;
   `checks.crucible.phase0.s12PreemptionDecision` reports model discrimination;
   and `checks.crucible.phase0.s13RrSwitchQuantum` reports
   `PASS`, `race_yield_tested=true`, `s11_sim_rerun_green=true`, and
-  `s13_complete=true`. T-RISK-17, T-RISK-19, and T-D-4 are complete.
+  `s13_complete=true`. Current release qualification must rerun S11 on the
+  50 ps/instruction QEMU and lean SMP fixture.
 - **Affects:** [SCHED-45], [PLUG-3], [G-9], [G-11], [DET-12], [SCHED-46]; files
   08, 22, 25, and 30; gates `checks.crucible.phase0.s11MultiVcpuFingerprint`,
   `checks.crucible.phase0.s12PreemptionDecision`, and
@@ -2028,10 +2029,11 @@ register.
   - **Fallback:** none adopted.
 
 - **RISK-25 / T-RISK-17 — diskless multi-vCPU RR-TCG fingerprint**
-  - **Status:** PASS; the normative `-accel sim,thread=single` S11 run is green
-    on the exact four-vCPU path.
+  - **Status:** Historical PASS on the prior artifact. The current
+    50 ps/instruction QEMU and test-only Linux fixture require a new exact
+    four-billion-instruction run before release qualification.
   - **Check:** `checks.crucible.phase0.s11MultiVcpuFingerprint`.
-  - **Result:** `accelerator=sim,thread=single`, `vcpus=4`,
+  - **Result on the prior artifact:** `accelerator=sim,thread=single`, `vcpus=4`,
     `rr_switch_quantum=4096`, `cadence=100000000`,
     `horizon_icount=4000000000`, `periodic_samples_expected=40`,
     `periodic_samples_observed=40`, `samples=41`,
@@ -2048,18 +2050,22 @@ register.
     `horizon_register_hash=a5a4baaca7c3b908461b60b63afb626cae16e2915738719ff09b0549f7b80d0c`,
     `horizon_ram_hash=3446f725b3550c2cc6b7a1501bfd0b12fc4a2771d0a04f537e33a53788a653ee`,
     `horizon_ram_bytes=268435456`,
-    `register_read_failures=0`. The exact four-vCPU sim path is the only S11
-    execution path.
-  - **Scope:** validates a stock Linux kernel with a diskless initramfs running an
-    SMP pthread spinlock workload across four guest vCPUs. The aggregate samples
+    `register_read_failures=0`. The exact four-vCPU sim path remains the only S11
+    execution path; these measured values do not describe the current artifact.
+  - **Scope:** the prior artifact validated a stock Linux kernel with a diskless
+    initramfs running an SMP pthread spinlock workload across four guest vCPUs.
+    The aggregate samples
     compare the aggregate instruction stream, per-vCPU register hashes, RAM
     hash, RR cursor, RR quantum, and final horizon fingerprint across an
     clean run and a run with six configured 15 ms preemptions of QEMU itself
     after the first positive trace coordinate and under a two-second resume
     watchdog. The check asserts every sampled vCPU
     has a nonempty register descriptor set and zero register-read failures.
-    Memory/device-event callbacks are disabled in this diskless proof; full
-    device-event hashing remains later §4.6 gate work. The check scans the
+    The current fixture builds a test-only Linux SMP kernel from the pinned
+    source and boots it through direct reset with an Intel MP topology table;
+    its serial result, AP execution, and exact fingerprints require a new gate
+    result. Memory/device-event callbacks are disabled in this diskless proof;
+    full device-event hashing remains later §4.6 gate work. The check scans the
     actual launch argv for block-device options before running. The block-backed
     diagnostic path is
     not used as the retirement proof because it exposed a separate
