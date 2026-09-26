@@ -28,6 +28,7 @@ pub mod host_execution_argument;
 pub mod host_execution_no_apply;
 pub mod host_observation;
 pub mod host_output;
+pub mod host_storage_output_readback;
 pub mod inventory;
 pub mod mount_catalog;
 pub mod mount_destination_slot;
@@ -55,7 +56,6 @@ pub mod storage_capture_grant;
 pub mod storage_existing_output;
 pub mod storage_inventory;
 pub mod storage_output_reserve;
-pub mod host_storage_output_readback;
 pub mod storage_root_export;
 pub mod terminal_commit;
 

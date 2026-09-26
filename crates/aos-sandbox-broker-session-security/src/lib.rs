@@ -80,7 +80,6 @@ mod handshake;
 mod host_consumer_cgroup_transfer;
 mod host_execution_handoff;
 mod host_mount_scope_identity_transfer;
-mod storage_host_output_readback;
 mod lifecycle_domain_effect;
 mod lifecycle_host_inventory;
 pub mod manifest;
@@ -116,6 +115,7 @@ mod source_signer_credential;
 pub mod source_signer_exchange;
 mod storage_create_preparation;
 mod storage_host_consumer_client;
+mod storage_host_output_readback;
 
 pub use cache_directory_source::{
     DirectoryPortableObjectSource, PortableObjectReader, ProjectSealedViewObjectSourceV1,
@@ -192,9 +192,6 @@ pub use host_mount_scope_identity_transfer::{
     ProtectedHostMountScopeCurrentV1, ProtectedHostMountScopeIdentityTransferV1,
     ProtectedHostMountScopeIdentityV1,
 };
-pub use storage_host_output_readback::{
-    ProtectedHostStorageOutputCurrentV1, ProtectedHostStorageOutputReadbackV1,
-};
 pub use lifecycle_domain_effect::{
     DormantLifecycleDomainEffectOwnerV1, DormantLifecycleDomainEffectProgressV1,
     DormantLifecycleDomainEffectRecoveryV1,
@@ -259,4 +256,7 @@ pub use recovery::{
 pub use storage_create_preparation::AuthenticatedStorageCreatePreparationV1;
 pub use storage_host_consumer_client::{
     StorageHostConsumerClientErrorV1, StorageHostConsumerClientV1,
+};
+pub use storage_host_output_readback::{
+    ProtectedHostStorageOutputCurrentV1, ProtectedHostStorageOutputReadbackV1,
 };
