@@ -602,6 +602,92 @@ def check_rust_diagnostic_passthrough(root, env, accache, sccache, rustc, hits):
     return results
 
 
+def check_rust_staged_compilation_passthrough(root, env, accache, sccache, rustc):
+    """Preserve rustc modes that replace or consume the normal library output."""
+    results = []
+    rust_env = env | {"RUSTC_BOOTSTRAP": "1"}
+    for name in ["no-link", "link-only", "parse-crate-root-only", "unpretty"]:
+        work = root / f"rust-{name}"
+        work.mkdir()
+        target = work / "target"
+        target.mkdir()
+        (work / "library.rs").write_text("pub fn answer() -> u32 { 42 }\n")
+        if name == "link-only":
+            staged_args = [rustc, "--crate-name=example", "--crate-type=rlib",
+                           "--emit=link,dep-info", "--out-dir=target", "library.rs",
+                           "-Zno-link"]
+            staged = subprocess.run(staged_args, cwd=work, env=rust_env,
+                                    capture_output=True, timeout=120)
+            assert staged.returncode == 0, staged.stderr
+            assert (target / "example.rlink").is_file(), name
+            source = "target/example.rlink"
+        else:
+            source = "library.rs"
+
+        args = [rustc, "--crate-name=example", "--crate-type=rlib",
+                "--emit=link,dep-info", "--out-dir=target", source,
+                "-Zunpretty=hir-tree" if name == "unpretty" else "-Z" + name]
+
+        def compile_case(wrapper):
+            if name == "link-only":
+                # rustc consumes the staged object while constructing the rlib.
+                staged = subprocess.run(staged_args, cwd=work, env=rust_env,
+                                        capture_output=True, timeout=120)
+                assert staged.returncode == 0, staged.stderr
+                (target / "libexample.rlib").unlink(missing_ok=True)
+            else:
+                for path in target.iterdir():
+                    if path.is_file():
+                        path.unlink()
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=rust_env,
+                                       capture_output=True, timeout=120)
+            artifacts = {path: contents for path, contents in snapshot(work).items()
+                         if path.startswith("target/") and (name != "link-only"
+                         or path == "target/libexample.rlib")}
+            return completed.returncode, completed.stdout, completed.stderr, artifacts
+
+        direct = compile_case([])
+        assert direct[0] == 0, (name, direct[2])
+        if name == "no-link":
+            assert ("target/example.rlink" in direct[3]
+                    and any(path.endswith(".o") for path in direct[3])
+                    and "target/libexample.rlib" not in direct[3]), direct[3]
+        elif name == "link-only":
+            assert "target/libexample.rlib" in direct[3], direct[3]
+        elif name == "unpretty":
+            assert (set(direct[3]) == {"target/example.d"}
+                    and b"Hir" in direct[1]), (direct[1][:100], direct[3])
+        else:
+            assert not direct[3], direct[3]
+
+        oracle_cold = compile_case([sccache])
+        oracle_warm = compile_case([sccache])
+        oracle_failure = (b"Failed to parse dep info for example" if name in {
+            "link-only", "parse-crate-root-only"}
+            else b"failed to zip up compiler outputs")
+        for oracle in [oracle_cold, oracle_warm]:
+            assert (oracle[0] == 254 and oracle_failure in oracle[2]
+                    and oracle[3] == direct[3]), (
+                name, oracle[0], oracle[2][:300], sorted(oracle[3]))
+
+        for attempt in range(2):
+            actual = compile_case([accache])
+            assert actual == direct, (name, attempt, actual[:3], direct[:3],
+                                      sorted(actual[3]), sorted(direct[3]))
+            event = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+            assert (event["outcome"] == "bypass"
+                    and f"Rust -Z{name} changes the compilation or output contract"
+                    in event["reason"]), event
+
+        results.append({"fixture": "rust-" + name, "revision": 0,
+                        "oracle_exit_code": 254,
+                        "oracle_failure": oracle_failure.decode(),
+                        "accache": "bypass", "artifacts": sorted(direct[3])})
+        print("PASS oracle rust", name, "passthrough", flush=True)
+
+    return results
+
+
 def check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits):
     """Keep GCC's separate dump naming flags in the pinned frontend's bypass path."""
     results = []
@@ -1622,6 +1708,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                                    accache, sccache, gcc, hits))
         results.extend(check_rust_diagnostic_passthrough(root, env,
                                                          accache, sccache, rustc, hits))
+        results.extend(check_rust_staged_compilation_passthrough(
+            root, env, accache, sccache, rustc))
         results.extend(check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits))
         results.extend(check_ada_specs(root, env, accache, sccache, gcc, hits))
         results.extend(check_gcc_timing_passthrough(root, env, accache,
