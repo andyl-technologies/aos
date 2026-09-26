@@ -124,6 +124,36 @@ pub(super) fn configure(
             invocation.extension_reads(manifest)?;
         }
     }
+    for option in codegen_options(&expanded) {
+        let Some(llvm_args) = option.strip_prefix("llvm-args=") else {
+            continue;
+        };
+        for argument in llvm_args.split_whitespace() {
+            let argument = argument.trim_start_matches('-');
+            if let Some(path) = argument.strip_prefix("basic-block-sections=") {
+                // LLVM accepts a file of function and block IDs in addition
+                // to these three literal modes. rustc omits the file from
+                // dep-info even though editing it changes the rlib.
+                if !matches!(path, "all" | "none" | "labels") {
+                    ensure!(!path.is_empty(), "LLVM basic-block section list is empty");
+                    invocation.extra_inputs.insert(path.into());
+                }
+                continue;
+            }
+            for prefix in [
+                "internalize-public-api-file=",
+                "ms-secure-hotpatch-functions-file=",
+                "summary-file=",
+                "ir2vec-vocab-path=",
+                "mir2vec-vocab-path=",
+            ] {
+                if let Some(path) = argument.strip_prefix(prefix) {
+                    ensure!(!path.is_empty(), "LLVM file input is empty");
+                    invocation.extra_inputs.insert(path.into());
+                }
+            }
+        }
+    }
 
     invocation
         .read_dirs
@@ -273,6 +303,17 @@ fn unstable_options(args: &[String]) -> impl Iterator<Item = &str> {
             args.get(index + 1).map(String::as_str)
         } else {
             arg.strip_prefix("-Z")
+        }
+    })
+}
+
+fn codegen_options(args: &[String]) -> impl Iterator<Item = &str> {
+    args.iter().enumerate().filter_map(|(index, arg)| {
+        if matches!(arg.as_str(), "-C" | "--codegen") {
+            args.get(index + 1).map(String::as_str)
+        } else {
+            arg.strip_prefix("-C")
+                .or_else(|| arg.strip_prefix("--codegen="))
         }
     })
 }
