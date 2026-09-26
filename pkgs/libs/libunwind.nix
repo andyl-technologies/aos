@@ -1,5 +1,6 @@
 ##! Local, remote, and core-dump stack unwinding.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -35,6 +36,103 @@ in
       role = "public-package";
     };
     pname = "libunwind";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "The current process stack.";
+        operation = "Capture a local unwind cursor and advance to its caller.";
+        expected = "The cursor exposes a nonzero instruction pointer and a caller frame.";
+        files."stack.c" = ''
+          #define UNW_LOCAL_ONLY
+          #include <libunwind.h>
+          #include <stdio.h>
+
+          int main(void) {
+            unw_context_t context;
+            unw_cursor_t cursor;
+            unw_word_t instruction_pointer = 0;
+            if (unw_getcontext(&context) < 0) return 1;
+            if (unw_init_local(&cursor, &context) < 0) return 2;
+            if (unw_get_reg(&cursor, UNW_REG_IP, &instruction_pointer) < 0 ||
+                instruction_pointer == 0) return 3;
+            if (unw_step(&cursor) <= 0) return 4;
+
+            puts("libunwind local stack traversal passed");
+          }
+        '';
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@cc@"
+              "-std=c11"
+              "-I@out@/include"
+              "stack.c"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lunwind"
+              "-o"
+              "stack"
+            ];
+            exit_code = 0;
+            stdout.exact = "";
+          }
+          {
+            argv = ["./stack"];
+            exit_code = 0;
+            stdout.exact = "libunwind local stack traversal passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "An invalid register number in an otherwise valid local cursor.";
+        operation = "Read that register through the unwind API.";
+        expected = "The API returns its bad-register error.";
+        files."bad.c" = ''
+          #define UNW_LOCAL_ONLY
+          #include <libunwind.h>
+          #include <stdio.h>
+
+          int main(void) {
+            unw_context_t context;
+            unw_cursor_t cursor;
+            unw_word_t value = 0;
+            if (unw_getcontext(&context) < 0 ||
+                unw_init_local(&cursor, &context) < 0) return 1;
+            if (unw_get_reg(&cursor, (unw_regnum_t)123456, &value) != -UNW_EBADREG)
+              return 2;
+
+            puts("libunwind rejected invalid register");
+            return 7;
+          }
+        '';
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@cc@"
+              "-std=c11"
+              "-I@out@/include"
+              "bad.c"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lunwind"
+              "-o"
+              "bad"
+            ];
+            exit_code = 0;
+            stdout.exact = "";
+          }
+          {
+            argv = ["./bad"];
+            exit_code = 7;
+            observes_rejection = true;
+            stdout.exact = "libunwind rejected invalid register\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://github.com/libunwind/libunwind/releases/download/v${version}/libunwind-${version}.tar.gz"];
