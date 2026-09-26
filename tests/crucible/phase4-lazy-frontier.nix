@@ -114,7 +114,6 @@ in
             printf 'attr_path=%s\n' "$ATTR_PATH"
             printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'scope=bounded-generated-polling,allocation-scaling,finite-backpressure,exhaustive-ceiling,frontier-pagination,feedback-recovery,restart,strict-streaming-order,daemon-control-responsiveness\n'
-            printf 'performance_target=not_evaluated\n'
             cat "$TMPDIR/campaign-planner-queue-profile"
             cat "$TMPDIR/campaign-planner-queue-checkpoints"
             cat "$TMPDIR/campaign-planner-queue-snapshot"

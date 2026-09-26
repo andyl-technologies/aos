@@ -2429,11 +2429,12 @@ manual-bundle, trusted-signers, legacy evidence, or compatibility input path.
   immutable snapshot, whereas the manual `issue_proposal` and `admit_proposal`
   APIs advance two snapshots. The canonical one-proposal, one-worker-slot
   semantics must remain intact. One million canonical steps plus setup
-  transitions exceed the current 1,000,001-snapshot ancestry limit by a small
-  amount; increasing that limit requires measured closure and object-budget
-  evidence, rather than bypassing validation. Each step also rewrites
+  transitions require 1,125,003 ancestry snapshots. The bounded 1,250,001
+  ancestry ceiling covers that corpus while the independent closure-object
+  limit still bounds authenticated work; the million-run gate must establish
+  measured closure and object-budget evidence. Each step also rewrites
   persistent Merkle nodes, and queue projection scans the mixed accounting
-  root. The implementation spike must retain raw object, index, packed-store,
+  root. The implementation spike must retain raw object, index, physical-store,
   peak-memory, and paged cold-reopen evidence for one million real admissions;
   add a paged admission index if mixed accounting scans exceed the budget. The
   <5% gate must time planner plus queue operations and the entire identical
