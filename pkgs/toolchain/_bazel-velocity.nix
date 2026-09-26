@@ -20,7 +20,7 @@
     }
     {
       name = "jdom";
-      url = "https://repo.maven.apache.org/maven2/org/jdom/jdom/1.0/jdom-1.0-sources.jar";
+      url = "https://repo.maven.apache.org/maven2/jdom/jdom/1.0/jdom-1.0-sources.jar";
       hash = "sha256-pvJKSsvBU9QvXz3ZM7qjoxF+gC8uyjCLccwJ1HHMawU=";
     }
     {
