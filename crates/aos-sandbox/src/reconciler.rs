@@ -7022,7 +7022,7 @@ mod tests {
         let preliminary = HostSettlementRecordV1::preliminary(
             observed,
             archives,
-            1,
+            marker_sequence + 1,
             ObjectDigest::from_bytes([0xa3; 32]),
             [0xe3; 32],
             [0xe4; 16],
@@ -7051,7 +7051,8 @@ mod tests {
         );
 
         let proof = create_failure::CreateFailureSettlementProofV1::test_only(marker)
-            .with_test_lease(preliminary.digest());
+            .with_test_lease(preliminary.digest())
+            .with_test_lease_epoch(preliminary.epoch);
         let _lost_prepared = controller
             .prepare_create_failed_before_commit(operation_id, proof, 102)
             .unwrap();

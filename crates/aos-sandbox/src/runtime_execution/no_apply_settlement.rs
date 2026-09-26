@@ -151,7 +151,10 @@ impl HostSettlementRecordV1 {
             controller_floor: None,
             controller_cas: None,
         };
-        if commit_sequence <= observed.marker_sequence || !record.valid() {
+        if epoch < observed.marker_sequence
+            || !preliminary_sequence_matches_epoch(epoch, commit_sequence)
+            || !record.valid()
+        {
             return Err(HostSettlementRecordErrorV1);
         }
         Ok(record)
@@ -363,6 +366,12 @@ fn marker_digest(marker: HostExecutionNoApplyRecordV1) -> ObjectDigest {
     ObjectDigest::from_bytes(Sha256::digest(marker.encode_canonical()).into())
 }
 
+fn preliminary_sequence_matches_epoch(epoch: u64, commit_sequence: u64) -> bool {
+    // A one-record Journal transaction has a begin, record, and commit frame.
+    // The snapshot epoch is the sequence of its next begin frame.
+    epoch.checked_add(2) == Some(commit_sequence)
+}
+
 struct Reader<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -425,7 +434,8 @@ pub(crate) fn validate_history(
         || preliminary.execution.as_bytes() != &marker.fields().execution_id
         || preliminary.operation.as_bytes() != &marker.fields().create_operation_id
         || preliminary.marker_digest != marker_digest(marker)
-        || preliminary.commit_sequence <= marker.fields().commit_sequence
+        || preliminary.epoch < marker.fields().commit_sequence
+        || !preliminary_sequence_matches_epoch(preliminary.epoch, preliminary.commit_sequence)
         || preliminary.commit_sequence > protected_sequence
     {
         return Err(HostSettlementRecordErrorV1);
@@ -524,6 +534,31 @@ mod tests {
         );
         assert!(validate_history(marker, Some(preliminary), None, Some(ack), 19).is_err());
         assert!(validate_history(marker, Some(preliminary), Some(floor), Some(ack), 18).is_err());
+        assert!(
+            validate_history(
+                marker,
+                Some(HostSettlementRecordV1 {
+                    epoch: preliminary.epoch + 1,
+                    ..preliminary
+                }),
+                None,
+                None,
+                19,
+            )
+            .is_err()
+        );
+        assert!(
+            HostSettlementRecordV1::preliminary(
+                observed,
+                archives,
+                marker.fields().commit_sequence - 1,
+                ObjectDigest::from_bytes([17; 32]),
+                [18; 32],
+                [19; 16],
+                marker.fields().commit_sequence + 1,
+            )
+            .is_err()
+        );
         assert!(
             validate_history(
                 marker,

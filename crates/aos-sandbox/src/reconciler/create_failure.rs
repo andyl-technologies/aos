@@ -119,6 +119,12 @@ impl CreateFailureSettlementProofV1 {
         self.host_lease_head = head;
         self
     }
+
+    #[cfg(test)]
+    pub(super) fn with_test_lease_epoch(mut self, epoch: u64) -> Self {
+        self.host_lease_epoch = epoch;
+        self
+    }
 }
 
 /// Retains a fresh held-Host proof only across one Controller prepare-to-CAS.

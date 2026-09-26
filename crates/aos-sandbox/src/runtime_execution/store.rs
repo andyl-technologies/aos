@@ -3814,6 +3814,46 @@ mod output_v2_tests {
             JournalRuntimeExecutionStoreV1::claim(&mut missing_correlation, binding, peer()),
             Err(JournalRuntimeExecutionError::CorruptRecord)
         ));
+
+        let mislabeled_preliminary = HostSettlementRecordV1 {
+            epoch: preliminary.epoch + 1,
+            ..preliminary
+        };
+        let mislabeled_lease = JournalTransaction::new(
+            [45; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    host_output_key(identity.source.execution()),
+                    correlation.encode().expect("original correlation").to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    lease_key(
+                        identity.source.execution(),
+                        HostSettlementStageV1::Preliminary,
+                    ),
+                    mislabeled_preliminary.encode_canonical().to_vec(),
+                ),
+            ],
+        )
+        .expect("adversarial lease replacement");
+        missing_correlation
+            .commit(&mislabeled_lease)
+            .expect("raw protected lease replacement");
+        drop(missing_correlation);
+
+        let (mut mislabeled_lease, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("mislabeled lease reopen");
+        assert!(matches!(
+            JournalRuntimeExecutionStoreV1::claim(&mut mislabeled_lease, binding, peer()),
+            Err(JournalRuntimeExecutionError::CorruptRecord)
+        ));
     }
 
     #[test]
