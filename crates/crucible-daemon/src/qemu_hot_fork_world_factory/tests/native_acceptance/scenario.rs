@@ -38,7 +38,7 @@ use crucible_campaign::{
 
 pub(super) const PERMANENT_FAILURE_NANOS: u64 = 30_000_000_000;
 pub(super) const NINEP_FAULT_WINDOW_NANOS: u64 = 5_000_000_000;
-const NATIVE_LINK_LATENCY_NANOS: u64 = 5_000_000_000;
+const NATIVE_LINK_LATENCY_NANOS: u64 = 1_000_000_000;
 pub(super) const INACTIVE_WORLD_NANOS: u64 = 80_000_000_000;
 pub(super) const REACTIVATION_NANOS: u64 = 81_000_000_000;
 
@@ -871,4 +871,29 @@ fn representative_world_admits_the_shared_fault_path() {
                 if forwarder.as_str() == "shared-forwarder")
         })
     }));
+}
+
+#[test]
+fn first_http_response_can_precede_permanent_nginx_failure() {
+    let fixture =
+        include_str!("../../../../../../tests/crucible/fixtures/e2e-determinism.scenario.toml");
+    let base = ScenarioDefForm::from_canonical_toml(fixture).expect("parse reviewed scenario");
+    let world = with_shared_fault_path(base.world().clone()).expect("build shared fault topology");
+    let curl_nginx_link = world
+        .links()
+        .iter()
+        .find(|link| {
+            let (left, right) = link.endpoints();
+            [left.name.as_str(), right.name.as_str()].contains(&"curl")
+                && [left.name.as_str(), right.name.as_str()].contains(&"nginx")
+        })
+        .expect("curl-nginx link");
+
+    // The guest has no static ARP entry. ARP request/reply, TCP SYN/SYN-ACK,
+    // and HTTP request/response each cross this one-way link once.
+    let first_response_ticks = 6 * curl_nginx_link.latency().ticks;
+    let boot_and_processing_margin_ticks = 10_000_000_000 * crucible::SIM_TICKS_PER_NS;
+    let failure_ticks = PERMANENT_FAILURE_NANOS * crucible::SIM_TICKS_PER_NS;
+
+    assert!(first_response_ticks + boot_and_processing_margin_ticks < failure_ticks);
 }
