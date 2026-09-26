@@ -44,15 +44,15 @@ mod execution_capture_policy;
 #[cfg(target_os = "linux")]
 #[allow(
     dead_code,
-    reason = "capture ZFS effect awaits a signed Storage grant and durable attempt issuer"
-)]
-mod execution_capture_zfs_worker;
-#[cfg(target_os = "linux")]
-#[allow(
-    dead_code,
     reason = "capture writer awaits exclusive ZFS mount custody and signed Controller grant"
 )]
 mod execution_capture_writer;
+#[cfg(target_os = "linux")]
+#[allow(
+    dead_code,
+    reason = "capture ZFS effect awaits a signed Storage grant and durable attempt issuer"
+)]
+mod execution_capture_zfs_worker;
 #[cfg(target_os = "linux")]
 pub mod execution_output;
 #[cfg(target_os = "linux")]
@@ -132,13 +132,13 @@ mod pin_worker;
 mod pin_worker_runtime;
 pub mod process;
 pub mod request;
-pub mod root_export;
-mod root_initializer;
 #[allow(
     dead_code,
     reason = "protected catalog resolution is not wired until Storage Apply readiness exists"
 )]
 mod resolver;
+pub mod root_export;
+mod root_initializer;
 #[allow(
     dead_code,
     reason = "root initialization is not wired until Storage Apply readiness exists"
@@ -150,13 +150,13 @@ mod snapshot_metadata;
 pub mod state;
 pub mod storage_zfs_hold_key;
 pub mod transport;
+mod worker_wire;
 pub mod workspace_catalog;
 mod workspace_pin;
 mod workspace_repair;
 mod workspace_repair_admission;
 mod workspace_repair_observer;
 mod workspace_repair_worker;
-mod worker_wire;
 pub mod zfs;
 
 pub use authorization::{
@@ -187,7 +187,6 @@ pub use live_export_transport::StorageLiveExportTransportOutcomeV1;
 pub use pin_worker_runtime::{
     run_inherited_workspace_pin_observer, run_inherited_workspace_pin_worker,
 };
-pub use root_initializer::run_inherited_workspace_root_initializer;
 pub use process::{
     SystemdZfsExecutor, WorkerProcessOutput, ZfsWorkerError, process_timeout, run_inherited_worker,
 };
@@ -195,6 +194,7 @@ pub use request::{
     CanonicalStorageSemanticsV1, CatalogBindingV1, StorageOperation, StorageRequestError,
     StorageSemanticsError, decode_resolved,
 };
+pub use root_initializer::run_inherited_workspace_root_initializer;
 pub use runtime::{
     AtomicDatasetSnapshotMutationOutcomeV1, StorageApplyReadiness, StorageBrokerRuntime,
     StoragePrepareReadiness, StorageRuntimeError, StorageRuntimeMutationOutcome,
