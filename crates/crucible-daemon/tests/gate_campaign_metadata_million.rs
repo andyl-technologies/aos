@@ -11,7 +11,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crucible_campaign::{
     AlternativeId, AttemptQueue, AuthorizedPlannerService, BranchBudget, BranchRequest,
@@ -29,12 +29,24 @@ use crucible_cas::content_store::{
     BlobStoreAdmin, DirectoryBlobBackend, DirectoryRefBackend, ObjectKind,
 };
 use crucible_daemon::{CanonicalPlannerProcessConfig, CanonicalPlannerProcessSupervisor};
+use rustix::time::{ClockId, Timespec, clock_gettime};
 
 const CAMPAIGN: &str = "million-real-admissions";
 const REQUEST_SIZE: usize = 16;
 const PAGE_SIZE: usize = 512;
 const REQUIRED_ADMISSIONS: usize = 1_000_000;
 const REQUIRED_ANCESTRY: usize = ancestry_for_admissions(REQUIRED_ADMISSIONS);
+
+// Host monotonic time is reported only as diagnostic evidence. It never enters
+// a planner request, campaign state, or a simulation timeout.
+fn measurement_elapsed_since(started: Timespec) -> Result<Duration, Box<dyn Error>> {
+    let finished = clock_gettime(ClockId::Monotonic);
+    let started = Duration::try_from(started)?;
+    let finished = Duration::try_from(finished)?;
+    Ok(finished
+        .checked_sub(started)
+        .ok_or("monotonic clock moved backwards")?)
+}
 
 const fn ancestry_for_admissions(admissions: usize) -> usize {
     // create + fund + resume, then discover + submit per finite request,
@@ -266,7 +278,7 @@ fn run_corpus(
     let mut setup_elapsed = Duration::ZERO;
     let mut planner_elapsed = Duration::ZERO;
     for request_index in 0..admissions / REQUEST_SIZE {
-        let setup_started = Instant::now();
+        let setup_started = clock_gettime(ClockId::Monotonic);
         let request = publish_request(&repository, &lineage, request_index)?;
         let discovered = repository.discover_operator_choice_opportunity(
             CAMPAIGN,
@@ -278,10 +290,10 @@ fn run_corpus(
             .submit_operator_branch_request(CAMPAIGN, discovered.new_snapshot, &request)?
             .new_snapshot;
         ancestry_depth += 2;
-        setup_elapsed += setup_started.elapsed();
+        setup_elapsed += measurement_elapsed_since(setup_started)?;
 
         for _ in 0..REQUEST_SIZE {
-            let step_started = Instant::now();
+            let step_started = clock_gettime(ClockId::Monotonic);
             let outcome = planner.step(CAMPAIGN)?;
             let CampaignPlannerStepOutcome::Advanced {
                 result,
@@ -300,7 +312,7 @@ fn run_corpus(
             assert_eq!(issued_proposals.len(), 1);
             parent = result.new_snapshot;
             ancestry_depth += 1;
-            planner_elapsed += step_started.elapsed();
+            planner_elapsed += measurement_elapsed_since(step_started)?;
         }
         if (request_index + 1) % 1_024 == 0 {
             println!(
@@ -317,9 +329,9 @@ fn run_corpus(
     assert_eq!(projection.spent_proposals, admissions as u64);
     assert_eq!(projection.spent_attempts, admissions as u64);
 
-    let hot_started = Instant::now();
+    let hot_started = clock_gettime(ClockId::Monotonic);
     let (hot_claimable, hot_pages) = scan_queue(&repository, parent)?;
-    let hot_elapsed = hot_started.elapsed();
+    let hot_elapsed = measurement_elapsed_since(hot_started)?;
     drop(planner);
     drop(repository);
     let cold = CampaignRepository::with_component_authorities(
@@ -331,10 +343,10 @@ fn run_corpus(
         PlannerAuthorityKey::from_bytes([0x91; 32])?,
         debugger_authority,
     )?;
-    let cold_started = Instant::now();
+    let cold_started = clock_gettime(ClockId::Monotonic);
     assert_eq!(cold.head(CAMPAIGN)?.snapshot_id(), parent);
     let (cold_claimable, cold_pages) = scan_queue(&cold, parent)?;
-    let cold_elapsed = cold_started.elapsed();
+    let cold_elapsed = measurement_elapsed_since(cold_started)?;
     drop(cold);
 
     let mut index_bytes = 0_u64;
