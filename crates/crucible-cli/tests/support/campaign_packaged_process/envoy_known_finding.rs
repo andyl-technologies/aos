@@ -4,6 +4,7 @@
 //! traffic-east. The traffic guest reports that product failure; the campaign
 //! must retain the same observation, measurement evidence, and replayable finding.
 
+use std::collections::BTreeSet;
 use std::io::Write as _;
 use std::os::unix::net::UnixStream;
 
@@ -451,8 +452,19 @@ fn retain_and_cleanup_product_finding(
     let head = campaign_status(fixture)?;
     assert_eq!(head["state"], "paused");
     let live_sessions = public_debug_sessions(service.daemon_url())?;
-    assert_eq!(live_sessions.len(), 1);
-    assert_eq!(format_debug_session(live_sessions[0]), debug_session);
+    let live_debug_session = live_sessions
+        .iter()
+        .copied()
+        .find(|session| format_debug_session(*session) == debug_session)
+        .ok_or("public debugger session was absent from the live session list")?;
+    assert_eq!(
+        live_sessions
+            .iter()
+            .filter(|session| session.seed == live_debug_session.seed)
+            .count(),
+        1,
+        "debugger seed must identify one live session before restart"
+    );
 
     let pinned = run_json(
         connected_campaign(fixture).args([
@@ -598,14 +610,30 @@ fn retain_and_cleanup_product_finding(
     assert_eq!(retained_summary, pin_summary);
     assert_eq!(retained_pins, pin_records);
     let recovered_sessions = public_debug_sessions(reopened.daemon_url())?;
-    assert_eq!(recovered_sessions.len(), 1);
-    assert_eq!(recovered_sessions[0].seed, live_sessions[0].seed);
-    destroy_public_debug_session(reopened.daemon_url(), recovered_sessions[0])?;
+    let recovered_debug_sessions = recovered_sessions
+        .iter()
+        .copied()
+        .filter(|session| session.seed == live_debug_session.seed)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        recovered_debug_sessions.len(),
+        1,
+        "recovered debugger session must be unambiguous by its authenticated seed"
+    );
+    destroy_public_debug_session(
+        reopened.daemon_url(),
+        recovered_debug_sessions[0],
+        &recovered_sessions,
+    )?;
     reopened.stop()?;
 
     // A fresh owner must not readmit a debug session removed from durable inventory.
     let mut cleared = fixture.start_service(None)?;
-    assert!(public_debug_sessions(cleared.daemon_url())?.is_empty());
+    assert!(
+        public_debug_sessions(cleared.daemon_url())?
+            .iter()
+            .all(|session| session.seed != live_debug_session.seed)
+    );
     cleared.stop()?;
 
     println!("envoy_product_retention_and_cleanup_authenticated=true");
@@ -633,6 +661,7 @@ fn public_debug_sessions(
 fn destroy_public_debug_session(
     daemon_url: &str,
     session: crucible_api::SessionRef,
+    before: &[crucible_api::SessionRef],
 ) -> Result<(), Box<dyn Error>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -651,7 +680,19 @@ fn destroy_public_debug_session(
         assert_eq!(repeated.session, session);
         assert!(!repeated.stopped);
         assert!(repeated.already_absent);
-        assert!(client.list_sessions().await?.sessions.is_empty());
+        let remaining = client
+            .list_sessions()
+            .await?
+            .sessions
+            .into_iter()
+            .map(|entry| entry.session)
+            .collect::<BTreeSet<_>>();
+        let expected = before
+            .iter()
+            .copied()
+            .filter(|candidate| *candidate != session)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(remaining, expected);
         Ok::<(), crucible_api::ControlClientError>(())
     })?;
     Ok(())
