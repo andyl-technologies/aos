@@ -126,7 +126,9 @@ GCC/Clang `-Wp,-MD` and `-Wp,-MMD` and GCC `-Xpreprocessor -MD`), split debug
 files, coverage notes, preprocessed source, assembly, PCH, explicit Clang
 modules, and serialized Clang diagnostics. GCC's joined `-MFpath` and
 `-MF=path` forms also restore the actual dependency file, including the
-literal leading `=` in the second form.
+literal leading `=` in the second form. The last driver `-MF` wins, while
+`-Wp,-MD,...` and GCC `-Xpreprocessor -MD` select their forwarded output
+instead of a driver `-MF` path.
 
 GCC coverage includes SARIF and plain HTML diagnostic reports, numbered tree,
 RTL, IPA, language, debug, early-debug, and analyzer dumps (including graph

@@ -968,9 +968,21 @@ def check_ada_specs(root, env, accache, sccache, gcc, hits):
 def check_gcc_joined_depfile(root, env, accache, sccache, gcc, hits):
     """Restore dependency files named by GCC's joined -MF spellings."""
     results = []
-    for fixture, flag, output in [
-        ("gcc-mf-joined", "-MFdeps.d", "deps.d"),
-        ("gcc-mf-joined-equals", "-MF=deps.d", "=deps.d"),
+    for fixture, flags, output in [
+        ("gcc-mf-joined", ["-MD", "-MFdeps.d"], "deps.d"),
+        ("gcc-mf-joined-equals", ["-MD", "-MF=deps.d"], "=deps.d"),
+        ("gcc-mf-mmd-joined", ["-MMD", "-MFdeps.d"], "deps.d"),
+        ("gcc-mf-joined-last",
+         ["-MD", "-MF", "first.d", "-MFdeps.d"], "deps.d"),
+        ("gcc-mf-separated-last",
+         ["-MD", "-MFfirst.d", "-MF", "deps.d"], "deps.d"),
+        ("gcc-mf-wp-overrides",
+         ["-MD", "-MFdriver.d", "-Wp,-MD,wp.d"], "wp.d"),
+        ("gcc-mf-xpreprocessor-overrides",
+         ["-MD", "-MFdriver.d", "-Xpreprocessor", "-MD",
+          "-Xpreprocessor", "xp.d"], "xp.d"),
+        ("gcc-mf-wp-same",
+         ["-MD", "-MFwp.d", "-Wp,-MD,wp.d"], "wp.d"),
     ]:
         work = root / fixture
         work.mkdir()
@@ -979,22 +991,27 @@ def check_gcc_joined_depfile(root, env, accache, sccache, gcc, hits):
         header = work / "value.h"
         object_file = work / "source.o"
         depfile = work / output
-        args = [gcc, "-MD", "-c", "source.c", "-o", "source.o", flag]
+        args = [gcc, "-c", "source.c", "-o", "source.o", *flags]
 
         def compile_object(wrapper):
             object_file.unlink(missing_ok=True)
-            depfile.unlink(missing_ok=True)
+            for path in work.glob("*.d"):
+                path.unlink()
             completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
                                        capture_output=True, timeout=120)
+            other_depfiles = sorted(path.name for path in work.glob("*.d")
+                                    if path != depfile)
             return (completed.returncode, completed.stdout, completed.stderr,
                     object_file.read_bytes() if object_file.exists() else None,
-                    depfile.read_bytes() if depfile.exists() else None)
+                    depfile.read_bytes() if depfile.exists() else None,
+                    other_depfiles)
 
         first_object = None
         for revision, value in enumerate([42, 73]):
             header.write_text(f"#define VALUE {value}\n")
             direct = compile_object([])
-            assert direct[0] == 0 and direct[3] and direct[4], (fixture, direct)
+            assert (direct[0] == 0 and direct[3] and direct[4]
+                    and not direct[5]), (fixture, direct)
             if first_object is None:
                 first_object = direct[3]
             else:
@@ -1002,7 +1019,7 @@ def check_gcc_joined_depfile(root, env, accache, sccache, gcc, hits):
 
             oracle_cold = compile_object([sccache])
             if oracle_cold[0] == 0:
-                assert oracle_cold[3:] == direct[3:], (fixture, revision, oracle_cold)
+                assert oracle_cold[3] == direct[3], (fixture, revision, oracle_cold)
             before_hits = hits()
             oracle_warm = compile_object([sccache])
             oracle_hit = hits() > before_hits
@@ -1020,6 +1037,7 @@ def check_gcc_joined_depfile(root, env, accache, sccache, gcc, hits):
                             "oracle_hit": oracle_hit,
                             "oracle_exit_code": oracle_warm[0],
                             "oracle_missing_artifacts": [output] if oracle_warm[4] is None else [],
+                            "oracle_extra_depfiles": oracle_warm[5],
                             "accache": "hit", "artifacts": ["source.o", output]})
 
         print("PASS oracle", fixture, "joined dependency output", flush=True)
