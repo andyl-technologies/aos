@@ -132,8 +132,10 @@ def placeholders(work: pathlib.Path, outputs: dict[str, str]) -> dict[str, str]:
         "@cxx@": os.environ["AOS_QUALIFICATION_CXX"],
         "@perl@": os.environ["AOS_QUALIFICATION_PERL"],
         "@python@": os.environ["AOS_QUALIFICATION_PYTHON"],
-        "@rustc@": os.environ["AOS_QUALIFICATION_RUSTC"],
     }
+    rustc = os.environ.get("AOS_QUALIFICATION_RUSTC")
+    if rustc:
+        values["@rustc@"] = rustc
     for name, path in outputs.items():
         values[f"@output:{name}@"] = path
         store_hash = pathlib.Path(path).name.split("-", 1)[0]
@@ -385,6 +387,7 @@ def main() -> None:
     allowed_harness_commands = {
         pathlib.Path(substitutions[marker])
         for marker in ("@bash@", "@cc@", "@cxx@", "@perl@", "@python@", "@rustc@")
+        if marker in substitutions
     }
     primary_root = work / "primary"
     bad_input_root = work / "bad-input"
