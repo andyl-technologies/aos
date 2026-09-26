@@ -219,6 +219,80 @@
     urls = ["${stardocRegistryRoot}/MODULE.bazel"];
     hash = "sha256-NUj66k7l3aVYD5rxUOedD2rqk0/GDBzFD0792UIHWec=";
   };
+
+  rulesAppleRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/rules_apple/3.16.0";
+  rulesAppleSource = moduleSource {
+    name = "rules_apple";
+    version = "3.16.0";
+    url = "https://github.com/bazelbuild/rules_apple.git";
+    ref = "3.16.0";
+    rev = "5f7d38d51351d2ff0cbe3ffb9b74c00b1294b8a6";
+    hash = "sha256-0sMEz0U8FLT4QFeOGbs8fTZQy3YGIfh9lteD9IzusMk=";
+  };
+  rulesAppleModule = fetchurl {
+    urls = ["${rulesAppleRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-DRyvC4N1lCzpjqlEvnVKGIdAQeTgRZQB2SVXdiTTpUo=";
+  };
+  rulesApplePatch = fetchurl {
+    urls = ["${rulesAppleRegistryRoot}/patches/module_dot_bazel_version.patch"];
+    hash = "sha256-tc1zjSKWZcwJgw84Baye8gdG6De+/REqSj9Ra17Xcoo=";
+  };
+
+  chicoryRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/chicory/1.1.0";
+  chicorySource = moduleSource {
+    name = "chicory";
+    version = "1.1.0";
+    url = "https://github.com/dylibso/chicory.git";
+    ref = "1.1.0";
+    rev = "469f7b273cc05db1db7ac2a5d59e91b41fcda8cc";
+    hash = "sha256-+ZnY8+f8SPDj9171ovzS7H3oaLzMlinCJhbS2PHQJdo=";
+    # Upstream tracks two precompiled WASM tools without file extensions.
+    extraExcludes = [
+      "!/wabt/src/main/resources/wat2wasm"
+      "!/wabt/src/main/resources/wast2json"
+    ];
+  };
+  chicoryPatch = fetchurl {
+    urls = ["${chicoryRegistryRoot}/patches/rm-errorprone-annotations.patch"];
+    hash = "sha256-l85uwkvGGeWu8n440DwCX47s04syKq7QHHzSzKjVR9E=";
+  };
+  chicoryOverlayHashes = {
+    "MODULE.bazel" = "sha256-LTH1To/fCWPp9K9t9VPe96q2kntGIdpFVbwhICGXU0A=";
+    "host-module/annotations/BUILD.bazel" = "sha256-MQZi1EDrUnxd080ZSsmuT78tM29qz7l4I94/xy2kBFQ=";
+    "host-module/processor/BUILD.bazel" = "sha256-nxWfD+O80D0wNsVoqery0rzib7ZkS3fza9gaEm2C55w=";
+    "log/BUILD.bazel" = "sha256-XqbVcm6y4+rgiyVYc2s1y8RSZ+QDVZ0AOd8l+uiggNY=";
+    "runtime/BUILD.bazel" = "sha256-0MJQDX44Qe9rfBHcNeVQCPrAwQcG8mbrYj+g66xqlPM=";
+    "wasi/BUILD.bazel" = "sha256-x0iC+Po7ZDOYy8z/B5Yh/rU+G2AA3OGYhv1BcWO3lPI=";
+    "wasm/BUILD.bazel" = "sha256-M0GF0CnFj3QIWr+QiJj8Bm3zWVBFr+OB8LDo9gKDeek=";
+  };
+  chicoryOverlays = builtins.mapAttrs (path: hash:
+    fetchurl {
+      urls = ["${chicoryRegistryRoot}/overlay/${path}"];
+      inherit hash;
+    })
+  chicoryOverlayHashes;
+  chicoryOverlayScript = builtins.concatStringsSep "\n" (builtins.map (path: ''
+    mkdir -p ${builtins.dirOf path}
+    cp ${builtins.getAttr path chicoryOverlays} ${path}
+  '') (builtins.attrNames chicoryOverlayHashes));
+
+  appleSupportRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/apple_support/1.23.1";
+  appleSupportSource = moduleSource {
+    name = "apple_support";
+    version = "1.23.1";
+    url = "https://github.com/bazelbuild/apple_support.git";
+    ref = "1.23.1";
+    rev = "4c51f10063687af77eabbbdc035124d798ca3a3f";
+    hash = "sha256-EGVl830AkhaY3ujSih69kyajdL0ob4tEnQyL9yIlCIQ=";
+  };
+  appleSupportModule = fetchurl {
+    urls = ["${appleSupportRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-U3Y/7UVqloz5GbMkBCfPOp1UgexUZqvJ1dxRvHAIdEI=";
+  };
+  appleSupportPatch = fetchurl {
+    urls = ["${appleSupportRegistryRoot}/patches/module_dot_bazel_version.patch"];
+    hash = "sha256-yqwfzmg9lIV674KI+GHtlok/967e8C2Ap8bPggzPm58=";
+  };
 in {
   rules_cc = moduleSource {
     name = "rules_cc";
@@ -662,6 +736,111 @@ in {
           sed '/^### INTERNAL ONLY/,$d' MODULE.bazel > MODULE.bazel.released
           cmp MODULE.bazel.released ${stardocModule}
           mv MODULE.bazel.released MODULE.bazel
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  rules_apple = mkDerivation {
+    pname = "bazel-rules-apple-bcr-source";
+    version = "3.16.0";
+    src = rulesAppleSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir rules-apple-source
+          cp -a "$src"/. rules-apple-source/
+          chmod -R u+w rules-apple-source
+          cd rules-apple-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch -p1 < ${rulesApplePatch}
+          cmp MODULE.bazel ${rulesAppleModule}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  chicory = mkDerivation {
+    pname = "bazel-chicory-bcr-source";
+    version = "1.1.0";
+    src = chicorySource;
+
+    buildDeps = [buildPackages.patch];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir chicory-source
+          cp -a "$src"/. chicory-source/
+          chmod -R u+w chicory-source
+          cd chicory-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch -p0 < ${chicoryPatch}
+          ${chicoryOverlayScript}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  apple_support = mkDerivation {
+    pname = "bazel-apple-support-bcr-source";
+    version = "1.23.1";
+    src = appleSupportSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir apple-support-source
+          cp -a "$src"/. apple-support-source/
+          chmod -R u+w apple-support-source
+          cd apple-support-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch -p1 < ${appleSupportPatch}
+          cmp MODULE.bazel ${appleSupportModule}
         '';
       }
       {
