@@ -383,10 +383,22 @@ fn execute(backend: &Backend, args: &[String], prepared: Prepared, start: Instan
                     }
                 }
             }
-            _ => {
+            Ok(inputs) => {
+                let mut observed = identity.clone();
+                observed.inputs = inputs;
+                event.changes.extend(
+                    identity
+                        .differences(&observed)
+                        .into_iter()
+                        .map(|change| format!("changed during compilation: {change}")),
+                );
                 event.outcome = "unstable-inputs".into();
                 event.reason =
                     "dependency inventory changed during compilation; result not cached".into();
+            }
+            Err(error) => {
+                event.outcome = "unstable-inputs".into();
+                event.reason = format!("dependency inventory could not be rechecked: {error:#}");
             }
         }
     } else if !result.status.success() {
