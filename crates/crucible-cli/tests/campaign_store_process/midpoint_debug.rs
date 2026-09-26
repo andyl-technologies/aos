@@ -91,8 +91,8 @@ pub(super) fn run_public_campaign_debug_flight_with_stopped_finding(
 
     let first = run_public_debug_client(&fixture, service.daemon_url(), &snapshot, &finding)?;
     let second = run_public_debug_client(&fixture, service.daemon_url(), &snapshot, &finding)?;
-    let first_selection = validate_public_debug_selection(&fixture, &first, &finding_proof)?;
-    let second_selection = validate_public_debug_selection(&fixture, &second, &finding_proof)?;
+    let first_selection = validate_public_debug_selection(&fixture, &first, &finding_proof, 2)?;
+    let second_selection = validate_public_debug_selection(&fixture, &second, &finding_proof, 2)?;
     assert_eq!(first_selection, second_selection);
     assert_eq!(
         first.session_response, second.session_response,
@@ -383,7 +383,7 @@ fn write_component_authority(fixture: &FlightFixture) -> Result<PathBuf, Box<dyn
     Ok(authority)
 }
 
-fn pause_campaign_for_debug(fixture: &FlightFixture) -> Result<String, Box<dyn Error>> {
+pub(super) fn pause_campaign_for_debug(fixture: &FlightFixture) -> Result<String, Box<dyn Error>> {
     use crucible_campaign::{
         ActiveAttemptPolicy, ApplyCampaignCommandRequest, CampaignCommandId, CampaignControlAction,
         CampaignName, CampaignPrincipal, CampaignService, CampaignServiceFailure,
@@ -399,7 +399,7 @@ fn pause_campaign_for_debug(fixture: &FlightFixture) -> Result<String, Box<dyn E
             break;
         }
         if head["state"] != "running" {
-            return Err(format!("q7 campaign cannot pause from this state: {head}").into());
+            return Err(format!("campaign cannot pause from this state: {head}").into());
         }
 
         let expected = CampaignSnapshotId::parse(&json_string(&head, "snapshot")?)?;
@@ -450,7 +450,7 @@ fn pause_campaign_for_debug(fixture: &FlightFixture) -> Result<String, Box<dyn E
         last_head = Some(head);
         Ok(stable.then_some(snapshot))
     })?;
-    stable.ok_or_else(|| format!("q7 campaign did not pause and drain: {last_head:?}").into())
+    stable.ok_or_else(|| format!("campaign did not pause and drain: {last_head:?}").into())
 }
 
 fn wait_for_retained_finding(
@@ -1027,11 +1027,69 @@ fn validate_fast_q7_schedule(schedule: &Schedule) -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
+pub(super) fn verify_public_debug_handoff(
+    fixture: &FlightFixture,
+    daemon_url: &str,
+    snapshot: &str,
+    finding: &str,
+    finding_proof: &crucible_campaign::GetCampaignFindingObjectResponse,
+    node: &str,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
+    let first = run_public_debug_client_at_node(
+        fixture,
+        daemon_url,
+        snapshot,
+        finding,
+        node,
+        timeout,
+        Duration::from_secs(180),
+    )?;
+    let second = run_public_debug_client_at_node(
+        fixture,
+        daemon_url,
+        snapshot,
+        finding,
+        node,
+        timeout,
+        Duration::from_secs(180),
+    )?;
+    // The product finding may have only its terminal exact checkpoint.
+    let first_selection = validate_public_debug_selection(fixture, &first, finding_proof, 1)?;
+    let second_selection = validate_public_debug_selection(fixture, &second, finding_proof, 1)?;
+    assert_eq!(first_selection, second_selection);
+    assert_eq!(first.session_response, second.session_response);
+    assert_eq!(first.stop_reply_class, second.stop_reply_class);
+
+    println!("public_product_finding_debug_authenticated=true");
+    Ok(())
+}
+
 fn run_public_debug_client(
     fixture: &FlightFixture,
     daemon_url: &str,
     snapshot: &str,
     finding: &str,
+) -> Result<PublicDebugEvidence, Box<dyn Error>> {
+    run_public_debug_client_at_node(
+        fixture,
+        daemon_url,
+        snapshot,
+        finding,
+        "choice-node",
+        MIDPOINT_TIMEOUT,
+        Duration::from_secs(10),
+    )
+}
+
+fn run_public_debug_client_at_node(
+    fixture: &FlightFixture,
+    daemon_url: &str,
+    snapshot: &str,
+    finding: &str,
+    node: &str,
+    timeout: Duration,
+    reply_timeout: Duration,
 ) -> Result<PublicDebugEvidence, Box<dyn Error>> {
     let relay_address = reserve_loopback_address()?;
     let mut invocation = command(&[
@@ -1053,7 +1111,7 @@ fn run_public_debug_client(
             "--finding",
             finding,
             "--node",
-            "choice-node",
+            node,
             "--gdb-listen",
             &relay_address.to_string(),
         ])
@@ -1092,12 +1150,12 @@ fn run_public_debug_client(
     });
     let relay_result = (|| {
         ready_receiver
-            .recv_timeout(MIDPOINT_TIMEOUT)
+            .recv_timeout(timeout)
             .map_err(|error| format!("campaign debug readiness handshake failed: {error}"))??;
         let mut relay = TcpStream::connect(relay_address).map_err(|error| {
             format!("campaign debug relay {relay_address} connect failed: {error}")
         })?;
-        relay.set_read_timeout(Some(Duration::from_secs(10)))?;
+        relay.set_read_timeout(Some(reply_timeout))?;
         relay.write_all(b"$?#3f")?;
         let stop_reply_class = read_single_rsp_stop_reply(&mut relay)?;
         relay.shutdown(Shutdown::Both)?;
@@ -1218,6 +1276,7 @@ fn validate_public_debug_selection(
     fixture: &FlightFixture,
     evidence: &PublicDebugEvidence,
     finding: &crucible_campaign::GetCampaignFindingObjectResponse,
+    minimum_candidates: usize,
 ) -> Result<(u64, usize), Box<dyn Error>> {
     let pins = finding.finding().exact_pin_retention();
     let role_pins = match evidence.role {
@@ -1283,8 +1342,11 @@ fn validate_public_debug_selection(
     let Some(((restore_bytes, _, checkpoint), role)) = expected else {
         return Err("authenticated finding retained no exact debug checkpoint".into());
     };
-    if candidate_count < 2 {
-        return Err("campaign debug flight requires competing authenticated checkpoints".into());
+    if candidate_count < minimum_candidates {
+        return Err(format!(
+            "campaign debug flight requires at least {minimum_candidates} authenticated checkpoints"
+        )
+        .into());
     }
     if (evidence.checkpoint, evidence.role) != (checkpoint, role) {
         return Err(format!(

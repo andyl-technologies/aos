@@ -14,10 +14,11 @@ use crucible_session::engine::{
 
 const PROCESS_OBSERVATION_INTERVAL: Duration = Duration::from_millis(100);
 
-#[path = "campaign_packaged_process/envoy_network.rs"]
-mod envoy_network;
+#[cfg(feature = "packaged-midpoint-flight")]
 #[path = "campaign_packaged_process/envoy_known_finding.rs"]
 mod envoy_known_finding;
+#[path = "campaign_packaged_process/envoy_network.rs"]
+mod envoy_network;
 #[path = "campaign_packaged_process/guest_choice.rs"]
 pub(super) mod guest_choice;
 #[path = "campaign_packaged_process/policy_timeout.rs"]

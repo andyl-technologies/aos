@@ -44,6 +44,8 @@ required_claim_gates = [
   "gate:campaign-finding-signal-bundle",
   "gate:campaign-finding-fork-write",
   "gate:campaign-envoy-network-five-vm",
+  "gate:campaign-envoy-known-finding",
+  "gate:campaign-envoy-product-lifecycle",
 ]
 
 [e2e_evidence]
