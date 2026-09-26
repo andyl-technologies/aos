@@ -609,6 +609,9 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
 #[path = "campaign_store_process/archive_transfer.rs"]
 mod archive_transfer;
 
+#[path = "campaign_store_process/live_s3_product.rs"]
+mod live_s3_product;
+
 struct FlightFixture {
     _temporary: TempDir,
     fixture: PathBuf,
