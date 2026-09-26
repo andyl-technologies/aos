@@ -372,13 +372,18 @@ impl CampaignRepository {
             return Err(integrity("planner-step-publication-id-mismatch"));
         }
 
-        let mut coordination = self.coordination_with_parent_result(current_content, &current)?;
-        for key in [step_key, invocation_key, planner_head_key()] {
-            coordination = self
-                .merkle
-                .insert(coordination, key, step_content)?
-                .content_id();
+        let mut coordination_upserts = BTreeMap::new();
+        if let Some((key, value)) = self.parent_result_upsert(current_content, &current)? {
+            coordination_upserts.insert(key, value);
         }
+        for key in [step_key, invocation_key, planner_head_key()] {
+            coordination_upserts.insert(key, step_content);
+        }
+        // Publish only the canonical final trie, after all four owner keys are known.
+        let coordination = self
+            .merkle
+            .insert_many(current.snapshot.roots().coordination, &coordination_upserts)?
+            .content_id();
 
         let fact = CampaignFact::PlannerAdvanced(step_id);
         let transition_content = self.put_fact(&fact)?;
