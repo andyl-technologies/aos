@@ -31,9 +31,9 @@ use crucible_campaign::{
     DiscreteAlternative, DiscreteDomain, ExactRational, ExplorerPolicy, FairnessPolicy,
     FeedbackWait, IntegerDomain, IntegerRepresentation, IntegerValue, MeasurementSet, Observation,
     PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, PlannerAuthorityKey, PlannerDisposition,
-    PlannerExecutionSupervisor, PlannerRequest, PlannerStepId, PlanningBudget,
-    ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy, PurePlannerEngine,
-    RepositoryCampaignService, RepositoryCampaignServiceError, RetentionPolicy,
+    PlannerExecutionSupervisor, PlannerProposalDisposition, PlannerRequest, PlannerStepId,
+    PlanningBudget, ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy,
+    PurePlannerEngine, RepositoryCampaignService, RepositoryCampaignServiceError, RetentionPolicy,
     STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION, ScenarioDefId, SelectableDeclaration, Selection,
     SelectionOrigin, StopCondition, StopOutcome, SubmitCampaignBranchRequest,
     SupervisedPlannerExecution, WorkerSlotId,
@@ -528,10 +528,21 @@ impl PlannerExecutionSupervisor<CanonicalFrontierPlanner> for DirectPlannerSuper
         engine: &mut CanonicalFrontierPlanner,
         request: &PlannerRequest,
     ) -> Result<SupervisedPlannerExecution<CampaignCodecError>, Self::Error> {
-        Ok(SupervisedPlannerExecution::new(
-            engine.plan(request),
-            request.invocation().scan_page().input_objects() + 1,
-        ))
+        let result = engine.plan(request);
+        let output_count = match result
+            .as_ref()
+            .map(|output| output.proposal().disposition())
+        {
+            Ok(PlannerProposalDisposition::Issue {
+                branch_requests,
+                proposals,
+                ..
+            }) => (branch_requests.len() + proposals.len()).max(1) as u64,
+            _ => 1,
+        };
+        let measured_fuel =
+            request.invocation().scan_page().positions().len() as u64 + output_count;
+        Ok(SupervisedPlannerExecution::new(result, measured_fuel))
     }
 }
 
@@ -551,6 +562,21 @@ impl CampaignPrincipalAuthorizer for AllowGatePrincipal {
 
 fn planner_driver(
     fixture: &GateFixture,
+) -> Result<
+    CampaignPlannerDriver<
+        crucible_campaign::AuthorizedPlannerService<
+            CanonicalFrontierPlanner,
+            DirectPlannerSupervisor,
+        >,
+    >,
+    Box<dyn Error>,
+> {
+    planner_driver_with_proposal_limit(fixture, 1)
+}
+
+fn planner_driver_with_proposal_limit(
+    fixture: &GateFixture,
+    proposal_limit: u32,
 ) -> Result<
     CampaignPlannerDriver<
         crucible_campaign::AuthorizedPlannerService<
@@ -584,9 +610,62 @@ fn planner_driver(
         artifact,
         initial_state,
         16,
-        PlanningBudget::new(1, 1, 64, 64 * 1024, 10_000)?,
+        PlanningBudget::new(1, proposal_limit, 64, 64 * 1024, 10_000)?,
     )?
     .require_tree_search_policy())
+}
+
+#[test]
+fn finite_frontier_issues_one_ordered_bounded_vector() -> Result<(), Box<dyn Error>> {
+    let fixture = GateFixture::new(
+        "finite-vector-issue",
+        CampaignMode::Strict,
+        tree_search_explorer()?,
+        &BTreeMap::new(),
+    )?;
+    let campaign = "finite-vector-issue";
+    let head = fixture.create_funded_running(campaign, &BTreeMap::new(), 16)?;
+    let domain = integer_domain(15)?;
+    let values = (0..16_u64)
+        .map(|value| ChoiceValue::Integer(IntegerValue::Unsigned(value)))
+        .collect::<BTreeSet<_>>();
+    let request = request_for_source(
+        &fixture,
+        &domain,
+        ChoiceValue::Integer(IntegerValue::Unsigned(0)),
+        CandidateSource::finite(values.clone())?,
+        BranchRequestCause::Operator(command_id(campaign, "request")),
+        campaign,
+        BranchBudget::new(16, 16)?,
+    )?;
+    let requested = discover_and_submit(&fixture, campaign, head.snapshot_id(), &request)?;
+    let mut driver = planner_driver_with_proposal_limit(&fixture, 16)?;
+
+    let CampaignPlannerStepOutcome::Advanced {
+        result,
+        disposition: PlannerDisposition::Issue {
+            issued_proposals, ..
+        },
+        ..
+    } = driver.step(campaign)?
+    else {
+        return Err("finite frontier did not issue its ordered vector".into());
+    };
+    assert_ne!(result.new_snapshot, requested.new_snapshot);
+    assert_eq!(issued_proposals.len(), 16);
+    for (index, proposal_id) in issued_proposals.into_iter().enumerate() {
+        let proposal = fixture.repository.load_proposal(proposal_id)?;
+        assert_eq!(proposal.ordinal(), index as u64 + 1);
+        assert_eq!(
+            proposal.value(),
+            values.iter().nth(index).ok_or("missing value")?
+        );
+    }
+    let claimable = fixture
+        .repository
+        .project_claimable_attempts(campaign, None, 32)?;
+    assert_eq!(claimable.attempts().len(), 16);
+    Ok(())
 }
 
 #[test]
