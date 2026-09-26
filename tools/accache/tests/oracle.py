@@ -8,6 +8,7 @@ The private sccache server is bounded by this process and stopped in finally.
 """
 
 from dataclasses import dataclass, field
+import fnmatch
 import hashlib
 import json
 import os
@@ -84,6 +85,23 @@ def fixtures(gcc, clang, rustc):
             yield Fixture("gcc-statistics-dump", compiler,
                           base + ["-O2", "-fdump-statistics-stats"], c_sources,
                           {"value.h": "#define VALUE 73\n"})
+            analyzer_sources = {
+                "source.c": '#include "value.h"\nint answer(int *p) { return *p + VALUE; }\n',
+                "value.h": "#define VALUE 42\n",
+            }
+            for suffix, flag, nondeterministic in [
+                ("text", "-fdump-analyzer", {"source.c.analyzer.txt"}),
+                ("exploded-graph", "-fdump-analyzer-exploded-graph", {"source.c.eg.dot"}),
+                ("exploded-nodes-2", "-fdump-analyzer-exploded-nodes-2", {"source.c.eg.txt"}),
+                ("exploded-nodes-3", "-fdump-analyzer-exploded-nodes-3", {"source.c.en-*.txt"}),
+                ("state-purge", "-fdump-analyzer-state-purge", set()),
+                ("supergraph", "-fdump-analyzer-supergraph", set()),
+                ("json", "-fdump-analyzer-json", set()),
+            ]:
+                yield Fixture("gcc-analyzer-" + suffix, compiler,
+                              base + ["-fanalyzer", flag], analyzer_sources,
+                              {"value.h": "#define VALUE 73\n"},
+                              nondeterministic_outputs=nondeterministic)
             yield Fixture("gcc-debug-dumps", compiler,
                           base + ["-da"], c_sources,
                           {"value.h": "#define VALUE 73\n"})
@@ -323,6 +341,48 @@ def check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits):
                         "artifacts": ["source.o", next(work.glob(pattern)).name]})
         print("PASS oracle GCC custom", name, "passthrough", flush=True)
     return results
+
+
+def check_ada_spec_passthrough(root, env, accache, sccache, gcc, hits):
+    """Keep header-derived Ada specs outside the bounded object dump scope."""
+    work = root / "gcc-ada-spec"
+    work.mkdir()
+    (work / "objects").mkdir()
+    (work / "header.h").write_text("struct point { int x; int y; };\n")
+    (work / "source.c").write_text(
+        '#include "header.h"\n'
+        'int answer(void) { struct point p = {1, 2}; return p.x; }\n')
+    args = [gcc, "-c", "source.c", "-o", "objects/source.o", "-fdump-ada-spec"]
+
+    def compile_object(wrapper):
+        for path in work.rglob("*"):
+            if path.is_file() and path.name not in {"source.c", "header.h"}:
+                path.unlink()
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        files = snapshot(work)
+        files.pop("source.c")
+        files.pop("header.h")
+        return completed.stdout, completed.stderr, files
+
+    direct = compile_object([])
+    assert {"header_h.ads", "source_c.ads", "objects/source.o"} == set(direct[2])
+    assert compile_object([sccache]) == direct
+    before_hits = hits()
+    oracle_warm = compile_object([sccache])
+    oracle_hit = hits() > before_hits
+
+    for _ in range(2):
+        assert compile_object([accache]) == direct
+        event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert event["outcome"] == "bypass" and "untracked side output" in event["reason"], event
+
+    print("PASS oracle GCC Ada spec passthrough", flush=True)
+    return {"fixture": "gcc-ada-spec", "revision": 0,
+            "oracle_hit": oracle_hit, "accache": "bypass",
+            "oracle_missing_artifacts": sorted(set(direct[2]) - set(oracle_warm[2])),
+            "artifacts": sorted(direct[2])}
 
 
 def check_saved_temporaries(root, env, accache, sccache, rustc, hits):
@@ -824,6 +884,10 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                env=env, check=True, capture_output=True)
             sources = set(snapshot(work))
 
+            def nondeterministic(path):
+                return any(fnmatch.fnmatchcase(path, pattern)
+                           for pattern in fixture.nondeterministic_outputs)
+
             def clean():
                 for path in work.rglob("*"):
                     if path.is_file() and str(path.relative_to(work)) not in sources:
@@ -888,14 +952,26 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                            if key != "source.c.sarif"})
                 if fixture.name in {"gcc-tree-dump", "gcc-multiple-dumps",
                                     "gcc-tree-all-dumps", "gcc-statistics-dump",
-                                    "gcc-debug-dumps", "gcc-joined-debug-dumps"} and label == "sccache warm vs direct":
+                                    "gcc-debug-dumps", "gcc-joined-debug-dumps",
+                                    "gcc-analyzer-text", "gcc-analyzer-exploded-graph",
+                                    "gcc-analyzer-exploded-nodes-2",
+                                    "gcc-analyzer-exploded-nodes-3",
+                                    "gcc-analyzer-state-purge", "gcc-analyzer-supergraph",
+                                    "gcc-analyzer-json"} and label == "sccache warm vs direct":
                     dump_files = {path for path in expected[3]
                                   if path.startswith("source.c.")}
                     expected_count = {"gcc-tree-dump": 1, "gcc-multiple-dumps": 2,
-                                      "gcc-statistics-dump": 1}
+                                      "gcc-statistics-dump": 1,
+                                      "gcc-analyzer-text": 1,
+                                      "gcc-analyzer-exploded-graph": 1,
+                                      "gcc-analyzer-exploded-nodes-2": 1,
+                                      "gcc-analyzer-state-purge": 1,
+                                      "gcc-analyzer-json": 1}
                     if fixture.name in {"gcc-tree-all-dumps", "gcc-debug-dumps",
-                                        "gcc-joined-debug-dumps"}:
-                        minimum = 100 if fixture.name == "gcc-tree-all-dumps" else 60
+                                        "gcc-joined-debug-dumps", "gcc-analyzer-supergraph",
+                                        "gcc-analyzer-exploded-nodes-3"}:
+                        minimum = (100 if fixture.name == "gcc-tree-all-dumps" else
+                                   5 if fixture.name.startswith("gcc-analyzer-") else 60)
                         assert len(dump_files) >= minimum, ("unexpected GCC dump files", expected[3])
                     else:
                         assert len(dump_files) == expected_count[fixture.name], (
@@ -918,9 +994,9 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     if field == "artifacts" and fixture.nondeterministic_outputs:
                         # GCC PCH embeds process-specific state even when direct
                         # compilations receive identical argv and inputs.
-                        left = {path: (b"", mode) if path in fixture.nondeterministic_outputs
+                        left = {path: (b"", mode) if nondeterministic(path)
                                 else (data, mode) for path, (data, mode) in left.items()}
-                        right = {path: (b"", mode) if path in fixture.nondeterministic_outputs
+                        right = {path: (b"", mode) if nondeterministic(path)
                                  else (data, mode) for path, (data, mode) in right.items()}
                     assert left == right, (fixture.name, label, field,
                                            {path: (hashlib.sha256(data).hexdigest(), executable)
@@ -949,14 +1025,19 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                 oracle_warm = invoke([sccache])
                 compare(baseline, oracle_warm, "sccache warm vs direct" if baseline is direct else "sccache warm vs cold")
                 if fixture.cacheable:
-                    for path in fixture.nondeterministic_outputs:
-                        if path in oracle_warm[3]:
+                    for path in oracle_warm[3]:
+                        if nondeterministic(path):
                             assert oracle_warm[3][path] == oracle_cold[3][path], (
                                 fixture.name, "sccache did not replay the cold artifact")
                 oracle_hit = hits() > before_hits
                 if fixture.name in {"gcc-tree-dump", "gcc-multiple-dumps",
                                     "gcc-tree-all-dumps", "gcc-statistics-dump",
                                     "gcc-debug-dumps", "gcc-joined-debug-dumps",
+                                    "gcc-analyzer-text", "gcc-analyzer-exploded-graph",
+                                    "gcc-analyzer-exploded-nodes-2",
+                                    "gcc-analyzer-exploded-nodes-3",
+                                    "gcc-analyzer-state-purge", "gcc-analyzer-supergraph",
+                                    "gcc-analyzer-json",
                                     "gcc-explicit-tree-dump",
                                     "gcc-opt-report", "gcc-sarif-report",
                                     "gcc-sarif-nested-output", "gcc-add-sarif-output",
@@ -975,9 +1056,10 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                 accache_warm = invoke([accache])
                 compare(baseline, accache_warm, "accache warm vs baseline")
                 if fixture.cacheable:
-                    for path in fixture.nondeterministic_outputs:
-                        assert accache_warm[3][path] == accache_cold[3][path], (
-                            fixture.name, "accache did not replay the cold PCH")
+                    for path in accache_warm[3]:
+                        if nondeterministic(path):
+                            assert accache_warm[3][path] == accache_cold[3][path], (
+                                fixture.name, "accache did not replay the cold artifact")
                 warm_event = json.loads(subprocess.check_output([accache, "explain"], env=env))
                 if fixture.cacheable:
                     assert cold_event["outcome"] == "miss", (fixture.name, cold_event)
@@ -993,6 +1075,7 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
             print("PASS oracle", fixture.name, flush=True)
 
         results.extend(check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits))
+        results.append(check_ada_spec_passthrough(root, env, accache, sccache, gcc, hits))
         results.append(check_saved_temporaries(root, env, accache, sccache, rustc, hits))
         results.append(check_assembler_include_invalidation(root, env, accache,
                                                             sccache, gcc, hits))
