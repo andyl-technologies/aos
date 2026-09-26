@@ -1,11 +1,21 @@
 //! Handles hub documentation commands and their domain-specific request validation.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use crate::cli::{HubAccessArgs, HubDocumentationCmd};
 use crate::commands::hub::client::hub_client;
 use crate::commands::hub::mutation::topology_read;
 use crate::commands::hub::output::print_hub_json;
+use crate::commands::input::read_bounded_file;
 use anyhow::{Context as _, Result};
+use aos_ability_inspect::{
+    DeploymentReportContext, INSPECTION_BUNDLE_MAX_BYTES, InspectionBundle,
+    planned_deployment_overlay,
+};
+use aos_ability_model::LocalKey;
+use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
+use aos_doc_model::{PackageAbilityReference, ability_reference_supported_features};
 use aos_remote::{hub_rpc as HubTopologyMethod, hub_types};
 use sha2::{Digest as _, Sha256};
 
@@ -50,6 +60,123 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
                 }));
             } else {
                 print_ability_graph(&graph, identity);
+            }
+            Ok(())
+        }
+        HubDocumentationCmd::Report {
+            access,
+            bundle,
+            expected_digest,
+            registry,
+            release,
+            package,
+            version,
+            platform,
+            deployment,
+            sequence,
+            reporter_resource_version,
+            valid_for_seconds,
+        } => {
+            let bundle_bytes = read_bounded_file(
+                bundle,
+                u64::try_from(INSPECTION_BUNDLE_MAX_BYTES)?,
+                "inspection bundle",
+            )?;
+            let expected_digest = expected_digest
+                .as_deref()
+                .map(Sha256Digest::parse)
+                .transpose()
+                .context("parsing expected inspection-bundle digest")?;
+            let checked = InspectionBundle::decode(&bundle_bytes)
+                .context("decoding canonical ability inspection bundle")?
+                .check(expected_digest)
+                .context("checking ability inspection bundle semantics")?;
+
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            let response: hub_types::GetPackageAbilityReferenceResponse = client
+                .call_topology(
+                    HubTopologyMethod::GetPackageAbilityReference,
+                    &hub_types::GetPackageAbilityReferenceRequest {
+                        registry: registry.clone(),
+                        package: package.clone(),
+                        version: version.clone(),
+                        platform: platform.clone(),
+                        release: release.clone().unwrap_or_default(),
+                    },
+                )
+                .await?;
+            let identity = response
+                .identity
+                .as_ref()
+                .context("Hub omitted package ability reference identity")?;
+            let reference = PackageAbilityReference::from_canonical_json(
+                &response.canonical_json,
+                &ability_reference_supported_features()?,
+            )
+            .context("Hub returned an invalid canonical package ability reference")?;
+            let digest = hex::encode(Sha256::digest(&response.canonical_json));
+            anyhow::ensure!(
+                digest == response.etag
+                    && identity.package == *package
+                    && identity.package == reference.package.as_str()
+                    && identity.version == *version
+                    && identity.version == reference.version
+                    && identity.platform == *platform
+                    && identity.manifest_sha256 == reference.manifest_sha256.to_string()
+                    && identity.package_digest == reference.package_digest.to_string(),
+                "Hub package ability reference identity does not match canonical bytes"
+            );
+
+            let reported_at_unix_seconds = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .context("system clock precedes the Unix epoch")?
+                .as_secs();
+            let overlay = planned_deployment_overlay(
+                checked.plan(),
+                &reference,
+                DeploymentReportContext {
+                    registry_commit: identity.registry_commit.clone(),
+                    platform: platform.clone(),
+                    deployment: LocalKey::new(deployment.clone())
+                        .context("invalid deployment reporter slot")?,
+                    sequence: *sequence,
+                    reported_at_unix_seconds,
+                    valid_for_seconds: *valid_for_seconds,
+                },
+            )
+            .context("projecting checked planned deployment")?;
+            let canonical_json = overlay.canonical_json()?;
+            let accepted: hub_types::PackageAbilityDeploymentResponse = client
+                .call_topology(
+                    HubTopologyMethod::ReportPackageAbilityDeployment,
+                    &hub_types::ReportPackageAbilityDeploymentRequest {
+                        registry: registry.clone(),
+                        deployment: deployment.clone(),
+                        reporter_resource_version: *reporter_resource_version,
+                        canonical_json: canonical_json.clone(),
+                    },
+                )
+                .await?;
+            anyhow::ensure!(
+                accepted.canonical_json == canonical_json,
+                "Hub returned different deployment overlay bytes"
+            );
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "overlay": overlay,
+                    "authority": accepted.authority,
+                    "received_at": accepted.received_at,
+                    "expires_at": accepted.expires_at,
+                    "reporter_resource_version": accepted.reporter_resource_version,
+                }));
+            } else {
+                println!(
+                    "Reported {} planned ability exports for {} in deployment {} (sequence {})",
+                    overlay.plan.exports.len(),
+                    package,
+                    deployment,
+                    sequence
+                );
             }
             Ok(())
         }

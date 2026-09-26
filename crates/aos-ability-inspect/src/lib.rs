@@ -19,6 +19,7 @@
 pub mod artifact_consumption;
 pub mod bundle;
 pub mod compare;
+pub mod deployment;
 pub mod diagnostic_bundle;
 pub mod explanation;
 pub mod operator_view;
@@ -43,6 +44,9 @@ pub use bundle::{
     InspectionBundle, InspectionBundleError,
 };
 pub use compare::{ChangedNode, INSPECTION_DIFF_SCHEMA, InspectionDiff};
+pub use deployment::{
+    DeploymentProjectionError, DeploymentReportContext, planned_deployment_overlay,
+};
 pub use diagnostic_bundle::{
     DIAGNOSTIC_BUNDLE_MAX_BYTES, DIAGNOSTIC_BUNDLE_SCHEMA, DiagnosticArtifact, DiagnosticBundle,
     DiagnosticBundleAudience, DiagnosticBundleError, DiagnosticLimitation, ExecutionTimeline,

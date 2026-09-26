@@ -257,6 +257,28 @@ using the report: evidence for one mechanism deliberately does not claim the
 others, authenticate a signed publication, or prove continued deployment
 state.
 
+## Report planned selections to Hub
+
+An enrolled deployment reporter can associate a checked plan with Hub's exact
+package reference. Supply the reporter slot's next sequence and current
+resource version:
+
+```sh
+aos hub docs report --registry core --release 2026.09 \
+  --package nginx --version 1.30.4 --platform x86_64-linux \
+  --deployment production --bundle inspection-bundle.json \
+  --expected-digest sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --sequence 7 --reporter-resource-version 3
+```
+
+The command validates the bundle, fetches the authenticated reference, and
+reports matching public exports as `planned`. It does not infer activation or
+availability from a plan. Hub accepts the report only for the enrolled bearer
+and exact package reference, and expires it after a bounded period. Use
+`--valid-for-seconds` to request a lifetime other than the 60-second default.
+Replace the example digest with the independently obtained digest of the
+actual inspection bundle.
+
 ## Current scope
 
 The current CLI reads version-1 canonical schemas and rejects unknown required

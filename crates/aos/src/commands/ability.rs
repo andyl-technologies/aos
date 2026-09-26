@@ -34,6 +34,7 @@ use crate::cli::{
     AbilityDiagnosticAudience, AbilityInspectArgs, AbilityOperatorArgs, AbilityProjection,
     AbilityRemovalPreviewArgs, AbilityRenderFormat, ArtifactConsumptionRenderFormat,
 };
+use crate::commands::input::read_bounded_file;
 
 mod browser;
 
@@ -611,23 +612,6 @@ fn read_bounded_bundle(args: &AbilityInspectArgs) -> Result<Vec<u8>> {
             .context("inspection bundle byte limit does not fit this platform")?,
         "inspection bundle",
     )
-}
-
-fn read_bounded_file(path: &std::path::Path, limit: u64, label: &str) -> Result<Vec<u8>> {
-    let file = File::open(path).with_context(|| format!("opening {label} {}", path.display()))?;
-    let mut reader: Take<File> = file.take(limit.saturating_add(1));
-    let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .with_context(|| format!("reading {label} {}", path.display()))?;
-    if bytes.len() as u64 > limit {
-        bail!(
-            "{label} {} exceeds the {} byte limit",
-            path.display(),
-            limit
-        );
-    }
-    Ok(bytes)
 }
 
 fn read_bounded_query(path: &std::path::Path) -> Result<GraphQuery> {
