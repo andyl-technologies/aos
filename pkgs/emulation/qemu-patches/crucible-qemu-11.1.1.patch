@@ -1,4 +1,4 @@
-From a87f0a0731041031af2e8227a2addeca0fbe9e92 Mon Sep 17 00:00:00 2001
+From 799f4628161cdc0632edee9702fe10ae3f3fec7c Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -3001,10 +3001,10 @@ index 0000000000000000000000000000000000000000..ab3f9519b98c2e3107612d4d940035d9
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..b1c35c48abaf5bb9f8945b07b99c64b63fdfd7ac 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..086152f2339a6b2cb768d0a25a808ed1fadbe6cc 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,41 +27,1677 @@
+@@ -27,45 +27,1676 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -4354,19 +4354,8 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..b1c35c48abaf5bb9f8945b07b99c64b6
 +    if (acquired_replay) {
 +        rr_replay_mutex_unlock();
 +    }
- }
- 
--/*
-- * TCG vCPU kick timer
-- *
-- * The kick timer is responsible for moving single threaded vCPU
-- * emulation on to the next vCPU. If more than one vCPU is running a
-- * timer event we force a cpu->exit so the next vCPU can get
-- * scheduled.
-- *
-- * The timer is removed if all vCPUs are idle and restarted again once
-- * idleness is complete.
-- */
++}
++
 +static bool rr_crucible_sim_complete_dispatch_boundary(
 +    CPUState **cpu_ptr, uint64_t current_icount)
 +{
@@ -4382,10 +4371,19 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..b1c35c48abaf5bb9f8945b07b99c64b6
 +    }
 +    rr_crucible_sim_wait_at_dispatch_ceiling();
 +    return true;
-+}
+ }
  
--static QEMUTimer *rr_kick_vcpu_timer;
--static CPUState *rr_current_cpu;
+-/*
+- * TCG vCPU kick timer
+- *
+- * The kick timer is responsible for moving single threaded vCPU
+- * emulation on to the next vCPU. If more than one vCPU is running a
+- * timer event we force a cpu->exit so the next vCPU can get
+- * scheduled.
+- *
+- * The timer is removed if all vCPUs are idle and restarted again once
+- * idleness is complete.
+- */
 +static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
 +                                          int64_t *cpu_budget,
 +                                          bool *icount_retry,
@@ -4393,7 +4391,9 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..b1c35c48abaf5bb9f8945b07b99c64b6
 +{
 +    unsigned int runs = 0;
 +    CPUState *cpu = *cpu_ptr;
-+
+ 
+-static QEMUTimer *rr_kick_vcpu_timer;
+-static CPUState *rr_current_cpu;
 +    while (true) {
 +        bool guest_pause_yield;
 +        bool retain_replay = rr_crucible_sim_quantum_dispatch_fence();
@@ -4402,7 +4402,10 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..b1c35c48abaf5bb9f8945b07b99c64b6
 +        uint64_t service_before;
 +        uint64_t service_after;
 +        bool ready_marker_boundary_requested;
-+
+ 
+-static inline int64_t rr_next_kick_time(void)
+-{
+-    return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
 +        if (rr_crucible_sim_mode() &&
 +            qemu_plugin_time_advance_is_pending()) {
 +            if (rr_crucible_sim_complete_wake_boundary()) {
@@ -4694,11 +4697,19 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..b1c35c48abaf5bb9f8945b07b99c64b6
 +
 +        rr_crucible_sim_refresh_batch_budget(cpu_budget);
 +    }
-+}
+ }
  
- static inline int64_t rr_next_kick_time(void)
+ /* Kick the currently round-robin scheduled vCPU to next */
+@@ -84,18 +1715,30 @@ static void rr_kick_next_cpu(void)
+ 
+ static void rr_kick_thread(void *opaque)
  {
-@@ -90,6 +1726,14 @@ static void rr_kick_thread(void *opaque)
+-    timer_mod(rr_kick_vcpu_timer, rr_next_kick_time());
++    if (!timer_mod_after_ns(rr_kick_vcpu_timer, TCG_KICK_PERIOD)) {
++        g_error("TCG round-robin kick deadline overflow");
++    }
+     rr_kick_next_cpu();
+ }
  
  static void rr_start_kick_timer(void)
  {
@@ -4713,7 +4724,16 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..b1c35c48abaf5bb9f8945b07b99c64b6
      if (!rr_kick_vcpu_timer && CPU_NEXT(first_cpu)) {
          rr_kick_vcpu_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                             rr_kick_thread, NULL);
-@@ -110,15 +1754,131 @@ static void rr_wait_io_event(void)
+     }
+     if (rr_kick_vcpu_timer && !timer_pending(rr_kick_vcpu_timer)) {
+-        timer_mod(rr_kick_vcpu_timer, rr_next_kick_time());
++        if (!timer_mod_after_ns(rr_kick_vcpu_timer, TCG_KICK_PERIOD)) {
++            g_error("TCG round-robin kick deadline overflow");
++        }
+     }
+ }
+ 
+@@ -110,15 +1753,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -4847,7 +4867,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..b1c35c48abaf5bb9f8945b07b99c64b6
      }
  }
  
-@@ -140,6 +1900,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +1899,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -4866,7 +4886,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..b1c35c48abaf5bb9f8945b07b99c64b6
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +1956,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +1955,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -4875,7 +4895,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..b1c35c48abaf5bb9f8945b07b99c64b6
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -207,38 +1981,193 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -207,38 +1980,193 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_process_cpu_events_common(cpu);
          }
      }
@@ -5086,7 +5106,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..b1c35c48abaf5bb9f8945b07b99c64b6
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2183,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2182,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -5119,7 +5139,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..b1c35c48abaf5bb9f8945b07b99c64b6
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2225,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2224,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -5258,7 +5278,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..b1c35c48abaf5bb9f8945b07b99c64b6
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2349,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2348,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -5398,7 +5418,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..b1c35c48abaf5bb9f8945b07b99c64b6
      }
  
      g_assert_not_reached();
-@@ -318,13 +2488,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2487,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -19985,6 +20005,127 @@ index d6a4fb90b961f4c11aac8df13d044a73d034a79e..3663f3e0f4daf0374947ca28c35edddb
      .fields = (const VMStateField[]) {
          VMSTATE_UINT32(locked, PL061State),
          VMSTATE_UINT32(data, PL061State),
+diff --git a/hw/hppa/machine.c b/hw/hppa/machine.c
+index d762163ddf51d0bcfdd560b567b4d9debf06dcb0..b3d1facbfb507d53dec72fc46e01e14f3551915b 100644
+--- a/hw/hppa/machine.c
++++ b/hw/hppa/machine.c
+@@ -16,6 +16,9 @@
+ #include "system/system.h"
+ #include "system/qtest.h"
+ #include "system/runstate.h"
++#include "system/rtc.h"
++#include "migration/qemu-file-types.h"
++#include "migration/vmstate.h"
+ #include "hw/rtc/mc146818rtc.h"
+ #include "hw/timer/i8254.h"
+ #include "hw/char/serial-mm.h"
+@@ -46,6 +49,7 @@ struct HppaMachineState {
+ 
+     DeviceState *lasi_dev;
+     uint64_t memsplit_addr;
++    uint64_t rtc_ref;
+ };
+ 
+ #define MIN_SEABIOS_HPPA_VERSION 22 /* require at least this fw version */
+@@ -119,16 +123,48 @@ static ISABus *hppa_isa_bus(hwaddr addr)
+ /*
+  * Helper functions to emulate RTC clock and DebugOutputPort
+  */
+-static time_t rtc_ref;
++static bool hppa_rtc_fingerprint_projection(QEMUFile *f,
++                                            const void *opaque,
++                                            Error **errp)
++{
++    const HppaMachineState *hpm = opaque;
++    uint64_t effective_time = (uint64_t)qemu_rtc_get_guest_epoch_seconds() +
++                              hpm->rtc_ref;
++
++    (void)errp;
++    qemu_put_byte(f, qemu_timer_tcg_ps_enabled());
++    qemu_put_byte(f, rtc_clock);
++    qemu_put_be64(f, hpm->rtc_ref);
++    qemu_put_be64(f, effective_time);
++    return true;
++}
++
++static const CrucibleFingerprintProjection hppa_rtc_fingerprint = {
++    .schema = "crucible.qemu.hppa-rtc.v1",
++    .version = 1,
++    .save = hppa_rtc_fingerprint_projection,
++};
++
++static const VMStateDescription vmstate_hppa_rtc = {
++    .name = "hppa/rtc",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .crucible_fingerprint_projection = &hppa_rtc_fingerprint,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT64(rtc_ref, HppaMachineState),
++        VMSTATE_END_OF_LIST()
++    }
++};
+ 
+ static uint64_t io_cpu_read(void *opaque, hwaddr addr, unsigned size)
+ {
++    HppaMachineState *hpm = opaque;
+     uint64_t val = 0;
+ 
+     switch (addr) {
+     case 0:             /* RTC clock */
+-        val = time(NULL);
+-        val += rtc_ref;
++        val = qemu_rtc_get_guest_epoch_seconds();
++        val += hpm->rtc_ref;
+         break;
+     case 8:             /* DebugOutputPort */
+         return 0xe9;    /* readback */
+@@ -139,12 +175,13 @@ static uint64_t io_cpu_read(void *opaque, hwaddr addr, unsigned size)
+ static void io_cpu_write(void *opaque, hwaddr addr,
+                          uint64_t val, unsigned size)
+ {
++    HppaMachineState *hpm = opaque;
+     unsigned char ch;
+     Chardev *debugout;
+ 
+     switch (addr) {
+     case 0:             /* RTC clock */
+-        rtc_ref = val - time(NULL);
++        hpm->rtc_ref = val - (uint64_t)qemu_rtc_get_guest_epoch_seconds();
+         break;
+     case 8:             /* DebugOutputPort */
+         ch = val;
+@@ -293,7 +330,7 @@ static TranslateFn *machine_HP_common_init_cpus(MachineState *machine)
+     TranslateFn *translate;
+     MemoryRegion *cpu_region;
+     uint64_t ram_max;
+-    struct HppaMachineState *hpm;
++    HppaMachineState *hpm = HPPA_COMMON_MACHINE(machine);
+     hwaddr splitaddr;
+ 
+     /* Create CPUs.  */
+@@ -346,9 +383,13 @@ static TranslateFn *machine_HP_common_init_cpus(MachineState *machine)
+     /* RTC and DebugOutputPort on CPU #0 */
+     cpu_region = g_new(MemoryRegion, 1);
+     memory_region_init_io(cpu_region, OBJECT(cpu[0]), &hppa_io_helper_ops,
+-                          cpu[0], "cpu0-io-rtc", 2 * sizeof(uint64_t));
++                          hpm, "cpu0-io-rtc", 2 * sizeof(uint64_t));
+     memory_region_add_subregion(addr_space, translate(NULL, CPU_HPA + 16),
+                                 cpu_region);
++    if (vmstate_register(NULL, 0, &vmstate_hppa_rtc, hpm) < 0) {
++        error_report("could not register HPPA RTC migration state");
++        exit(1);
++    }
+ 
+     /* Main memory region. */
+     if (machine->ram_size > ram_max) {
+@@ -356,7 +397,6 @@ static TranslateFn *machine_HP_common_init_cpus(MachineState *machine)
+         machine->ram_size = ram_max;
+     }
+ 
+-    hpm = HPPA_COMMON_MACHINE(machine);
+     if (!hpm->memsplit_addr) {
+         /* non-contiguous: Memory above 3.75 GB is mapped at RAM_MAP_HIGH */
+         hpm->memsplit_addr = FIRMWARE_START;
 diff --git a/hw/i2c/core.c b/hw/i2c/core.c
 index 54f6bdca882060b6f64e032fa52dde22009618be..d4ba38753b9eead3f913cb4fdc6398575023ca6c 100644
 --- a/hw/i2c/core.c
@@ -26559,6 +26700,56 @@ index 99be41d0adfbca8b61f2795f6db7ec94eb5258cf..8e2aa9460fbb01fd36fabc721a4d6f3a
      }
  };
  
+diff --git a/hw/m68k/next-cube.c b/hw/m68k/next-cube.c
+index 9a0a57c0cc496cf2599fe3d3e48896d5823f8628..cd238651148851199a8021ef223a4b1999ba155e 100644
+--- a/hw/m68k/next-cube.c
++++ b/hw/m68k/next-cube.c
+@@ -16,6 +16,7 @@
+ #include "exec/cpu-interrupt.h"
+ #include "system/physmem.h"
+ #include "system/system.h"
++#include "system/rtc.h"
+ #include "system/qtest.h"
+ #include "hw/core/irq.h"
+ #include "hw/m68k/next-cube.h"
+@@ -949,28 +950,29 @@ static void next_rtc_data_in_irq(void *opaque, int n, int level)
+             }
+             if ((rtc->command >= 0x20) && (rtc->command <= 0x2f)) {
+                 /* RTC */
+-                time_t time_h = time(NULL);
+-                struct tm *info = localtime(&time_h);
++                struct tm info;
++
++                qemu_rtc_get_guest_calendar_time(&info);
+                 rtc->retval = 0;
+ 
+                 switch (rtc->command) {
+                 case 0x20:
+-                    rtc->retval = SCR2_TOBCD(info->tm_sec);
++                    rtc->retval = SCR2_TOBCD(info.tm_sec);
+                     break;
+                 case 0x21:
+-                    rtc->retval = SCR2_TOBCD(info->tm_min);
++                    rtc->retval = SCR2_TOBCD(info.tm_min);
+                     break;
+                 case 0x22:
+-                    rtc->retval = SCR2_TOBCD(info->tm_hour);
++                    rtc->retval = SCR2_TOBCD(info.tm_hour);
+                     break;
+                 case 0x24:
+-                    rtc->retval = SCR2_TOBCD(info->tm_mday);
++                    rtc->retval = SCR2_TOBCD(info.tm_mday);
+                     break;
+                 case 0x25:
+-                    rtc->retval = SCR2_TOBCD((info->tm_mon + 1));
++                    rtc->retval = SCR2_TOBCD((info.tm_mon + 1));
+                     break;
+                 case 0x26:
+-                    rtc->retval = SCR2_TOBCD((info->tm_year - 100));
++                    rtc->retval = SCR2_TOBCD((info.tm_year - 100));
+                     break;
+                 }
+             }
 diff --git a/hw/m68k/q800-glue.c b/hw/m68k/q800-glue.c
 index ac9062c648818117f01c738d44739533efb47e47..2e3c20a099742ded75fededec59a653efd72efa4 100644
 --- a/hw/m68k/q800-glue.c
@@ -27784,6 +27975,36 @@ index 54bfe1ba59721ae90140975aff42abc20759a912..3dd10d476fa15544d21ddc4996e94833
      .version_id = 1,
      .minimum_version_id = 1,
      .fields = (const VMStateField[]) {
+diff --git a/hw/misc/lasi.c b/hw/misc/lasi.c
+index f0dfd78b4d2279e24a262ad0e4bd11c15d7fd90f..b65df16fe4cb3cdf0cfe7a668910e19d61a83a08 100644
+--- a/hw/misc/lasi.c
++++ b/hw/misc/lasi.c
+@@ -17,6 +17,7 @@
+ #include "hw/core/irq.h"
+ #include "system/system.h"
+ #include "system/runstate.h"
++#include "system/rtc.h"
+ #include "migration/vmstate.h"
+ #include "qom/object.h"
+ #include "hw/misc/lasi.h"
+@@ -96,7 +97,7 @@ static MemTxResult lasi_chip_read_with_attrs(void *opaque, hwaddr addr,
+         val = 0;
+         break;
+     case LASI_RTC:
+-        val = time(NULL);
++        val = qemu_rtc_get_guest_epoch_seconds();
+         val += s->rtc_ref;
+         break;
+ 
+@@ -175,7 +176,7 @@ static MemTxResult lasi_chip_write_with_attrs(void *opaque, hwaddr addr,
+         /* XXX: reset Floppy controller */
+         break;
+     case LASI_RTC:
+-        s->rtc_ref = val - time(NULL);
++        s->rtc_ref = val - qemu_rtc_get_guest_epoch_seconds();
+         break;
+ 
+     case LASI_PCR:
 diff --git a/hw/misc/mac_via.c b/hw/misc/mac_via.c
 index 26ee230dcc4ad0395badc9655c68c1f6c5e03a4a..dd9efa08b5f74212655c22bf7748d71eee9c6cf5 100644
 --- a/hw/misc/mac_via.c
@@ -32139,7 +32360,7 @@ index 550848307d16e4df77e371fa52fbf7a505f7e4e1..3fd650f4df1c446e6c5d3dc889688f60
      }
  };
 diff --git a/hw/net/virtio-net.c b/hw/net/virtio-net.c
-index 814b99a43d20408d5541aa7f19e1f9d2da3ad578..73e4be6b4b8115046d5bc33b56e209f05e407b64 100644
+index 814b99a43d20408d5541aa7f19e1f9d2da3ad578..8eb3b4c4d82a40735060560d418ffa14b3f14bcd 100644
 --- a/hw/net/virtio-net.c
 +++ b/hw/net/virtio-net.c
 @@ -17,6 +17,7 @@
@@ -32705,7 +32926,7 @@ index 814b99a43d20408d5541aa7f19e1f9d2da3ad578..73e4be6b4b8115046d5bc33b56e209f0
  
      /* MAC_TABLE_ENTRIES may be different from the saved image */
      if (n->mac_table.in_use > MAC_TABLE_ENTRIES) {
-@@ -3249,14 +3604,25 @@ static int virtio_net_post_load_device(void *opaque, int version_id)
+@@ -3249,14 +3604,31 @@ static int virtio_net_post_load_device(void *opaque, int version_id)
  
      if (virtio_vdev_has_feature(vdev, VIRTIO_NET_F_GUEST_ANNOUNCE) &&
          virtio_vdev_has_feature(vdev, VIRTIO_NET_F_CTRL_VQ)) {
@@ -32730,15 +32951,21 @@ index 814b99a43d20408d5541aa7f19e1f9d2da3ad578..73e4be6b4b8115046d5bc33b56e209f0
 +                                      QEMU_CLOCK_VIRTUAL,
 +                                      virtio_net_announce_timer, n);
 +            if (n->announce_timer.round) {
-+                timer_mod(n->announce_timer.tm,
-+                          qemu_clock_get_ms(n->announce_timer.type));
++                if (qemu_timer_tcg_ps_enabled()) {
++                    timer_mod_ps_wide(n->announce_timer.tm,
++                                      qemu_clock_get_ps_wide(
++                                          QEMU_CLOCK_VIRTUAL));
++                } else {
++                    timer_mod(n->announce_timer.tm,
++                              qemu_clock_get_ms(n->announce_timer.type));
++                }
 +            } else {
 +                qemu_announce_timer_del(&n->announce_timer, false);
 +            }
          }
      }
  
-@@ -3289,6 +3655,100 @@ static const VMStateDescription vmstate_virtio_net_queue_tx_waiting = {
+@@ -3289,6 +3661,100 @@ static const VMStateDescription vmstate_virtio_net_queue_tx_waiting = {
     },
  };
  
@@ -32839,7 +33066,7 @@ index 814b99a43d20408d5541aa7f19e1f9d2da3ad578..73e4be6b4b8115046d5bc33b56e209f0
  static bool max_queue_pairs_gt_1(void *opaque, int version_id)
  {
      return VIRTIO_NET(opaque)->max_queue_pairs > 1;
-@@ -3599,6 +4059,7 @@ static const VMStateDescription vmstate_virtio_net_device = {
+@@ -3599,6 +4065,7 @@ static const VMStateDescription vmstate_virtio_net_device = {
      .name = "virtio-net-device",
      .version_id = VIRTIO_NET_VM_VERSION,
      .minimum_version_id = VIRTIO_NET_VM_VERSION,
@@ -32847,7 +33074,7 @@ index 814b99a43d20408d5541aa7f19e1f9d2da3ad578..73e4be6b4b8115046d5bc33b56e209f0
      .post_load = virtio_net_post_load_device,
      .fields = (const VMStateField[]) {
          VMSTATE_UINT8_ARRAY(mac, VirtIONet, ETH_ALEN),
-@@ -3648,6 +4109,8 @@ static const VMStateDescription vmstate_virtio_net_device = {
+@@ -3648,6 +4115,8 @@ static const VMStateDescription vmstate_virtio_net_device = {
      .subsections = (const VMStateDescription * const []) {
          &vmstate_virtio_net_rss,
          &vhost_user_net_backend_state,
@@ -32856,7 +33083,7 @@ index 814b99a43d20408d5541aa7f19e1f9d2da3ad578..73e4be6b4b8115046d5bc33b56e209f0
          NULL
      }
  };
-@@ -4132,7 +4595,10 @@ static void virtio_net_reset(VirtIODevice *vdev)
+@@ -4132,7 +4601,10 @@ static void virtio_net_reset(VirtIODevice *vdev)
      n->nobcast = 0;
      /* multiqueue is disabled by default */
      n->curr_queue_pairs = 1;
@@ -32868,7 +33095,7 @@ index 814b99a43d20408d5541aa7f19e1f9d2da3ad578..73e4be6b4b8115046d5bc33b56e209f0
      n->announce_timer.round = 0;
      n->status &= ~VIRTIO_NET_S_ANNOUNCE;
  
-@@ -4150,6 +4616,7 @@ static void virtio_net_reset(VirtIODevice *vdev)
+@@ -4150,6 +4622,7 @@ static void virtio_net_reset(VirtIODevice *vdev)
          flush_or_purge_queued_packets(qemu_get_subqueue(n->nic, i));
      }
  
@@ -32876,7 +33103,7 @@ index 814b99a43d20408d5541aa7f19e1f9d2da3ad578..73e4be6b4b8115046d5bc33b56e209f0
      virtio_net_disable_rss(n);
  }
  
-@@ -4176,7 +4643,6 @@ static int virtio_net_pre_save(void *opaque)
+@@ -4176,7 +4649,6 @@ static int virtio_net_pre_save(void *opaque)
      /* At this point, backend must be stopped, otherwise
       * it might keep writing to memory. */
      assert(!n->vhost_started);
@@ -32884,7 +33111,7 @@ index 814b99a43d20408d5541aa7f19e1f9d2da3ad578..73e4be6b4b8115046d5bc33b56e209f0
      return 0;
  }
  
-@@ -4202,10 +4668,135 @@ static bool dev_unplug_pending(void *opaque)
+@@ -4202,10 +4674,135 @@ static bool dev_unplug_pending(void *opaque)
      return vdc->primary_unplug_pending(dev);
  }
  
@@ -35797,6 +36024,429 @@ index 158c8155055835f3dccc5943d8f94ee511854ad5..c36d43a79a59e9fb7e28064a567a719d
      }
  }
  
+diff --git a/hw/rtc/m48t59-internal.h b/hw/rtc/m48t59-internal.h
+index cd648241e989c17aa5ec9dec37662d72dd4a8f8c..c73bede0d3876eabd25bb29a01e1abc276bdd1f6 100644
+--- a/hw/rtc/m48t59-internal.h
++++ b/hw/rtc/m48t59-internal.h
+@@ -26,6 +26,8 @@
+ #ifndef HW_M48T59_INTERNAL_H
+ #define HW_M48T59_INTERNAL_H
+ 
++typedef struct VMStateDescription VMStateDescription;
++
+ /*
+  * The M48T02, M48T08 and M48T59 chips are very similar. The newer '59 has
+  * alarm and a watchdog timer and related control registers. In the
+@@ -58,8 +60,16 @@ typedef struct M48t59State {
+     /* NVRAM storage */
+     uint16_t addr;
+     uint8_t  lock;
++    int64_t migrated_time_offset;
++    int64_t migrated_stop_time;
++    bool calendar_state_loaded;
++    bool exact_timers_loaded;
+ } M48t59State;
+ 
++extern const VMStateDescription vmstate_m48t59;
++bool m48t59_fingerprint_state(QEMUFile *f, const M48t59State *s,
++                             Error **errp);
++
+ uint32_t m48t59_read(M48t59State *NVRAM, uint32_t addr);
+ void m48t59_write(M48t59State *NVRAM, uint32_t addr, uint32_t val);
+ void m48t59_reset_common(M48t59State *NVRAM);
+diff --git a/hw/rtc/m48t59-isa.c b/hw/rtc/m48t59-isa.c
+index ea0f307aa062caba92a5a22f3db141da6c221535..b152e1c69e5ba5a432a3b9f42dd3421fee9d5cf4 100644
+--- a/hw/rtc/m48t59-isa.c
++++ b/hw/rtc/m48t59-isa.c
+@@ -28,8 +28,11 @@
+ #include "hw/core/qdev-properties.h"
+ #include "hw/rtc/m48t59.h"
+ #include "m48t59-internal.h"
++#include "migration/qemu-file.h"
++#include "migration/vmstate.h"
+ #include "qapi/error.h"
+ #include "qemu/module.h"
++#include "qemu/timer.h"
+ #include "qom/object.h"
+ 
+ #define TYPE_M48TXX_ISA "isa-m48txx"
+@@ -83,6 +86,40 @@ static const Property m48t59_isa_properties[] = {
+     DEFINE_PROP_UINT8("irq", M48txxISAState, isairq, 8),
+ };
+ 
++static bool m48t59_isa_exact_state_needed(void *opaque)
++{
++    return qemu_timer_tcg_ps_enabled();
++}
++
++static bool m48t59_isa_fingerprint(QEMUFile *f, const void *opaque,
++                                   Error **errp)
++{
++    const M48txxISAState *d = opaque;
++
++    qemu_put_be32(f, d->io_base);
++    qemu_put_byte(f, d->isairq);
++    return m48t59_fingerprint_state(f, &d->state, errp);
++}
++
++static const CrucibleFingerprintProjection m48t59_isa_projection = {
++    .schema = "crucible.qemu.m48t59.isa.v1",
++    .version = 1,
++    .save = m48t59_isa_fingerprint,
++};
++
++static const VMStateDescription vmstate_m48t59_isa = {
++    .name = "isa-m48t59",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = m48t59_isa_exact_state_needed,
++    .crucible_fingerprint_projection = &m48t59_isa_projection,
++    .fields = (const VMStateField[]) {
++        VMSTATE_STRUCT(state, M48txxISAState, 0, vmstate_m48t59,
++                       M48t59State),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
+ static void m48t59_reset_isa(DeviceState *d)
+ {
+     M48txxISAState *isa = M48TXX_ISA(d);
+@@ -121,6 +158,7 @@ static void m48txx_isa_class_init(ObjectClass *klass, const void *data)
+     dc->realize = m48t59_isa_realize;
+     device_class_set_legacy_reset(dc, m48t59_reset_isa);
+     device_class_set_props(dc, m48t59_isa_properties);
++    dc->vmsd = &vmstate_m48t59_isa;
+     nc->read = m48txx_isa_read;
+     nc->write = m48txx_isa_write;
+     nc->toggle_lock = m48txx_isa_toggle_lock;
+diff --git a/hw/rtc/m48t59.c b/hw/rtc/m48t59.c
+index be4196b21c4fb092ea0da9520988380460931dfb..8c11907ba44ffa2234aaf347ed550143ffee7e47 100644
+--- a/hw/rtc/m48t59.c
++++ b/hw/rtc/m48t59.c
+@@ -34,11 +34,13 @@
+ #include "hw/core/sysbus.h"
+ #include "qapi/error.h"
+ #include "qemu/bcd.h"
++#include "qemu/error-report.h"
+ #include "qemu/module.h"
+ #include "trace.h"
+ #include "system/watchdog.h"
+ 
+ #include "m48t59-internal.h"
++#include "migration/qemu-file.h"
+ #include "migration/vmstate.h"
+ #include "qom/object.h"
+ 
+@@ -127,8 +129,17 @@ static void alarm_cb (void *opaque)
+         /* Repeat once a second */
+         next_time = 1;
+     }
+-    timer_mod(NVRAM->alrm_timer, qemu_clock_get_ns(rtc_clock) +
+-                    next_time * 1000);
++    if (qemu_timer_tcg_ps_enabled() && rtc_clock == QEMU_CLOCK_VIRTUAL) {
++        __int128 now_ps = qemu_clock_get_ps_wide(rtc_clock);
++
++        /* Recurring alarms stay on calendar-second boundaries. */
++        timer_mod_ps_wide(NVRAM->alrm_timer,
++                          (now_ps / PICOSECONDS_PER_SECOND + next_time) *
++                          PICOSECONDS_PER_SECOND);
++    } else {
++        timer_mod(NVRAM->alrm_timer, qemu_clock_get_ns(rtc_clock) +
++                  next_time * 1000);
++    }
+     qemu_set_irq(NVRAM->IRQ, 0);
+ }
+ 
+@@ -138,8 +149,18 @@ static void set_alarm(M48t59State *NVRAM)
+     if (NVRAM->alrm_timer != NULL) {
+         timer_del(NVRAM->alrm_timer);
+         diff = qemu_timedate_diff(&NVRAM->alarm) - NVRAM->time_offset;
+-        if (diff > 0)
+-            timer_mod(NVRAM->alrm_timer, diff * 1000);
++        if (diff > 0) {
++            if (qemu_timer_tcg_ps_enabled() && rtc_clock == QEMU_CLOCK_VIRTUAL) {
++                __int128 now_ps = qemu_clock_get_ps_wide(rtc_clock);
++
++                /* Alarm fields name calendar seconds, not elapsed subsecond time. */
++                timer_mod_ps_wide(NVRAM->alrm_timer,
++                                  (now_ps / PICOSECONDS_PER_SECOND + diff) *
++                                  PICOSECONDS_PER_SECOND);
++            } else {
++                timer_mod(NVRAM->alrm_timer, diff * 1000);
++            }
++        }
+     }
+ }
+ 
+@@ -155,6 +176,14 @@ static void set_time(M48t59State *NVRAM, struct tm *tm)
+     set_alarm(NVRAM);
+ }
+ 
++static time_t m48t59_calendar_seconds(void)
++{
++    if (qemu_timer_tcg_ps_enabled() && rtc_clock == QEMU_CLOCK_VIRTUAL) {
++        return qemu_clock_get_ps_wide(rtc_clock) / PICOSECONDS_PER_SECOND;
++    }
++    return time(NULL);
++}
++
+ /* Watchdog management */
+ static void watchdog_cb (void *opaque)
+ {
+@@ -180,8 +209,16 @@ static void set_up_watchdog(M48t59State *NVRAM, uint8_t value)
+         timer_del(NVRAM->wd_timer);
+         if (value != 0) {
+             interval = (1 << (2 * (value & 0x03))) * ((value >> 2) & 0x1F);
+-            timer_mod(NVRAM->wd_timer, ((uint64_t)time(NULL) * 1000) +
+-                           ((interval * 1000) >> 4));
++            if (qemu_timer_tcg_ps_enabled()) {
++                /* The watchdog counts 1/16-second intervals from VM time. */
++                timer_mod_ps_wide(NVRAM->wd_timer,
++                                  qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL) +
++                                  (__int128)interval *
++                                  (PICOSECONDS_PER_SECOND / 16));
++            } else {
++                timer_mod(NVRAM->wd_timer, ((uint64_t)time(NULL) * 1000) +
++                          ((interval * 1000) >> 4));
++            }
+         }
+     }
+ }
+@@ -270,9 +307,10 @@ void m48t59_write(M48t59State *NVRAM, uint32_t addr, uint32_t val)
+         }
+         if ((val & 0x80) ^ (NVRAM->buffer[addr] & 0x80)) {
+             if (val & 0x80) {
+-                NVRAM->stop_time = time(NULL);
++                NVRAM->stop_time = m48t59_calendar_seconds();
+             } else {
+-                NVRAM->time_offset += NVRAM->stop_time - time(NULL);
++                NVRAM->time_offset += NVRAM->stop_time -
++                                      m48t59_calendar_seconds();
+                 NVRAM->stop_time = 0;
+             }
+         }
+@@ -522,15 +560,211 @@ static const MemoryRegionOps nvram_ops = {
+     .endianness = DEVICE_BIG_ENDIAN,
+ };
+ 
+-static const VMStateDescription vmstate_m48t59 = {
++static bool m48t59_fingerprint_timer(QEMUFile *f, const QEMUTimer *timer,
++                                     Error **errp)
++{
++    int64_t expiry_ns = 0;
++    uint16_t phase_ps = 0;
++    int status = timer_expire_time_ns_phase(timer, &expiry_ns, &phase_ps);
++
++    if (status < 0) {
++        error_setg(errp, "M48T59 timer deadline cannot be projected");
++        return false;
++    }
++    qemu_put_byte(f, status != 0);
++    qemu_put_sbe64(f, expiry_ns);
++    qemu_put_be16(f, phase_ps);
++    return true;
++}
++
++bool m48t59_fingerprint_state(QEMUFile *f, const M48t59State *s,
++                             Error **errp)
++{
++    const int *alarm_fields[] = {
++        &s->alarm.tm_sec, &s->alarm.tm_min, &s->alarm.tm_hour,
++        &s->alarm.tm_mday, &s->alarm.tm_mon, &s->alarm.tm_year,
++        &s->alarm.tm_wday, &s->alarm.tm_yday, &s->alarm.tm_isdst,
++    };
++
++    qemu_put_be32(f, s->model);
++    qemu_put_be32(f, s->size);
++    qemu_put_byte(f, s->lock);
++    qemu_put_be16(f, s->addr);
++    qemu_put_buffer(f, s->buffer, s->size);
++    qemu_put_sbe64(f, s->time_offset);
++    qemu_put_sbe64(f, s->stop_time);
++    if (s->model == 59) {
++        for (size_t i = 0; i < ARRAY_SIZE(alarm_fields); i++) {
++            qemu_put_be32(f, *alarm_fields[i]);
++        }
++        return m48t59_fingerprint_timer(f, s->alrm_timer, errp) &&
++               m48t59_fingerprint_timer(f, s->wd_timer, errp);
++    }
++    return true;
++}
++
++static bool m48t59_sysbus_fingerprint(QEMUFile *f, const void *opaque,
++                                      Error **errp)
++{
++    const M48txxSysBusState *d = opaque;
++
++    return m48t59_fingerprint_state(f, &d->state, errp);
++}
++
++static const CrucibleFingerprintProjection m48t59_sysbus_projection = {
++    .schema = "crucible.qemu.m48t59.sysbus.v1",
++    .version = 1,
++    .save = m48t59_sysbus_fingerprint,
++};
++
++static int m48t59_pre_save(void *opaque)
++{
++    M48t59State *s = opaque;
++
++    s->migrated_time_offset = s->time_offset;
++    s->migrated_stop_time = s->stop_time;
++    return 0;
++}
++
++static int m48t59_pre_load(void *opaque)
++{
++    M48t59State *s = opaque;
++
++    s->calendar_state_loaded = false;
++    s->exact_timers_loaded = false;
++    if (s->model == 59 && qemu_timer_tcg_ps_enabled()) {
++        timer_del(s->alrm_timer);
++        timer_del(s->wd_timer);
++    }
++    return 0;
++}
++
++static int m48t59_post_load(void *opaque, int version_id)
++{
++    M48t59State *s = opaque;
++
++    if (qemu_timer_tcg_ps_enabled() &&
++        (!s->calendar_state_loaded ||
++         (s->model == 59 && !s->exact_timers_loaded))) {
++        error_report("M48Txx exact calendar or timer state is missing");
++        return -EINVAL;
++    }
++    return 0;
++}
++
++static bool m48t59_calendar_state_needed(void *opaque)
++{
++    return qemu_timer_tcg_ps_enabled();
++}
++
++static int m48t59_calendar_state_post_load(void *opaque, int version_id)
++{
++    M48t59State *s = opaque;
++
++    if ((int64_t)(time_t)s->migrated_time_offset !=
++        s->migrated_time_offset ||
++        (int64_t)(time_t)s->migrated_stop_time != s->migrated_stop_time) {
++        error_report("M48Txx exact calendar offset is invalid");
++        return -EINVAL;
++    }
++    s->time_offset = s->migrated_time_offset;
++    s->stop_time = s->migrated_stop_time;
++    s->calendar_state_loaded = true;
++    return 0;
++}
++
++static bool m48t59_exact_timers_needed(void *opaque)
++{
++    M48t59State *s = opaque;
++
++    return s->model == 59 && qemu_timer_tcg_ps_enabled();
++}
++
++static int m48t59_exact_timers_post_load(void *opaque, int version_id)
++{
++    M48t59State *s = opaque;
++
++    if (s->alarm.tm_sec < 0 || s->alarm.tm_sec > 60 ||
++        s->alarm.tm_min < 0 || s->alarm.tm_min > 59 ||
++        s->alarm.tm_hour < 0 || s->alarm.tm_hour > 23 ||
++        s->alarm.tm_mday < 1 || s->alarm.tm_mday > 31 ||
++        s->alarm.tm_mon < 0 || s->alarm.tm_mon > 11 ||
++        s->alarm.tm_year < -1900 || s->alarm.tm_year > 8099 ||
++        s->alarm.tm_wday < 0 || s->alarm.tm_wday > 6 ||
++        s->alarm.tm_yday < 0 || s->alarm.tm_yday > 365 ||
++        s->alarm.tm_isdst < -1 || s->alarm.tm_isdst > 1) {
++        error_report("M48T59 exact alarm state is invalid");
++        return -EINVAL;
++    }
++    s->exact_timers_loaded = true;
++    return 0;
++}
++
++static const VMStateDescription vmstate_m48t59_calendar_state = {
++    .name = "m48t59/calendar-ps",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = m48t59_calendar_state_needed,
++    .post_load = m48t59_calendar_state_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_INT64(migrated_time_offset, M48t59State),
++        VMSTATE_INT64(migrated_stop_time, M48t59State),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++static const VMStateDescription vmstate_m48t59_exact_timers = {
++    .name = "m48t59/timers-ps",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = m48t59_exact_timers_needed,
++    .post_load = m48t59_exact_timers_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_INT32(alarm.tm_sec, M48t59State),
++        VMSTATE_INT32(alarm.tm_min, M48t59State),
++        VMSTATE_INT32(alarm.tm_hour, M48t59State),
++        VMSTATE_INT32(alarm.tm_mday, M48t59State),
++        VMSTATE_INT32(alarm.tm_mon, M48t59State),
++        VMSTATE_INT32(alarm.tm_year, M48t59State),
++        VMSTATE_INT32(alarm.tm_wday, M48t59State),
++        VMSTATE_INT32(alarm.tm_yday, M48t59State),
++        VMSTATE_INT32(alarm.tm_isdst, M48t59State),
++        VMSTATE_TIMER_NS_PHASE_PTR(alrm_timer, M48t59State),
++        VMSTATE_TIMER_NS_PHASE_PTR(wd_timer, M48t59State),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++const VMStateDescription vmstate_m48t59 = {
+     .name = "m48t59",
+     .version_id = 1,
+     .minimum_version_id = 1,
++    .pre_save = m48t59_pre_save,
++    .pre_load = m48t59_pre_load,
++    .post_load = m48t59_post_load,
+     .fields = (const VMStateField[]) {
+         VMSTATE_UINT8(lock, M48t59State),
+         VMSTATE_UINT16(addr, M48t59State),
+         VMSTATE_VBUFFER_UINT32(buffer, M48t59State, 0, NULL, size),
+         VMSTATE_END_OF_LIST()
++    },
++    .subsections = (const VMStateDescription * const []) {
++        &vmstate_m48t59_calendar_state,
++        &vmstate_m48t59_exact_timers,
++        NULL
++    }
++};
++
++static const VMStateDescription vmstate_m48t59_sysbus = {
++    .name = "m48t59",
++    /* V1 applied core-state offsets to the outer sysbus device pointer. */
++    .version_id = 2,
++    .minimum_version_id = 2,
++    .crucible_fingerprint_projection = &m48t59_sysbus_projection,
++    .fields = (const VMStateField[]) {
++        VMSTATE_STRUCT(state, M48txxSysBusState, 0, vmstate_m48t59,
++                       M48t59State),
++        VMSTATE_END_OF_LIST()
+     }
+ };
+ 
+@@ -630,7 +864,7 @@ static void m48txx_sysbus_class_init(ObjectClass *klass, const void *data)
+     dc->realize = m48t59_realize;
+     device_class_set_legacy_reset(dc, m48t59_reset_sysbus);
+     device_class_set_props(dc, m48t59_sysbus_properties);
+-    dc->vmsd = &vmstate_m48t59;
++    dc->vmsd = &vmstate_m48t59_sysbus;
+     nc->read = m48txx_sysbus_read;
+     nc->write = m48txx_sysbus_write;
+     nc->toggle_lock = m48txx_sysbus_toggle_lock;
 diff --git a/hw/rtc/mc146818rtc.c b/hw/rtc/mc146818rtc.c
 index ba396435d1af30a82b1e14325df261d331fc9cac..bc1f4b173b8cb1ccd51ec9d58f16ad0faa414f14 100644
 --- a/hw/rtc/mc146818rtc.c
@@ -47974,6 +48624,28 @@ index 0000000000000000000000000000000000000000..8fc423dfdf13c5af4cbe5625ab7d22a6
 +}
 +
 +type_init(accelerator_register_types)
+diff --git a/hw/virtio/virtio-nsm.c b/hw/virtio/virtio-nsm.c
+index 3bf5e7009a4614bd6bcd637bb2d8ced22da89b1e..ab228b6d946aa2e51707ff7040042673cbb007a4 100644
+--- a/hw/virtio/virtio-nsm.c
++++ b/hw/virtio/virtio-nsm.c
+@@ -12,6 +12,7 @@
+ #include "qemu/iov.h"
+ #include "qemu/guest-random.h"
+ #include "qapi/error.h"
++#include "system/rtc.h"
+ 
+ #include "crypto/hash.h"
+ #include "hw/virtio/virtio.h"
+@@ -1186,7 +1187,8 @@ static bool add_payload_to_cose(cbor_item_t *cose, VirtIONSM *vnsm,
+         goto cleanup;
+     }
+     if (!qemu_cbor_add_uint64_to_map(root, "timestamp",
+-                                     (uint64_t) time(NULL) * 1000)) {
++                                     (uint64_t) qemu_rtc_get_guest_epoch_seconds()
++                                     * 1000)) {
+         goto cleanup;
+     }
+ 
 diff --git a/hw/virtio/virtio-pci.c b/hw/virtio/virtio-pci.c
 index 6f5db5fc42b72975a564201aadd39f4ab535efe9..56c28080347890a94ba5fa20402ada82aaa838f4 100644
 --- a/hw/virtio/virtio-pci.c
@@ -59226,10 +59898,34 @@ index a2667d75efd0747f2369cbc2f7f53f514ab1343e..8e075edeeed08c4e631f20938938d64a
  };
  
 diff --git a/include/system/rtc.h b/include/system/rtc.h
-index cde83fab15f5b5544047f6e8a3fcdbdf28abe2d0..309a4b03d9f5410d3809fa6e9721261277e6da6b 100644
+index cde83fab15f5b5544047f6e8a3fcdbdf28abe2d0..cfd8d06af887fd12e5f8627a4e5542dda7d2c532 100644
 --- a/include/system/rtc.h
 +++ b/include/system/rtc.h
-@@ -55,4 +55,14 @@ void qemu_get_timedate(struct tm *tm, time_t offset);
+@@ -44,6 +44,23 @@
+  */
+ void qemu_get_timedate(struct tm *tm, time_t offset);
+ 
++/**
++ * qemu_rtc_get_guest_epoch_seconds: Get guest-visible Unix epoch seconds.
++ *
++ * Sim mode and TCG with -rtc clock=vm use the configured RTC base and virtual
++ * clock. Other modes retain the host-time behavior of direct time(NULL) reads.
++ */
++time_t qemu_rtc_get_guest_epoch_seconds(void);
++
++/**
++ * qemu_rtc_get_guest_calendar_time: Get calendar fields for a host-time device.
++ * @tm: struct tm to fill with the current guest-visible calendar time
++ *
++ * Sim mode and TCG with -rtc clock=vm follow the configured RTC calendar.
++ * Other modes retain the localtime() behavior of direct host-time reads.
++ */
++void qemu_rtc_get_guest_calendar_time(struct tm *tm);
++
+ /**
+  * qemu_timedate_diff: Return difference between a struct tm and the RTC
+  * @tm: struct tm containing the date/time to compare against
+@@ -55,4 +72,14 @@ void qemu_get_timedate(struct tm *tm, time_t offset);
   */
  time_t qemu_timedate_diff(struct tm *tm);
  
@@ -68199,6 +68895,25 @@ index 338d37cb7e5af19dfebd5de23a8694f18f81b332..a7306e957232e4755396ee6fe78fcc33
          QTAILQ_REMOVE(&mon_list, mon, entry);
      }
  
+diff --git a/net/announce.c b/net/announce.c
+index 9e9904442238f1c93ce98700998d20f32cee7f8c..a08c9fab5fae460fc56c2bc15880f6e80514e8cc 100644
+--- a/net/announce.c
++++ b/net/announce.c
+@@ -28,7 +28,13 @@ int64_t qemu_announce_timer_step(AnnounceTimer *timer)
+     if (step < 0 || step > timer->params.max) {
+         step = timer->params.max;
+     }
+-    timer_mod(timer->tm, qemu_clock_get_ms(timer->type) + step);
++    if (qemu_timer_tcg_ps_enabled() && timer->type == QEMU_CLOCK_VIRTUAL) {
++        timer_mod_ps_wide(timer->tm,
++                          qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL) +
++                          (__int128)step * (PICOSECONDS_PER_SECOND / 1000));
++    } else {
++        timer_mod(timer->tm, qemu_clock_get_ms(timer->type) + step);
++    }
+ 
+     return step;
+ }
 diff --git a/net/filter-buffer.c b/net/filter-buffer.c
 index 427da24097f2ec0897f69ba4ec5c9d7dbe6e9a52..0497d6cec2f466ee4ca1a1b606613746d0b72be2 100644
 --- a/net/filter-buffer.c
@@ -119288,7 +120003,7 @@ index 00fed791cce124ed7b31b785f09d771dfef09390..8e14228aa2987df00f2fa35ee895d21b
                               "process of unplug", id);
              return;
 diff --git a/system/rtc.c b/system/rtc.c
-index 018609a4f9a4f56b5e3485f82513ab6ceebb3501..f37950af1dbf5a67574340a5d875d6b5b3a379c0 100644
+index 018609a4f9a4f56b5e3485f82513ab6ceebb3501..74dc67b8b0e01b3518e6c48513a2653d78bd3141 100644
 --- a/system/rtc.c
 +++ b/system/rtc.c
 @@ -45,8 +45,34 @@ static time_t rtc_realtime_clock_offset; /* used only with QEMU_CLOCK_REALTIME *
@@ -119326,8 +120041,32 @@ index 018609a4f9a4f56b5e3485f82513ab6ceebb3501..f37950af1dbf5a67574340a5d875d6b5
  static time_t qemu_ref_timedate(QEMUClockType clock)
  {
      time_t value = qemu_clock_get_ms(clock) / 1000;
-@@ -70,7 +96,7 @@ static time_t qemu_ref_timedate(QEMUClockType clock)
+@@ -68,9 +94,31 @@ static time_t qemu_ref_timedate(QEMUClockType clock)
+     return value;
+ }
  
++time_t qemu_rtc_get_guest_epoch_seconds(void)
++{
++    if ((crucible_sim_rtc_virtual_clock || qemu_timer_tcg_ps_enabled()) &&
++        crucible_guest_rtc_clock() == QEMU_CLOCK_VIRTUAL) {
++        return qemu_ref_timedate(crucible_guest_rtc_clock());
++    }
++
++    return time(NULL);
++}
++
++void qemu_rtc_get_guest_calendar_time(struct tm *tm)
++{
++    if ((crucible_sim_rtc_virtual_clock || qemu_timer_tcg_ps_enabled()) &&
++        crucible_guest_rtc_clock() == QEMU_CLOCK_VIRTUAL) {
++        qemu_get_timedate(tm, 0);
++    } else {
++        time_t now = time(NULL);
++
++        localtime_r(&now, tm);
++    }
++}
++
  void qemu_get_timedate(struct tm *tm, time_t offset)
  {
 -    time_t ti = qemu_ref_timedate(rtc_clock);
@@ -119335,7 +120074,7 @@ index 018609a4f9a4f56b5e3485f82513ab6ceebb3501..f37950af1dbf5a67574340a5d875d6b5
  
      ti += offset;
  
-@@ -105,7 +131,7 @@ time_t qemu_timedate_diff(struct tm *tm)
+@@ -105,7 +153,7 @@ time_t qemu_timedate_diff(struct tm *tm)
          abort();
      }
  
@@ -122356,7 +123095,7 @@ index f453444d7f926b3029d6d29592b9dfa6d4582c32..f2d1ccd03500f4e816768c02901a949e
  G_NORETURN void hppa_dynamic_excp(CPUHPPAState *env, int excp, uintptr_t ra);
  
 diff --git a/target/hppa/machine.c b/target/hppa/machine.c
-index 6a143cf8df2102b71a448e0604347379cfef5895..27269edb60010c4a5aff1788624ff8dcd3a337fc 100644
+index 6a143cf8df2102b71a448e0604347379cfef5895..7d97aba9c90295abe7582160f3c4e694e6ae15ff 100644
 --- a/target/hppa/machine.c
 +++ b/target/hppa/machine.c
 @@ -19,8 +19,10 @@
@@ -122370,7 +123109,7 @@ index 6a143cf8df2102b71a448e0604347379cfef5895..27269edb60010c4a5aff1788624ff8dc
  
  
  static int get_psw(QEMUFile *f, void *opaque, size_t size,
-@@ -216,6 +218,51 @@ static const VMStateDescription vmstate_env = {
+@@ -216,6 +218,55 @@ static const VMStateDescription vmstate_env = {
      .subsections = vmstate_env_subsections,
  };
  
@@ -122412,6 +123151,10 @@ index 6a143cf8df2102b71a448e0604347379cfef5895..27269edb60010c4a5aff1788624ff8dc
 +{
 +    HPPACPU *cpu = opaque;
 +
++    /* Version 1 predates the machine RTC offset section. */
++    if (qemu_timer_tcg_ps_enabled() && version_id < 2) {
++        return -EINVAL;
++    }
 +    if (icount_crucible_sim_mode() && qemu_timer_tcg_ps_enabled() &&
 +        !cpu->alarm_timer_ps_clock_unit) {
 +        return -EINVAL;
@@ -122422,9 +123165,12 @@ index 6a143cf8df2102b71a448e0604347379cfef5895..27269edb60010c4a5aff1788624ff8dc
  static const VMStateField vmstate_cpu_fields[] = {
      VMSTATE_STRUCT(parent_obj, HPPACPU, 0, vmstate_cpu_common, CPUState),
      VMSTATE_STRUCT(env, HPPACPU, 1, vmstate_env, CPUHPPAState),
-@@ -226,5 +273,11 @@ const VMStateDescription vmstate_hppa_cpu = {
+@@ -224,7 +275,13 @@ static const VMStateField vmstate_cpu_fields[] = {
+ 
+ const VMStateDescription vmstate_hppa_cpu = {
      .name = "cpu",
-     .version_id = 1,
+-    .version_id = 1,
++    .version_id = 2,
      .minimum_version_id = 1,
 +    .pre_load = hppa_cpu_pre_load,
 +    .post_load = hppa_cpu_post_load,
@@ -125838,20 +126584,33 @@ index 2d5ca16c51164e3f06a1b237013be14e93530916..f43c6c30e1eb7240678783971a7baa0e
  };
  
  static int cpu_post_load(void *opaque, int version_id)
+diff --git a/target/ppc/cpu.h b/target/ppc/cpu.h
+index cbd5964b1acdae315d3766f1e065bbc3524b635f..89369da334a14edb34b64feed0e856e3a865b57a 100644
+--- a/target/ppc/cpu.h
++++ b/target/ppc/cpu.h
+@@ -1530,6 +1530,7 @@ struct ArchCPU {
+     int32_t node_id; /* NUMA node this CPU belongs to */
+     PPCHash64Options *hash64_opts;
+     bool rtas_stopped_state;
++    bool prep_m48t59_state_loaded;
+ 
+     /* Those resources are used only during code translation */
+     /* opcode handlers */
 diff --git a/target/ppc/machine.c b/target/ppc/machine.c
-index 569536bd02d84ce09d5ff6904234627a054798b4..328be75004533460cc2212a76b6236712a04ab52 100644
+index 569536bd02d84ce09d5ff6904234627a054798b4..2cc7deabad410bdfa808c3d13ad56180a0059b90 100644
 --- a/target/ppc/machine.c
 +++ b/target/ppc/machine.c
-@@ -1,5 +1,8 @@
+@@ -1,5 +1,9 @@
  #include "qemu/osdep.h"
  #include "cpu.h"
 +#include "exec/icount.h"
++#include "hw/core/boards.h"
 +#include "hw/ppc/ppc.h"
 +#include "qemu/timer.h"
  #include "system/kvm.h"
  #include "system/tcg.h"
  #include "helper_regs.h"
-@@ -7,6 +10,7 @@
+@@ -7,6 +11,7 @@
  #include "migration/cpu.h"
  #include "migration/qemu-file-types.h"
  #include "qapi/error.h"
@@ -125859,7 +126618,7 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..328be75004533460cc2212a76b623671
  #include "kvm_ppc.h"
  #include "power8-pmu.h"
  #include "system/replay.h"
-@@ -112,6 +116,32 @@ static const VMStateInfo vmstate_info_vsr = {
+@@ -112,6 +117,32 @@ static const VMStateInfo vmstate_info_vsr = {
      .put  = put_vsr,
  };
  
@@ -125892,7 +126651,7 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..328be75004533460cc2212a76b623671
  #define VMSTATE_VSR_ARRAY_V(_f, _s, _n, _v)                       \
      VMSTATE_SUB_ARRAY(_f, _s, 0, _n, _v, vmstate_info_vsr, ppc_vsr_t)
  
-@@ -124,6 +154,15 @@ static int cpu_pre_save(void *opaque)
+@@ -124,6 +155,15 @@ static int cpu_pre_save(void *opaque)
      CPUPPCState *env = &cpu->env;
      int i;
  
@@ -125908,7 +126667,7 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..328be75004533460cc2212a76b623671
      env->spr[SPR_LR] = env->lr;
      env->spr[SPR_CTR] = env->ctr;
      env->spr[SPR_XER] = cpu_read_xer(env);
-@@ -159,6 +198,112 @@ static int cpu_pre_save(void *opaque)
+@@ -159,6 +199,142 @@ static int cpu_pre_save(void *opaque)
      return 0;
  }
  
@@ -125981,10 +126740,40 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..328be75004533460cc2212a76b623671
 +    },
 +};
 +
++static bool prep_m48t59_vmstate_needed(void *opaque)
++{
++    return qemu_timer_tcg_ps_enabled() && current_machine &&
++           object_dynamic_cast(OBJECT(current_machine),
++                               MACHINE_TYPE_NAME("40p"));
++}
++
++static int prep_m48t59_vmstate_post_load(void *opaque, int version_id)
++{
++    PowerPCCPU *cpu = opaque;
++
++    cpu->prep_m48t59_state_loaded = true;
++    return 0;
++}
++
++/* Old 40p streams omit the ISA RTC section entirely.  Require this marker
++ * in the always-present CPU section before accepting ps-TCG migration. */
++static const VMStateDescription vmstate_prep_m48t59_marker = {
++    .name = "cpu/40p-m48t59-ps",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = prep_m48t59_vmstate_needed,
++    .post_load = prep_m48t59_vmstate_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_END_OF_LIST()
++    },
++};
++
 +static int cpu_pre_load(void *opaque)
 +{
 +    PowerPCCPU *cpu = opaque;
 +    ppc_tb_t *tb_env = cpu->env.tb_env;
++
++    cpu->prep_m48t59_state_loaded = false;
 +
 +#ifdef TARGET_PPC64
 +    if (qemu_timer_tcg_ps_enabled()) {
@@ -126021,10 +126810,16 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..328be75004533460cc2212a76b623671
  /*
   * Determine if a given PVR is a "close enough" match to the CPU
   * object.  For TCG and KVM PR it would probably be sufficient to
-@@ -186,6 +331,11 @@ static int cpu_post_load(void *opaque, int version_id)
+@@ -186,6 +362,17 @@ static int cpu_post_load(void *opaque, int version_id)
      CPUPPCState *env = &cpu->env;
      int i;
  
++    if (prep_m48t59_vmstate_needed(cpu) &&
++        !cpu->prep_m48t59_state_loaded) {
++        error_report("40p ps-TCG migration is missing exact ISA RTC state");
++        return -EINVAL;
++    }
++
 +    if (icount_crucible_sim_mode() && ppc_timer_vmstate_needed(cpu) &&
 +        !env->tb_env->timer_vmstate_loaded) {
 +        return -EINVAL;
@@ -126033,7 +126828,7 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..328be75004533460cc2212a76b623671
      /*
       * If we're operating in compat mode, we should be ok as long as
       * the destination supports the same compatibility mode.
-@@ -313,6 +463,13 @@ static int cpu_post_load(void *opaque, int version_id)
+@@ -313,6 +500,13 @@ static int cpu_post_load(void *opaque, int version_id)
           */
          cpu_ppc_store_decr(env, env->spr[SPR_DECR]);
          pmu_mmcr01a_updated(env);
@@ -126047,7 +126842,7 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..328be75004533460cc2212a76b623671
      }
  
      return 0;
-@@ -736,6 +893,7 @@ const VMStateDescription vmstate_ppc_cpu = {
+@@ -736,6 +930,7 @@ const VMStateDescription vmstate_ppc_cpu = {
      .version_id = 5,
      .minimum_version_id = 5,
      .pre_save = cpu_pre_save,
@@ -126055,11 +126850,12 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..328be75004533460cc2212a76b623671
      .post_load = cpu_post_load,
      .fields = (const VMStateField[]) {
          VMSTATE_UNUSED(sizeof(target_ulong)), /* was _EQUAL(env.spr[SPR_PVR]) */
-@@ -778,6 +936,7 @@ const VMStateDescription vmstate_ppc_cpu = {
+@@ -778,6 +973,8 @@ const VMStateDescription vmstate_ppc_cpu = {
          &vmstate_compat,
          &vmstate_reservation,
          &vmstate_rtas_stopped,
 +        &vmstate_ppc_timers,
++        &vmstate_prep_m48t59_marker,
          NULL
      }
  };
