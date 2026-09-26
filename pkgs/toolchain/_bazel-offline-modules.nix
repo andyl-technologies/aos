@@ -4,6 +4,7 @@
   fetchgit,
   fetchurl,
   buildPackages,
+  bazelSource8,
 }: let
   moduleSource = import ./_bazel-module-source.nix {inherit fetchgit buildPackages;};
   registryRevision = "18e405773f40bfe226ef2e2ea7bc0f1a71d39fd9";
@@ -630,6 +631,8 @@ in {
         script = ''
           patch --batch -p0 < ${jvmExternalPatch}
           cmp MODULE.bazel ${jvmExternalModule}
+          # Module overrides bypass Bazel's single_version_override patch.
+          patch --batch --fuzz=0 -p1 < ${bazelSource8}/third_party/rules_jvm_external_6.0.patch
         '';
       }
       {
