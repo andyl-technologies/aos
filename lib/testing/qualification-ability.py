@@ -1837,7 +1837,9 @@ class Scenario:
                         "matrix cohort retained a malformed provider-negative audit"
                     )
                 provider_negative_cells = cohort_provider_negative_audit["cells"]
-            if cohort_probes is None and provider_negative_cells:
+            if cohort_probes is None and (
+                runtime_cells or interruption_cells or provider_negative_cells
+            ):
                 cohort_probes = {}
                 subject_map = {}
                 evidence_map = {}
