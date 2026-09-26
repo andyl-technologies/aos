@@ -1392,6 +1392,13 @@ mod tests {
         source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
         project: ProjectId,
     ) -> ObjectDigest {
+        model_ancestry_head(source_domains, project).expect("model project tree")
+    }
+
+    fn model_ancestry_head(
+        source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+        project: ProjectId,
+    ) -> Option<ObjectDigest> {
         // These policy tests use a synthetic, unsigned Tree to exercise
         // policy-head matching; production ancestry readers reject that Tree.
         let validator =
@@ -1405,8 +1412,7 @@ mod tests {
             .records()
             .iter()
             .find(|record| record.key() == &key)
-            .expect("model project tree")
-            .digest()
+            .map(|record| record.digest())
     }
 
     fn hierarchy_project_tree_key(project: ProjectId) -> HierarchyProtectedJournalKeyV1 {
@@ -1420,7 +1426,7 @@ mod tests {
 
     struct ModelOnlyAncestryReaderV1 {
         project: ProjectId,
-        head: ObjectDigest,
+        head: Option<ObjectDigest>,
     }
 
     impl ProjectAncestryHeadReaderV1 for ModelOnlyAncestryReaderV1 {
@@ -1428,7 +1434,11 @@ mod tests {
             &self,
             project: ProjectId,
         ) -> Result<Option<ObjectDigest>, HierarchyProtectedJournalErrorV1> {
-            Ok((project == self.project).then_some(self.head))
+            Ok(if project == self.project {
+                self.head
+            } else {
+                None
+            })
         }
     }
 
@@ -1438,7 +1448,7 @@ mod tests {
     ) -> ModelOnlyAncestryReaderV1 {
         ModelOnlyAncestryReaderV1 {
             project,
-            head: current_ancestry_head(source_domains, project),
+            head: model_ancestry_head(source_domains, project),
         }
     }
 
@@ -1459,6 +1469,8 @@ mod tests {
     #[test]
     fn absent_tree_preserves_unrelated_source_state() {
         let directory = tempfile::tempdir().expect("private source fixture");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private source directory");
         let mut journal = open_journal(directory.path(), "source-domains.journal");
         let transaction = JournalTransaction::new(
             [86; 16],
