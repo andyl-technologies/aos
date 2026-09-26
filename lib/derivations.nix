@@ -867,16 +867,34 @@
       then crossElfFixupPhase
       else fixupPhase;
 
+    # A published output must itself retain dependencies needed by consumers;
+    # builder inputs alone do not become references in the output closure.
+    propagatedDependencyMetadataPhase = {
+      name = "propagated-dependency-metadata";
+      script = ''
+        for outputName in ''${AOS_OUTPUT_NAMES:-out}; do
+          eval "outputPath=\"\''${$outputName:-}\""
+          [ -d "$outputPath" ] && [ ! -L "$outputPath" ] || continue
+          mkdir -p "$outputPath/nix-support"
+          printf '%s\n' ${builtins.concatStringsSep " " (map (dependency: escapeShellArg (builtins.toString dependency)) propagatedDeps)} \
+            > "$outputPath/nix-support/propagated-build-inputs"
+        done
+      '';
+    };
+
     allPhases =
       (
         if builtins.any (p: p.name == "fixup") finalPhases
         then finalPhases
         else finalPhases ++ [defaultFixupPhase]
       )
-      ++ [
-        scrubPhase
-        (targetPlatformMetadataPhase outputPlatform.system)
-      ];
+      ++ [scrubPhase]
+      ++ (
+        if propagatedDeps == []
+        then []
+        else [propagatedDependencyMetadataPhase]
+      )
+      ++ [(targetPlatformMetadataPhase outputPlatform.system)];
 
     builder = phasesToScript allPhases shell useStructuredAttrs;
 
