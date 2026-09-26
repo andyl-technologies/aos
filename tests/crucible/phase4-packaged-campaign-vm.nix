@@ -410,9 +410,17 @@
           ${pkgs.grep}/bin/grep -Fqx "$finding_selector: test" \
             /tmp/campaign-envoy-known-finding-list.log
 
-          if ! ${pkgs.coreutils}/bin/timeout -k 5 3600 \
+          : > "$finding_log"
+          ${pkgs.coreutils}/bin/timeout -k 5 3600 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
-            "$finding_selector" --nocapture > "$finding_log" 2>&1; then
+            "$finding_selector" --nocapture > "$finding_log" 2>&1 &
+          finding_test=$!
+          ${pkgs.coreutils}/bin/timeout -k 5 3610 \
+            ${pkgs.coreutils}/bin/tail --pid="$finding_test" -n +1 -F "$finding_log" \
+            | ${pkgs.grep}/bin/grep --line-buffered \
+              -E '^(CRUCIBLE-ENVOY-WAIT-V1 |CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 )' \
+            || true
+          if ! wait "$finding_test"; then
             cat "$finding_log"
             exit 1
           fi
