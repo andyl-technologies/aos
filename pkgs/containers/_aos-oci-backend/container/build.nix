@@ -259,7 +259,7 @@
       packageRoots = container.packageRoots;
       explicit = container.filesystem.facade;
       expectedCollisions = container.filesystem.allowedFacadeCollisions;
-      pname = "aos-container-${container.name}-golden-facade${suffixPart}";
+      pname = "aos-container-${container.name}-baked-facade${suffixPart}";
     };
     standardFiles = [
       {

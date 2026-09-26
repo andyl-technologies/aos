@@ -77,14 +77,16 @@ aos_dev_target_attr() {
 
 aos_dev_validate_target() {
   local category=$1 name=$2
-  local entries
-  # Resolve a dotted check within its own scope so selecting one check does
-  # not evaluate every unrelated check tree.
+  # Exact dotted check paths go straight to Nix. Listing their scope would
+  # evaluate the check once here and again for the actual build.
   if [[ $category == checks && $name == *.* ]]; then
-    entries=$(aos_dev_list "$category" "$name")
-  else
-    entries=$(aos_dev_list "$category")
+    [[ $name =~ ^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$ ]] || \
+      aos_dev_error "invalid check target '$name'"
+    return
   fi
+
+  local entries
+  entries=$(aos_dev_list "$category")
   if ! printf '%s\n' "$entries" | grep -Fxq -- "$name"; then
     printf 'aos-dev: unknown %s target: %s\n' "$category" "$name" >&2
     printf '%s\n' "$entries" | grep -iF -- "${name%%:*}" | head -8 >&2 || true

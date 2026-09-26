@@ -1,8 +1,8 @@
 ##! OCI backend PATH facade over ordered package roots.
 ##!
-##! The server login PATH is every golden package's `bin` directory in package
-##! order followed by every `sbin` directory in that same order.  This builder
-##! realizes that policy without import-from-derivation: it scans the already
+##! The facade scans each selected package's `bin` directory in package order,
+##! followed by each `sbin` directory in that same order. This builder
+##! realizes the ordering without import-from-derivation: it scans the already
 ##! realized roots in its build sandbox, selects the first executable for each
 ##! name, records every shadowed collision, and emits `/usr/bin` symlinks.
 {
@@ -13,8 +13,8 @@
   referenceGraph,
   explicit ? [],
   expectedCollisions ? [],
-  pname ? "aos-container-golden-facade",
-  layerName ? "golden-facade",
+  pname ? "aos-container-baked-facade",
+  layerName ? "baked-facade",
 }: let
   rootPaths = map (oci.common.validateStorePath "facade package root") packageRoots;
   normalizeExplicit = index: entry: {
@@ -114,10 +114,10 @@ in
             candidate_path="$3"
 
             [ -n "$candidate_name" ] \
-              || { echo "empty executable name in golden facade" >&2; exit 1; }
+              || { echo "empty executable name in baked facade" >&2; exit 1; }
             case "$candidate_name" in
               .|..|*/*)
-                echo "unsafe executable name in golden facade: $candidate_name" >&2
+                echo "unsafe executable name in baked facade: $candidate_name" >&2
                 exit 1
                 ;;
             esac
@@ -125,7 +125,7 @@ in
               '$name | (contains("\\n") or contains("\\r")) | not' >/dev/null \
               || { echo "executable name contains a line separator" >&2; exit 1; }
             if [ ! -f "$candidate_path" ] || [ ! -x "$candidate_path" ]; then
-              echo "golden facade candidate is not an executable file: $candidate_path" >&2
+              echo "baked facade candidate is not an executable file: $candidate_path" >&2
               exit 1
             fi
             candidate_target=$(readlink -f "$candidate_path")
@@ -190,7 +190,7 @@ in
           jq -r '.facadeSpec.expectedCollisions[]' "$NIX_ATTRS_JSON_FILE" \
             > collision-names.expected
           if ! cmp collision-names.expected collision-names.actual; then
-            echo "golden facade collisions differ from the reviewed policy" >&2
+            echo "baked facade collisions differ from the reviewed policy" >&2
             exit 1
           fi
 
@@ -252,5 +252,5 @@ in
       mediaType = oci.common.layerMediaType;
     };
 
-    meta.description = "Ordered golden-package executable facade OCI layer";
+    meta.description = "Ordered baked-package executable facade OCI layer";
   })
