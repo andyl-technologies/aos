@@ -21,7 +21,9 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use crate::hierarchy::protected_journal::HierarchyProtectedJournalOwnerV1;
-use crate::journal::SourceDomainPolicyHoldV1;
+use crate::journal::{
+    SourceDomainChallengeV1, SourceDomainPolicyHoldV1, replay_source_domain_challenge_v1,
+};
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 
 const MAGIC: &[u8; 8] = b"AOSSRB01";
@@ -189,6 +191,46 @@ pub fn sign_current_source_hold_readback_v1(
         return Err(SourceHoldReadbackErrorV1::Stale);
     }
     Ok(packet)
+}
+
+/// Commits a Root challenge under the held Source writer and current ancestry.
+///
+/// Controller must retain this same writer until Root compares the separate
+/// Source-only signature and finishes its CAS. This row and its return value
+/// confer no publication, Create, or effect authority.
+///
+/// # Errors
+///
+/// Rejects stale or replaced Source names, absent or released hold, changed
+/// ancestry, malformed challenge, or failed durable append/readback.
+pub fn record_current_source_signer_challenge_v1(
+    owner: &mut ProtectedSourceDomainJournalOwnerV1,
+    project: ProjectId,
+    challenge: SourceHoldReadbackChallengeV1,
+) -> Result<SourceDomainChallengeV1, SourceHoldReadbackErrorV1> {
+    if project.as_bytes() == &[0; 16] {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical);
+    }
+    let names = owner
+        .fixed_physical_names_v1()
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?;
+    let hold = require_current_hold_and_head(owner, project)?;
+    let row = owner
+        .journal()
+        .record_source_domain_challenge_v1(hold, project, challenge.nonce(), challenge.cut(), names)
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?;
+    if owner
+        .fixed_physical_names_v1()
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?
+        != names
+        || require_current_hold_and_head(owner, project)? != hold
+        || replay_source_domain_challenge_v1(owner.journal())
+            .map_err(|_| SourceHoldReadbackErrorV1::Stale)?
+            != Some(row)
+    {
+        return Err(SourceHoldReadbackErrorV1::Stale);
+    }
+    Ok(row)
 }
 
 fn require_current_hold_and_head(
@@ -485,6 +527,14 @@ mod tests {
                 challenge,
                 1,
                 &SigningKey::from_bytes(&[10; 32]),
+            )
+            .is_err()
+        );
+        assert!(
+            record_current_source_signer_challenge_v1(
+                &mut owner,
+                ProjectId::from_bytes([9; 16]),
+                challenge,
             )
             .is_err()
         );

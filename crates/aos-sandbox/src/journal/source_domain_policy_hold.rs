@@ -105,6 +105,17 @@ impl SourceDomainPolicyHoldV1 {
         self.held
     }
 
+    /// Returns the digest of the exact canonical held or released record.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid Source hold.
+    pub fn record_digest(self) -> Result<ObjectDigest, JournalError> {
+        Ok(ObjectDigest::from_bytes(
+            Sha256::digest(self.encode()?).into(),
+        ))
+    }
+
     fn validate(self) -> Result<(), JournalError> {
         if self.operation.as_bytes() == &[0; 16]
             || self.sandbox.as_bytes() == &[0; 16]
@@ -249,7 +260,19 @@ fn transaction(hold: SourceDomainPolicyHoldV1) -> Result<JournalTransaction, Jou
     )
 }
 
-fn ensure_source_domain(journal: &Journal) -> Result<(), JournalError> {
+pub(super) fn release_transaction(
+    expected: SourceDomainPolicyHoldV1,
+) -> Result<JournalTransaction, JournalError> {
+    if !expected.is_held() {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    transaction(SourceDomainPolicyHoldV1 {
+        held: false,
+        ..expected
+    })
+}
+
+pub(super) fn ensure_source_domain(journal: &Journal) -> Result<(), JournalError> {
     journal.ensure_protected_authority()?;
     if journal
         .protected

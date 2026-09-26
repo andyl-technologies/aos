@@ -42,6 +42,7 @@ pub(crate) use mount_manager_startup::{
 mod cache_policy_hold;
 mod capacity_reservation;
 mod controller_policy_hold;
+mod source_domain_challenge;
 mod source_domain_policy_hold;
 pub use cache_policy_hold::CachePolicyHoldV1;
 pub(crate) use cache_policy_hold::NAME as CACHE_POLICY_HOLD_JOURNAL;
@@ -52,6 +53,8 @@ pub use capacity_reservation::{
     PreparedGlobalCapacityReservationV1,
 };
 pub use controller_policy_hold::{ControllerPolicyEffectAckV1, ControllerPolicyHoldV1};
+pub use source_domain_challenge::SourceDomainChallengeV1;
+pub(crate) use source_domain_challenge::replay_source_domain_challenge_v1;
 pub use source_domain_policy_hold::SourceDomainPolicyHoldV1;
 mod mount_source_consumption;
 pub use mount_source_consumption::{

@@ -13,6 +13,7 @@ use thiserror::Error;
 
 use crate::cache_residency::signer_mount::require_signer_mount;
 use crate::hierarchy::protected_journal::replay_project_ancestry_head_v1;
+use crate::journal::replay_source_domain_challenge_v1;
 use crate::journal::{
     Journal, JournalError, ProtectedJournalNamesV1, ReadOnlyProtectedJournal,
     SourceDomainPolicyHoldV1,
@@ -70,7 +71,15 @@ pub fn sign_fixed_source_signer_readback_v1(
         expected_controller_uid,
         project,
         signer_generation,
-        |hold, _| sign_fields(challenge, project, hold, signer_generation, signing_key),
+        |hold, _, _| {
+            Ok(sign_fields(
+                challenge,
+                project,
+                hold,
+                signer_generation,
+                signing_key,
+            ))
+        },
     )
 }
 
@@ -95,15 +104,19 @@ pub fn sign_fixed_source_signer_readback_v2(
         expected_controller_uid,
         project,
         signer_generation,
-        |hold, names| {
-            sign_source_hold_readback_with_names_v2(
+        |hold, names, row| {
+            let row = row.ok_or(SourceSignerReadbackErrorV1::Stale)?;
+            if !row.matches_current(challenge.nonce(), challenge.cut(), project, hold, names)? {
+                return Err(SourceSignerReadbackErrorV1::Stale);
+            }
+            Ok(sign_source_hold_readback_with_names_v2(
                 challenge,
                 project,
                 hold,
                 names,
                 signer_generation,
                 signing_key,
-            )
+            ))
         },
     )
 }
@@ -112,7 +125,11 @@ fn with_current_source_signer_view<const N: usize>(
     expected_controller_uid: u32,
     project: ProjectId,
     signer_generation: u64,
-    sign: impl FnOnce(SourceDomainPolicyHoldV1, ProtectedJournalNamesV1) -> [u8; N],
+    sign: impl FnOnce(
+        SourceDomainPolicyHoldV1,
+        ProtectedJournalNamesV1,
+        Option<crate::journal::SourceDomainChallengeV1>,
+    ) -> Result<[u8; N], SourceSignerReadbackErrorV1>,
 ) -> Result<[u8; N], SourceSignerReadbackErrorV1> {
     if project.as_bytes() == &[0; 16] || signer_generation == 0 || expected_controller_uid == 0 {
         return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
@@ -132,7 +149,8 @@ fn with_current_source_signer_view<const N: usize>(
         mount.root_identity(),
     )?;
     let hold = replay_source_hold(&mut readback, project)?;
-    let packet = sign(hold, readback.physical_names_v1());
+    let row = replay_source_domain_challenge_v1(readback.journal_mut())?;
+    let packet = sign(hold, readback.physical_names_v1(), row)?;
 
     readback.check_named_currentness()?;
     if require_signer_mount(SIGNER_SOURCE_VIEW, PROTECTED_SOURCE_DOMAIN_ROOT, signer_uid)
