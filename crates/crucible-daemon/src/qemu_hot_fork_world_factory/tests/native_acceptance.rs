@@ -32,6 +32,8 @@ use crate::{
 mod equivalence;
 #[path = "native_acceptance/failures.rs"]
 mod failures;
+#[path = "native_acceptance/final_audit.rs"]
+mod final_audit;
 #[path = "native_acceptance/isolation_native_negative.rs"]
 mod isolation_native_negative;
 #[path = "native_acceptance/isolation_negative.rs"]
