@@ -32,8 +32,10 @@ pub struct Invocation {
     /// Expanded rustc arguments when sccache accepts a nested response file.
     pub execution_args: Option<Vec<String>>,
     scan_args: Option<Vec<String>>,
+    assembly_scan_args: Option<Vec<String>>,
     scan_stdout: bool,
     dependencies: PathBuf,
+    assembly_dependencies: PathBuf,
     extra_inputs: BTreeSet<PathBuf>,
     read_dirs: BTreeSet<PathBuf>,
     recursive_dirs: BTreeSet<PathBuf>,
@@ -58,14 +60,17 @@ pub fn classify(
         optional_outputs: BTreeSet::new(),
         execution_args: None,
         scan_args: None,
+        assembly_scan_args: None,
         scan_stdout: false,
         dependencies: PathBuf::new(),
+        assembly_dependencies: PathBuf::new(),
         extra_inputs: BTreeSet::new(),
         read_dirs: BTreeSet::new(),
         recursive_dirs: BTreeSet::new(),
         _temporary: tempfile::tempdir()?,
     };
     invocation.dependencies = invocation._temporary.path().join("dependencies.d");
+    invocation.assembly_dependencies = invocation._temporary.path().join("assembly.d");
     let (expanded_args, nested_response) = response_inputs(
         args,
         kind == "rust",
@@ -149,6 +154,9 @@ impl Invocation {
     ) -> Result<BTreeMap<String, String>> {
         let mut inputs = BTreeMap::new();
         if let Some(scan) = &self.scan_args {
+            if self.dependencies.exists() {
+                fs::remove_file(&self.dependencies)?;
+            }
             let output = command(compiler, scan, environment).output()?;
             ensure!(
                 output.status.success(),
@@ -174,6 +182,31 @@ impl Invocation {
                     }
                 }
                 inputs.insert("<preprocessor-output>".into(), hash(&output.stdout));
+            }
+        }
+        if let Some(scan) = &self.assembly_scan_args {
+            if self.assembly_dependencies.exists() {
+                fs::remove_file(&self.assembly_dependencies)?;
+            }
+            let output = command(compiler, scan, environment).output()?;
+            ensure!(
+                output.status.success(),
+                "assembler dependency discovery failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            ensure!(
+                self.assembly_dependencies.is_file(),
+                "assembler probe produced no depfile"
+            );
+            for path in
+                dependencies::dependencies(&fs::read_to_string(&self.assembly_dependencies)?)?
+            {
+                // -save-temps=obj keeps the compiler's generated .s file in
+                // our probe directory. It is not an external action input.
+                if Path::new(&path).starts_with(self._temporary.path()) {
+                    continue;
+                }
+                inputs.insert(path.clone(), fingerprint(Path::new(&path))?);
             }
         }
         for path in &self.extra_inputs {

@@ -71,6 +71,16 @@ def suite(root):
         roundtrip(label + " raw assembly", compiler, ["-c", "raw.s", "-o", label + "-assembly.o"])
         (work / "source.i").write_text("int preprocessed(void) { return 13; }\n")
         roundtrip(label + " preprocessed input", compiler, ["-c", "source.i", "-o", label + "-preprocessed.o"])
+        (work / "assembler-include.S").write_text(
+            '.text\n.globl assembly_include\nassembly_include:\n.include "fragment.inc"\n')
+        (work / "fragment.inc").write_text(".byte 0xc3\n")
+        assembly_args = ["-c", "assembler-include.S", "-I.",
+                         "-o", label + "-assembly-include.o"]
+        roundtrip(label + " preprocessed assembler include", compiler, assembly_args)
+        (work / "fragment.inc").write_text(".byte 0x90\n")
+        _, changed = invoke(compiler, assembly_args, "miss")
+        assert any("fragment.inc" in item for item in changed["changes"]), changed
+        print("PASS", label, "assembler include invalidation", flush=True)
 
     roundtrip("clang diagnostics", clang, ["-c", "source.c", "--serialize-diagnostics", "diagnostics.dia", "-o", "diagnostic.o"])
     (work / "module.cppm").write_text("export module example; export int answer() { return 42; }\n")

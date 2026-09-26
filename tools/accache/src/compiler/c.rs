@@ -142,6 +142,31 @@ pub(super) fn configure(
             scan.push(format!("-Wa,--MD,{}", invocation.dependencies.display()));
         }
     } else if parsed.language.needs_c_preprocessing() {
+        if parsed.language == Language::AssemblerToPreprocess {
+            if clang {
+                // Clang's integrated assembler cannot emit .include deps.
+                invocation.extension_reads(manifest)?;
+            } else {
+                let mut assembly_scan = scan.clone();
+                assembly_scan.extend([
+                    "-c".into(),
+                    "-save-temps=obj".into(),
+                    "-o".into(),
+                    invocation
+                        ._temporary
+                        .path()
+                        .join("probe.o")
+                        .to_string_lossy()
+                        .into_owned(),
+                    format!("-Wa,--MD,{}", invocation.assembly_dependencies.display()),
+                ]);
+                if parsed.double_dash_input {
+                    assembly_scan.push("--".into());
+                }
+                assembly_scan.push(parsed.input.to_string_lossy().into_owned());
+                invocation.assembly_scan_args = Some(assembly_scan);
+            }
+        }
         scan.extend([
             "-E".into(),
             "-fpch-preprocess".into(),
