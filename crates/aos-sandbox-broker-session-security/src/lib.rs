@@ -63,6 +63,7 @@ mod controller_cache_readback_credential;
 mod controller_capture_candidate_exchange;
 mod controller_guest_root_credentials;
 mod controller_hold_credential;
+mod controller_no_apply_exchange;
 mod controller_output_exchange;
 mod controller_ownership;
 mod controller_plan_signer;

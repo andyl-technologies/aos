@@ -1412,6 +1412,14 @@ impl DormantBrokerOutcomeVerificationV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn historical_host_terminal_no_apply_archive(
+        &mut self,
+        source: &aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1,
+    ) -> Result<crate::recovery::AuthenticatedOriginalHostNoApplyJoinV1, BrokerSessionSecurityError>
+    {
+        self.0.historical_host_terminal_no_apply_archive(source)
+    }
+
     /// Returns the current verified Storage transcript binding for this socket.
     ///
     /// # Errors
