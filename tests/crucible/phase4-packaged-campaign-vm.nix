@@ -20,7 +20,11 @@
   cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;
   controllerArtifactContract = controllerArtifacts.passthru.cargoArtifactContract;
   campaignFlightFeatures = lib.optionalString (campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) " --features packaged-midpoint-flight";
-  campaignFlightBuildCommand = "test --frozen --offline --release --no-run -j$NIX_BUILD_CORES -p crucible-cli --test campaign_process --test campaign_store_process --bin crucible${campaignFlightFeatures}";
+  campaignFlightBuildCommands = [
+    "test --frozen --offline --release --no-run -j$NIX_BUILD_CORES -p crucible-cli --test campaign_process --test campaign_store_process --bin crucible${campaignFlightFeatures}"
+    # A test-only build does not promise the normal CLI executable.
+    "build --frozen --offline --release -j$NIX_BUILD_CORES -p crucible-cli --bin crucible${campaignFlightFeatures}"
+  ];
   campaignFlightArtifacts = pkgs.mkCargoArtifacts {
     pname = "crucible-packaged-campaign-flight-artifacts";
     version = "0";
@@ -35,7 +39,7 @@
     cargoArtifactContract = controllerArtifactContract;
     cargoEnv = controllerArtifactContract.cargoEnv;
     cargoRoot = "crates";
-    cargoBuildCommands = [campaignFlightBuildCommand];
+    cargoBuildCommands = campaignFlightBuildCommands;
 
     buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf];
     runtimeDeps = [pkgs.openssl];
@@ -51,7 +55,7 @@
     cargoArtifactContract = controllerArtifactContract;
     cargoEnv = controllerArtifactContract.cargoEnv;
     cargoRoot = "crates";
-    cargoBuildCommands = [campaignFlightBuildCommand];
+    cargoBuildCommands = campaignFlightBuildCommands;
     installBins = false;
     doCheck = false;
 
@@ -63,15 +67,17 @@
       store_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "campaign_store_process" and .executable != null) | .executable' "$artifacts")
       campaign_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "campaign_process" and .executable != null) | .executable' "$artifacts")
       unit_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "crucible" and .target.kind == ["bin"] and .profile.test == true and .executable != null) | .executable' "$artifacts")
+      cli_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "crucible" and .target.kind == ["bin"] and .profile.test == false and .executable != null) | .executable' "$artifacts" | sort -u)
       test -f "$store_test_binary"
       test -f "$campaign_test_binary"
       test -f "$unit_test_binary"
+      test -f "$cli_binary"
 
       mkdir -p "$out/bin"
       cp "$store_test_binary" "$out/bin/campaign-store-process-flight"
       cp "$campaign_test_binary" "$out/bin/campaign-process-flight"
       cp "$unit_test_binary" "$out/bin/crucible-unit-flight"
-      cp target/release/crucible "$out/bin/crucible"
+      cp "$cli_binary" "$out/bin/crucible"
 
       # Genesis is captured before execution; the immutable blank disk still
       # follows the production store-path contract for guest assets.
