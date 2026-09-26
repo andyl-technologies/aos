@@ -10,11 +10,12 @@
   systemName,
   ...
 }: let
-  cfg = config.aos.containers or {
-    enable = false;
-    default = null;
-    definitions = {};
-  };
+  cfg =
+    config.aos.containers or {
+      enable = false;
+      default = null;
+      definitions = {};
+    };
   enabled = cfg.enable;
   defaultContainerName =
     if !enabled || cfg.default == null

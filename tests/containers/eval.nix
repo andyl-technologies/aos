@@ -31,10 +31,11 @@
     };
   in
     builtins.tryEval (builtins.deepSeq (
-      if builtins.all (check: check.assertion) checked.config.assertions
-      then checked.config
-      else throw "the container definition violates its schema assertions"
-    ) true);
+        if builtins.all (check: check.assertion) checked.config.assertions
+        then checked.config
+        else throw "the container definition violates its schema assertions"
+      )
+      true);
   trySystem = modules: let
     evaluated = evaluate "container-system-negative" modules;
   in
