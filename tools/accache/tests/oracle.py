@@ -1597,6 +1597,92 @@ def check_rust_native_archives(root, env, accache, sccache, gcc, rustc, hits):
     return results
 
 
+def check_rust_extern_inputs(root, env, accache, sccache, rustc, hits):
+    """Hash explicit extern crates and preserve bare-extern passthrough."""
+    results = []
+    for fixture, flags in [
+        ("rust-extern-path", ["--extern", "dep=libdep.rlib"]),
+        ("rust-extern-path-joined", ["--extern=dep=libdep.rlib"]),
+        ("rust-extern-search", ["--extern", "dep", "-Lcrate=."]),
+        ("rust-extern-search-split", ["--extern=dep", "-L", "crate=."]),
+    ]:
+        cacheable = fixture.startswith("rust-extern-path")
+        work = root / fixture
+        work.mkdir()
+        (work / "target").mkdir()
+        source_dir = root / (fixture + "-dependency-source")
+        source_dir.mkdir()
+        dependency_source = source_dir / "dep.rs"
+        (work / "consumer.rs").write_text(
+            "extern crate dep; pub fn answer() -> u32 { dep::VALUE }\n")
+        library = work / "target/libconsumer.rlib"
+        depfile = work / "target/consumer.d"
+        args = [rustc, "--crate-name=consumer", "--crate-type=rlib",
+                "--emit=link,dep-info", "--out-dir=target", *flags, "consumer.rs"]
+
+        def compile_consumer(wrapper):
+            library.unlink(missing_ok=True)
+            depfile.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            return (completed.stdout, completed.stderr,
+                    library.read_bytes(), depfile.read_bytes())
+
+        initial_library = None
+        for revision, value in enumerate([42, 73]):
+            dependency_source.write_text(f"pub const VALUE: u32 = {value};\n")
+            subprocess.run([rustc, "--crate-name=dep", "--crate-type=rlib",
+                            str(dependency_source), "-o", "libdep.rlib"],
+                           cwd=work, env=env, check=True, capture_output=True)
+
+            direct = compile_consumer([])
+            assert b"libdep.rlib" not in direct[3], (fixture, "dep-info listed extern rlib")
+            if initial_library is None:
+                initial_library = direct[2]
+            else:
+                assert direct[2] != initial_library, (fixture, "extern had no effect")
+
+            before_hits = hits()
+            oracle_cold = compile_consumer([sccache])
+            if cacheable:
+                oracle_hit = hits() > before_hits
+                if oracle_cold != direct:
+                    assert (revision == 1 and oracle_hit
+                            and oracle_cold[2] == initial_library), (
+                        fixture, "unexpected sccache difference")
+                before_hits = hits()
+                assert compile_consumer([sccache]) == oracle_cold
+                assert hits() > before_hits, (fixture, "sccache did not warm-hit")
+
+                assert compile_consumer([accache]) == direct
+                cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+                assert cold["outcome"] == "miss", (fixture, revision, cold)
+                if revision:
+                    assert any("libdep.rlib" in item for item in cold["changes"]), cold
+                assert compile_consumer([accache]) == direct
+                warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+                assert warm["outcome"] == "hit", (fixture, revision, warm)
+            else:
+                assert oracle_cold == direct and hits() == before_hits, fixture
+                assert compile_consumer([sccache]) == direct
+                assert hits() == before_hits, (fixture, "sccache cached a bare extern")
+                for _ in range(2):
+                    assert compile_consumer([accache]) == direct
+                    event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+                    assert (event["outcome"] == "bypass"
+                            and "no path for extern" in event["reason"]), (fixture, event)
+
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": cacheable,
+                            "oracle_stale_artifact": oracle_cold != direct,
+                            "accache": "hit" if cacheable else "bypass",
+                            "artifacts": ["target/libconsumer.rlib", "target/consumer.d"]})
+
+        print("PASS oracle", fixture, "extern invalidation", flush=True)
+    return results
+
+
 def check_rust_profile_use(root, env, accache, sccache, rustc, clang, hits):
     """Track rustc's profile input across cold and warm library actions."""
     work = root / "rust-profile-use"
@@ -2196,6 +2282,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                clang, hits))
         results.extend(check_rust_native_archives(root, env, accache, sccache,
                                                   gcc, rustc, hits))
+        results.extend(check_rust_extern_inputs(root, env, accache,
+                                                sccache, rustc, hits))
         results.extend(check_rust_profile_use(root, env, accache, sccache,
                                               rustc, clang, hits))
         results.extend(check_rust_sample_profile_use(root, env, accache,
