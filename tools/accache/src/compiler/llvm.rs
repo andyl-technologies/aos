@@ -19,16 +19,22 @@ pub(super) fn classify(argument: &str) -> OptionEffect<'_> {
             | "callgraph-dot-filename-prefix"
             | "cfg-dot-filename-prefix"
             | "constraint-elimination-dump-reproducers"
+            | "crash-diagnostics-dir"
+            | "dataflow-log"
+            | "dot-cfg-dir"
             | "dot-cfg-mssa"
             | "dot-ddg-filename-prefix"
             | "info-output-file"
             | "ir-dump-directory"
+            | "lowertypetests-write-summary"
             | "lto-pass-remarks-output"
             | "lto-stats-file"
             | "mcfg-dot-filename-prefix"
             | "memprof-dot-file-path-prefix"
             | "module-summary-dot-file"
             | "opt-bisect-print-ir-path"
+            | "print-changed-diff-path"
+            | "print-changed-dot-path"
             | "pgo-view-block-coverage-graph"
             | "print-after"
             | "print-after-all"
@@ -38,6 +44,7 @@ pub(super) fn classify(argument: &str) -> OptionEffect<'_> {
             | "print-on-crash-path"
             | "stats"
             | "time-passes"
+            | "wholeprogramdevirt-write-summary"
     ) || name.starts_with("view-")
         || name.starts_with("pgo-view-")
     {
@@ -59,12 +66,15 @@ pub(super) fn classify(argument: &str) -> OptionEffect<'_> {
         "chr-function-list=",
         "chr-module-list=",
         "codegen-data-use-path=",
+        "dfsan-abilist=",
         "extract-blocks-file=",
         "forceattrs-csv-path=",
         "fs-profile-file=",
         "fs-remapping-file=",
         "internalize-public-api-file=",
+        "instrument-cold-function-only-path=",
         "ir2vec-vocab-path=",
+        "lowertypetests-read-summary=",
         "mir2vec-vocab-path=",
         "ml-inliner-ir2vec-vocab-file=",
         "ms-secure-hotpatch-functions-file=",
@@ -74,6 +84,8 @@ pub(super) fn classify(argument: &str) -> OptionEffect<'_> {
         "sample-profile-file=",
         "sample-profile-inline-replay=",
         "summary-file=",
+        "use-ctx-profile=",
+        "wholeprogramdevirt-read-summary=",
     ] {
         if let Some(path) = argument.strip_prefix(prefix) {
             return OptionEffect::FileInput(path);

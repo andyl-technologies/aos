@@ -187,6 +187,12 @@ accache objects for Clang and Rust. LLVM's `chr-function-list` and
 `chr-module-list` read named files outside the depfile. Accache fingerprints
 those files and explains an edit as a miss, even when the selected test source
 produces the same object bytes.
+The LLVM DataFlowSanitizer `dfsan-abilist` input is also fingerprinted. Its
+oracle changes the ABI list without changing Clang's depfile: pinned sccache
+replays the old object, while accache misses and restores the new object on a
+warm hit. Other audited LLVM summary and contextual-profile read paths are
+tracked; newly identified report destinations continue through the compiler
+without caching their side files.
 
 Unstable Rust modes that write profiling data, MIR or NLL dumps, monomorphization
 statistics, closure reports, metrics, LLVM traces, codegen statistics,
