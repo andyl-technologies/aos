@@ -2982,8 +2982,8 @@ in
                    timer_fingerprint_projection,
                    r'static const CrucibleFingerprintProjection\s*'
                    r"cpu_timers_fingerprint = \{\s*"
-                   r'\.schema = "crucible\.qemu\.cpu-timers\.v4",\s*'
-                   r"\.version = 4,\s*"
+                   r'\.schema = "crucible\.qemu\.cpu-timers\.v5",\s*'
+                   r"\.version = 5,\s*"
                    r"\.save = cpu_timers_fingerprint_projection,\s*\};", 1),
                   ("timer fingerprint excludes transient RR selection",
                    timer_fingerprint_projection,
@@ -2991,7 +2991,7 @@ in
                    r"s->crucible_rr_selection_pending\);", 0),
                   ("timer fingerprint qtest requires current marker",
                    fingerprint_test,
-                   r'timer_marker = section_marker\("timer", 0, 4\)\s*'
+                   r'timer_marker = section_marker\("timer", 0, 5\)\s*'
                    r"if live\.last_material\.count\(timer_marker\) != 1:",
                    1),
                   ("determinism idle canonical facts", idle_trace,

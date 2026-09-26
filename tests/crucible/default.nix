@@ -422,6 +422,11 @@ in rec {
       focusedResultEvidence = true;
       attrPath = "checks.crucible.phase2.qemuInstructionResultEvidence";
     };
+    qemuAarch64TimerFingerprint = import ./phase2-qemu-instruction-faults.nix {
+      inherit pkgs lib;
+      focusedAarch64Skip = true;
+      attrPath = "checks.crucible.phase2.qemuAarch64TimerFingerprint";
+    };
     qemuRegisterMutation = import ./phase2-qemu-register-mutation.nix {inherit pkgs lib;};
     qemuHardwareErrorFaults = import ./phase2-qemu-hardware-error-faults.nix {inherit pkgs lib;};
     qemuVcpuService = import ./phase2-qemu-vcpu-service.nix {inherit pkgs lib;};

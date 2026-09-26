@@ -7,6 +7,7 @@
   taskIds ? ["T-QEMU-0052"],
   campaignComposition ? null,
   focusedResultEvidence ? false,
+  focusedAarch64Skip ? false,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
@@ -15,7 +16,7 @@
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   liveCaseCount =
-    if focusedResultEvidence
+    if focusedResultEvidence || focusedAarch64Skip
     then 2
     else 72;
 
@@ -338,6 +339,8 @@
             -accel sim \
             -icount shift=0,align=off,sleep=off,rr_switch_quantum=256 \
             -smp "$smp_count" \
+            -rtc base=2026-01-01T00:00:00,clock=vm \
+            -seed 0x0010c011 \
             -nographic \
             -no-reboot \
             -serial none \
@@ -362,7 +365,15 @@
           run_instruction x86_64 result result rax
           run_instruction aarch64 result result x0
         ''}
-        ${lib.optionalString (!focusedResultEvidence) ''
+        ${lib.optionalString focusedAarch64Skip ''
+          run_instruction aarch64 skip skip x0
+          cp logs/aarch64-skip-skip.log logs/aarch64-skip-first.log
+          run_instruction aarch64 skip skip x0
+          cmp logs/aarch64-skip-first.log logs/aarch64-skip-skip.log
+          test "$(grep -Ec '^CRUCIBLE_INSTRUCTION_AFTER_STATE_SHA256=[0-9a-f]{64}$' \
+            logs/aarch64-skip-skip.log)" -eq 1
+        ''}
+        ${lib.optionalString (!focusedResultEvidence && !focusedAarch64Skip) ''
           run_instruction x86_64 result result rax
           run_instruction x86_64 result-compose result rax
           x86_result_input="$(sed -n 's/^CRUCIBLE_MATCHED_INPUT_STATE=//p' \
@@ -513,7 +524,18 @@
             echo qemu_package=${qemuPackage}
           } > "$out/result"
         ''}
-        ${lib.optionalString (!focusedResultEvidence) ''
+        ${lib.optionalString focusedAarch64Skip ''
+          {
+            echo PASS
+            echo gate=gate:patch-microtests
+            echo attr_path=${attrPath}
+            echo task_ids=${taskList}
+            echo focused_aarch64_skip_replays=2
+            echo exact_after_state_and_log_replay=true
+            echo qemu_package=${qemuPackage}
+          } > "$out/result"
+        ''}
+        ${lib.optionalString (!focusedResultEvidence && !focusedAarch64Skip) ''
           {
             echo PASS
             echo gate=gate:patch-microtests
