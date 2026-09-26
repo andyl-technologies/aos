@@ -1115,14 +1115,12 @@ genuinely unresolved and is tracked as a spike in
 - **Resolution:** S12/S13 now compose the modeled known-race discrimination
   witness with exact live QEMU commanded-preemption application across the full
   quantum sweep. D-36 promotes `4096` into the final shipped default.
-- **Evidence on the prior artifact:**
-  `checks.crucible.phase0.s11MultiVcpuFingerprint` reported a matching sim-mode
-  horizon fingerprint on the exact four-vCPU path;
-  `checks.crucible.phase0.s12PreemptionDecision` reports model discrimination;
-  and `checks.crucible.phase0.s13RrSwitchQuantum` reports
-  `PASS`, `race_yield_tested=true`, `s11_sim_rerun_green=true`, and
-  `s13_complete=true`. Current release qualification must rerun S11 on the
-  50 ps/instruction QEMU and lean SMP fixture.
+- **Evidence:** The current 50 ps/instruction QEMU and test-only SMP fixture
+  passed `checks.crucible.phase0.s11MultiVcpuFingerprint` at the exact
+  four-billion-instruction horizon. Earlier S12 and S13 artifacts reported model
+  discrimination and `PASS`, `race_yield_tested=true`,
+  `s11_sim_rerun_green=true`, and `s13_complete=true`, respectively; this S11
+  rerun does not requalify those separate checks.
 - **Affects:** [SCHED-45], [PLUG-3], [G-9], [G-11], [DET-12], [SCHED-46]; files
   08, 22, 25, and 30; gates `checks.crucible.phase0.s11MultiVcpuFingerprint`,
   `checks.crucible.phase0.s12PreemptionDecision`, and
@@ -2029,15 +2027,14 @@ register.
   - **Fallback:** none adopted.
 
 - **RISK-25 / T-RISK-17 — diskless multi-vCPU RR-TCG fingerprint**
-  - **Status:** Historical PASS on the prior artifact. The current
-    50 ps/instruction QEMU and test-only Linux fixture require a new exact
-    four-billion-instruction run before release qualification.
+  - **Status:** PASS on the current 50 ps/instruction QEMU and test-only Linux
+    SMP fixture at the exact four-billion-instruction horizon.
   - **Check:** `checks.crucible.phase0.s11MultiVcpuFingerprint`.
-  - **Result on the prior artifact:** `accelerator=sim,thread=single`, `vcpus=4`,
+  - **Result:** `accelerator=sim,thread=single`, `vcpus=4`,
     `rr_switch_quantum=4096`, `cadence=100000000`,
     `horizon_icount=4000000000`, `periodic_samples_expected=40`,
     `periodic_samples_observed=40`, `samples=41`,
-    `rr_switch_events=731765`, `workload_affinity_active=true`,
+    `rr_switch_events=2530767`, `workload_affinity_active=true`,
     `workload_affinity_vcpus=0,1,2,3`, `sustained_workload_active=true`,
     `aggregate_fingerprint_match=true`, `aggregate_icount_stream_match=true`,
     `rr_switch_trace_match=true`, `per_vcpu_delta_trace_match=true`,
@@ -2047,24 +2044,28 @@ register.
     `final_sample_semantics=exact-observer-aggregate-before-native-vmstop`,
     `final_sample_exact_horizon=true`,
     `final_sample_fingerprint_compared=authoritative`,
-    `horizon_register_hash=a5a4baaca7c3b908461b60b63afb626cae16e2915738719ff09b0549f7b80d0c`,
-    `horizon_ram_hash=3446f725b3550c2cc6b7a1501bfd0b12fc4a2771d0a04f537e33a53788a653ee`,
+    `horizon_register_hash=6a5f028fe7460bc8569475d46546ca217da9425d28b31f4c5867640135ce67ce`,
+    `horizon_ram_hash=e1642590a2fec027bd2fc520f96a6f25164e6ab7fadf5a6b8d7c592409c96dc5`,
     `horizon_ram_bytes=268435456`,
-    `register_read_failures=0`. The exact four-vCPU sim path remains the only S11
-    execution path; these measured values do not describe the current artifact.
-  - **Scope:** the prior artifact validated a stock Linux kernel with a diskless
-    initramfs running an SMP pthread spinlock workload across four guest vCPUs.
+    `all_vcpus_retired=true`,
+    `final_per_vcpu_retired=[1600257447,790965440,819153696,789611181]`,
+    `register_read_failures=0`. Output:
+    `/nix/store/gab60s1mvmvqm78c48dshg1643plb6jb-crucible-phase0-s11-multi-vcpu-fingerprint-0`;
+    both trace files have SHA-256
+    `9860975acf234eee0529165c3525c1acdbd78a48a65aa54b3cef1dfbd9f352b3`.
+  - **Scope:** the current artifact validates a test-only Linux SMP kernel with
+    a diskless initramfs running an SMP pthread spinlock workload across four
+    guest vCPUs. Direct reset supplies a four-CPU MP topology table.
     The aggregate samples
     compare the aggregate instruction stream, per-vCPU register hashes, RAM
-    hash, RR cursor, RR quantum, and final horizon fingerprint across an
+    hash, RR cursor, RR quantum, and final horizon fingerprint across a
     clean run and a run with six configured 15 ms preemptions of QEMU itself
     after the first positive trace coordinate and under a two-second resume
     watchdog. The check asserts every sampled vCPU
     has a nonempty register descriptor set and zero register-read failures.
-    The current fixture builds a test-only Linux SMP kernel from the pinned
-    source and boots it through direct reset with an Intel MP topology table;
-    its serial result, AP execution, and exact fingerprints require a new gate
-    result. Memory/device-event callbacks are disabled in this diskless proof;
+    Both guests reported four processors, the active affinity-pinned workload,
+    and exactly one `TEST_RESULT:PASS` with no `TEST_RESULT:FAIL`.
+    Memory/device-event callbacks are disabled in this diskless proof;
     full device-event hashing remains later §4.6 gate work. The check scans the
     actual launch argv for block-device options before running. The block-backed
     diagnostic path is
