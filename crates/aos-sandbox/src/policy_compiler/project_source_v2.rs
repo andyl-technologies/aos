@@ -36,8 +36,9 @@ use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
 
 use super::deployment_head::{
     DeploymentLayerV1, DeploymentLimitV1, HEAD_KEY, PROJECT_HEAD_KEY, PROJECT_INPUT_KEY,
-    SIGNER_PINS_KEY, SignedProjectPolicyHeadV1, bind_signed_project_to_controller_currentness,
-    decode_layer, encode_policy_signer_pins_v1, validate_canonical_input,
+    ProjectAncestryHeadReaderV1, SIGNER_PINS_KEY, SignedProjectPolicyHeadV1,
+    bind_signed_project_to_controller_currentness, decode_layer, encode_policy_signer_pins_v1,
+    validate_canonical_input,
 };
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
@@ -380,7 +381,7 @@ pub fn admit_fixed_signed_project_policy_source_v2(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn admit_signed_project_policy_source_with_journals_v2(
     controller_journal: &mut Journal,
-    hierarchy: &HierarchyProtectedJournalOwnerV1<'_>,
+    hierarchy: &impl ProjectAncestryHeadReaderV1,
     authority_journal: &mut Journal,
     trusted_revocation_scope: RevocationScopeId,
     packet: &[u8],
@@ -426,9 +427,9 @@ pub(super) fn admit_signed_project_policy_source_with_journals_v2(
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
     let ancestry = hierarchy
-        .project_ancestry_head(verified.head.project())?
+        .project_ancestry_head_digest(verified.head.project())?
         .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
-    if verified.head.base.prerequisites[0] != ancestry.evidence().head() {
+    if verified.head.base.prerequisites[0] != ancestry {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
 
@@ -503,9 +504,7 @@ pub(super) fn admit_signed_project_policy_source_with_journals_v2(
     }
     if authority.get(HEAD_KEY_V2)? != Some(packet)
         || authority.get(INPUT_KEY_V2)? != Some(input)
-        || hierarchy
-            .project_ancestry_head(verified.head.project())?
-            .is_none_or(|current| current.evidence().head() != ancestry.evidence().head())
+        || hierarchy.project_ancestry_head_digest(verified.head.project())? != Some(ancestry)
     {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }

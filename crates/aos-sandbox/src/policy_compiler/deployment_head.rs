@@ -796,9 +796,32 @@ fn with_current_policy_head_lease_in_journal_v1<R>(
     Ok(result)
 }
 
+/// Reads an ancestry head while its owning Source writer remains held.
+///
+/// Policy model tests use an explicit model-only reader so their policy checks
+/// do not imply that a bare Tree has production ancestry authority.
+pub(super) trait ProjectAncestryHeadReaderV1 {
+    /// Returns the exact head for one project under the retained Source cut.
+    fn project_ancestry_head_digest(
+        &self,
+        project: ProjectId,
+    ) -> Result<Option<ObjectDigest>, HierarchyProtectedJournalErrorV1>;
+}
+
+impl ProjectAncestryHeadReaderV1 for HierarchyProtectedJournalOwnerV1<'_> {
+    fn project_ancestry_head_digest(
+        &self,
+        project: ProjectId,
+    ) -> Result<Option<ObjectDigest>, HierarchyProtectedJournalErrorV1> {
+        Ok(self
+            .project_ancestry_head(project)?
+            .map(|current| current.evidence().head()))
+    }
+}
+
 fn admit_signed_project_policy_source_with_journals_v1(
     controller_journal: &mut Journal,
-    hierarchy: &HierarchyProtectedJournalOwnerV1<'_>,
+    hierarchy: &impl ProjectAncestryHeadReaderV1,
     authority_journal: &mut Journal,
     trusted_revocation_scope: RevocationScopeId,
     packet: &[u8],
@@ -810,9 +833,9 @@ fn admit_signed_project_policy_source_with_journals_v1(
     let verified =
         verify_signed_project_policy_source_v1(packet, input, verifying_key, now_unix_seconds)?;
     let ancestry = hierarchy
-        .project_ancestry_head(verified.head.project)?
+        .project_ancestry_head_digest(verified.head.project)?
         .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
-    if verified.head.prerequisites[0] != ancestry.evidence().head() {
+    if verified.head.prerequisites[0] != ancestry {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
     let mut authority =
@@ -894,9 +917,7 @@ fn admit_signed_project_policy_source_with_journals_v1(
     authority.commit(&transaction)?;
     if authority.get(PROJECT_HEAD_KEY)? != Some(packet)
         || authority.get(PROJECT_INPUT_KEY)? != Some(input)
-        || hierarchy
-            .project_ancestry_head(verified.head.project)?
-            .is_none_or(|current| current.evidence().head() != ancestry.evidence().head())
+        || hierarchy.project_ancestry_head_digest(verified.head.project)? != Some(ancestry)
     {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
@@ -1153,6 +1174,7 @@ mod tests {
         HierarchyProtectedJournalKeyV1, HierarchyProtectedRecordKindV1,
         HierarchyProtectedReplayValidatorV1, HierarchyReducerRecordV1,
         claim_hierarchy_protected_journal_v1, hierarchy_reducer_envelope_v1,
+        replay_project_ancestry_head_v1,
     };
     use crate::policy_compiler::project_source_v2::admit_signed_project_policy_source_with_journals_v2;
     use crate::policy_compiler::{
@@ -1370,13 +1392,103 @@ mod tests {
         source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
         project: ProjectId,
     ) -> ObjectDigest {
-        HierarchyProtectedJournalOwnerV1::claim(source_domains)
-            .expect("claimed current hierarchy")
-            .project_ancestry_head(project)
-            .expect("project ancestry currentness")
-            .expect("current project tree")
-            .evidence()
-            .head()
+        // These policy tests use a synthetic, unsigned Tree to exercise
+        // policy-head matching; production ancestry readers reject that Tree.
+        let validator =
+            HierarchyProtectedReplayValidatorV1::from_protected_current_heads(&[], &[], &[])
+                .expect("model hierarchy validator");
+        let journal = claim_hierarchy_protected_journal_v1(source_domains.journal(), validator)
+            .expect("model hierarchy journal");
+        let projection = journal.replay().expect("model hierarchy projection");
+        let key = hierarchy_project_tree_key(project);
+        projection
+            .records()
+            .iter()
+            .find(|record| record.key() == &key)
+            .expect("model project tree")
+            .digest()
+    }
+
+    fn hierarchy_project_tree_key(project: ProjectId) -> HierarchyProtectedJournalKeyV1 {
+        let mut identity = Vec::with_capacity(48);
+        for _ in 0..3 {
+            identity.extend_from_slice(project.as_bytes());
+        }
+        HierarchyProtectedJournalKeyV1::new(HierarchyProtectedRecordKindV1::Tree, identity)
+            .expect("model Tree key")
+    }
+
+    struct ModelOnlyAncestryReaderV1 {
+        project: ProjectId,
+        head: ObjectDigest,
+    }
+
+    impl ProjectAncestryHeadReaderV1 for ModelOnlyAncestryReaderV1 {
+        fn project_ancestry_head_digest(
+            &self,
+            project: ProjectId,
+        ) -> Result<Option<ObjectDigest>, HierarchyProtectedJournalErrorV1> {
+            Ok((project == self.project).then_some(self.head))
+        }
+    }
+
+    fn model_ancestry_reader(
+        source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+        project: ProjectId,
+    ) -> ModelOnlyAncestryReaderV1 {
+        ModelOnlyAncestryReaderV1 {
+            project,
+            head: current_ancestry_head(source_domains, project),
+        }
+    }
+
+    #[test]
+    fn bare_tree_has_no_cold_ancestry_authority() {
+        let (_directory, _controller, mut source_domains, _authority, project, _, _) = fixture();
+
+        assert!(matches!(
+            HierarchyProtectedJournalOwnerV1::claim(&mut source_domains),
+            Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord)
+        ));
+        assert!(matches!(
+            replay_project_ancestry_head_v1(source_domains.journal(), project),
+            Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord)
+        ));
+    }
+
+    #[test]
+    fn absent_tree_preserves_unrelated_source_state() {
+        let directory = tempfile::tempdir().expect("private source fixture");
+        let mut journal = open_journal(directory.path(), "source-domains.journal");
+        let transaction = JournalTransaction::new(
+            [86; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                b"unrelated-source-state".to_vec(),
+                vec![1],
+            )],
+        )
+        .expect("unrelated source transaction");
+        journal
+            .commit(&transaction)
+            .expect("unrelated source record");
+
+        let project = ProjectId::from_bytes([87; 16]);
+        let mut source_domains = ProtectedSourceDomainJournalOwnerV1::from_test_journal(journal);
+        let hierarchy = HierarchyProtectedJournalOwnerV1::claim(&mut source_domains)
+            .expect("empty hierarchy claim");
+        assert!(
+            hierarchy
+                .project_ancestry_head(project)
+                .expect("absent project tree")
+                .is_none()
+        );
+        drop(hierarchy);
+        assert!(
+            replay_project_ancestry_head_v1(source_domains.journal(), project)
+                .expect("cold absent project tree")
+                .is_none()
+        );
     }
 
     fn admit_with_test_source(
@@ -1390,7 +1502,12 @@ mod tests {
         deployment_packet: &[u8],
         now: i64,
     ) -> Result<SignedProjectPolicySourceV1, PolicyDeploymentHeadErrorV1> {
-        let hierarchy = HierarchyProtectedJournalOwnerV1::claim(source_domains)?;
+        let project = packet
+            .get(8..24)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(ProjectId::from_bytes)
+            .ok_or(PolicyDeploymentHeadErrorV1::InvalidHead)?;
+        let hierarchy = model_ancestry_reader(source_domains, project);
         admit_signed_project_policy_source_with_journals_v1(
             controller,
             &hierarchy,
@@ -1596,7 +1713,7 @@ mod tests {
                      sources: &mut ProtectedSourceDomainJournalOwnerV1,
                      authority: &mut Journal,
                      deployment_generation: u64| {
-            let hierarchy = HierarchyProtectedJournalOwnerV1::claim(sources)?;
+            let hierarchy = model_ancestry_reader(sources, project);
             admit_signed_project_policy_source_with_journals_v2(
                 controller,
                 &hierarchy,

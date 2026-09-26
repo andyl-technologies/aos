@@ -621,7 +621,9 @@ impl<'journal> HierarchyProtectedJournalOwnerV1<'journal> {
     ///
     /// The provisional head decoder grants no authority. Ordinary typed replay
     /// must subsequently authenticate every complete retained head against the
-    /// candidate set before this owner is returned.
+    /// candidate set before this owner is returned. A bare Tree remains closed
+    /// until a signed genesis receipt, immutable lineage, and independent
+    /// anti-rollback floor can be verified together.
     ///
     /// # Errors
     ///
@@ -657,7 +659,8 @@ impl<'journal> HierarchyProtectedJournalOwnerV1<'journal> {
     ///
     /// This is a source observation, not standalone policy publication
     /// authority. A cross-owner issuer must keep this owner borrowed through
-    /// its root binding commit and effect handoff.
+    /// its root binding commit and effect handoff. Until protected genesis and
+    /// lineage verification exists, a materialized Tree fails cold claim.
     ///
     /// # Errors
     ///
@@ -1036,6 +1039,7 @@ impl<'journal> HierarchyProtectedJournalOwnerV1<'journal> {
 }
 
 /// Replays the typed hierarchy projection without acquiring a Source writer.
+/// A materialized bare Tree is rejected by the shared cold validator.
 pub(crate) fn replay_project_ancestry_head_v1(
     journal: &mut Journal,
     project: ProjectId,
@@ -1089,6 +1093,11 @@ pub(crate) fn recover_hierarchy_replay_validator_v1(
     let mut detach_heads = Vec::new();
     let mut transaction_heads = Vec::new();
     for candidate in &candidates {
+        if candidate.key().kind() == HierarchyProtectedRecordKindV1::Tree {
+            // The current Tree codec proves shape only. No production writer
+            // yet binds its genesis and successors to independent authority.
+            return Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord);
+        }
         match candidate.body().get(..8) {
             Some(magic) if magic == b"AOSHRH01" => realization_heads.push(
                 decode_protected_realization_head_v1(candidate.body())
