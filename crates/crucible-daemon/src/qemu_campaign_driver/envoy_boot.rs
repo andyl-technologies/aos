@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
+use std::time::Instant;
 
 use crucible::{
     Decision, NetworkFaultSelectable, NodeTemplate, ObservableEventPayload, QuantumOutcome,
@@ -19,6 +20,7 @@ use crate::{AttemptWorkerFailure, CrucibleAttemptExecution};
 const ENVOY_FIXTURE_SEED: u64 = 802_750_664_550_812_378;
 const ENVOY_LINK_LATENCY_TICKS: u64 = 10_000_000 * crucible::SIM_TICKS_PER_NS;
 const ENVOY_LINK_JITTER_TICKS: u64 = 100_000 * crucible::SIM_TICKS_PER_NS;
+const BOOT_CONSOLE_TAIL_BYTES: usize = 160;
 
 /// Reports whether an attempt carries the audited five-node boot capability.
 pub(super) fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) -> bool {
@@ -121,6 +123,7 @@ pub(super) fn west_convergence_marker_seen(entries: &[SchedulerEventLogEntry]) -
 /// Owns the audited concurrent prefix before west reports route convergence.
 pub(super) struct EnvoyParallelBoot {
     active: bool,
+    started: Instant,
     next_progress_quanta: u64,
     observable_events: u64,
     nodes: BTreeMap<String, NodeBootProgress>,
@@ -131,6 +134,7 @@ struct NodeBootProgress {
     stage_order: u8,
     stage_icount: u64,
     console_bytes: usize,
+    console_tail: Vec<u8>,
 }
 
 impl NodeBootProgress {
@@ -140,6 +144,7 @@ impl NodeBootProgress {
             stage_order: 0,
             stage_icount: 0,
             console_bytes: 0,
+            console_tail: Vec::with_capacity(BOOT_CONSOLE_TAIL_BYTES),
         }
     }
 }
@@ -176,6 +181,7 @@ impl EnvoyParallelBoot {
         }
         Self {
             active,
+            started: Instant::now(),
             next_progress_quanta: 1,
             observable_events: 0,
             nodes: [
@@ -225,6 +231,21 @@ impl EnvoyParallelBoot {
                 ObservableEventPayload::ConsoleOutput { node, bytes } => {
                     if let Some(progress) = self.nodes.get_mut(&node.name) {
                         progress.console_bytes = progress.console_bytes.saturating_add(bytes.len());
+                        // Retain only a diagnostic suffix, even for a large console event.
+                        if bytes.len() >= BOOT_CONSOLE_TAIL_BYTES {
+                            progress.console_tail.clear();
+                            progress
+                                .console_tail
+                                .extend_from_slice(&bytes[bytes.len() - BOOT_CONSOLE_TAIL_BYTES..]);
+                        } else {
+                            let excess = progress
+                                .console_tail
+                                .len()
+                                .saturating_add(bytes.len())
+                                .saturating_sub(BOOT_CONSOLE_TAIL_BYTES);
+                            progress.console_tail.drain(..excess);
+                            progress.console_tail.extend_from_slice(bytes);
+                        }
                     }
                 }
                 _ => {}
@@ -239,8 +260,9 @@ impl EnvoyParallelBoot {
             .nodes
             .iter()
             .map(|(name, progress)| {
+                let tail = String::from_utf8_lossy(&progress.console_tail);
                 format!(
-                    "{name}={stage}@{icount}/console:{console_bytes}",
+                    "{name}={stage}@{icount}/console:{console_bytes}/tail:{tail:?}",
                     stage = progress.stage,
                     icount = progress.stage_icount,
                     console_bytes = progress.console_bytes,
@@ -250,16 +272,13 @@ impl EnvoyParallelBoot {
             .join(" ");
         let _ = writeln!(
             std::io::stderr().lock(),
-            "CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 quanta={} frontier_ps={} observable_events={} converged={converged} nodes={nodes}",
+            "CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 elapsed_ms={} quanta={} frontier_ps={} observable_events={} converged={converged} nodes={nodes}",
+            self.started.elapsed().as_millis(),
             completed_quanta,
             outcome.frontier.ticks,
             self.observable_events,
         );
-        self.next_progress_quanta = if self.next_progress_quanta < 1_024 {
-            self.next_progress_quanta.saturating_add(64)
-        } else {
-            self.next_progress_quanta.saturating_mul(2)
-        };
+        self.next_progress_quanta = completed_quanta.saturating_add(64);
     }
 
     /// Stops parallel RUNs after the west marker and refuses an earlier choice.
