@@ -90,6 +90,17 @@ def suite(root):
     roundtrip("rust persistent target outside source tree", rustc,
               [arg.replace("--out-dir=target", "--out-dir=" + str(persistent)) for arg in rust_args])
     roundtrip("rust staticlib", rustc, ["--crate-name", "static_example", "--crate-type", "staticlib", "--emit=link,dep-info", "--out-dir", "target", "library.rs"])
+    roundtrip("Rust save-temps disabled", rustc,
+              ["--crate-name=save_temps_disabled", "--crate-type=rlib",
+               "--emit=link,dep-info", "--out-dir=target", "library.rs",
+               "-Csave-temps=yes", "--codegen=save-temps=no"])
+    _, saved_temporaries = invoke(rustc,
+                                  ["--crate-name=save_temps_enabled", "--crate-type=rlib",
+                                   "--emit=link,dep-info", "--out-dir=target", "library.rs",
+                                   "-Csave-temps=no", "-Csave-temps=yes"], "bypass")
+    assert "save-temps" in saved_temporaries["reason"], saved_temporaries
+    assert list((work / "target").rglob("*.bc")), "rustc did not save temporary bitcode"
+    print("PASS Rust save-temps passthrough", flush=True)
     _, incremental = invoke(rustc,
                             ["--crate-name=incremental_example", "--crate-type=rlib",
                              "--emit=link,dep-info", "--out-dir=target", "library.rs",

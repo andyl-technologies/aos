@@ -190,6 +190,59 @@ def snapshot(work):
             for path in work.rglob("*") if path.is_file()}
 
 
+def check_saved_temporaries(root, env, accache, sccache, rustc, hits):
+    """Check that requested Rust temporary outputs survive accache invocations."""
+    # Pinned sccache caches -Csave-temps but drops its dynamically named
+    # bitcode and temporary metadata on a hit. Accache preserves these
+    # requested outputs by letting rustc compile instead of caching it.
+    save_temps = root / "rust-save-temps"
+    save_temps.mkdir()
+    (save_temps / "target").mkdir()
+    (save_temps / "library.rs").write_text("pub fn answer() -> u32 { 42 }\n")
+    save_args = [rustc, "--crate-name=example", "--crate-type=rlib",
+                 "--emit=link,dep-info", "--out-dir=target", "library.rs",
+                 "-Csave-temps=yes"]
+
+    def compile_with_saved_temporaries(wrapper):
+        for path in (save_temps / "target").rglob("*"):
+            if path.is_file():
+                path.unlink()
+        completed = subprocess.run([*wrapper, *save_args], cwd=save_temps,
+                                   env=env, capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        files = snapshot(save_temps)
+        files.pop("library.rs")
+        return files
+
+    def saved_bitcode(files):
+        return any(name.endswith(".bc") for name in files)
+
+    direct_saved = compile_with_saved_temporaries([])
+    oracle_saved = compile_with_saved_temporaries([sccache])
+    before_hits = hits()
+    oracle_hit_saved = compile_with_saved_temporaries([sccache])
+    assert hits() > before_hits, "sccache did not hit save-temps action"
+    accache_saved = compile_with_saved_temporaries([accache])
+    cold_saved_event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+    accache_warm_saved = compile_with_saved_temporaries([accache])
+    warm_saved_event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+
+    for name in ["target/example.d", "target/libexample.rlib"]:
+        assert len({files[name] for files in [direct_saved, oracle_saved,
+                                                oracle_hit_saved, accache_saved,
+                                                accache_warm_saved]}) == 1, name
+    assert all(saved_bitcode(files) for files in [direct_saved, oracle_saved,
+                                                   accache_saved, accache_warm_saved])
+    assert not saved_bitcode(oracle_hit_saved), "sccache save-temps defect changed"
+    for event in [cold_saved_event, warm_saved_event]:
+        assert event["outcome"] == "bypass" and "save-temps" in event["reason"], event
+    print("PASS oracle rust-save-temps output preservation", flush=True)
+    return {"fixture": "rust-save-temps", "revision": 0,
+            "oracle_hit": True, "accache": "bypass",
+            "oracle_missing_artifacts": sorted(set(oracle_saved) - set(oracle_hit_saved)),
+            "artifacts": sorted(direct_saved)}
+
+
 def run_suite(root, accache, sccache, gcc, clang, rustc):
     root = Path(root)
     # Keep socket names short even under long Nix build-directory names.
@@ -346,6 +399,9 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                 "oracle_missing_artifacts": sorted(set(baseline[3]) - set(oracle_warm[3])),
                                 "artifacts": sorted(baseline[3])})
             print("PASS oracle", fixture.name, flush=True)
+
+        results.append(check_saved_temporaries(root, env, accache, sccache, rustc, hits))
+
         report = json.dumps({"fixtures": results, "sccache_stats": stats()}, sort_keys=True)
         if destination := os.environ.get("ACCACHE_ORACLE_REPORT"):
             Path(destination).write_text(report + "\n")

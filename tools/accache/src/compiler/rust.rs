@@ -15,6 +15,16 @@ pub(super) fn configure(
 ) -> Result<()> {
     let arguments: Vec<_> = args.iter().map(OsString::from).collect();
     let parsed = parsed(rust::parse_arguments(&arguments, &std::env::current_dir()?))?;
+    let expanded = strings(rust::ExpandResponseFile::new(
+        &std::env::current_dir()?,
+        &arguments,
+    ))?;
+    // save-temps writes bitcode, object, and temporary metadata paths that
+    // --print=file-names cannot enumerate. A hit would silently omit them.
+    ensure!(
+        !saves_temporary_outputs(&expanded),
+        "save-temps writes unenumerated compiler outputs"
+    );
     let mut print_args = invocation
         .execution_args
         .as_deref()
@@ -57,10 +67,6 @@ pub(super) fn configure(
     invocation
         .read_dirs
         .extend(parsed.crate_link_paths.iter().cloned());
-    let expanded = strings(rust::ExpandResponseFile::new(
-        &std::env::current_dir()?,
-        &arguments,
-    ))?;
     let mut index = 0;
     while index < expanded.len() {
         let arg = &expanded[index];
@@ -98,4 +104,25 @@ pub(super) fn configure(
     ));
     invocation.scan_args = Some(scan);
     Ok(())
+}
+
+fn saves_temporary_outputs(args: &[String]) -> bool {
+    let mut enabled = false;
+    for (index, arg) in args.iter().enumerate() {
+        let value = if matches!(arg.as_str(), "-C" | "--codegen") {
+            args.get(index + 1).map(String::as_str)
+        } else {
+            arg.strip_prefix("-C")
+                .or_else(|| arg.strip_prefix("--codegen="))
+        };
+        if let Some(value) = value {
+            if value == "save-temps" {
+                enabled = true;
+            } else if let Some(setting) = value.strip_prefix("save-temps=") {
+                // rustc uses the last codegen setting when it is repeated.
+                enabled = !matches!(setting, "no" | "false");
+            }
+        }
+    }
+    enabled
 }
