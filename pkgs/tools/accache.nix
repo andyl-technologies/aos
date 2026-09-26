@@ -7,10 +7,10 @@
   src = builtins.path {
     path = ../../tools/accache;
     name = "accache-source";
-    # Integration fixtures are consumed by checks.build.accache separately.
-    # Keep edits to that suite from rebuilding the compiler wrapper itself.
+    # Integration fixtures and documentation are consumed outside the Cargo
+    # package. Edits there should not rebuild the compiler wrapper itself.
     filter = path: type:
-      !(builtins.elem (baseNameOf path) ["target" "__pycache__"])
+      !(builtins.elem (baseNameOf path) ["target" "__pycache__" "README.md" "UPSTREAM.md"])
       && !(lib.hasPrefix (toString ../../tools/accache + "/tests/") path);
   };
 in

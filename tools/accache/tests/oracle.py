@@ -28,6 +28,8 @@ class Fixture:
     changes: dict[str, str] = field(default_factory=dict)
     cacheable: bool = True
     exit_code: int = 0
+    precompile: list[str] = field(default_factory=list)
+    nondeterministic_outputs: set[str] = field(default_factory=set)
 
 
 def fixtures(gcc, clang, rustc):
@@ -100,10 +102,34 @@ def fixtures(gcc, clang, rustc):
         yield Fixture(name + "-unknown-invalid", compiler, base + ["-faccache-intentionally-invalid"],
                       c_sources, cacheable=False, exit_code=1)
 
+    for extension, language in [("m", "objc"), ("mm", "objcxx"),
+                                ("mi", "objc-preprocessed"), ("mii", "objcxx-preprocessed")]:
+        yield Fixture("clang-" + language, clang,
+                      ["-c", "source." + extension, "-o", "source.o"],
+                      {"source." + extension: "int answer(void) { return 42; }\n"},
+                      {"source." + extension: "int answer(void) { return 73; }\n"})
+
     # PCH/PCM serialize diagnostic configuration. Use sccache's forced color
     # setting explicitly so the reference compiler serializes the same options.
     yield Fixture("clang-pch", clang, ["-x", "c-header", "-c", "header.h", "-o", "header.pch", "-fdiagnostics-color=always"],
                   {"header.h": "#define VALUE 42\n"})
+    for name, compiler, precompiled, include in [
+        ("gcc", gcc, "header.h.gch", []),
+        ("clang", clang, "header.pch", ["-include-pch", "header.pch"]),
+    ]:
+        yield Fixture(name + "-pch-consumer", compiler,
+                      ["-c", "consumer.c", "-o", "consumer.o", *include,
+                       "-fdiagnostics-color=always"],
+                      {"header.h": "#define VALUE 42\n",
+                       "consumer.c": '#include "header.h"\nint answer(void) { return VALUE + 1; }\n'},
+                      {"consumer.c": '#include "header.h"\nint answer(void) { return VALUE + 2; }\n'},
+                      precompile=["-x", "c-header", "-c", "header.h", "-o", precompiled,
+                                  "-fdiagnostics-color=always"])
+    yield Fixture("gcc-pch", gcc,
+                  ["-x", "c-header", "-c", "header.h", "-o", "header.h.gch",
+                   "-fdiagnostics-color=always"],
+                  {"header.h": "#define VALUE 42\n"},
+                  nondeterministic_outputs={"header.h.gch"})
     yield Fixture("clang-module", clang,
                   ["-std=c++20", "-c", "--precompile", "module.cppm", "-o", "example.pcm", "-fdiagnostics-color=always"],
                   {"module.cppm": "export module example; export int answer() { return 42; }\n"})
@@ -192,6 +218,9 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
             (work / "target").mkdir()
             for name, contents in fixture.sources.items():
                 (work / name).write_text(contents)
+            if fixture.precompile:
+                subprocess.run([fixture.compiler, *fixture.precompile], cwd=work,
+                               env=env, check=True, capture_output=True)
             sources = set(snapshot(work))
 
             def clean():
@@ -244,6 +273,13 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     assert "target/libexample.rmeta" not in actual[3], (
                         "oracle defect changed; remove this exception")
                 for field, left, right in zip(["exit", "stdout", "stderr", "artifacts"], expected, actual):
+                    if field == "artifacts" and fixture.nondeterministic_outputs:
+                        # GCC PCH embeds process-specific state even when direct
+                        # compilations receive identical argv and inputs.
+                        left = {path: (b"", mode) if path in fixture.nondeterministic_outputs
+                                else (data, mode) for path, (data, mode) in left.items()}
+                        right = {path: (b"", mode) if path in fixture.nondeterministic_outputs
+                                 else (data, mode) for path, (data, mode) in right.items()}
                     assert left == right, (fixture.name, label, field,
                                            {path: (hashlib.sha256(data).hexdigest(), executable)
                                             for path, (data, executable) in left.items()} if isinstance(left, dict) else left,
@@ -260,6 +296,9 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                 before_hits = hits()
                 oracle_warm = invoke([sccache])
                 compare(direct, oracle_warm, "sccache warm vs direct")
+                for path in fixture.nondeterministic_outputs:
+                    assert oracle_warm[3][path] == oracle_cold[3][path], (
+                        fixture.name, "sccache did not replay the cold PCH")
                 oracle_hit = hits() > before_hits
 
                 accache_cold = invoke([accache])
@@ -267,6 +306,9 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                 cold_event = json.loads(subprocess.check_output([accache, "explain"], env=env))
                 accache_warm = invoke([accache])
                 compare(direct, accache_warm, "accache warm vs direct")
+                for path in fixture.nondeterministic_outputs:
+                    assert accache_warm[3][path] == accache_cold[3][path], (
+                        fixture.name, "accache did not replay the cold PCH")
                 warm_event = json.loads(subprocess.check_output([accache, "explain"], env=env))
                 if fixture.cacheable:
                     assert cold_event["outcome"] == "miss", (fixture.name, cold_event)
