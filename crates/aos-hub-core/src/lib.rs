@@ -91,6 +91,7 @@ pub mod filter;
 pub mod gc_controller;
 pub mod git;
 pub mod gitwrite;
+pub mod hybrid_ingress;
 pub mod image_catalog;
 pub mod image_http;
 pub mod indexer;
@@ -117,6 +118,7 @@ pub mod service;
 pub mod signing;
 pub mod sigv4;
 pub mod storage_credential;
+pub mod storage_work;
 /// Re-export of the cache-stack node model from `aos-registry-surface`.
 ///
 /// The model lives in the shared wasm-clean surface crate so the `apm`/`apr`

@@ -67,10 +67,29 @@ impl PlacementScanController {
     /// Returns an error when operation inventory, claiming, copy or scan
     /// execution, or terminal-state persistence fails.
     pub async fn run_due(&self, limit: usize) -> Result<usize> {
-        let due = self
-            .db
-            .due_surface_placement_scan_operations(clock::now_unix_secs(), limit)
-            .await?;
+        self.run_due_with_copy_support(limit, true).await
+    }
+
+    /// Claims only read-only scans when no storage-local copy writer exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a scan claim, observation, or result write fails.
+    pub async fn run_due_scans_only(&self, limit: usize) -> Result<usize> {
+        self.run_due_with_copy_support(limit, false).await
+    }
+
+    async fn run_due_with_copy_support(&self, limit: usize, include_copies: bool) -> Result<usize> {
+        let now = clock::now_unix_secs();
+        let due = if include_copies {
+            self.db
+                .due_surface_placement_scan_operations(now, limit)
+                .await?
+        } else {
+            self.db
+                .due_surface_placement_scan_only_operations(now, limit)
+                .await?
+        };
         let mut completed = 0;
         for operation in due {
             let claim_token = uuid::Uuid::new_v4().simple().to_string();
@@ -236,7 +255,7 @@ impl PlacementScanController {
             "destination",
         )
         .await?;
-        let writer = writes.placement_writer(destination).await?;
+        let mut writer: Option<Box<dyn SurfaceWrite>> = None;
         let mut cursor = None;
         let mut prior_path: Option<String> = None;
         let mut budget = SurfaceListingBudget::default();
@@ -269,7 +288,21 @@ impl PlacementScanController {
                         .context("placement copy reuse count overflow")?;
                     continue;
                 }
-                let size = copy_surface_object(fetch.as_ref(), writer.as_ref(), &path).await?;
+                let size = match writes
+                    .copy_placement_object(&source, destination, &path, source_evidence.get(&path))
+                    .await?
+                {
+                    Some(size) => size,
+                    None => {
+                        if writer.is_none() {
+                            writer = Some(writes.placement_writer(destination).await?);
+                        }
+                        let writer = writer
+                            .as_deref()
+                            .context("placement copy writer was not initialized")?;
+                        copy_surface_object(fetch.as_ref(), writer, &path).await?
+                    }
+                };
                 copied_objects = copied_objects
                     .checked_add(1)
                     .context("placement copy object count overflow")?;
@@ -1329,7 +1362,7 @@ mod tests {
 
         let controller =
             PlacementScanController::new(Arc::clone(&db), Arc::new(EmptySurfaceProvider));
-        assert_eq!(controller.run_due(1).await.unwrap(), 1);
+        assert_eq!(controller.run_due_scans_only(1).await.unwrap(), 1);
 
         let operation = db
             .topology_operation(&operation.operation_id)
@@ -1400,6 +1433,13 @@ mod tests {
             })
             .await
             .unwrap();
+        let read_only_due = db
+            .due_surface_placement_scan_only_operations(clock::now_unix_secs(), 10)
+            .await
+            .unwrap();
+        assert!(read_only_due
+            .iter()
+            .all(|candidate| candidate.operation_id != operation.operation_id));
         let provider = CopySurfaceProvider::default();
         provider
             .objects

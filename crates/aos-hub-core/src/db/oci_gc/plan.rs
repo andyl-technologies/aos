@@ -2,25 +2,27 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use aos_oci_types::Sha256Digest;
 use uuid::Uuid;
 
-pub use super::plan_model::{ApplyOciGc, PlanOciGc};
 use super::plan_model::{
-    EffectivePolicy, FrozenAction, FrozenCandidate, FrozenPlacement, FrozenRoot, PlanBlocker,
     canonical_digest, digest_json, oci_gc_snapshot_guard_statement, policy_guard_statement,
-    validate_apply_input, validate_plan_input,
+    validate_apply_input, validate_plan_input, EffectivePolicy, FrozenAction, FrozenCandidate,
+    FrozenPlacement, FrozenRoot, PlanBlocker,
 };
+pub use super::plan_model::{ApplyOciGc, PlanOciGc};
 use super::{
-    OCI_GC_MAX_ACTIONS, OCI_GC_MAX_DEPTH, OCI_GC_MAX_EDGES, OCI_GC_MAX_INVENTORY_AGE_SECONDS,
-    OCI_GC_MAX_OBJECTS, OCI_GC_MAX_PLACEMENTS, OCI_GC_PLAN_TTL_SECONDS, OciGcGenerationRecord,
+    OciGcGenerationRecord, OCI_GC_MAX_ACTIONS, OCI_GC_MAX_DEPTH, OCI_GC_MAX_EDGES,
+    OCI_GC_MAX_INVENTORY_AGE_SECONDS, OCI_GC_MAX_OBJECTS, OCI_GC_MAX_PLACEMENTS,
+    OCI_GC_PLAN_TTL_SECONDS,
 };
 use crate::backend::Statement;
 use crate::db::{
-    Database, OCI_RETENTION_DEFAULT_DELETED_TAG_HISTORY_SECONDS,
+    sanitize_log_text, Database, OciRetentionPolicyRecord,
+    OCI_RETENTION_DEFAULT_DELETED_TAG_HISTORY_SECONDS,
     OCI_RETENTION_DEFAULT_RECENT_MANUAL_TAG_REVISIONS, OCI_RETENTION_DEFAULT_RETAIN_REFERRERS,
-    OCI_RETENTION_DEFAULT_UNTAGGED_GRACE_SECONDS, OciRetentionPolicyRecord, sanitize_log_text,
+    OCI_RETENTION_DEFAULT_UNTAGGED_GRACE_SECONDS,
 };
 
 /// Qualifies a catalog-owned root source within its repository.
@@ -917,7 +919,8 @@ impl Database {
                 || capability_fingerprint.is_none()
                 || capability_resource_version.is_none()
                 || capability_observed_at.is_none_or(|observed| observed < oldest_allowed)
-                || (credential_purpose.is_none() && binding_kind != "local_fs")
+                || (credential_purpose.is_none()
+                    && !matches!(binding_kind.as_str(), "local_fs" | "deployment_r2"))
                 || (credential_purpose.is_some()
                     && (delete_credential_state.as_deref() != Some("valid")
                         || current_delete_credential_generation != credential_generation))
@@ -1172,7 +1175,7 @@ impl Database {
                     "SELECT digest FROM oci_blobs
                      WHERE registry_id = ?1 AND lifecycle_state = 'active'
                        AND unreferenced_since IS NULL
-                       AND (?2 IS NULL OR digest > ?2)
+                       AND (CAST(?2 AS VARCHAR) IS NULL OR digest > ?2)
                      ORDER BY digest LIMIT ?3",
                     &vals![
                         registry_id,
@@ -1267,7 +1270,7 @@ impl Database {
                     "SELECT 1 FROM oci_blobs stored_blob
                      WHERE stored_blob.registry_id = ?1 AND stored_blob.digest = ?2
                        AND stored_blob.lifecycle_state = 'active'
-                       AND (?3 IS NULL OR EXISTS (SELECT 1 FROM oci_repository_objects link
+                       AND (CAST(?3 AS BIGINT) IS NULL OR EXISTS (SELECT 1 FROM oci_repository_objects link
                          WHERE link.registry_id = stored_blob.registry_id
                            AND link.repository_id = ?3
                            AND link.digest = stored_blob.digest))",

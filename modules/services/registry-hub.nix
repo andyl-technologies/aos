@@ -3,7 +3,8 @@
 ##! Runs `aos-hub serve` as a hardened systemd service so operators
 ##! deploy the multi-tenant registry management WebUI *with* AOS, per RFC-0004's
 ##! operations section. The hub is local-first and self-contained: a single
-##! binary plus a sqlite database under `--root`, listening on `--listen`. It
+##! binary plus a local database or a hybrid PostgreSQL backend, listening on
+##! `--listen`. It
 ##! can terminate TLS in-process so authenticated listener evidence reaches the
 ##! typed route dispatcher without trusting forwarding headers.
 ##!
@@ -79,6 +80,18 @@
       handle = "tls-private-key";
       environment = "HUB_TLS_PRIVATE_KEY_FILE";
     };
+    databaseUrl = {
+      handle = "database-url";
+      environment = "HUB_DATABASE_URL_FILE";
+    };
+    hybridIngressKey = {
+      handle = "hybrid-ingress-key";
+      environment = "HUB_HYBRID_INGRESS_KEY_FILE";
+    };
+    storageWorkKey = {
+      handle = "storage-work-key";
+      environment = "HUB_STORAGE_WORK_KEY_FILE";
+    };
   };
   configuredCredentials = lib.filterAttrs (name: _: cfg.credentials.${name} != null) credentialFields;
   loadCredentials =
@@ -100,7 +113,9 @@
     cfg.credentials.releasePublicationKeys
     cfg.credentials.qualificationKeys
   ];
-  releaseEvidenceConfigured = builtins.any (value: value != null) releaseEvidenceFields;
+  releaseEvidenceConfigured =
+    cfg.deploymentId != null
+    || builtins.any (value: value != null) (builtins.tail releaseEvidenceFields);
   releaseEvidenceComplete = builtins.all (value: value != null) releaseEvidenceFields;
 in {
   options.aos.registry-hub = {
@@ -127,12 +142,30 @@ in {
       type = lib.types.path;
       default = "/var/lib/aos-hub";
       description = ''
-        State directory holding the hub's sqlite database (hub.db) and any
-        local_fs storage-binding roots. The native Hub provisions its
-        deployment-owned instance-default binding at the `storage` directory
-        beneath this root. The root is provisioned as a systemd StateDirectory
-        owned by the service account.
+        State directory for the native Hub. Local mode holds its SQLite database
+        (hub.db) and local_fs storage roots here. Hybrid mode keeps authoritative
+        state in PostgreSQL and still uses this directory for local runtime state.
+        The directory is provisioned as a systemd StateDirectory owned by the
+        service account.
       '';
+    };
+
+    hybrid = {
+      enable = lib.mkEnableOption "Worker-fronted Native Hub serving";
+
+      workerUrl = lib.mkOption {
+        type = lib.types.nullOr (lib.types.strMatching "https://[^[:space:]]+");
+        default = null;
+        example = "https://storage.example.com";
+        description = "HTTPS origin of the paired storage Worker.";
+      };
+
+      originUrl = lib.mkOption {
+        type = lib.types.nullOr (lib.types.strMatching "https://[^[:space:]]+");
+        default = null;
+        example = "https://hub-origin.example.com";
+        description = "Private HTTPS origin the Worker uses to reach this Native Hub, including its TLS hostname.";
+      };
     };
 
     externalUrl = lib.mkOption {
@@ -203,6 +236,19 @@ in {
         message = "aos.registry-hub.credentials.routeReservationKeys is required";
       }
       {
+        assertion =
+          !cfg.hybrid.enable
+          || (cfg.deploymentId != null
+            && cfg.hybrid.workerUrl != null
+            && cfg.hybrid.originUrl != null
+            && cfg.credentials.databaseUrl != null
+            && cfg.credentials.hybridIngressKey != null
+            && cfg.credentials.storageWorkKey != null
+            && cfg.externalUrl != null
+            && lib.hasPrefix "https://" cfg.externalUrl);
+        message = "hybrid Hub requires deploymentId, HTTPS externalUrl, workerUrl and originUrl, plus databaseUrl, hybridIngressKey, and storageWorkKey credentials";
+      }
+      {
         assertion = cfg.credentials.domainProbeSignerManifest != null;
         message = "aos.registry-hub.credentials.domainProbeSignerManifest is required";
       }
@@ -214,7 +260,7 @@ in {
       }
       {
         assertion = !releaseEvidenceConfigured || releaseEvidenceComplete;
-        message = "native Hub release evidence requires deploymentId, both receipt key ids, both receipt key credentials, releasePublicationKeys, and qualificationKeys together";
+        message = "Hub release evidence requires deploymentId, both receipt key ids, both receipt key credentials, releasePublicationKeys, and qualificationKeys together";
       }
       {
         assertion =
@@ -261,16 +307,14 @@ in {
       # WatchdogSec are not wired up — that needs sd_notify support in the
       # binary (the `sd-notify` crate would do it). Until then we keep
       # Type=simple and harden the restart policy: always restart, back off,
-      # and cap the restart rate so a crash loop surfaces as a failed unit
-      # rather than spinning forever.
+      # and cap the restart rate in Native-only mode. Hybrid may start before
+      # its Worker; keep retrying so it recovers when the paired Worker starts.
       #
       # TODO(rfc-0004): add sd_notify to `serve` (emit READY=1 after the
       # listener binds, WATCHDOG=1 periodically) and switch to Type=notify +
       # WatchdogSec for true readiness/liveness supervision.
       unitConfig = {
-        # Cap the restart rate: more than 5 starts in 60s fails the unit
-        # (so a crash loop surfaces as `failed`, not an endless respawn).
-        StartLimitIntervalSec = 60;
+        StartLimitIntervalSec = if cfg.hybrid.enable then 0 else 60;
         StartLimitBurst = 5;
       };
       serviceConfig = {
@@ -279,27 +323,34 @@ in {
           "${cfg.package}/bin/aos-hub"
           + " --root ${lib.escapeShellArg cfg.root}"
           + " serve --listen ${lib.escapeShellArg cfg.listen}"
+          + lib.optionalString cfg.hybrid.enable " --topology hybrid"
           + " --reindex-interval ${toString cfg.reindexInterval}"
           + externalArg;
         LoadCredential = loadCredentials;
         Environment =
           credentialEnvironment
           ++ ["HUB_DNS_JSON_ENDPOINT=${cfg.dnsJsonEndpoint}"]
-          ++ lib.optionals releaseEvidenceComplete [
+          ++ lib.optionals cfg.hybrid.enable [
+            "HUB_DEPLOYMENT_ID=${toString cfg.deploymentId}"
+            "HUB_HYBRID_WORKER_URL=${toString cfg.hybrid.workerUrl}"
+            "HUB_HYBRID_ORIGIN_URL=${toString cfg.hybrid.originUrl}"
+          ]
+          ++ lib.optionals (releaseEvidenceComplete && !cfg.hybrid.enable) [
             "HUB_DEPLOYMENT_ID=${cfg.deploymentId}"
+          ]
+          ++ lib.optionals releaseEvidenceComplete [
             "HUB_RELEASE_RECEIPT_KEY_ID=${cfg.releaseReceiptKeyId}"
             "HUB_CHANNEL_RECEIPT_KEY_ID=${cfg.channelReceiptKeyId}"
           ]
           ++ lib.optional (cfg.routePublicationPublicKey != null)
           "HUB_ROUTE_PUBLICATION_PUBLIC_KEY=${cfg.routePublicationPublicKey}";
         Restart = "always";
-        RestartSec = "5s";
+        RestartSec = if cfg.hybrid.enable then "15s" else "5s";
         User = "aos-hub";
         Group = "aos-hub";
-        # The hub opens $root/hub.db at startup and writes its sqlite WAL there;
-        # StateDirectory provisions /var/lib/aos-hub (0750) owned by
-        # the service account. When `root` is the default this is exactly that
-        # path; an operator pointing `root` elsewhere must provision it.
+        # Local mode opens $root/hub.db and writes its SQLite WAL here.
+        # Hybrid mode uses PostgreSQL but retains a private runtime directory.
+        # A nondefault root must be provisioned by the operator.
         StateDirectory = "aos-hub";
         StateDirectoryMode = "0750";
         # Sandboxing: matches the registry-server role's profile. The hub needs

@@ -46,8 +46,8 @@ const OCI_MANIFEST_COLUMNS: &str = "manifest.registry_id, manifest.digest,
     manifest.platform_os_version, manifest.platform_os_features_json,
     manifest.annotations_json, manifest.descriptor_count,
     stored_blob.surface_object_id, object.object_key, manifest.created_at";
-const OCI_MANIFEST_REFERENCE_PREDICATE: &str = "((link.digest = ?2 AND ?2 IS NOT NULL)
-                         OR (tag.name = ?3 AND ?3 IS NOT NULL))";
+const OCI_MANIFEST_REFERENCE_PREDICATE: &str = "((link.digest = ?2 AND CAST(?2 AS VARCHAR) IS NOT NULL)
+                         OR (tag.name = ?3 AND CAST(?3 AS VARCHAR) IS NOT NULL))";
 const OCI_UPLOAD_COLUMNS: &str = "id, registry_id, repository_id, publication_id,
     quota_reservation_id, writer_id, token_id, expected_digest, expected_size,
     maximum_size, uploaded_size, staging_placement_id,
@@ -932,19 +932,19 @@ fn extend_projection_identity_guards(
                  WHERE manifest.registry_id = ?2 AND manifest.digest = ?4
                    AND manifest.media_type = ?5 AND manifest.byte_size = ?6
                    AND (manifest.artifact_type = ?7
-                     OR (manifest.artifact_type IS NULL AND ?7 IS NULL))
+                     OR (manifest.artifact_type IS NULL AND CAST(?7 AS VARCHAR) IS NULL))
                    AND (manifest.subject_digest = ?8
-                     OR (manifest.subject_digest IS NULL AND ?8 IS NULL))
+                     OR (manifest.subject_digest IS NULL AND CAST(?8 AS VARCHAR) IS NULL))
                    AND (manifest.config_digest = ?9
-                     OR (manifest.config_digest IS NULL AND ?9 IS NULL))
+                     OR (manifest.config_digest IS NULL AND CAST(?9 AS VARCHAR) IS NULL))
                    AND (manifest.platform_os = ?10
-                     OR (manifest.platform_os IS NULL AND ?10 IS NULL))
+                     OR (manifest.platform_os IS NULL AND CAST(?10 AS VARCHAR) IS NULL))
                    AND (manifest.platform_architecture = ?11
-                     OR (manifest.platform_architecture IS NULL AND ?11 IS NULL))
+                     OR (manifest.platform_architecture IS NULL AND CAST(?11 AS VARCHAR) IS NULL))
                    AND (manifest.platform_variant = ?12
-                     OR (manifest.platform_variant IS NULL AND ?12 IS NULL))
+                     OR (manifest.platform_variant IS NULL AND CAST(?12 AS VARCHAR) IS NULL))
                    AND (manifest.platform_os_version = ?13
-                     OR (manifest.platform_os_version IS NULL AND ?13 IS NULL))
+                     OR (manifest.platform_os_version IS NULL AND CAST(?13 AS VARCHAR) IS NULL))
                    AND manifest.platform_os_features_json = ?14
                    AND manifest.annotations_json = ?15
                    AND manifest.descriptor_count = ?16
@@ -994,13 +994,13 @@ fn extend_projection_identity_guards(
                        AND edge.target_digest = ?7 AND edge.media_type = ?8
                        AND edge.byte_size = ?9
                        AND (edge.platform_os = ?10
-                         OR (edge.platform_os IS NULL AND ?10 IS NULL))
+                         OR (edge.platform_os IS NULL AND CAST(?10 AS VARCHAR) IS NULL))
                        AND (edge.platform_architecture = ?11
-                         OR (edge.platform_architecture IS NULL AND ?11 IS NULL))
+                         OR (edge.platform_architecture IS NULL AND CAST(?11 AS VARCHAR) IS NULL))
                        AND (edge.platform_variant = ?12
-                         OR (edge.platform_variant IS NULL AND ?12 IS NULL))
+                         OR (edge.platform_variant IS NULL AND CAST(?12 AS VARCHAR) IS NULL))
                        AND (edge.platform_os_version = ?13
-                         OR (edge.platform_os_version IS NULL AND ?13 IS NULL))
+                         OR (edge.platform_os_version IS NULL AND CAST(?13 AS VARCHAR) IS NULL))
                        AND edge.platform_os_features_json = ?14
                        AND edge.annotations_json = ?15)",
                 vals![
@@ -2484,7 +2484,7 @@ impl Database {
             .query(
                 "SELECT name, digest, source_kind, resource_version, updated_at
                  FROM oci_tags
-                 WHERE repository_id = ?1 AND (?2 IS NULL OR name > ?2)
+                 WHERE repository_id = ?1 AND (CAST(?2 AS VARCHAR) IS NULL OR name > ?2)
                  ORDER BY name LIMIT ?3",
                 &vals![repository_id, last.map(Tag::as_str), limit],
             )
@@ -2569,7 +2569,7 @@ impl Database {
                  WHERE link.repository_id = ?1
                    AND manifest.subject_digest = ?2
                    AND manifest.artifact_type IS NOT NULL
-                   AND (?3 IS NULL OR manifest.artifact_type = ?3)
+                   AND (CAST(?3 AS VARCHAR) IS NULL OR manifest.artifact_type = ?3)
                  ORDER BY manifest.digest LIMIT ?4",
                 &vals![
                     repository_id,
@@ -3347,34 +3347,25 @@ mod tests {
             ("platform_variant", 12),
         ] {
             let equality = format!("manifest.{column} = ${parameter}");
-            let null_check = format!("manifest.{column} IS NULL AND ${parameter} IS NULL");
+            let null_check =
+                format!("manifest.{column} IS NULL AND CAST(${parameter} AS VARCHAR) IS NULL");
             assert!(postgres.sql.contains(&equality), "{}", postgres.sql);
             assert!(postgres.sql.contains(&null_check), "{}", postgres.sql);
-            assert!(
-                postgres.sql.find(&equality) < postgres.sql.find(&null_check),
-                "PostgreSQL must infer ${parameter} from typed equality first: {}",
-                postgres.sql
-            );
         }
     }
 
     #[test]
-    fn manifest_reference_predicate_types_nullable_parameters_before_null_checks() {
+    fn manifest_reference_predicate_casts_nullable_parameters() {
         let postgres = crate::dialect::Dialect::Postgres
             .translate(OCI_MANIFEST_REFERENCE_PREDICATE)
             .unwrap();
 
         for (equality, null_check) in [
-            ("link.digest = $2", "$2 IS NOT NULL"),
-            ("tag.name = $3", "$3 IS NOT NULL"),
+            ("link.digest = $2", "CAST($2 AS VARCHAR) IS NOT NULL"),
+            ("tag.name = $3", "CAST($3 AS VARCHAR) IS NOT NULL"),
         ] {
             assert!(postgres.sql.contains(equality), "{}", postgres.sql);
             assert!(postgres.sql.contains(null_check), "{}", postgres.sql);
-            assert!(
-                postgres.sql.find(equality) < postgres.sql.find(null_check),
-                "PostgreSQL must infer nullable reference parameters from typed equality first: {}",
-                postgres.sql
-            );
         }
     }
 
@@ -3520,6 +3511,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn portable_sha256_resumes_after_json_transfer() {
+        let mut native = OciSha256State::initial();
+        native.update(&vec![b'a'; 65]).unwrap();
+        let encoded = serde_json::to_vec(&native).unwrap();
+
+        let mut worker: OciSha256State = serde_json::from_slice(&encoded).unwrap();
+        worker.update(b"next chunk").unwrap();
+
+        let mut expected = vec![b'a'; 65];
+        expected.extend_from_slice(b"next chunk");
+        assert_eq!(
+            worker.final_digest().unwrap(),
+            Sha256Digest::digest(&expected)
+        );
+
+        let mut unknown_field: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        unknown_field["extra"] = serde_json::Value::Bool(true);
+        assert!(serde_json::from_value::<OciSha256State>(unknown_field).is_err());
     }
 
     #[tokio::test]

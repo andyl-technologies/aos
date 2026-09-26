@@ -44,7 +44,7 @@ use anyhow::{Context, Result};
 
 use super::super::dialect::Dialect;
 use super::super::value::{Row, Value};
-use super::{CheckedStatement, Statement};
+use super::{CheckedStatement, PoolStats, Statement};
 // Multi-statement migration splitting is only needed by the postgres/mysql
 // drivers (sqlite runs the whole script in one call via `raw_sql`).
 #[cfg(any(feature = "postgres", feature = "mysql"))]
@@ -178,6 +178,34 @@ impl super::Backend for SqlxBackend {
             #[cfg(feature = "mysql")]
             Self::Mysql(_) => Dialect::Mysql,
         }
+    }
+
+    fn pool_stats(&self) -> Option<PoolStats> {
+        let (open, idle, maximum) = match self {
+            Self::Sqlite(pool) => (
+                pool.size(),
+                pool.num_idle(),
+                pool.options().get_max_connections(),
+            ),
+            #[cfg(feature = "postgres")]
+            Self::Postgres(pool) => (
+                pool.size(),
+                pool.num_idle(),
+                pool.options().get_max_connections(),
+            ),
+            #[cfg(feature = "mysql")]
+            Self::Mysql(pool) => (
+                pool.size(),
+                pool.num_idle(),
+                pool.options().get_max_connections(),
+            ),
+        };
+        Some(PoolStats {
+            open,
+            // Pool counters are sampled separately and may race a connection close.
+            idle: idle.min(open as usize),
+            maximum,
+        })
     }
 
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<u64> {
@@ -470,27 +498,45 @@ mod postgres {
     use super::super::{prepare, with_returning_id, CheckedStatement, Statement};
     use super::SqlxBackend;
 
-    /// PostgreSQL null whose type is inferred from the statement context.
+    /// PostgreSQL null with the type advertised to the Parse message.
     ///
-    /// Binding `Option::<i64>::None` advertises INT8 even though a hub
-    /// [`Value::Null`] may target text, bytea, or another nullable column. OID
-    /// 705 is PostgreSQL's unknown pseudo-type; the server resolves it from the
-    /// target column or comparison before executing the prepared statement.
-    struct UntypedNull;
+    /// An untyped null uses OID 705 so PostgreSQL can infer its column type.
+    /// `IS NULL` gives no type context, so statements with an explicit cast
+    /// advertise that cast's type for the parameter instead.
+    struct PostgresNull {
+        oid: sqlx::postgres::types::Oid,
+    }
 
-    impl sqlx::Type<Postgres> for UntypedNull {
+    impl sqlx::Type<Postgres> for PostgresNull {
         fn type_info() -> sqlx::postgres::PgTypeInfo {
             sqlx::postgres::PgTypeInfo::with_oid(sqlx::postgres::types::Oid(705))
         }
     }
 
-    impl sqlx::Encode<'_, Postgres> for UntypedNull {
+    impl sqlx::Encode<'_, Postgres> for PostgresNull {
         fn encode_by_ref(
             &self,
             _buf: &mut sqlx::postgres::PgArgumentBuffer,
         ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
             Ok(sqlx::encode::IsNull::Yes)
         }
+
+        fn produces(&self) -> Option<sqlx::postgres::PgTypeInfo> {
+            Some(sqlx::postgres::PgTypeInfo::with_oid(self.oid))
+        }
+    }
+
+    fn null_type_oid(sql: &str, parameter_number: usize) -> sqlx::postgres::types::Oid {
+        use sqlx::postgres::types::Oid;
+
+        for (name, oid) in [("BIGINT", 20), ("VARCHAR", 1043), ("TEXT", 25)] {
+            let cast = format!("CAST(${parameter_number} AS {name})");
+            if sql.contains(&cast) {
+                return Oid(oid);
+            }
+        }
+
+        Oid(705)
     }
 
     /// Decodes PostgreSQL's base-10000 binary NUMERIC form when it is an i64.
@@ -560,10 +606,13 @@ mod postgres {
     fn bind<'q>(
         mut query: sqlx::query::Query<'q, Postgres, sqlx::postgres::PgArguments>,
         params: &'q [Value],
+        sql: &str,
     ) -> sqlx::query::Query<'q, Postgres, sqlx::postgres::PgArguments> {
-        for value in params {
+        for (index, value) in params.iter().enumerate() {
             query = match value {
-                Value::Null => query.bind(UntypedNull),
+                Value::Null => query.bind(PostgresNull {
+                    oid: null_type_oid(sql, index + 1),
+                }),
                 Value::Int(n) => query.bind(*n),
                 Value::Real(f) => query.bind(*f),
                 Value::Text(s) => query.bind(s.as_str()),
@@ -618,7 +667,7 @@ mod postgres {
     /// Runs a non-`SELECT` statement, returning rows affected.
     pub(super) async fn execute(pool: &PgPool, sql: &str, params: &[Value]) -> Result<u64> {
         let (sql, params) = prepare(Dialect::Postgres, sql, params)?;
-        let result = bind(sqlx::query(&sql), &params)
+        let result = bind(sqlx::query(&sql), &params, &sql)
             .execute(pool)
             .await
             .with_context(|| format!("executing {sql}"))?;
@@ -644,7 +693,7 @@ mod postgres {
     /// Runs a `SELECT`/`RETURNING` statement, returning all rows.
     pub(super) async fn query(pool: &PgPool, sql: &str, params: &[Value]) -> Result<Vec<Row>> {
         let (sql, params) = prepare(Dialect::Postgres, sql, params)?;
-        let rows = bind(sqlx::query(&sql), &params)
+        let rows = bind(sqlx::query(&sql), &params, &sql)
             .fetch_all(pool)
             .await
             .with_context(|| format!("querying {sql}"))?;
@@ -659,7 +708,7 @@ mod postgres {
             .context("beginning postgres transaction")?;
         for stmt in stmts {
             let (sql, params) = prepare(Dialect::Postgres, &stmt.sql, &stmt.params)?;
-            bind(sqlx::query(&sql), &params)
+            bind(sqlx::query(&sql), &params, &sql)
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("executing {sql}"))?;
@@ -699,7 +748,7 @@ mod postgres {
         );
         for stmt in stmts {
             let (sql, params) = prepare(Dialect::Postgres, &stmt.sql, &stmt.params)?;
-            bind(sqlx::query(&sql), &params)
+            bind(sqlx::query(&sql), &params, &sql)
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("executing {sql}"))?;
@@ -720,7 +769,7 @@ mod postgres {
                 &checked.statement.sql,
                 &checked.statement.params,
             )?;
-            let result = bind(sqlx::query(&sql), &params)
+            let result = bind(sqlx::query(&sql), &params, &sql)
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("executing {sql}"))?;

@@ -30,9 +30,17 @@ use aos_hub::server::{router, AppState};
 #[derive(Parser)]
 #[command(name = "aos-hub", version, about = "AOS registry hub server")]
 struct Cli {
-    /// Hub state directory (holds hub.db).
+    /// Hub state directory; holds hub.db when using local SQLite.
     #[arg(long, global = true)]
     root: Option<PathBuf>,
+
+    /// Native database URL; defaults to the SQLite file under --root.
+    #[arg(long, global = true, env = "HUB_DATABASE_URL")]
+    database_url: Option<String>,
+
+    /// File containing the native database URL, for service credentials.
+    #[arg(long, global = true, env = "HUB_DATABASE_URL_FILE")]
+    database_url_file: Option<PathBuf>,
 
     /// Database target. The hard-cutover CLI admits only the native `local`
     /// database; Worker administration uses the typed Hub API.
@@ -58,6 +66,21 @@ enum Command {
         /// Externally reachable base URL for setup snippets.
         #[arg(long)]
         external_url: Option<String>,
+        /// Serving topology: local Native or Worker-fronted hybrid.
+        #[arg(long, env = "HUB_TOPOLOGY", default_value = "native", value_parser = ["native", "hybrid"])]
+        topology: String,
+        /// HMAC key shared with the hybrid Worker ingress.
+        #[arg(long, env = "HUB_HYBRID_INGRESS_KEY_FILE")]
+        hybrid_ingress_key_file: Option<PathBuf>,
+        /// HTTPS origin of the hybrid Worker storage executor.
+        #[arg(long, env = "HUB_HYBRID_WORKER_URL")]
+        hybrid_worker_url: Option<String>,
+        /// HTTPS origin hostname presented to the hybrid Worker's origin fetch.
+        #[arg(long, env = "HUB_HYBRID_ORIGIN_URL")]
+        hybrid_origin_url: Option<String>,
+        /// HMAC key used to authorize Native-issued storage plans.
+        #[arg(long, env = "HUB_STORAGE_WORK_KEY_FILE")]
+        storage_work_key_file: Option<PathBuf>,
         /// PEM certificate chain for native TLS termination.
         #[arg(long, env = "HUB_TLS_CERTIFICATE_FILE")]
         tls_certificate_file: Option<PathBuf>,
@@ -240,6 +263,8 @@ enum Provider {
 
 #[derive(Subcommand)]
 enum WorkerCommand {
+    /// Render a hybrid Worker profile for a prebuilt shim.mjs artifact.
+    RenderHybridConfig(HybridConfigArgs),
     /// Provision provider resources, deploy the Worker, and set its secrets.
     ///
     /// Provider-specific only: `HubDb` applies the closed schema on first use.
@@ -267,6 +292,31 @@ enum WorkerCommand {
     Logout(ProviderOpt),
     /// Show the current hosting-provider authentication.
     Whoami(ProviderOpt),
+}
+
+#[derive(Args)]
+struct HybridConfigArgs {
+    /// Cloudflare Worker name.
+    #[arg(long)]
+    name: String,
+    /// R2 bucket attached to the storage executor.
+    #[arg(long)]
+    bucket: String,
+    /// Shared Native and Worker deployment identity.
+    #[arg(long)]
+    deployment_id: String,
+    /// Public HTTPS origin served by the Worker.
+    #[arg(long)]
+    external_url: String,
+    /// Private HTTPS origin of the Native Hub.
+    #[arg(long)]
+    native_origin_url: String,
+    /// Cloudflare custom domain managed by this Worker; repeatable.
+    #[arg(long = "domain")]
+    domains: Vec<String>,
+    /// Include an assets binding for an adjacent assets directory.
+    #[arg(long)]
+    serve_assets: bool,
 }
 
 /// The provider selector for `worker` subcommands that take no other options.
@@ -536,7 +586,16 @@ impl WorkerArgs {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber_init();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    if let Some(path) = cli.database_url_file.as_ref() {
+        anyhow::ensure!(
+            cli.database_url.is_none(),
+            "configure either HUB_DATABASE_URL or HUB_DATABASE_URL_FILE"
+        );
+        let database_url = std::fs::read_to_string(path)
+            .with_context(|| format!("reading database URL from {}", path.display()))?;
+        cli.database_url = Some(database_url.trim_end_matches(['\r', '\n']).to_owned());
+    }
 
     match cli.command {
         Command::Serve {
@@ -544,6 +603,11 @@ async fn main() -> Result<()> {
             dev,
             seed,
             external_url,
+            topology,
+            hybrid_ingress_key_file,
+            hybrid_worker_url,
+            hybrid_origin_url,
+            storage_work_key_file,
             tls_certificate_file,
             tls_private_key_file,
             deployment_id,
@@ -577,6 +641,77 @@ async fn main() -> Result<()> {
                 .local_addr()
                 .context("reading bound listen address")?;
             let external_url = external_url.unwrap_or_else(|| format!("http://{listen_addr}"));
+            let hybrid = topology == "hybrid";
+            let hybrid_origin_host = if hybrid {
+                let origin_url =
+                    hybrid_origin_url.context("hybrid serving requires HUB_HYBRID_ORIGIN_URL")?;
+                let origin =
+                    url::Url::parse(&origin_url).context("parsing the hybrid Native origin URL")?;
+                anyhow::ensure!(
+                    origin.scheme() == "https"
+                        && origin.path() == "/"
+                        && origin.query().is_none()
+                        && origin.fragment().is_none()
+                        && origin.username().is_empty()
+                        && origin.password().is_none(),
+                    "hybrid Native origin URL must be an HTTPS origin"
+                );
+                let public =
+                    url::Url::parse(&external_url).context("parsing the hybrid public URL")?;
+                anyhow::ensure!(
+                    origin.origin() != public.origin(),
+                    "hybrid Native origin must differ from the public Worker origin"
+                );
+                let host = origin
+                    .host_str()
+                    .context("hybrid Native origin URL has no hostname")?;
+                anyhow::ensure!(
+                    host.parse::<std::net::IpAddr>().is_err(),
+                    "hybrid Native origin must use a DNS hostname for SNI"
+                );
+                Some(host.to_owned())
+            } else {
+                None
+            };
+            let hybrid_runtime = if hybrid {
+                anyhow::ensure!(
+                    cli.database_url.as_deref().is_some_and(|url| {
+                        url.starts_with("postgres://") || url.starts_with("postgresql://")
+                    }),
+                    "hybrid serving requires a PostgreSQL HUB_DATABASE_URL"
+                );
+                anyhow::ensure!(
+                    external_url.starts_with("https://"),
+                    "hybrid serving requires an HTTPS external URL"
+                );
+                anyhow::ensure!(
+                    !dev && !seed,
+                    "hybrid serving does not use local demo state"
+                );
+                let deployment_id = deployment_id
+                    .as_ref()
+                    .context("hybrid serving requires HUB_DEPLOYMENT_ID")?
+                    .clone();
+                let ingress_key_file = hybrid_ingress_key_file
+                    .context("hybrid serving requires HUB_HYBRID_INGRESS_KEY_FILE")?;
+                let storage_key_file = storage_work_key_file
+                    .context("hybrid serving requires HUB_STORAGE_WORK_KEY_FILE")?;
+                let worker_url =
+                    hybrid_worker_url.context("hybrid serving requires HUB_HYBRID_WORKER_URL")?;
+                let ingress_key = aos_hub_core::hybrid_ingress::HybridIngressKey::new(
+                    aos_hub::auth::seal::read_secret_file(&ingress_key_file)?,
+                )?;
+                let storage_key = aos_hub::auth::seal::read_secret_file(&storage_key_file)?;
+                let work = aos_hub::storage_work::RemoteStorageWorkClient::new(
+                    &worker_url,
+                    deployment_id.clone(),
+                    &storage_key,
+                )?;
+                work.check_ready().await?;
+                Some((deployment_id, Arc::new(ingress_key), Arc::new(work)))
+            } else {
+                None
+            };
             let tls = match (tls_certificate_file, tls_private_key_file) {
                 (Some(certificate), Some(private_key)) => {
                     let public_url = url::Url::parse(&external_url)
@@ -585,9 +720,12 @@ async fn main() -> Result<()> {
                         public_url.scheme() == "https",
                         "native TLS requires an https external URL"
                     );
-                    let server_name = public_url
-                        .host_str()
-                        .context("native TLS external URL has no hostname")?;
+                    let server_name = match hybrid_origin_host.as_deref() {
+                        Some(host) => host,
+                        None => public_url
+                            .host_str()
+                            .context("native TLS external URL has no hostname")?,
+                    };
                     anyhow::ensure!(
                         server_name.parse::<std::net::IpAddr>().is_err(),
                         "native TLS external URL must use a DNS hostname for SNI"
@@ -599,7 +737,10 @@ async fn main() -> Result<()> {
                     "HUB_TLS_CERTIFICATE_FILE and HUB_TLS_PRIVATE_KEY_FILE must be configured together"
                 ),
             };
-            let db = Arc::new(Database::open(&root.join("hub.db")).await?);
+            let db = Arc::new(match cli.database_url.as_deref() {
+                Some(database_url) => Database::connect(database_url).await?,
+                None => Database::open(&root.join("hub.db")).await?,
+            });
             let storage_root = root.join("storage");
             std::fs::create_dir_all(&storage_root).with_context(|| {
                 format!(
@@ -610,11 +751,30 @@ async fn main() -> Result<()> {
             let storage_root_text = storage_root
                 .to_str()
                 .context("native Hub storage root is not valid UTF-8")?;
-            db.ensure_instance_default_binding("local_fs", Some(storage_root_text), None)
+            if hybrid {
+                db.ensure_instance_default_binding(
+                    "deployment_r2",
+                    None,
+                    Some(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT),
+                )
                 .await
-                .context("provisioning native Hub instance-default binding")?;
-            let image_snapshots = aos_hub::image_snapshot::ImageSnapshotStore::open(&root)?;
-            image_snapshots.load_tracked(&db).await?;
+                .context("provisioning hybrid Hub instance-default binding")?;
+            } else if !cli.database_url.as_deref().is_some_and(|database_url| {
+                database_url.starts_with("postgres://")
+                    || database_url.starts_with("postgresql://")
+                    || database_url.starts_with("mysql://")
+            }) {
+                db.ensure_instance_default_binding("local_fs", Some(storage_root_text), None)
+                    .await
+                    .context("provisioning native Hub instance-default binding")?;
+            }
+            let image_snapshots = if hybrid {
+                None
+            } else {
+                let snapshots = aos_hub::image_snapshot::ImageSnapshotStore::open(&root)?;
+                snapshots.load_tracked(&db).await?;
+                Some(snapshots)
+            };
             let route_reservation_keys_path = route_reservation_keys_file
                 .context("HUB_ROUTE_RESERVATION_KEYS_FILE is required for route management")?;
             let route_reservation_keys = String::from_utf8(
@@ -647,7 +807,11 @@ async fn main() -> Result<()> {
                 match aos_hub::seed::seed_dev_with_snapshots(
                     &db,
                     &root,
-                    Arc::clone(&image_snapshots),
+                    Arc::clone(
+                        image_snapshots
+                            .as_ref()
+                            .context("demo seed requires image snapshots")?,
+                    ),
                     &aos_hub::seed::SeedRouteConfig {
                         listen_addr,
                         external_url: &external_url,
@@ -666,6 +830,30 @@ async fn main() -> Result<()> {
                 }
             }
             let mut app_state = AppState::new(db, external_url).await;
+            if hybrid {
+                let pool_db = Arc::clone(&app_state.db);
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                    loop {
+                        tick.tick().await;
+                        if let Some(stats) = pool_db.pool_stats() {
+                            tracing::info!(
+                                open = stats.open,
+                                idle = stats.idle,
+                                maximum = stats.maximum,
+                                "hybrid SQL pool"
+                            );
+                        }
+                    }
+                });
+            }
+            if cli.database_url.as_deref().is_some_and(|database_url| {
+                database_url.starts_with("postgres://") || database_url.starts_with("postgresql://")
+            }) {
+                app_state.leases = Arc::new(aos_hub_core::lease::DatabasePublishLease::new(
+                    Arc::clone(&app_state.db),
+                ));
+            }
             app_state.container_rollout = aos_hub_core::container_rollout::ContainerRollout {
                 pull: oci_pull_enabled,
                 push: oci_push_enabled,
@@ -729,7 +917,7 @@ async fn main() -> Result<()> {
                     trusted_proxy: app_state.trusted_proxy,
                 });
             }
-            app_state.image_snapshots = Some(image_snapshots);
+            app_state.image_snapshots = image_snapshots;
             if let Some(snapshots) = app_state.image_snapshots.clone() {
                 let snapshot_db = Arc::clone(&app_state.db);
                 tokio::spawn(async move {
@@ -770,29 +958,37 @@ async fn main() -> Result<()> {
                 app_state.secret_versions =
                     aos_hub::coreports::load_secret_version_manifest(&path)?;
             }
-            let index_surfaces = Arc::new(
-                aos_hub::coreports::HubSurfaceProvider::new(
-                    Arc::clone(&app_state.db),
-                    app_state.http.clone(),
-                    app_state.image_snapshots.clone(),
-                )
-                .with_credentials(Arc::clone(&app_state.secret_versions))
-                .for_image_indexing(),
-            );
+            let index_surfaces: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
+                if let Some((_, _, work)) = &hybrid_runtime {
+                    Arc::new(aos_hub::storage_work::HybridSurfaceProvider::new(
+                        Arc::clone(&app_state.db),
+                        Arc::clone(work),
+                    ))
+                } else {
+                    Arc::new(
+                        aos_hub::coreports::HubSurfaceProvider::new(
+                            Arc::clone(&app_state.db),
+                            app_state.http.clone(),
+                            app_state.image_snapshots.clone(),
+                        )
+                        .with_credentials(Arc::clone(&app_state.secret_versions))
+                        .for_image_indexing(),
+                    )
+                };
             index_all(&app_state.db, index_surfaces.as_ref()).await;
-            prune_expired_invitation_secrets(&app_state.db).await;
-
             if reindex_interval > 0 {
                 let db = Arc::clone(&app_state.db);
                 let index_surfaces = Arc::clone(&index_surfaces);
                 tokio::spawn(async move {
                     let mut tick =
                         tokio::time::interval(std::time::Duration::from_secs(reindex_interval));
-                    tick.tick().await; // first tick fires immediately; we already indexed
+                    tick.tick().await;
                     loop {
                         tick.tick().await;
                         index_all(&db, index_surfaces.as_ref()).await;
-                        sync_due_mirrors(&db, now_secs()).await;
+                        if !hybrid {
+                            sync_due_mirrors(&db, now_secs()).await;
+                        }
                         prune_expired_invitation_secrets(&db).await;
                         match aos_hub::export::purge_expired_orgs(&db, now_secs()).await {
                             Ok(purged) => {
@@ -807,6 +1003,7 @@ async fn main() -> Result<()> {
                     }
                 });
             }
+            prune_expired_invitation_secrets(&app_state.db).await;
             let endpoint = std::env::var("HUB_DNS_JSON_ENDPOINT")
                 .context("HUB_DNS_JSON_ENDPOINT is required for domain verification")?;
             let tls_verifier = aos_hub_core::topology_probe::DomainTlsProbeVerifier::new();
@@ -916,24 +1113,293 @@ async fn main() -> Result<()> {
             if has_route_adapter {
                 controller = controller.with_route_observer(Arc::new(route_adapters));
             }
-            let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
-                Arc::clone(&app_state.db),
-                Arc::new(
-                    aos_hub::coreports::HubSurfaceProvider::new(
+            if !hybrid {
+                let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
+                    Arc::clone(&app_state.db),
+                    Arc::new(
+                        aos_hub::coreports::HubSurfaceProvider::new(
+                            Arc::clone(&app_state.db),
+                            app_state.http.clone(),
+                            app_state.image_snapshots.clone(),
+                        )
+                        .with_credentials(Arc::clone(&app_state.secret_versions)),
+                    ),
+                )
+                .with_writes(Arc::new(
+                    aos_hub::coreports::HubSurfaceWriteProvider::new(
                         Arc::clone(&app_state.db),
+                        app_state.http.clone(),
+                    )
+                    .with_credentials(Arc::clone(&app_state.secret_versions)),
+                ));
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = placement_scans.run_due(5).await {
+                            tracing::warn!(
+                                error = %format!("{error:#}"),
+                                "placement scan controller pass failed"
+                            );
+                        }
+                    }
+                });
+                let deletion_controller =
+                    aos_hub_core::gc_controller::CacheGcDeletionController::new(
+                        Arc::clone(&app_state.db),
+                        Arc::new(
+                            aos_hub::coreports::HubSurfaceWriteProvider::new(
+                                Arc::clone(&app_state.db),
+                                app_state.http.clone(),
+                            )
+                            .with_credentials(Arc::clone(&app_state.secret_versions)),
+                        ),
+                    );
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = deletion_controller.run_due(now_secs(), 100).await {
+                            tracing::warn!(
+                                error = %format!("{error:#}"),
+                                "physical cache deletion controller pass failed"
+                            );
+                        }
+                    }
+                });
+                let inventory_db = Arc::clone(&app_state.db);
+                let inventory_surfaces = Arc::new(
+                    aos_hub::coreports::HubSurfaceProvider::new(
+                        Arc::clone(&inventory_db),
                         app_state.http.clone(),
                         app_state.image_snapshots.clone(),
                     )
                     .with_credentials(Arc::clone(&app_state.secret_versions)),
-                ),
-            )
-            .with_writes(Arc::new(
-                aos_hub::coreports::HubSurfaceWriteProvider::new(
-                    Arc::clone(&app_state.db),
-                    app_state.http.clone(),
+                );
+                let inventory_writers = Arc::new(
+                    aos_hub::coreports::HubSurfaceWriteProvider::new(
+                        Arc::clone(&inventory_db),
+                        app_state.http.clone(),
+                    )
+                    .with_credentials(Arc::clone(&app_state.secret_versions)),
+                );
+                let oci_recovery_writers: Arc<
+                    dyn aos_hub_core::surface_write::SurfaceWriteProvider,
+                > = if let Some((_, _, work)) = &hybrid_runtime {
+                    Arc::new(aos_hub::storage_work::HybridSurfaceWrites::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(work),
+                    ))
+                } else {
+                    inventory_writers.clone()
+                };
+                let conditional_delete_probes =
+                    aos_hub_core::conditional_delete_probe::ConditionalDeleteProbeController::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces)
+                            as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+                        Arc::clone(&inventory_writers)
+                            as Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>,
+                    );
+                if oci_gc_enabled {
+                    spawn_oci_provider_inventory(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces)
+                            as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+                        "native-oci-inventory",
+                        "native-inventory",
+                    );
+                }
+                let oci_gc_controller =
+                    aos_hub_core::oci_gc_controller::OciGcDeletionController::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces)
+                            as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+                        Arc::clone(&inventory_writers)
+                            as Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>,
+                    );
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = aos_hub_core::oci::recover_expired_oci_work(
+                            &inventory_db,
+                            oci_recovery_writers.as_ref(),
+                            now_secs(),
+                            100,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "expired OCI work recovery failed");
+                        }
+                        if let Err(error) = aos_hub_core::cache_scan::reap_due_cache_tombstones(
+                            &inventory_db,
+                            now_secs(),
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "cache tombstone reap failed");
+                        }
+                        if let Err(error) = aos_hub_core::cache_scan::recover_expired_cache_writes(
+                            &inventory_db,
+                            inventory_surfaces.as_ref(),
+                            inventory_writers.as_ref(),
+                            now_secs(),
+                            aos_hub_core::cache_scan::MAX_CLEANUP_ITEMS_PER_PASS,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "expired cache write recovery failed");
+                        }
+                        if oci_gc_enabled {
+                            if let Err(error) = oci_gc_controller
+                                .run_due("native-oci-gc", now_secs(), 100)
+                                .await
+                            {
+                                tracing::warn!(error = %format!("{error:#}"), "OCI GC deletion controller pass failed");
+                            }
+                            if let Err(error) =
+                                conditional_delete_probes.run_due(now_secs(), 10).await
+                            {
+                                tracing::warn!(error = %format!("{error:#}"), "conditional-delete capability probe failed");
+                            }
+                        }
+                        let caches = match inventory_db.list_binary_caches().await {
+                            Ok(caches) => caches,
+                            Err(error) => {
+                                tracing::warn!(error = %format!("{error:#}"), "listing cache inventories failed");
+                                continue;
+                            }
+                        };
+                        for cache in caches
+                            .into_iter()
+                            .filter(|cache| cache.deleted_at.is_none())
+                        {
+                            if let Err(error) = aos_hub_core::cache_scan::rescan_cache(
+                                &inventory_db,
+                                inventory_surfaces.as_ref(),
+                                &cache,
+                            )
+                            .await
+                            {
+                                tracing::warn!(cache = %cache.slug, error = %format!("{error:#}"), "cache inventory pass failed");
+                            }
+                        }
+                    }
+                });
+            }
+            if let Some((_, _, work)) = &hybrid_runtime {
+                let inventory_db = Arc::clone(&app_state.db);
+                let inventory_surfaces: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
+                    Arc::new(aos_hub::storage_work::HybridSurfaceProvider::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(work),
+                    ));
+                let inventory_writers: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> =
+                    Arc::new(aos_hub::storage_work::HybridSurfaceWrites::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(work),
+                    ));
+                let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
+                    Arc::clone(&inventory_db),
+                    Arc::clone(&inventory_surfaces),
                 )
-                .with_credentials(Arc::clone(&app_state.secret_versions)),
-            ));
+                .with_writes(Arc::clone(&inventory_writers));
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = placement_scans.run_due(5).await {
+                            tracing::warn!(
+                                error = %format!("{error:#}"),
+                                "hybrid placement scan controller pass failed"
+                            );
+                        }
+                    }
+                });
+
+                if oci_gc_enabled {
+                    spawn_oci_provider_inventory(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces),
+                        "hybrid-oci-inventory",
+                        "hybrid-inventory",
+                    );
+                }
+                let deletion_controller =
+                    aos_hub_core::gc_controller::CacheGcDeletionController::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_writers),
+                    );
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = deletion_controller.run_due(now_secs(), 100).await {
+                            tracing::warn!(error = %format!("{error:#}"), "hybrid physical cache deletion pass failed");
+                        }
+                    }
+                });
+                let conditional_delete_probes =
+                    aos_hub_core::conditional_delete_probe::ConditionalDeleteProbeController::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces),
+                        Arc::clone(&inventory_writers),
+                    );
+                let oci_gc_controller =
+                    aos_hub_core::oci_gc_controller::OciGcDeletionController::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces),
+                        Arc::clone(&inventory_writers),
+                    );
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = aos_hub_core::cache_scan::reap_due_cache_tombstones(
+                            &inventory_db,
+                            now_secs(),
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "cache tombstone reap failed");
+                        }
+                        if oci_gc_enabled {
+                            if let Err(error) = oci_gc_controller
+                                .run_due("hybrid-oci-gc", now_secs(), 100)
+                                .await
+                            {
+                                tracing::warn!(error = %format!("{error:#}"), "hybrid OCI GC deletion pass failed");
+                            }
+                        }
+                        if let Err(error) = conditional_delete_probes.run_due(now_secs(), 10).await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "hybrid conditional-delete probe failed");
+                        }
+                        let caches = match inventory_db.list_binary_caches().await {
+                            Ok(caches) => caches,
+                            Err(error) => {
+                                tracing::warn!(error = %format!("{error:#}"), "listing hybrid cache inventories failed");
+                                continue;
+                            }
+                        };
+                        for cache in caches
+                            .into_iter()
+                            .filter(|cache| cache.deleted_at.is_none())
+                        {
+                            if let Err(error) = aos_hub_core::cache_scan::rescan_cache(
+                                &inventory_db,
+                                inventory_surfaces.as_ref(),
+                                &cache,
+                            )
+                            .await
+                            {
+                                tracing::warn!(cache = %cache.slug, error = %format!("{error:#}"), "hybrid cache inventory pass failed");
+                            }
+                        }
+                    }
+                });
+            }
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
                 loop {
@@ -943,156 +1409,6 @@ async fn main() -> Result<()> {
                             error = %format!("{error:#}"),
                             "domain probe controller pass failed"
                         );
-                    }
-                    if let Err(error) = placement_scans.run_due(5).await {
-                        tracing::warn!(
-                            error = %format!("{error:#}"),
-                            "placement scan controller pass failed"
-                        );
-                    }
-                }
-            });
-            let deletion_controller = aos_hub_core::gc_controller::CacheGcDeletionController::new(
-                Arc::clone(&app_state.db),
-                Arc::new(
-                    aos_hub::coreports::HubSurfaceWriteProvider::new(
-                        Arc::clone(&app_state.db),
-                        app_state.http.clone(),
-                    )
-                    .with_credentials(Arc::clone(&app_state.secret_versions)),
-                ),
-            );
-            tokio::spawn(async move {
-                let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
-                loop {
-                    tick.tick().await;
-                    if let Err(error) = deletion_controller.run_due(now_secs(), 100).await {
-                        tracing::warn!(
-                            error = %format!("{error:#}"),
-                            "physical cache deletion controller pass failed"
-                        );
-                    }
-                }
-            });
-            let inventory_db = Arc::clone(&app_state.db);
-            let inventory_surfaces = Arc::new(
-                aos_hub::coreports::HubSurfaceProvider::new(
-                    Arc::clone(&inventory_db),
-                    app_state.http.clone(),
-                    app_state.image_snapshots.clone(),
-                )
-                .with_credentials(Arc::clone(&app_state.secret_versions)),
-            );
-            let inventory_writers = Arc::new(
-                aos_hub::coreports::HubSurfaceWriteProvider::new(
-                    Arc::clone(&inventory_db),
-                    app_state.http.clone(),
-                )
-                .with_credentials(Arc::clone(&app_state.secret_versions)),
-            );
-            let conditional_delete_probes =
-                aos_hub_core::conditional_delete_probe::ConditionalDeleteProbeController::new(
-                    Arc::clone(&inventory_db),
-                    Arc::clone(&inventory_surfaces)
-                        as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
-                    Arc::clone(&inventory_writers)
-                        as Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>,
-                );
-            let oci_provider_inventory =
-                aos_hub_core::oci_inventory_controller::OciProviderInventoryController::new(
-                    Arc::clone(&inventory_db),
-                    Arc::clone(&inventory_surfaces)
-                        as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
-                );
-            let oci_gc_controller = aos_hub_core::oci_gc_controller::OciGcDeletionController::new(
-                Arc::clone(&inventory_db),
-                Arc::clone(&inventory_surfaces) as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
-                Arc::clone(&inventory_writers)
-                    as Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>,
-            );
-            tokio::spawn(async move {
-                let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
-                let mut oci_inventory_continuation: Option<String> = None;
-                loop {
-                    tick.tick().await;
-                    if let Err(error) = aos_hub_core::oci::recover_expired_oci_work(
-                        &inventory_db,
-                        inventory_writers.as_ref(),
-                        now_secs(),
-                        100,
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %format!("{error:#}"), "expired OCI work recovery failed");
-                    }
-                    if let Err(error) = aos_hub_core::cache_scan::reap_due_cache_tombstones(
-                        &inventory_db,
-                        now_secs(),
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %format!("{error:#}"), "cache tombstone reap failed");
-                    }
-                    if let Err(error) = aos_hub_core::cache_scan::recover_expired_cache_writes(
-                        &inventory_db,
-                        inventory_surfaces.as_ref(),
-                        inventory_writers.as_ref(),
-                        now_secs(),
-                        aos_hub_core::cache_scan::MAX_CLEANUP_ITEMS_PER_PASS,
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %format!("{error:#}"), "expired cache write recovery failed");
-                    }
-                    if oci_gc_enabled {
-                        let inventory_now = now_secs();
-                        match oci_provider_inventory
-                            .run_due_bounded(
-                                "native-oci-inventory",
-                                &format!("native-inventory-{}", inventory_now / 60),
-                                inventory_now,
-                                100,
-                                oci_inventory_continuation.as_deref(),
-                                aos_hub_core::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET,
-                            )
-                            .await
-                        {
-                            Ok(stats) => oci_inventory_continuation = stats.continuation,
-                            Err(error) => {
-                                tracing::warn!(error = %format!("{error:#}"), "OCI provider inventory pass failed");
-                            }
-                        }
-                        if let Err(error) = oci_gc_controller
-                            .run_due("native-oci-gc", now_secs(), 100)
-                            .await
-                        {
-                            tracing::warn!(error = %format!("{error:#}"), "OCI GC deletion controller pass failed");
-                        }
-                        if let Err(error) = conditional_delete_probes.run_due(now_secs(), 10).await
-                        {
-                            tracing::warn!(error = %format!("{error:#}"), "conditional-delete capability probe failed");
-                        }
-                    }
-                    let caches = match inventory_db.list_binary_caches().await {
-                        Ok(caches) => caches,
-                        Err(error) => {
-                            tracing::warn!(error = %format!("{error:#}"), "listing cache inventories failed");
-                            continue;
-                        }
-                    };
-                    for cache in caches
-                        .into_iter()
-                        .filter(|cache| cache.deleted_at.is_none())
-                    {
-                        if let Err(error) = aos_hub_core::cache_scan::rescan_cache(
-                            &inventory_db,
-                            inventory_surfaces.as_ref(),
-                            &cache,
-                        )
-                        .await
-                        {
-                            tracing::warn!(cache = %cache.slug, error = %format!("{error:#}"), "cache inventory pass failed");
-                        }
                     }
                 }
             });
@@ -1123,26 +1439,35 @@ async fn main() -> Result<()> {
                     ingress_kind: "hub".to_owned(),
                     tls_identity: Some(aos_hub_core::db::InboundEndpointHost::Domain(server_name)),
                 };
+                let app = match hybrid_runtime {
+                    Some((deployment_id, key, work)) => {
+                        aos_hub::server::router_with_hybrid_ingress(state, key, deployment_id, work)
+                            .await
+                    }
+                    None => aos_hub::server::router_with_transport(state, Some(transport)).await,
+                };
                 axum::serve(
                     tls_listener,
-                    aos_hub::server::router_with_transport(state, Some(transport))
-                        .await
-                        .into_make_service_with_connect_info::<aos_hub::native_tls::NativeTlsPeer>(
-                        ),
+                    app.into_make_service_with_connect_info::<aos_hub::native_tls::NativeTlsPeer>(),
                 )
                 .await?;
             } else {
+                let app = match hybrid_runtime {
+                    Some((deployment_id, key, work)) => {
+                        aos_hub::server::router_with_hybrid_ingress(state, key, deployment_id, work)
+                            .await
+                    }
+                    None => router(state).await,
+                };
                 axum::serve(
                     listener,
-                    router(state)
-                        .await
-                        .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                    app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
                 )
                 .await?;
             }
         }
         Command::Index { slug } => {
-            let db = Arc::new(open_db(&cli.root, &cli.target).await?);
+            let db = Arc::new(open_db(&cli.root, &cli.target, cli.database_url.as_deref()).await?);
             let root = resolve_root(cli.root.clone(), false)?;
             let image_snapshots = aos_hub::image_snapshot::ImageSnapshotStore::open(&root)?;
             image_snapshots.load_tracked(&db).await?;
@@ -1196,8 +1521,13 @@ async fn main() -> Result<()> {
         } => {
             // `open_db` opens and migrates the local database. Worker HubDb
             // bootstrap is handled by the Worker command family.
-            let db = open_db(&cli.root, &cli.target).await?;
-            println!("schema migrated ({})", cli.target);
+            let db = open_db(&cli.root, &cli.target, cli.database_url.as_deref()).await?;
+            let database = if cli.database_url.is_some() {
+                "configured native database"
+            } else {
+                "local SQLite database"
+            };
+            println!("schema migrated ({database})");
             if let Some(email) = root_email {
                 let plaintext = read_password(root_password, root_password_stdin)?;
                 let (email, id) = ensure_root(&db, &email, &plaintext).await?;
@@ -1209,7 +1539,7 @@ async fn main() -> Result<()> {
             password,
             password_stdin,
         } => {
-            let db = open_db(&cli.root, &cli.target).await?;
+            let db = open_db(&cli.root, &cli.target, cli.database_url.as_deref()).await?;
             let plaintext = read_password(password, password_stdin)?;
             let (email, id) = ensure_root(&db, &email, &plaintext).await?;
             println!("reset root password for '{email}' (user id {id})");
@@ -1290,6 +1620,20 @@ fn read_password(password: Option<String>, from_stdin: bool) -> Result<String> {
 async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> Result<()> {
     use aos_hub::cloudflare;
 
+    if let WorkerCommand::RenderHybridConfig(args) = &command {
+        let config = cloudflare::HybridDeployConfig {
+            name: args.name.clone(),
+            bucket: args.bucket.clone(),
+            deployment_id: args.deployment_id.clone(),
+            external_url: args.external_url.clone(),
+            native_origin_url: args.native_origin_url.clone(),
+            custom_domains: args.domains.clone(),
+            serve_assets: args.serve_assets,
+        };
+        print!("{}", cloudflare::render_hybrid_wrangler_toml(&config)?);
+        return Ok(());
+    }
+
     // `bootstrap-root` is a direct seal-authenticated HTTP call to the deployed
     // Worker's `HubDb` endpoint — it needs no provider assets/auth, so handle it
     // before the provider/asset setup.
@@ -1342,7 +1686,8 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         // Handled above with an early return.
         WorkerCommand::BootstrapRoot(_)
         | WorkerCommand::BackupBookmark(_)
-        | WorkerCommand::RestoreBookmark(_) => Provider::Cloudflare,
+        | WorkerCommand::RestoreBookmark(_)
+        | WorkerCommand::RenderHybridConfig(_) => Provider::Cloudflare,
     };
     // Only Cloudflare is implemented; the match documents the extension point
     // for future providers (each would resolve its own assets + auth).
@@ -1358,7 +1703,8 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         // Handled by the early return at the top of this function.
         WorkerCommand::BootstrapRoot(_)
         | WorkerCommand::BackupBookmark(_)
-        | WorkerCommand::RestoreBookmark(_) => {}
+        | WorkerCommand::RestoreBookmark(_)
+        | WorkerCommand::RenderHybridConfig(_) => {}
         WorkerCommand::Provision(args) => {
             let cfg = provision_worker(&assets, args).await?;
             println!("provisioned: R2 {}, KV id {}", cfg.bucket, cfg.kv_id);
@@ -1564,6 +1910,52 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Drains bounded OCI inventory continuations without delaying each page batch for a minute.
+fn spawn_oci_provider_inventory(
+    db: Arc<Database>,
+    surfaces: Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+    collector_id: &'static str,
+    idempotency_prefix: &'static str,
+) {
+    tokio::spawn(async move {
+        let controller =
+            aos_hub_core::oci_inventory_controller::OciProviderInventoryController::new(
+                db, surfaces,
+            );
+        let mut continuation: Option<String> = None;
+
+        loop {
+            let now = now_secs();
+            let delay_seconds = match controller
+                .run_due_bounded(
+                    collector_id,
+                    &format!("{idempotency_prefix}-{}", now / 60),
+                    now,
+                    100,
+                    continuation.as_deref(),
+                    aos_hub_core::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET,
+                )
+                .await
+            {
+                Ok(stats) => {
+                    continuation = stats.continuation;
+                    if continuation.is_some() {
+                        1
+                    } else {
+                        60
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(error = %format!("{error:#}"), "OCI provider inventory pass failed");
+                    5
+                }
+            };
+
+            tokio::time::sleep(std::time::Duration::from_secs(delay_seconds)).await;
+        }
+    });
+}
+
 /// Runs one bounded invitation-credential retention pass.
 async fn prune_expired_invitation_secrets(db: &Database) {
     if let Err(error) = db.prune_expired_invitation_secrets(now_secs(), 1_000).await {
@@ -1691,13 +2083,21 @@ fn resolve_root(root: Option<PathBuf>, dev: bool) -> Result<PathBuf> {
     Ok(root)
 }
 
-/// Opens the native database for the closed `local` target.
+/// Opens the configured native database for the closed `local` target.
 ///
 /// # Errors
 ///
-/// Returns an error for an unknown target or if the local file cannot be opened.
-async fn open_db(root: &Option<PathBuf>, target: &str) -> Result<Database> {
+/// Returns an error for an unknown target, unsupported database URL, or failed
+/// connection or migration.
+async fn open_db(
+    root: &Option<PathBuf>,
+    target: &str,
+    database_url: Option<&str>,
+) -> Result<Database> {
     if target == "local" {
+        if let Some(database_url) = database_url {
+            return Database::connect(database_url).await;
+        }
         let root = resolve_root(root.clone(), false)?;
         return Database::open(&root.join("hub.db")).await;
     }

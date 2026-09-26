@@ -145,6 +145,10 @@ mod frozen_surface_access;
 #[cfg(target_arch = "wasm32")]
 pub mod handlers;
 #[cfg(target_arch = "wasm32")]
+mod hybrid;
+#[cfg(target_arch = "wasm32")]
+pub mod hybrid_object;
+#[cfg(target_arch = "wasm32")]
 pub mod indexer;
 // Pure (no `worker`/wasm dependency) DO-SQLite placeholder translation, so it
 // is unit-tested on the native target too — see [`placeholder`].
@@ -468,6 +472,19 @@ mod entry {
     const HUB_RELEASE_EVIDENCE_CONFIG: &str = "HUB_RELEASE_EVIDENCE_CONFIG";
     /// Staged request-execution cutover: `off`, `read`, or `on`.
     const HUB_REQUEST_SHARDING: &str = "HUB_REQUEST_SHARDING";
+    /// Explicit deployment topology: `worker_only` or `hybrid`.
+    const HUB_TOPOLOGY: &str = "HUB_TOPOLOGY";
+
+    fn hybrid_mode(env: &Env) -> Result<bool> {
+        match env.var(HUB_TOPOLOGY).map(|value| value.to_string()) {
+            Err(_) => Ok(false),
+            Ok(value) if value == "worker_only" => Ok(false),
+            Ok(value) if value == "hybrid" => Ok(true),
+            Ok(value) => Err(worker::Error::RustError(format!(
+                "{HUB_TOPOLOGY} must be worker_only or hybrid; got {value:?}"
+            ))),
+        }
+    }
     /// Optional fail-closed OCI Distribution pull rollout flag.
     const HUB_OCI_PULL_ENABLED: &str = "HUB_OCI_PULL_ENABLED";
     /// Optional fail-closed OCI Distribution push rollout flag.
@@ -1179,6 +1196,22 @@ mod entry {
         // errors land in Workers Logs (idempotent; see `crate::tracinglog`).
         crate::tracinglog::init();
 
+        let hybrid = hybrid_mode(&env)?;
+        if hybrid && req.url()?.path() == DEPLOYMENT_ID_PATH {
+            if !matches!(req.method(), Method::Get | Method::Head) {
+                return Response::error("method not allowed", 405);
+            }
+            let expected = env.var(HUB_DEPLOYMENT_ID)?.to_string();
+            let response = crate::hybrid::proxy(req, &env).await?;
+            if response.status_code() != 200
+                || response.headers().get("x-aos-deployment-id")?.as_deref()
+                    != Some(expected.as_str())
+            {
+                return Response::error("hybrid origin deployment mismatch", 503);
+            }
+            return Ok(response);
+        }
+
         if req.url()?.path() == DEPLOYMENT_ID_PATH {
             if !matches!(req.method(), Method::Get | Method::Head) {
                 return Response::error("method not allowed", 405);
@@ -1210,6 +1243,10 @@ mod entry {
                 Ok(()) => Response::ok("ok"),
                 Err(error) => Response::error(format!("direct egress contract: {error:#}"), 500),
             };
+        }
+
+        if hybrid {
+            return crate::hybrid::fetch(req, &env).await;
         }
 
         let browse_target = anonymous_browse_target(&req)?;
@@ -1340,6 +1377,9 @@ mod entry {
     #[worker::event(scheduled)]
     async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
         crate::tracinglog::init();
+        if hybrid_mode(&env).unwrap_or(true) {
+            return;
+        }
         use aos_hub_core::jobs::Queue as _;
         let result = match crate::workerqueue::WorkerQueue::from_env(&env) {
             Ok(queue) => {
@@ -1368,6 +1408,11 @@ mod entry {
         _ctx: Context,
     ) -> Result<()> {
         crate::tracinglog::init();
+        if hybrid_mode(&env)? {
+            return Err(worker::Error::RustError(
+                "hybrid topology does not consume Worker-only jobs".into(),
+            ));
+        }
         #[derive(serde::Deserialize)]
         #[serde(untagged)]
         enum QueuedJobBody {

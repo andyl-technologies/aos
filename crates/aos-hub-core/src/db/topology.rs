@@ -2955,6 +2955,7 @@ impl Database {
                 )
                 .unchecked(),
                 reservation_statement.unchecked(),
+                // KEYTEXT64 casts keep nullable route IDs typed in PostgreSQL.
                 Statement::new(
                     "INSERT INTO routes (id, url_reservation_id, resource_version,
                  endpoint_id, endpoint_generation, endpoint_ingress_kind, consumer_scope_key,
@@ -2970,7 +2971,7 @@ impl Database {
                  SELECT ?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                    ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
                    ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?32
-                 WHERE (?33 IS NULL OR EXISTS (
+                 WHERE (CAST(?33 AS VARCHAR(64)) IS NULL OR EXISTS (
                    SELECT 1 FROM routes predecessor
                    WHERE predecessor.id = ?33 AND predecessor.resource_version = ?34
                      AND predecessor.enabled = 1
@@ -3024,7 +3025,7 @@ impl Database {
                 Statement::new(
                     "INSERT INTO route_oci_capabilities (route_id, serves_web, created_at)
                      SELECT ?1, ?2, ?3 WHERE ?4 = 1
-                       AND EXISTS (SELECT 1 FROM routes WHERE id = ?1)",
+                       AND EXISTS (SELECT 1 FROM routes WHERE id = CAST(?1 AS VARCHAR(64)))",
                     vals![id, spec.serves_web, now, spec.serves_oci],
                 )
                 .unchecked(),
@@ -3032,7 +3033,7 @@ impl Database {
                     "INSERT INTO route_replacements
                      (successor_route_id, predecessor_route_id,
                       predecessor_resource_version, created_at)
-                     SELECT ?1, ?2, ?3, ?4 WHERE ?2 IS NOT NULL
+                     SELECT ?1, ?2, ?3, ?4 WHERE CAST(?2 AS VARCHAR(64)) IS NOT NULL
                        AND EXISTS (SELECT 1 FROM routes WHERE id = ?1)",
                     vals![
                         id,
@@ -3108,6 +3109,7 @@ impl Database {
                     ],
                 )
                 .unchecked(),
+                // Absent gateway IDs need an explicit KEYTEXT64 type in PostgreSQL.
                 Statement::new(
                     "INSERT INTO gateway_scope_grant_pins
                      (pin_id, gateway_id, generation, consumer_scope_key,
@@ -3116,7 +3118,8 @@ impl Database {
                       resource_version)
                      SELECT ?1, ?2, ?3, ?4, grant_generation, 'active', 'route',
                        ?5, 1, ?6, 1 FROM gateway_revision_route_scopes
-                     WHERE ?2 IS NOT NULL AND gateway_id = ?2 AND generation = ?3
+                     WHERE CAST(?2 AS VARCHAR(64)) IS NOT NULL
+                       AND gateway_id = CAST(?2 AS VARCHAR(64)) AND generation = ?3
                        AND consumer_scope_key = ?4 AND state = 'active' AND ?7 = 1",
                     vals![
                         format!("gateway-pin:{}", Uuid::new_v4().simple()),
@@ -3160,6 +3163,7 @@ impl Database {
                     ],
                 )
                 .unchecked(),
+                // Public routes have no access boundary, so type that NULL explicitly.
                 Statement::new(
                     "INSERT INTO network_policy_serving_pins
                      (pin_id, boundary_id, revision, consumer_scope_key,
@@ -3173,7 +3177,8 @@ impl Database {
                      JOIN network_policy_revision_lifecycle l
                        ON l.boundary_id = s.boundary_id AND l.revision = ?3
                       AND l.state = 'active'
-                     WHERE ?2 IS NOT NULL AND s.boundary_id = ?2
+                     WHERE CAST(?2 AS VARCHAR(64)) IS NOT NULL
+                       AND s.boundary_id = CAST(?2 AS VARCHAR(64))
                        AND s.consumer_scope_key = ?4 AND s.state = 'active' AND ?9 = 1",
                     vals![
                         format!("boundary-pin:{}", Uuid::new_v4().simple()),

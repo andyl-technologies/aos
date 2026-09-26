@@ -72,7 +72,7 @@ impl Database {
                  JOIN registries registry ON registry.id = repository.registry_id
                  WHERE repository.id = ?4 AND repository.registry_id = ?5
                    AND repository.lifecycle_state = 'active'
-                   AND (?6 IS NULL OR EXISTS (SELECT 1 FROM oci_publication_sessions publication
+                   AND (CAST(?6 AS VARCHAR) IS NULL OR EXISTS (SELECT 1 FROM oci_publication_sessions publication
                      WHERE publication.id = ?6
                        AND publication.registry_id = repository.registry_id
                        AND publication.repository_id = repository.id
@@ -1506,7 +1506,7 @@ fn release_upload_statements(
         "AND upload.writer_id = ?2 AND upload.token_id = ?3
          AND upload.resource_version = ?4"
     } else {
-        "AND ?2 IS NULL AND ?3 IS NULL AND ?4 IS NULL"
+        "AND CAST(?2 AS VARCHAR) IS NULL AND CAST(?3 AS VARCHAR) IS NULL AND CAST(?4 AS BIGINT) IS NULL"
     };
     let eligible_states = if allow_completing {
         "upload.state IN('active', 'completing')"

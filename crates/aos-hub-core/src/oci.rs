@@ -800,7 +800,8 @@ impl RpcService {
             Err(_) => return unavailable_response("repository catalog is unavailable", head),
         };
         let private = resolved.access_policy_kind != "public"
-            || !(registry.visibility == "public" || registry.org_id.is_none());
+            || !(registry.visibility == "public" || registry.org_id.is_none())
+            || authorization.is_some();
         // A push-only rollout authorizes immutable blob/manifest HEAD probes
         // with the push grant, but those probes still use the read-side object
         // responder. Only protocol write operations enter the write handler.
@@ -996,6 +997,23 @@ impl RpcService {
             response.headers_mut().insert(name, value);
         }
         if *method == Method::HEAD && plan.status < 300 {
+            if self.hybrid_delivery {
+                let probe = crate::placement_read::head_verified_image_from_placements(
+                    &self.db,
+                    self.surface.as_ref(),
+                    registry_id,
+                    &object_key,
+                    &digest.encoded(),
+                    byte_size,
+                )
+                .await;
+                return match probe {
+                    Ok(PlacementReadOutcome::Found(_)) => response,
+                    Ok(PlacementReadOutcome::NotFound) | Err(_) => {
+                        unavailable_response("OCI object is temporarily unavailable", true)
+                    }
+                };
+            }
             let probe_range = (byte_size > 0).then_some((0, 0));
             let probe = crate::placement_read::stream_verified_image_from_placements(
                 &self.db,
@@ -1054,6 +1072,52 @@ impl RpcService {
                     return redirect;
                 }
             }
+        }
+        if self.hybrid_delivery {
+            use crate::hybrid_ingress::{
+                HybridDeliveryTarget, HybridPlannedDelivery, HYBRID_DELIVERY_HEADER,
+            };
+
+            let snapshot = crate::placement_read::head_verified_image_from_placements(
+                &self.db,
+                self.surface.as_ref(),
+                registry_id,
+                &object_key,
+                &digest.encoded(),
+                byte_size,
+            )
+            .await;
+            let Ok(PlacementReadOutcome::Found(snapshot)) = snapshot else {
+                return unavailable_response("OCI object is temporarily unavailable", false);
+            };
+            let content_type = plan.headers.get("content-type").cloned();
+            let cache_control = plan.headers.get("cache-control").cloned();
+            let (Some(content_type), Some(cache_control)) = (content_type, cache_control) else {
+                return unavailable_response("OCI response metadata is incomplete", false);
+            };
+            let target = HybridDeliveryTarget {
+                object_key: snapshot.value.object_key,
+                object_size: snapshot.value.size,
+                object_etag: snapshot.value.strong_etag,
+                content_type,
+                cache_control,
+                producer_document: false,
+                planned_response: Some(HybridPlannedDelivery {
+                    status: plan.status,
+                    start: range.start,
+                    end: range.end,
+                    headers: plan.headers,
+                }),
+            };
+            let encoded = match serde_json::to_vec(&target) {
+                Ok(bytes) => base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes),
+                Err(_) => return unavailable_response("OCI delivery grant is invalid", false),
+            };
+            return Response::builder()
+                .header(HYBRID_DELIVERY_HEADER, encoded)
+                .header(header::CACHE_CONTROL, "private, no-store")
+                .body(Body::empty())
+                .unwrap_or_else(|_| unavailable_response("OCI delivery grant is invalid", false));
         }
         let storage_range = (plan.status == StatusCode::PARTIAL_CONTENT.as_u16())
             .then_some((range.start, range.end));

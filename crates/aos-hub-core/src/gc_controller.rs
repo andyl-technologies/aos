@@ -202,7 +202,7 @@ impl CacheGcDeletionController {
             size: receipt.expected_size,
         };
         match deleter
-            .delete_if_matches(&receipt.object_key, &expected)
+            .delete_if_matches_claimed(&receipt.object_key, &expected, &receipt.request_id)
             .await
         {
             Ok(outcome @ SurfaceDeleteOutcome::Deleted { .. })

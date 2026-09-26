@@ -236,6 +236,59 @@ pub struct StreamedRead {
     pub snapshot_lease_id: Option<String>,
 }
 
+/// Size and strong version observed together for one delivery object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceDeliveryHead {
+    /// Full object size in bytes.
+    pub size: u64,
+    /// Provider-issued strong entity tag for the same metadata snapshot.
+    pub strong_etag: String,
+}
+
+/// Bounded documentation fields derived and verified beside object storage.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentationInspection {
+    /// Artifact identities repeated inside the canonical documentation.
+    pub identity: aos_doc_model::DocumentationIdentity,
+    /// Deterministic search rows extracted from the verified document.
+    pub search: Vec<aos_doc_model::SearchDocument>,
+    /// Structural option paths used to build the release-wide option tree.
+    pub options: Vec<DocumentationOptionInspection>,
+}
+
+/// One compact option projection from canonical package documentation.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentationOptionInspection {
+    /// Stable display path used as the option key.
+    pub key: String,
+    /// Literal and wildcard segments preserved without path reinterpretation.
+    pub path: Vec<aos_doc_model::PathSegment>,
+    /// Human-readable type used in option summaries.
+    pub type_signature: String,
+}
+
+impl DocumentationInspection {
+    /// Extracts index fields from a verified canonical document.
+    #[must_use]
+    pub fn from_document(document: &aos_doc_model::PackageDocumentation) -> Self {
+        Self {
+            identity: document.identity.clone(),
+            search: document.search_documents(),
+            options: document
+                .options
+                .iter()
+                .map(|option| DocumentationOptionInspection {
+                    key: option.display_path.clone(),
+                    path: option.path.clone(),
+                    type_signature: option.type_signature.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Placement-scoped identity evidence collected from one physical object.
 ///
 /// The SHA-256 digest and size are derived from the bytes returned by that
@@ -264,6 +317,19 @@ pub struct SurfaceInventoryChunk {
     pub strong_etag: String,
 }
 
+/// One exact inventory range hashed into a portable SHA-256 continuation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceInventoryHashChunk {
+    /// Full object size observed by the ranged response.
+    pub total: u64,
+    /// Inclusive byte range hashed by the provider adapter.
+    pub range: (u64, u64),
+    /// Provider-issued strong tag for the ranged object snapshot.
+    pub strong_etag: String,
+    /// SHA-256 state after the exact range.
+    pub sha256_state: crate::db::OciSha256State,
+}
+
 /// Read access to a registry surface by relative path (the "Blobs" read port).
 ///
 /// Mirrors the native hub's surface reader so the relocated read logic (facade,
@@ -281,6 +347,108 @@ pub trait SurfaceFetch: BackendBounds {
     ///
     /// Returns an error for IO/transport failures other than absence.
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>>;
+
+    /// Observes one exact object version for a hybrid delivery grant.
+    ///
+    /// The provider must obtain size and strong ETag from the same HEAD. Only
+    /// storage adapters that can do so implement this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this adapter cannot issue grants or HEAD fails.
+    async fn delivery_head(&self, _path: &str) -> Result<Option<SurfaceDeliveryHead>> {
+        bail!("this surface does not support hybrid delivery grants")
+    }
+
+    /// Whether Git objects are decoded beside storage through a typed query.
+    ///
+    /// Indexers use this to skip eager bundle hydration in hybrid mode. Local
+    /// adapters retain their existing bundle preload and loose-object path.
+    fn storage_local_git_inspection(&self) -> bool {
+        false
+    }
+
+    /// Whether bounded SHA-256 verification runs beside object storage.
+    ///
+    /// The image indexer uses this to avoid transferring signed image bodies
+    /// to the control-plane runtime.
+    fn storage_local_sha256(&self) -> bool {
+        false
+    }
+
+    /// Whether documentation NARs are parsed beside object storage.
+    fn storage_local_documentation_inspection(&self) -> bool {
+        false
+    }
+
+    /// Returns only verified index fields for one signed documentation artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported inspection, invalid bytes, or transport
+    /// failure. The selected artifact and package identity must match the
+    /// signed release metadata supplied by the caller.
+    async fn inspect_package_documentation(
+        &self,
+        _package_name: &str,
+        _package_version: &str,
+        _platform: &str,
+        _artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+    ) -> Result<DocumentationInspection> {
+        bail!("this surface does not support storage-local documentation inspection")
+    }
+
+    /// Reads one verified Git object through a storage-local inspection port.
+    ///
+    /// Only providers returning `true` from
+    /// [`storage_local_git_inspection`](Self::storage_local_git_inspection)
+    /// may implement this path. The caller rehashes the decoded content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported inspection, transport failure, or an
+    /// invalid Git object projection.
+    async fn inspect_git_object(
+        &self,
+        _oid: aos_registry_surface::object::Oid,
+    ) -> Result<Option<(aos_registry_surface::object::ObjectKind, Vec<u8>)>> {
+        bail!("this surface does not support storage-local Git inspection")
+    }
+
+    /// Reads several verified Git objects in request order beside storage.
+    ///
+    /// Adapters without a batch protocol use their single-object inspection
+    /// path. Callers verify every returned OID before retaining it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for transport failure or an invalid projection.
+    async fn inspect_git_objects(
+        &self,
+        oids: &[aos_registry_surface::object::Oid],
+    ) -> Result<Vec<Option<(aos_registry_surface::object::ObjectKind, Vec<u8>)>>> {
+        let mut objects = Vec::with_capacity(oids.len());
+        for oid in oids {
+            objects.push(self.inspect_git_object(*oid).await?);
+        }
+        Ok(objects)
+    }
+
+    /// Reads a bounded OCI range needed to inspect legacy layer metadata.
+    ///
+    /// This separate port keeps public blob delivery on the storage Worker in
+    /// hybrid deployments. Local readers use their ordinary ranged stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported or invalid range or backend failure.
+    async fn inspect_oci_range(
+        &self,
+        path: &str,
+        range: (u64, u64),
+    ) -> Result<Option<StreamedRead>> {
+        self.fetch_stream(path, Some(range)).await
+    }
 
     /// Stream one surface path, optionally just the inclusive byte `range`.
     ///
@@ -420,6 +588,24 @@ pub trait SurfaceFetch: BackendBounds {
             "this surface ({}) does not support listing",
             self.describe()
         )
+    }
+
+    /// Lists a page using a provider-side prefix when the backend supports it.
+    ///
+    /// A backend may ignore the hint and return a full-surface page. Callers
+    /// must still validate and filter every returned path. The cursor belongs
+    /// to the same prefix walk for the lifetime of one inventory generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when listing fails or the backend rejects the cursor.
+    async fn list_page_with_prefix(
+        &self,
+        _prefix: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<SurfaceListPage> {
+        self.list_page(cursor, limit).await
     }
 
     /// Returns a backend-issued strong entity tag for one object, when available.
@@ -586,6 +772,46 @@ pub trait SurfaceFetch: BackendBounds {
         }))
     }
 
+    /// Hashes one bounded inventory range, returning only resumable state.
+    ///
+    /// Local adapters use their bounded range read. A remote storage adapter
+    /// overrides this method so object bytes remain beside the provider.
+    ///
+    /// # Errors
+    /// Returns an error for a malformed prior state or a failed range read.
+    async fn inventory_hash_chunk_bounded(
+        &self,
+        path: &str,
+        offset: u64,
+        expected_total: u64,
+        maximum_bytes: u64,
+        strong_etag: &str,
+        mut sha256_state: crate::db::OciSha256State,
+    ) -> Result<Option<SurfaceInventoryHashChunk>> {
+        sha256_state.validate()?;
+        anyhow::ensure!(
+            sha256_state.total_bytes == offset,
+            "inventory hash state differs from the requested offset"
+        );
+        let Some(chunk) = self
+            .inventory_chunk_bounded(path, offset, expected_total, maximum_bytes)
+            .await?
+        else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            chunk.strong_etag == strong_etag,
+            "inventory hash range changed its strong entity tag"
+        );
+        sha256_state.update(&chunk.bytes)?;
+        Ok(Some(SurfaceInventoryHashChunk {
+            total: chunk.total,
+            range: chunk.range,
+            strong_etag: chunk.strong_etag,
+            sha256_state,
+        }))
+    }
+
     /// A human-readable description of the source (for health/audit text).
     fn describe(&self) -> String;
 }
@@ -629,6 +855,16 @@ pub trait OriginFetch: BackendBounds {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceProvider: BackendBounds {
+    /// Whether readers from this provider support storage-local Git inspection.
+    fn storage_local_git_inspection(&self) -> bool {
+        false
+    }
+
+    /// Whether readers from this provider verify SHA-256 beside object storage.
+    fn storage_local_sha256(&self) -> bool {
+        false
+    }
+
     /// Opens a reader rooted at one explicit physical placement.
     ///
     /// Selection remains in shared topology logic; adapters only translate the

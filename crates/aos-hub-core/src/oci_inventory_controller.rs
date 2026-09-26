@@ -34,6 +34,7 @@ const MAX_OCI_INVENTORY_OBJECT_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_PLACEMENTS_PER_PASS: usize = 100;
 const INVENTORY_CLAIM_LEASE_SECONDS: i64 = 60 * 60;
 const INVENTORY_PAGE_SIZE: usize = 1;
+const OCI_BLOB_PREFIX: &str = "oci/blobs/sha256/";
 
 /// Native provider work admitted by one maintenance dispatch.
 pub const NATIVE_OCI_INVENTORY_DISPATCH_BUDGET: OciInventoryDispatchBudget =
@@ -612,7 +613,11 @@ impl OciProviderInventoryController {
             let requested_cursor = cursor.clone();
             let Some(page) = before_dispatch_deadline(
                 dispatch,
-                fetch.list_page(requested_cursor.as_deref(), page_limit),
+                fetch.list_page_with_prefix(
+                    OCI_BLOB_PREFIX,
+                    requested_cursor.as_deref(),
+                    page_limit,
+                ),
             )
             .await?
             else {
@@ -778,11 +783,13 @@ impl OciProviderInventoryController {
                 .await?;
             let Some(chunk) = before_dispatch_deadline(
                 dispatch,
-                fetch.inventory_chunk_bounded(
+                fetch.inventory_hash_chunk_bounded(
                     &progress.object_key,
                     progress.next_offset,
                     progress.expected_size,
                     chunk_limit,
+                    &progress.strong_etag,
+                    sha_state.clone(),
                 ),
             )
             .await?
@@ -796,18 +803,29 @@ impl OciProviderInventoryController {
                     && chunk.strong_etag == progress.strong_etag,
                 "OCI provider inventory chunk did not match its continuation identity"
             );
-            let chunk_len = u64::try_from(chunk.bytes.len())?;
+            let chunk_len = chunk
+                .range
+                .1
+                .checked_sub(chunk.range.0)
+                .and_then(|length| length.checked_add(1))
+                .context("OCI provider inventory range length overflowed")?;
             let expected_next = progress
                 .next_offset
                 .checked_add(chunk_len)
                 .context("OCI provider inventory chunk offset overflowed")?;
             anyhow::ensure!(
                 chunk_len > 0
+                    && chunk_len <= chunk_limit
                     && chunk.range.1.checked_add(1) == Some(expected_next)
                     && expected_next <= progress.expected_size,
                 "OCI provider inventory chunk overlapped or left an offset gap"
             );
-            sha_state.update(&chunk.bytes)?;
+            chunk.sha256_state.validate()?;
+            anyhow::ensure!(
+                chunk.sha256_state.total_bytes == expected_next,
+                "OCI provider inventory hash state did not advance by its exact range"
+            );
+            sha_state = chunk.sha256_state;
             progress.next_offset = expected_next;
             progress.set_sha_state(&sha_state)?;
             dispatch.record_chunk(chunk_len)?;

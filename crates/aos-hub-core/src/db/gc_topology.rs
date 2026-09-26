@@ -26,6 +26,8 @@ use super::{validate_key_bytes, Database, SurfaceObjectRecord};
 
 /// Minimum interval between persisted access observations for one object.
 const ACCESS_OBSERVATION_DEBOUNCE_SECS: i64 = 3_600;
+// Match the provider inventory freshness used by reviewed OCI deletion.
+const DELETE_CAPABILITY_MAX_AGE_SECS: i64 = 15 * 60;
 
 /// One cache's concurrency fence for retention and garbage collection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1217,7 +1219,7 @@ impl Database {
                         revision.write_credential_purpose,
                         revision.write_credential_generation,
                         state.inventory_generation, ?6, ?7, ?8,
-                        CASE WHEN ?6 IS NULL THEN 'none' ELSE 'pending' END,
+                        CASE WHEN CAST(?6 AS BIGINT) IS NULL THEN 'none' ELSE 'pending' END,
                         'observing', 1, ?9, ?10
                  FROM surface_placement_effective placement
                  JOIN bindings binding
@@ -1241,7 +1243,7 @@ impl Database {
                      WHERE owner.id = ?2
                        AND (owner.org_id IS NULL OR org.deleted_at IS NULL)
                        AND (owner.org_id = ?6
-                         OR (owner.org_id IS NULL AND ?6 IS NULL)))
+                         OR (owner.org_id IS NULL AND CAST(?6 AS BIGINT) IS NULL)))
                    AND NOT EXISTS (SELECT 1 FROM cache_inventory_generations inventory
                      WHERE inventory.cache_id = ?2 AND inventory.state = 'building')
                    AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
@@ -1310,11 +1312,11 @@ impl Database {
              SET prior_object_size = ?6, prior_object_hash = ?7,
                  prior_object_etag = ?8, intended_object_hash = ?9,
                  quota_delta_bytes = ?4, quota_delta_objects = ?5,
-                 quota_state = CASE WHEN ?3 IS NULL THEN 'none' ELSE 'reserved' END,
+                 quota_state = CASE WHEN CAST(?3 AS BIGINT) IS NULL THEN 'none' ELSE 'reserved' END,
                  state = 'active', resource_version = resource_version + 1
              WHERE ticket_id = ?1 AND resource_version = ?2
                AND state = 'observing' AND active_cache_slot = 1
-               AND (quota_org_id = ?3 OR (quota_org_id IS NULL AND ?3 IS NULL))
+               AND (quota_org_id = ?3 OR (quota_org_id IS NULL AND CAST(?3 AS BIGINT) IS NULL))
                AND expires_at > ?10
                AND EXISTS (SELECT 1 FROM surface_placement_effective placement
                  JOIN bindings binding
@@ -1422,7 +1424,7 @@ impl Database {
                     revision.write_credential_purpose,
                     revision.write_credential_generation,
                     'presign', presign.generation, state.inventory_generation,
-                    ?5, ?6, ?7, CASE WHEN ?5 IS NULL THEN 'none' ELSE 'pending' END,
+                    ?5, ?6, ?7, CASE WHEN CAST(?5 AS BIGINT) IS NULL THEN 'none' ELSE 'pending' END,
                     'observing', 1, ?8, ?9
              FROM surface_placement_effective placement
              JOIN bindings binding ON binding.id = placement.binding_id
@@ -1454,7 +1456,7 @@ impl Database {
                  WHERE owner.id = ?2
                    AND (owner.org_id IS NULL OR org.deleted_at IS NULL)
                    AND (owner.org_id = ?5
-                     OR (owner.org_id IS NULL AND ?5 IS NULL)))
+                     OR (owner.org_id IS NULL AND CAST(?5 AS BIGINT) IS NULL)))
                AND NOT EXISTS (SELECT 1 FROM cache_inventory_generations inventory
                  WHERE inventory.cache_id = ?2 AND inventory.state = 'building')
                AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
@@ -1587,8 +1589,8 @@ impl Database {
                    AND ticket.state = ?5 AND ticket.active_cache_slot = 1
                    AND ticket.expires_at > ?6
                    AND ((ticket.intended_object_hash = ?7)
-                     OR (ticket.intended_object_hash IS NULL AND ?7 IS NULL)
-                     OR (?4 = 'single' AND ?5 = 'active' AND ?7 IS NULL
+                     OR (ticket.intended_object_hash IS NULL AND CAST(?7 AS VARCHAR) IS NULL)
+                     OR (?4 = 'single' AND ?5 = 'active' AND CAST(?7 AS VARCHAR) IS NULL
                        AND ticket.intended_object_hash IS NOT NULL))
                    AND ticket.placement_id = ?8
                    AND ticket.placement_resource_version = ?9
@@ -2884,19 +2886,32 @@ impl Database {
                  LEFT JOIN binding_write_revisions revision
                    ON revision.binding_id = placement.binding_id
                   AND revision.revision = placement.authority_observed_binding_write_revision
+                 LEFT JOIN binding_write_state write_state
+                   ON write_state.binding_id = placement.binding_id
+                 LEFT JOIN oci_conditional_delete_capabilities capability
+                   ON capability.binding_id = placement.binding_id
+                  AND capability.binding_write_revision =
+                    write_state.current_write_revision
                  WHERE placement.cache_id = ?1
                    AND (COALESCE(binding.kind, '') = 'r2'
-                     OR placement.requires_conditional_writes <> 1
-                     OR COALESCE(revision.conditional_writes_supported, 0) <> 1)
+                     OR (COALESCE(binding.kind, '') <> 'deployment_r2'
+                       AND (placement.requires_conditional_writes <> 1
+                         OR COALESCE(revision.conditional_writes_supported, 0) <> 1))
+                     OR (binding.kind = 'deployment_r2'
+                       AND (COALESCE(capability.state, '') <> 'valid'
+                         OR capability.binding_resource_version <>
+                           binding.resource_version
+                         OR capability.observed_at < ?2)))
                  LIMIT 1",
-                &vals![cache_id],
+                &vals![
+                    cache_id,
+                    acknowledged_at.saturating_sub(DELETE_CAPABILITY_MAX_AGE_SECS)
+                ],
             )
             .await?
             .is_some()
         {
-            bail!(
-                "cache has a placement that cannot enforce identity-checked deletion; migrate it to a validated S3 binding before enabling destructive GC"
-            );
+            bail!("cache has a placement without a validated identity-checked deletion capability");
         }
         let statements = [
             Statement::new(
@@ -2928,16 +2943,34 @@ impl Database {
                      LEFT JOIN binding_write_revisions revision
                        ON revision.binding_id = placement.binding_id
                       AND revision.revision = placement.authority_observed_binding_write_revision
+                     LEFT JOIN binding_write_state write_state
+                       ON write_state.binding_id = placement.binding_id
+                     LEFT JOIN oci_conditional_delete_capabilities capability
+                       ON capability.binding_id = placement.binding_id
+                      AND capability.binding_write_revision =
+                        write_state.current_write_revision
                      WHERE placement.cache_id = ?1
                        AND (COALESCE(binding.kind, '') = 'r2'
-                         OR placement.requires_conditional_writes <> 1
-                         OR COALESCE(revision.conditional_writes_supported, 0) <> 1))
+                         OR (COALESCE(binding.kind, '') <> 'deployment_r2'
+                           AND (placement.requires_conditional_writes <> 1
+                             OR COALESCE(revision.conditional_writes_supported, 0) <> 1))
+                         OR (binding.kind = 'deployment_r2'
+                           AND (COALESCE(capability.state, '') <> 'valid'
+                             OR capability.binding_resource_version <>
+                               binding.resource_version
+                             OR capability.observed_at < ?5))))
                    AND EXISTS (SELECT 1
                      FROM cache_gc_first_sweep_acknowledgements acknowledgement
                      WHERE acknowledgement.acknowledgement_id = ?4
                        AND acknowledgement.cache_id = ?1
                        AND acknowledgement.state = 'applied')",
-                vals![cache_id, expected_epoch, claim_id, acknowledgement_id],
+                vals![
+                    cache_id,
+                    expected_epoch,
+                    claim_id,
+                    acknowledgement_id,
+                    acknowledged_at.saturating_sub(DELETE_CAPABILITY_MAX_AGE_SECS)
+                ],
             )
             .expecting(1),
             Statement::new(
@@ -3159,7 +3192,7 @@ impl Database {
     /// presence inputs, incomplete action coverage/dependencies, an unsafe
     /// grace candidate, or database failure.
     pub async fn create_cache_gc_plan_topology(&self, input: &CreateCacheGcPlan) -> Result<()> {
-        self.assert_cache_gc_delete_topology_supported(input.cache_id)
+        self.assert_cache_gc_delete_topology_supported(input.cache_id, input.created_at)
             .await?;
         validate_stable_key(&input.plan_id, "cache GC plan id")?;
         validate_stable_key(&input.generation_id, "cache GC generation id")?;
@@ -3398,11 +3431,11 @@ impl Database {
                              AND existing.active_slot = 1
                              AND existing.phase = ?6
                              AND (existing.expected_etag = ?7
-                               OR (existing.expected_etag IS NULL AND ?7 IS NULL))
+                               OR (existing.expected_etag IS NULL AND CAST(?7 AS VARCHAR) IS NULL))
                              AND (existing.expected_hash = ?8
-                               OR (existing.expected_hash IS NULL AND ?8 IS NULL))
+                               OR (existing.expected_hash IS NULL AND CAST(?8 AS VARCHAR) IS NULL))
                              AND (existing.expected_size = ?9
-                               OR (existing.expected_size IS NULL AND ?9 IS NULL))
+                               OR (existing.expected_size IS NULL AND CAST(?9 AS BIGINT) IS NULL))
                              AND existing.expected_inventory_generation = ?10)))
                        AND presence.observed_inventory_generation = ?10
                        AND state.inventory_generation = ?10
@@ -3418,11 +3451,11 @@ impl Database {
                            AND credential_head.purpose = 'delete'
                            AND credential_head.current_generation = ?13)
                        AND (presence.etag = ?7
-                         OR (presence.etag IS NULL AND ?7 IS NULL))
+                         OR (presence.etag IS NULL AND CAST(?7 AS VARCHAR) IS NULL))
                        AND (presence.observed_hash = ?8
-                         OR (presence.observed_hash IS NULL AND ?8 IS NULL))
+                         OR (presence.observed_hash IS NULL AND CAST(?8 AS VARCHAR) IS NULL))
                        AND (presence.observed_size = ?9
-                         OR (presence.observed_size IS NULL AND ?9 IS NULL))",
+                         OR (presence.observed_size IS NULL AND CAST(?9 AS BIGINT) IS NULL))",
                     vals![
                         input.cache_id,
                         input.plan_id,
@@ -3631,21 +3664,40 @@ impl Database {
         self.backend.checked_batch(&statements).await
     }
 
-    async fn assert_cache_gc_delete_topology_supported(&self, cache_id: i64) -> Result<()> {
+    async fn assert_cache_gc_delete_topology_supported(
+        &self,
+        cache_id: i64,
+        now: i64,
+    ) -> Result<()> {
         if self
             .backend
             .query_opt(
                 "SELECT 1 FROM surface_placements placement
-             JOIN bindings binding ON binding.id = placement.binding_id
-             WHERE placement.cache_id = ?1
-               AND binding.kind IN ('r2', 'deployment_r2') LIMIT 1",
-                &vals![cache_id],
+                 JOIN bindings binding ON binding.id = placement.binding_id
+                 LEFT JOIN binding_write_state write_state
+                   ON write_state.binding_id = binding.id
+                 LEFT JOIN oci_conditional_delete_capabilities capability
+                   ON capability.binding_id = binding.id
+                  AND capability.binding_write_revision =
+                    write_state.current_write_revision
+                 WHERE placement.cache_id = ?1
+                   AND (binding.kind = 'r2'
+                     OR (binding.kind = 'deployment_r2'
+                       AND (COALESCE(capability.state, '') <> 'valid'
+                         OR capability.binding_resource_version <>
+                           binding.resource_version
+                         OR capability.observed_at < ?2)))
+                 LIMIT 1",
+                &vals![
+                    cache_id,
+                    now.saturating_sub(DELETE_CAPABILITY_MAX_AGE_SECS)
+                ],
             )
             .await?
             .is_some()
         {
             bail!(
-                "destructive GC is unsupported for R2 placements without strong conditional delete"
+                "destructive GC requires a fresh identity-checked deletion capability"
             );
         }
         Ok(())
@@ -4450,10 +4502,10 @@ impl Database {
                    AND nar_surface_object_id = ?6 AND ?5 <> ?6
                    AND nar_hash = ?7 AND nar_size = ?8 AND file_hash = ?9
                    AND file_size = ?10 AND compression = ?11
-                   AND (deriver = ?12 OR (deriver IS NULL AND ?12 IS NULL))
-                   AND (signature = ?13 OR (signature IS NULL AND ?13 IS NULL))
+                   AND (deriver = ?12 OR (deriver IS NULL AND CAST(?12 AS VARCHAR) IS NULL))
+                   AND (signature = ?13 OR (signature IS NULL AND CAST(?13 AS TEXT) IS NULL))
                    AND (content_address = ?14
-                     OR (content_address IS NULL AND ?14 IS NULL))
+                     OR (content_address IS NULL AND CAST(?14 AS TEXT) IS NULL))
                    AND reference_count = ?16 AND lifecycle_state = 'tombstoned'
                    AND EXISTS (SELECT 1 FROM cache_gc_state state
                      WHERE state.cache_id = ?2 AND state.epoch = ?17)
@@ -6285,10 +6337,22 @@ impl Database {
                      LEFT JOIN binding_write_revisions revision
                        ON revision.binding_id = placement.binding_id
                       AND revision.revision = placement.authority_observed_binding_write_revision
+                     LEFT JOIN binding_write_state write_state
+                       ON write_state.binding_id = placement.binding_id
+                     LEFT JOIN oci_conditional_delete_capabilities capability
+                       ON capability.binding_id = placement.binding_id
+                      AND capability.binding_write_revision =
+                        write_state.current_write_revision
                      WHERE placement.cache_id = plan.cache_id
                        AND (COALESCE(binding.kind, '') = 'r2'
-                         OR placement.requires_conditional_writes <> 1
-                         OR COALESCE(revision.conditional_writes_supported, 0) <> 1))
+                         OR (COALESCE(binding.kind, '') <> 'deployment_r2'
+                           AND (placement.requires_conditional_writes <> 1
+                             OR COALESCE(revision.conditional_writes_supported, 0) <> 1))
+                         OR (binding.kind = 'deployment_r2'
+                           AND (COALESCE(capability.state, '') <> 'valid'
+                             OR capability.binding_resource_version <>
+                               binding.resource_version
+                             OR capability.observed_at < ?6))))
                    AND state.epoch = plan.expected_epoch
                    AND state.epoch = generation.expected_epoch
                    AND state.root_generation = generation.root_generation
@@ -6393,20 +6457,36 @@ impl Database {
                      LEFT JOIN binding_credential_heads credential_head
                        ON credential_head.binding_id = action.binding_id
                       AND credential_head.purpose = 'delete'
+                     LEFT JOIN binding_write_state write_state
+                       ON write_state.binding_id = binding.id
+                     LEFT JOIN oci_conditional_delete_capabilities capability
+                       ON capability.binding_id = binding.id
+                      AND capability.binding_write_revision =
+                        write_state.current_write_revision
                      WHERE action.cache_id = plan.cache_id
                        AND action.plan_id = plan.plan_id
                        AND (presence.surface_object_id IS NULL
                          OR placement.id IS NULL
                          OR binding.id IS NULL
-                         OR credential.generation IS NULL
-                         OR credential_head.current_generation IS NULL
                          OR placement.binding_id <> action.binding_id
                          OR binding.resource_version <> action.binding_resource_version
-                         OR binding.kind <> 's3'
-                         OR binding.is_instance_default <> 0
-                         OR credential.validation_state <> 'valid'
-                         OR credential_head.current_generation
-                           <> action.delete_credential_generation
+                         OR NOT (
+                           (binding.kind = 's3'
+                             AND binding.is_instance_default = 0
+                             AND credential.generation IS NOT NULL
+                             AND credential.validation_state = 'valid'
+                             AND credential_head.current_generation =
+                               action.delete_credential_generation)
+                           OR
+                           (binding.kind = 'deployment_r2'
+                             AND binding.is_instance_default = 1
+                             AND action.delete_credential_generation = 1
+                             AND COALESCE(capability.state, '') = 'valid'
+                             AND capability.binding_resource_version =
+                               binding.resource_version
+                             AND capability.delete_credential_purpose IS NULL
+                             AND capability.delete_credential_generation IS NULL
+                             AND capability.observed_at >= ?6))
                          OR presence.observed_inventory_generation
                            <> action.expected_inventory_generation
                          OR NOT (presence.observed_hash = action.expected_hash
@@ -6440,7 +6520,8 @@ impl Database {
                     input.claim_id,
                     input.actor_scope_digest,
                     input.confirmation_hash,
-                    input.now
+                    input.now,
+                    input.now.saturating_sub(DELETE_CAPABILITY_MAX_AGE_SECS)
                 ],
             )
             .expecting(1),
@@ -7692,19 +7773,26 @@ impl Database {
              FROM cache_retention_refreshes refresh
              WHERE refresh.refresh_id = ?1 AND refresh.state = 'building'
                AND ((?5 = 'registry_catalog'
-                     AND ?6 IS NULL AND ?7 IS NULL AND ?8 IS NULL AND ?9 IS NULL
+                     AND CAST(?6 AS BIGINT) IS NULL
+                     AND CAST(?7 AS VARCHAR) IS NULL
+                     AND CAST(?8 AS BIGINT) IS NULL
+                     AND CAST(?9 AS BIGINT) IS NULL
                      AND EXISTS (SELECT 1 FROM registry_catalog_artifacts artifact
                        WHERE artifact.registry_id = refresh.registry_id
                          AND artifact.source_revision = refresh.registry_source_revision
                          AND artifact.store_hash = ?3))
-                 OR (?5 = 'release' AND ?6 IS NOT NULL AND ?7 IS NOT NULL
-                     AND ?8 IS NULL AND ?9 IS NULL
+                 OR (?5 = 'release'
+                     AND CAST(?6 AS BIGINT) IS NOT NULL
+                     AND CAST(?7 AS VARCHAR) IS NOT NULL
+                     AND CAST(?8 AS BIGINT) IS NULL AND CAST(?9 AS BIGINT) IS NULL
                      AND EXISTS (SELECT 1 FROM release_artifacts artifact
                        WHERE artifact.snapshot_id = ?7 AND artifact.release_id = ?6
                          AND artifact.registry_id = refresh.registry_id
                          AND artifact.store_hash = ?3))
-                 OR (?5 = 'channel' AND ?6 IS NOT NULL AND ?7 IS NOT NULL
-                     AND ?8 IS NOT NULL AND ?9 IS NOT NULL
+                 OR (?5 = 'channel'
+                     AND CAST(?6 AS BIGINT) IS NOT NULL
+                     AND CAST(?7 AS VARCHAR) IS NOT NULL
+                     AND CAST(?8 AS BIGINT) IS NOT NULL AND CAST(?9 AS BIGINT) IS NOT NULL
                      AND EXISTS (SELECT 1 FROM channels channel
                        JOIN channel_partitions partition
                          ON partition.channel_id = channel.id AND partition.bucket = ?9
@@ -9445,7 +9533,7 @@ impl Database {
         now: i64,
         expires_at: i64,
     ) -> Result<CacheGcPlanView> {
-        self.assert_cache_gc_delete_topology_supported(cache_id)
+        self.assert_cache_gc_delete_topology_supported(cache_id, now)
             .await?;
         if actor_scope_digest.is_empty()
             || created_by.trim().is_empty()
@@ -9712,7 +9800,8 @@ impl Database {
                             .backend
                             .query_opt(
                                 "SELECT binding.id, binding.resource_version,
-                                   credential.generation
+                                   CASE WHEN binding.kind = 'deployment_r2'
+                                     THEN 1 ELSE credential.generation END
                              FROM surface_placements placement
                              JOIN bindings binding
                                ON binding.id = placement.binding_id
@@ -9720,21 +9809,40 @@ impl Database {
                                ON scan.cache_id = placement.cache_id
                               AND scan.placement_id = placement.id
                               AND scan.generation = ?3
-                             JOIN binding_credential_heads head
+                             LEFT JOIN binding_write_state write_state
+                               ON write_state.binding_id = binding.id
+                             LEFT JOIN oci_conditional_delete_capabilities capability
+                               ON capability.binding_id = binding.id
+                              AND capability.binding_write_revision =
+                                write_state.current_write_revision
+                             LEFT JOIN binding_credential_heads head
                                ON head.binding_id = binding.id
                               AND head.purpose = 'delete'
-                             JOIN binding_credential_revisions credential
+                             LEFT JOIN binding_credential_revisions credential
                                ON credential.binding_id = head.binding_id
                               AND credential.purpose = head.purpose
                               AND credential.generation = head.current_generation
                              WHERE placement.id = ?1 AND placement.cache_id = ?2
-                               AND binding.kind = 's3'
-                               AND binding.is_instance_default = 0
                                AND scan.completed_at IS NOT NULL
                                AND scan.binding_id = binding.id
                                AND scan.binding_resource_version = binding.resource_version
-                               AND credential.validation_state = 'valid'",
-                                &vals![placement_id, cache_id, expected_inventory_generation],
+                               AND ((binding.kind = 's3'
+                                 AND binding.is_instance_default = 0
+                                 AND credential.validation_state = 'valid')
+                                OR (binding.kind = 'deployment_r2'
+                                 AND binding.is_instance_default = 1
+                                 AND capability.state = 'valid'
+                                 AND capability.binding_resource_version =
+                                   binding.resource_version
+                                 AND capability.delete_credential_purpose IS NULL
+                                 AND capability.delete_credential_generation IS NULL
+                                 AND capability.observed_at >= ?4))",
+                                &vals![
+                                    placement_id,
+                                    cache_id,
+                                    expected_inventory_generation,
+                                    now.saturating_sub(DELETE_CAPABILITY_MAX_AGE_SECS)
+                                ],
                             )
                             .await?
                             .map(|row| -> Result<(i64, i64, i64)> {
@@ -9750,7 +9858,7 @@ impl Database {
                     deletion_capability
                 else {
                     bail!(
-                        "placement {placement_id} cannot enforce identity-checked deletion; migrate it to a validated S3 binding before enabling destructive GC"
+                        "placement {placement_id} lacks a validated identity-checked deletion capability"
                     );
                 };
                 if expected_etag

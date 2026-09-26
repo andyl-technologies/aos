@@ -534,6 +534,7 @@ pub use oci_gc::*;
 mod package_documentation_reads;
 mod placement_policy;
 mod publication_admission;
+mod publish_lease;
 mod registry_delete;
 mod registry_index_build;
 mod release_browse;
@@ -3624,6 +3625,12 @@ impl Database {
         self.backend.dialect()
     }
 
+    /// Reports the current native SQL connection-pool occupancy, when available.
+    #[must_use]
+    pub fn pool_stats(&self) -> Option<crate::backend::PoolStats> {
+        self.backend.pool_stats()
+    }
+
     async fn migrate(&self) -> Result<()> {
         self.backend
             .execute(
@@ -4204,7 +4211,7 @@ impl Database {
              WHERE registry_id = ?1 AND surface_object_id IN (
                SELECT id FROM surface_objects
                WHERE registry_id = ?1 AND object_key LIKE 'images/sha256/%')
-               AND (?2 IS NULL OR placement_id = ?2)",
+               AND (CAST(?2 AS BIGINT) IS NULL OR placement_id = ?2)",
             vals![registry_id, indexed_placement_id].to_vec(),
         ));
         stmts.push(Statement::new(
@@ -6171,19 +6178,19 @@ impl Database {
             .execute(
                 "UPDATE domains SET observed_dns_state = CASE
                       WHEN desired_dns_provider = ?3 OR
-                        (desired_dns_provider IS NULL AND ?3 IS NULL)
+                        (desired_dns_provider IS NULL AND CAST(?3 AS TEXT) IS NULL)
                       THEN observed_dns_state
-                      WHEN ?3 IS NULL THEN 'unconfigured' ELSE 'pending' END,
+                      WHEN CAST(?3 AS TEXT) IS NULL THEN 'unconfigured' ELSE 'pending' END,
                     observed_tls_state = CASE
                       WHEN desired_tls_provider = ?4 OR
-                        (desired_tls_provider IS NULL AND ?4 IS NULL)
+                        (desired_tls_provider IS NULL AND CAST(?4 AS TEXT) IS NULL)
                       THEN observed_tls_state
-                      WHEN ?4 IS NULL THEN 'unconfigured' ELSE 'pending' END,
+                      WHEN CAST(?4 AS TEXT) IS NULL THEN 'unconfigured' ELSE 'pending' END,
                     verified_at = CASE WHEN
                       (desired_dns_provider = ?3 OR
-                        (desired_dns_provider IS NULL AND ?3 IS NULL)) AND
+                        (desired_dns_provider IS NULL AND CAST(?3 AS TEXT) IS NULL)) AND
                       (desired_tls_provider = ?4 OR
-                        (desired_tls_provider IS NULL AND ?4 IS NULL))
+                        (desired_tls_provider IS NULL AND CAST(?4 AS TEXT) IS NULL))
                       THEN verified_at ELSE NULL END,
                     desired_dns_provider = ?3, desired_tls_provider = ?4,
                     access_provider_json = ?5,
@@ -6321,7 +6328,7 @@ impl Database {
                      WHERE state.registry_id = ?2
                        AND (registry.org_id IS NULL OR org.deleted_at IS NULL)
                        AND (state.current_publication_id = ?7 OR
-                            (state.current_publication_id IS NULL AND ?7 IS NULL))",
+                            (state.current_publication_id IS NULL AND CAST(?7 AS VARCHAR) IS NULL))",
                     vals![
                         input.publication_id,
                         input.registry_id,
@@ -6530,7 +6537,7 @@ impl Database {
                         retired_at
                  FROM registry_publications
                  WHERE registry_id = ?1 AND (?2 = '' OR state = ?2)
-                   AND (?3 IS NULL OR ordinal < ?3)
+                   AND (CAST(?3 AS BIGINT) IS NULL OR ordinal < ?3)
                  ORDER BY ordinal DESC LIMIT ?4",
                 &vals![registry_id, state, before_ordinal, limit + 1],
             )
@@ -7234,6 +7241,62 @@ impl Database {
         etag: Option<&str>,
         observed_at: i64,
     ) -> Result<()> {
+        self.record_registry_publication_object_presence_with_fence(
+            publication_id,
+            surface_object_id,
+            placement_id,
+            observed_hash,
+            observed_size,
+            etag,
+            observed_at,
+            None,
+        )
+        .await
+    }
+
+    /// Records publication evidence only while the observed placement and binding
+    /// still have the resource versions admitted for a hybrid R2 upload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either resource version changed, the publication
+    /// no longer admits the object, or the database operation fails.
+    pub async fn record_registry_publication_object_presence_fenced(
+        &self,
+        publication_id: &str,
+        surface_object_id: i64,
+        placement_id: i64,
+        observed_hash: &str,
+        observed_size: i64,
+        etag: Option<&str>,
+        observed_at: i64,
+        placement_resource_version: i64,
+        binding_resource_version: i64,
+    ) -> Result<()> {
+        self.record_registry_publication_object_presence_with_fence(
+            publication_id,
+            surface_object_id,
+            placement_id,
+            observed_hash,
+            observed_size,
+            etag,
+            observed_at,
+            Some((placement_resource_version, binding_resource_version)),
+        )
+        .await
+    }
+
+    async fn record_registry_publication_object_presence_with_fence(
+        &self,
+        publication_id: &str,
+        surface_object_id: i64,
+        placement_id: i64,
+        observed_hash: &str,
+        observed_size: i64,
+        etag: Option<&str>,
+        observed_at: i64,
+        fence: Option<(i64, i64)>,
+    ) -> Result<()> {
         validate_key_bytes(publication_id, "publication id", 64)?;
         validate_key_bytes(observed_hash, "observed object hash", 128)?;
         if observed_size < 0 {
@@ -7271,6 +7334,11 @@ impl Database {
                       AND placement.registry_id = pub.registry_id
                      WHERE pub.publication_id = ?1 AND object.id = ?2
                        AND placement.id = ?3
+                       AND (CAST(?8 AS BIGINT) IS NULL OR (
+                         placement.resource_version = ?8
+                         AND EXISTS (SELECT 1 FROM bindings binding
+                           WHERE binding.id = placement.binding_id
+                             AND binding.resource_version = ?9)))
                        AND pub.state IN ('preparing', 'writing_pointers')
                        AND declared.expected_hash = ?4
                        AND declared.expected_size = ?5",
@@ -7281,7 +7349,9 @@ impl Database {
                         observed_hash,
                         observed_size,
                         etag,
-                        observed_at
+                        observed_at,
+                        fence.map(|(placement_version, _)| placement_version),
+                        fence.map(|(_, binding_version)| binding_version)
                     ],
                 )
                 .expecting(1),
@@ -7304,6 +7374,11 @@ impl Database {
                       AND placement.registry_id = pub.registry_id
                      WHERE pub.publication_id = ?1 AND object.id = ?2
                        AND placement.id = ?3
+                       AND (CAST(?8 AS BIGINT) IS NULL OR (
+                         placement.resource_version = ?8
+                         AND EXISTS (SELECT 1 FROM bindings binding
+                           WHERE binding.id = placement.binding_id
+                             AND binding.resource_version = ?9)))
                        AND pub.state IN ('preparing', 'writing_pointers')
                        AND declared.expected_hash = ?4
                        AND declared.expected_size = ?5
@@ -7319,7 +7394,9 @@ impl Database {
                         observed_hash,
                         observed_size,
                         etag,
-                        observed_at
+                        observed_at,
+                        fence.map(|(placement_version, _)| placement_version),
+                        fence.map(|(_, binding_version)| binding_version)
                     ],
                 )
                 .expecting(1),
@@ -9781,9 +9858,9 @@ impl Database {
               AND g.consumer_scope_key = COALESCE(r.owner_scope_key, c.owner_scope_key)
               AND g.state = 'active'
              WHERE b.id = ?4
-               AND ((?1 IS NOT NULL AND r.id IS NOT NULL)
-                 OR (?2 IS NOT NULL AND c.id IS NOT NULL))
-               AND (?1 IS NULL OR NOT EXISTS (
+               AND ((CAST(?1 AS BIGINT) IS NOT NULL AND r.id IS NOT NULL)
+                 OR (CAST(?2 AS BIGINT) IS NOT NULL AND c.id IS NOT NULL))
+               AND (CAST(?1 AS BIGINT) IS NULL OR NOT EXISTS (
                  SELECT 1 FROM oci_gc_registry_locks registry_lock
                  WHERE registry_lock.registry_id = ?1))
                AND NOT EXISTS (SELECT 1 FROM surface_placements existing
@@ -11149,13 +11226,13 @@ impl Database {
                 .execute(
                     "UPDATE cache_population_targets SET required = ?4,
                     placement_policy_revision_id = ?5,
-                    placement_policy_revision_state = CASE WHEN ?5 IS NULL
+                    placement_policy_revision_state = CASE WHEN CAST(?5 AS BIGINT) IS NULL
                       THEN NULL ELSE 'published' END, selector_json = ?6,
                     validation_gate = ?7, enabled = ?8,
                     resource_version = resource_version + 1, updated_at = ?9
                  WHERE cache_id = ?1 AND registry_id = ?2 AND trigger_kind = ?3
                    AND resource_version = ?10
-                   AND (?5 IS NULL OR EXISTS (SELECT 1 FROM placement_policy_revisions
+                   AND (CAST(?5 AS BIGINT) IS NULL OR EXISTS (SELECT 1 FROM placement_policy_revisions
                        WHERE id = ?5 AND cache_id = ?1 AND state = 'published'))",
                     &vals![
                         input.cache_id,
@@ -11179,10 +11256,10 @@ impl Database {
                     placement_policy_revision_state, selector_json,
                     validation_gate, enabled, created_at, updated_at)
                  SELECT c.id, r.id, ?3, ?4, ?5,
-                        CASE WHEN ?5 IS NULL THEN NULL ELSE 'published' END,
+                        CASE WHEN CAST(?5 AS BIGINT) IS NULL THEN NULL ELSE 'published' END,
                         ?6, ?7, ?8, ?9, ?9
                  FROM binary_caches c CROSS JOIN registries r WHERE c.id = ?1 AND r.id = ?2
-                   AND (?5 IS NULL OR EXISTS (SELECT 1 FROM placement_policy_revisions
+                   AND (CAST(?5 AS BIGINT) IS NULL OR EXISTS (SELECT 1 FROM placement_policy_revisions
                        WHERE id = ?5 AND cache_id = c.id AND state = 'published'))",
                     &vals![
                         input.cache_id,
@@ -12015,15 +12092,43 @@ impl Database {
         now: i64,
         limit: usize,
     ) -> Result<Vec<TopologyOperationRecord>> {
+        self.due_physical_placement_operations(now, limit, true)
+            .await
+    }
+
+    /// Lists only read-only placement scans for runtimes without copy writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn due_surface_placement_scan_only_operations(
+        &self,
+        now: i64,
+        limit: usize,
+    ) -> Result<Vec<TopologyOperationRecord>> {
+        self.due_physical_placement_operations(now, limit, false)
+            .await
+    }
+
+    async fn due_physical_placement_operations(
+        &self,
+        now: i64,
+        limit: usize,
+        include_copies: bool,
+    ) -> Result<Vec<TopologyOperationRecord>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
+        let operation_filter = if include_copies {
+            "IN ('scan_placement', 'replicate_placement', 'repair_placement')"
+        } else {
+            "= 'scan_placement'"
+        };
         self.backend
             .query(
                 &format!(
                     "SELECT {OPERATION_COLUMNS} FROM topology_operations operation
-                     WHERE operation.operation_kind IN
-                       ('scan_placement', 'replicate_placement', 'repair_placement')
+                     WHERE operation.operation_kind {operation_filter}
                        AND (operation.state = 'pending'
                          OR (operation.state = 'running' AND (
                            NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
@@ -12328,7 +12433,7 @@ impl Database {
                     "SELECT {OPERATION_COLUMNS} FROM topology_operations o
                       WHERE o.primary_target_kind = ?1 AND o.primary_target_stable_id = ?2
                         AND (?3 = '' OR o.state = ?3)
-                        AND (?4 IS NULL OR o.created_at < ?4
+                        AND (CAST(?4 AS BIGINT) IS NULL OR o.created_at < ?4
                           OR (o.created_at = ?4 AND o.operation_id > ?5))
                       ORDER BY o.created_at DESC, o.operation_id
                       LIMIT ?6"
@@ -12422,7 +12527,7 @@ impl Database {
                          ON ancestry.descendant_scope_key = o.authorization_scope_key
                       WHERE ancestry.ancestor_scope_key = ?1
                         AND (?2 = '' OR o.state = ?2)
-                        AND (?3 IS NULL OR o.created_at < ?3
+                        AND (CAST(?3 AS BIGINT) IS NULL OR o.created_at < ?3
                           OR (o.created_at = ?3 AND o.operation_id > ?4))
                       ORDER BY o.created_at DESC, o.operation_id
                       LIMIT ?5"
@@ -13002,7 +13107,7 @@ impl Database {
                 resource_version = resource_version + 1
              WHERE operation_id = ?1 AND resource_version = ?2
                AND progress_current <= ?4
-               AND (progress_total IS NULL OR ?5 IS NULL OR progress_total = ?5)
+               AND (progress_total IS NULL OR CAST(?5 AS BIGINT) IS NULL OR progress_total = ?5)
                AND (?3 <> 'succeeded' OR COALESCE(?5, progress_total) IS NULL
                     OR ?4 = COALESCE(?5, progress_total))
                AND ((state = 'pending' AND ?3 IN ('running', 'cancelled'))
@@ -18058,21 +18163,21 @@ impl Database {
                        WHERE scope.scope_key = ?3 AND scope.retired_at IS NULL
                          AND {scope_identity_guard}
                          AND (scope.org_id IS NULL OR org.deleted_at IS NULL))
-                   AND (?4 IS NULL OR EXISTS (
+                   AND (CAST(?4 AS BIGINT) IS NULL OR EXISTS (
                      SELECT 1 FROM binding_consumer_scopes grant_row
                       WHERE grant_row.binding_id = ?4
                         AND grant_row.consumer_scope_key = ?3
                         AND grant_row.state = 'active'))
-                   AND (?5 IS NULL OR EXISTS (
+                   AND (CAST(?5 AS BIGINT) IS NULL OR EXISTS (
                      SELECT 1 FROM domains domain
                       WHERE domain.id = ?5 AND domain.owner_scope_key = ?3))
-                   AND (?6 IS NULL OR EXISTS (
+                   AND (CAST(?6 AS BIGINT) IS NULL OR EXISTS (
                      SELECT 1 FROM endpoint_route_scopes grant_row
                       WHERE grant_row.endpoint_id = ?6
                         AND grant_row.endpoint_generation = ?7
                         AND grant_row.consumer_scope_key = ?3
                         AND grant_row.state = 'active'))
-                   AND (?8 IS NULL OR EXISTS (
+                   AND (CAST(?8 AS BIGINT) IS NULL OR EXISTS (
                      SELECT 1 FROM gateway_revision_route_scopes grant_row
                       WHERE grant_row.gateway_id = ?8 AND grant_row.generation = ?9
                         AND grant_row.consumer_scope_key = ?3
@@ -22168,7 +22273,7 @@ impl Database {
                     incarnation_id = ?14, mutation_plan_id = ?15, updated_at = ?16
                   WHERE org_id = ?1 AND resource_version = ?17
                     AND (incarnation_id = ?18
-                         OR (incarnation_id IS NULL AND ?18 IS NULL))",
+                         OR (incarnation_id IS NULL AND CAST(?18 AS VARCHAR) IS NULL))",
                 vals![
                     config.org_id,
                     config.issuer,
@@ -22280,7 +22385,7 @@ impl Database {
                     "DELETE FROM org_idp_configs
                       WHERE org_id = ?1 AND resource_version = ?2
                         AND (incarnation_id = ?3
-                             OR (incarnation_id IS NULL AND ?3 IS NULL))",
+                             OR (incarnation_id IS NULL AND CAST(?3 AS VARCHAR) IS NULL))",
                     vals![org_id, expected_resource_version, expected_incarnation_id],
                 )
                 .expecting(1),
@@ -22567,7 +22672,7 @@ impl Database {
                         incarnation_id = ?4, mutation_plan_id = ?5
                   WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?6
                     AND (incarnation_id = ?7
-                         OR (incarnation_id IS NULL AND ?7 IS NULL))",
+                         OR (incarnation_id IS NULL AND CAST(?7 AS VARCHAR) IS NULL))",
                 vals![
                     record.domain,
                     record.org_id,
@@ -22637,7 +22742,7 @@ impl Database {
               WHERE domain = ?1 AND org_id = ?2 AND txt_challenge = ?3
                 AND resource_version = ?7 AND verified_at IS NULL
                 AND (incarnation_id = ?8
-                     OR (incarnation_id IS NULL AND ?8 IS NULL))",
+                     OR (incarnation_id IS NULL AND CAST(?8 AS VARCHAR) IS NULL))",
             vals![
                 record.domain,
                 record.org_id,
@@ -22688,7 +22793,7 @@ impl Database {
             "DELETE FROM org_domains
               WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?3
                 AND (incarnation_id = ?4
-                     OR (incarnation_id IS NULL AND ?4 IS NULL))",
+                     OR (incarnation_id IS NULL AND CAST(?4 AS VARCHAR) IS NULL))",
             vals![
                 record.domain,
                 record.org_id,
@@ -33577,6 +33682,107 @@ source_nar_hash = ""
             .unwrap());
         assert!(db
             .registry_publication_class_is_complete(publication_id, "mutable_pointer")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn publication_presence_requires_exact_hybrid_placement_fence() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db
+            .create_org("fenced-upload", "Fenced upload")
+            .await
+            .unwrap();
+        let binding_id =
+            create_test_binding(&db, org_id, "fenced-upload", "/tmp/fenced-upload").await;
+        let binding = db.binding(binding_id).await.unwrap().unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "registry", "public", &[], false)
+            .await
+            .unwrap();
+        let mut placement = topology_placement(
+            SurfaceTarget::Registry(registry_id),
+            "primary",
+            "fenced-upload",
+            0,
+        );
+        placement.binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+        let publication_id = "fenced-upload-publication";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "generation-1".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(40)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        let digest = "d".repeat(64);
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: "images/sha256/dd/system.qcow2".into(),
+                content_hash: Some(digest.clone()),
+                size: Some(91),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.set_registry_publication_object(&SetRegistryPublicationObject {
+            publication_id: publication_id.into(),
+            surface_object_id: object.id,
+            object_kind: "immutable".into(),
+            expected_hash: digest.clone(),
+            expected_size: 91,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: publication_id.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: 1,
+        })
+        .await
+        .unwrap();
+
+        let record = |placement_version, binding_version| {
+            db.record_registry_publication_object_presence_fenced(
+                publication_id,
+                object.id,
+                placement.id,
+                &digest,
+                91,
+                Some("\"r2-version-1\""),
+                2,
+                placement_version,
+                binding_version,
+            )
+        };
+        assert!(
+            record(placement.resource_version + 1, binding.resource_version)
+                .await
+                .is_err()
+        );
+        assert!(!db
+            .registry_publication_class_is_complete(publication_id, "immutable")
+            .await
+            .unwrap());
+        record(placement.resource_version, binding.resource_version)
+            .await
+            .unwrap();
+        assert!(
+            record(placement.resource_version, binding.resource_version + 1)
+                .await
+                .is_err()
+        );
+        assert!(db
+            .registry_publication_class_is_complete(publication_id, "immutable")
             .await
             .unwrap());
     }

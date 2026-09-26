@@ -754,7 +754,11 @@ fn canonical_endpoint_host(host: &str) -> Result<crate::db::InboundEndpointHost,
 }
 
 /// Extracts and canonicalizes the host from an already authenticated authority.
-pub(crate) fn attested_authority_host(
+///
+/// # Errors
+///
+/// Returns an error for malformed, noncanonical, or userinfo-bearing authorities.
+pub fn attested_authority_host(
     authority: &str,
 ) -> Result<crate::db::InboundEndpointHost, ()> {
     let authority = authority
@@ -1137,12 +1141,16 @@ pub async fn rewrite_for_route(
         Err(()) => return Err(StatusCode::SERVICE_UNAVAILABLE.into_response()),
     };
     let is_control_authority = control_authority == (host.clone(), port, scheme.clone());
-    let Ok(routes) = svc
+    let routes = match svc
         .db
         .inbound_routes(&host, port, &scheme, &ingress_kind)
         .await
-    else {
-        return Err(StatusCode::SERVICE_UNAVAILABLE.into_response());
+    {
+        Ok(routes) => routes,
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), "loading inbound delivery routes failed");
+            return Err(StatusCode::SERVICE_UNAVAILABLE.into_response());
+        }
     };
     let host_is_delivery = if routes.is_empty() {
         match svc.db.endpoint_host_exists(&host).await {
@@ -1688,6 +1696,8 @@ async fn dispatch_route(
     {
         request.extensions_mut().insert(default_transport);
     }
+    // Hybrid handlers issue signed delivery grants for bulk reads; their
+    // surface provider rejects origin-side object streaming.
     match rewrite_for_route(&svc, request).await {
         Ok(request) => next.run(request).await,
         Err(response) => response,
@@ -3260,16 +3270,72 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         put(
             |State(state): State<SharedState>,
              Path((publication_id, object_id)): Path<(String, i64)>,
+             hybrid_origin: Option<axum::extract::Extension<crate::hybrid_ingress::HybridOriginRequest>>,
              headers: HeaderMap,
              request: Request| {
                 let svc = from_state(state);
                 send_bridge(async move {
+                    let body = request.into_body();
+                    if let Some(phase) = headers
+                        .get(crate::hybrid_ingress::HYBRID_UPLOAD_PHASE_HEADER)
+                        .and_then(|value| value.to_str().ok())
+                    {
+                        if hybrid_origin.is_none() {
+                            return StatusCode::FORBIDDEN.into_response();
+                        }
+                        let body = match axum::body::to_bytes(body, 64 * 1024).await {
+                            Ok(body) => body,
+                            Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+                        };
+                        return match phase {
+                            "admit" => {
+                                if !body.is_empty() {
+                                    return StatusCode::BAD_REQUEST.into_response();
+                                }
+                                match svc
+                                    .admit_hybrid_registry_publication_object(
+                                        auth_header(&headers).as_deref(),
+                                        &publication_id,
+                                        object_id,
+                                    )
+                                    .await
+                                {
+                                    Ok(admission) => Json(admission).into_response(),
+                                    Err(error) => error_response(&error),
+                                }
+                            }
+                            "complete" => {
+                                let request = serde_json::from_slice::<
+                                    crate::hybrid_ingress::HybridPublicationUploadCompletionRequest,
+                                >(&body);
+                                match request {
+                                    Ok(request) => match svc
+                                        .complete_hybrid_registry_publication_object(
+                                            auth_header(&headers).as_deref(),
+                                            &publication_id,
+                                            object_id,
+                                            request,
+                                        )
+                                        .await
+                                    {
+                                        Ok(()) => StatusCode::CREATED.into_response(),
+                                        Err(error) => error_response(&error),
+                                    },
+                                    Err(_) => StatusCode::BAD_REQUEST.into_response(),
+                                }
+                            }
+                            _ => StatusCode::BAD_REQUEST.into_response(),
+                        };
+                    }
+                    if hybrid_origin.is_some() {
+                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
                     match svc
                         .upload_registry_publication_object(
                             auth_header(&headers).as_deref(),
                             &publication_id,
                             object_id,
-                            request.into_body(),
+                            body,
                         )
                         .await
                     {
@@ -3285,10 +3351,87 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         put(
             |State(state): State<SharedState>,
              Path((upload_id, part_number)): Path<(String, u32)>,
+             hybrid_origin: Option<
+                axum::extract::Extension<crate::hybrid_ingress::HybridOriginRequest>,
+            >,
              headers: HeaderMap,
-             body: Bytes| {
+             request: Request| {
                 let svc = from_state(state);
                 send_bridge(async move {
+                    if let Some(phase) = headers
+                        .get(crate::hybrid_ingress::HYBRID_UPLOAD_PHASE_HEADER)
+                        .and_then(|value| value.to_str().ok())
+                    {
+                        if hybrid_origin.is_none() {
+                            return StatusCode::FORBIDDEN.into_response();
+                        }
+                        let body = match axum::body::to_bytes(request.into_body(), 256 * 1024).await {
+                            Ok(body) => body,
+                            Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+                        };
+                        return match phase {
+                            "preflight" if body.is_empty() => match svc
+                                .preflight_hybrid_registry_publication_part(
+                                    auth_header(&headers).as_deref(),
+                                    &upload_id,
+                                    part_number,
+                                )
+                                .await
+                            {
+                                Ok(preflight) => Json(preflight).into_response(),
+                                Err(error) => error_response(&error),
+                            },
+                            "admit" => match serde_json::from_slice::<
+                                crate::hybrid_ingress::HybridPublicationPartAdmissionRequest,
+                            >(&body)
+                            {
+                                Ok(admission) => match svc
+                                    .admit_hybrid_registry_publication_part(
+                                        auth_header(&headers).as_deref(),
+                                        &upload_id,
+                                        part_number,
+                                        admission,
+                                    )
+                                    .await
+                                {
+                                    Ok(admitted) => Json(admitted).into_response(),
+                                    Err(error) => error_response(&error),
+                                },
+                                Err(_) => StatusCode::BAD_REQUEST.into_response(),
+                            },
+                            "complete" => match serde_json::from_slice::<
+                                crate::hybrid_ingress::HybridPublicationPartCompletionRequest,
+                            >(&body)
+                            {
+                                Ok(completion) => match svc
+                                    .complete_hybrid_registry_publication_part(
+                                        auth_header(&headers).as_deref(),
+                                        &upload_id,
+                                        part_number,
+                                        completion,
+                                    )
+                                    .await
+                                {
+                                    Ok(part) => Json(part).into_response(),
+                                    Err(error) => error_response(&error),
+                                },
+                                Err(_) => StatusCode::BAD_REQUEST.into_response(),
+                            },
+                            _ => StatusCode::BAD_REQUEST.into_response(),
+                        };
+                    }
+                    if hybrid_origin.is_some() {
+                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
+                    let body = match axum::body::to_bytes(
+                        request.into_body(),
+                        CONNECT_REQUEST_BODY_LIMIT_BYTES,
+                    )
+                    .await
+                    {
+                        Ok(body) => body,
+                        Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+                    };
                     match svc
                         .upload_registry_publication_multipart_part(
                             auth_header(&headers).as_deref(),
@@ -3535,10 +3678,86 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         put(
             |State(state): State<SharedState>,
              Path((cache_id, ticket_id, encoded_path)): Path<(String, String, String)>,
+             hybrid_origin: Option<
+                axum::extract::Extension<crate::hybrid_ingress::HybridOriginRequest>,
+            >,
              headers: HeaderMap,
              body: Bytes| {
                 let svc = from_state(state);
                 send_bridge(async move {
+                    if let Some(phase) = headers
+                        .get(crate::hybrid_ingress::HYBRID_UPLOAD_PHASE_HEADER)
+                        .and_then(|value| value.to_str().ok())
+                    {
+                        if hybrid_origin.is_none() {
+                            return StatusCode::FORBIDDEN.into_response();
+                        }
+                        return match phase {
+                            "preflight" => {
+                                if !body.is_empty() {
+                                    return StatusCode::BAD_REQUEST.into_response();
+                                }
+                                match svc
+                                    .preflight_hybrid_cache_upload(
+                                        auth_header(&headers).as_deref(),
+                                        &cache_id,
+                                        &ticket_id,
+                                        &encoded_path,
+                                    )
+                                    .await
+                                {
+                                    Ok(preflight) => Json(preflight).into_response(),
+                                    Err(error) => error_response(&error),
+                                }
+                            }
+                            "admit" => {
+                                let request = serde_json::from_slice::<
+                                    crate::hybrid_ingress::HybridCacheUploadAdmissionRequest,
+                                >(&body);
+                                match request {
+                                    Ok(request) => match svc
+                                        .admit_hybrid_cache_upload(
+                                            auth_header(&headers).as_deref(),
+                                            &cache_id,
+                                            &ticket_id,
+                                            &encoded_path,
+                                            request,
+                                        )
+                                        .await
+                                    {
+                                        Ok(admission) => Json(admission).into_response(),
+                                        Err(error) => error_response(&error),
+                                    },
+                                    Err(_) => StatusCode::BAD_REQUEST.into_response(),
+                                }
+                            }
+                            "complete" => {
+                                let request = serde_json::from_slice::<
+                                    crate::hybrid_ingress::HybridCacheUploadCompletionRequest,
+                                >(&body);
+                                match request {
+                                    Ok(request) => match svc
+                                        .complete_hybrid_cache_upload(
+                                            auth_header(&headers).as_deref(),
+                                            &cache_id,
+                                            &ticket_id,
+                                            &encoded_path,
+                                            request,
+                                        )
+                                        .await
+                                    {
+                                        Ok(()) => StatusCode::CREATED.into_response(),
+                                        Err(error) => error_response(&error),
+                                    },
+                                    Err(_) => StatusCode::BAD_REQUEST.into_response(),
+                                }
+                            }
+                            _ => StatusCode::BAD_REQUEST.into_response(),
+                        };
+                    }
+                    if hybrid_origin.is_some() {
+                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
                     match svc
                         .upload_cache_object(
                             auth_header(&headers).as_deref(),
@@ -3576,10 +3795,91 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         put(
             |State(state): State<SharedState>,
              Path((upload_id, part_number)): Path<(String, u32)>,
+             hybrid_origin: Option<
+                axum::extract::Extension<crate::hybrid_ingress::HybridOriginRequest>,
+            >,
              headers: HeaderMap,
-             body: Bytes| {
+             request: Request| {
                 let svc = from_state(state);
                 send_bridge(async move {
+                    if let Some(phase) = headers
+                        .get(crate::hybrid_ingress::HYBRID_UPLOAD_PHASE_HEADER)
+                        .and_then(|value| value.to_str().ok())
+                    {
+                        if hybrid_origin.is_none() {
+                            return StatusCode::FORBIDDEN.into_response();
+                        }
+                        let body = match axum::body::to_bytes(request.into_body(), 4096).await {
+                            Ok(body) => body,
+                            Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+                        };
+                        return match phase {
+                            "preflight" if body.is_empty() => match svc
+                                .preflight_hybrid_cache_part(
+                                    auth_header(&headers).as_deref(),
+                                    &upload_id,
+                                    part_number,
+                                )
+                                .await
+                            {
+                                Ok(preflight) => Json(preflight).into_response(),
+                                Err(error) => error_response(&error),
+                            },
+                            "admit" => match serde_json::from_slice::<
+                                crate::hybrid_ingress::HybridCachePartAdmissionRequest,
+                            >(&body)
+                            {
+                                Ok(admission) => match svc
+                                    .admit_hybrid_cache_part(
+                                        auth_header(&headers).as_deref(),
+                                        &upload_id,
+                                        part_number,
+                                        admission,
+                                    )
+                                    .await
+                                {
+                                    Ok(admitted) => Json(admitted).into_response(),
+                                    Err(error) => error_response(&error),
+                                },
+                                Err(_) => StatusCode::BAD_REQUEST.into_response(),
+                            },
+                            "complete" => match serde_json::from_slice::<
+                                crate::hybrid_ingress::HybridCachePartCompletionRequest,
+                            >(&body)
+                            {
+                                Ok(completion) => match svc
+                                    .complete_hybrid_cache_part(
+                                        auth_header(&headers).as_deref(),
+                                        &upload_id,
+                                        part_number,
+                                        completion,
+                                    )
+                                    .await
+                                {
+                                    Ok(part) => Json(aos_proto_types::CacheMultipartPart {
+                                        part_number: part.part_number,
+                                        etag: part.etag,
+                                    })
+                                    .into_response(),
+                                    Err(error) => error_response(&error),
+                                },
+                                Err(_) => StatusCode::BAD_REQUEST.into_response(),
+                            },
+                            _ => StatusCode::BAD_REQUEST.into_response(),
+                        };
+                    }
+                    if hybrid_origin.is_some() {
+                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
+                    let body = match axum::body::to_bytes(
+                        request.into_body(),
+                        CONNECT_REQUEST_BODY_LIMIT_BYTES,
+                    )
+                    .await
+                    {
+                        Ok(body) => body,
+                        Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+                    };
                     match svc
                         .upload_cache_multipart_part(
                             auth_header(&headers).as_deref(),

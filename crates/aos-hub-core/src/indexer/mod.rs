@@ -1106,10 +1106,7 @@ async fn fetch_exact_oci_range(
     limit: usize,
 ) -> Result<Vec<u8>> {
     let read = fetch
-        .fetch_stream(
-            &crate::db::oci_blob_object_key(descriptor.digest),
-            Some(range),
-        )
+        .inspect_oci_range(&crate::db::oci_blob_object_key(descriptor.digest), range)
         .await?
         .context("legacy OCI layer range is absent")?;
     anyhow::ensure!(
@@ -2586,24 +2583,36 @@ async fn verify_package_documentation(
                 let Some(artifact) = &entry.documentation else {
                     continue;
                 };
-                let document = fetch_package_documentation(
-                    fetch,
-                    &package.package.name,
-                    &version.version,
-                    platform,
-                    artifact,
-                )
-                .await?;
+                let inspection = if fetch.storage_local_documentation_inspection() {
+                    fetch
+                        .inspect_package_documentation(
+                            &package.package.name,
+                            &version.version,
+                            platform,
+                            artifact,
+                        )
+                        .await?
+                } else {
+                    let document = fetch_package_documentation(
+                        fetch,
+                        &package.package.name,
+                        &version.version,
+                        platform,
+                        artifact,
+                    )
+                    .await?;
+                    crate::fetch::DocumentationInspection::from_document(&document)
+                };
                 anyhow::ensure!(
                     documentation_digest_matches(
-                        &document.identity.runtime_nar_hash,
+                        &inspection.identity.runtime_nar_hash,
                         &entry.nar_hash,
                     )?,
                     "package documentation runtime identity mismatch"
                 );
                 if let Some(config) = &entry.config_module {
                     anyhow::ensure!(
-                        document
+                        inspection
                             .identity
                             .config_module_nar_hash
                             .as_deref()
@@ -2617,13 +2626,13 @@ async fn verify_package_documentation(
                     );
                 }
                 anyhow::ensure!(
-                    document.identity.system_module_nar_hash.as_deref()
+                    inspection.identity.system_module_nar_hash.as_deref()
                         == artifact.system_module_nar_hash.as_deref(),
                     "package documentation system-module identity mismatch"
                 );
                 if let Some(expose) = &entry.expose_artifact {
                     anyhow::ensure!(
-                        document
+                        inspection
                             .identity
                             .expose_artifact_nar_hash
                             .as_deref()
@@ -2638,14 +2647,14 @@ async fn verify_package_documentation(
                     package_version: version.version.clone(),
                     platform: platform.clone(),
                     artifact: artifact.clone(),
-                    search: document.search_documents(),
-                    options: document
+                    search: inspection.search,
+                    options: inspection
                         .options
-                        .iter()
+                        .into_iter()
                         .map(|option| crate::db::IndexedDocumentationOption {
-                            key: option.display_path.clone(),
-                            path: option.path.clone(),
-                            type_signature: option.type_signature.clone(),
+                            key: option.key,
+                            path: option.path,
+                            type_signature: option.type_signature,
                         })
                         .collect(),
                 });
@@ -3040,6 +3049,27 @@ async fn verify_system_image_object(
 ) -> Result<crate::db::VerifiedRegistryImageObject> {
     let expected_size =
         u64::try_from(byte_size).context("signed image object size cannot be negative")?;
+
+    if fetch.storage_local_sha256() {
+        let evidence = fetch
+            .inventory_evidence_bounded(&object_key, expected_size)
+            .await?
+            .with_context(|| format!("signed image object '{object_key}' is unavailable"))?;
+        let strong_etag = evidence.strong_etag.context(format!(
+            "signed image object '{object_key}' backend does not expose a strong version"
+        ))?;
+        anyhow::ensure!(
+            evidence.size == byte_size && hex::encode(evidence.sha256) == sha256,
+            "signed image object '{object_key}' does not match its catalog identity"
+        );
+        return Ok(crate::db::VerifiedRegistryImageObject {
+            object_key,
+            sha256,
+            byte_size,
+            strong_etag,
+        });
+    }
+
     let before_etag = fetch.inventory_strong_etag(&object_key).await?;
     let read = fetch
         .fetch_stream(&object_key, None)
@@ -3419,7 +3449,7 @@ mod tests {
 
     use super::*;
     use crate::db::Database;
-    use crate::fetch::{StreamedRead, SurfaceFetch};
+    use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceObjectEvidence};
     use aos_oci_types::{
         to_canonical_json, Annotations, ContainerDsseSignature,
         ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
@@ -4231,6 +4261,75 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
         fn describe(&self) -> String {
             "malicious-image-object".into()
         }
+    }
+
+    struct StorageLocalImageFetch {
+        evidence: SurfaceObjectEvidence,
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for StorageLocalImageFetch {
+        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("storage-local image verification must not fetch image bytes")
+        }
+
+        fn storage_local_sha256(&self) -> bool {
+            true
+        }
+
+        async fn inventory_evidence_bounded(
+            &self,
+            path: &str,
+            maximum_bytes: u64,
+        ) -> Result<Option<SurfaceObjectEvidence>> {
+            assert_eq!(path, "images/raw");
+            assert_eq!(maximum_bytes, 3);
+            Ok(Some(self.evidence.clone()))
+        }
+
+        fn describe(&self) -> String {
+            "storage-local-image-fixture".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn signed_image_verifier_uses_storage_local_digest_evidence() {
+        let bytes = b"raw";
+        let mut leases = Vec::new();
+        let verified = verify_system_image_object(
+            &StorageLocalImageFetch {
+                evidence: SurfaceObjectEvidence {
+                    sha256: Sha256::digest(bytes).into(),
+                    size: bytes.len() as i64,
+                    strong_etag: Some("\"fixture-version\"".into()),
+                },
+            },
+            "images/raw".into(),
+            hex::encode(Sha256::digest(bytes)),
+            bytes.len() as i64,
+            &mut leases,
+        )
+        .await
+        .unwrap();
+        assert_eq!(verified.strong_etag, "\"fixture-version\"");
+        assert!(leases.is_empty());
+
+        let corrupted = StorageLocalImageFetch {
+            evidence: SurfaceObjectEvidence {
+                sha256: Sha256::digest(b"other").into(),
+                size: bytes.len() as i64,
+                strong_etag: Some("\"fixture-version\"".into()),
+            },
+        };
+        assert!(verify_system_image_object(
+            &corrupted,
+            "images/raw".into(),
+            hex::encode(Sha256::digest(bytes)),
+            bytes.len() as i64,
+            &mut leases,
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]

@@ -108,6 +108,7 @@ pub mod ratelimit;
 pub mod seed;
 pub mod server;
 pub mod signing;
+pub mod storage_work;
 /// The cache-stack node model, re-exported from [`aos_hub_core::stack`]
 /// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::stack::…` stable.
 pub use aos_hub_core::stack;

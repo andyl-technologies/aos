@@ -337,7 +337,7 @@ impl Database {
                 AND publication.registry_id = bundle.registry_id
               WHERE bundle.bundle_digest = ?1 AND bundle.registry_id = ?2
                 AND publication.state = 'ready'
-                AND ?5 = bundle.staging_deployment_id AND ?8 IS NULL";
+                AND ?5 = bundle.staging_deployment_id AND CAST(?8 AS VARCHAR) IS NULL";
         self.backend
             .checked_batch(&[CheckedStatement::exact(
                 sql,

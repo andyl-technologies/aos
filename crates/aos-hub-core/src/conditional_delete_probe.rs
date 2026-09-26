@@ -70,8 +70,7 @@ impl ConditionalDeleteProbeController {
                 .await?
                 .context("due conditional-delete placement disappeared")?;
             anyhow::ensure!(
-                placement.registry_id == Some(frozen.registry_id)
-                    && placement.name == frozen.placement_name
+                placement.name == frozen.placement_name
                     && placement.resource_version == frozen.placement_resource_version
                     && placement.write_spec_version == frozen.placement_write_spec_version
                     && placement.observation_version == Some(frozen.placement_observation_version)
@@ -135,20 +134,6 @@ impl ConditionalDeleteProbeController {
         let capability_fingerprint = capability_fingerprint(&binding.kind, binding_write_revision);
         let expected_resource_version = existing.map(|capability| capability.resource_version);
 
-        if binding.kind == "deployment_r2" {
-            self.record(
-                &binding,
-                binding_write_revision,
-                None,
-                None,
-                capability_fingerprint,
-                "invalid",
-                expected_resource_version,
-                now,
-            )
-            .await?;
-            return Ok(());
-        }
         if matches!(binding.kind.as_str(), "s3" | "r2") && delete_credential.is_none() {
             self.record(
                 &binding,
@@ -174,10 +159,28 @@ impl ConditionalDeleteProbeController {
             .writes
             .placement_writer_at_revision(placement, &revision)
             .await?;
-        let deleter = self
+        let deleter = match self
             .writes
             .placement_deleter(placement, binding.resource_version, generation.unwrap_or(1))
-            .await?;
+            .await
+        {
+            Ok(deleter) => deleter,
+            Err(_) if binding.kind == "deployment_r2" => {
+                self.record(
+                    &binding,
+                    binding_write_revision,
+                    None,
+                    None,
+                    capability_fingerprint,
+                    "invalid",
+                    expected_resource_version,
+                    now,
+                )
+                .await?;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         let key = format!(
             ".aos-internal/conditional-delete-probes/{}-{}",
             binding.id, binding_write_revision
