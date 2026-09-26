@@ -105,13 +105,19 @@ impl SystemdHeldSnapshotReaderV1 {
         let request = encode_request(snapshot, expected_pool_guid, protected_cut_digest, nonce)?;
         let request_digest = digest_request(&request);
         let deadline = Deadline::after(EXCHANGE_TIMEOUT);
-        let mut socket = SeqpacketSocket::connect(Path::new(SOCKET_PATH))?;
-        socket
-            .peer()
-            .require_peer_filesystem_path(socket.as_fd()?, Path::new(SOCKET_PATH))?;
-        verify_systemd_activation_peer(socket.peer(), &self.manager)?;
-
-        let ready = receive_before(&mut socket, MAXIMUM_READY_BYTES, deadline)?;
+        // Peer pinning inside connect can fail after the kernel has accepted
+        // the connection and systemd has begun starting a reader.
+        let mut socket = SeqpacketSocket::connect(Path::new(SOCKET_PATH))
+            .map_err(ZfsWorkerError::from)
+            .or_else(|error| fail_stop_unproved_setup(&mut self.fail_stopped, error, None))?;
+        let ready = (|| {
+            socket
+                .peer()
+                .require_peer_filesystem_path(socket.as_fd()?, Path::new(SOCKET_PATH))?;
+            verify_systemd_activation_peer(socket.peer(), &self.manager)?;
+            receive_before(&mut socket, MAXIMUM_READY_BYTES, deadline)
+        })()
+        .or_else(|error| fail_stop_unproved_setup(&mut self.fail_stopped, error, None))?;
         let (ready_payload, reader_subject) = ready.into_parts();
         let reader_setup =
             decode_ready(&ready_payload).and_then(|path| self.verify_reader(&reader_subject, path));
@@ -168,9 +174,10 @@ impl SystemdHeldSnapshotReaderV1 {
     }
 
     fn prove_prior_readers_empty(&self) -> Result<(), ZfsWorkerError> {
-        // The client is about to create a new Accept=yes instance. Scan the
-        // reserved service scope first, including after a Storage restart,
-        // so an earlier indeterminate exchange cannot overlap this attempt.
+        // This checks materialized prior units. An accepted activation may
+        // not have a cgroup yet, including during a Storage restart. Positive
+        // production admission must stay closed until a durable launch fence
+        // or supervisor ordering covers that interval.
         let directory = format!("/proc/self/fd/{}", self.worker_parent.as_fd().as_raw_fd());
         let mut reader_count = 0;
         for entry in fs::read_dir(directory)? {
@@ -571,6 +578,47 @@ mod tests {
             require_prior_reader_empty(CgroupPopulationState::Populated),
             Err(ZfsWorkerError::Quiescence(_))
         ));
+    }
+
+    #[test]
+    fn ambiguous_connection_and_pre_ready_failures_fail_stop() {
+        let cases = [
+            (
+                "connection peer pinning",
+                ZfsWorkerError::Transport(
+                    aos_sandbox_linux::seqpacket::SeqpacketError::PeerIdentity(
+                        "peer pinning failed",
+                    ),
+                ),
+            ),
+            (
+                "socket path authentication",
+                ZfsWorkerError::Transport(
+                    aos_sandbox_linux::seqpacket::SeqpacketError::PeerIdentity(
+                        "socket path changed",
+                    ),
+                ),
+            ),
+            ("systemd peer authentication", ZfsWorkerError::PeerMismatch),
+            (
+                "READY receive",
+                ZfsWorkerError::Transport(
+                    aos_sandbox_linux::seqpacket::SeqpacketError::EmptyRecord,
+                ),
+            ),
+        ];
+
+        for (stage, error) in cases {
+            let mut fail_stopped = false;
+            let result: Result<(), ZfsWorkerError> =
+                fail_stop_unproved_setup(&mut fail_stopped, error, None);
+
+            assert!(fail_stopped, "{stage}");
+            assert!(
+                matches!(result, Err(ZfsWorkerError::Quiescence(_))),
+                "{stage}"
+            );
+        }
     }
 
     #[test]
