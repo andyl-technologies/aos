@@ -33,7 +33,7 @@ const GUEST_SELECTABLE_BOUNDARY_PREFIX: &str = "CRUCIBLE-GUEST-SELECTABLE-BOUNDA
 const MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS: usize = 256;
 const MAX_GUEST_SELECTABLE_BOUNDARY_LINES: usize = MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS + 1;
 const MAX_GUEST_SELECTABLE_BOUNDARY_LINE_BYTES: usize = 8 * 1024;
-const MATERIALIZATION_DIAGNOSTIC_PREFIX: &str = "CRUCIBLE-MATERIALIZATION-V1 ";
+pub(super) const MATERIALIZATION_DIAGNOSTIC_PREFIX: &str = "CRUCIBLE-MATERIALIZATION-V1 ";
 const EXACT_RESUME_PROGRESS_PREFIX: &str = "CRUCIBLE-EXACT-RESUME-PROGRESS-V1 ";
 
 #[path = "guest_choice/maintenance_transfer.rs"]
@@ -719,13 +719,13 @@ fn materialization_flight_deployment(fixture: &FlightFixture) -> Result<PathBuf,
     Ok(deployment)
 }
 
-fn capture_materialization_events(
+pub(super) fn capture_materialization_events(
     service: &CampaignServiceChild,
 ) -> Result<Vec<String>, Box<dyn Error>> {
     service.stderr_lines_with_prefix(MATERIALIZATION_DIAGNOSTIC_PREFIX, 257, 256)
 }
 
-fn assert_materialization_tier(
+pub(super) fn assert_materialization_tier(
     events: &[String],
     attempt: impl std::fmt::Display,
     tier: &str,

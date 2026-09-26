@@ -4,6 +4,7 @@
   lib,
   guestChoice ? false,
   envoyNetwork ? false,
+  envoyKnownFinding ? false,
   hotForkFlight ? false,
   campaignMidpoint ? false,
   findingExactBundle ? false,
@@ -12,6 +13,7 @@
   maintenanceTransfer ? false,
   policyTimeout ? false,
 }: let
+  envoyProduct = envoyNetwork || envoyKnownFinding;
   source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
   controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
   cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;
@@ -88,56 +90,56 @@
     attempt_namespace = "packaged-flight"
     first_project_id = 30000
     project_id_count = ${
-      if findingForkWrite || hotForkFlight
+      if findingForkWrite || hotForkFlight || envoyProduct
       then "2"
       else "1"
     }
     child_user_id = 65534
     child_group_id = 65534
     maximum_tasks = ${
-      if envoyNetwork
+      if envoyProduct
       then "256"
       else "64"
     }
     maximum_inodes = ${
-      if envoyNetwork
+      if envoyProduct
       then "65536"
       else "4096"
     }
     finish_timeout_ms = ${
-      if envoyNetwork
+      if envoyProduct
       then "30000"
       else "15000"
     }
     maximum_slots = ${
-      if findingForkWrite || hotForkFlight
+      if findingForkWrite || hotForkFlight || envoyProduct
       then "2"
       else "1"
     }
     maximum_vcpus = ${
-      if envoyNetwork
-      then "5"
+      if envoyProduct
+      then "10"
       else "2"
     }
     maximum_resident_bytes = ${toString (
-      if envoyNetwork
-      then 6442450944
+      if envoyProduct
+      then 7516192768
       else if guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite
       then 1073741824
       else 536870912
     )}
     maximum_disk_bytes = ${
-      if envoyNetwork
+      if envoyProduct
       then "10737418240"
       else "2147483648"
     }
     maximum_execution_quanta = ${
-      if envoyNetwork
+      if envoyProduct
       then "250000"
       else "10000"
     }
     maximum_checkpoint_bytes = ${
-      if envoyNetwork
+      if envoyProduct
       then "4294967296"
       else "1073741824"
     }
@@ -180,6 +182,8 @@
       then "crucible-campaign-exact-maintenance-transfer"
       else if hotForkFlight
       then "crucible-campaign-public-materialization-tiers"
+      else if envoyKnownFinding
+      then "crucible-campaign-envoy-known-finding"
       else if envoyNetwork
       then "crucible-campaign-envoy-network"
       else if guestChoice
@@ -194,25 +198,25 @@
       then "crucible-campaign-midpoint-debug"
       else "crucible-packaged-campaign";
     memory =
-      if envoyNetwork
+      if envoyProduct
       then 8192
       else if findingForkWrite || hotForkFlight
       then 3072
       else 2048;
     headlessVcpuCount =
-      if envoyNetwork
+      if envoyProduct
       then 6
       else 1;
     # Five 512 MiB RAM and 512 MiB disk snapshots need at least 5 GiB for
     # baked genesis alone. Leave 16 GiB writable for staged checkpoints,
     # quota-backed attempts, and copy-on-write overhead on the ext4 rootfs.
     extraWritableMiB =
-      if envoyNetwork
+      if envoyProduct
       then 16384
       else 0;
     rootfsDeps =
       [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
-      ++ (lib.optional envoyNetwork envoyNetworkRootImage)
+      ++ (lib.optional envoyProduct envoyNetworkRootImage)
       ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite) pkgs.crucible)
       ++ (
         if guestChoice || hotForkFlight
@@ -223,7 +227,7 @@
       );
     testScript = ''
       set -eu
-      ${lib.optionalString envoyNetwork ''
+      ${lib.optionalString envoyProduct ''
         # The headless harness mounts /tmp as a RAM-sized tmpfs. Put the
         # five-guest checkpoint workspace on the already-sized ext4 rootfs.
         ${pkgs.util-linux}/bin/mount -o remount,rw /
@@ -265,7 +269,7 @@
       echo '+cpu +memory +pids' > /sys/fs/cgroup/crucible/cgroup.subtree_control 2>> "$setup_log" \
         || setup_failure "$?" cgroup-owner-controllers
       setup_step quota-image truncate -s ${
-        if envoyNetwork
+        if envoyProduct
         then "16G"
         else "4G"
       } /tmp/attempts.img
@@ -285,7 +289,7 @@
       export CRUCIBLE_DEBUG_GATEWAY=${gateway}/bin/crucible-debug-gateway
       for kernel in ${pkgs.linux}/boot/vmlinuz-*; do export CRUCIBLE_KERNEL="$kernel"; done
       export CRUCIBLE_ROOT_IMAGE=${
-        if envoyNetwork
+        if envoyProduct
         then "${envoyNetworkRootImage}/root.ext4"
         else "${flight}/root.raw"
       }
@@ -386,6 +390,28 @@
             'test result: ok. 1 passed; 0 failed; 0 ignored;' "$tier_log"
           printf '%s\n' 'gate=gate:campaign-public-materialization-tiers'
         ''
+        else if envoyKnownFinding
+        then ''
+          finding_selector=packaged::envoy_known_finding::public_five_node_envoy_network_retains_known_failure
+          finding_log=/tmp/campaign-envoy-known-finding.log
+          ${flight}/bin/campaign-store-process-flight --ignored --list \
+            > /tmp/campaign-envoy-known-finding-list.log 2>&1
+          ${pkgs.grep}/bin/grep -Fqx "$finding_selector: test" \
+            /tmp/campaign-envoy-known-finding-list.log
+
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 3600 \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
+            "$finding_selector" --nocapture > "$finding_log" 2>&1; then
+            cat "$finding_log"
+            exit 1
+          fi
+          cat "$finding_log"
+          ${pkgs.grep}/bin/grep -Fxq \
+            'envoy_known_finding_authenticated=true' "$finding_log"
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' "$finding_log"
+          printf '%s\n' 'gate=gate:campaign-envoy-known-finding'
+        ''
         else if envoyNetwork
         then ''
           envoy_selector=packaged::envoy_network::public_five_node_envoy_network_reaches_measured_failover
@@ -410,6 +436,15 @@
           cat "$envoy_log"
           ${pkgs.grep}/bin/grep -Fxq \
             'envoy_five_node_failover_and_recovery_authenticated=true' "$envoy_log"
+          for evidence in \
+            envoy_five_node_hot_fork_authenticated=true \
+            envoy_five_node_thin_replay_authenticated=true \
+            envoy_five_node_exact_restore_authenticated=true \
+            envoy_five_node_retention_authenticated=true \
+            envoy_five_node_graceful_completion_authenticated=true
+          do
+            ${pkgs.grep}/bin/grep -Fxq "$evidence" "$envoy_log"
+          done
           ${pkgs.grep}/bin/grep -Fq \
             'test result: ok. 1 passed; 0 failed; 0 ignored;' "$envoy_log"
           printf '%s\n' 'gate=gate:campaign-envoy-network-five-vm'
