@@ -65,6 +65,47 @@ fn request_authority_must_match_its_consumer_declaration() {
 }
 
 #[test]
+fn pure_provider_package_authenticates_children_without_runtime_inventory() {
+    let mut fixture = stateful_owner_plan_fixture();
+    fixture.binding_inputs.environment.providers.clear();
+    fixture.binding_inputs.desired_state.instances[0].authority = DeclarationAuthority::System;
+    for request in &mut fixture.binding_inputs.desired_state.child_requests {
+        if request.id.scope.as_slice().is_empty() {
+            request.authority = DeclarationAuthority::System;
+        }
+    }
+    fixture.binding_plan.requests = fixture.binding_inputs.desired_state.child_requests.clone();
+    fixture.refresh_commitments();
+
+    let mut unpinned = fixture.clone();
+    unpinned.binding_inputs.desired_state.instances[0].package = None;
+    unpinned.refresh_commitments();
+    let unpinned_errors = unpinned
+        .context
+        .validate_binding_plan(unpinned.binding_plan, unpinned.binding_inputs)
+        .expect_err("a package-authored child needs an exact provider package pin");
+    assert!(
+        unpinned_errors
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::BindingPrincipalMismatch)
+    );
+
+    let errors = fixture
+        .context
+        .validate_binding_plan(fixture.binding_plan, fixture.binding_inputs)
+        .expect_err("terminal handler has no runtime inventory");
+    assert!(
+        errors
+            .diagnostics()
+            .iter()
+            .all(|diagnostic| diagnostic.code != DiagnosticCode::BindingPrincipalMismatch),
+        "pure provider child lost its authenticated package author: {:?}",
+        errors.diagnostics()
+    );
+}
+
+#[test]
 fn operation_rejects_caller_authored_method_semantics() {
     let checked = checked_lifecycle_effect_plan();
     let mut document = serde_json::to_value(checked.document()).unwrap();
