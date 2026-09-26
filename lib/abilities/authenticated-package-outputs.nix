@@ -20,6 +20,9 @@
         package = builtins.head pending;
         remaining = builtins.tail pending;
         path = builtins.toString package;
+        # Nix attribute names cannot retain a derivation's string context.
+        pathKey = builtins.unsafeDiscardStringContext path;
+        visitedAfterPackage = visited // {"${pathKey}" = true;};
         dependencies = remaining ++ (package.runtimeDeps or []);
         name = packageNameFor package;
         # The native contract is the authority for addressable outputs. Walk
@@ -27,18 +30,24 @@
         # do not silently turn unrelated transitive packages into selectors.
         authenticated = builtins.elem name selectedDependencyNames;
       in
-        if builtins.elem path visited
+        if builtins.hasAttr pathKey visited
         then visit outputs visited remaining
         else if !authenticated
-        then visit outputs (visited ++ [path]) dependencies
+        then visit outputs visitedAfterPackage dependencies
         else if builtins.hasAttr name outputs
         then
           if builtins.toString outputs.${name} == path
-          then visit outputs (visited ++ [path]) dependencies
+          then visit outputs visitedAfterPackage dependencies
           else throw "package '${ownerName}' has ambiguous authenticated dependency outputs for '${name}'"
-        else visit (outputs // {${name} = package;}) (visited ++ [path]) dependencies;
+        else visit (outputs // {${name} = package;}) visitedAfterPackage dependencies;
   in
-    visit {${ownerName} = owner;} [builtins.toString owner] (owner.runtimeDeps or []);
+    if selectedDependencyNames == []
+    then {${ownerName} = owner;}
+    else
+      visit
+      {${ownerName} = owner;}
+      {"${builtins.unsafeDiscardStringContext (builtins.toString owner)}" = true;}
+      (owner.runtimeDeps or []);
 
   authenticatedPackageOutputFor = {
     package,
