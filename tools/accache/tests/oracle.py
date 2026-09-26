@@ -50,6 +50,10 @@ def fixtures(gcc, clang, rustc):
             ("default-depfile", ["-MMD", "-MP"]),
             ("include", ["-include", "value.h", "-I.", "-isystem", "."]),
             ("defines", ["-DUNUSED=123", "-UUNUSED", "-fPIC", "-fvisibility=hidden"]),
+            ("lto", ["-flto"]),
+            ("address-sanitizer", ["-fsanitize=address"]),
+            ("openmp", ["-fopenmp"]),
+            ("stack-protector", ["-fstack-protector-strong"]),
         ]:
             # Give independent cases distinct compiler identities. Otherwise
             # sccache can reuse an earlier object-only entry for a depfile case,
@@ -58,6 +62,17 @@ def fixtures(gcc, clang, rustc):
                           base + flags + ["-frandom-seed=" + name + "-" + suffix], c_sources,
                           {"value.h": "#define VALUE 73\n"})
 
+        yield Fixture(name + "-stack-usage", compiler,
+                      base + ["-fstack-usage"], c_sources,
+                      {"value.h": "#define VALUE 73\n"}, cacheable=False)
+        if name == "gcc":
+            yield Fixture("gcc-aux-info", compiler,
+                          base + ["-aux-info", "source.aux"], c_sources,
+                          {"value.h": "#define VALUE 73\n"})
+        else:
+            yield Fixture("clang-serialized-diagnostics", compiler,
+                          base + ["--serialize-diagnostics", "source.dia"], c_sources,
+                          {"value.h": "#define VALUE 73\n"})
         yield Fixture(name + "-default-output", compiler, ["-c", "source.c"], c_sources)
         yield Fixture(name + "-joined-output", compiler, ["-c", "source.c", "-osource.o"], c_sources)
         yield Fixture(name + "-response", compiler, ["@arguments.rsp"], c_sources | {
@@ -111,6 +126,17 @@ def fixtures(gcc, clang, rustc):
     yield Fixture("rust-staticlib", rustc,
                   ["--crate-name=example", "--crate-type=staticlib", "--emit=link,dep-info", "--out-dir=target", "library.rs"],
                   rust_sources)
+    for name, crate_type, emits in [
+        ("rlib-metadata-only", "rlib", "metadata,dep-info"),
+        ("staticlib-metadata-only", "staticlib", "metadata,dep-info"),
+        ("staticlib-all-outputs", "staticlib", "link,metadata,dep-info"),
+        ("rlib-staticlib", "rlib,staticlib", "link,metadata,dep-info"),
+        ("rlib-link-only", "rlib", "link"),
+    ]:
+        yield Fixture("rust-" + name, rustc,
+                      ["--crate-name=example", "--crate-type=" + crate_type,
+                       "--out-dir=target", "library.rs", "--emit=" + emits],
+                      rust_sources, {"value.txt": "second"})
     yield Fixture("rust-response", rustc, ["@arguments.rsp"], rust_sources | {
         "arguments.rsp": "--crate-name=example\n--crate-type=rlib\n--emit=link,dep-info\n--out-dir=target\nlibrary.rs\n",
     })
@@ -195,6 +221,28 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     expected = (*expected[:3], {key: value for key, value in expected[3].items()
                                                if key != "source.d"})
                     assert "source.d" not in actual[3], "oracle defect changed; remove this exception"
+                missing_oracle_side_files = {
+                    "gcc-aux-info": "source.aux",
+                    "clang-serialized-diagnostics": "source.dia",
+                }
+                if (side_file := missing_oracle_side_files.get(fixture.name)) and label == "sccache warm vs direct":
+                    # These accepted flags produce files that pinned sccache
+                    # omits from its action result. Accache must restore them.
+                    assert side_file in expected[3]
+                    expected = (*expected[:3], {key: value for key, value in expected[3].items()
+                                               if key != side_file})
+                    assert side_file not in actual[3], (
+                        "oracle defect changed; remove this exception")
+                if (fixture.name in {"rust-staticlib-metadata-only", "rust-staticlib-all-outputs"}
+                        and label == "sccache warm vs direct"):
+                    # Pinned sccache loses rustc's empty metadata file for a
+                    # staticlib-only crate. Keep the direct/accache comparison
+                    # strict and fail if the oracle changes its behavior.
+                    assert expected[3]["target/libexample.rmeta"] == (b"", False)
+                    expected = (*expected[:3], {key: value for key, value in expected[3].items()
+                                               if key != "target/libexample.rmeta"})
+                    assert "target/libexample.rmeta" not in actual[3], (
+                        "oracle defect changed; remove this exception")
                 for field, left, right in zip(["exit", "stdout", "stderr", "artifacts"], expected, actual):
                     assert left == right, (fixture.name, label, field,
                                            {path: (hashlib.sha256(data).hexdigest(), executable)
@@ -229,7 +277,7 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     assert warm_event["outcome"] != "hit", (fixture.name, warm_event)
                 results.append({"fixture": fixture.name, "revision": revision,
                                 "oracle_hit": oracle_hit, "accache": warm_event["outcome"],
-                                "oracle_omits_default_depfile": fixture.name in {"gcc-default-depfile", "clang-default-depfile"},
+                                "oracle_missing_artifacts": sorted(set(direct[3]) - set(oracle_warm[3])),
                                 "artifacts": sorted(direct[3])})
             print("PASS oracle", fixture.name, flush=True)
         report = json.dumps({"fixtures": results, "sccache_stats": stats()}, sort_keys=True)

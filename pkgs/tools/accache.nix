@@ -2,11 +2,16 @@
 {
   mkCargoPackage,
   fetchCargoDeps,
+  lib,
 }: let
   src = builtins.path {
     path = ../../tools/accache;
     name = "accache-source";
-    filter = path: type: !(builtins.elem (baseNameOf path) ["target" "__pycache__"]);
+    # Integration fixtures are consumed by checks.build.accache separately.
+    # Keep edits to that suite from rebuilding the compiler wrapper itself.
+    filter = path: type:
+      !(builtins.elem (baseNameOf path) ["target" "__pycache__"])
+      && !(lib.hasPrefix (toString ../../tools/accache + "/tests/") path);
   };
 in
   mkCargoPackage {
