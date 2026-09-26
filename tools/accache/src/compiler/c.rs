@@ -63,7 +63,18 @@ pub(super) fn configure(
         }
         let mut explicit_reports = Vec::new();
         let mut implicit_dump = false;
+        let mut ada_specs = false;
+        let mut optimization_record = false;
         for arg in &expanded {
+            ensure!(
+                arg != "-time" && !arg.starts_with("-time="),
+                "GCC timing output is not a replayable compiler artifact"
+            );
+            if arg == "-fsave-optimization-record" {
+                optimization_record = true;
+            } else if arg == "-fno-save-optimization-record" {
+                optimization_record = false;
+            }
             if is_gcc_debug_dump_arg(arg) {
                 implicit_dump = true;
             }
@@ -84,10 +95,22 @@ pub(super) fn configure(
             }
             if arg.starts_with("-fopt-info") || arg.starts_with("-fdump-") {
                 if let Some((_, destination)) = arg.split_once('=') {
-                    if !matches!(destination, "stdout" | "stderr" | "-") {
+                    if arg.starts_with("-fdump-final-insns=") && destination == "." {
+                        default_reports.insert(".gkd");
+                    } else if !matches!(destination, "stdout" | "stderr" | "-") {
                         invocation.output(Path::new(destination), false)?;
                     }
                 } else if arg.starts_with("-fdump-") {
+                    if arg == "-fdump-final-insns" {
+                        default_reports.insert(".gkd");
+                        continue;
+                    }
+                    if matches!(arg.as_str(), "-fdump-ada-spec" | "-fdump-ada-spec-slim") {
+                        // The binding generator names specs after every input
+                        // header, including transitive headers, in the cwd.
+                        ada_specs = true;
+                        continue;
+                    }
                     // GCC's analyzer dumps use the same object-adjacent dump
                     // base for textual, graph, and compressed JSON outputs.
                     ensure!(
@@ -103,6 +126,13 @@ pub(super) fn configure(
                 }
             }
         }
+        if optimization_record {
+            default_reports.insert(".opt-record.json.gz");
+        }
+        ensure!(
+            !ada_specs || !implicit_dump,
+            "GCC Ada specs and object-adjacent dumps need separate output scopes"
+        );
         if !default_reports.is_empty() || implicit_dump {
             // Custom dump naming has separate precedence rules. Pass those
             // invocations through until their destinations can be derived.
@@ -143,6 +173,17 @@ pub(super) fn configure(
         }
         for path in explicit_reports {
             invocation.output(&path, false)?;
+        }
+        if ada_specs {
+            // GCC emits Ada specs in the working directory even when the
+            // object is placed elsewhere. The scope lock excludes other
+            // wrapped writers while we attribute changed .ads files.
+            invocation.dynamic_outputs = Some(DynamicOutputs {
+                directory: cwd.to_string_lossy().into_owned(),
+                prefix: String::new(),
+                suffix: ".ads".into(),
+                nested_prefixes: Vec::new(),
+            });
         }
     }
     for (index, arg) in expanded.iter().enumerate() {
@@ -212,7 +253,11 @@ pub(super) fn configure(
             index += 2;
             continue;
         }
-        if !clang && (arg.starts_with("-fdump-") || arg.starts_with("-fopt-info")) {
+        if !clang
+            && (arg.starts_with("-fdump-")
+                || arg.starts_with("-fopt-info")
+                || arg == "-fsave-optimization-record")
+        {
             // A dependency probe must not create or append to a caller's
             // report before the actual compilation or a cache restoration.
             index += 1;

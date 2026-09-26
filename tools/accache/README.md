@@ -110,8 +110,9 @@ files, coverage notes, preprocessed source, assembly, PCH, explicit Clang
 modules, serialized Clang diagnostics, GCC SARIF and plain HTML diagnostic
 reports with default or explicit file names, numbered GCC tree, RTL, IPA, and
 language dumps (including joined `-d` debug dumps), GCC analyzer text, graph,
-and compressed JSON dumps, and nonincremental Rust
-rlib/staticlib, metadata, dep-info, unpacked split debug `.dwo` files, and
+and compressed JSON dumps, GCC Ada and Go specs, GCC final instruction dumps
+and compressed optimization records, and nonincremental Rust rlib/staticlib,
+metadata, dep-info, unpacked split debug `.dwo` files, and
 `-Csave-temps=yes` bitcode, object, and saved metadata files.
 Rust extern/native dependencies and proc macro consumers are covered by the
 input contract above.
@@ -139,8 +140,13 @@ HTML diagram modes and unknown sink specifications bypass.
 Specialized GCC dump families outside tree, RTL, IPA, language, statistics,
 and analyzer still bypass when they select implicit filenames. Explicitly named
 GCC dumps and optimization reports are cached with their requested output files.
-GCC Ada spec generation remains passthrough because transitive headers can
-create arbitrarily named `.ads` files outside the selected object's directory.
+GCC Ada spec generation has a separate working-directory scope for `.ads`
+files: transitive headers can create names unrelated to the selected object.
+The scope lock prevents concurrent wrapped writers from being attributed to
+the wrong action. Do not run an unwrapped Ada binding generator concurrently
+in the same working directory.
+GCC `-time[=file]` bypasses caching because its timing output is invocation
+specific and the file form appends to an existing file.
 
 ## Storage and concurrency
 
