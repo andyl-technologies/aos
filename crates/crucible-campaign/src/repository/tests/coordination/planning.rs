@@ -2781,6 +2781,197 @@ fn planner_driver_releases_repository_mutation_ownership_during_component_work()
 }
 
 #[test]
+fn finite_vector_issue_charges_its_authenticated_closure_delta() {
+    let campaign = "finite-vector-closure";
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let genesis = repository
+        .create_funded(campaign, &lineage, &policy, &BTreeMap::new())
+        .expect("create campaign");
+    let alternatives = (0_u64..16)
+        .map(|index| {
+            let id = AlternativeId::from_hash(CampaignHash::derive(
+                "test.finite-vector-closure",
+                &index.to_be_bytes(),
+            ));
+            (
+                id,
+                DiscreteAlternative::new(id, format!("choice-{index}"), None)
+                    .expect("discrete alternative"),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let values = alternatives
+        .keys()
+        .copied()
+        .map(ChoiceValue::Discrete)
+        .collect::<Vec<_>>();
+    let domain = ChoiceDomain::Discrete(DiscreteDomain::new(1, alternatives).expect("domain"));
+    let declaration = SelectableDeclaration::new(
+        "product.network.retry",
+        ChoiceSource::Workload {
+            producer: "finite-vector-closure".to_owned(),
+        },
+        domain.clone(),
+        values[0].clone(),
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("declaration");
+    repository
+        .publish_choice_domain(&domain)
+        .expect("publish domain");
+    repository
+        .publish_selectable(&declaration)
+        .expect("publish declaration");
+    let opportunity = ChoiceOpportunity::new(
+        lineage.scenario(),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test", b"finite-vector-scheduler"),
+            producer: CampaignHash::derive("test", b"finite-vector-producer"),
+        },
+        campaign,
+        None,
+    )
+    .expect("opportunity");
+    repository
+        .publish_choice_opportunity(&opportunity)
+        .expect("publish opportunity");
+    let request = BranchRequest::new(
+        BranchRequest::identity(
+            opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
+        CandidateSource::finite(values.iter().cloned().collect()).expect("finite source"),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"finite-vector-request",
+        ))),
+        BranchBudget::new(16, 16).expect("branch budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("finite request");
+    let requested = repository
+        .submit_known_branch_request(campaign, genesis.snapshot_id(), &request)
+        .expect("submit finite request");
+
+    let engine = PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+    let state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![0],
+    )
+    .expect("initial state");
+    let (engine, artifact, _) =
+        planner_basis(&repository, campaign, requested.new_snapshot, state.clone());
+    let invocation = repository
+        .prepare_planner_invocation(
+            campaign,
+            requested.new_snapshot,
+            &engine,
+            &artifact,
+            &state,
+            None,
+            16,
+            PlanningBudget::new(1, 16, 16, 8192, 100).expect("vector planning budget"),
+        )
+        .expect("vector invocation");
+    let proposals = values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            Proposal::new(
+                request.branch_point(),
+                request.id().expect("request id"),
+                request.domain(),
+                value,
+                policy.id().expect("policy id"),
+                Some(invocation.id().expect("invocation id")),
+                u64::try_from(index + 1).expect("proposal ordinal"),
+                invocation.input_view(),
+            )
+            .expect("ordered finite proposal")
+        })
+        .collect::<Vec<_>>();
+    let usage = PlanningUsage {
+        branch_requests: 0,
+        proposals: 16,
+        input_objects: invocation.scan_page().input_objects(),
+        input_bytes: invocation.scan_page().input_bytes(),
+        fuel: 18,
+    };
+    let step = PlannerStepProposal::new(
+        invocation.id().expect("invocation id"),
+        PlannerState::new(
+            engine.id().expect("engine id"),
+            "closed-rust-state",
+            1,
+            vec![1],
+        )
+        .expect("next state"),
+        usage,
+        GuidanceEvidence::new(BTreeMap::new()).expect("guidance"),
+        PlannerProposalDisposition::Issue {
+            selected: PlanningScanPosition::new(
+                request.branch_point(),
+                request.id().expect("request id"),
+            ),
+            branch_requests: Vec::new(),
+            proposals: proposals.clone(),
+        },
+    )
+    .expect("vector Issue");
+    let prior_closure = repository
+        .load_validation_checkpoint(requested.new_snapshot.content_id())
+        .expect("prior checkpoint")
+        .closure_objects;
+    let prior_objects = blobs.object_count().expect("prior object count");
+
+    let accepted = repository
+        .accept_planner_step(campaign, requested.new_snapshot, &step, usage)
+        .expect("accept vector Issue");
+    let admitted = repository
+        .load_planner_step_at(accepted.new_snapshot, accepted.step)
+        .expect("load vector Issue");
+    assert_eq!(admitted.accounting().proposals, 16);
+    assert_eq!(admitted.accounting().attempts, 16);
+    assert_eq!(
+        admitted.issued_proposals(),
+        proposals
+            .iter()
+            .map(|proposal| proposal.id().expect("proposal id"))
+            .collect::<Vec<_>>()
+    );
+
+    let hot_closure = repository
+        .load_validation_checkpoint(accepted.new_snapshot.content_id())
+        .expect("hot checkpoint")
+        .closure_objects;
+    let stored_growth = blobs.object_count().expect("new object count") - prior_objects;
+    assert!(hot_closure - prior_closure >= stored_growth);
+    assert!(hot_closure - prior_closure < MAX_PLANNER_ISSUE_SUCCESSOR_GROWTH);
+    let cold = CampaignRepository::new(blobs.clone(), repository.refs.clone());
+    assert_eq!(
+        cold.head(campaign).expect("cold head").snapshot_id(),
+        accepted.new_snapshot
+    );
+    assert_eq!(
+        cold.load_planner_step_at(accepted.new_snapshot, accepted.step)
+            .expect("cold vector Issue"),
+        admitted
+    );
+    let cold_closure = cold
+        .verify_campaign_closure_anchored(accepted.new_snapshot.content_id(), &BTreeSet::new())
+        .expect("cold closure");
+    assert!(hot_closure >= cold_closure);
+}
+
+#[test]
 fn planner_issue_atomically_admits_attempts_and_deduplicates_replay() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     let genesis = repository
