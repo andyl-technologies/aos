@@ -22,9 +22,10 @@ use aos_sandbox::cache_residency::{
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, ClosedPolicyRootCasObservationV2,
-    PolicyCompilerInputV1, StagedClosedPolicyRootBaseV2, StagedClosedPolicySignerChallengeV2,
-    closed_policy_binding_digest_v2, closed_policy_effect_handoff_v2,
-    compare_closed_policy_binding_hold_claims_v2, current_parentless_create_project_source_v1,
+    PolicyCompilerInputV1, RootEffectAckV1, StagedClosedPolicyRootBaseV2,
+    StagedClosedPolicySignerChallengeV2, closed_policy_binding_digest_v2,
+    closed_policy_effect_handoff_v2, compare_closed_policy_binding_hold_claims_v2,
+    current_parentless_create_project_source_v1,
     propose_closed_current_create_explicit_policy_binding_v2,
     with_current_create_cache_signer_barrier_v5, with_current_create_policy_source_barrier_v4,
 };
@@ -36,12 +37,14 @@ use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
 use ed25519_dalek::VerifyingKey;
 
 use crate::cache_signer_exchange::request_controller_q04_cache_signer_readback_v3;
+use crate::controller_hold_credential::with_process_controller_hold_signer_v1;
 use crate::policy_authority_client::{
     ClosedPolicyBindingClientObservationV4, ClosedPolicyBindingPreviewV4,
     ClosedPolicyBindingSignerFlightV4, commit_closed_policy_binding_v4,
     commit_staged_closed_policy_signer_flight_v4, inspect_staged_closed_policy_signer_flight_v4,
     preview_staged_closed_policy_binding_v4, recover_closed_policy_binding_decision_v5,
 };
+use crate::policy_root_ack_client::acknowledge_held_root_effect_v1;
 
 /// Commits one held Q04 cut without opening public Create or effect handoff.
 ///
@@ -483,6 +486,82 @@ pub fn acknowledge_fixed_parentless_create_held_effect_v1(
                 .acknowledge_controller_policy_effect_v1(ack)
                 .map_err(io::Error::other)?;
             Ok(ack)
+        },
+    )
+    .map_err(io::Error::other)?
+}
+
+/// Sends the durable Controller no-Apply ACK to Root under the full held cut.
+///
+/// Controller, Source, protected Cache, and physical Cache remain writer-held
+/// through Root's fresh challenge, Controller-only signature, durable Root ACK,
+/// and ambiguous-reply replay. Root is acquired last. This neither releases
+/// custody nor opens public Create or Apply.
+///
+/// # Errors
+///
+/// Rejects stale Create or owner heads, a missing or substituted Controller
+/// ACK, changed Root proof, invalid signer credentials, and unresolved Root
+/// transport or replay.
+#[allow(clippy::too_many_arguments)]
+pub fn acknowledge_fixed_parentless_create_root_effect_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<RootEffectAckV1> {
+    let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
+
+    with_current_create_cache_signer_barrier_v5(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |controller, source, _, held| -> io::Result<_> {
+            let ack = controller
+                .controller_policy_effect_ack_v1()
+                .map_err(io::Error::other)?
+                .ok_or_else(invalid_cut)?;
+            if ack.hold() != controller_hold
+                || ack.accepted_generation() != source.accepted_generation()
+            {
+                return Err(invalid_cut());
+            }
+            let (decision, proposed, proof) = recover_closed_policy_binding_decision_v5(
+                controller_hold.binding(),
+                controller_hold.epoch(),
+            )?;
+            if !matches!(
+                decision,
+                ClosedPolicyBindingDecisionV2::CommittedQualifiedHeld(_)
+            ) || proof != Some(ack.root_proof())
+            {
+                return Err(invalid_cut());
+            }
+            let proposed = proposed.ok_or_else(invalid_cut)?;
+            compare_closed_policy_binding_hold_claims_v2(
+                &proposed,
+                controller_hold,
+                source_hold,
+                held.hold(),
+            )
+            .map_err(io::Error::other)?;
+            let handoff = closed_policy_effect_handoff_v2(&proposed).map_err(io::Error::other)?;
+            if handoff.operation != operation
+                || handoff.sandbox != sandbox
+                || handoff.accepted_generation != ack.accepted_generation()
+                || handoff.effect_transaction != ack.effect_transaction()
+                || handoff.epoch != controller_hold.epoch()
+            {
+                return Err(invalid_cut());
+            }
+            with_process_controller_hold_signer_v1(|generation, key| {
+                acknowledge_held_root_effect_v1(controller, ack, generation, key)
+            })
         },
     )
     .map_err(io::Error::other)?

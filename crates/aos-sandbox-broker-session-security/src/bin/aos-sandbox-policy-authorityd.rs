@@ -46,14 +46,15 @@ use aos_sandbox::policy_compiler::{
     CacheSignerRootSettlementStateV2, ClosedCacheReadbackRootChallengeV1,
     ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, PinnedSourceHoldReadbackSignerV1,
     PolicyDeploymentInputsV1, StagedClosedPolicyRootBaseV2,
-    abandon_fixed_cache_signer_challenge_v2, admit_fixed_cache_readback_pin_v1,
-    admit_fixed_controller_hold_pin_v1, admit_fixed_policy_deployment_head_v1,
-    admit_fixed_policy_signer_pins_v1, admit_fixed_source_hold_pin_v1,
-    compact_fixed_cache_signer_root_journal_v2, decode_policy_deployment_sources_v1,
-    read_fixed_cache_signer_challenge_v2, read_fixed_inert_closed_policy_binding_hold_v1,
-    read_fixed_policy_cache_hold_v1, record_fixed_cache_signer_root_settlement_v2,
-    recover_fixed_cache_signer_abandonment_v2, recover_fixed_cache_signer_root_history_v2,
-    recover_fixed_cache_signer_root_settlement_v2, recover_fixed_closed_policy_binding_decision_v2,
+    abandon_fixed_cache_signer_challenge_v2, acknowledge_fixed_closed_root_effect_v1,
+    admit_fixed_cache_readback_pin_v1, admit_fixed_controller_hold_pin_v1,
+    admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
+    admit_fixed_source_hold_pin_v1, compact_fixed_cache_signer_root_journal_v2,
+    decode_policy_deployment_sources_v1, read_fixed_cache_signer_challenge_v2,
+    read_fixed_inert_closed_policy_binding_hold_v1, read_fixed_policy_cache_hold_v1,
+    record_fixed_cache_signer_root_settlement_v2, recover_fixed_cache_signer_abandonment_v2,
+    recover_fixed_cache_signer_root_history_v2, recover_fixed_cache_signer_root_settlement_v2,
+    recover_fixed_closed_policy_binding_decision_v2, recover_fixed_closed_root_effect_ack_v1,
     release_fixed_closed_policy_controller_hold_v1,
     release_fixed_closed_policy_source_domain_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
@@ -91,6 +92,12 @@ use aos_sandbox_broker_session_security::policy_cache_readback_client::{
     POLICY_CACHE_SIGNER_SETTLED_MAGIC_V6, POLICY_CACHE_SIGNER_SUBMIT_MAGIC_V6,
     decode_cache_signer_recovery_submission_v7, encode_cache_signer_recovery_observation_v7,
 };
+use aos_sandbox_broker_session_security::policy_root_ack_client::{
+    ROOT_EFFECT_ACK_CHALLENGE_FRAME_BYTES_V1, ROOT_EFFECT_ACK_CHALLENGE_MAGIC_V1,
+    ROOT_EFFECT_ACK_QUERY_MAGIC_V1, ROOT_EFFECT_ACK_REPLAY_QUERY_MAGIC_V1,
+    ROOT_EFFECT_ACK_SUBMIT_FRAME_BYTES_V1, ROOT_EFFECT_ACK_SUBMIT_MAGIC_V1,
+    encode_root_effect_ack_reply_v1,
+};
 use aos_sandbox_broker_session_security::policy_signer_credential::{
     PinnedPolicySignerV1, PolicySignerRoleV1,
 };
@@ -123,6 +130,8 @@ enum HeadRequestMode {
     ClosedBinding,
     QualifiedClosedBinding,
     ClosedBindingReplay,
+    RootEffectAck,
+    RootEffectAckReplay,
     ClosedBindingStage,
     ClosedBindingPreview,
     ClosedBindingSignerFlight,
@@ -420,11 +429,11 @@ fn run() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    // An unresolved CAS never reaches credential admission, which can write
-    // protected Root state. Only exact historical replay is served until a
-    // privileged cold resolution and service restart.
+    // An unresolved CAS never reaches credential admission. Its isolated
+    // service admits only historical replay and the qualified, nonauthorizing
+    // Controller ACK exchange; Root validates the pinned signer before writing.
     if read_fixed_inert_closed_policy_binding_hold_v1()?.is_some() {
-        return serve_unresolved_binding_replay_only(controller_uid, controller_gid);
+        return serve_held_binding_recovery(controller_uid, controller_gid);
     }
 
     let root = Path::new(CREDENTIAL_ROOT);
@@ -563,21 +572,22 @@ fn run() -> Result<(), Box<dyn Error>> {
     Err(io::Error::new(io::ErrorKind::BrokenPipe, "authority listener ended").into())
 }
 
-fn serve_unresolved_binding_replay_only(
+fn serve_held_binding_recovery(
     controller_uid: u32,
     controller_gid: u32,
 ) -> Result<(), Box<dyn Error>> {
     let listener = bind_policy_socket(Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2))?;
     for accepted in listener.incoming() {
         let mut stream = accepted?;
-        if let Err(error) = serve_binding_replay_only(&mut stream, controller_uid, controller_gid) {
-            eprintln!("aos-sandbox-policy-authorityd: rejected Q04 replay: {error}");
+        if let Err(error) = serve_held_binding_request(&mut stream, controller_uid, controller_gid)
+        {
+            eprintln!("aos-sandbox-policy-authorityd: rejected held Q04 recovery: {error}");
         }
     }
     Err(io::Error::new(io::ErrorKind::BrokenPipe, "authority listener ended").into())
 }
 
-fn serve_binding_replay_only(
+fn serve_held_binding_request(
     stream: &mut std::os::unix::net::UnixStream,
     controller_uid: u32,
     controller_gid: u32,
@@ -588,10 +598,26 @@ fn serve_binding_replay_only(
     let (request, mode) = read_head_request(stream, || {
         Err(io::Error::new(io::ErrorKind::PermissionDenied, "Root hold unresolved").into())
     })?;
-    if !matches!(mode, HeadRequestMode::ClosedBindingReplay) {
+    if !matches!(
+        mode,
+        HeadRequestMode::ClosedBindingReplay
+            | HeadRequestMode::RootEffectAck
+            | HeadRequestMode::RootEffectAckReplay
+    ) {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "replay only").into());
     }
-    serve_closed_binding_replay(stream, &request[8..24])
+    match mode {
+        HeadRequestMode::ClosedBindingReplay => {
+            serve_closed_binding_replay(stream, &request[8..24])
+        }
+        HeadRequestMode::RootEffectAck => {
+            serve_root_effect_ack(stream, &request[8..24], controller_uid)
+        }
+        HeadRequestMode::RootEffectAckReplay => {
+            serve_root_effect_ack_replay(stream, &request[8..24])
+        }
+        _ => Err(io::Error::new(io::ErrorKind::PermissionDenied, "replay only").into()),
+    }
 }
 
 fn bind_policy_socket(path: &Path) -> io::Result<UnixListener> {
@@ -765,6 +791,10 @@ fn read_head_request(
         Some(magic) if magic == POLICY_BINDING_REPLAY_QUERY_MAGIC_V5 => {
             HeadRequestMode::ClosedBindingReplay
         }
+        Some(magic) if magic == ROOT_EFFECT_ACK_QUERY_MAGIC_V1 => HeadRequestMode::RootEffectAck,
+        Some(magic) if magic == ROOT_EFFECT_ACK_REPLAY_QUERY_MAGIC_V1 => {
+            HeadRequestMode::RootEffectAckReplay
+        }
         Some(magic) if magic == POLICY_BINDING_STAGE_QUERY_MAGIC_V4 => {
             HeadRequestMode::ClosedBindingStage
         }
@@ -805,12 +835,19 @@ fn read_head_request(
             | HeadRequestMode::ClosedBindingPreview
             | HeadRequestMode::ClosedBindingSignerFlight
             | HeadRequestMode::QualifiedClosedBinding
+            | HeadRequestMode::RootEffectAck
+            | HeadRequestMode::RootEffectAckReplay
     ) {
         if request[8..24] == [0; 16] {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "zero Q04 query nonce").into());
         }
     }
-    if !matches!(mode, HeadRequestMode::ClosedBindingReplay) {
+    if !matches!(
+        mode,
+        HeadRequestMode::ClosedBindingReplay
+            | HeadRequestMode::RootEffectAck
+            | HeadRequestMode::RootEffectAckReplay
+    ) {
         root_custody_gate()?;
     }
     Ok((request, mode))
@@ -858,6 +895,14 @@ fn serve_current_head(
     })?;
     if matches!(mode, HeadRequestMode::ClosedBindingReplay) {
         serve_closed_binding_replay(stream, &request[8..24])?;
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::RootEffectAck) {
+        serve_root_effect_ack(stream, &request[8..24], controller_uid)?;
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::RootEffectAckReplay) {
+        serve_root_effect_ack_replay(stream, &request[8..24])?;
         return Ok(());
     }
     if matches!(
@@ -1672,6 +1717,101 @@ fn serve_closed_binding_replay(
     Ok(())
 }
 
+fn read_root_effect_ack_claim(
+    stream: &mut std::os::unix::net::UnixStream,
+    require_end: bool,
+) -> io::Result<(ObjectDigest, u64)> {
+    let mut claim = [0; 40];
+    stream.read_exact(&mut claim)?;
+    if require_end {
+        let mut trailing = [0];
+        if stream.read(&mut trailing)? != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "trailing Root ACK claim",
+            ));
+        }
+    }
+    let binding = ObjectDigest::from_bytes(claim[..32].try_into().map_err(io::Error::other)?);
+    let epoch = u64::from_be_bytes(claim[32..].try_into().map_err(io::Error::other)?);
+    if binding.as_bytes() == &[0; 32] || epoch == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "empty Root ACK claim",
+        ));
+    }
+    Ok((binding, epoch))
+}
+
+fn serve_root_effect_ack_replay(
+    stream: &mut std::os::unix::net::UnixStream,
+    client_nonce: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    let (binding, epoch) = read_root_effect_ack_claim(stream, true)?;
+    let ack = recover_fixed_closed_root_effect_ack_v1(binding, epoch)?;
+    let nonce: [u8; 16] = client_nonce.try_into()?;
+    stream.write_all(&encode_root_effect_ack_reply_v1(
+        nonce, binding, epoch, ack,
+    )?)?;
+    Ok(())
+}
+
+fn serve_root_effect_ack(
+    stream: &mut std::os::unix::net::UnixStream,
+    client_nonce: &[u8],
+    controller_uid: u32,
+) -> Result<(), Box<dyn Error>> {
+    let (binding, epoch) = read_root_effect_ack_claim(stream, false)?;
+    let nonce: [u8; 16] = client_nonce.try_into()?;
+    let controller_credential =
+        read_optional_pin(Path::new(CREDENTIAL_ROOT), "controller-hold-public-key")?.ok_or_else(
+            || io::Error::new(io::ErrorKind::PermissionDenied, "Controller pin absent"),
+        )?;
+    stream.set_read_timeout(Some(Duration::from_secs(35)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let ack = acknowledge_fixed_closed_root_effect_v1(
+        binding,
+        epoch,
+        controller_uid,
+        &controller_credential,
+        |challenge| {
+            let mut frame = [0; ROOT_EFFECT_ACK_CHALLENGE_FRAME_BYTES_V1];
+            frame[..8].copy_from_slice(ROOT_EFFECT_ACK_CHALLENGE_MAGIC_V1);
+            frame[8..24].copy_from_slice(&nonce);
+            frame[24..40].copy_from_slice(&challenge.nonce());
+            frame[40..72].copy_from_slice(challenge.cut().as_bytes());
+            stream.write_all(&frame)?;
+            read_root_effect_ack_submission(stream, nonce)
+        },
+    )?;
+    stream.write_all(&encode_root_effect_ack_reply_v1(
+        nonce,
+        binding,
+        epoch,
+        Some(ack),
+    )?)?;
+    Ok(())
+}
+
+fn read_root_effect_ack_submission(
+    stream: &mut std::os::unix::net::UnixStream,
+    nonce: [u8; 16],
+) -> io::Result<Vec<u8>> {
+    let mut submit = [0; ROOT_EFFECT_ACK_SUBMIT_FRAME_BYTES_V1];
+    stream.read_exact(&mut submit)?;
+    let mut trailing = [0];
+    if &submit[..8] != ROOT_EFFECT_ACK_SUBMIT_MAGIC_V1
+        || submit[8..24] != nonce
+        || stream.read(&mut trailing)? != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid Controller ACK receipt",
+        ));
+    }
+    Ok(submit[24..].to_vec())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn serve_closed_binding_preview(
     stream: &mut std::os::unix::net::UnixStream,
@@ -1957,9 +2097,11 @@ fn select_project_source<'a>(
                 "legacy project source is unavailable",
             )
         }),
-        HeadRequestMode::ClosedBindingReplay => Err(io::Error::new(
+        HeadRequestMode::ClosedBindingReplay
+        | HeadRequestMode::RootEffectAck
+        | HeadRequestMode::RootEffectAckReplay => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Q04 replay has no project source",
+            "held Q04 recovery has no project source",
         )),
     }
 }
@@ -2192,6 +2334,90 @@ mod tests {
     }
 
     #[test]
+    fn root_effect_ack_headers_keep_the_held_gate_closed_for_other_modes() {
+        for magic in [
+            ROOT_EFFECT_ACK_QUERY_MAGIC_V1,
+            ROOT_EFFECT_ACK_REPLAY_QUERY_MAGIC_V1,
+        ] {
+            let (mut client, mut server) = UnixStream::pair().expect("local Root ACK socket");
+            let mut request = [0; REQUEST_BYTES];
+            request[..8].copy_from_slice(magic);
+            request[8..24].fill(7);
+            client.write_all(&request).expect("Root ACK header");
+            let gate_opened = Cell::new(false);
+            let (_, mode) = read_head_request(&mut server, || {
+                gate_opened.set(true);
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "Root hold").into())
+            })
+            .expect("held Root ACK mode");
+            assert!(!gate_opened.get());
+            assert!(matches!(
+                mode,
+                HeadRequestMode::RootEffectAck | HeadRequestMode::RootEffectAckReplay
+            ));
+
+            request[8..24].fill(0);
+            let (mut client, mut server) = UnixStream::pair().expect("local Root ACK socket");
+            client.write_all(&request).expect("zero Root ACK nonce");
+            assert!(read_head_request(&mut server, || Ok(())).is_err());
+        }
+    }
+
+    #[test]
+    fn root_effect_ack_submission_rejects_substitution_truncation_and_trailing_bytes() {
+        let mut frame = [0; ROOT_EFFECT_ACK_SUBMIT_FRAME_BYTES_V1];
+        frame[..8].copy_from_slice(ROOT_EFFECT_ACK_SUBMIT_MAGIC_V1);
+        frame[8..24].fill(7);
+        frame[24..].fill(9);
+        let read = |bytes: &[u8], nonce| {
+            let (mut client, mut server) = UnixStream::pair().expect("local ACK submission");
+            client.write_all(bytes).expect("ACK bytes");
+            client.shutdown(std::net::Shutdown::Write).expect("ACK EOF");
+            server
+                .set_read_timeout(Some(Duration::from_millis(20)))
+                .unwrap();
+            read_root_effect_ack_submission(&mut server, nonce)
+        };
+        assert_eq!(
+            read(&frame, [7; 16]).unwrap(),
+            vec![9; aos_sandbox::policy_compiler::CONTROLLER_EFFECT_ACK_READBACK_BYTES_V1]
+        );
+        assert!(read(&frame, [8; 16]).is_err());
+        let mut changed = frame;
+        changed[0] ^= 1;
+        assert!(read(&changed, [7; 16]).is_err());
+        assert!(read(&frame[..frame.len() - 1], [7; 16]).is_err());
+        assert!(read(&[frame.as_slice(), &[1]].concat(), [7; 16]).is_err());
+    }
+
+    #[test]
+    fn root_effect_ack_claim_requires_exact_binding_epoch_and_replay_eof() {
+        let mut claim = [0; 40];
+        claim[..32].fill(3);
+        claim[32..].copy_from_slice(&4_u64.to_be_bytes());
+        let read = |bytes: &[u8], replay| {
+            let (mut client, mut server) = UnixStream::pair().expect("local ACK claim");
+            client.write_all(bytes).expect("ACK claim bytes");
+            client
+                .shutdown(std::net::Shutdown::Write)
+                .expect("claim EOF");
+            read_root_effect_ack_claim(&mut server, replay)
+        };
+        assert_eq!(
+            read(&claim, true).unwrap(),
+            (ObjectDigest::from_bytes([3; 32]), 4)
+        );
+        assert!(read(&[claim.as_slice(), &[1]].concat(), true).is_err());
+        assert!(read(&claim[..39], true).is_err());
+        let mut empty = claim;
+        empty[..32].fill(0);
+        assert!(read(&empty, true).is_err());
+        empty = claim;
+        empty[32..].fill(0);
+        assert!(read(&empty, true).is_err());
+    }
+
+    #[test]
     fn q04_stage_header_rejects_zero_nonce_before_root_custody() {
         let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
         let mut request = [0_u8; REQUEST_BYTES];
@@ -2266,7 +2492,7 @@ mod tests {
         let (_client, mut server) = UnixStream::pair().expect("replay-only socket");
         let uid = rustix::process::getuid().as_raw();
         let gid = rustix::process::getgid().as_raw();
-        let error = serve_binding_replay_only(&mut server, uid + 1, gid)
+        let error = serve_held_binding_request(&mut server, uid + 1, gid)
             .err()
             .expect("foreign peer");
         assert_eq!(
@@ -2279,7 +2505,7 @@ mod tests {
         request[..8].copy_from_slice(POLICY_BINDING_STAGE_QUERY_MAGIC_V4);
         request[8..24].copy_from_slice(&[1; 16]);
         client.write_all(&request).expect("new Q04 stage query");
-        assert!(serve_binding_replay_only(&mut server, uid, gid).is_err());
+        assert!(serve_held_binding_request(&mut server, uid, gid).is_err());
     }
 
     #[test]

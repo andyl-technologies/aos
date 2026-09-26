@@ -44,6 +44,8 @@ const CHALLENGE_RECORD_DOMAIN: &[u8] =
 const CHALLENGE_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.policy-compiler.root-effect-ack-challenge-transaction.v1\0";
 const RECORD_BYTES: usize = 268;
+/// Bounds the exact Root-owned, nonauthorizing effect ACK record.
+pub const ROOT_EFFECT_ACK_RECORD_BYTES_V1: usize = RECORD_BYTES;
 const CHALLENGE_CODEC: RootChallengeRecordCodec = RootChallengeRecordCodec::new(
     CHALLENGE_MAGIC,
     CHALLENGE_RECORD_DOMAIN,
@@ -92,6 +94,18 @@ impl RootEffectAckV1 {
         self.binding
     }
 
+    /// Returns the accepted operation.
+    #[must_use]
+    pub const fn operation(self) -> OperationId {
+        self.operation
+    }
+
+    /// Returns the accepted sandbox.
+    #[must_use]
+    pub const fn sandbox(self) -> SandboxId {
+        self.sandbox
+    }
+
     /// Returns the held Root handoff epoch.
     #[must_use]
     pub const fn epoch(self) -> u64 {
@@ -102,6 +116,12 @@ impl RootEffectAckV1 {
     #[must_use]
     pub const fn controller_ack(self) -> ObjectDigest {
         self.controller_ack
+    }
+
+    /// Returns the exact signed Controller receipt digest.
+    #[must_use]
+    pub const fn receipt(self) -> ObjectDigest {
+        self.receipt
     }
 
     /// Returns the exact Root signer-proof digest.
@@ -120,6 +140,45 @@ impl RootEffectAckV1 {
     #[must_use]
     pub const fn effect_transaction(self) -> [u8; 16] {
         self.effect_transaction
+    }
+
+    /// Returns the pinned Controller signer generation.
+    #[must_use]
+    pub const fn signer_generation(self) -> u64 {
+        self.signer_generation
+    }
+
+    /// Returns the authenticated Controller owner UID.
+    #[must_use]
+    pub const fn controller_uid(self) -> u32 {
+        self.controller_uid
+    }
+
+    /// Returns the spent Root challenge nonce.
+    #[must_use]
+    pub const fn nonce(self) -> [u8; 16] {
+        self.nonce
+    }
+
+    /// Encodes canonical journal bytes for exact authenticated transport.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a malformed ACK record.
+    pub fn record_bytes(self) -> Result<[u8; RECORD_BYTES], RootEffectAckErrorV1> {
+        self.encode()
+    }
+
+    /// Decodes canonical bytes without asserting current Root custody.
+    ///
+    /// A caller must authenticate the Root peer and compare this record to
+    /// its retained Controller ACK and owner cut.
+    ///
+    /// # Errors
+    ///
+    /// Rejects altered, noncanonical, or truncated record bytes.
+    pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, RootEffectAckErrorV1> {
+        Self::decode(bytes)
     }
 
     fn encode(self) -> Result<[u8; RECORD_BYTES], RootEffectAckErrorV1> {
@@ -264,8 +323,9 @@ pub fn recover_fixed_closed_root_effect_ack_v1(
 ///
 /// The caller must retain Controller, Source, protected Cache, and physical
 /// Cache writers through this call. A transport failure leaves every hold
-/// intact; retry first replays the exact durable Root ACK. This library API
-/// has no live Controller signer transport yet and grants no release or Apply.
+/// intact; retry first replays the exact durable Root ACK. The caller provides
+/// the current fixed Controller public credential and live signer exchange;
+/// this API grants no release or Apply.
 ///
 /// # Errors
 ///
@@ -275,6 +335,7 @@ pub fn acknowledge_fixed_closed_root_effect_v1(
     binding: ObjectDigest,
     epoch: u64,
     controller_uid: u32,
+    controller_credential: &[u8],
     exchange: impl FnOnce(ControllerEffectAckChallengeV1) -> io::Result<Vec<u8>>,
 ) -> Result<RootEffectAckV1, RootEffectAckErrorV1> {
     let (mut journal, _) = Journal::open_protected_at(
@@ -291,6 +352,7 @@ pub fn acknowledge_fixed_closed_root_effect_v1(
         binding,
         epoch,
         controller_uid,
+        controller_credential,
         super::super::controller_readback_session::fresh_root_nonce,
         exchange,
     )
@@ -375,10 +437,18 @@ pub(super) fn acknowledge_in_authority(
     binding: ObjectDigest,
     epoch: u64,
     controller_uid: u32,
+    controller_credential: &[u8],
     fresh_nonce: impl FnOnce() -> io::Result<[u8; 16]>,
     exchange: impl FnOnce(ControllerEffectAckChallengeV1) -> io::Result<Vec<u8>>,
 ) -> Result<RootEffectAckV1, RootEffectAckErrorV1> {
     if controller_uid == 0 {
+        return Err(RootEffectAckErrorV1::Stale);
+    }
+    if authority
+        .get(CONTROLLER_HOLD_PIN_KEY)
+        .map_err(PolicyCompilerJournalErrorV1::from)?
+        != Some(controller_credential)
+    {
         return Err(RootEffectAckErrorV1::Stale);
     }
     if let Some(prior) = current_ack(authority, binding, epoch)? {

@@ -69,8 +69,8 @@ use hold::{HOLD_KEY, RootBindingHoldV1, current_hold, release_hold};
 use proof::{PROOF_KEY_PREFIX, RootQualifiedProofV1, proof_key};
 
 pub use ack::{
-    RootEffectAckErrorV1, RootEffectAckV1, acknowledge_fixed_closed_root_effect_v1,
-    recover_fixed_closed_root_effect_ack_v1,
+    ROOT_EFFECT_ACK_RECORD_BYTES_V1, RootEffectAckErrorV1, RootEffectAckV1,
+    acknowledge_fixed_closed_root_effect_v1, recover_fixed_closed_root_effect_ack_v1,
 };
 
 pub use producer::{
@@ -3392,6 +3392,20 @@ mod tests {
             proof_digest.expect("qualified Root proof"),
         )
         .expect("exact Controller ACK");
+        for current_credential in [&[][..], source_pin.as_slice()] {
+            assert!(
+                ack::acknowledge_in_authority(
+                    &mut authority,
+                    committed.binding(),
+                    committed.handoff_epoch(),
+                    1234,
+                    current_credential,
+                    || panic!("stale Controller credential cannot spend a Root challenge"),
+                    |_| panic!("stale Controller credential cannot request a receipt"),
+                )
+                .is_err()
+            );
+        }
         let lost_packet = std::cell::RefCell::new(None);
         assert!(
             ack::acknowledge_in_authority(
@@ -3399,6 +3413,7 @@ mod tests {
                 committed.binding(),
                 committed.handoff_epoch(),
                 1234,
+                &controller_pin,
                 || Ok([53; 16]),
                 |challenge| {
                     *lost_packet.borrow_mut() = Some(
@@ -3437,6 +3452,7 @@ mod tests {
                 committed.binding(),
                 committed.handoff_epoch(),
                 1234,
+                &controller_pin,
                 || Ok([54; 16]),
                 |_| Ok(lost_packet.borrow().as_ref().expect("lost packet").clone()),
             )
@@ -3455,6 +3471,7 @@ mod tests {
                 committed.binding(),
                 committed.handoff_epoch(),
                 1234,
+                &controller_pin,
                 || Ok([55; 16]),
                 |challenge| Ok(sign_test_controller_effect_ack_readback_v1(
                     stale_ack,
@@ -3473,6 +3490,7 @@ mod tests {
             committed.binding(),
             committed.handoff_epoch(),
             1234,
+            &controller_pin,
             || Ok([56; 16]),
             |challenge| {
                 Ok(sign_test_controller_effect_ack_readback_v1(
@@ -3504,12 +3522,29 @@ mod tests {
             ack::current_ack(&authority, committed.binding(), committed.handoff_epoch()).unwrap(),
             Some(root_ack)
         );
+        assert!(
+            ack::acknowledge_in_authority(
+                &mut authority,
+                committed.binding(),
+                committed.handoff_epoch(),
+                1234,
+                &source_pin,
+                || panic!("rotated credential cannot issue another challenge"),
+                |_| panic!("rotated credential cannot request another receipt"),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            ack::current_ack(&authority, committed.binding(), committed.handoff_epoch()).unwrap(),
+            Some(root_ack)
+        );
         assert_eq!(
             ack::acknowledge_in_authority(
                 &mut authority,
                 committed.binding(),
                 committed.handoff_epoch(),
                 1234,
+                &controller_pin,
                 || panic!("idempotent replay cannot spend a new challenge"),
                 |_| panic!("idempotent replay cannot request a new receipt"),
             )
