@@ -14,6 +14,7 @@ from itertools import product
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import struct
@@ -369,6 +370,23 @@ def fixtures(gcc, clang, rustc):
         yield Fixture(name + "-unknown-invalid", compiler, base + ["-faccache-intentionally-invalid"],
                       c_sources, cacheable=False, exit_code=1)
 
+    # The AOS Clang supports host-only CUDA and HIP without an SDK. These
+    # modes use separate driver paths but still need header invalidation and
+    # complete object and depfile restoration.
+    for language, extension, flags in [
+        ("cuda", "cu", ["--cuda-host-only", "-nocudainc", "-nocudalib"]),
+        ("hip", "hip", ["--offload-host-only", "-nogpuinc", "-nogpulib",
+                        "-fuse-cuid=none"]),
+    ]:
+        yield Fixture("clang-" + language + "-host", clang,
+                      ["-x", language, *flags, "-c", "source." + extension,
+                       "-o", "source.o", "-MD", "-MF", "source.d",
+                       "-fdiagnostics-color=always"],
+                      {"source." + extension: '#include "value.h"\n'
+                                               'int answer(void) { return VALUE; }\n',
+                       "value.h": "#define VALUE 42\n"},
+                      {"value.h": "#define VALUE 73\n"})
+
     for extension, language in [("m", "objc"), ("mm", "objcxx"),
                                 ("mi", "objc-preprocessed"), ("mii", "objcxx-preprocessed")]:
         yield Fixture("clang-" + language, clang,
@@ -481,6 +499,53 @@ def snapshot(work):
     """Observe file contents and executable bits without relying on a parser."""
     return {str(path.relative_to(work)): (path.read_bytes(), bool(path.stat().st_mode & 0o111))
             for path in work.rglob("*") if path.is_file()}
+
+
+def check_clang_hip_default_cuid(root, env, accache, sccache, clang, hits):
+    """Keep direct HIP bytes when sccache changes Clang's generated CUID."""
+    fixture = "clang-hip-default-cuid"
+    work = root / fixture
+    work.mkdir()
+    (work / "source.hip").write_text("int answer(int x) { return x + 1; }\n")
+    object_file = work / "source.o"
+    depfile = work / "source.d"
+    args = [clang, "-x", "hip", "--offload-host-only", "-nogpuinc", "-nogpulib",
+            "-c", "source.hip", "-o", "source.o", "-MD", "-MF", "source.d",
+            "-fdiagnostics-color=always"]
+
+    def compile_object(wrapper):
+        object_file.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+        return (completed.stdout, completed.stderr,
+                object_file.read_bytes(), depfile.read_bytes())
+
+    direct = compile_object([])
+    oracle_cold = compile_object([sccache])
+    assert direct[:2] == oracle_cold[:2], (fixture, "sccache diagnostics changed")
+    assert direct[3] == oracle_cold[3], (fixture, "sccache depfile changed")
+    direct_cuid = re.search(rb"__hip_cuid_[0-9a-f]+", direct[2])
+    oracle_cuid = re.search(rb"__hip_cuid_[0-9a-f]+", oracle_cold[2])
+    assert direct_cuid and oracle_cuid and direct_cuid.group() != oracle_cuid.group(), (
+        fixture, "expected a different sccache-generated HIP CUID")
+
+    before_hits = hits()
+    assert compile_object([sccache]) == oracle_cold
+    assert hits() > before_hits, (fixture, "sccache did not warm-hit")
+
+    assert compile_object([accache]) == direct
+    cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+    assert cold["outcome"] == "miss", (fixture, cold)
+    assert compile_object([accache]) == direct
+    warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+    assert warm["outcome"] == "hit", (fixture, warm)
+
+    print("PASS oracle", fixture, "direct CUID and cache hit", flush=True)
+    return [{"fixture": fixture, "revision": 0, "oracle_hit": True,
+             "oracle_cold_difference": "HIP CUID", "accache": "hit",
+             "artifacts": ["source.o", "source.d"]}]
 
 
 def check_clang_driver_dependency_file(root, env, accache, sccache, clang):
@@ -4930,6 +4995,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                                 "artifacts": sorted(baseline[3])})
             print("PASS oracle", fixture.name, flush=True)
 
+        results.extend(check_clang_hip_default_cuid(root, env, accache,
+                                                    sccache, clang, hits))
         results.extend(check_clang_driver_dependency_file(root, env, accache,
                                                           sccache, clang))
         results.extend(check_clang_cc1_dependency_file(root, env, accache,

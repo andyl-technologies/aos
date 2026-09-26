@@ -192,6 +192,13 @@ Clang's `-mllvm` options use the same classification. Identified file inputs
 are fingerprinted, so editing a function-attribute CSV invalidates an object;
 report and unknown options run directly through Clang. The oracle covers both
 the separated and joined `-mllvm` spellings and a live pass report.
+Host-only CUDA and HIP actions in the AOS Clang also cache objects and depfiles
+and invalidate after header edits. This Clang cannot generate NVPTX device
+objects and its HIP device path fails in LLVM option parsing, so GPU device
+compilation is outside the tested AOS toolchain scope. With HIP's default
+compilation-unit ID, pinned sccache changes the generated `__hip_cuid_` symbol
+even on a cold compile. Accache preserves direct Clang's bytes; a separate
+`-fuse-cuid=none` oracle compares byte-for-byte cache behavior.
 Scalar `inline-threshold`, `preinline-threshold`, `unroll-count`, and
 `unroll-threshold` tuning is cacheable; oracles change inline and unroll
 settings and check distinct direct, sccache, and accache objects for Clang and
