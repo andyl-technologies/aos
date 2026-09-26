@@ -81,6 +81,94 @@
       hash = "sha256-6nP0rVTjiLmtC5YqCYq1bi+dQI3pcgCGIsVqZ+27H1A=";
     })
   ];
+
+  abseilRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/abseil-cpp/20240722.0.bcr.2";
+  abseilSource = moduleSource {
+    name = "abseil-cpp";
+    version = "20240722.0";
+    url = "https://github.com/abseil/abseil-cpp.git";
+    ref = "20240722.0";
+    rev = "4447c7562e3bc702ade25105912dce503f0c4010";
+    hash = "sha256-51jpDhdZ0n+KLmxh8KVaTz53pZAB0dHjmILFX+OLud4=";
+  };
+  abseilModule = fetchurl {
+    urls = ["${abseilRegistryRoot}/overlay/MODULE.bazel"];
+    hash = "sha256-w2YbRMnT8X8LZf+1RIlqrriRJzmOqGdTe6usGBM6ACo=";
+  };
+  abseilPatch = fetchurl {
+    urls = ["${abseilRegistryRoot}/patches/jetson.patch"];
+    hash = "sha256-KRONt49ouN+ytVat9Y9Lqqzcrd2HkZFPid1oj2wtmeg=";
+  };
+
+  zlibRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/zlib/1.3.1.bcr.5";
+  zlibSource = moduleSource {
+    name = "zlib";
+    version = "1.3.1";
+    url = "https://github.com/madler/zlib.git";
+    ref = "v1.3.1";
+    rev = "51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf";
+    hash = "sha256-TkPLWSN5QcPlL9D0kc/yhH0/puE9bFND24aj5NVDKYs=";
+  };
+  zlibModule = fetchurl {
+    urls = ["${zlibRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-7sUXtbvlSSYpRm4R2ukI0EM2QwIoPeJVgePrlEMmxMo=";
+  };
+  zlibPatches = [
+    (fetchurl {
+      urls = ["${zlibRegistryRoot}/patches/add_build_file.patch"];
+      hash = "sha256-SdbiiqOKN9dcerx8E+mFC2Pd/Q2KuL67/3+50WxCJLc=";
+    })
+    (fetchurl {
+      urls = ["${zlibRegistryRoot}/patches/module_dot_bazel.patch"];
+      hash = "sha256-ln6iWXu370RclA0exBzU2YboB6sDIn76lsAzkNXWuvk=";
+    })
+  ];
+
+  jvmExternalRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/rules_jvm_external/6.0";
+  jvmExternalSource = moduleSource {
+    name = "rules_jvm_external";
+    version = "6.0";
+    url = "https://github.com/bazelbuild/rules_jvm_external.git";
+    ref = "6.0";
+    rev = "e4bfab1096dc7f3c4246b488b8d2bb4cf70f3b23";
+    hash = "sha256-tiFP2Y5nVfOrZCq7nt9Lwn+mXMw3AoK2sEjRNfJUreg=";
+  };
+  jvmExternalModule = fetchurl {
+    urls = ["${jvmExternalRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-N8k6WnjTLoldUvhqjQQWF26RXaq9ApzLVZTbQi6HxJU=";
+  };
+  jvmExternalPatch = fetchurl {
+    urls = ["${jvmExternalRegistryRoot}/patches/module_dot_bazel.patch"];
+    hash = "sha256-+Ci4gFKoiHYV4zl1HFIS8JtdDSogzDh6neAEBNd+zLA=";
+  };
+
+  blake3RegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/blake3/1.5.1.bcr.1";
+  blake3Source = moduleSource {
+    name = "blake3";
+    version = "1.5.1";
+    url = "https://github.com/BLAKE3-team/BLAKE3.git";
+    ref = "1.5.1";
+    rev = "54930c95227daaac4dcf1eb3028e2f4e0768d139";
+    hash = "sha256-STWAnJjKrtb2Xyj6i1ACwxX/gTkQo5jUHilcqcgJYxc=";
+  };
+  blake3Module = fetchurl {
+    urls = ["${blake3RegistryRoot}/MODULE.bazel"];
+    hash = "sha256-byKng3kNg0yOLJGrhYSOeB5lB4qWME6Z5FlXY2IrFxo=";
+  };
+  blake3Patches = [
+    (fetchurl {
+      urls = ["${blake3RegistryRoot}/patches/add_build_file.patch"];
+      hash = "sha256-BmZOqWOTfHup68uNZXOh2mP+b971CWY3QufbkIe6eEM=";
+    })
+    (fetchurl {
+      urls = ["${blake3RegistryRoot}/patches/module_dot_bazel.patch"];
+      hash = "sha256-dKnHpXqvNwW2m7vYxnfWEoBhphBysqbeBxAMVX3b5a0=";
+    })
+    (fetchurl {
+      urls = ["${blake3RegistryRoot}/patches/fix_windows_arm_build_pr_389.patch"];
+      hash = "sha256-9G3QDBp5OuyYP7vwPKjqK+uTUZmjhLpKSE7nshz8guc=";
+    })
+  ];
 in {
   rules_cc = moduleSource {
     name = "rules_cc";
@@ -155,6 +243,15 @@ in {
     ref = "v0.5.2";
     rev = "691c8938ff87681f7281cc4ba840e74e3b63c54b";
     hash = "sha256-+NZG/nBDWzMmsNPA4JEneA36ZxUQFZjSul1HMz5EE44=";
+  };
+
+  rules_license = moduleSource {
+    name = "rules_license";
+    version = "1.0.0";
+    url = "https://github.com/bazelbuild/rules_license.git";
+    ref = "1.0.0";
+    rev = "f85e7d6309f28f031bf049f7d6283ce0d41d7546";
+    hash = "sha256-GTSHr08f0eSfV8QQ7YdlxEZt1sEkdzLXSFBcMs0YSdk=";
   };
 
   grpc = mkDerivation {
@@ -250,6 +347,146 @@ in {
         script = ''
           ${builtins.concatStringsSep "\n" (builtins.map (patchFile: ''patch --batch -p1 < ${patchFile}'') zstdJniPatches)}
           cmp MODULE.bazel ${zstdJniModule}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  abseil-cpp = mkDerivation {
+    pname = "bazel-abseil-bcr-source";
+    version = "20240722.0.bcr.2";
+    src = abseilSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir abseil-source
+          cp -a "$src"/. abseil-source/
+          chmod -R u+w abseil-source
+          cd abseil-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch -p0 < ${abseilPatch}
+          cp ${abseilModule} MODULE.bazel
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  zlib = mkDerivation {
+    pname = "bazel-zlib-bcr-source";
+    version = "1.3.1.bcr.5";
+    src = zlibSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir zlib-source
+          cp -a "$src"/. zlib-source/
+          chmod -R u+w zlib-source
+          cd zlib-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          ${builtins.concatStringsSep "\n" (builtins.map (patchFile: ''patch --batch -p0 < ${patchFile}'') zlibPatches)}
+          cmp MODULE.bazel ${zlibModule}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  rules_jvm_external = mkDerivation {
+    pname = "bazel-rules-jvm-external-bcr-source";
+    version = "6.0";
+    src = jvmExternalSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir rules-jvm-external-source
+          cp -a "$src"/. rules-jvm-external-source/
+          chmod -R u+w rules-jvm-external-source
+          cd rules-jvm-external-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch -p0 < ${jvmExternalPatch}
+          cmp MODULE.bazel ${jvmExternalModule}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  blake3 = mkDerivation {
+    pname = "bazel-blake3-bcr-source";
+    version = "1.5.1.bcr.1";
+    src = blake3Source;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir blake3-source
+          cp -a "$src"/. blake3-source/
+          chmod -R u+w blake3-source
+          cd blake3-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          ${builtins.concatStringsSep "\n" (builtins.map (patchFile: ''patch --batch -p0 < ${patchFile}'') blake3Patches)}
+          cmp MODULE.bazel ${blake3Module}
         '';
       }
       {
