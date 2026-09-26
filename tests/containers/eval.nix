@@ -14,8 +14,7 @@
     };
   evaluateServer = module:
     evaluate "container-eval" [serverModule module];
-  definitionFor = module: let
-    evaluated = evaluateServer module;
+  definitionFor = evaluated: let
     checked = evaluated.config.system.build.defaultContainer.definition;
   in
     if builtins.all (check: check.assertion) evaluated.config.aos.containers.definitions.aos.assertions
@@ -54,10 +53,13 @@
     {aos.boot.initrd.abilityHandoff.enable = lib.mkForce false;}
   ];
   testing = evaluate "aos-testing-eval" [testingModule];
-  aos = definitionFor {};
+  aos = definitionFor server;
   testingAos = testing.config.aos.containers.definitions.aos;
   testingChannels = builtins.map (channel: let
-    evaluated = evaluate "testing-channel-eval" [testingModule {aos.release.channel = channel;}];
+    evaluated =
+      if channel == "edge"
+      then testing
+      else evaluate "testing-channel-eval" [testingModule {aos.release.channel = channel;}];
   in {
     inherit channel;
     profile = evaluated.config.aos.release;
