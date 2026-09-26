@@ -2900,6 +2900,88 @@ def check_rust_extern_inputs(root, env, accache, sccache, rustc, hits):
     return results
 
 
+def check_rust_proc_macro_probe_environment(root, env, accache, sccache, rustc, hits):
+    """Keep dependency discovery aligned with a proc macro's real environment."""
+    fixture = "rust-proc-macro-bootstrap-environment"
+    work = root / fixture
+    work.mkdir()
+    (work / "target").mkdir()
+    (work / "macro-read-root").mkdir()
+    (work / "selector.rs").write_text(
+        'extern crate proc_macro;\n'
+        'use proc_macro::TokenStream;\n'
+        '#[proc_macro]\n'
+        'pub fn selected(_: TokenStream) -> TokenStream {\n'
+        '    let name = if std::env::var_os("RUSTC_BOOTSTRAP").is_some() {\n'
+        '        "bootstrap.txt"\n'
+        '    } else {\n'
+        '        "regular.txt"\n'
+        '    };\n'
+        '    format!("include_str!({name:?})").parse().unwrap()\n'
+        '}\n')
+    (work / "selected.rs").write_text('pub const TEXT: &str = selector::selected!();\n')
+    (work / "bootstrap.txt").write_text("bootstrap")
+
+    local_env = env.copy()
+    local_env.pop("RUSTC_BOOTSTRAP", None)
+    manifest = json.loads(Path(env["ACCACHE_MANIFEST"]).read_text())
+    manifest["read_roots"] = [str(work / "macro-read-root")]
+    manifest_path = work / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    local_env["ACCACHE_MANIFEST"] = str(manifest_path)
+    subprocess.run([rustc, "--edition=2024", "--crate-name=selector",
+                    "--crate-type=proc-macro", "selector.rs", "-o",
+                    "target/libselector.so"], cwd=work, env=local_env,
+                   check=True, capture_output=True)
+
+    args = [rustc, "--edition=2024", "--crate-name=selected",
+            "--crate-type=rlib", "--out-dir=target", "--emit=link,dep-info",
+            "--extern", "selector=target/libselector.so", "-L",
+            "dependency=target", "selected.rs"]
+    library = work / "target/libselected.rlib"
+    depfile = work / "target/selected.d"
+
+    def compile_library(wrapper):
+        library.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=local_env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+        return completed.stdout, completed.stderr, library.read_bytes(), depfile.read_bytes()
+
+    results = []
+    initial_library = None
+    for revision, value in enumerate(["regular-one", "regular-two"]):
+        (work / "regular.txt").write_text(value)
+        direct = compile_library([])
+        if initial_library is not None:
+            assert direct[2] != initial_library, (fixture, "edit had no effect")
+        initial_library = direct[2]
+
+        before_hits = hits()
+        oracle_cold = compile_library([sccache])
+        oracle_hit = hits() > before_hits
+        assert oracle_cold == direct, (fixture, revision, "sccache cold")
+        assert compile_library([sccache]) == direct
+        assert hits() > before_hits, (fixture, "sccache did not warm-hit")
+
+        assert compile_library([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=local_env))
+        assert cold["outcome"] == "miss", (fixture, revision, cold)
+        assert any(path.endswith("regular.txt") for path in cold["identity"]["inputs"])
+        assert compile_library([accache]) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=local_env))
+        assert warm["outcome"] == "hit", (fixture, revision, warm)
+
+        results.append({"fixture": fixture, "revision": revision,
+                        "oracle_hit": oracle_hit, "accache": "hit",
+                        "oracle_missing_artifacts": [],
+                        "artifacts": ["target/libselected.rlib", "target/selected.d"]})
+
+    print("PASS oracle", fixture, "environment-matched dependency probe", flush=True)
+    return results
+
+
 def check_rust_target_json(root, env, accache, sccache, rustc, hits):
     """Hash a custom Rust target spec absent from rustc dep-info."""
     rust_env = env | {"RUSTC_BOOTSTRAP": "1"}
@@ -4883,6 +4965,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                                                   gcc, rustc, hits))
         results.extend(check_rust_extern_inputs(root, env, accache,
                                                 sccache, rustc, hits))
+        results.extend(check_rust_proc_macro_probe_environment(
+            root, env, accache, sccache, rustc, hits))
         results.extend(check_rust_target_json(root, env, accache,
                                               sccache, rustc, hits))
         results.extend(check_rust_llvm_plugin(root, env, accache,

@@ -114,6 +114,23 @@ pub(super) fn configure(
     invocation
         .extra_inputs
         .extend(parsed.profile.iter().cloned());
+    let proc_macro_consumer = parsed.externs.iter().any(|path| {
+        matches!(
+            path.extension().and_then(|suffix| suffix.to_str()),
+            Some("so" | "dylib" | "dll")
+        )
+    });
+
+    if proc_macro_consumer {
+        // A proc macro can inspect RUSTC_BOOTSTRAP and emit a different file
+        // read or crate reference during the -Z probe. Use rustc's unmodified
+        // environment for discovery and inventory its crate search paths.
+        // Separate these actions from older keys that used the altered probe.
+        invocation.kind = "rust-sccache-8396f020-v3".into();
+        invocation
+            .read_dirs
+            .extend(parsed.crate_link_paths.iter().cloned());
+    }
 
     // These unstable inputs are not necessarily listed in rustc's depfile.
     for option in unstable_options(&expanded) {
@@ -188,12 +205,7 @@ pub(super) fn configure(
     }
     // Macro executables can read files beyond rustc's dep-info. The Nix caller
     // must declare those read roots; their full contents are fingerprinted.
-    if parsed.externs.iter().any(|path| {
-        matches!(
-            path.extension().and_then(|s| s.to_str()),
-            Some("so" | "dylib" | "dll")
-        )
-    }) {
+    if proc_macro_consumer {
         invocation.extension_reads(manifest)?;
         for variable in ["OUT_DIR", "CARGO_MANIFEST_DIR"] {
             if let Some(path) = environment.get(variable) {
@@ -206,7 +218,9 @@ pub(super) fn configure(
         "--emit=dep-info={}",
         invocation.dependencies.display()
     ));
-    scan.push("-Zbinary-dep-depinfo=yes".into());
+    if !proc_macro_consumer {
+        scan.push("-Zbinary-dep-depinfo=yes".into());
+    }
     invocation.scan_args = Some(scan);
     Ok(())
 }
