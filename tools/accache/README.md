@@ -315,6 +315,10 @@ A Clang profile-selection case changes `-fprofile-list=path` between two
 functions. The edit changes instrumentation and object bytes. Pinned sccache
 replays its stale object, while accache fingerprints the list, misses with its
 path in the explanation, and restores the new object and depfile on a warm hit.
+A C++ profile-remapping case changes `-fprofile-remapping-file=path` while
+keeping the indexed profile and source fixed. Remapping an old namespace to a
+new one changes object bytes; Clang omits the remapping file from its depfile.
+Both caches miss on the edit and warm-hit with the new object and depfile.
 A Clang pass-plugin case rebuilds an LLVM plugin at the same path with different
 code. Both caches miss on the changed plugin, warm-hit on a repeat, and produce
 the direct compiler's changed object.
