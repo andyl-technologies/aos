@@ -1,4 +1,4 @@
-//! Checks exact-tick scheduler horizons and anchored retired-instruction counters.
+//! Checks exact-tick scheduler horizons and anchored node-local counters.
 
 #![forbid(unsafe_code)]
 
@@ -29,7 +29,7 @@ fn shared_timeline_preserves_both_sides_of_nanosecond_boundary() {
 }
 
 #[test]
-fn idle_jump_keeps_the_phase_of_the_next_retired_instruction() {
+fn idle_jump_preserves_anchored_tick_phase() {
     let mapping = NodeTimeMapping {
         anchor_counter: NodeCounter { ticks: 5 },
         anchor_time: SimInstant { ticks: 7 },
