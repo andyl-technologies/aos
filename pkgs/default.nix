@@ -1392,10 +1392,15 @@
         value = let
           path = dir + "/${name}";
           acceptsMkDerivation = (builtins.functionArgs (import path)) ? mkDerivation;
+          # Recipes can build internal derivations. Stamp only the returned
+          # package so those dependencies keep their own contract identities.
+          package = callPackage path {};
         in
-          callPackage path (lib.optionalAttrs acceptsMkDerivation {
-            mkDerivation = args: mkDerivation (args // {catalogName = lib.removeSuffix ".nix" name;});
-          });
+          if !acceptsMkDerivation
+          then package
+          else if package ? overrideAttrs
+          then package.overrideAttrs {catalogName = lib.removeSuffix ".nix" name;}
+          else throw "discovered package '${name}' cannot receive its catalog identity";
       })
       nixFiles
     );
