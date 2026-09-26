@@ -968,7 +968,11 @@ def check_c_timing_passthrough(root, env, accache, sccache, gcc, clang, hits):
     for name, compiler, flag in [("gcc-time-stderr", gcc, "-time"),
                                  ("gcc-time-file", gcc, "-time=timings.txt"),
                                  ("gcc-time-report", gcc, "-ftime-report"),
-                                 ("clang-time-report", clang, "-ftime-report")]:
+                                 ("clang-time-report", clang, "-ftime-report"),
+                                 ("clang-time-report-per-pass", clang,
+                                  "-ftime-report=per-pass"),
+                                 ("clang-time-report-per-pass-run", clang,
+                                  "-ftime-report=per-pass-run")]:
         work = root / name
         work.mkdir()
         (work / "source.c").write_text("int answer(void) { return 42; }\n")
@@ -985,7 +989,7 @@ def check_c_timing_passthrough(root, env, accache, sccache, gcc, clang, hits):
 
         direct = compile_object([])
         assert direct[2], (name, "direct compiler produced no object")
-        if name.endswith("-time-report"):
+        if "time-report" in name:
             expected_header = b"Time variable" if name.startswith("gcc-") else b"Total"
             assert expected_header in direct[1], (name, direct[1])
         assert compile_object([sccache])[2] == direct[2]
@@ -997,7 +1001,7 @@ def check_c_timing_passthrough(root, env, accache, sccache, gcc, clang, hits):
             previous_size = timing.stat().st_size if timing.exists() else 0
             actual = compile_object([accache])
             assert actual[2] == direct[2]
-            if name.endswith("-time-report"):
+            if "time-report" in name:
                 assert expected_header in actual[1], (name, actual[1])
             event = json.loads(subprocess.check_output([accache, "explain"], env=env))
             assert event["outcome"] == "bypass" and "timing output" in event["reason"], event
