@@ -590,6 +590,21 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/oro/oro/2.0.8/oro-2.0.8-sources.jar";
       hash = "sha256-tMSSnpN9BGSAf0oX46D0b2kUhRTtswOYGkGz5bKoFdI=";
     }
+    {
+      target = "com/lmax/disruptor/3.4.4/disruptor-3.4.4.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/lmax/disruptor/3.4.4/disruptor-3.4.4-sources.jar";
+      hash = "sha256-8bAHn8jI3PyE9sMyWaDwkxbykB5++z62AfY1UFjTUjw=";
+    }
+    {
+      target = "com/conversantmedia/disruptor/1.2.15/disruptor-1.2.15.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/conversantmedia/disruptor/1.2.15/disruptor-1.2.15-sources.jar";
+      hash = "sha256-t4IZqwIqrrLtAOGFbuG4ZLzNQ3yaDG9xUinCfLrFfPI=";
+    }
+    {
+      target = "org/jctools/jctools-core/3.3.0/jctools-core-3.3.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/jctools/jctools-core/3.3.0/jctools-core-3.3.0-sources.jar";
+      hash = "sha256-R51NwF2/ifRpE1S9aEuqJ+evbhn8YvMl/RHLxhCUAvw=";
+    }
   ];
 
   sources = builtins.genList (
