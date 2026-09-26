@@ -3073,9 +3073,16 @@ in rec {
   };
   phase9 = {
     gates = rec {
+      campaignGateMatrixContract = import ./phase9-campaign-gate-matrix-contract.nix {
+        inherit pkgs;
+      };
       campaignGateMatrix = import ./phase9-campaign-gate-matrix.nix {
         inherit pkgs lib campaignModeAuthorities;
         modeGateAdapters = campaignModeGateAdapters;
+        inherit campaignGateMatrixContract;
+      };
+      campaignServiceModuleContract = import ./phase9-campaign-service-module-contract.nix {
+        inherit pkgs mkSystem;
       };
       campaignMidpointDebug = import ./phase9-campaign-midpoint-debug.nix {
         inherit pkgs lib;
@@ -3102,7 +3109,7 @@ in rec {
         inherit pkgs lib;
         campaignStoreComposition = phase5.gates.campaignStoreComposition.rawGate;
         campaignColdContinuity = phase5.gates.campaignColdContinuity.rawGate;
-        inherit campaignMidpointDebug;
+        inherit campaignMidpointDebug campaignServiceModuleContract;
         dependencies = [];
       };
       campaignFindingPortability = import ./phase9-campaign-finding-portability.nix {

@@ -6,6 +6,7 @@
   campaignStoreComposition,
   campaignColdContinuity,
   campaignMidpointDebug,
+  campaignServiceModuleContract,
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -28,6 +29,7 @@ in
         campaignStoreComposition
         campaignColdContinuity
         campaignMidpointDebug
+        campaignServiceModuleContract
 
         pkgs.pkg-config
         pkgs.sqlite
@@ -70,6 +72,20 @@ in
             line="$2"
             test "$(grep -Fxc "$line" "$result" || true)" -eq 1
           }
+
+          require_result_line ${campaignServiceModuleContract}/result PASS
+          require_result_line \
+            ${campaignServiceModuleContract}/result \
+            check=checks.crucible.phase9.gates.campaignServiceModuleContract
+          require_result_line \
+            ${campaignServiceModuleContract}/result \
+            loopback_only=true
+          require_result_line \
+            ${campaignServiceModuleContract}/result \
+            socket_path_service_owned=true
+          require_result_line \
+            ${campaignServiceModuleContract}/result \
+            state_directory_service_owned=true
 
           require_result_line ${campaignStoreComposition}/result PASS
           require_result_line \

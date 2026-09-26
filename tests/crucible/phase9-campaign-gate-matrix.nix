@@ -3,6 +3,7 @@
   lib,
   campaignModeAuthorities,
   modeGateAdapters,
+  campaignGateMatrixContract,
   attrPath ? "checks.crucible.phase9.gates.campaignGateMatrix",
   taskIds ? ["T-CAM-9.1"],
 }: let
@@ -87,13 +88,24 @@ in
       pname = "crucible-phase9-campaign-gate-matrix";
       version = "0";
       src = null;
-      buildDeps = adapterDerivations ++ [pkgs.coreutils pkgs.grep pkgs.sed];
+      buildDeps = adapterDerivations ++ [pkgs.coreutils pkgs.grep pkgs.sed campaignGateMatrixContract];
       phases = [
         {
           name = "authenticate-mode-gate-matrix";
           script = ''
             set -eu
             . ${./_phase9-campaign-gate-matrix-authenticate.sh}
+            grep -Fxq PASS ${campaignGateMatrixContract}/result
+            grep -Fxq 'check=checks.crucible.phase9.gates.campaignGateMatrixContract' \
+              ${campaignGateMatrixContract}/result
+            grep -Fxq 'cross_mode_substitution=rejected' \
+              ${campaignGateMatrixContract}/result
+            grep -Fxq 'cross_gate_substitution=rejected' \
+              ${campaignGateMatrixContract}/result
+            grep -Fxq 'out_of_order_frame=rejected' \
+              ${campaignGateMatrixContract}/result
+            grep -Fxq 'typed_perf_observations=bounded-and-normalized' \
+              ${campaignGateMatrixContract}/result
             mkdir -p "$out/disabled" "$out/enabled"
             : > "$out/execution-manifest.tsv"
 
