@@ -31,55 +31,7 @@ in
       role = "public-package";
     };
     pname = "docbook-xml";
-    qualification.packageProbe = lib.qualification.commandProbe {
-      "primary" = {
-        "artifacts" = [];
-        "expected" = "The catalog is well-formed and its DTD declares the DocBook book element.";
-        "files" = {};
-        "input" = "The DocBook 4.5 XML catalog and document type definition.";
-        "operation" = "Parse the catalog and inspect the book element declaration.";
-        "steps" = [
-          {
-            "argv" = [
-              "@python@"
-              "-c"
-              "import pathlib, xml.etree.ElementTree as ET\nroot = pathlib.Path(\"@out@/share/xml/docbook/schema/dtd/4.5\")\nET.parse(root / \"catalog.xml\")\nassert \"<!ELEMENT book\" in (root / \"docbookx.dtd\").read_text(errors=\"replace\")\nprint(\"docbook-xml data passed\")\n"
-            ];
-            "exit_code" = 0;
-            "stderr" = {
-              "exact" = "";
-            };
-            "stdout" = {
-              "exact" = "docbook-xml data passed\n";
-            };
-          }
-        ];
-      };
-      "badInput" = {
-        "artifacts" = [];
-        "expected" = "The DTD lookup rejects the unknown element.";
-        "files" = {};
-        "input" = "A request for an element declaration absent from DocBook 4.5.";
-        "operation" = "Search the installed DTD for the nonexistent declaration.";
-        "steps" = [
-          {
-            "argv" = [
-              "@python@"
-              "-c"
-              "import pathlib, sys\nsource = pathlib.Path(\"@out@/share/xml/docbook/schema/dtd/4.5/docbookx.dtd\").read_text(errors=\"replace\")\nif \"<!ELEMENT aos-nonexistent\" in source:\n    raise SystemExit(2)\nsys.stderr.write(\"docbook-xml rejected invalid input\\n\")\nraise SystemExit(7)\n"
-            ];
-            "exit_code" = 7;
-            "observes_rejection" = true;
-            "stderr" = {
-              "exact" = "docbook-xml rejected invalid input\n";
-            };
-            "stdout" = {
-              "exact" = "";
-            };
-          }
-        ];
-      };
-    };
+    qualification.packageProbe = import ./_docbook-xml-probe.nix {inherit lib version;};
 
     inherit version;
 

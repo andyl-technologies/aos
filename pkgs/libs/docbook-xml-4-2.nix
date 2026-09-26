@@ -1,5 +1,6 @@
 ##! docbook-xml — DocBook XML 4.2 document type definition
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -30,6 +31,7 @@ in
       role = "public-package";
     };
     pname = "docbook-xml";
+    qualification.packageProbe = import ./_docbook-xml-probe.nix {inherit lib version;};
     inherit version;
 
     src = fetchurl {
