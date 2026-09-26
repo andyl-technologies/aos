@@ -26,6 +26,138 @@ fn public_archive_transfer_is_backend_neutral_across_compressed_stores()
     run_public_offline_archive_transfer(&source, &destination, &trace_backend)
 }
 
+#[test]
+fn public_worked_network_archive_survives_packed_repack_outage_and_corruption()
+-> Result<(), Box<dyn Error>> {
+    let source = packed_archive_fixture()?;
+    let destination = packed_archive_fixture()?;
+    let trace_backend = PackedBlobBackend::open("packed", &source.objects, 65_536)?;
+
+    run_public_offline_archive_transfer(&source, &destination, &trace_backend)?;
+    let mut service = source.start_service(None)?;
+    let source_heads = DERIVED_CAMPAIGNS
+        .iter()
+        .map(|name| {
+            Ok((
+                *name,
+                json_string(&campaign_status_named(&source, name)?, "snapshot")?,
+            ))
+        })
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+    service.stop()?;
+    let journal = source._temporary.path().join("packed-repack-journal");
+
+    let planned = run_json(
+        &mut packed_repack_command(&source, &journal, "plan"),
+        "plan product repack",
+    )?;
+    assert_eq!(planned["schema"], "crucible.cli.packed-repack.v1");
+    assert_eq!(planned["phase"], "planned");
+    let applied = run_json(
+        &mut packed_repack_command(&source, &journal, "apply"),
+        "apply product repack",
+    )?;
+    assert_eq!(applied["plan"], planned["plan"]);
+    assert_eq!(applied["phase"], "applied");
+
+    let packs = source.objects.join("packs");
+    let unavailable = source._temporary.path().join("packs-unavailable");
+    fs::rename(&packs, &unavailable)?;
+    let outage = command(&["--format", "jsonl", "store", "verify"])
+        .arg(&source.store)
+        .output()?;
+    assert!(
+        !outage.status.success(),
+        "missing packed data passed verification"
+    );
+    if packs.exists() {
+        fs::remove_dir(&packs)?;
+    }
+    fs::rename(&unavailable, &packs)?;
+
+    let index = source.objects.join(".packed-admin/index-v1");
+    let original = fs::read(&index)?;
+    let mut corrupt = original.clone();
+    corrupt[0] ^= 0xff;
+    fs::write(&index, corrupt)?;
+    let rejected = command(&["--format", "jsonl", "store", "verify"])
+        .arg(&source.store)
+        .output()?;
+    assert!(
+        !rejected.status.success(),
+        "corrupt packed index passed verification"
+    );
+    fs::write(&index, original)?;
+
+    let verified = source.verify_store()?;
+    assert!(json_u64(&verified, "placements")? > 0);
+    let mut restarted = source.start_service(None)?;
+    for (name, snapshot) in &source_heads {
+        assert_eq!(
+            campaign_status_named(&source, name)?["snapshot"],
+            snapshot.as_str()
+        );
+    }
+    restarted.stop()?;
+
+    let planned_gc = run_json(&mut source.gc_command("plan"), "plan packed product GC")?;
+    let applied_gc = run_json(&mut source.gc_command("apply"), "apply packed product GC")?;
+    assert_eq!(applied_gc["plan"], planned_gc["plan"]);
+    let mut reopened = source.start_service(None)?;
+    for (name, snapshot) in &source_heads {
+        assert_eq!(
+            campaign_status_named(&source, name)?["snapshot"],
+            snapshot.as_str()
+        );
+    }
+    reopened.stop()?;
+
+    Ok(())
+}
+
+fn packed_repack_command(fixture: &FlightFixture, journal: &Path, operation: &str) -> Command {
+    let mut command = command(&[
+        "--format",
+        "jsonl",
+        "store",
+        "transform",
+        "packed",
+        "--store",
+    ]);
+    command
+        .arg(&fixture.store)
+        .arg("--journal")
+        .arg(journal)
+        .arg(operation);
+    command
+}
+
+fn packed_archive_fixture() -> Result<FlightFixture, Box<dyn Error>> {
+    let fixture = FlightFixture::new()?;
+    let refs = fixture._temporary.path().join("refs");
+    fs::write(
+        &fixture.store,
+        format!(
+            r#"schema = "crucible.campaign-repository-store"
+version = 2
+root = "packed"
+admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
+ref_directory = {refs:?}
+
+[[nodes]]
+id = "packed"
+[nodes.spec]
+kind = "packed"
+root = {objects:?}
+target_pack_bytes = 65536
+"#,
+            objects = fixture.objects,
+        ),
+    )?;
+    fs::set_permissions(&fixture.store, fs::Permissions::from_mode(0o600))?;
+    Ok(fixture)
+}
+
 fn compressed_archive_fixture() -> Result<FlightFixture, Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
     let refs = fixture._temporary.path().join("refs");
