@@ -1010,19 +1010,44 @@ impl ProductionVmLifecycleLoop {
             .collect::<Vec<_>>();
         let mut node_icounts = BTreeMap::new();
         let mut node_times = BTreeMap::new();
-        let mut fingerprints = BTreeMap::new();
-        for node in nodes {
-            node_icounts.insert(
-                node.clone(),
-                Icount {
-                    retired: self.inner.backend().node_now(&node)?.ticks,
-                },
-            );
-            node_times.insert(
-                node.clone(),
-                self.inner.loop_impl().scheduler_time_for_node(&node)?,
-            );
-            fingerprints.insert(node.clone(), self.inner.backend_mut().fingerprint(node)?);
+        // A later node's clock error must not hide an earlier fingerprint error.
+        // Sample the valid prefix before reporting its first metadata failure.
+        let mut sampled_nodes = Vec::with_capacity(nodes.len());
+        let mut first_metadata_error = None;
+        for node in &nodes {
+            let now = match self.inner.backend().node_now(node) {
+                Ok(now) => now,
+                Err(error) => {
+                    first_metadata_error = Some(SchedulerError::Backend(error));
+                    break;
+                }
+            };
+            let scheduler_time = match self.inner.loop_impl().scheduler_time_for_node(node) {
+                Ok(time) => time,
+                Err(error) => {
+                    first_metadata_error = Some(error);
+                    break;
+                }
+            };
+            if let Err(error) = self.inner.backend().validate_fingerprint_node(node) {
+                first_metadata_error = Some(SchedulerError::Backend(error));
+                break;
+            }
+
+            node_icounts.insert(node.clone(), Icount { retired: now.ticks });
+            node_times.insert(node.clone(), scheduler_time);
+            sampled_nodes.push(node.clone());
+        }
+        let maximum_host_workers = sampled_nodes
+            .len()
+            .min(self.config.maximum_host_workers)
+            .max(1);
+        let fingerprints = self
+            .inner
+            .backend_mut()
+            .fingerprints_at_boundary(&sampled_nodes, maximum_host_workers)?;
+        if let Some(error) = first_metadata_error {
+            return Err(error);
         }
         let evidence = ProductionVmDebugRuntimeEvidence {
             configuration: self.inner.loop_impl().configuration().id(),
