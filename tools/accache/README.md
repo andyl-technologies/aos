@@ -359,6 +359,11 @@ Clang sample-guided optimization also reads `-fprofile-sample-use=path` outside
 the preprocessor depfile. Reversing hot and cold samples changes the object;
 pinned sccache replays the old object, while accache fingerprints the profile,
 names it in the miss explanation, and restores the new object on a warm hit.
+An AArch64 multilib case uses `-multi-lib-config=path` to select headers from
+two sysroot variants. Pinned sccache replays the first object and depfile after
+the YAML changes; accache fingerprints the config, rebuilds, and records its
+path in the miss explanation. A comment-only YAML edit also invalidates the
+declared config input without changing the selected header.
 Clang sanitizer cases change an ignorelist under both the current and legacy
 flag spellings. Both caches miss on the edited list, warm-hit on a repeat, and
 produce the direct compiler's changed object.
