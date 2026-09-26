@@ -21,6 +21,7 @@ mod recovery;
 mod route_record;
 mod spec_producer;
 mod store;
+pub(crate) use store::HostSettlementAdmissionWitnessV1;
 
 #[cfg(unix)]
 pub use agent_execution_adapter::DormantGuestProvisioningOwnerV1;

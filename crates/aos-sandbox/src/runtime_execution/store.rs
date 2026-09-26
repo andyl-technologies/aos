@@ -63,6 +63,7 @@ use super::route_record::{
 
 mod output_budget;
 mod output_correlation;
+mod settlement_admission;
 mod settlement_store;
 
 use crate::journal::host_execution_fence::KEY as HOST_FENCE_KEY;
@@ -70,6 +71,8 @@ use output_budget::{OutputBudget, decode_output_claim, reserve_output_bytes};
 use output_correlation::{
     HostOutputCorrelationV1, KEY_PREFIX as HOST_OUTPUT_KEY_PREFIX, host_output_key,
 };
+pub(crate) use settlement_admission::HostSettlementAdmissionWitnessV1;
+use settlement_admission::KEY_PREFIX as SETTLEMENT_ADMISSION_KEY_PREFIX;
 use settlement_store::host_settlement_cut_from_authority_v1;
 
 const ADMISSION_KEY_PREFIX: u8 = b'a';
@@ -2138,6 +2141,7 @@ fn owned_key(key: &[u8]) -> bool {
         || matches!(key, [AGENT_OUTCOME_KEY_PREFIX, ..] if key.len() == 17)
         || matches!(key, [ARGUMENT_KEY_PREFIX, ..] if key.len() == 17)
         || matches!(key, [HOST_OUTPUT_KEY_PREFIX, ..] if key.len() == 17)
+        || matches!(key, [SETTLEMENT_ADMISSION_KEY_PREFIX, ..] if key.len() == 17)
         || matches!(key, [LEASE_KEY_PREFIX, ..] if key.len() == 18 && (1..=3).contains(&key[17]))
 }
 
@@ -2194,6 +2198,7 @@ fn validate_runtime_execution_replay(
     let mut effects = BTreeMap::new();
     let mut no_apply = BTreeMap::new();
     let mut no_apply_settlement = BTreeMap::<[u8; 16], [Option<HostSettlementRecordV1>; 3]>::new();
+    let mut settlement_admission = BTreeMap::<[u8; 16], HostSettlementAdmissionWitnessV1>::new();
     let mut host_fence = None;
     let mut routes = BTreeMap::new();
     let mut agent_outcomes = BTreeMap::new();
@@ -2366,6 +2371,17 @@ fn validate_runtime_execution_replay(
                     return Err(JournalRuntimeExecutionError::CorruptRecord);
                 }
             }
+            Some(SETTLEMENT_ADMISSION_KEY_PREFIX) if key.len() == 17 => {
+                let witness = HostSettlementAdmissionWitnessV1::decode(value)?;
+                if witness.key() != key
+                    || witness.commit_sequence >= protected_sequence
+                    || settlement_admission
+                        .insert(*witness.execution.as_bytes(), witness)
+                        .is_some()
+                {
+                    return Err(JournalRuntimeExecutionError::CorruptRecord);
+                }
+            }
             Some(ROUTE_KEY_PREFIX) if key.len() == 17 => {
                 let route = ProtectedAgentRouteRecordV1::decode(value)?;
                 let operation = *route.request().operation_id().as_bytes();
@@ -2486,6 +2502,18 @@ fn validate_runtime_execution_replay(
             protected_sequence,
         )
         .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+    }
+    for (&execution, witness) in &settlement_admission {
+        let marker = no_apply
+            .get(&execution)
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        let preliminary = no_apply_settlement
+            .get(&execution)
+            .and_then(|stages| stages[0])
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        if !witness.matches_stage(*marker, preliminary, store_binding) {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
     }
     if let Some(fence) = host_fence {
         let stages = no_apply_settlement
@@ -3740,6 +3768,94 @@ mod output_v2_tests {
                 .expect("durable preliminary coordinate"),
             preliminary
         );
+        assert_eq!(
+            store
+                .load_host_settlement_admission_witness_v1(identity.source.execution())
+                .expect("stage-only readback"),
+            None
+        );
+        std::fs::copy(
+            directory.path().join("execution.journal"),
+            directory.path().join("stage-only.journal"),
+        )
+        .expect("copy stage-only crash window");
+        std::fs::set_permissions(
+            directory.path().join("stage-only.journal"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .expect("private stage-only journal");
+        let witness = HostSettlementAdmissionWitnessV1 {
+            execution: identity.source.execution(),
+            store_binding: binding,
+            preliminary_digest: preliminary.digest(),
+            signed_request_digest: ObjectDigest::from_bytes([34; 32]),
+            settlement_session_binding: [31; 32],
+            source_digest: identity.source.record_digest(),
+            handoff_digest: ObjectDigest::from_bytes([27; 32]),
+            host_boot_id: identity.source.host_boot_id(),
+            admitted_boottime_nanoseconds: 50,
+            original_deadline_boottime_nanoseconds: 100,
+            commit_sequence: predicted_commit_sequence(
+                store
+                    .authority
+                    .snapshot()
+                    .expect("pre-witness snapshot")
+                    .sequence(),
+                1,
+            )
+            .expect("witness commit sequence"),
+            hoststate_cut: ObjectDigest::from_bytes([35; 32]),
+        };
+        let raw_witness = JournalTransaction::new(
+            [101; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                witness.key(),
+                witness.encode().expect("canonical witness").to_vec(),
+            )],
+        )
+        .expect("raw witness transaction");
+        assert!(matches!(
+            store
+                .authority
+                .preflight_transactions(std::slice::from_ref(&raw_witness)),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        assert!(matches!(
+            store.authority.commit(&raw_witness),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        store
+            .append_host_settlement_admission_witness_v1(witness)
+            .expect("protected admission witness");
+        assert_eq!(
+            store
+                .load_host_settlement_admission_witness_v1(identity.source.execution())
+                .expect("witness readback"),
+            Some(witness)
+        );
+        assert!(matches!(
+            store.append_host_settlement_admission_witness_v1(witness),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        for (index, record) in [
+            JournalRecord::put(
+                RecordNamespace::Effect,
+                witness.key(),
+                witness.encode().expect("canonical witness").to_vec(),
+            ),
+            JournalRecord::delete(RecordNamespace::Effect, witness.key()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mutation = JournalTransaction::new([102 + index as u8; 16], vec![record])
+                .expect("witness mutation");
+            assert!(matches!(
+                store.authority.commit(&mutation),
+                Err(JournalError::ProtectedBoundary)
+            ));
+        }
         let preliminary_cut = store
             .protected_host_settlement_cut_v1()
             .expect("protected preliminary cut");
@@ -3758,10 +3874,114 @@ mod output_v2_tests {
             Err(JournalError::AlreadyLocked)
         ));
         drop(store);
+        assert!(matches!(
+            journal.compact(),
+            Err(JournalError::ProtectedBoundary)
+        ));
         drop(journal);
 
-        // Clone the preliminary-only history so the existing stage-chain
-        // tests can continue independently of this permanent fence.
+        let (mut stage_only_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "stage-only.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold stage-only journal");
+        let stage_only =
+            JournalRuntimeExecutionStoreV1::claim(&mut stage_only_journal, binding, peer())
+                .expect("cold stage-only replay");
+        assert_eq!(
+            stage_only
+                .load_host_settlement_admission_witness_v1(identity.source.execution())
+                .expect("cold stage-only witness absence"),
+            None
+        );
+        drop(stage_only);
+        drop(stage_only_journal);
+
+        std::fs::copy(
+            directory.path().join("stage-only.journal"),
+            directory.path().join("delayed-witness.journal"),
+        )
+        .expect("copy delayed witness history");
+        std::fs::set_permissions(
+            directory.path().join("delayed-witness.journal"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .expect("private delayed witness journal");
+        let (mut delayed_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "delayed-witness.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("delayed witness journal");
+        let mut delayed =
+            JournalRuntimeExecutionStoreV1::claim(&mut delayed_journal, binding, peer())
+                .expect("preliminary-only delayed replay");
+        delayed
+            .authority
+            .commit(
+                &JournalTransaction::new(
+                    [104; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::Effect,
+                        no_apply_key(identity.source.execution()),
+                        committed.encode_canonical().to_vec(),
+                    )],
+                )
+                .expect("intervening same-byte transaction"),
+            )
+            .expect("intervening durable transaction");
+        let late_witness = HostSettlementAdmissionWitnessV1 {
+            commit_sequence: predicted_commit_sequence(
+                delayed
+                    .authority
+                    .snapshot()
+                    .expect("delayed snapshot")
+                    .sequence(),
+                1,
+            )
+            .expect("late commit sequence"),
+            ..witness
+        };
+        assert!(matches!(
+            delayed.append_host_settlement_admission_witness_v1(late_witness),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        drop(delayed);
+        drop(delayed_journal);
+        let (mut delayed_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "delayed-witness.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold delayed journal");
+        let delayed = JournalRuntimeExecutionStoreV1::claim(&mut delayed_journal, binding, peer())
+            .expect("cold delayed history");
+        assert_eq!(
+            delayed
+                .load_host_settlement_admission_witness_v1(identity.source.execution())
+                .expect("delayed history lacks witness"),
+            None
+        );
+        drop(delayed);
+        drop(delayed_journal);
+
+        std::fs::copy(
+            directory.path().join("stage-only.journal"),
+            directory.path().join("forged-witness.journal"),
+        )
+        .expect("copy stage-only history for forged witness");
+        std::fs::set_permissions(
+            directory.path().join("forged-witness.journal"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .expect("private forged witness journal");
+
+        // Clone the witnessed preliminary history so the fence tests remain
+        // independent of one another.
         for name in [
             "fenced.journal",
             "forged-fence.journal",
@@ -3789,6 +4009,12 @@ mod output_v2_tests {
         let mut fenced =
             JournalRuntimeExecutionStoreV1::claim(&mut fenced_journal, binding, peer())
                 .expect("preliminary replay");
+        assert_eq!(
+            fenced
+                .load_host_settlement_admission_witness_v1(identity.source.execution())
+                .expect("cold witness replay"),
+            Some(witness)
+        );
         assert!(matches!(
             fenced.acquire_host_execution_fence_v1(preliminary, marker_epoch, marker_cut),
             Err(JournalRuntimeExecutionError::RecordConflict)
@@ -4035,6 +4261,56 @@ mod output_v2_tests {
         .expect("cold orphan fence journal");
         assert!(matches!(
             JournalRuntimeExecutionStoreV1::claim(&mut orphan_journal, binding, peer()),
+            Err(JournalRuntimeExecutionError::CorruptRecord)
+        ));
+
+        let (mut forged_witness_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "forged-witness.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("forged witness journal");
+        let mut forged_witness =
+            JournalRuntimeExecutionStoreV1::claim(&mut forged_witness_journal, binding, peer())
+                .expect("original preliminary stage");
+        let substituted = HostSettlementAdmissionWitnessV1 {
+            preliminary_digest: ObjectDigest::from_bytes([90; 32]),
+            ..witness
+        };
+        let forged_transaction = JournalTransaction::new(
+            [100; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                witness.key(),
+                substituted
+                    .encode()
+                    .expect("canonical substitution")
+                    .to_vec(),
+            )],
+        )
+        .expect("forged witness transaction");
+        assert!(matches!(
+            forged_witness
+                .authority
+                .append_host_settlement_admission_witness_v1(substituted, &forged_transaction),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        forged_witness
+            .authority
+            .inject_host_settlement_admission_witness_for_test(&forged_transaction)
+            .expect("inject forged witness for cold replay");
+        drop(forged_witness);
+        drop(forged_witness_journal);
+        let (mut forged_witness_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "forged-witness.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold forged witness journal");
+        assert!(matches!(
+            JournalRuntimeExecutionStoreV1::claim(&mut forged_witness_journal, binding, peer()),
             Err(JournalRuntimeExecutionError::CorruptRecord)
         ));
 

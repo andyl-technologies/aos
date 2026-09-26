@@ -16,9 +16,14 @@
 
 use sha2::{Digest as _, Sha256};
 
+mod historical_recovery;
 mod settlement_transport;
 mod transport;
 
+pub use historical_recovery::{
+    HOST_HISTORICAL_RECOVERY_ENVELOPE_BYTES_V1, HostHistoricalRecoveryEnvelopeErrorV1,
+    SignedHostHistoricalRecoveryEnvelopeV1,
+};
 pub use settlement_transport::{
     HostNoApplyControllerCoordinateV2, HostNoApplySettlementHistoryV2,
     HostNoApplySettlementPhaseV2, ValidatedHostNoApplySettlementQueryV2,
