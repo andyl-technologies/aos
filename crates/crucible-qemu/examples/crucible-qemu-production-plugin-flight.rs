@@ -855,22 +855,24 @@ fn run_once(
             node.enable_bounded_scheduler_preemption(evidence.claim()?);
         }
         if index == 2 {
+            let at = aligned_preemption_tick(&mut node, 3_000_000, target)?;
             install_preemption(
                 &mut node,
                 PreemptionKind::VcpuSwitch {
                     from_vcpu: VcpuId { index: 0 },
                     to_vcpu: VcpuId { index: 1 },
                 },
-                3_000_000,
+                at,
             )?;
         } else if index == 3 {
+            let at = aligned_preemption_tick(&mut node, 6_000_000, target)?;
             install_preemption(
                 &mut node,
                 PreemptionKind::InterruptAt {
                     target_vcpu: VcpuId { index: 2 },
                     irq: IrqVector { vector: 32 },
                 },
-                6_000_000,
+                at,
             )?;
         }
         let observation = match SimulationBackend::step_to(&mut node, VirtualTime { ticks: target })
@@ -1283,6 +1285,45 @@ fn install_preemption(
         current,
     )?;
     Ok(())
+}
+
+fn aligned_preemption_tick(
+    node: &mut QemuNode,
+    requested: u64,
+    horizon: u64,
+) -> Result<u64, Box<dyn Error>> {
+    let calibration = node.logical_time_calibration()?;
+    align_preemption_tick(calibration, requested, horizon)
+}
+
+fn align_preemption_tick(
+    calibration: QemuLogicalTimeCalibration,
+    requested: u64,
+    horizon: u64,
+) -> Result<u64, Box<dyn Error>> {
+    let raw_ticks = calibration
+        .raw_icount
+        .checked_mul(FLIGHT_TICKS_PER_INSTRUCTION)
+        .ok_or("raw preemption calibration overflowed")?;
+    let offset = calibration
+        .logical_icount
+        .checked_sub(raw_ticks)
+        .ok_or("raw preemption calibration exceeded logical time")?;
+    let raw_at = requested
+        .checked_sub(offset)
+        .ok_or("preemption target precedes the raw origin")?
+        .div_ceil(FLIGHT_TICKS_PER_INSTRUCTION);
+    let at = raw_at
+        .checked_mul(FLIGHT_TICKS_PER_INSTRUCTION)
+        .and_then(|raw_ticks| raw_ticks.checked_add(offset))
+        .ok_or("aligned preemption tick overflowed")?;
+
+    // QEMU can preempt only at a retired instruction. Keep the request inside
+    // its scheduler RUN while choosing the first retirement at or after it.
+    if at > horizon {
+        return Err(format!("aligned preemption tick {at} exceeds horizon {horizon}").into());
+    }
+    Ok(at)
 }
 
 fn validate_sample(sample: FingerprintSample, target: u64) -> Result<(), Box<dyn Error>> {

@@ -5,6 +5,46 @@ use crucible::{ContentHash, MarkerId};
 use crucible_device::block::BlockTransportRequestIds;
 
 #[test]
+fn preemption_after_adjacent_sample_uses_the_next_retirement() {
+    let calibration = QemuLogicalTimeCalibration {
+        logical_icount: 2_000_001,
+        raw_icount: 40_000,
+    };
+
+    assert_eq!(
+        align_preemption_tick(calibration, 3_000_000, 4_000_000)
+            .expect("the next retirement is inside the RUN"),
+        3_000_001
+    );
+    assert!(align_preemption_tick(calibration, 4_000_000, 4_000_000).is_err());
+}
+
+#[test]
+fn preemption_alignment_rejects_invalid_calibration_and_overflow() {
+    let raw_ahead = QemuLogicalTimeCalibration {
+        logical_icount: 0,
+        raw_icount: 1,
+    };
+    let raw_overflow = QemuLogicalTimeCalibration {
+        logical_icount: u64::MAX,
+        raw_icount: u64::MAX,
+    };
+    let raw_origin = QemuLogicalTimeCalibration {
+        logical_icount: 0,
+        raw_icount: 0,
+    };
+    let offset_one = QemuLogicalTimeCalibration {
+        logical_icount: 501,
+        raw_icount: 10,
+    };
+
+    assert!(align_preemption_tick(raw_ahead, 1_000, 2_000).is_err());
+    assert!(align_preemption_tick(raw_overflow, 1_000, 2_000).is_err());
+    assert!(align_preemption_tick(raw_origin, u64::MAX, u64::MAX).is_err());
+    assert!(align_preemption_tick(offset_one, 0, 2_000).is_err());
+}
+
+#[test]
 fn block_recovery_selector_accepts_only_the_documented_value() {
     assert!(
         !parse_block_recovery_only(None).expect("an absent selector should run the full flight")
