@@ -9,14 +9,8 @@
     "lose-external-result"
     "interrupt-after-durable-outcome"
   ];
-  alreadyQualified = [
-    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/interrupt-after-durable-intent"
-    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/lose-external-result"
-    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/interrupt-after-durable-outcome"
-  ];
   selected = builtins.filter (cell:
-    builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) scenarios
-    && !builtins.elem cell.id alreadyQualified)
+    builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) scenarios)
   matrix.cells;
   byAdapters = adapters:
     map (cell: cell.id) (builtins.filter (cell: builtins.elem cell.adapter adapters) selected);
@@ -24,19 +18,16 @@
     "image-rollout"
     "kubernetes-object"
     "systemd-bootstrap"
-    "systemd-manager"
-    ];
+  ];
   groups = {
     reference = map (cell: cell.id) (
       builtins.filter (cell: !builtins.elem cell.adapter specializedAdapters) selected
     );
-    systemdManager = byAdapters ["systemd-manager"];
     kubernetes = byAdapters ["kubernetes-object" "systemd-bootstrap"];
     rollout = byAdapters ["image-rollout"];
   };
   all =
     groups.reference
-    ++ groups.systemdManager
     ++ groups.kubernetes
     ++ groups.rollout;
 in
@@ -44,5 +35,5 @@ in
   assert builtins.sort builtins.lessThan all
   == builtins.sort builtins.lessThan (map (cell: cell.id) selected);
   assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) selected; {
-    inherit all alreadyQualified groups scenarios;
+    inherit all groups scenarios;
   }

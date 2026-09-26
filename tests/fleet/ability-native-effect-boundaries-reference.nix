@@ -19,7 +19,7 @@ in
   import ./_ability-effect-boundary-cohort.nix {
     inherit lib mkSystem pkgs fixture nativeAdapterMatrix;
     name = "ability-native-effect-boundaries-reference";
-    qualifiedCells = cells.groups.reference ++ cells.groups.systemdManager;
+    qualifiedCells = cells.groups.reference;
     domainScript = ''
       runtime.wait_until_succeeds(
           "systemctl is-active --quiet aos-graph-compile.service", timeout=300
@@ -41,7 +41,6 @@ in
           lifecycle,
           response,
           tls,
-          systemd_manager_method=None,
       ):
           output = f"/var/lib/aos/ability-boundary-test/activation-{label}"
           authority = f"/var/lib/aos/ability-boundary-test/authority-{label}"
@@ -54,12 +53,6 @@ in
               "foreign-stable",
               authority,
               lifecycle=lifecycle,
-              systemd_manager_method=systemd_manager_method,
-              systemd_manager_revision=(
-                  f"matrix-{label}"
-                  if systemd_manager_method is not None
-                  else None
-              ),
               **arguments,
           )
           provision_operator_authority(activation, authority)
@@ -79,9 +72,7 @@ in
           )
 
 
-      def reference_target(adapter, method):
-          if adapter == "systemd-manager":
-              return "matrix-systemd", "aos-matrix-primary-service"
+      def reference_target(adapter):
           if adapter == "credential-delivery":
               return "shared-credential", "nginx-main-credential-view"
           if adapter == "managed-configuration":
@@ -118,51 +109,19 @@ in
           return value
 
 
-      def replace_systemd_foreign(value):
-          if isinstance(value, str):
-              return value.replace("aos-matrix-primary", "aos-matrix-foreign")
-          if isinstance(value, list):
-              return [replace_systemd_foreign(child) for child in value]
-          if isinstance(value, dict):
-              return {
-                  key: replace_systemd_foreign(child)
-                  for key, child in value.items()
-              }
-          return value
-
-
       mutation_methods = {
-          "prepare", "publish", "record", "validate", "reload"
+          "prepare", "publish", "record", "validate", "reload",
+          "reconcile", "update",
       }
-      creation_methods = {"deliver", "materialize", "apply", "ensure", "start"}
+      creation_methods = {"create", "deliver", "materialize", "apply", "ensure", "start"}
       teardown_methods = {"release", "remove", "stop"}
       for index, cell_id in enumerate(COHORT_CELLS):
           adapter, interface, _, method, _ = cell_id.split("/")
           label = f"reference-{index:03d}"
           baseline_label = f"{label}-baseline"
-          target_provider, target_resource = reference_target(adapter, method)
+          target_provider, target_resource = reference_target(adapter)
 
-          if adapter == "systemd-manager":
-              baseline_method = "stop" if method == "start" else "start"
-              settle_reference(
-                  baseline_label, "full", "baseline", True,
-              )
-              baseline_host = reference_activation(
-                  f"{baseline_label}-systemd",
-                  "full",
-                  "baseline",
-                  True,
-                  baseline_method,
-              )
-              runtime.succeed(
-                  f"{APM} switch --from {shlex.quote(baseline_host)} "
-                  f"--eval-root /run/reference-systemd-baseline-{index:03d}",
-                  timeout=1200,
-              )
-              candidate = reference_activation(
-                  label, "full", label, True, method
-              )
-          elif adapter == "credential-delivery" and method == "deliver":
+          if adapter == "credential-delivery" and method == "deliver":
               settle_reference(baseline_label, "full", "baseline", False)
               candidate = reference_activation(label, "full", label, True)
           elif adapter == "credential-delivery" and method == "release":
@@ -193,11 +152,7 @@ in
           def observe_reference(operation, cell_id=cell_id, adapter=adapter):
               foreign = {
                   "adapter": adapter,
-                  "operation": (
-                      replace_systemd_foreign(operation)
-                      if adapter == "systemd-manager"
-                      else replace_reference_identity(operation)
-                  ),
+                  "operation": replace_reference_identity(operation),
               }
               return EFFECT_ORACLES.observe_resource(
                   cell_id, operation, foreign

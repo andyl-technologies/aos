@@ -762,7 +762,7 @@
         [
           {
             id = "provider-effect-boundaries-reference";
-            qualifiedCells = nativeEffectBoundaryCells.groups.reference ++ nativeEffectBoundaryCells.groups.systemdManager;
+            qualifiedCells = nativeEffectBoundaryCells.groups.reference;
             inherit (nativeEffectReferenceCohort) testScript;
             inherit (nativeEffectReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
