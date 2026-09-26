@@ -189,9 +189,10 @@ Clang's `-mllvm` options use the same classification. Identified file inputs
 are fingerprinted, so editing a function-attribute CSV invalidates an object;
 report and unknown options run directly through Clang. The oracle covers both
 the separated and joined `-mllvm` spellings and a live pass report.
-Scalar `inline-threshold` and `preinline-threshold` tuning is cacheable; an
-oracle changes the inline threshold and checks distinct direct, sccache, and
-accache objects for Clang and Rust. LLVM's `chr-function-list` and
+Scalar `inline-threshold`, `preinline-threshold`, `unroll-count`, and
+`unroll-threshold` tuning is cacheable; oracles change inline and unroll
+settings and check distinct direct, sccache, and accache objects for Clang and
+Rust. LLVM's `chr-function-list` and
 `chr-module-list` read named files outside the depfile. Accache fingerprints
 those files and explains an edit as a miss, even when the selected test source
 produces the same object bytes.
