@@ -119,20 +119,20 @@ fn max_advance_keeps_preemption_pending_until_its_run_ceiling_is_published() {
 }
 
 #[test]
-fn max_advance_enqueues_and_acknowledges_logical_preemption_in_raw_space() {
+fn max_advance_keeps_unaligned_window_inside_logical_bounds() {
     TEST_PREEMPTION_COMMAND.with_borrow_mut(|command| *command = None);
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 5000, None)
+    let ceiling = authorize_advance_ceiling(0, 4000, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    slot.publish_reached_icount(2500)
+    slot.publish_reached_icount(501)
         .unwrap_or_else(|error| panic!("logical current should publish: {error}"));
     let sequence = slot
         .publish_preemption_command(crucible_shmem::SchedulerPreemptionCommand {
-            at_tick: 4000,
-            deadline_tick: 3500,
-            ceiling_tick: 5000,
+            at_tick: 3001,
+            deadline_tick: 2500,
+            ceiling_tick: 4000,
             kind: SchedulerPreemptionKind::InterruptAt {
                 target_vcpu: 0,
                 irq: 41,
@@ -169,15 +169,18 @@ fn max_advance_enqueues_and_acknowledges_logical_preemption_in_raw_space() {
     )
     .unwrap_or_else(|error| panic!("test live state should validate: {error}"));
 
-    assert_eq!(state.max_advance_icount(), Ok(40));
+    // At 50 logical ticks per instruction, offset 1 maps at=3001 to raw 60;
+    // the inclusive [2500, 4000] window rounds inward to raw [50, 79].
+    assert_eq!(crucible_shmem::TICKS_PER_INSTRUCTION, 50);
+    assert_eq!(state.max_advance_icount(), Ok(60));
     assert_eq!(slot.consumed_preemption_sequence(), sequence);
     TEST_PREEMPTION_COMMAND.with_borrow(|command| {
         assert_eq!(
             *command,
             Some((
-                40,
-                30,
                 60,
+                50,
+                79,
                 crate::QEMU_PREEMPTION_KIND_INTERRUPT_AT,
                 0,
                 41,
@@ -185,5 +188,34 @@ fn max_advance_enqueues_and_acknowledges_logical_preemption_in_raw_space() {
             ))
         );
     });
-    assert_eq!(state.max_advance_icount(), Ok(60));
+    assert_eq!(state.max_advance_icount(), Ok(79));
+}
+
+#[test]
+fn preemption_window_conversion_rejects_empty_interval_and_raw_origin_underflow() {
+    let deadline = logical_preemption_deadline_to_raw(2, 1)
+        .unwrap_or_else(|error| panic!("deadline conversion should succeed: {error}"));
+    let ceiling = logical_preemption_ceiling_to_raw(49, 1)
+        .unwrap_or_else(|error| panic!("ceiling conversion should succeed: {error}"));
+    assert_eq!(
+        PreemptionWindow::new(deadline, SchedulerCeiling::new(ceiling)),
+        Err(PreemptionError::InvalidWindow {
+            deadline_icount: 1,
+            ceiling_icount: 0,
+        })
+    );
+    assert!(matches!(
+        logical_preemption_deadline_to_raw(0, 1),
+        Err(LiveVcpuTimeCallbackError::PreemptionIcountBeforeRawOrigin { .. })
+    ));
+}
+
+#[test]
+fn preemption_deadline_conversion_handles_maximum_logical_tick() {
+    let deadline = logical_preemption_deadline_to_raw(u64::MAX, 0)
+        .unwrap_or_else(|error| panic!("maximum deadline should convert: {error}"));
+    assert_eq!(
+        deadline,
+        u64::MAX / crucible_shmem::TICKS_PER_INSTRUCTION + 1
+    );
 }

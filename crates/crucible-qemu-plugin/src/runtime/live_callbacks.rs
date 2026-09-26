@@ -2596,10 +2596,8 @@ impl LiveVcpuTimeCallbackState {
         };
         let command = published.command;
         let raw_at = logical_preemption_icount_to_raw("at", command.at_tick, offset)?;
-        let raw_deadline =
-            logical_preemption_icount_to_raw("deadline", command.deadline_tick, offset)?;
-        let raw_command_ceiling =
-            logical_preemption_icount_to_raw("ceiling", command.ceiling_tick, offset)?;
+        let raw_deadline = logical_preemption_deadline_to_raw(command.deadline_tick, offset)?;
+        let raw_command_ceiling = logical_preemption_ceiling_to_raw(command.ceiling_tick, offset)?;
         if raw_command_ceiling > raw_ceiling {
             // The mailbox is published before the RUN that owns it. Keep the
             // command pending until that RUN's ceiling is visible, then inject
@@ -2930,13 +2928,7 @@ fn logical_preemption_icount_to_raw(
     logical_icount: u64,
     logical_icount_offset: u64,
 ) -> Result<u64, LiveVcpuTimeCallbackError> {
-    let raw_tick = logical_icount.checked_sub(logical_icount_offset).ok_or(
-        LiveVcpuTimeCallbackError::PreemptionIcountBeforeRawOrigin {
-            field,
-            logical_icount,
-            logical_icount_offset,
-        },
-    )?;
+    let raw_tick = preemption_tick_since_raw_origin(field, logical_icount, logical_icount_offset)?;
     if !raw_tick.is_multiple_of(crucible_shmem::TICKS_PER_INSTRUCTION) {
         return Err(
             LiveVcpuTimeCallbackError::PreemptionIcountBetweenRetirements {
@@ -2946,6 +2938,40 @@ fn logical_preemption_icount_to_raw(
         );
     }
     Ok(raw_tick / crucible_shmem::TICKS_PER_INSTRUCTION)
+}
+
+fn logical_preemption_deadline_to_raw(
+    logical_icount: u64,
+    logical_icount_offset: u64,
+) -> Result<u64, LiveVcpuTimeCallbackError> {
+    let raw_tick =
+        preemption_tick_since_raw_origin("deadline", logical_icount, logical_icount_offset)?;
+    // Rounding the lower bound up cannot authorize an earlier preemption.
+    Ok(raw_tick.div_ceil(crucible_shmem::TICKS_PER_INSTRUCTION))
+}
+
+fn logical_preemption_ceiling_to_raw(
+    logical_icount: u64,
+    logical_icount_offset: u64,
+) -> Result<u64, LiveVcpuTimeCallbackError> {
+    let raw_tick =
+        preemption_tick_since_raw_origin("ceiling", logical_icount, logical_icount_offset)?;
+    // Rounding the upper bound down cannot pass the scheduler's RUN ceiling.
+    Ok(raw_tick / crucible_shmem::TICKS_PER_INSTRUCTION)
+}
+
+fn preemption_tick_since_raw_origin(
+    field: &'static str,
+    logical_icount: u64,
+    logical_icount_offset: u64,
+) -> Result<u64, LiveVcpuTimeCallbackError> {
+    logical_icount.checked_sub(logical_icount_offset).ok_or(
+        LiveVcpuTimeCallbackError::PreemptionIcountBeforeRawOrigin {
+            field,
+            logical_icount,
+            logical_icount_offset,
+        },
+    )
 }
 
 pub(crate) extern "C" fn crucible_qemu_plugin_live_time_advance_completion_cb(
