@@ -852,6 +852,14 @@ class PackageScenario:
             for directory in ("bin", "sbin")
             if (pathlib.Path(store_path) / directory).is_dir()
         )
+        site_packages = (
+            f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+        )
+        closure_python_path = ":".join(
+            str(pathlib.Path(store_path) / site_packages)
+            for store_path in sorted(self.closure)
+            if (pathlib.Path(store_path) / site_packages).is_dir()
+        )
         environment = {
             "HOME": str(work / "home"),
             "USER": os.environ["USER"],
@@ -873,6 +881,8 @@ class PackageScenario:
             "AOS_QUALIFICATION_PYTHON": os.environ["AOS_QUALIFICATION_PYTHON"],
             "AOS_QUALIFICATION_NIX_STORE": os.environ["AOS_QUALIFICATION_NIX_STORE"],
         }
+        if closure_python_path:
+            environment["PYTHONPATH"] = closure_python_path
         pathlib.Path(environment["HOME"]).mkdir()
         pathlib.Path(environment["TMPDIR"]).mkdir()
         run([self.probe], environment=environment, cwd=work)
