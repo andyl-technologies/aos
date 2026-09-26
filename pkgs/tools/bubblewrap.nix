@@ -1,6 +1,7 @@
 ##! Bubblewrap — unprivileged Linux process isolation.
 {
   mkDerivation,
+  lib,
   fetchurl,
   buildPackages,
   stdenv,
@@ -17,6 +18,66 @@ in
       role = "public-package";
     };
     pname = "bubblewrap";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "The signed Bubblewrap package closure.";
+        operation = "Start a user and mount namespace containing only that closure.";
+        expected = "The nested Bubblewrap executable starts from the private root filesystem.";
+        artifacts = [];
+        files."probe.py" = ''
+          import json
+          import os
+
+          bubblewrap = "@out@/bin/bwrap"
+          closure = json.loads(os.environ["AOS_QUALIFICATION_PACKAGE_CLOSURE"])
+          arguments = [
+              bubblewrap,
+              "--unshare-user",
+              "--tmpfs", "/",
+              "--dir", "/nix",
+              "--dir", "/nix/store",
+          ]
+          for store_path in closure:
+              arguments.extend(("--ro-bind", store_path, store_path))
+
+          arguments.extend(("--chdir", "/", "--", bubblewrap, "--version"))
+          os.execv(bubblewrap, arguments)
+        '';
+        steps = [
+          {
+            argv = ["@python@" "probe.py"];
+            exit_code = 0;
+            stdout.exact = "bubblewrap ${version}\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "A bind source that does not exist in the probe work directory.";
+        operation = "Attempt to create a read-only bind mount from the missing source.";
+        expected = "Bubblewrap rejects the absent source before starting the child.";
+        artifacts = [];
+        files = {};
+        steps = [
+          {
+            argv = [
+              "@out@/bin/bwrap"
+              "--unshare-user"
+              "--ro-bind"
+              "missing"
+              "/missing"
+              "--"
+              "@out@/bin/bwrap"
+              "--version"
+            ];
+            exit_code = 1;
+            observes_rejection = true;
+            stdout.exact = "";
+            stderr.exact = "bwrap: Can't find source path missing: No such file or directory\n";
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://github.com/containers/bubblewrap/releases/download/v${version}/bubblewrap-${version}.tar.xz"];
