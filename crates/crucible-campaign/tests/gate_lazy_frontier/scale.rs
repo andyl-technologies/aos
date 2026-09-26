@@ -200,6 +200,7 @@ fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
     let mut prior_stored_objects = baseline_objects;
     for _ in 0..ATTEMPTS {
         let CampaignPlannerStepOutcome::Advanced {
+            result: _result,
             disposition:
                 PlannerDisposition::Issue {
                     issued_proposals, ..
@@ -225,6 +226,20 @@ fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
             prior_checkpoint = metrics;
             prior_stored_objects = stored_objects;
             checkpoint_samples.push((metrics.ancestry_depth, metrics.closure_objects));
+            if matches!(checkpoint_samples.len(), 16 | 32) {
+                let reopened = CampaignRepository::with_component_authorities(
+                    fixture.blobs.clone(),
+                    fixture.refs.clone(),
+                    fixture.planner_authority.clone(),
+                    fixture.debugger_authority.clone(),
+                )?;
+                assert_eq!(reopened.head(campaign)?.snapshot_id(), _result.new_snapshot);
+                let cold = reopened
+                    .validation_checkpoint_metrics(campaign)?
+                    .closure_objects;
+                assert!(metrics.closure_objects >= cold);
+                assert!(metrics.closure_objects <= cold + cold / 4);
+            }
         }
     }
     let snapshot = fixture.repository.head(campaign)?.snapshot_id();

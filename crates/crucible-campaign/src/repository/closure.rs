@@ -1,7 +1,7 @@
 //! Complete snapshot ancestry and reachable-object closure validation.
 
-use super::*;
 use super::budget::ExpectedBudgetSuccessor;
+use super::*;
 
 /// Bounded process-local validation state exposed to conformance tests.
 #[cfg(feature = "test-support")]
@@ -18,6 +18,81 @@ pub struct CampaignValidationCheckpointMetrics {
 }
 
 impl CampaignRepository {
+    pub(super) fn simple_planner_issue_growth_upper(
+        &self,
+        parent: &LoadedSnapshot,
+        child: &CampaignSnapshot,
+    ) -> Result<usize, CampaignRepositoryError> {
+        let prior = parent.snapshot.roots();
+        let next = child.roots();
+        if prior.graph != next.graph
+            || prior.observations != next.observations
+            || prior.corpus != next.corpus
+            || prior.coverage != next.coverage
+            || prior.findings != next.findings
+            || prior.pins != next.pins
+        {
+            return Err(integrity("simple-planner-issue-unexpected-root-change"));
+        }
+        let prior_ledger = self.parent_budget_ledger(parent)?;
+        let next_ledger = self.read_budget_ledger(child.budget_ledger())?;
+        let mut positions = BTreeSet::new();
+        let mut roots = BTreeSet::new();
+        let mut values = BTreeSet::new();
+        for (old, new) in [
+            (prior.exploration, next.exploration),
+            (prior.accounting, next.accounting),
+            (prior.coordination, next.coordination),
+            (
+                prior_ledger.request_spending(),
+                next_ledger.request_spending(),
+            ),
+            (
+                prior_ledger.request_admissions(),
+                next_ledger.request_admissions(),
+            ),
+        ] {
+            self.merkle.collect_changed_node_positions(
+                old,
+                new,
+                &mut positions,
+                &mut roots,
+                &mut values,
+                MAX_CAMPAIGN_CLOSURE_OBJECTS,
+            )?;
+        }
+
+        let transition = child
+            .transition()
+            .ok_or_else(|| integrity("local-successor-checkpoint-shape"))?
+            .content_id();
+        let mut anchors = self.incremental_closure_anchors(parent, transition)?;
+        let mut linked_ids = BTreeSet::new();
+        self.verify_campaign_closures_anchored_cached_collect(
+            [transition],
+            &anchors,
+            &mut ChoiceValidationCache::default(),
+            Some(&mut linked_ids),
+            None,
+        )?;
+        anchors.extend(linked_ids);
+        let leaf_growth = self.verify_campaign_closures_anchored_cached(
+            values,
+            &anchors,
+            &mut ChoiceValidationCache::default(),
+        )?;
+
+        // A root is visited once as an object and once at its trie position.
+        // The snapshot and changed ledger are the remaining owner records.
+        positions
+            .len()
+            .checked_add(roots.len())
+            .and_then(|count| count.checked_add(leaf_growth))
+            .and_then(|count| count.checked_add(1))
+            .and_then(|count| count.checked_add(usize::from(prior_ledger != next_ledger)))
+            .ok_or_else(|| integrity("campaign-closure-object-limit"))
+    }
+
     /// Reports the bounded acceleration checkpoint for one campaign head.
     ///
     /// This diagnostic exists only with the `test-support` feature. It exposes
