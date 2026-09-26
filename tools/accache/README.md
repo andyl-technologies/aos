@@ -348,12 +348,13 @@ changed include in its miss explanation and returns the new compiler output.
 A GCC specs case changes an included specs file that alters an assembler
 symbol while leaving preprocessor output unchanged. Accache fingerprints the
 include tree and rebuilds the object; pinned sccache replays its old object.
-Raw GCC `-Bprefix` and `--prefix=prefix` cases rebuild a prefixed assembler
-executable at the same path. The assembler changes object bytes after
-preprocessing; pinned sccache replays the old object. Accache fingerprints
-matching prefix entries, names the changed assembler in its miss explanation,
-and then warm-hits the new object. The public AOS cc-wrapper supplies its own
-earlier `-B` directory, so these cases register the AOS-built unwrapped GCC.
+Four raw GCC cases cover `-Bprefix`, `--prefix=prefix`, and joined and separated
+`-B` directory forms. Each rebuilds the selected assembler at the same path.
+The assembler changes object bytes after preprocessing; pinned sccache replays
+the old object. Accache fingerprints the selected file or directory, names the
+changed assembler in its miss explanation, and then warm-hits the new object.
+The public AOS cc-wrapper supplies its own earlier `-B` directory, so these
+cases register the AOS-built unwrapped GCC.
 Four more cases mutate a binary read by C inline assembly in GCC/Clang `.c`
 and `.i` compilations. Pinned sccache again replays stale objects; accache
 misses and names the changed binary input.

@@ -1303,9 +1303,9 @@ def check_gcc_nested_specs(root, env, accache, sccache, gcc, hits):
              "artifacts": ["source.o"]} for revision in range(2)]
 
 
-def check_gcc_file_prefix_tool(root, env, accache, sccache, gcc, hits,
-                               fixture, option):
-    """Hash an assembler selected by a GCC filename-prefix option."""
+def check_gcc_compiler_prefix(root, env, accache, sccache, gcc, hits,
+                              fixture, option, directory=False, separated=False):
+    """Hash an assembler selected by a GCC directory or filename prefix."""
     work = root / fixture
     work.mkdir()
     (work / "tools").mkdir()
@@ -1315,10 +1315,12 @@ def check_gcc_file_prefix_tool(root, env, accache, sccache, gcc, hits,
         [gcc, "-print-prog-name=as"], cwd=work, env=env, text=True).strip()
     assert Path(assembler).is_file(), (fixture, assembler)
     wrapper_source = work / "tool.c"
-    wrapper = work / "tools/prefix-as"
+    tool_name = "as" if directory else "prefix-as"
+    wrapper = work / "tools" / tool_name
     object_file = work / "source.o"
-    args = [gcc, option + str(work / "tools/prefix-"),
-            "-c", "source.S", "-o", "source.o"]
+    prefix = str(work / "tools") + "/" if directory else str(work / "tools/prefix-")
+    selected = [option, prefix] if separated else [option + prefix]
+    args = [gcc, *selected, "-c", "source.S", "-o", "source.o"]
 
     def build_assembler(value):
         # The generated executable delegates to AOS as but changes a symbol
@@ -1368,7 +1370,7 @@ def check_gcc_file_prefix_tool(root, env, accache, sccache, gcc, hits,
         cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
         assert cold["outcome"] == "miss", (fixture, revision, cold)
         if revision:
-            assert any("prefix-as" in item for item in cold["changes"]), cold
+            assert any(str(wrapper) in item for item in cold["changes"]), cold
         assert compile_object([accache]) == direct, (fixture, revision, "warm")
         warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
         assert warm["outcome"] == "hit", (fixture, revision, warm)
@@ -4036,12 +4038,15 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
         results.append(check_assembler_include_invalidation(root, env, accache,
                                                             sccache, gcc, hits))
         results.extend(check_gcc_nested_specs(root, env, accache, sccache, gcc, hits))
-        for fixture, option in [
-            ("gcc-file-prefix-assembler", "-B"),
-            ("gcc-long-prefix-assembler", "--prefix="),
+        for fixture, option, directory, separated in [
+            ("gcc-file-prefix-assembler", "-B", False, False),
+            ("gcc-long-prefix-assembler", "--prefix=", False, False),
+            ("gcc-directory-prefix-assembler", "-B", True, False),
+            ("gcc-separated-directory-prefix-assembler", "-B", True, True),
         ]:
-            results.extend(check_gcc_file_prefix_tool(
-                root, env, accache, sccache, raw_gcc, hits, fixture, option))
+            results.extend(check_gcc_compiler_prefix(
+                root, env, accache, sccache, raw_gcc, hits,
+                fixture, option, directory, separated))
         results.extend(check_gcc_profile_note_outputs(root, env, accache,
                                                       sccache, gcc, hits))
         results.extend(check_gcc_auto_profile_inputs(root, env, accache,
