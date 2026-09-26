@@ -1,6 +1,6 @@
 //! GCC and Clang discovery using the complete pinned argument tables.
 
-use super::{Invocation, parsed, strings};
+use super::{Invocation, llvm, parsed, strings};
 use crate::model::{DynamicOutputs, Manifest};
 use accache_frontend::compiler::{Language, c::CCompilerKind, clang, gcc};
 use anyhow::{Result, ensure};
@@ -48,6 +48,35 @@ pub(super) fn configure(
             .any(|arg| arg == "-ftime-report" || arg.starts_with("-ftime-report=")),
         "compiler timing output is not a replayable artifact"
     );
+    if clang {
+        for (index, arg) in expanded.iter().enumerate() {
+            let llvm_arg = if arg == "-mllvm" {
+                expanded.get(index + 1).map(String::as_str)
+            } else {
+                arg.strip_prefix("-mllvm=")
+            };
+            let Some(llvm_arg) = llvm_arg else {
+                continue;
+            };
+            match llvm::classify(llvm_arg) {
+                llvm::OptionEffect::FileInput(path) => {
+                    ensure!(!path.is_empty(), "LLVM file input is empty");
+                    invocation.extra_inputs.insert(path.into());
+                }
+                llvm::OptionEffect::NoFileInput => {}
+                llvm::OptionEffect::InvocationReport => {
+                    // LLVM can write reports outside the selected object
+                    // directory, and compiler probes must not emit them.
+                    anyhow::bail!("Clang LLVM option {llvm_arg} writes an invocation report");
+                }
+                llvm::OptionEffect::Unknown => {
+                    // Unknown internal flags might read files or write side
+                    // outputs absent from Clang's ordinary depfile.
+                    anyhow::bail!("Clang LLVM option {llvm_arg} has no audited cache contract");
+                }
+            }
+        }
+    }
     let mut cc1_depfile = None;
     if clang {
         for (index, arg) in expanded.iter().enumerate() {
