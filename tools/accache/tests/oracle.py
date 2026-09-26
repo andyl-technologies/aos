@@ -150,6 +150,9 @@ def fixtures(gcc, clang, rustc):
             yield Fixture("gcc-aux-info", compiler,
                           base + ["-aux-info", "source.aux"], c_sources,
                           {"value.h": "#define VALUE 73\n"})
+            yield Fixture("gcc-aux-info-joined", compiler,
+                          base + ["-aux-info=source.aux"], c_sources,
+                          {"value.h": "#define VALUE 73\n"})
             yield Fixture("gcc-tree-dump", compiler,
                           base + ["-fdump-tree-original"], c_sources,
                           {"value.h": "#define VALUE 73\n"})
@@ -3305,6 +3308,7 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     assert "source.d" not in actual[3], "oracle defect changed; remove this exception"
                 missing_oracle_side_files = {
                     "gcc-aux-info": {"source.aux"},
+                    "gcc-aux-info-joined": {"source.aux"},
                     "gcc-explicit-tree-dump": {"report.txt"},
                     "gcc-go-spec": {"spec.go"},
                     "gcc-optimization-record": {"source.c.opt-record.json.gz"},

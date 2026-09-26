@@ -293,6 +293,12 @@ pub(super) fn configure(
         {
             invocation.output(Path::new(output), false)?;
         }
+        if !clang && let Some(output) = arg.strip_prefix("-aux-info=") {
+            // GCC also accepts the joined spelling, which the pinned
+            // frontend treats as an otherwise ordinary compiler flag.
+            ensure!(!output.is_empty(), "GCC auxiliary output path is empty");
+            invocation.output(Path::new(output), false)?;
+        }
     }
     let common = strings(parsed.common_args.clone())?;
     let preprocessing = strings(parsed.preprocessor_args.clone())?;
@@ -472,6 +478,11 @@ pub(super) fn configure(
             "--serialize-diagnostics" | "-serialize-diagnostics" | "-aux-info"
         ) {
             index += 2;
+            continue;
+        }
+        if !clang && arg.starts_with("-aux-info=") {
+            // A private dependency probe must not write the caller's report.
+            index += 1;
             continue;
         }
         if !clang
