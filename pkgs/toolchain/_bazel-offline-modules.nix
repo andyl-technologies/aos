@@ -293,6 +293,42 @@
     urls = ["${appleSupportRegistryRoot}/patches/module_dot_bazel_version.patch"];
     hash = "sha256-yqwfzmg9lIV674KI+GHtlok/967e8C2Ap8bPggzPm58=";
   };
+
+  rulesSwiftRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/rules_swift/2.1.1";
+  rulesSwiftSource = moduleSource {
+    name = "rules_swift";
+    version = "2.1.1";
+    url = "https://github.com/bazelbuild/rules_swift.git";
+    ref = "2.1.1";
+    rev = "f9681793be03df5fbaeb2f46223de5f74e9096f4";
+    hash = "sha256-21wJ3j9WyqRSLC9vSHzs2xu2SIG7n/pf9dgZnYgJmy8=";
+  };
+  rulesSwiftModule = fetchurl {
+    urls = ["${rulesSwiftRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-SUkAqA+UT8eqYVAMIHPZcp3/C3ZPDom4JOt0aVm8EEY=";
+  };
+  rulesSwiftPatch = fetchurl {
+    urls = ["${rulesSwiftRegistryRoot}/patches/module_dot_bazel_version.patch"];
+    hash = "sha256-/kZbNxPjPQxNaVxijhzrPhwIf8mGwidxih95QYLXSo4=";
+  };
+
+  cAresRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/c-ares/1.15.0";
+  cAresSource = moduleSource {
+    name = "c-ares";
+    version = "1.15.0";
+    url = "https://github.com/c-ares/c-ares.git";
+    ref = "cares-1_15_0";
+    rev = "e982924acee7f7313b4baa4ee5ec000c5e373c30";
+    hash = "sha256-m3EIqqQo9Mt51Fv2Yk9oZ3qy+tHQv18MV35Bv4K2djI=";
+  };
+  cAresBuildPatch = fetchurl {
+    urls = ["${cAresRegistryRoot}/patches/add_build_file.patch"];
+    hash = "sha256-+SUCFxBIkR0GE9FRFPps/e6AnA9cQIGANBHK14UAKwQ=";
+  };
+  cAresModulePatch = fetchurl {
+    urls = ["${cAresRegistryRoot}/patches/module_dot_bazel.patch"];
+    hash = "sha256-SVQeSrnvd7IishMhmg8S3PK6/6bbt1IqwVEqKDfdYgk=";
+  };
 in {
   rules_cc = moduleSource {
     name = "rules_cc";
@@ -841,6 +877,76 @@ in {
         script = ''
           patch --batch -p1 < ${appleSupportPatch}
           cmp MODULE.bazel ${appleSupportModule}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  rules_swift = mkDerivation {
+    pname = "bazel-rules-swift-bcr-source";
+    version = "2.1.1";
+    src = rulesSwiftSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir rules-swift-source
+          cp -a "$src"/. rules-swift-source/
+          chmod -R u+w rules-swift-source
+          cd rules-swift-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch -p1 < ${rulesSwiftPatch}
+          cmp MODULE.bazel ${rulesSwiftModule}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  "c-ares" = mkDerivation {
+    pname = "bazel-c-ares-bcr-source";
+    version = "1.15.0";
+    src = cAresSource;
+
+    buildDeps = [buildPackages.patch];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir c-ares-source
+          cp -a "$src"/. c-ares-source/
+          chmod -R u+w c-ares-source
+          cd c-ares-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch -p0 < ${cAresBuildPatch}
+          patch --batch -p0 < ${cAresModulePatch}
         '';
       }
       {
