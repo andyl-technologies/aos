@@ -307,6 +307,64 @@ def check_assembler_include_invalidation(root, env, accache, sccache, gcc, hits)
             "oracle_stale_artifact": "source.o", "artifacts": ["source.o"]}
 
 
+def check_inline_assembler_inputs(root, env, accache, sccache, gcc, clang, hits):
+    """Invalidate C and preprocessed C actions when inline assembly reads a file."""
+    results = []
+    source = 'asm(".text\\n.globl embedded\\nembedded:\\n.incbin \\"fragment.bin\\"\\n");\n'
+    for compiler_name, compiler in [("gcc", gcc), ("clang", clang)]:
+        for extension in ["c", "i"]:
+            fixture = f"{compiler_name}-inline-asm-{extension}"
+            work = root / fixture
+            work.mkdir()
+            (work / f"source.{extension}").write_text(source)
+            fragment = work / "fragment.bin"
+            output = work / "source.o"
+            args = [compiler, "-c", f"source.{extension}", "-o", "source.o"]
+
+            def compile_object(wrapper):
+                output.unlink(missing_ok=True)
+                completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                           capture_output=True, timeout=120)
+                assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+                return completed.stdout, completed.stderr, output.read_bytes()
+
+            old_object = None
+            for revision, byte in enumerate([b"\xc3", b"\x90"]):
+                fragment.write_bytes(byte)
+                direct = compile_object([])
+                if revision:
+                    assert direct[2] != old_object, fixture
+                else:
+                    old_object = direct[2]
+
+                before_cold_hits = hits()
+                oracle_cold = compile_object([sccache])
+                if revision:
+                    assert oracle_cold[2] == old_object, "sccache defect changed"
+                    assert hits() > before_cold_hits, "sccache did not replay stale object"
+                else:
+                    assert oracle_cold == direct
+                before_warm_hits = hits()
+                assert compile_object([sccache]) == oracle_cold
+                assert hits() > before_warm_hits
+
+                assert compile_object([accache]) == direct
+                cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+                assert cold["outcome"] == "miss", cold
+                if revision:
+                    assert any("fragment.bin" in item for item in cold["changes"]), cold
+                assert compile_object([accache]) == direct
+                warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+                assert warm["outcome"] == "hit", warm
+                results.append({"fixture": fixture, "revision": revision,
+                                "oracle_hit": True, "accache": "hit",
+                                "oracle_stale_artifact": "source.o" if revision else None,
+                                "artifacts": ["source.o"]})
+
+            print("PASS oracle", fixture, "input invalidation", flush=True)
+    return results
+
+
 def check_clang_profile_use(root, env, accache, sccache, clang, hits):
     """Track the profile data consumed by a cacheable Clang action."""
     work = root / "clang-profile-use"
@@ -662,6 +720,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
         results.append(check_saved_temporaries(root, env, accache, sccache, rustc, hits))
         results.append(check_assembler_include_invalidation(root, env, accache,
                                                             sccache, gcc, hits))
+        results.extend(check_inline_assembler_inputs(root, env, accache,
+                                                     sccache, gcc, clang, hits))
         results.extend(check_clang_profile_use(root, env, accache, sccache,
                                                clang, hits))
         results.extend(check_rust_profile_use(root, env, accache, sccache,
