@@ -7,8 +7,11 @@
   bazelNettyCommon,
   bazelNettyBase,
   bazelMavenBootstrap,
+  version ? "4.1.93.Final",
+  brotliVersion ? "1.11.0",
+  brotliServiceHash ? "sha256-fje+wvf0jtzD5OifSCm3kGhDF+gbl8BGk3dcsMZ8rhk=",
+  brotliHash ? "sha256-TVjrwIBTYRHJx9OwsZGrfq37hAqAoXOb0VRdKf1nFkE=",
 }: let
-  version = "4.1.93.Final";
   buildJdk = buildPackages.openjdk-17;
   archives = [
     {
@@ -49,15 +52,15 @@
     }
     {
       name = "service";
-      sourceVersion = "1.11.0";
+      sourceVersion = brotliVersion;
       mavenPath = "com/aayushatharva/brotli4j/service";
-      hash = "sha256-fje+wvf0jtzD5OifSCm3kGhDF+gbl8BGk3dcsMZ8rhk=";
+      hash = brotliServiceHash;
     }
     {
       name = "brotli4j";
-      sourceVersion = "1.11.0";
+      sourceVersion = brotliVersion;
       mavenPath = "com/aayushatharva/brotli4j/brotli4j";
-      hash = "sha256-TVjrwIBTYRHJx9OwsZGrfq37hAqAoXOb0VRdKf1nFkE=";
+      hash = brotliHash;
     }
   ];
   sources =
@@ -153,7 +156,7 @@ in
           nettyBaseClasspath=$(find ${bazelNettyBase}/share/java \
             -type f -name '*.jar' -print | sort | paste -sd:)
           classpath="$mavenClasspath:$nettyBaseClasspath"
-          classpath="$classpath:${bazelNettyCommon}/share/java/netty-common-4.1.93.Final.jar"
+          classpath="$classpath:${bazelNettyCommon}/share/java/netty-common-${version}.jar"
           classpath="$classpath:${bazelJbossModules}/share/java/jboss-modules-${bazelJbossModules.version}.jar"
 
           ${buildModules}
