@@ -102,6 +102,16 @@ def fixtures(gcc, clang, rustc):
                               base + ["-fanalyzer", flag], analyzer_sources,
                               {"value.h": "#define VALUE 73\n"},
                               nondeterministic_outputs=nondeterministic)
+            for suffix in ["debug", "earlydebug"]:
+                yield Fixture("gcc-" + suffix + "-dump", compiler,
+                              base + ["-g", "-fdump-" + suffix], c_sources,
+                              {"value.h": "#define VALUE 73\n"},
+                              nondeterministic_outputs={"source.c.*." + suffix})
+            for suffix in ["noaddr", "unnumbered", "unnumbered-links",
+                           "internal-locations", "passes"]:
+                yield Fixture("gcc-dump-" + suffix, compiler,
+                              base + ["-g", "-fdump-" + suffix], c_sources,
+                              {"value.h": "#define VALUE 73\n"})
             yield Fixture("gcc-debug-dumps", compiler,
                           base + ["-da"], c_sources,
                           {"value.h": "#define VALUE 73\n"})
@@ -1038,7 +1048,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                     "gcc-analyzer-exploded-nodes-2",
                                     "gcc-analyzer-exploded-nodes-3",
                                     "gcc-analyzer-state-purge", "gcc-analyzer-supergraph",
-                                    "gcc-analyzer-json"} and label == "sccache warm vs direct":
+                                    "gcc-analyzer-json", "gcc-debug-dump",
+                                    "gcc-earlydebug-dump"} and label == "sccache warm vs direct":
                     dump_files = {path for path in expected[3]
                                   if path.startswith("source.c.")}
                     expected_count = {"gcc-tree-dump": 1, "gcc-multiple-dumps": 2,
@@ -1047,7 +1058,9 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                       "gcc-analyzer-exploded-graph": 1,
                                       "gcc-analyzer-exploded-nodes-2": 1,
                                       "gcc-analyzer-state-purge": 1,
-                                      "gcc-analyzer-json": 1}
+                                      "gcc-analyzer-json": 1,
+                                      "gcc-debug-dump": 1,
+                                      "gcc-earlydebug-dump": 1}
                     if fixture.name in {"gcc-tree-all-dumps", "gcc-debug-dumps",
                                         "gcc-joined-debug-dumps", "gcc-analyzer-supergraph",
                                         "gcc-analyzer-exploded-nodes-3"}:
@@ -1072,6 +1085,13 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     assert "target/libexample.rmeta" not in actual[3], (
                         "oracle defect changed; remove this exception")
                 for field, left, right in zip(["exit", "stdout", "stderr", "artifacts"], expected, actual):
+                    if (fixture.name == "gcc-dump-internal-locations"
+                            and field == "stderr" and label.startswith("sccache ")):
+                        # sccache compiles preprocessed source, whose stripped
+                        # macro whitespace changes this location-map dump.
+                        # Accache must still match direct GCC byte for byte.
+                        assert b"ORDINARY MAP" in left and b"ORDINARY MAP" in right
+                        continue
                     if field == "artifacts" and fixture.nondeterministic_outputs:
                         # GCC PCH embeds process-specific state even when direct
                         # compilations receive identical argv and inputs.
@@ -1127,7 +1147,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                     "gcc-analyzer-exploded-nodes-2",
                                     "gcc-analyzer-exploded-nodes-3",
                                     "gcc-analyzer-state-purge", "gcc-analyzer-supergraph",
-                                    "gcc-analyzer-json",
+                                    "gcc-analyzer-json", "gcc-debug-dump",
+                                    "gcc-earlydebug-dump",
                                     "gcc-go-spec",
                                     "gcc-optimization-record",
                                     "gcc-final-insns-default", "gcc-final-insns-dot",
