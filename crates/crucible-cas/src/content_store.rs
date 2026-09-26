@@ -11,7 +11,7 @@
 //! or delete committed objects and is not a GC fence.
 //!
 //! Built-in memory, plaintext-directory, compressed-directory, encrypted,
-//! compressed-encrypted, and packed leaves are public. Composition
+//! compressed-encrypted, SQLite, and packed leaves are public. Composition
 //! implementations remain private and can only be assembled through the
 //! admitted [`StoreGraph`] configuration algebra.
 
@@ -36,6 +36,7 @@ mod profile;
 mod quota;
 mod s3;
 mod s3_ref;
+mod sqlite;
 mod write_back;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -75,6 +76,7 @@ pub use physical_quota::{
     StoreGraphPhysicalQuotaBinders, StorePhysicalQuotaBinder, StorePhysicalQuotaGuard,
     StorePhysicalQuotaPolicyId,
 };
+pub use sqlite::SqliteBlobBackend;
 pub use profile::{
     ObjectProfile, Reconstructibility, RetentionRole, SensitivityClass, StoreGraphObjectProfilers,
     StoreObjectProfilePolicyId, StoreObjectProfiler,
