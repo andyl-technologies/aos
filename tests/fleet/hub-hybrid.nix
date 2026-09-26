@@ -1693,7 +1693,7 @@ in {
       assert all(job["state"] == "succeeded" for job in gc_jobs), gc_jobs
       for path in (f"{gc_store_hash}.narinfo", gc_nar_path):
           head = probe_work({"kind": "head", "path": path})
-          assert head["outcome"]["kind"] == "not_found", (path, head)
+          assert head["kind"] == "not_found", (path, head)
 
       invalid_plan_time = int(time.time())
       rejected_plans = [
