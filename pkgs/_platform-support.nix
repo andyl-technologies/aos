@@ -44,6 +44,7 @@ let
 
   targetWave1 = [
     "abseil-cpp"
+    "apr"
     "autoconf"
     "autoconf-archive"
     "automake"

@@ -1,14 +1,17 @@
 """Generate Bazel's Maven BUILD file from its pinned lock and source-built JARs.
 
-The normal mode requires every ordinary locked JAR. The explicit partial mode
-exists for the Java bootstrap probe while native and optional Java artifacts
-are still being built from source.
+The normal mode requires every locked JAR for the selected release platforms.
+The explicit partial mode exists for the Java bootstrap probe while native and
+optional Java artifacts are still being built from source.
 """
 
 import argparse
 import json
 import re
 from pathlib import Path
+
+
+NATIVE_CLASSIFIER_PLATFORMS = frozenset({"linux", "osx", "windows"})
 
 
 def target_name(coordinate: str) -> str:
@@ -49,8 +52,20 @@ def render_rule(name: str, path: Path, dependencies: list[str]) -> str:
     )
 
 
-def generate(lock_file: Path, maven_root: Path, partial: bool) -> str:
+def generate(
+    lock_file: Path,
+    maven_root: Path,
+    partial: bool,
+    eligible_platforms: frozenset[str] | None = None,
+) -> str:
     """Render BUILD.vendor, rejecting unavailable locked inputs by default."""
+
+    if eligible_platforms is not None and not eligible_platforms:
+        raise ValueError("At least one eligible platform is required")
+    if eligible_platforms is not None:
+        unknown_platforms = eligible_platforms - NATIVE_CLASSIFIER_PLATFORMS
+        if unknown_platforms:
+            raise ValueError(f"Unknown eligible platforms: {sorted(unknown_platforms)}")
 
     lock = json.loads(lock_file.read_text())
     artifacts = lock["artifacts"]
@@ -59,12 +74,22 @@ def generate(lock_file: Path, maven_root: Path, partial: bool) -> str:
         for coordinate, metadata in artifacts.items()
         if "jar" in metadata["shasums"]
     }
-    classified = {
-        f"{coordinate}:{classifier}": jar_path(coordinate, metadata["version"], classifier)
-        for coordinate, metadata in artifacts.items()
-        for classifier in metadata["shasums"]
-        if classifier != "jar"
-    }
+    classified = {}
+    for coordinate, metadata in artifacts.items():
+        for classifier in metadata["shasums"]:
+            if classifier == "jar":
+                continue
+
+            platform = classifier.split("-", 1)[0]
+            if eligible_platforms is not None:
+                if platform not in NATIVE_CLASSIFIER_PLATFORMS:
+                    raise ValueError(f"Unknown Maven classifier platform: {coordinate}:{classifier}")
+                if platform not in eligible_platforms:
+                    continue
+
+            classified[f"{coordinate}:{classifier}"] = jar_path(
+                coordinate, metadata["version"], classifier
+            )
     locked = ordinary | classified
     missing = sorted(
         coordinate for coordinate, path in locked.items() if not (maven_root / path).is_file()
@@ -130,9 +155,20 @@ def main() -> None:
     parser.add_argument("--maven-root", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--partial", action="store_true")
+    parser.add_argument(
+        "--eligible-platform",
+        action="append",
+        choices=sorted(NATIVE_CLASSIFIER_PLATFORMS),
+        help="Include native classifiers for this release platform; repeat as needed.",
+    )
     arguments = parser.parse_args()
 
-    contents = generate(arguments.lock, arguments.maven_root, arguments.partial)
+    eligible_platforms = (
+        frozenset(arguments.eligible_platform) if arguments.eligible_platform else None
+    )
+    contents = generate(
+        arguments.lock, arguments.maven_root, arguments.partial, eligible_platforms
+    )
     arguments.output.write_text(contents)
 
 
