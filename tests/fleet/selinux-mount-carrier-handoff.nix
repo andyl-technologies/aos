@@ -28,82 +28,111 @@
     mountExecutableCarrier = wrongHash;
   };
 
-  fixtureModule = stage0:
-    lib.mkMerge [
-      (stage0Fixture stage0)
-      {
-        aos.image.erofsCompressionLevel = 1;
-        aos.image.budgets.maxEspMiB = 896;
-        aos.image.budgets.maxDownloadMiB = 1056;
-        aos.boot.initrd.extraPackages = [
-          pkgs.attr
-          pkgs.coreutils
-          pkgs.cryptsetup
-          pkgs.device-mapper
-          pkgs.util-linux
-        ];
-        boot.initrd.systemd.mountExecutableCarrier = carrier;
-        environment.systemPackages = [pkgs.attr pkgs.cryptsetup pkgs.util-linux];
+  fixtureModule = stage0: {
+    imports = [(stage0Fixture stage0)];
 
-        boot.initrd.systemd.services.aos-mount-carrier-qualification = {
-          description = "Qualify the signed Mount carrier before switch-root";
-          requiredBy = ["initrd-switch-root.target"];
-          after = ["systemd-udev-settle.service"];
-          before = ["initrd-switch-root.target"];
-          unitConfig = {
-            DefaultDependencies = "no";
-            OnFailure = "aos-boot-identity-failure.target";
-            OnFailureJobMode = "isolate";
-          };
-          serviceConfig = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-            StandardOutput = "kmsg+console";
-            StandardError = "kmsg+console";
-          };
-          script = ''
-            set -eu
-
-            carrier=/lib/aos/mount-executable-carrier
-            test "$(cat /sys/fs/selinux/enforce)" = 1
-            test -s "$carrier/carrier.ext4"
-            test -s "$carrier/carrier.hash"
-            root_hash=$(cat "$carrier/carrier.root-hash")
-            test "''${#root_hash}" -eq 64
-
-            data_loop=$(${pkgs.util-linux}/bin/losetup --find --show --read-only \
-              "$carrier/carrier.ext4")
-            hash_loop=$(${pkgs.util-linux}/bin/losetup --find --show --read-only \
-              "$carrier/carrier.hash")
-            ${pkgs.cryptsetup}/sbin/veritysetup verify \
-              "$data_loop" "$hash_loop" "$root_hash"
-            ${pkgs.cryptsetup}/sbin/veritysetup open \
-              "$data_loop" aos-mount-carrier "$hash_loop" "$root_hash"
-
-            ${pkgs.coreutils}/bin/mkdir -p ${carrierRoot}
-            ${pkgs.util-linux}/bin/mount -t ext4 -o ro,nosuid,nodev \
-              /dev/mapper/aos-mount-carrier ${carrierRoot}
-            test "$(${pkgs.attr}/bin/getfattr --only-values -n security.selinux \
-              ${carrierRoot})" = system_u:object_r:root_t
-            test "$(${pkgs.attr}/bin/getfattr --only-values -n security.selinux \
-              ${carrierRoot}/launcher)" = system_u:object_r:init_exec_t
-            test "$(${pkgs.attr}/bin/getfattr --only-values -n security.selinux \
-              ${carrierRoot}/daemon)" = system_u:object_r:bin_t
-
-            ${pkgs.coreutils}/bin/stat -c '%d:%i:%s' \
-              ${carrierRoot}/launcher > /run/aos/mount-carrier-launcher.before
-            ${pkgs.coreutils}/bin/stat -c '%d:%i:%s' \
-              ${carrierRoot}/daemon > /run/aos/mount-carrier-daemon.before
-            echo 'AOS Mount carrier qualification: mounted signed dm-verity carrier before switch-root'
-          '';
-        };
-      }
+    aos.image.erofsCompressionLevel = 1;
+    aos.image.budgets.maxEspMiB = 896;
+    aos.image.budgets.maxRootMiB = 896;
+    aos.image.budgets.maxInitrdMiB = 256;
+    aos.image.budgets.maxUkiMiB = 288;
+    aos.image.budgets.maxDownloadMiB = 1536;
+    aos.image.budgets.maxRuntimeClosureMiB = 1024;
+    aos.boot.initrd.extraPackages = [
+      pkgs.attr
+      pkgs.coreutils
+      pkgs.cryptsetup
+      pkgs.device-mapper
+      pkgs.util-linux
     ];
+    boot.initrd.systemd.mountExecutableCarrier = carrier;
+    environment.systemPackages = [pkgs.attr pkgs.cryptsetup pkgs.util-linux];
 
-  systemFor = stage0:
-    systems.server-secureboot-lockdown.extendModules {
+    boot.initrd.systemd.services.aos-mount-carrier-qualification = {
+      description = "Qualify the signed Mount carrier before switch-root";
+      requiredBy = ["initrd-switch-root.target"];
+      after = ["systemd-udev-settle.service"];
+      before = ["initrd-switch-root.target"];
+      unitConfig = {
+        DefaultDependencies = "no";
+        OnFailure = "aos-boot-identity-failure.target";
+        OnFailureJobMode = "isolate";
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        StandardOutput = "kmsg+console";
+        StandardError = "kmsg+console";
+      };
+      script = ''
+        set -Eeuo pipefail
+
+        fail_qualification() {
+          local status="$1"
+          local line="$2"
+          printf 'AOS Mount carrier qualification failed at line %s (status %s)\n' \
+            "$line" "$status" >&2
+          printf '<0>AOS Mount carrier qualification failed at line %s (status %s)\n' \
+            "$line" "$status" > /dev/kmsg || :
+          exit "$status"
+        }
+        trap 'fail_qualification "$?" "$LINENO"' ERR
+
+        carrier=/lib/aos/mount-executable-carrier
+        test "$(${pkgs.coreutils}/bin/cat /sys/fs/selinux/enforce)" = 1
+        test -s "$carrier/carrier.ext4"
+        test -s "$carrier/carrier.hash"
+        root_hash=$(${pkgs.coreutils}/bin/cat "$carrier/carrier.root-hash")
+        test "''${#root_hash}" -eq 64
+
+        data_loop=$(${pkgs.util-linux}/sbin/losetup --find --show --read-only \
+          "$carrier/carrier.ext4")
+        hash_loop=$(${pkgs.util-linux}/sbin/losetup --find --show --read-only \
+          "$carrier/carrier.hash")
+        ${pkgs.cryptsetup}/sbin/veritysetup verify \
+          "$data_loop" "$hash_loop" "$root_hash"
+        ${pkgs.cryptsetup}/sbin/veritysetup open \
+          "$data_loop" aos-mount-carrier "$hash_loop" "$root_hash"
+
+        ${pkgs.coreutils}/bin/mkdir -p ${carrierRoot}
+        ${pkgs.util-linux}/bin/mount -t ext4 -o ro,nosuid,nodev \
+          /dev/mapper/aos-mount-carrier ${carrierRoot}
+        test "$(${pkgs.attr}/bin/getfattr --only-values -n security.selinux \
+          ${carrierRoot})" = system_u:object_r:root_t
+        test "$(${pkgs.attr}/bin/getfattr --only-values -n security.selinux \
+          ${carrierRoot}/launcher)" = system_u:object_r:init_exec_t
+        test "$(${pkgs.attr}/bin/getfattr --only-values -n security.selinux \
+          ${carrierRoot}/daemon)" = system_u:object_r:bin_t
+
+        ${pkgs.coreutils}/bin/stat -c '%d:%i:%s' \
+          ${carrierRoot}/launcher > /run/aos/mount-carrier-launcher.before
+        ${pkgs.coreutils}/bin/stat -c '%d:%i:%s' \
+          ${carrierRoot}/daemon > /run/aos/mount-carrier-daemon.before
+        echo 'AOS Mount carrier qualification: mounted signed dm-verity carrier before switch-root'
+      '';
+    };
+  };
+
+  systemFor = stage0: let
+    system = systems.server-secureboot-lockdown.extendModules {
       modules = [(fixtureModule stage0)];
     };
+    cfg = system.config;
+  in
+    if
+      toString cfg.aos.boot.initrd.stage0
+      == toString stage0
+      && toString cfg.boot.initrd.systemd.mountExecutableCarrier == toString carrier
+      && cfg.aos.image.budgets.maxRootMiB == 896
+      && cfg.aos.image.budgets.maxInitrdMiB == 256
+      && cfg.aos.image.budgets.maxUkiMiB == 288
+      && cfg.aos.image.budgets.maxDownloadMiB == 1536
+      && cfg.aos.image.budgets.maxRuntimeClosureMiB == 1024
+      && builtins.elem "selinux=1" cfg.aos.boot.kernelParams
+      && builtins.elem "enforcing=1" cfg.aos.boot.kernelParams
+      && builtins.elem "aos.selinux.root_handoff=1" cfg.aos.boot.kernelParams
+    then system
+    else throw "Mount warm-handoff fixture lost its stage0, signed carrier, bounded image budgets, or enforcing kernel parameters";
 in {
   name = "selinux-mount-carrier-handoff";
   timeout = 1800;
@@ -113,11 +142,13 @@ in {
     retained = {
       system = systemFor qualificationStage0;
       bootMode = "image";
+      imageDiskMiB = 16384;
       firmwareVars = "${enrolledFirmwareVars}/enroller-OVMF_VARS.fd";
     };
     wrongHash = {
       system = systemFor wrongHashStage0;
       bootMode = "image";
+      imageDiskMiB = 16384;
       firmwareVars = "${enrolledFirmwareVars}/enroller-OVMF_VARS.fd";
       expectAgent = false;
     };
@@ -129,17 +160,36 @@ in {
 
     retained.wait_for_unit("multi-user.target")
     retained.succeed("test $(cat /sys/fs/selinux/enforce) = 1")
-    marker = retained.succeed("cat /run/aos/selinux-root-handoff")
+    marker_status, marker_output, marker_error = retained.execute("cat /run/aos/selinux-root-handoff")
+    marker = marker_output.decode(errors="replace")
+    if marker_status != 0:
+        for command in (
+            "cat /proc/cmdline",
+            "readlink /proc/1/exe",
+            "systemctl --failed --no-pager",
+            "systemctl status initrd-switch-root.service --no-pager -l",
+            "${pkgs.util-linux}/bin/findmnt -R /run/aos",
+            "journalctl -b -n 120 --no-pager -o short-monotonic",
+        ):
+            status, output, error = retained.execute(command)
+            print(
+                f"handoff diagnostic: {command}: status={status}\n"
+                f"{output.decode(errors='replace')}{error.decode(errors='replace')}"
+            )
+        raise AssertionError(
+            f"switch-root handoff marker is absent: {marker_error.decode(errors='replace')}"
+        )
     assert "phase=switch-root" in marker, marker
 
     for name in ("launcher", "daemon"):
         before = retained.succeed(f"cat /run/aos/mount-carrier-{name}.before").strip()
         after = retained.succeed(f"stat -c '%d:%i:%s' ${carrierRoot}/{name}").strip()
         assert before == after, (name, before, after)
-    retained.succeed("test $(getfattr --only-values -n security.selinux ${carrierRoot}) = system_u:object_r:root_t")
+    retained.succeed("test $(${pkgs.attr}/bin/getfattr --only-values -n security.selinux ${carrierRoot}) = system_u:object_r:root_t")
     retained.succeed("${carrierRoot}/launcher --version")
-    status, output = retained.execute("${carrierRoot}/daemon --help")
-    assert status != 0 and "aos-sandbox-mountd:" in output, (status, output)
+    status, output, error = retained.execute("${carrierRoot}/daemon --help")
+    daemon_output = (output + error).decode(errors="replace")
+    assert status != 0 and "aos-sandbox-mountd:" in daemon_output, (status, daemon_output)
 
     retained.succeed("systemctl daemon-reexec")
     retained.wait_for_unit("multi-user.target")
@@ -150,7 +200,6 @@ in {
         after = retained.succeed(f"stat -c '%d:%i:%s' ${carrierRoot}/{name}").strip()
         assert before == after, (name, before, after)
 
-    wrongHash.start()
     deadline = time.monotonic() + 180
     serial_path = Path(wrongHash.serial_log_path)
     while time.monotonic() < deadline:

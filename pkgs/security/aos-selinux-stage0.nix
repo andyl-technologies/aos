@@ -14,6 +14,7 @@
   admissionUnit ? "aos-selinux-stage0-hold.target",
   qualificationPostPinGate ? "",
   mountExecutableCarrier ? null,
+  mountCarrierFirstLauncher ? false,
 }: let
   stage0Name = "aos-selinux-stage0";
   admissionUnitValue =
@@ -28,7 +29,11 @@
     then qualificationPostPinGate
     else throw "aos-selinux-stage0: qualificationPostPinGate must be empty or a canonical /run/aos path";
   carrierCompileFlag =
-    if mountExecutableCarrier == null
+    if mountCarrierFirstLauncher && mountExecutableCarrier == null
+    then throw "aos-selinux-stage0: first-launcher carrier custody requires a carrier"
+    else if mountCarrierFirstLauncher
+    then "-DAOS_MOUNT_CARRIER_HANDOFF=1 -DAOS_MOUNT_CARRIER_FIRST_LAUNCHER=1"
+    else if mountExecutableCarrier == null
     then ""
     else "-DAOS_MOUNT_CARRIER_HANDOFF=1";
   carrierObject =
@@ -159,6 +164,12 @@ in
             ''
           }
 
+          ${
+            if mountCarrierFirstLauncher
+            then "cp ${./_aos-selinux-stage0-carrier-early.inc} ./_aos-selinux-stage0-carrier-early.inc"
+            else ""
+          }
+
           $CC \
             -std=c17 \
             -D_GNU_SOURCE \
@@ -214,7 +225,7 @@ in
     ];
 
     passthru = {
-      inherit admissionUnit loadedPolicy expectedPolicy expectedPolicyKernel qualificationPostPinGate mountExecutableCarrier;
+      inherit admissionUnit loadedPolicy expectedPolicy expectedPolicyKernel qualificationPostPinGate mountExecutableCarrier mountCarrierFirstLauncher;
       immutablePolicy = aos-selinux-production-policy;
       runtimeRootsProvisioner = aos-selinux-runtime-roots;
     };

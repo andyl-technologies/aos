@@ -32,6 +32,12 @@
 #include <sys/ioctl.h>
 #endif
 
+#ifdef AOS_MOUNT_CARRIER_FIRST_LAUNCHER
+#include <linux/fs.h>
+#include <linux/loop.h>
+#include <sys/sysmacros.h>
+#endif
+
 #ifndef AOS_GUARD_PATH
 #error "AOS_GUARD_PATH must name the physical inner stage-1 guard"
 #endif
@@ -80,6 +86,14 @@
 #define EXPECTED_BIN_CONTEXT "system_u:object_r:bin_t"
 #endif
 
+#ifdef AOS_MOUNT_CARRIER_FIRST_LAUNCHER
+#ifndef AOS_MOUNT_CARRIER_HANDOFF
+#error "first-launcher carrier custody requires the handoff guard"
+#endif
+#define AOS_MOUNT_CARRIER_SOURCE "/newroot/lib/aos/mount-executable-carrier"
+#define AOS_MOUNT_CARRIER_LAUNCHER AOS_MOUNT_CARRIER_ROOT "/launcher"
+#endif
+
 extern const unsigned char _binary_loaded_policy_bin_start[];
 extern const unsigned char _binary_loaded_policy_bin_end[];
 extern const unsigned char _binary_expected_policy_bin_start[];
@@ -99,11 +113,35 @@ static void write_diagnostic(const char *prefix, const char *format, va_list arg
 }
 
 __attribute__((noreturn)) static void fail_closed(const char *format, ...) {
+    char message[512];
+    char kmsg_record[sizeof(message) + 64];
     va_list arguments;
+    int kmsg_fd;
+    int record_length;
 
     va_start(arguments, format);
-    write_diagnostic("AOS SELinux stage0 failure: ", format, arguments);
+    if (vsnprintf(message, sizeof(message), format, arguments) < 0) {
+        snprintf(message, sizeof(message), "diagnostic formatting failed");
+    }
     va_end(arguments);
+    dprintf(STDERR_FILENO, "AOS SELinux stage0 failure: %s\n", message);
+
+    // PID 1 freezes on rejection; keep the reason visible on serial kernel consoles.
+    kmsg_fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (kmsg_fd >= 0) {
+        record_length = snprintf(
+            kmsg_record,
+            sizeof(kmsg_record),
+            "<0>AOS SELinux stage0 failure: %s\n",
+            message);
+        if (record_length > 0 && (size_t)record_length < sizeof(kmsg_record)) {
+            if (write(kmsg_fd, kmsg_record, (size_t)record_length) !=
+                (ssize_t)record_length) {
+                dprintf(STDERR_FILENO, "AOS SELinux stage0: kernel diagnostic unavailable\n");
+            }
+        }
+        close(kmsg_fd);
+    }
 
     if (getpid() == 1) {
         dprintf(STDERR_FILENO, "AOS SELinux stage0: PID 1 frozen fail-closed\n");
@@ -1277,7 +1315,7 @@ static void await_qualification_post_pin_gate(const char *phase) {
     }
 }
 
-static void pin_runtime_closure(const char *phase) {
+static void pin_runtime_closure(const char *phase, const char *handoff_systemd_path) {
     const unsigned char *manifest = _binary_systemd_runtime_manifest_bin_start;
     size_t manifest_size = embedded_size(
         manifest,
@@ -1378,7 +1416,7 @@ static void pin_runtime_closure(const char *phase) {
                 marker,
                 "version=1\nphase=%s\nsystemd=%s\nmanifest_sha256=%s\nmanifest_count=%lu\nmount_namespace=%s\n",
                 phase,
-                AOS_PHYSICAL_SYSTEMD_PATH,
+                handoff_systemd_path,
                 hexadecimal_digest,
                 count,
                 mount_namespace) < 0 || fsync(marker) < 0 || close(marker) < 0) {
@@ -1447,18 +1485,19 @@ static int require_serialization_descriptor(int argc, char **argv) {
 }
 
 #ifdef AOS_MOUNT_CARRIER_HANDOFF
-static void require_mount_carrier_file(
+static int open_verified_mount_carrier_file(
     int root_fd,
     const char *name,
     const char *expected_context,
-    dev_t device) {
+    dev_t device,
+    char *observed_context,
+    size_t context_capacity) {
     struct open_how how = {
         .flags = O_RDONLY | O_CLOEXEC | O_NOCTTY,
         .resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS |
                    RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV,
     };
     struct stat metadata;
-    char observed_context[256];
     int descriptor = (int)syscall(SYS_openat2, root_fd, name, &how, sizeof(how));
 
     if (descriptor < 0 || fstat(descriptor, &metadata) < 0 ||
@@ -1471,8 +1510,8 @@ static void require_mount_carrier_file(
         name,
         expected_context,
         observed_context,
-        sizeof(observed_context));
-    close(descriptor);
+        context_capacity);
+    return descriptor;
 }
 
 static void require_mount_carrier_table(dev_t device) {
@@ -1556,17 +1595,14 @@ static void require_mount_carrier_table(dev_t device) {
 
 static void require_mount_carrier_handoff(void) {
     struct stat root_status;
-    struct stat mapper_status;
     char observed_context[256];
     int root_fd;
 
     require_filesystem(AOS_MOUNT_CARRIER_ROOT, EXT4_SUPER_MAGIC, ST_RDONLY | ST_NODEV | ST_NOSUID, ST_NOEXEC);
     root_fd = open(AOS_MOUNT_CARRIER_ROOT, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (root_fd < 0 || fstat(root_fd, &root_status) < 0 ||
-        stat(AOS_MOUNT_CARRIER_MAPPER, &mapper_status) < 0 ||
         !S_ISDIR(root_status.st_mode) || root_status.st_uid != 0 ||
-        root_status.st_gid != 0 || (root_status.st_mode & 0777) != 0755 ||
-        !S_ISBLK(mapper_status.st_mode) || root_status.st_dev != mapper_status.st_rdev) {
+        root_status.st_gid != 0 || (root_status.st_mode & 0777) != 0755) {
         fail_closed("Mount carrier root is not the retained dm-verity filesystem");
     }
     require_fd_context(
@@ -1575,12 +1611,22 @@ static void require_mount_carrier_handoff(void) {
         EXPECTED_ROOT_CONTEXT,
         observed_context,
         sizeof(observed_context));
+    // udev may remove the initrd-created mapper node; the mounted device and
+    // its authenticated live dm table, not that pathname, carry authority.
     require_mount_carrier_table(root_status.st_dev);
-    require_mount_carrier_file(root_fd, "launcher", EXPECTED_INIT_EXEC_CONTEXT, root_status.st_dev);
-    require_mount_carrier_file(root_fd, "daemon", EXPECTED_BIN_CONTEXT, root_status.st_dev);
+    close(open_verified_mount_carrier_file(
+        root_fd, "launcher", EXPECTED_INIT_EXEC_CONTEXT, root_status.st_dev,
+        observed_context, sizeof(observed_context)));
+    close(open_verified_mount_carrier_file(
+        root_fd, "daemon", EXPECTED_BIN_CONTEXT, root_status.st_dev,
+        observed_context, sizeof(observed_context)));
     close(root_fd);
     log_status("Mount carrier retained across handoff: st_dev=%ju", (uintmax_t)root_status.st_dev);
 }
+#endif
+
+#ifdef AOS_MOUNT_CARRIER_FIRST_LAUNCHER
+#include "_aos-selinux-stage0-carrier-early.inc"
 #endif
 
 static void run_root_handoff(int argc, char **argv) {
@@ -1628,12 +1674,16 @@ static void run_root_handoff(int argc, char **argv) {
         EXPECTED_INIT_EXEC_CONTEXT,
         systemd_context,
         sizeof(systemd_context));
+#ifdef AOS_MOUNT_CARRIER_FIRST_LAUNCHER
+    systemd_fd = open_retained_carrier_launcher(systemd_context, sizeof(systemd_context));
+#else
     systemd_fd = open_verified_physical_store_target(
         "/",
         AOS_PHYSICAL_SYSTEMD_PATH,
         EXPECTED_INIT_EXEC_CONTEXT,
         systemd_context,
         sizeof(systemd_context));
+#endif
     verify_systemd_exec(systemd_context);
     interpreter_fd = open_verified_physical_store_target(
         "/",
@@ -1649,12 +1699,17 @@ static void run_root_handoff(int argc, char **argv) {
         "execute");
     close(interpreter_fd);
 
-    pin_runtime_closure(phase);
+#ifdef AOS_MOUNT_CARRIER_FIRST_LAUNCHER
+    pin_runtime_closure(phase, AOS_MOUNT_CARRIER_LAUNCHER);
+    log_status("runtime closure pinned; %s handoff to retained carrier systemd", phase);
+    argv[1] = (char *)AOS_MOUNT_CARRIER_LAUNCHER;
+#else
+    pin_runtime_closure(phase, AOS_PHYSICAL_SYSTEMD_PATH);
     log_status("runtime closure pinned; %s handoff to physical systemd", phase);
-
     argv[1] = (char *)AOS_PHYSICAL_SYSTEMD_PATH;
+#endif
     execveat(systemd_fd, "", &argv[1], environ, AT_EMPTY_PATH);
-    fail_closed("exec retained physical root systemd: %s", strerror(errno));
+    fail_closed("exec retained systemd: %s", strerror(errno));
 }
 
 static void run_runtime_roots_launcher(int argc, char **argv) {
@@ -1803,6 +1858,10 @@ static void mount_inner_stage(void) {
         ST_RDONLY | ST_NODEV,
         ST_NOSUID);
 
+#ifdef AOS_MOUNT_CARRIER_FIRST_LAUNCHER
+    mount_signed_carrier_before_policy();
+#endif
+
     move_mounted_tree("/dev", "/newroot/dev", TMPFS_MAGIC, ST_NOSUID | ST_NOEXEC, 0);
     move_mounted_tree(
         "/proc",
@@ -1873,6 +1932,9 @@ static void run_inner_guard(void) {
     char unit_argument[320];
     char *systemd_arguments[3] = {"/usr/bin/systemd", NULL, NULL};
     int systemd_fd;
+#ifdef AOS_MOUNT_CARRIER_FIRST_LAUNCHER
+    struct stat carrier_launcher;
+#endif
 
     attach_console();
     require_current_context(EXPECTED_INIT_CONTEXT);
@@ -1890,7 +1952,20 @@ static void run_inner_guard(void) {
         EXPECTED_INIT_EXEC_CONTEXT,
         systemd_context,
         sizeof(systemd_context));
+#ifdef AOS_MOUNT_CARRIER_FIRST_LAUNCHER
+    close(open_verified_stage1_systemd(systemd_context, sizeof(systemd_context)));
+    require_mount_carrier_handoff();
+    systemd_fd = open_retained_carrier_launcher(systemd_context, sizeof(systemd_context));
+    if (fstat(systemd_fd, &carrier_launcher) < 0) {
+        fail_closed("stat retained Mount carrier first launcher: %s", strerror(errno));
+    }
+    log_status(
+        "Mount carrier first launcher: st_dev=%ju inode=%ju",
+        (uintmax_t)carrier_launcher.st_dev,
+        (uintmax_t)carrier_launcher.st_ino);
+#else
     systemd_fd = open_verified_stage1_systemd(systemd_context, sizeof(systemd_context));
+#endif
     verify_systemd_exec(systemd_context);
 
     if (AOS_ADMISSION_UNIT[0] != '\0') {
