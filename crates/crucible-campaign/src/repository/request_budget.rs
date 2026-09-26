@@ -26,8 +26,9 @@ impl CampaignRepository {
         accounting: ContentId,
         fact: &CampaignFact,
         publish: bool,
-    ) -> Result<ContentId, CampaignRepositoryError> {
+    ) -> Result<(ContentId, usize), CampaignRepositoryError> {
         let proposals = self.new_request_admission_proposals(fact)?;
+        let indexed_proposals = proposals.len();
 
         let prior = ledger.request_admissions();
         let empty = MerkleMap::empty_content_id()?;
@@ -80,7 +81,10 @@ impl CampaignRepository {
                 self.update_request_spending_map(request_root, &admissions, publish)?,
             );
         }
-        self.update_request_spending_map(prior, &outer, publish)
+        Ok((
+            self.update_request_spending_map(prior, &outer, publish)?,
+            indexed_proposals,
+        ))
     }
 
     fn new_request_admission_proposals(
@@ -267,18 +271,10 @@ impl CampaignRepository {
 
     /// Charges the ledger and the maximum two trie paths per indexed admission.
     pub(super) fn request_budget_closure_growth(
-        &self,
-        parent: &LoadedSnapshot,
-        child: &LoadedSnapshot,
+        prior: CampaignBudgetLedger,
+        next: CampaignBudgetLedger,
+        indexed: usize,
     ) -> Result<usize, CampaignRepositoryError> {
-        let prior = self.parent_budget_ledger(parent)?;
-        let next = self.parent_budget_ledger(child)?;
-        let fact = child
-            .snapshot
-            .transition()
-            .ok_or_else(|| integrity("request-budget-successor-has-no-transition"))?;
-        let fact = self.read_fact(fact.content_id())?;
-        let indexed = self.new_request_admission_proposals(&fact)?.len();
         indexed
             .checked_mul(2 * MERKLE_UPDATE_NODE_UPPER)
             .and_then(|nodes| {

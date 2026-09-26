@@ -391,7 +391,7 @@ impl CampaignRepository {
             roots.accounting = projected.accounting;
         }
         roots.coordination = coordination;
-        let next = self.budgeted_successor(
+        let (next, budget_witness) = self.budgeted_successor(
             current_id,
             current.snapshot.lineage(),
             current.snapshot.active_policy(),
@@ -405,6 +405,7 @@ impl CampaignRepository {
             next_content,
             None,
             closure_growth_upper,
+            &budget_witness,
         )?;
 
         match self

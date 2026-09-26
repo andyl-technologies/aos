@@ -1,6 +1,7 @@
 //! Complete snapshot ancestry and reachable-object closure validation.
 
 use super::*;
+use super::budget::ExpectedBudgetSuccessor;
 
 /// Bounded process-local validation state exposed to conformance tests.
 #[cfg(feature = "test-support")]
@@ -94,6 +95,7 @@ impl CampaignRepository {
         child: ContentId,
         action: Option<&CampaignControlAction>,
         closure_growth_upper: usize,
+        budget_witness: &ExpectedBudgetSuccessor,
     ) -> Result<ValidationCheckpoint, CampaignRepositoryError> {
         // Transaction helpers have already authenticated their inputs and
         // constructed the exact owner delta. This final shape check prevents a
@@ -110,19 +112,16 @@ impl CampaignRepository {
         let transition_content = optional_child(&loaded.envelope, "transition")
             .ok_or_else(|| integrity("local-successor-checkpoint-shape"))?;
         let parent_checkpoint = self.load_validation_checkpoint(parent)?;
-        let derived_branch = match self.read_fact(transition_content)? {
+        let (fact, budget_growth) =
+            self.validate_local_budget_witness(parent, child, &loaded, budget_witness)?;
+        let derived_branch = match fact {
             CampaignFact::CampaignDerived(derivation) => Some(DerivedBranchCheckpoint {
                 snapshot: child,
-                derivation,
+                derivation: *derivation,
             }),
             _ => parent_checkpoint.derived_branch,
         };
         let parent_snapshot = self.read_snapshot(parent)?;
-        self.validate_budget_successor(
-            &parent_snapshot,
-            &loaded,
-            &self.read_fact(transition_content)?,
-        )?;
         let ancestry_depth = parent_checkpoint
             .ancestry_depth
             .checked_add(1)
@@ -141,12 +140,9 @@ impl CampaignRepository {
         // checkpoint never understates restart validation.
         let anchors = self.incremental_closure_anchors(&parent_snapshot, transition_content)?;
         let linked_objects = self.verify_campaign_closure_anchored(transition_content, &anchors)?;
-        // The index update was recomputed from exact admission deltas above.
-        // Its values are parent-owned or covered by the transition closure;
-        // only the ledger and newly constructed trie paths add growth here.
-        let budget_growth = self.request_budget_closure_growth(&parent_snapshot, &loaded)?;
-        let scan_growth =
-            self.planner_scan_closure_growth(&loaded, &self.read_fact(transition_content)?)?;
+        // The transaction's indexed admission delta bounds its new trie paths.
+        // Cold ancestry validation independently reconstructs both index roots.
+        let scan_growth = self.planner_scan_closure_growth(&loaded, fact)?;
         let closure_growth_upper = closure_growth_upper
             .checked_add(linked_objects)
             .and_then(|growth| growth.checked_add(budget_growth))
