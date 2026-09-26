@@ -88,6 +88,9 @@ GCC `-specs=` files can include other specs that change assembly without
 changing preprocessor output. Their containing directory and declared
 `read_roots` are hashed recursively; declare any additional mutable include
 directories in the manifest.
+GCC AutoFDO reads `-fauto-profile=path`, or `fbdata.afdo` for the bare flag.
+Accache fingerprints that profile even though it is absent from the ordinary
+preprocessor depfile.
 The package author must declare every extension-readable mutable input and
 must not cache compiler extensions with undeclared side effects. This is an
 input contract, not an additional filesystem sandbox. Full tree hashing can
@@ -293,6 +296,9 @@ changed list before producing the new object.
 GCC `-fprofile-note=path` oracle cases confirm that pinned sccache fails to
 publish a relocated coverage note, while accache restores both the object and
 the named note on a warm hit. The flag without coverage remains cacheable.
+Two GCC AutoFDO oracle families change valid, empty-function profiles under
+both option spellings. Pinned sccache reuses its action after a profile edit;
+accache misses and names the changed profile before warming again.
 
 The suite asserts several pinned sccache output omissions: implicit `.d` files
 on warm `-MMD` hits without `-MF`, GCC `-aux-info` files, Clang serialized
