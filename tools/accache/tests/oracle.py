@@ -1649,6 +1649,68 @@ def check_clang_sanitizer_ignorelist(root, env, accache, sccache, clang, hits):
     return results
 
 
+def check_clang_xray_lists(root, env, accache, sccache, clang, hits):
+    """Track all three XRay attribute-list inputs and their depfiles."""
+    results = []
+    for fixture, option, threshold, selected in [
+        ("clang-xray-always", "-fxray-always-instrument", "1000", "fun:sampled\n"),
+        ("clang-xray-never", "-fxray-never-instrument", "1", "fun:sampled\n"),
+        ("clang-xray-attrs", "-fxray-attr-list", "1000",
+         "[always]\nfun:sampled\n"),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "source.c").write_text(
+            "__attribute__((noinline)) int sampled(int x) { return x + 1; }\n")
+        list_file = work / "list.txt"
+        object_file = work / "source.o"
+        depfile = work / "source.d"
+        args = [clang, "-O1", "-c", "source.c", "-fxray-instrument",
+                "-fxray-instruction-threshold=" + threshold,
+                option + "=list.txt", "-MD", "-MF", "source.d", "-o", "source.o"]
+
+        def compile_object(wrapper):
+            object_file.unlink(missing_ok=True)
+            depfile.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            return (completed.stdout, completed.stderr,
+                    object_file.read_bytes(), depfile.read_bytes())
+
+        first_object = None
+        for revision, contents in enumerate(["# no entries\n", selected]):
+            list_file.write_text(contents)
+            direct = compile_object([])
+            assert b"list.txt" in direct[3], (fixture, "dep-info omitted XRay list")
+            if first_object is None:
+                first_object = direct[2]
+            else:
+                assert direct[2] != first_object, (fixture, "XRay list edit had no effect")
+
+            before_hits = hits()
+            assert compile_object([sccache]) == direct
+            assert hits() == before_hits, (fixture, "sccache ignored the changed list")
+            before_hits = hits()
+            assert compile_object([sccache]) == direct
+            assert hits() > before_hits, (fixture, "sccache did not warm-hit")
+
+            assert compile_object([accache]) == direct
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert cold["outcome"] == "miss", (fixture, revision, cold)
+            if revision:
+                assert any("list.txt" in item for item in cold["changes"]), cold
+            assert compile_object([accache]) == direct
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert warm["outcome"] == "hit", (fixture, revision, warm)
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": True, "accache": "hit",
+                            "artifacts": ["source.o", "source.d"]})
+
+        print("PASS oracle", fixture, "XRay list invalidation", flush=True)
+    return results
+
+
 def check_clang_layout_seed(root, env, accache, sccache, clang, hits):
     """Track a layout seed file omitted from Clang's dependency output."""
     work = root / "clang-layout-seed"
@@ -2869,6 +2931,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                clang, hits))
         results.extend(check_clang_sanitizer_ignorelist(root, env, accache,
                                                         sccache, clang, hits))
+        results.extend(check_clang_xray_lists(root, env, accache,
+                                              sccache, clang, hits))
         results.extend(check_clang_layout_seed(root, env, accache,
                                                sccache, clang, hits))
         results.extend(check_clang_warning_mappings(root, env, accache,
