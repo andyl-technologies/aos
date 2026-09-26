@@ -233,6 +233,33 @@ pub fn record_current_source_signer_challenge_v1(
     Ok(row)
 }
 
+/// Rechecks the exact committed challenge and Source names under its writer.
+///
+/// # Errors
+///
+/// Rejects a superseded challenge, changed ancestry or hold, or substituted
+/// fixed journal or lock name.
+pub fn require_current_source_signer_challenge_v1(
+    owner: &mut ProtectedSourceDomainJournalOwnerV1,
+    project: ProjectId,
+    expected: SourceDomainChallengeV1,
+) -> Result<(), SourceHoldReadbackErrorV1> {
+    let names = owner
+        .fixed_physical_names_v1()
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?;
+    let hold = require_current_hold_and_head(owner, project)?;
+    if !expected
+        .matches_current(expected.nonce(), expected.cut(), project, hold, names)
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?
+        || replay_source_domain_challenge_v1(owner.journal())
+            .map_err(|_| SourceHoldReadbackErrorV1::Stale)?
+            != Some(expected)
+    {
+        return Err(SourceHoldReadbackErrorV1::Stale);
+    }
+    Ok(())
+}
+
 fn require_current_hold_and_head(
     owner: &mut ProtectedSourceDomainJournalOwnerV1,
     project: ProjectId,

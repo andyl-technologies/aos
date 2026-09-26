@@ -34,7 +34,8 @@ use crate::cache_residency::{
 };
 use crate::journal::{
     CachePolicyHoldV1, ControllerPolicyHoldV1, Journal, JournalRecord, JournalTransaction,
-    ProtectedJournalAuthority, ProtectedJournalSnapshot, RecordNamespace, SourceDomainPolicyHoldV1,
+    ProtectedJournalAuthority, ProtectedJournalNamesV1, ProtectedJournalSnapshot, RecordNamespace,
+    SourceDomainPolicyHoldV1,
 };
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
@@ -55,6 +56,7 @@ use super::source_hold_readback::{
     PinnedSourceHoldReadbackSignerV1, SourceHoldReadbackChallengeV1,
     verify_current_source_hold_readback_v1,
 };
+use super::source_hold_readback_v2::verify_source_hold_readback_with_names_v2;
 use super::{
     PolicyCompilerJournalErrorV1, SignedProjectPolicyHeadV1, SignedProjectPolicyHeadV2,
     verify_signed_project_policy_source_v2,
@@ -1133,6 +1135,93 @@ impl ClosedPolicyRootSessionV2<'_> {
         )?;
         self.postcommit = Some(self.authority.snapshot()?);
         Ok(joined)
+    }
+
+    /// Joins a Root-last spent Source challenge to the V2 named signer view.
+    ///
+    /// The caller retains every other owner writer while this inert session
+    /// checks current Root issuance, Source/Cache pins and packets, protected
+    /// Cache replay, and the exact staged proposal. No CAS occurs here.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a superseded Root issue, stale stage or Source hold, changed
+    /// named inode pair, foreign signer, or mismatched physical Cache packet.
+    #[allow(clippy::too_many_arguments)]
+    pub fn inspect_staged_source_writer_cut_v5(
+        &mut self,
+        proposed: &[u8],
+        staged: StagedClosedPolicyRootBaseV2,
+        expected_source: SourceDomainPolicyHoldV1,
+        source_challenge: SourceHoldReadbackChallengeV1,
+        source_issue: u64,
+        source_names: ProtectedJournalNamesV1,
+        source_packet: &[u8],
+        cache_packet: &[u8],
+        cache_owner_uid: u32,
+    ) -> Result<ClosedPolicyRootSignerJoinV2, PolicyCompilerJournalErrorV1> {
+        self.require_spent_source_challenge_v1(proposed, staged, source_challenge, source_issue)?;
+        let observed = read_fixed_policy_cache_hold_v1()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
+        let cache_cut = self.prepare_cache_cut_with_observation(&binding, observed.hold)?;
+        if !expected_source.is_held()
+            || expected_source.operation() != binding.operation
+            || expected_source.sandbox() != binding.sandbox
+            || expected_source.ancestry() != binding.ancestry_head
+            || expected_source.binding() != cache_cut.binding()
+            || expected_source.epoch() != cache_cut.epoch()
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+
+        let source_pin = self
+            .authority
+            .get(SOURCE_HOLD_PIN_KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let cache_pin = self
+            .authority
+            .get(CACHE_PIN_KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let source_signer = PinnedSourceHoldReadbackSignerV1::decode(source_pin)
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let cache_signer = PinnedCacheOwnerReadbackSignerV1::decode(cache_pin)
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if source_signer.verifying_key() == cache_signer.verifying_key() {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        verify_source_hold_readback_with_names_v2(
+            source_packet,
+            &source_signer,
+            source_challenge,
+            binding.project,
+            expected_source,
+            source_names,
+        )
+        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let cache_challenge = staged_closed_policy_signer_challenge_v2(staged, proposed)?;
+        let physical_cache = verify_closed_cache_owner_readback_v2(
+            cache_packet,
+            &cache_signer,
+            CacheOwnerReadbackChallengeV1::new(cache_challenge.nonce(), cache_challenge.cut())
+                .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
+            cache_owner_uid,
+        )
+        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if physical_cache.hold() != observed.hold
+            || physical_cache.quota_digest() != observed.replay.quota_digest
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+
+        self.require_spent_source_challenge_v1(proposed, staged, source_challenge, source_issue)?;
+        self.postcommit = Some(self.authority.snapshot()?);
+        Ok(ClosedPolicyRootSignerJoinV2 {
+            cache_cut,
+            source_packet: ObjectDigest::from_bytes(Sha256::digest(source_packet).into()),
+            cache_packet: ObjectDigest::from_bytes(Sha256::digest(cache_packet).into()),
+            physical_cache,
+        })
     }
 
     /// Commits one held Q04 proposal only after both pinned signers prove its staged cut.

@@ -811,6 +811,7 @@ pub fn with_current_create_cache_signer_barrier_v5<R>(
     sandbox: SandboxId,
     inspect: impl FnOnce(
         &mut Journal,
+        &mut ProtectedSourceDomainJournalOwnerV1,
         &CurrentCreateProjectPolicySourceV1,
         CurrentCreatePolicyBarrierHeadsV2,
         &CacheResidencyWriterReadbackV2,
@@ -859,7 +860,7 @@ pub fn with_current_create_cache_signer_barrier_v5<R>(
             physical_partition: selected.partition().digest(),
             physical_cache: selected.head(),
         };
-        Ok(inspect(controller, &source, heads, held))
+        Ok(inspect(controller, source_domains, &source, heads, held))
     });
 
     finish_held_create_source_cut(result.map_err(Into::into), || {

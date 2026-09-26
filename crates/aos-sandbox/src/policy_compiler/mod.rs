@@ -179,8 +179,8 @@ pub use source_hold_pin::{SourceHoldPinErrorV1, admit_fixed_source_hold_pin_v1};
 pub use source_hold_readback::{
     PinnedSourceHoldReadbackSignerV1, SOURCE_HOLD_READBACK_BYTES_V1, SourceHoldReadbackChallengeV1,
     SourceHoldReadbackErrorV1, encode_source_hold_readback_signer_credential_v1,
-    record_current_source_signer_challenge_v1, sign_current_source_hold_readback_v1,
-    verify_current_source_hold_readback_v1,
+    record_current_source_signer_challenge_v1, require_current_source_signer_challenge_v1,
+    sign_current_source_hold_readback_v1, verify_current_source_hold_readback_v1,
 };
 pub use source_hold_readback_v2::{
     SOURCE_HOLD_READBACK_BYTES_V2, verify_source_hold_readback_with_names_v2,

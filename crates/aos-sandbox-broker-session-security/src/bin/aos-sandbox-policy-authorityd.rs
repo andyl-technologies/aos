@@ -18,6 +18,9 @@
 //! challenge, then Root durably commits the exact binding/head/held decision.
 //! `AOSPHQ4F` uses the same flight but returns only an inert preview. Neither
 //! exchange opens public Create or releases custody for downstream effects.
+//! `AOSPHQ5F` separately spends a fresh Source challenge under Root-last
+//! custody and checks the Source V2 signed journal/lock identities. It is
+//! preview-only and cannot enter the V4 qualified-CAS path.
 //! `--show-controller-hold` inspects the protected Controller record;
 //! `--release-controller-hold` checks exact root custody under the fixed
 //! Controller-then-root lock order before unfreezing the Controller journal.
@@ -39,7 +42,7 @@ use std::{
 use aos_sandbox::cache_residency::{
     CLOSED_CACHE_OWNER_READBACK_BYTES_V2, PinnedCacheOwnerReadbackSignerV1,
 };
-use aos_sandbox::journal::SourceDomainPolicyHoldV1;
+use aos_sandbox::journal::{ProtectedJournalNamesV1, SourceDomainPolicyHoldV1};
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, CacheSignerRootChallengeStatusV2,
@@ -76,7 +79,9 @@ use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_BINDING_HELD_MARKER_V4, POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4,
     POLICY_BINDING_PREVIEW_REPLY_MAGIC_V4, POLICY_BINDING_QUERY_MAGIC_V4,
     POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_BINDING_REPLAY_QUERY_MAGIC_V5,
-    POLICY_BINDING_REPLAY_REPLY_MAGIC_V5, POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
+    POLICY_BINDING_REPLAY_REPLY_MAGIC_V5, POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V5,
+    POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V5, POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V5,
+    POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V5, POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
     POLICY_BINDING_STAGE_REPLY_MAGIC_V4, POLICY_BINDING_SUBMIT_MAGIC_V4,
     POLICY_BINDING_TERMINAL_ACK_MAGIC_V4, POLICY_HEAD_LEASE_ACK_MAGIC_V3,
     POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
@@ -101,7 +106,9 @@ use aos_sandbox_broker_session_security::policy_root_ack_client::{
 use aos_sandbox_broker_session_security::policy_signer_credential::{
     PinnedPolicySignerV1, PolicySignerRoleV1,
 };
-use aos_sandbox_broker_session_security::source_signer_exchange::request_root_staged_q04_source_readback_v2;
+use aos_sandbox_broker_session_security::source_signer_exchange::{
+    request_root_source_signer_readback_with_names_v2, request_root_staged_q04_source_readback_v2,
+};
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
@@ -121,6 +128,7 @@ const CLOSED_BINDING_REPLAY_CLAIM_BYTES: usize = 32 + 8;
 const CLOSED_BINDING_PREVIEW_CLAIM_BYTES: usize = 96 + CLOSED_POLICY_BINDING_BYTES_V2;
 const CLOSED_BINDING_FLIGHT_HOLD_BYTES: usize = 16 + 16 + 32 + 32 + 32 + 8;
 const CLOSED_BINDING_FLIGHT_SUBMIT_BYTES: usize = 8 + 16 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2;
+const SOURCE_FLIGHT_SUBMIT_BYTES_V5: usize = CLOSED_BINDING_FLIGHT_SUBMIT_BYTES + 48;
 const CACHE_SIGNER_RPC_TIMEOUT: Duration = Duration::from_secs(75);
 
 #[derive(Clone, Copy)]
@@ -135,6 +143,7 @@ enum HeadRequestMode {
     ClosedBindingStage,
     ClosedBindingPreview,
     ClosedBindingSignerFlight,
+    ClosedBindingSourceWriterFlight,
     ClosedCacheReadback,
     StagedCacheSigner,
 }
@@ -804,6 +813,9 @@ fn read_head_request(
         Some(magic) if magic == POLICY_BINDING_FLIGHT_QUERY_MAGIC_V4 => {
             HeadRequestMode::ClosedBindingSignerFlight
         }
+        Some(magic) if magic == POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V5 => {
+            HeadRequestMode::ClosedBindingSourceWriterFlight
+        }
         Some(magic) if magic == POLICY_CACHE_READBACK_QUERY_MAGIC_V5 => {
             HeadRequestMode::ClosedCacheReadback
         }
@@ -834,6 +846,7 @@ fn read_head_request(
             | HeadRequestMode::ClosedBindingStage
             | HeadRequestMode::ClosedBindingPreview
             | HeadRequestMode::ClosedBindingSignerFlight
+            | HeadRequestMode::ClosedBindingSourceWriterFlight
             | HeadRequestMode::QualifiedClosedBinding
             | HeadRequestMode::RootEffectAck
             | HeadRequestMode::RootEffectAckReplay
@@ -926,6 +939,7 @@ fn serve_current_head(
             | HeadRequestMode::ClosedBindingStage
             | HeadRequestMode::ClosedBindingPreview
             | HeadRequestMode::ClosedBindingSignerFlight
+            | HeadRequestMode::ClosedBindingSourceWriterFlight
             | HeadRequestMode::ClosedCacheReadback
             | HeadRequestMode::StagedCacheSigner
     ) {
@@ -995,7 +1009,9 @@ fn serve_current_head(
 
     if matches!(
         mode,
-        HeadRequestMode::ClosedBindingSignerFlight | HeadRequestMode::QualifiedClosedBinding
+        HeadRequestMode::ClosedBindingSignerFlight
+            | HeadRequestMode::ClosedBindingSourceWriterFlight
+            | HeadRequestMode::QualifiedClosedBinding
     ) {
         if cache_signer_uid == 0
             || source_signer_uid == 0
@@ -1015,6 +1031,29 @@ fn serve_current_head(
         let source_pin = source_pin.ok_or_else(|| {
             io::Error::new(io::ErrorKind::PermissionDenied, "Source pin unavailable")
         })?;
+        if matches!(mode, HeadRequestMode::ClosedBindingSourceWriterFlight) {
+            serve_closed_binding_source_writer_flight_v5(
+                stream,
+                &request[8..24],
+                packet,
+                selected_project_packet,
+                selected_project_input,
+                deployment_signer_generation,
+                verifying_key,
+                project_signer_generation,
+                project_key,
+                controller_uid,
+                controller_gid,
+                cache_signer_uid,
+                source_signer_uid,
+                cache_pin,
+                source_pin,
+                deployment.expires_at(),
+                project_expires_at,
+                now_unix_seconds,
+            )?;
+            return Ok(());
+        }
         serve_closed_binding_signer_flight(
             stream,
             &request[8..24],
@@ -1859,6 +1898,153 @@ fn serve_closed_binding_preview(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
+fn serve_closed_binding_source_writer_flight_v5(
+    stream: &mut std::os::unix::net::UnixStream,
+    nonce: &[u8],
+    deployment_packet: &[u8],
+    project_packet: &[u8],
+    project_input: &[u8],
+    deployment_generation: u64,
+    deployment_key: &VerifyingKey,
+    project_generation: u64,
+    project_key: &VerifyingKey,
+    controller_uid: u32,
+    controller_gid: u32,
+    cache_signer_uid: u32,
+    source_signer_uid: u32,
+    cache_pin: &[u8],
+    source_pin: &[u8],
+    deployment_expires: i64,
+    project_expires: i64,
+    now_unix_seconds: i64,
+) -> Result<(), Box<dyn Error>> {
+    let (staged, proposed) = read_closed_binding_claim_frame(stream)?;
+    let source_hold = read_closed_binding_flight_source_hold(stream)?;
+    let cache_signer = PinnedCacheOwnerReadbackSignerV1::decode(cache_pin)?;
+    let source_signer = PinnedSourceHoldReadbackSignerV1::decode(source_pin)?;
+    if cache_signer.verifying_key() == source_signer.verifying_key() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "signer roles share a key").into());
+    }
+    check_signed_head_expiration(deployment_expires, project_expires)?;
+
+    let (joined, source_issue, names) = with_fixed_explicit_closed_policy_binding_session_v2(
+        deployment_packet,
+        deployment_generation,
+        deployment_key,
+        project_packet,
+        project_input,
+        project_generation,
+        project_key,
+        controller_uid,
+        controller_gid,
+        now_unix_seconds,
+        |session| -> Result<_, Box<dyn Error>> {
+            session.validate_staged_closed_binding_base(staged)?;
+            let cut = session.prepare_cache_cut(&proposed)?;
+            let cache_challenge = staged_closed_policy_signer_challenge_v2(staged, &proposed)?;
+            let root_cache = begin_root_q04_cache_signer_exchange_v3(
+                cache_challenge,
+                cache_signer_uid,
+                controller_gid,
+            )?;
+            let (source_challenge, source_issue) = session.spend_staged_source_challenge_v1(
+                &proposed,
+                staged,
+                fresh_root_cache_nonce,
+            )?;
+
+            stream.write_all(POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V5)?;
+            stream.write_all(nonce)?;
+            stream.write_all(&cache_challenge.nonce())?;
+            stream.write_all(cache_challenge.cut().as_bytes())?;
+            stream.write_all(&cache_challenge.issue_epoch().to_be_bytes())?;
+            stream.write_all(&source_challenge.nonce())?;
+            stream.write_all(source_challenge.cut().as_bytes())?;
+            stream.write_all(&source_issue.to_be_bytes())?;
+            stream.set_read_timeout(Some(CACHE_SIGNER_RPC_TIMEOUT))?;
+
+            let (controller_packet, names) =
+                read_source_writer_flight_submission_v5(stream, nonce)?;
+            let root_packet = root_cache.finish(&cache_signer, controller_uid)?;
+            if controller_packet != root_packet {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Cache signer copies differ",
+                )
+                .into());
+            }
+            let source_packet = request_root_source_signer_readback_with_names_v2(
+                source_challenge,
+                cut.project(),
+                source_hold,
+                names,
+                &source_signer,
+                source_signer_uid,
+                controller_gid,
+            )?;
+            let joined = session.inspect_staged_source_writer_cut_v5(
+                &proposed,
+                staged,
+                source_hold,
+                source_challenge,
+                source_issue,
+                names,
+                &source_packet,
+                &root_packet,
+                controller_uid,
+            )?;
+            Ok((joined, source_issue, names))
+        },
+    )??;
+    check_signed_head_expiration(deployment_expires, project_expires)?;
+
+    let cut = joined.cache_cut();
+    let mut reply = [0_u8; 8 + 16 + 32 + 8 + 16 + 32 + 32 + 32 + 32 + 8 + 48];
+    reply[..8].copy_from_slice(POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V5);
+    reply[8..24].copy_from_slice(nonce);
+    reply[24..56].copy_from_slice(cut.binding().as_bytes());
+    reply[56..64].copy_from_slice(&cut.epoch().to_be_bytes());
+    reply[64..80].copy_from_slice(cut.project().as_bytes());
+    reply[80..112].copy_from_slice(cut.partition().as_bytes());
+    reply[112..144].copy_from_slice(cut.cache_head().as_bytes());
+    reply[144..176].copy_from_slice(joined.source_packet().as_bytes());
+    reply[176..208].copy_from_slice(joined.cache_packet().as_bytes());
+    reply[208..216].copy_from_slice(&source_issue.to_be_bytes());
+    reply[216..264].copy_from_slice(&names.to_bytes());
+    stream.write_all(&reply)?;
+    Ok(())
+}
+
+fn read_source_writer_flight_submission_v5(
+    stream: &mut std::os::unix::net::UnixStream,
+    nonce: &[u8],
+) -> io::Result<(
+    [u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
+    ProtectedJournalNamesV1,
+)> {
+    let mut submission = [0; SOURCE_FLIGHT_SUBMIT_BYTES_V5];
+    stream.read_exact(&mut submission)?;
+    let mut trailing = [0];
+    if stream.read(&mut trailing)? != 0
+        || &submission[..8] != POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V5
+        || submission[8..24] != *nonce
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid V5 flight submission",
+        ));
+    }
+    let cache_packet = submission[24..24 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2]
+        .try_into()
+        .map_err(io::Error::other)?;
+    let names = ProtectedJournalNamesV1::from_bytes(
+        &submission[24 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2..],
+    )
+    .map_err(io::Error::other)?;
+    Ok((cache_packet, names))
+}
+
 fn serve_closed_binding_signer_flight(
     stream: &mut std::os::unix::net::UnixStream,
     nonce: &[u8],
@@ -2084,6 +2270,7 @@ fn select_project_source<'a>(
         | HeadRequestMode::ClosedBindingStage
         | HeadRequestMode::ClosedBindingPreview
         | HeadRequestMode::ClosedBindingSignerFlight
+        | HeadRequestMode::ClosedBindingSourceWriterFlight
         | HeadRequestMode::ClosedCacheReadback
         | HeadRequestMode::StagedCacheSigner => explicit.ok_or_else(|| {
             io::Error::new(
@@ -2241,6 +2428,71 @@ mod tests {
         hold[96..128].fill(0);
         client.write_all(&hold).expect("invalid source hold");
         assert!(read_closed_binding_flight_source_hold(&mut server).is_err());
+    }
+
+    #[test]
+    fn v5_source_flight_is_distinct_and_requires_exact_writer_names() {
+        let nonce = [7; 16];
+        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+        let mut request = [0_u8; REQUEST_BYTES];
+        request[..8].copy_from_slice(POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V5);
+        request[8..24].copy_from_slice(&nonce);
+        client.write_all(&request).expect("V5 flight query");
+        let opened = Cell::new(false);
+        let (_, mode) = read_head_request(&mut server, || {
+            opened.set(true);
+            Ok(())
+        })
+        .expect("exact V5 query");
+        assert!(opened.get());
+        assert!(matches!(
+            mode,
+            HeadRequestMode::ClosedBindingSourceWriterFlight
+        ));
+        let (mut zero_client, mut zero_server) = UnixStream::pair().expect("local policy socket");
+        request[8..24].fill(0);
+        zero_client.write_all(&request).expect("zero V5 query");
+        let opened = Cell::new(false);
+        assert!(
+            read_head_request(&mut zero_server, || {
+                opened.set(true);
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!opened.get());
+
+        let mut names_bytes = [0; 48];
+        for (index, chunk) in names_bytes.chunks_exact_mut(8).enumerate() {
+            chunk.copy_from_slice(&(index as u64 + 1).to_be_bytes());
+        }
+        let names = ProtectedJournalNamesV1::from_bytes(&names_bytes).unwrap();
+        let mut submission = [0; SOURCE_FLIGHT_SUBMIT_BYTES_V5];
+        submission[..8].copy_from_slice(POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V5);
+        submission[8..24].copy_from_slice(&nonce);
+        submission[24..24 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2].fill(11);
+        submission[24 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2..].copy_from_slice(&names_bytes);
+        let parse = |bytes: &[u8]| {
+            let (mut client, mut server) = UnixStream::pair().expect("flight pair");
+            client.write_all(bytes).expect("flight bytes");
+            client
+                .shutdown(std::net::Shutdown::Write)
+                .expect("request EOF");
+            read_source_writer_flight_submission_v5(&mut server, &nonce)
+        };
+        let (packet, parsed_names) = parse(&submission).expect("exact V5 submission");
+        assert_eq!(packet, [11; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]);
+        assert_eq!(parsed_names, names);
+
+        for offset in [0, 8, 24 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2 + 7] {
+            let mut changed = submission;
+            changed[offset] = 0;
+            assert!(parse(&changed).is_err());
+        }
+        let mut trailing = submission.to_vec();
+        trailing.push(0);
+        assert!(parse(&trailing).is_err());
+        assert!(parse(&submission[..submission.len() - 1]).is_err());
     }
 
     #[test]

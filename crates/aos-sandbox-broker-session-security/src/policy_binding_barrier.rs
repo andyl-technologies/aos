@@ -27,6 +27,7 @@ use aos_sandbox::policy_compiler::{
     closed_policy_effect_handoff_v2, compare_closed_policy_binding_hold_claims_v2,
     current_parentless_create_project_source_v1,
     propose_closed_current_create_explicit_policy_binding_v2,
+    record_current_source_signer_challenge_v1, require_current_source_signer_challenge_v1,
     with_current_create_cache_signer_barrier_v5, with_current_create_policy_source_barrier_v4,
 };
 use aos_sandbox::{
@@ -40,8 +41,9 @@ use crate::cache_signer_exchange::request_controller_q04_cache_signer_readback_v
 use crate::controller_hold_credential::with_process_controller_hold_signer_v1;
 use crate::policy_authority_client::{
     ClosedPolicyBindingClientObservationV4, ClosedPolicyBindingPreviewV4,
-    ClosedPolicyBindingSignerFlightV4, commit_closed_policy_binding_v4,
-    commit_staged_closed_policy_signer_flight_v4, inspect_staged_closed_policy_signer_flight_v4,
+    ClosedPolicyBindingSignerFlightV4, ClosedPolicySourceWriterFlightV5,
+    commit_closed_policy_binding_v4, commit_staged_closed_policy_signer_flight_v4,
+    inspect_staged_closed_policy_signer_flight_v4, inspect_staged_source_writer_flight_v5,
     preview_staged_closed_policy_binding_v4, recover_closed_policy_binding_decision_v5,
 };
 use crate::policy_root_ack_client::acknowledge_held_root_effect_v1;
@@ -80,7 +82,7 @@ pub fn commit_fixed_parentless_create_held_binding_v4(
         physical,
         operation,
         sandbox,
-        |_, _, _, held| -> io::Result<_> {
+        |_, _, _, _, held| -> io::Result<_> {
             validate_staged_held_claims(
                 proposed,
                 staged,
@@ -271,7 +273,7 @@ pub fn inspect_fixed_parentless_create_staged_signer_flight_v4(
         physical,
         operation,
         sandbox,
-        |_, _, _, held| -> io::Result<_> {
+        |_, _, _, _, held| -> io::Result<_> {
             validate_staged_held_claims(
                 proposed,
                 staged,
@@ -294,6 +296,96 @@ pub fn inspect_fixed_parentless_create_staged_signer_flight_v4(
                     )
                 },
             )?;
+            let preview = flight.preview();
+            if preview.binding() != controller_hold.binding()
+                || preview.epoch() != controller_hold.epoch()
+                || preview.project() != held.hold().project()
+                || preview.partition() != held.hold().partition()
+                || preview.cache_head() != held.hold().cache_head()
+            {
+                return Err(invalid_cut());
+            }
+            Ok(flight)
+        },
+    )
+    .map_err(io::Error::other)?
+}
+
+/// Inspects the fresh Root-last Source V2 signer cut without submitting Q04.
+///
+/// Controller retains its journal, Source writer, protected Cache writers,
+/// and physical Cache flock through the Root challenge, durable Source row,
+/// independent signer replies, and final Source/Cache postflight. The result
+/// cannot authorize Create, Apply, Root CAS, or any owner release.
+///
+/// # Errors
+///
+/// Rejects a stale Root stage, changed Source row or named writer, signer or
+/// Cache mismatch, failed held-owner postflight, or ambiguous Root reply.
+#[allow(clippy::too_many_arguments)]
+pub fn inspect_fixed_parentless_create_source_writer_flight_v5(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    staged: StagedClosedPolicyRootBaseV2,
+    proposed: &[u8],
+    cache_signer_uid: u32,
+    controller_gid: u32,
+    cache_signer: &PinnedCacheOwnerReadbackSignerV1,
+) -> io::Result<ClosedPolicySourceWriterFlightV5> {
+    let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
+
+    with_current_create_cache_signer_barrier_v5(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |_, source_writer, source, _, held| -> io::Result<_> {
+            validate_staged_held_claims(
+                proposed,
+                staged,
+                controller_hold,
+                source_hold,
+                held.hold(),
+            )?;
+            let mut recorded = None;
+            let outcome = inspect_staged_source_writer_flight_v5(
+                staged,
+                proposed,
+                source_hold,
+                |cache_challenge, source_challenge, root_issue| {
+                    let row = record_current_source_signer_challenge_v1(
+                        source_writer,
+                        source.project(),
+                        source_challenge,
+                    )
+                    .map_err(io::Error::other)?;
+                    recorded = Some((row, root_issue));
+                    let cache_packet = request_verified_held_cache_packet(
+                        physical,
+                        held,
+                        cache_challenge,
+                        cache_signer_uid,
+                        controller_gid,
+                        cache_signer,
+                    )?;
+                    Ok((cache_packet, row.names()))
+                },
+            );
+            if let Some((row, _)) = recorded {
+                require_current_source_signer_challenge_v1(source_writer, source.project(), row)
+                    .map_err(io::Error::other)?;
+            }
+            let flight = outcome?;
+            let (row, root_issue) = recorded.ok_or_else(invalid_cut)?;
+            if flight.source_issue() != root_issue || flight.source_names() != row.names() {
+                return Err(invalid_cut());
+            }
             let preview = flight.preview();
             if preview.binding() != controller_hold.binding()
                 || preview.epoch() != controller_hold.epoch()
@@ -342,7 +434,7 @@ pub fn inspect_fixed_parentless_create_staged_binding_v4(
         physical,
         operation,
         sandbox,
-        |_, _, _, held| -> io::Result<_> {
+        |_, _, _, _, held| -> io::Result<_> {
             validate_staged_held_claims(
                 proposed,
                 staged,
@@ -396,7 +488,7 @@ pub fn recover_fixed_parentless_create_closed_binding_decision_v4(
         physical,
         operation,
         sandbox,
-        |_, _, _, held| -> io::Result<_> {
+        |_, _, _, _, held| -> io::Result<_> {
             let binding = controller_hold.binding();
             let epoch = controller_hold.epoch();
             let (decision, proposed, _) =
@@ -448,7 +540,7 @@ pub fn acknowledge_fixed_parentless_create_held_effect_v1(
         physical,
         operation,
         sandbox,
-        |controller, source, _, held| -> io::Result<_> {
+        |controller, _, source, _, held| -> io::Result<_> {
             let (decision, proposed, proof) = recover_closed_policy_binding_decision_v5(
                 controller_hold.binding(),
                 controller_hold.epoch(),
@@ -521,7 +613,7 @@ pub fn acknowledge_fixed_parentless_create_root_effect_v1(
         physical,
         operation,
         sandbox,
-        |controller, source, _, held| -> io::Result<_> {
+        |controller, _, source, _, held| -> io::Result<_> {
             let ack = controller
                 .controller_policy_effect_ack_v1()
                 .map_err(io::Error::other)?
