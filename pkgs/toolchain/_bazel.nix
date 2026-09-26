@@ -35,39 +35,8 @@
   bootstrapTools,
   gcc-libs,
   llvm,
-  bazelAsm ? null,
-  bazelMavenBootstrap ? null,
-  bazelJimfs ? null,
-  bazelErrorProneDataflow ? null,
-  bazelErrorProneCheckApi ? null,
-  bazelAvalonApi ? null,
-  bazelMailApi ? null,
-  bazelLog4j ? null,
-  bazelLegacyJavaHttp ? null,
-  bazelVelocity ? null,
-  bazelGoogleHttp ? null,
-  bazelGoogleJavaFormat ? null,
-  bazelByteBuddy114 ? null,
-  bazelMockito ? null,
-  bazelZstdJni ? null,
-  bazelGrpcJavaPlugin ? null,
-  bazelProtobufJava ? null,
-  bazelProtobufJavaUtil ? null,
-  bazelAsyncProfiler ? null,
-  bazelNettyCommon ? null,
-  bazelNettyBase ? null,
-  bazelNettyCodec ? null,
-  bazelNettyTransportExtras ? null,
-  bazelNettyHandler ? null,
-  bazelNettyCodecHttp ? null,
-  bazelNettyHttp2Proxy ? null,
-  bazelGrpcNetty ? null,
-  bazelNettyDns ? null,
-  bazelPcollections ? null,
-  bazelListenableFutureEmpty ? null,
 }: {
   version,
-  source ? null,
   srcHash,
   vendorDepsHash,
   update ? null,
@@ -1024,16 +993,12 @@
       scripts/bootstrap/bootstrap.sh
   '';
 
-  src =
-    if source != null
-    then source
-    else
-      fetchurl {
-        urls = [
-          "https://github.com/bazelbuild/bazel/releases/download/${version}/bazel-${version}-dist.zip"
-        ];
-        hash = srcHash;
-      };
+  src = fetchurl {
+    urls = [
+      "https://github.com/bazelbuild/bazel/releases/download/${version}/bazel-${version}-dist.zip"
+    ];
+    hash = srcHash;
+  };
 
   # Fixed-output derivation: vendor all external dependencies using
   # bazel-bootstrap in --batch mode.
@@ -1077,14 +1042,10 @@
                 chmod +x "$TMPDIR/bazel"
                 export PATH="$TMPDIR:$PATH"
 
-                # Materialize the selected source tree for vendoring.
+                # Extract dist zip
                 mkdir -p "$TMPDIR/bazel_src"
                 cd "$TMPDIR/bazel_src"
-                ${
-          if source != null
-          then ''cp -a ${src}/. . && chmod -R u+w .''
-          else ''unzip -q ${src}''
-        }
+                unzip -q ${src}
 
                 # Apply reproducibility patch when the target test file exists.
                 if [ -f src/test/shell/bazel/list_source_repository.bzl ]; then
@@ -1263,61 +1224,28 @@ in
 
     inherit src;
 
-    buildDeps =
-      [
-        bash
-        coreutils
-        which
-        zip
-        unzip
-        gawk
-        python3
-        openjdk-21
-        gcc
-        binutils
-        grep
-        gzip
-        patch
-        diffutils
-        findutils
-        sed
-        tar
-        xz
-        file
-        patchelf
-      ]
-      ++ lib.optional (bazelAsm != null) bazelAsm
-      ++ lib.optional (bazelMavenBootstrap != null) bazelMavenBootstrap
-      ++ lib.optional (bazelJimfs != null) bazelJimfs
-      ++ lib.optional (bazelErrorProneDataflow != null) bazelErrorProneDataflow
-      ++ lib.optional (bazelErrorProneCheckApi != null) bazelErrorProneCheckApi
-      ++ lib.optional (bazelAvalonApi != null) bazelAvalonApi
-      ++ lib.optional (bazelMailApi != null) bazelMailApi
-      ++ lib.optional (bazelLog4j != null) bazelLog4j
-      ++ lib.optional (bazelLegacyJavaHttp != null) bazelLegacyJavaHttp
-      ++ lib.optional (bazelVelocity != null) bazelVelocity
-      ++ lib.optional (bazelGoogleHttp != null) bazelGoogleHttp
-      ++ lib.optional (bazelGoogleJavaFormat != null) bazelGoogleJavaFormat
-      ++ lib.optional (bazelByteBuddy114 != null) bazelByteBuddy114
-      ++ lib.optional (bazelMockito != null) bazelMockito
-      ++ lib.optional (bazelZstdJni != null) bazelZstdJni
-      ++ lib.optional (bazelProtobufJava != null) bazelProtobufJava
-      ++ lib.optional (bazelProtobufJavaUtil != null) bazelProtobufJavaUtil
-      ++ lib.optional (bazelNettyCommon != null) bazelNettyCommon
-      ++ lib.optional (bazelNettyBase != null) bazelNettyBase
-      ++ lib.optional (bazelNettyCodec != null) bazelNettyCodec
-      ++ lib.optional (bazelNettyTransportExtras != null) bazelNettyTransportExtras
-      ++ lib.optional (bazelNettyHandler != null) bazelNettyHandler
-      ++ lib.optional (bazelNettyCodecHttp != null) bazelNettyCodecHttp
-      ++ lib.optional (bazelNettyHttp2Proxy != null) bazelNettyHttp2Proxy
-      ++ lib.optional (bazelGrpcNetty != null) bazelGrpcNetty
-      ++ lib.optional (bazelNettyDns != null) bazelNettyDns
-      ++ lib.optional (bazelPcollections != null) bazelPcollections
-      ++ lib.optional (bazelListenableFutureEmpty != null) bazelListenableFutureEmpty
-      ++ lib.optionals (bazelGrpcJavaPlugin != null) [
-        buildPackages.protobuf
-        bazelGrpcJavaPlugin
-      ];
+    buildDeps = [
+      bash
+      coreutils
+      which
+      zip
+      unzip
+      gawk
+      python3
+      openjdk-21
+      gcc
+      binutils
+      grep
+      gzip
+      patch
+      diffutils
+      findutils
+      sed
+      tar
+      xz
+      file
+      patchelf
+    ];
     runtimeDeps =
       [
         bash
@@ -1339,202 +1267,10 @@ in
       {
         name = "unpack";
         script = ''
-          # Bazel 7 uses a sparse source checkout; later versions still use
-          # their distribution archives until their source inputs are rebuilt.
+          # Bazel source is a zip, not a tarball
           mkdir bazel_src
           cd bazel_src
-          ${
-            if source != null
-            then ''cp -a $src/. . && chmod -R u+w .''
-            else ''unzip -q $src''
-          }
-          ${lib.optionalString (bazelAsm != null) ''
-            # Replace the dist archive's ASM classes before compile.sh adds
-            # every bundled JAR to its Java classpath and deploy JAR.
-            for version in 9.2 9.6; do
-              for component in asm asm-tree asm-analysis asm-commons asm-util; do
-                jar_name="$component-$version.jar"
-                if [ "$version" = 9.2 ]; then
-                  target="derived/maven/org/ow2/asm/$component/$version/$jar_name"
-                else
-                  target="third_party/asm/$jar_name"
-                fi
-
-                ${lib.optionalString (source == null) ''test -f "$target"''}
-                mkdir -p "$(dirname "$target")"
-                cp "${bazelAsm}/share/java/$jar_name" "$target"
-              done
-            done
-          ''}
-          ${lib.optionalString (bazelMavenBootstrap != null) ''
-            # Populate Bazel's bootstrap classpath with source-built Maven
-            # libraries. The remaining classpath inputs still block release.
-            mkdir -p derived/maven
-            cp -a ${bazelMavenBootstrap}/maven/. derived/maven/
-            chmod -R u+w derived/maven
-          ''}
-          ${lib.optionalString (bazelJimfs != null) ''
-            # Retain Jimfs's optional Unicode path handling with source-built
-            # ICU4J classes and generated resource data.
-            mkdir -p derived/maven
-            cp -a ${bazelJimfs}/maven/. derived/maven/
-          ''}
-          ${lib.optionalString (bazelErrorProneDataflow != null) ''
-            mkdir -p derived/maven
-            cp -a ${bazelErrorProneDataflow}/maven/. derived/maven/
-          ''}
-          ${lib.optionalString (bazelErrorProneCheckApi != null) ''
-            mkdir -p derived/maven
-            cp -a ${bazelErrorProneCheckApi}/maven/. derived/maven/
-          ''}
-          ${lib.optionalString (bazelAvalonApi != null) ''
-            mkdir -p derived/maven/logkit/logkit/1.0.1
-            cp ${bazelAvalonApi}/maven/logkit/logkit/1.0.1/logkit-1.0.1.jar \
-              derived/maven/logkit/logkit/1.0.1/logkit-1.0.1.jar
-          ''}
-          ${lib.optionalString (bazelMailApi != null) ''
-            mkdir -p derived/maven/com/sun/mail/javax.mail/1.6.3
-            cp ${bazelMailApi}/share/java/javax.mail-${bazelMailApi.version}.jar \
-              derived/maven/com/sun/mail/javax.mail/1.6.3/javax.mail-1.6.3.jar
-          ''}
-          ${lib.optionalString (bazelLog4j != null) ''
-            mkdir -p derived/maven/log4j/log4j/1.2.17
-            cp ${bazelLog4j}/maven/log4j/log4j/1.2.17/log4j-1.2.17.jar \
-              derived/maven/log4j/log4j/1.2.17/log4j-1.2.17.jar
-          ''}
-          ${lib.optionalString (bazelLegacyJavaHttp != null) ''
-            mkdir -p derived/maven/commons-logging/commons-logging/1.2
-            cp ${bazelLegacyJavaHttp}/maven/commons-logging/commons-logging/1.2/commons-logging-1.2.jar \
-              derived/maven/commons-logging/commons-logging/1.2/commons-logging-1.2.jar
-          ''}
-          ${lib.optionalString (bazelVelocity != null) ''
-            mkdir -p derived/maven/org/apache/velocity/velocity/1.7
-            cp ${bazelVelocity}/maven/org/apache/velocity/velocity/1.7/velocity-1.7.jar \
-              derived/maven/org/apache/velocity/velocity/1.7/velocity-1.7.jar
-          ''}
-          ${lib.optionalString (bazelGoogleHttp != null) ''
-            for target in \
-              org/apache/httpcomponents/httpclient/4.5.13/httpclient-4.5.13.jar \
-              com/google/http-client/google-http-client/1.42.0/google-http-client-1.42.0.jar \
-              com/google/http-client/google-http-client-gson/1.42.0/google-http-client-gson-1.42.0.jar \
-              com/google/http-client/google-http-client-apache-v2/1.42.0/google-http-client-apache-v2-1.42.0.jar \
-              com/google/auth/google-auth-library-oauth2-http/1.6.0/google-auth-library-oauth2-http-1.6.0.jar \
-              com/google/oauth-client/google-oauth-client/1.34.1/google-oauth-client-1.34.1.jar \
-              com/google/api-client/google-api-client/1.35.2/google-api-client-1.35.2.jar \
-              com/google/api-client/google-api-client-gson/1.35.2/google-api-client-gson-1.35.2.jar; do
-              mkdir -p "derived/maven/$(dirname "$target")"
-              cp "${bazelGoogleHttp}/maven/$target" "derived/maven/$target"
-            done
-          ''}
-          ${lib.optionalString (bazelGoogleJavaFormat != null) ''
-            destination="derived/maven/com/google/googlejavaformat/google-java-format/1.19.1"
-            mkdir -p "$destination"
-            cp ${bazelGoogleJavaFormat}/maven/com/google/googlejavaformat/google-java-format/1.19.1/google-java-format-1.19.1.jar \
-              "$destination/google-java-format-1.19.1.jar"
-          ''}
-          ${lib.optionalString (bazelByteBuddy114 != null) ''
-            for artifact in byte-buddy byte-buddy-agent; do
-              destination="derived/maven/net/bytebuddy/$artifact/1.14.5"
-              mkdir -p "$destination"
-              cp "${bazelByteBuddy114}/maven/net/bytebuddy/$artifact/1.14.5/$artifact-1.14.5.jar" \
-                "$destination/$artifact-1.14.5.jar"
-            done
-          ''}
-          ${lib.optionalString (bazelMockito != null) ''
-            destination="derived/maven/org/mockito/mockito-core/5.4.0"
-            mkdir -p "$destination"
-            cp ${bazelMockito}/maven/org/mockito/mockito-core/5.4.0/mockito-core-5.4.0.jar \
-              "$destination/mockito-core-5.4.0.jar"
-          ''}
-          ${lib.optionalString (bazelZstdJni != null) ''
-            mkdir -p derived/maven/com/github/luben/zstd-jni/1.5.2-3
-            cp ${bazelZstdJni}/maven/com/github/luben/zstd-jni/1.5.2-3/zstd-jni-1.5.2-3.jar \
-              derived/maven/com/github/luben/zstd-jni/1.5.2-3/zstd-jni-1.5.2-3.jar
-          ''}
-          ${lib.optionalString (bazelAvalonApi != null) ''
-            mkdir -p derived/maven/avalon-framework/avalon-framework-api/4.1.5
-            cp ${bazelAvalonApi}/share/java/avalon-framework-api-${bazelAvalonApi.version}.jar \
-              derived/maven/avalon-framework/avalon-framework-api/4.1.5/avalon-framework-api-4.1.5.jar
-            mkdir -p derived/maven/avalon-framework/avalon-framework-impl/4.1.5
-            cp ${bazelAvalonApi}/share/java/avalon-framework-impl-${bazelAvalonApi.version}.jar \
-              derived/maven/avalon-framework/avalon-framework-impl/4.1.5/avalon-framework-impl-4.1.5.jar
-          ''}
-          ${lib.optionalString (bazelProtobufJava != null) ''
-            mkdir -p derived/jars
-            cp ${bazelProtobufJava}/share/java/protobuf-java-${bazelProtobufJava.version}.jar \
-              derived/jars/protobuf-java.jar
-          ''}
-          ${lib.optionalString (bazelProtobufJavaUtil != null) ''
-            mkdir -p derived/jars
-            cp ${bazelProtobufJavaUtil}/share/java/protobuf-java-util-${bazelProtobufJavaUtil.version}.jar \
-              derived/jars/protobuf-java-util.jar
-          ''}
-          ${lib.optionalString (bazelAsyncProfiler != null) ''
-            mkdir -p derived/maven/tools/profiler/async-profiler/3.0
-            cp ${bazelAsyncProfiler}/share/java/async-profiler-3.0.jar \
-              derived/maven/tools/profiler/async-profiler/3.0/async-profiler-3.0.jar
-          ''}
-          ${lib.optionalString (bazelNettyTransportExtras != null) ''
-            for package in \
-              ${bazelNettyCommon} ${bazelNettyBase} \
-              ${bazelNettyCodec} ${bazelNettyTransportExtras}; do
-              for jar in "$package"/share/java/netty-*-4.1.93.Final.jar; do
-                filename=''${jar##*/}
-                artifact=''${filename%-4.1.93.Final.jar}
-                destination="derived/maven/io/netty/$artifact/4.1.93.Final"
-                mkdir -p "$destination"
-                cp "$jar" "$destination/$filename"
-              done
-            done
-          ''}
-          ${lib.optionalString (bazelNettyHandler != null) ''
-            destination="derived/maven/io/netty/netty-handler/4.1.93.Final"
-            mkdir -p "$destination"
-            cp ${bazelNettyHandler}/share/java/netty-handler-4.1.93.Final.jar \
-              "$destination/netty-handler-4.1.93.Final.jar"
-          ''}
-          ${lib.optionalString (bazelNettyCodecHttp != null) ''
-            destination="derived/maven/io/netty/netty-codec-http/4.1.93.Final"
-            mkdir -p "$destination"
-            cp ${bazelNettyCodecHttp}/share/java/netty-codec-http-4.1.93.Final.jar \
-              "$destination/netty-codec-http-4.1.93.Final.jar"
-          ''}
-          ${lib.optionalString (bazelNettyHttp2Proxy != null) ''
-            for jar in ${bazelNettyHttp2Proxy}/share/java/netty-*-4.1.93.Final.jar; do
-              filename=''${jar##*/}
-              artifact=''${filename%-4.1.93.Final.jar}
-              destination="derived/maven/io/netty/$artifact/4.1.93.Final"
-              mkdir -p "$destination"
-              cp "$jar" "$destination/$filename"
-            done
-          ''}
-          ${lib.optionalString (bazelGrpcNetty != null) ''
-            destination="derived/maven/io/grpc/grpc-netty/1.48.1"
-            mkdir -p "$destination"
-            cp ${bazelGrpcNetty}/share/java/grpc-netty-1.48.1.jar \
-              "$destination/grpc-netty-1.48.1.jar"
-          ''}
-          ${lib.optionalString (bazelPcollections != null) ''
-            destination="derived/maven/org/pcollections/pcollections/4.0.1"
-            mkdir -p "$destination"
-            cp ${bazelPcollections}/share/java/pcollections-4.0.1.jar \
-              "$destination/pcollections-4.0.1.jar"
-          ''}
-          ${lib.optionalString (bazelListenableFutureEmpty != null) ''
-            destination="derived/maven/com/google/guava/listenablefuture/9999.0-empty-to-avoid-conflict-with-guava"
-            mkdir -p "$destination"
-            cp ${bazelListenableFutureEmpty}/share/java/listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar \
-              "$destination/listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar"
-          ''}
-          ${lib.optionalString (bazelNettyDns != null) ''
-            for jar in ${bazelNettyDns}/share/java/netty-*-4.1.93.Final.jar; do
-              filename=''${jar##*/}
-              artifact=''${filename%-4.1.93.Final.jar}
-              destination="derived/maven/io/netty/$artifact/4.1.93.Final"
-              mkdir -p "$destination"
-              cp "$jar" "$destination/$filename"
-            done
-          ''}
+          unzip -q $src
         '';
       }
       {
@@ -1774,20 +1510,6 @@ in
             sed -i '/--action_env=PATH/d' compile.sh
             sed -i "s|--build_python_zip|--nobuild_python_zip|g" scripts/bootstrap/compile.sh
 
-            ${lib.optionalString (version == "7.7.1") ''
-              # The source checkout lacks generated classes for these two
-              # checked-in protos; Bazel 7's bootstrap list omits both.
-              if ! grep -q 'package_metrics.proto src/main/java/com/google/devtools/build/skydoc/rendering/proto/stardoc_output.proto' scripts/bootstrap/compile.sh; then
-                sed -i 's|src/main/java/com/google/devtools/build/lib/packages/metrics/package_load_metrics.proto -name|src/main/java/com/google/devtools/build/lib/packages/metrics/package_load_metrics.proto src/main/java/com/google/devtools/build/lib/packages/metrics/package_metrics.proto src/main/java/com/google/devtools/build/skydoc/rendering/proto/stardoc_output.proto -name|' scripts/bootstrap/compile.sh
-              fi
-            ''}
-
-            ${lib.optionalString (bazelGrpcJavaPlugin != null) ''
-              # Source checkouts have no pre-generated Java protocol classes.
-              export PROTOC=${buildPackages.protobuf}/bin/protoc
-              export GRPC_JAVA_PLUGIN=${bazelGrpcJavaPlugin}/bin/protoc-gen-grpc-java
-            ''}
-
             # Set EXTRA_BAZEL_ARGS which gets included in _BAZEL_ARGS in bootstrap.sh.
             # --vendor_dir provides all vendored deps from the FOD.
             # --repository_disable_download prevents any network access.
@@ -1847,13 +1569,6 @@ in
             fi
 
             # Run the bootstrap build
-            ${lib.optionalString (version == "7.7.1") ''
-              # Source checkouts lack Bazel's generated AutoValue classes.
-              # The source-built processor JAR has no service descriptor, so
-              # javac must select its processors explicitly.
-              export BAZEL_JAVAC_OPTS="-processor com.google.auto.value.processor.AutoValueProcessor,com.google.auto.value.processor.AutoOneOfProcessor,com.google.auto.value.processor.AutoBuilderProcessor,com.google.auto.value.processor.AutoAnnotationProcessor"
-            ''}
-
             ${buildBash}/bin/bash ./compile.sh
           '';
       }
