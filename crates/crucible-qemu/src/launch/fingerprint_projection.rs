@@ -120,10 +120,12 @@ macro_rules! versioned_row {
 }
 
 const X86_APIC: ProjectionRow = versioned_row!("apic", 0, "apic", 3, VOLATILE, "x86-apic", 3);
-const TIMER: ProjectionRow = versioned_row!("timer", 0, "timer", 2, VOLATILE, "cpu-timers", 4);
+const UI_INPUT_QUEUE: ProjectionRow =
+    row!("ui-input-queue", 0, "ui-input-queue", 1, DEVICE, "ui-input-queue");
+const TIMER: ProjectionRow = versioned_row!("timer", 0, "timer", 2, VOLATILE, "cpu-timers", 5);
 const CPU_COMMON: ProjectionRow = row!("cpu_common", 0, "cpu_common", 1, VOLATILE, "cpu-common");
 const X86_CPU: ProjectionRow = versioned_row!("cpu", 0, "cpu", 12, VOLATILE, "x86-cpu", 2);
-const AARCH64_CPU: ProjectionRow = row!("cpu", 0, "cpu", 22, VOLATILE, "aarch64-cpu");
+const AARCH64_CPU: ProjectionRow = versioned_row!("cpu", 0, "cpu", 22, VOLATILE, "aarch64-cpu", 2);
 const VIRTIO_RNG: ProjectionRow = versioned_row!(
     "0000:00:01.0/virtio-rng",
     0,
@@ -148,7 +150,7 @@ const Q35_BODY_BEFORE_SERIAL: &[ProjectionRow] = &[
         3,
         VOLATILE,
         "mc146818rtc",
-        5
+        6
     ),
     versioned_row!(
         "0000:00:1f.0/ICH9LPC",
@@ -162,7 +164,7 @@ const Q35_BODY_BEFORE_SERIAL: &[ProjectionRow] = &[
     row!("i8259", 0, "i8259", 1, VOLATILE, "x86-i8259"),
     row!("i8259", 1, "i8259", 1, VOLATILE, "x86-i8259"),
     versioned_row!("ioapic", 0, "ioapic", 3, VOLATILE, "x86-ioapic", 3),
-    versioned_row!("hpet", 0, "hpet", 2, VOLATILE, "hpet", 2),
+    versioned_row!("hpet", 0, "hpet", 2, VOLATILE, "hpet", 3),
     versioned_row!("i8254", 0, "i8254", 3, VOLATILE, "i8254", 3),
     row!("pcspk", 0, "pcspk", 1, DEVICE, "pcspk"),
 ];
@@ -170,7 +172,7 @@ const Q35_BODY_BEFORE_SERIAL: &[ProjectionRow] = &[
 const Q35_BODY_AFTER_SERIAL: &[ProjectionRow] = &[
     row!("ps2kbd", 0, "ps2kbd", 3, DEVICE, "ps2-keyboard"),
     row!("ps2mouse", 0, "ps2mouse", 2, DEVICE, "ps2-mouse"),
-    row!("pckbd", 0, "pckbd", 3, DEVICE, "pckbd"),
+    versioned_row!("pckbd", 0, "pckbd", 3, DEVICE, "pckbd", 2),
     row!("vmmouse", 0, "vmmouse", 0, DEVICE, "vmmouse"),
     row!("port92", 0, "port92", 1, DEVICE, "port92"),
     row!(
@@ -209,7 +211,7 @@ const AARCH64_BODY_BEFORE_CPUS: &[ProjectionRow] = &[
 const AARCH64_BODY_AFTER_CPUS: &[ProjectionRow] = &[
     row!("arm_gic", 0, "arm_gic", 12, VOLATILE, "arm-gicv2"),
     row!("pl011", 0, "pl011", 2, DEVICE, "pl011"),
-    versioned_row!("pl031", 0, "pl031", 1, VOLATILE, "pl031", 2),
+    versioned_row!("pl031", 0, "pl031", 1, VOLATILE, "pl031", 4),
     row!(
         "0000:00:00.0/gpex_root",
         0,
@@ -221,7 +223,7 @@ const AARCH64_BODY_AFTER_CPUS: &[ProjectionRow] = &[
     row!("PCIHost", 0, "PCIHost", 1, DEVICE, "pci-host"),
     row!("PCIBUS", 0, "PCIBUS", 1, DEVICE, "pci-bus"),
     row!("pl061", 0, "pl061", 4, DEVICE, "pl061"),
-    row!("gpio-key", 0, "gpio-key", 1, DEVICE, "gpio-key"),
+    versioned_row!("gpio-key", 0, "gpio-key", 1, DEVICE, "gpio-key", 2),
     versioned_row!("fw_cfg", 0, "fw_cfg", 2, DEVICE, "fw-cfg", 3),
     VIRTIO_RNG,
 ];
@@ -248,8 +250,15 @@ const ROOT_BLOCK: ProjectionRow =
 const SHMEM_BLOCK: ProjectionRow =
     virtio_row!("0000:00:03.0/virtio-blk", 0, "virtio-blk", 2, "virtio-blk");
 const NINEP: ProjectionRow = virtio_row!("0000:00:04.0/virtio-9p", 0, "virtio-9p", 1, "virtio-9p");
-const NETWORK: ProjectionRow =
-    virtio_row!("0000:00:05.0/virtio-net", 0, "virtio-net", 11, "virtio-net");
+const NETWORK: ProjectionRow = ProjectionRow::new(
+    "0000:00:05.0/virtio-net",
+    0,
+    "virtio-net",
+    11,
+    DEVICE,
+    "crucible.qemu.virtio-net.v5",
+)
+.with_projection_version(5);
 const ACCELERATOR: ProjectionRow = virtio_row!(
     "0000:00:06.0/virtio-crucible-accelerator",
     0,
@@ -309,6 +318,7 @@ fn expected_manifest_for_shape(
             rows.extend(
                 (0..u32::from(shape.smp_vcpus)).map(|instance| X86_APIC.with_instance(instance)),
             );
+            rows.push(UI_INPUT_QUEUE);
             rows.push(TIMER);
             if shape.shmem_block {
                 rows.push(SHMEM_CONTROL);
@@ -334,6 +344,7 @@ fn expected_manifest_for_shape(
             rows.extend_from_slice(Q35_BODY_AFTER_SERIAL);
         }
         FaultCapabilityScope::Aarch64 => {
+            rows.push(UI_INPUT_QUEUE);
             rows.push(TIMER);
             if shape.shmem_block {
                 rows.push(SHMEM_CONTROL);
@@ -419,18 +430,18 @@ mod tests {
     fn base_manifests_match_real_qemu_registry() -> Result<(), &'static str> {
         let q35 = expected_manifest_for_shape(base_shape(FaultCapabilityScope::X86_64))
             .ok_or("missing x86 manifest")?;
-        assert_eq!(q35.sections, 38);
+        assert_eq!(q35.sections, 39);
         assert_eq!(
             q35.digest,
-            "3da2702fbc015ddfa80fae245591ff1a0618883cb0b602388b0333047725eb70"
+            "ee6010553d7a7d1a8ee4740b5f5f265f87539ab7ae492eaae5b8b84562d787bc"
         );
 
         let aarch64 = expected_manifest_for_shape(base_shape(FaultCapabilityScope::Aarch64))
             .ok_or("missing AArch64 manifest")?;
-        assert_eq!(aarch64.sections, 17);
+        assert_eq!(aarch64.sections, 18);
         assert_eq!(
             aarch64.digest,
-            "99312a031d2c73e11a24759b31eed6f14a684054a6bc2c4559a4125a9c809f11"
+            "9b3f3e1b09e31333bd6a44b4dd87b00f7cea73e06612be6ef2b41a65dd885c3a"
         );
         Ok(())
     }
@@ -445,8 +456,8 @@ mod tests {
             .find(|row| row.id == "timer")
             .ok_or("missing timer projection")?;
 
-        assert_eq!(timer.projection_schema, "crucible.qemu.cpu-timers.v4");
-        assert_eq!(timer.projection_version, 4);
+        assert_eq!(timer.projection_schema, "crucible.qemu.cpu-timers.v5");
+        assert_eq!(timer.projection_version, 5);
         Ok(())
     }
 
@@ -465,10 +476,10 @@ mod tests {
         })
         .ok_or("missing Envoy manifest")?;
 
-        assert_eq!(manifest.sections, 42);
+        assert_eq!(manifest.sections, 43);
         assert_eq!(
             manifest.digest,
-            "a186369f2bb7bd5f9734f0a6d3efdaeda7af72a975cec4ad9e2b0e7023c2c15d"
+            "1ea959c79dc528bd190896d40918df1c0065fef8f451a13949d6509c0c7ffa4d"
         );
         Ok(())
     }
@@ -512,7 +523,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         let expected_provider_versions = virtio_rows.iter().all(|row| {
-            if row.vmsd_name == "virtio-rng" {
+            if matches!(row.vmsd_name.as_str(), "virtio-rng" | "virtio-net") {
                 row.projection_schema.ends_with(".v5") && row.projection_version == 5
             } else {
                 row.projection_schema.ends_with(".v3") && row.projection_version == 3
@@ -543,10 +554,10 @@ mod tests {
         })
         .ok_or("missing combined q35 manifest")?;
 
-        assert_eq!(manifest.sections, 46);
+        assert_eq!(manifest.sections, 47);
         assert_eq!(
             manifest.digest,
-            "afc340a1f09acd31bd929c74ae9477d83de295bf6f10b237f5051c18da159005"
+            "3ae28b0d8f1e20fb1791f058a57a807b0dbe69c5c7349885e5bf6e9744a4b27c"
         );
         Ok(())
     }
@@ -566,10 +577,10 @@ mod tests {
         })
         .ok_or("missing production q35 manifest")?;
 
-        assert_eq!(manifest.sections, 49);
+        assert_eq!(manifest.sections, 50);
         assert_eq!(
             manifest.digest,
-            "2216740f26b072d1f7fe4eab0fb75e98437df3779dbe93c0b4ff7cc136f95489"
+            "ab43c207d4f86cc2ed9f64aca69a2a6b6ffb979b37e6df0ac73cea266e1e9912"
         );
         Ok(())
     }
@@ -589,10 +600,10 @@ mod tests {
         })
         .ok_or("missing combined AArch64 manifest")?;
 
-        assert_eq!(manifest.sections, 24);
+        assert_eq!(manifest.sections, 25);
         assert_eq!(
             manifest.digest,
-            "8e2f8f2be84db117988f768774e75f26483a5939e987f052c5ee0b1a236e2e0b"
+            "a6461b16ae8c401844bb60ea8c0bff4b23ac4bc1a99413e4a85cf397e691fd64"
         );
         Ok(())
     }
@@ -604,16 +615,16 @@ mod tests {
             ..base_shape(FaultCapabilityScope::X86_64)
         })
         .ok_or("missing four-vCPU x86 manifest")?;
-        assert_eq!(q35.sections, 47);
+        assert_eq!(q35.sections, 48);
         assert_eq!(
             q35.digest,
-            "5d93b59f81fbefcdd586873ae8671aad302fa728e9e69b8b786be14f131a0f25"
+            "3a59da71dc11e4fe2f146574977be521b3cb160bc5aadd584cbef5afde25569f"
         );
 
         let identities = q35
             .rows
             .iter()
-            .take(14)
+            .take(15)
             .map(|row| (row.id.as_str(), row.instance))
             .collect::<Vec<_>>();
         assert_eq!(
@@ -623,6 +634,7 @@ mod tests {
                 ("apic", 1),
                 ("apic", 2),
                 ("apic", 3),
+                ("ui-input-queue", 0),
                 ("timer", 0),
                 ("cpu_common", 0),
                 ("cpu", 0),
@@ -641,10 +653,10 @@ mod tests {
             ..base_shape(FaultCapabilityScope::Aarch64)
         })
         .ok_or("missing four-vCPU AArch64 manifest")?;
-        assert_eq!(aarch64.sections, 23);
+        assert_eq!(aarch64.sections, 24);
         assert_eq!(
             aarch64.digest,
-            "ff9391617f0bfd8bd1d4c33319a410f128f300abef14b92d5ef216182cd51bc9"
+            "394588ec1ff0acef7dba6260f9b54b30d9802b12971bd900423b96197f6e02fc"
         );
         Ok(())
     }
@@ -690,7 +702,7 @@ mod tests {
             );
         }
 
-        for (manifest, offset) in [(&envoy, 0), (&production, 9)] {
+        for (manifest, offset) in [(&envoy, 1), (&production, 10)] {
             assert_projection_row(
                 manifest,
                 5 + offset,
@@ -706,8 +718,8 @@ mod tests {
                 "mc146818rtc",
                 0,
                 3,
-                "crucible.qemu.mc146818rtc.v5",
-                5,
+                "crucible.qemu.mc146818rtc.v6",
+                6,
             );
             assert_projection_row(
                 manifest,
@@ -733,8 +745,8 @@ mod tests {
                 "hpet",
                 0,
                 2,
-                "crucible.qemu.hpet.v2",
-                2,
+                "crucible.qemu.hpet.v3",
+                3,
             );
             assert_projection_row(
                 manifest,
@@ -749,7 +761,7 @@ mod tests {
 
         assert_projection_row(
             &envoy,
-            36,
+            37,
             "0000:00:01.0/virtio-rng",
             0,
             3,
@@ -758,7 +770,7 @@ mod tests {
         );
         assert_projection_row(
             &envoy,
-            40,
+            41,
             "crucible-fault",
             0,
             1,
@@ -767,7 +779,7 @@ mod tests {
         );
         assert_projection_row(
             &production,
-            45,
+            46,
             "0000:00:01.0/virtio-rng",
             0,
             3,
@@ -776,7 +788,7 @@ mod tests {
         );
         assert_projection_row(
             &production,
-            47,
+            48,
             "crucible-fault",
             0,
             1,
@@ -808,11 +820,11 @@ mod tests {
         assert!(expected.first_difference(&stale_apic).contains("row 0:"));
 
         let mut stale_rng_rows = expected.rows.clone();
-        stale_rng_rows[45].vmsd_version = 2;
-        stale_rng_rows[45].projection_schema = "crucible.qemu.virtio-rng.v4".to_owned();
-        stale_rng_rows[45].projection_version = 4;
+        stale_rng_rows[46].vmsd_version = 2;
+        stale_rng_rows[46].projection_schema = "crucible.qemu.virtio-rng.v4".to_owned();
+        stale_rng_rows[46].projection_version = 4;
         let stale_rng = QmpFingerprintProjectionManifest::from_rows(stale_rng_rows);
-        assert!(expected.first_difference(&stale_rng).contains("row 45:"));
+        assert!(expected.first_difference(&stale_rng).contains("row 46:"));
         Ok(())
     }
 

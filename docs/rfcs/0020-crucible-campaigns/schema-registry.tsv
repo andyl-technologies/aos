@@ -411,7 +411,7 @@ crucible.qemu.vmstate.arm-gicv3-cpu-crucible-interrupt	1	qemu-patch::vmstate	dev
 crucible.qemu.vmstate.arm-gicv3-crucible-interrupt	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.i8259-crucible-interrupt	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.vt82c686b-pm-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
-crucible.qemu.vmstate.mc146818rtc-crucible-clock	4	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.mc146818rtc-crucible-clock	5	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.pl031-crucible-clock	3	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.hpet-timer-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.hpet-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming

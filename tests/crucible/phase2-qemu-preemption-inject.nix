@@ -40,7 +40,7 @@
     ++ failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
       {
         label = "public preemption export";
-        needle = "int qemu_plugin_inject_preemption(uint64_t at_icount";
+        needle = "int qemu_plugin_inject_preemption(uint64_t at_tick";
       }
       {
         label = "vCPU switch kind";
@@ -63,16 +63,24 @@
         needle = "icount_crucible_rr_switch_quantum() != 0";
       }
       {
-        label = "scheduler ceiling read";
-        needle = "crucible_sim_shmem_max_advance_icount()";
+        label = "logical scheduler ceiling read";
+        needle = "crucible_sim_shmem_logical_ceiling()";
       }
       {
-        label = "past and ceiling rejection";
-        needle = "at_icount < deadline_icount";
+        label = "raw window rejection";
+        needle = "at_tick < deadline_tick";
       }
       {
-        label = "current and ceiling rejection";
-        needle = "at_icount < current_icount";
+        label = "raw current rejection";
+        needle = "at_tick < (uint64_t)current_raw";
+      }
+      {
+        label = "raw retired-instruction observation";
+        needle = "icount_get_raw_observed()";
+      }
+      {
+        label = "dynamic logical deadline projection";
+        needle = "crucible_sim_preemption_next_logical_tick";
       }
       {
         label = "single pending command";
@@ -92,7 +100,7 @@
       }
       {
         label = "missed command fails loud";
-        needle = "crucible preemption missed commanded icount";
+        needle = "Crucible preemption missed commanded raw icount";
       }
     ]
     ++ failuresFor "tests/crucible/phase2-qemu-preemption-inject.c" microtestSource [
