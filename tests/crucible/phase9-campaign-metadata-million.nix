@@ -49,15 +49,14 @@ in
         script = ''
           set -eu
           target="$TMPDIR/campaign-performance-target"
-          test_name=gate_campaign_metadata_million
-          cargo test --frozen --offline --release \
+          ${pkgs.rust}/bin/cargo test --frozen --offline --release \
             --manifest-path crates/Cargo.toml --target-dir "$target" \
-            -p crucible-daemon --test "$test_name" --no-run
+            -p crucible-daemon --test gate_campaign_metadata_million --no-run
 
           mkdir -p "$out/evidence"
-          cargo test --frozen --offline --release \
+          ${pkgs.rust}/bin/cargo test --frozen --offline --release \
             --manifest-path crates/Cargo.toml --target-dir "$target" \
-            -p crucible-daemon --test "$test_name" \
+            -p crucible-daemon --test gate_campaign_metadata_million \
             million_admission_ancestry_capacity_probe -- \
             --exact --nocapture --test-threads=1 \
             > "$out/evidence/capacity-probe.log" 2>&1
@@ -85,9 +84,9 @@ in
           chmod 0500 "$TMPDIR/campaign-million-planner"
           export CRUCIBLE_CAMPAIGN_MILLION_STORAGE_ROOT="$TMPDIR/campaign-million-store"
           export CRUCIBLE_CAMPAIGN_MILLION_PLANNER_EXECUTABLE="$TMPDIR/campaign-million-planner"
-          if ! timeout -k 60 604800 cargo test --frozen --offline --release \
+          if ! timeout -k 60 604800 ${pkgs.rust}/bin/cargo test --frozen --offline --release \
             --manifest-path crates/Cargo.toml --target-dir "$target" \
-            -p crucible-daemon --test "$test_name" \
+            -p crucible-daemon --test gate_campaign_metadata_million \
             million_real_admissions_fit_compact_metadata_budget -- \
             --ignored --exact --nocapture --test-threads=1 \
             > "$out/evidence/million-admissions.log" 2>&1; then
