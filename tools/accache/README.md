@@ -74,10 +74,13 @@ cannot hide a variable from the key while leaving it visible to the compiler.
 The helper removes derivation bookkeeping and inherited jobserver variables.
 Packages using those variables intentionally must override the list.
 
-Proc macro consumers, compiler plugins, and raw Clang assembly need declared
-`read_roots`; those trees are hashed recursively. Cargo's `OUT_DIR` and
-`CARGO_MANIFEST_DIR` are also covered for proc macro consumers. Native library
-search directories and explicit library/module/profile inputs are tracked.
+Proc macro consumers, compiler plugins, and Clang assembly (including `.S`
+files with assembler `.include` directives) need declared `read_roots`; those
+trees are hashed recursively. GNU `.S` builds use a separate assembler probe
+to discover `.include` inputs that the C preprocessor cannot see. Cargo's
+`OUT_DIR` and `CARGO_MANIFEST_DIR` are also covered for proc macro consumers.
+Native library search directories and explicit library/module/profile inputs
+are tracked.
 The package author must declare every extension-readable mutable input and
 must not cache compiler extensions with undeclared side effects. This is an
 input contract, not an additional filesystem sandbox. Full tree hashing can
@@ -186,6 +189,9 @@ mutates that inner file and requires a miss with provenance naming the change.
 The frontend check also requires incremental Rust to bypass caching.
 An oracle case verifies that sccache's warm `-Csave-temps=yes` hit omits
 bitcode files while accache runs rustc and preserves them on both invocations.
+Another oracle case changes a GNU assembler `.include` under a `.S` file:
+pinned sccache incorrectly replays the old object, while accache reports the
+changed include in its miss explanation and returns the new compiler output.
 
 The suite asserts several pinned sccache output omissions: implicit `.d` files
 on warm `-MMD` hits without `-MF`, GCC `-aux-info` files, Clang serialized

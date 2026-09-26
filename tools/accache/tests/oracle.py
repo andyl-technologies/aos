@@ -97,6 +97,10 @@ def fixtures(gcc, clang, rustc):
         yield Fixture(name + "-assembly-cpp", compiler, ["-c", "source.S", "-o", "source.o"],
                       {"source.S": '#include "value.h"\n.text\n.globl answer\nanswer:\n.byte VALUE\n',
                        "value.h": "#define VALUE 0xc3\n"})
+        yield Fixture(name + "-assembly-include", compiler,
+                      ["-c", "source.S", "-I.", "-o", "source.o"],
+                      {"source.S": '.text\n.globl answer\nanswer:\n.include "fragment.inc"\n',
+                       "fragment.inc": ".byte 0xc3\n"})
         yield Fixture(name + "-failed", compiler, base,
                       {"source.c": "#error intentional oracle failure\n"}, cacheable=False, exit_code=1)
         yield Fixture(name + "-preprocess-only", compiler, ["-E", "source.c"], c_sources, cacheable=False)
@@ -241,6 +245,49 @@ def check_saved_temporaries(root, env, accache, sccache, rustc, hits):
             "oracle_hit": True, "accache": "bypass",
             "oracle_missing_artifacts": sorted(set(oracle_saved) - set(oracle_hit_saved)),
             "artifacts": sorted(direct_saved)}
+
+
+def check_assembler_include_invalidation(root, env, accache, sccache, gcc, hits):
+    """Require a miss when a GNU assembler .include changes beneath .S."""
+    work = root / "gcc-assembler-include-mutation"
+    work.mkdir()
+    (work / "source.S").write_text(
+        '.text\n.globl answer\nanswer:\n.include "fragment.inc"\n')
+    included = work / "fragment.inc"
+    included.write_text(".byte 0xc3\n")
+    object_file = work / "source.o"
+    args = [gcc, "-c", "source.S", "-I.", "-o", "source.o"]
+
+    def compile_object(wrapper):
+        object_file.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        return object_file.read_bytes()
+
+    direct_old = compile_object([])
+    assert compile_object([accache]) == direct_old
+    assert compile_object([sccache]) == direct_old
+
+    included.write_text(".byte 0x90\n")
+    direct_new = compile_object([])
+    assert direct_new != direct_old, "assembler include mutation changed no output"
+    before_hits = hits()
+    assert compile_object([sccache]) == direct_old, "sccache defect changed"
+    assert hits() > before_hits, "sccache did not reuse the stale action"
+
+    assert compile_object([accache]) == direct_new
+    changed = json.loads(subprocess.check_output([accache, "explain"], env=env))
+    assert changed["outcome"] == "miss", changed
+    assert any("fragment.inc" in item for item in changed["changes"]), changed
+    assert compile_object([accache]) == direct_new
+    warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+    assert warm["outcome"] == "hit", warm
+
+    print("PASS oracle GNU assembler include invalidation", flush=True)
+    return {"fixture": "gcc-assembler-include-invalidation", "revision": 1,
+            "oracle_hit": True, "accache": "hit",
+            "oracle_stale_artifact": "source.o", "artifacts": ["source.o"]}
 
 
 def run_suite(root, accache, sccache, gcc, clang, rustc):
@@ -401,6 +448,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
             print("PASS oracle", fixture.name, flush=True)
 
         results.append(check_saved_temporaries(root, env, accache, sccache, rustc, hits))
+        results.append(check_assembler_include_invalidation(root, env, accache,
+                                                            sccache, gcc, hits))
 
         report = json.dumps({"fixtures": results, "sccache_stats": stats()}, sort_keys=True)
         if destination := os.environ.get("ACCACHE_ORACLE_REPORT"):
