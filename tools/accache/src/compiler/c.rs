@@ -43,7 +43,9 @@ pub(super) fn configure(
     })?;
     let expanded = strings(gcc::ExpandIncludeFile::new(&cwd, &arguments))?;
     ensure!(
-        !expanded.iter().any(|arg| arg == "-ftime-report"),
+        !expanded
+            .iter()
+            .any(|arg| arg == "-ftime-report" || arg.starts_with("-ftime-report=")),
         "compiler timing output is not a replayable artifact"
     );
     let mut cc1_depfile = None;
