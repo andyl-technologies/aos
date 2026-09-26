@@ -22,7 +22,18 @@ in
     version = "1";
     src = null;
     sharedBuildCache = false;
-    buildDeps = [pkgs.accache pkgs.cc pkgs.llvm pkgs.rust pkgs.python3 pkgs.cmake pkgs.ninja sccacheOracle];
+    # GCC's HTML diagram oracle cases require an AOS-built dot executable.
+    buildDeps = [
+      pkgs.accache
+      pkgs.cc
+      pkgs.llvm
+      pkgs.rust
+      pkgs.python3
+      pkgs.cmake
+      pkgs.ninja
+      pkgs.graphviz
+      sccacheOracle
+    ];
     ACCACHE_MANIFEST = cacheEnvironment.ACCACHE_MANIFEST;
     CMAKE_C_COMPILER_LAUNCHER = cacheEnvironment.CMAKE_C_COMPILER_LAUNCHER;
     CMAKE_CXX_COMPILER_LAUNCHER = cacheEnvironment.CMAKE_CXX_COMPILER_LAUNCHER;

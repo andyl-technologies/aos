@@ -189,6 +189,22 @@ def fixtures(gcc, clang, rustc):
             yield Fixture("gcc-html-output-options", compiler,
                           base + ["-fdiagnostics-set-output=experimental-html:css=no,javascript=no,file=report.html"],
                           c_sources, nondeterministic_outputs={"report.html"})
+            diagram_sources = {
+                "source.c": '#include "value.h"\n'
+                            'int answer(void) { int *p = 0; return *p + VALUE; }\n',
+                "value.h": "#define VALUE 42\n",
+            }
+            for suffix, options, report in [
+                ("cfgs", "cfgs=yes", "cfgs.html"),
+                ("state-diagrams", "show-state-diagrams=yes", "state.html"),
+                ("graph-details", "show-state-diagrams=yes,show-graph-dot-src=yes,show-graph-sarif=yes",
+                 "details.html"),
+            ]:
+                yield Fixture("gcc-html-" + suffix, compiler,
+                              base + ["-fanalyzer", "-fdiagnostics-add-output=experimental-html:"
+                                      + options + ",file=" + report], diagram_sources,
+                              {"value.h": "#define VALUE 73\n"},
+                              nondeterministic_outputs={report})
             yield Fixture("gcc-text-output-options", compiler,
                           base + ["-Wall", "-fdiagnostics-add-output=text:color=no,show-nesting=no,cfgs=no"],
                           {"source.c": "int answer(void) { int unused = 1; return 42; }\n"})
@@ -1021,6 +1037,9 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     "gcc-sarif-then-text": {"source.c.sarif"},
                     "gcc-html-output": {"source.c.html"},
                     "gcc-html-output-options": {"report.html"},
+                    "gcc-html-cfgs": {"cfgs.html"},
+                    "gcc-html-state-diagrams": {"state.html"},
+                    "gcc-html-graph-details": {"details.html"},
                     "clang-serialized-diagnostics": {"source.dia"},
                 }
                 if (side_files := missing_oracle_side_files.get(fixture.name)) and label == "sccache warm vs direct":
@@ -1121,6 +1140,13 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     report = ("final.gkd" if fixture.name.endswith("explicit") else
                               "source.c.gkd")
                     assert direct[3][report][0], "GCC final instruction dump is empty"
+                if fixture.name.startswith("gcc-html-") and fixture.name not in {
+                        "gcc-html-output", "gcc-html-output-options"}:
+                    report = {"gcc-html-cfgs": "cfgs.html",
+                              "gcc-html-state-diagrams": "state.html",
+                              "gcc-html-graph-details": "details.html"}[fixture.name]
+                    assert b"<svg" in direct[3][report][0], (
+                        fixture.name, "AOS Graphviz did not render embedded SVG")
                 oracle_cold = invoke([sccache])
                 if fixture.direct_exit_code is None:
                     compare(direct, oracle_cold, "sccache cold vs direct")
@@ -1159,7 +1185,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                     "gcc-add-default-sarif", "gcc-set-sarif-output",
                                     "gcc-sarif-output-parameters", "gcc-multiple-sarif-outputs",
                                     "gcc-sarif-then-text", "gcc-html-output",
-                                    "gcc-html-output-options"}:
+                                    "gcc-html-output-options", "gcc-html-cfgs",
+                                    "gcc-html-state-diagrams", "gcc-html-graph-details"}:
                     assert oracle_hit, (fixture.name, "sccache report omission was not a hit")
 
                 accache_cold = invoke([accache])
