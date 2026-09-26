@@ -3417,10 +3417,19 @@ impl Database {
                        ON scan.cache_id = presence.cache_id
                       AND scan.placement_id = presence.placement_id
                       AND scan.generation = presence.observed_inventory_generation
-                     JOIN binding_credential_revisions credential
+                     LEFT JOIN binding_credential_revisions credential
                        ON credential.binding_id = binding.id
                       AND credential.purpose = 'delete'
                       AND credential.generation = ?13
+                     LEFT JOIN binding_credential_heads credential_head
+                       ON credential_head.binding_id = binding.id
+                      AND credential_head.purpose = 'delete'
+                     LEFT JOIN binding_write_state write_state
+                       ON write_state.binding_id = binding.id
+                     LEFT JOIN oci_conditional_delete_capabilities capability
+                       ON capability.binding_id = binding.id
+                      AND capability.binding_write_revision =
+                        write_state.current_write_revision
                      WHERE presence.cache_id = ?1
                        AND presence.surface_object_id = ?4
                        AND presence.placement_id = ?5
@@ -3446,12 +3455,19 @@ impl Database {
                        AND scan.binding_resource_version = ?12
                        AND placement.binding_id = ?11
                        AND binding.resource_version = ?12
-                       AND credential.validation_state = 'valid'
-                       AND EXISTS (SELECT 1
-                         FROM binding_credential_heads credential_head
-                         WHERE credential_head.binding_id = ?11
-                           AND credential_head.purpose = 'delete'
-                           AND credential_head.current_generation = ?13)
+                       AND ((binding.kind = 's3'
+                         AND binding.is_instance_default = 0
+                         AND credential.validation_state = 'valid'
+                         AND credential_head.current_generation = ?13)
+                         OR (binding.kind = 'deployment_r2'
+                         AND binding.is_instance_default = 1
+                         AND ?13 = 1
+                         AND capability.state = 'valid'
+                         AND capability.binding_resource_version =
+                           binding.resource_version
+                         AND capability.delete_credential_purpose IS NULL
+                         AND capability.delete_credential_generation IS NULL
+                         AND capability.observed_at >= ?15))
                        AND (presence.etag = ?7
                          OR (presence.etag IS NULL AND CAST(?7 AS VARCHAR) IS NULL))
                        AND (presence.observed_hash = ?8
@@ -3472,7 +3488,8 @@ impl Database {
                         action.binding_id,
                         action.binding_resource_version,
                         action.delete_credential_generation,
-                        action.estimated_reclaimable_bytes
+                        action.estimated_reclaimable_bytes,
+                        input.created_at.saturating_sub(DELETE_CAPABILITY_MAX_AGE_SECS)
                     ],
                 )
                 .expecting(1),
