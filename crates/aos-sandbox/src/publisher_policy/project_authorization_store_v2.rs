@@ -22,8 +22,17 @@
 use std::collections::BTreeMap;
 
 use aos_sandbox_core::{ObjectDigest, ProjectId};
+#[cfg(any(target_os = "linux", test))]
+use thiserror::Error;
 
 use crate::hierarchy::model::TreeLimitsV1;
+#[cfg(target_os = "linux")]
+use crate::hierarchy::source_seed::verify_controller_source_tree_seed_from_fixed_issuer_v1;
+#[cfg(any(target_os = "linux", test))]
+use crate::hierarchy::source_seed::{
+    ControllerSourceTreeSeedErrorV1, ControllerSourceTreeSeedExpectedV1,
+    VerifiedControllerSourceTreeSeedV1,
+};
 use crate::journal::{CommitResult, Journal, JournalRecord, RecordNamespace};
 
 use super::project_authorization_source_v2::{
@@ -44,6 +53,10 @@ pub(super) const HEAD_PREFIX: &[u8] = b"project-auth/current/";
 const ROW_MAGIC: &[u8; 8] = b"AOSPAUR2";
 const HEAD_MAGIC: &[u8; 8] = b"AOSPAUH2";
 const ROW_DOMAIN: &[u8] = b"aos.sandbox.publisher-project-authorization.row.v2\0";
+// The seed binds the exact retained pointer, including its epoch and row digest.
+#[cfg(any(target_os = "linux", test))]
+const RETAINED_HEAD_DOMAIN: &[u8] =
+    b"aos.sandbox.publisher-project-authorization.retained-current-head.v2\0";
 const ROW_BYTES: usize = 188 + PACKET_BYTES;
 const HEAD_BYTES: usize = 80;
 
@@ -74,6 +87,24 @@ pub(super) struct RetainedProjectAuthorizationHeadV2 {
 pub(super) enum ProjectAuthorizationRetentionV2 {
     Committed(CommitResult),
     ExactReplay,
+}
+
+/// Reports why a Controller-held initial-tree seed preflight is unavailable.
+///
+/// Passing this preflight does not spend the seed epoch or authorize Source
+/// journal mutation.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Error)]
+pub(crate) enum CurrentSourceTreeSeedPreflightErrorV1 {
+    /// No authenticated project decision is current for the requested project.
+    #[error("no current project authorization is retained")]
+    MissingAuthorization,
+    /// The retained decision or its fixed issuer is unavailable or stale.
+    #[error(transparent)]
+    Authorization(#[from] ProjectAuthorizationSourceErrorV2),
+    /// The seed or its distinct fixed issuer is unavailable or stale.
+    #[error(transparent)]
+    Seed(#[from] ControllerSourceTreeSeedErrorV1),
 }
 
 pub(super) fn row_key(project: ProjectId, request_id: [u8; 16]) -> Vec<u8> {
@@ -269,6 +300,54 @@ pub(super) fn validate_rows_and_heads(
 }
 
 impl PublisherPolicyStore<'_> {
+    /// Checks one seed against the authenticated current Controller row.
+    ///
+    /// The caller must retain this store's Controller writer. Both issuer
+    /// credentials come from their fixed privileged names and are rechecked
+    /// around the joined read. The result is only a preflight observation: it
+    /// neither spends an epoch nor grants Source append authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing or stale current rows, unavailable issuer credentials,
+    /// a changed publisher pointer or revision, and any seed mismatch.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn preflight_current_source_tree_seed_from_fixed_issuers_v1(
+        &self,
+        project: ProjectId,
+        packet: &[u8],
+    ) -> Result<VerifiedControllerSourceTreeSeedV1, CurrentSourceTreeSeedPreflightErrorV1> {
+        let authorization_issuer =
+            ProtectedProjectAuthorizationIssuerV2::from_systemd_credentials()?;
+        authorization_issuer.recheck()?;
+        let authorization = self
+            .current_authenticated_project_authorization_v2(project, authorization_issuer.pin())?
+            .ok_or(CurrentSourceTreeSeedPreflightErrorV1::MissingAuthorization)?;
+        let head_digest = self.current_project_authorization_head_digest_v2(project)?;
+        let verified = verify_seed_for_current_authorization_v1(
+            packet,
+            authorization,
+            head_digest,
+            verify_controller_source_tree_seed_from_fixed_issuer_v1,
+        )?;
+        authorization_issuer.recheck()?;
+        Ok(verified)
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    fn current_project_authorization_head_digest_v2(
+        &self,
+        project: ProjectId,
+    ) -> Result<ObjectDigest, ProjectAuthorizationSourceErrorV2> {
+        // The preceding authenticated read validated this pair. The store's
+        // Controller writer prevents either record changing before this read.
+        let head_bytes = self
+            .journal
+            .get(RecordNamespace::PublisherPolicy, &head_key(project))
+            .ok_or(ProjectAuthorizationSourceErrorV2::Stale)?;
+        Ok(commitment(RETAINED_HEAD_DOMAIN, head_bytes))
+    }
+
     /// Authenticates the current retained decision with the fixed issuer pin.
     ///
     /// Structural journal replay does not establish the AOSPSC02 signature.
@@ -504,11 +583,50 @@ impl PublisherPolicyStore<'_> {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn verify_seed_for_current_authorization_v1(
+    packet: &[u8],
+    authorization: VerifiedPublisherProjectAuthorizationSourceV2,
+    authorization_head_digest: ObjectDigest,
+    verify_seed: impl FnOnce(
+        &[u8],
+        ControllerSourceTreeSeedExpectedV1,
+    ) -> Result<
+        VerifiedControllerSourceTreeSeedV1,
+        ControllerSourceTreeSeedErrorV1,
+    >,
+) -> Result<VerifiedControllerSourceTreeSeedV1, CurrentSourceTreeSeedPreflightErrorV1> {
+    let epoch_floor = authorization
+        .epoch()
+        .checked_sub(1)
+        .ok_or(ControllerSourceTreeSeedErrorV1::Stale)?;
+    let expected = ControllerSourceTreeSeedExpectedV1::new(
+        authorization.project(),
+        authorization.publisher_generation(),
+        authorization.publisher_head_digest(),
+        authorization_head_digest,
+        authorization.request_id(),
+        epoch_floor,
+    )?;
+    let verified = verify_seed(packet, expected)?;
+    if verified.seed().epoch() != authorization.epoch()
+        || verified.seed().limits() != authorization.limits()
+    {
+        return Err(ControllerSourceTreeSeedErrorV1::Stale.into());
+    }
+    Ok(verified)
+}
+
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::SigningKey;
 
     use crate::JournalTransaction;
+    use crate::hierarchy::source_seed::{
+        ControllerSourceTreeSeedV1, PinnedControllerSourceTreeSeedIssuerV1,
+        encode_controller_source_tree_seed_credential_v1, sign_controller_source_tree_seed_v1,
+        verify_controller_source_tree_seed_v1,
+    };
 
     use super::*;
     use crate::publisher_policy::project_authorization_test_fixture::{
@@ -541,6 +659,179 @@ mod tests {
             .publish_policy_from_trusted_controller([3; 16], None, &policy(project, 1))
             .unwrap();
         store
+    }
+
+    #[test]
+    fn current_seed_preflight_joins_both_signatures_and_exact_controller_cut() {
+        let directory = TestDirectory::new();
+        let project = ProjectId::from_bytes([1; 16]);
+        let authorization_signer = SigningKey::from_bytes(&[2; 32]);
+        let seed_signer = SigningKey::from_bytes(&[42; 32]);
+        let seed_credential =
+            encode_controller_source_tree_seed_credential_v1(11, &seed_signer.verifying_key())
+                .unwrap();
+        let seed_issuer = PinnedControllerSourceTreeSeedIssuerV1::decode(&seed_credential).unwrap();
+        let mut journal = directory.open();
+        let mut store = initial_store(&mut journal, project);
+        let authorization_packet = packet(&store, project, [4; 16], 9, &authorization_signer);
+        store
+            .retain_project_authorization_source_v2(
+                [5; 16],
+                project,
+                [4; 16],
+                &authorization_packet,
+                &pin(&authorization_signer),
+            )
+            .unwrap();
+        let authorization = store
+            .current_authenticated_project_authorization_v2(project, &pin(&authorization_signer))
+            .unwrap()
+            .unwrap();
+        let head_digest = store
+            .current_project_authorization_head_digest_v2(project)
+            .unwrap();
+        let seed = ControllerSourceTreeSeedV1::new(
+            project,
+            authorization.limits(),
+            authorization.publisher_generation(),
+            authorization.publisher_head_digest(),
+            head_digest,
+            authorization.request_id(),
+            authorization.epoch(),
+        )
+        .unwrap();
+        let seed_packet =
+            sign_controller_source_tree_seed_v1(seed, seed_issuer.generation(), &seed_signer)
+                .unwrap();
+        let verify = |packet: &[u8], expected| {
+            verify_controller_source_tree_seed_v1(packet, &seed_issuer, expected)
+        };
+        assert_eq!(
+            verify_seed_for_current_authorization_v1(
+                &seed_packet,
+                authorization,
+                head_digest,
+                verify,
+            )
+            .unwrap()
+            .seed(),
+            seed
+        );
+
+        let mismatch = |seed: ControllerSourceTreeSeedV1| {
+            let packet =
+                sign_controller_source_tree_seed_v1(seed, seed_issuer.generation(), &seed_signer)
+                    .unwrap();
+            verify_seed_for_current_authorization_v1(
+                &packet,
+                authorization,
+                head_digest,
+                |packet, expected| {
+                    verify_controller_source_tree_seed_v1(packet, &seed_issuer, expected)
+                },
+            )
+        };
+        let changed =
+            |limits, publisher_generation, publisher_head, authorization_head, request, epoch| {
+                ControllerSourceTreeSeedV1::new(
+                    project,
+                    limits,
+                    publisher_generation,
+                    publisher_head,
+                    authorization_head,
+                    request,
+                    epoch,
+                )
+                .unwrap()
+            };
+        for altered in [
+            changed(
+                seed.limits(),
+                2,
+                seed.publisher_head(),
+                head_digest,
+                [4; 16],
+                9,
+            ),
+            changed(
+                seed.limits(),
+                1,
+                ObjectDigest::from_bytes([8; 32]),
+                head_digest,
+                [4; 16],
+                9,
+            ),
+            changed(
+                seed.limits(),
+                1,
+                seed.publisher_head(),
+                ObjectDigest::from_bytes([8; 32]),
+                [4; 16],
+                9,
+            ),
+            changed(
+                seed.limits(),
+                1,
+                seed.publisher_head(),
+                head_digest,
+                [8; 16],
+                9,
+            ),
+            changed(
+                seed.limits(),
+                1,
+                seed.publisher_head(),
+                head_digest,
+                [4; 16],
+                10,
+            ),
+            changed(
+                TreeLimitsV1::new(1, 8, 7, 6, 5, 4, 2).unwrap(),
+                1,
+                seed.publisher_head(),
+                head_digest,
+                [4; 16],
+                9,
+            ),
+        ] {
+            assert!(matches!(
+                mismatch(altered),
+                Err(CurrentSourceTreeSeedPreflightErrorV1::Seed(
+                    ControllerSourceTreeSeedErrorV1::Stale
+                ))
+            ));
+        }
+
+        let rotated_key = SigningKey::from_bytes(&[43; 32]);
+        let rotated_credential =
+            encode_controller_source_tree_seed_credential_v1(11, &rotated_key.verifying_key())
+                .unwrap();
+        let rotated_issuer =
+            PinnedControllerSourceTreeSeedIssuerV1::decode(&rotated_credential).unwrap();
+        assert!(matches!(
+            verify_seed_for_current_authorization_v1(
+                &seed_packet,
+                authorization,
+                head_digest,
+                |packet, expected| {
+                    verify_controller_source_tree_seed_v1(packet, &rotated_issuer, expected)
+                },
+            ),
+            Err(CurrentSourceTreeSeedPreflightErrorV1::Seed(
+                ControllerSourceTreeSeedErrorV1::Signature
+            ))
+        ));
+
+        store
+            .publish_policy_from_trusted_controller([6; 16], Some(1), &policy(project, 2))
+            .unwrap();
+        assert!(matches!(
+            store.current_authenticated_project_authorization_v2(
+                project,
+                &pin(&authorization_signer)
+            ),
+            Err(ProjectAuthorizationSourceErrorV2::Stale)
+        ));
     }
 
     #[test]

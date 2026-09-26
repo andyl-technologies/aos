@@ -14,6 +14,12 @@
 //! AOSCSK01 | issuer-generation:u64be | Ed25519 public key:32 |
 //! SHA-256(key-domain || preceding 48 bytes):32
 //! ```
+//!
+//! The project-authorization head is
+//! `SHA-256("aos.sandbox.publisher-project-authorization.retained-current-head.v2\0" || AOSPAUH2)`
+//! over the exact current `AOSPAUH2` bytes retained by the Controller writer. The
+//! publisher head names the exact current `AOSPOLH1` pointer; the authenticated
+//! `AOSPSC02` row also checks its selected `AOSPOLR1` revision.
 
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
