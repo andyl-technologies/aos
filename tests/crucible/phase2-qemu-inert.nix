@@ -378,6 +378,7 @@
       pkgs.gawk
       pkgs.grep
       pkgs.jq
+      pkgs.python3
       pkgs.socat
       referenceQemu
       patchedQemu
@@ -778,12 +779,13 @@
     start_paused_qemu() {
       label="$1"
       qemu="$2"
+      incoming_state="''${3:-}"
       qmp_socket="$TMPDIR/qmp-$label.sock"
       serial="$TMPDIR/serial-$label.log"
       stderr="$TMPDIR/qemu-$label.stderr"
       rm -f "$qmp_socket" "$serial" "$stderr"
 
-      timeout 600 "$qemu" \
+      set -- \
         -nodefaults \
         -no-user-config \
         -display none \
@@ -800,8 +802,11 @@
         -qmp "unix:$qmp_socket,server=on,wait=off" \
         -S \
         -no-shutdown \
-        -no-reboot \
-        2> "$stderr" &
+        -no-reboot
+      if [ -n "$incoming_state" ]; then
+        set -- "$@" -incoming "file:$incoming_state"
+      fi
+      timeout 600 "$qemu" "$@" 2> "$stderr" &
       qemu_pid="$!"
 
       wait_for_socket "$qmp_socket" || {
@@ -901,9 +906,29 @@
     probe_migration_stream() {
       label="$1"
       qemu="$2"
-      start_paused_qemu "$label" "$qemu"
+      incoming_state="''${3:-}"
+      start_paused_qemu "$label" "$qemu" "$incoming_state"
       socket="$TMPDIR/qmp-$label.sock"
       state="$TMPDIR/migration-$label.bin"
+
+      if [ -n "$incoming_state" ]; then
+        waited=0
+        while [ "$waited" -lt 600 ]; do
+          qmp_cmd "$socket" '{"execute":"query-status"}' \
+            "$TMPDIR/qmp-restore-status-$label.json" \
+            || fail "$label restored QMP status query failed"
+          if jq -e -s '
+            [.[] | select(has("return"))][-1].return.status
+              | IN("prelaunch", "paused")
+          ' "$TMPDIR/qmp-restore-status-$label.json" >/dev/null; then
+            break
+          fi
+          sleep 0.1
+          waited=$((waited + 1))
+        done
+        [ "$waited" -lt 600 ] || fail "$label did not restore to a stopped VM"
+      fi
+
       uri=$(json_string "file:$state")
       request=$(printf '{"execute":"migrate","arguments":{"uri":%s}}' "$uri")
 
@@ -977,9 +1002,31 @@
       "$TMPDIR/qmp-patched-only-commands.txt"
     compare_files qmp-surface "$TMPDIR/qmp-surface-reference.normalized.txt" "$TMPDIR/qmp-surface-patched.normalized.txt"
 
-    probe_migration_stream reference "$REFERENCE_QEMU"
-    probe_migration_stream patched "$PATCHED_QEMU"
-    compare_files migration-stream "$TMPDIR/migration-reference.sha256" "$TMPDIR/migration-patched.sha256"
+    probe_migration_stream reference-a "$REFERENCE_QEMU"
+    probe_migration_stream reference-b "$REFERENCE_QEMU"
+    probe_migration_stream patched-a "$PATCHED_QEMU"
+    probe_migration_stream patched-b "$PATCHED_QEMU"
+
+    QEMU_INERT_MIGRATION_PARSER=${./qemu-inert-migration.py} \
+      python3 ${./test_qemu_inert_migration.py} \
+      > "$TMPDIR/migration-parser-tests.log" 2>&1 \
+      || { cat "$TMPDIR/migration-parser-tests.log" >&2; fail "migration parser corruption controls failed"; }
+    python3 ${./qemu-inert-migration.py} \
+      "$TMPDIR/migration-reference-a.bin" \
+      "$TMPDIR/migration-reference-b.bin" \
+      "$TMPDIR/migration-patched-a.bin" \
+      "$TMPDIR/migration-patched-b.bin" \
+      > "$TMPDIR/migration-projection.result" \
+      || fail "sim-off migration differs beyond the exact PIT phase subsection"
+    grep -Fxq 'migration_pit_phase_ps=0,0,0,578' \
+      "$TMPDIR/migration-projection.result" \
+      || fail "paused migration did not exercise the pinned nonzero PIT phase"
+
+    probe_migration_stream patched-restored "$PATCHED_QEMU" \
+      "$TMPDIR/migration-patched-a.bin"
+    compare_files migration-restore \
+      "$TMPDIR/migration-patched-a.bin" \
+      "$TMPDIR/migration-patched-restored.bin"
 
     mkdir -p "$out/corpus"
     cp "$PATCH_MICROTESTS_RESULT" "$out/patch-microtests.result"
@@ -995,8 +1042,12 @@
     cp "$TMPDIR/rng-leakage-negative-control.diff" "$out/corpus/rng-leakage-negative-control.diff"
     cp "$TMPDIR/qmp-surface-reference.normalized.txt" "$out/corpus/qmp-surface-reference.txt"
     cp "$TMPDIR/qmp-surface-patched.normalized.txt" "$out/corpus/qmp-surface-patched.txt"
-    cp "$TMPDIR/migration-reference.sha256" "$out/corpus/migration-reference.sha256"
-    cp "$TMPDIR/migration-patched.sha256" "$out/corpus/migration-patched.sha256"
+    for label in reference-a reference-b patched-a patched-b patched-restored; do
+      cp "$TMPDIR/migration-$label.bin" "$out/corpus/migration-$label.bin"
+      cp "$TMPDIR/migration-$label.sha256" "$out/corpus/migration-$label.sha256"
+    done
+    cp "$TMPDIR/migration-parser-tests.log" "$out/corpus/migration-parser-tests.log"
+    cp "$TMPDIR/migration-projection.result" "$out/corpus/migration-projection.result"
 
     cat > "$out/result" <<'RESULT'
     PASS
@@ -1043,9 +1094,14 @@
     qmp_introspection_surface_identical_after_control_extension=true
     qmp_crucible_control_extension=crucible-complete-terminal-lifecycle
     qmp_crucible_control_extension_sim_off_rejected_without_run_state_change=true
-    migration_stream_identical=true
-    upstream_equivalent_corpus=boot,device-io,virtio-rng-execution-output,qmp,migration
+    migration_legacy_projection_identical=true
+    migration_exact_ps_pit_subsection_authenticated=true
+    migration_same_binary_repeats_identical=true
+    migration_patched_restore_resave_identical=true
+    migration_patched_restore_preserved_nonzero_pit_phase=true
+    upstream_equivalent_corpus=boot,device-io,virtio-rng-execution-output,qmp,migration-legacy-projection
     RESULT
+    cat "$TMPDIR/migration-projection.result" >> "$out/result"
   '';
   authoritativeGate = pkgs.mkDerivation {
     pname = "crucible-phase2-qemu-inert";

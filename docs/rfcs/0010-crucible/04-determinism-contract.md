@@ -554,17 +554,23 @@ disposition, and (where unresolved) flagged as a spike forward-referencing
   re-gated change. *Gate:* `gate:e2e-determinism`, `gate:qemu-inert`. *Spec:*
   §4.9, forward-ref 11, 26.
 
-## 4.10 Patch inertness: determinism is opt-in, production QEMU is untouched
+## 4.10 Simulation-control inertness in ordinary TCG
 
-- **[DET-36]** Every patch-class mechanism in §4.6 MUST be *inert* unless
-  simulation mode is explicitly activated (plugin loaded + sim flags). The same
-  AOS QEMU source built without sim mode active MUST be behaviorally identical to
-  upstream ([INV-7]); a determinism mechanism MUST NOT change non-sim behavior.
-  *Gate:* `gate:qemu-inert`. *Spec:* §4.10, forward-ref 11.
+- **[DET-36]** Simulation-control mechanisms in §4.6 MUST be *inert* unless
+  simulation mode is explicitly activated (plugin loaded + sim flags). The
+  picosecond timer representation also serves ordinary TCG and MUST preserve
+  versioned exact-phase state across migration and restore. In the pinned Q35
+  sim-off corpus, it may add only the PIT exact-phase subsection; every legacy
+  migration byte MUST match pinned upstream. The checked boot, device-I/O, and
+  QMP outputs MUST also retain upstream-equivalent behavior. Ordinary-TCG timer
+  effects and migration layouts outside that corpus are not claimed to be
+  byte-identical to upstream ([INV-7]). *Gate:*
+  `gate:qemu-inert`. *Spec:* §4.10, forward-ref 11.
 
 - **[DET-37]** Each patch-class capability MUST have a component microtest that
   demonstrates its sim-mode effect. The atomic patch MUST also have a
-  pristine-QEMU attribution negative and MUST be inert out of sim mode. *Gate:* `gate:qemu-inert`.
+  pristine-QEMU attribution negative, and its simulation-control mechanisms
+  MUST be inert out of sim mode. *Gate:* `gate:qemu-inert`.
   *Spec:* §4.10, forward-ref 11.
 
 ## 4.11 Verification: run-twice-and-diff under adversarial conditions
@@ -632,7 +638,7 @@ DET-1   run(image,cmdline,seed,I) -> (S,T) is bit-identical across runs/hosts
   witnessed by the execution fingerprint (DET-29..31)
   stated as purity of reduce (DET-28) and enforced by the replay oracle (DET-41)
   verified run-twice-and-diff under adversarial host conditions (DET-38..40)
-  with QEMU mechanisms inert unless sim mode is on (DET-36..37)
+  with QEMU simulation-control mechanisms inert unless sim mode is on (DET-36..37)
 ```
 
 If `reduce` is a pure function of `(ScenarioDef, Schedule)`, then reproduction is
@@ -760,15 +766,17 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   proving black-box operation remains functional when that optional host/plugin
   channel is enabled but unused. This completion does not claim live any-guest
   white-box-on QEMU fingerprint equivalence.
-- [x] **T-DET-23** Implement `gate:qemu-inert`: prove the atomic integration
-  patch is inert out of sim mode (production QEMU behaviorally identical to
-  upstream) and effective in sim mode, with focused component microtests. — satisfies [DET-36], [DET-37], routes
+- [x] **T-DET-23** Implement `gate:qemu-inert`: prove simulation control is
+  inert out of sim mode, with strict upstream comparisons over the checked
+  corpus and focused component microtests for sim-mode effects. — satisfies [DET-36], [DET-37], routes
   [INV-7]; spec §4.10.
   - Completed by `checks.crucible.phase2.gates.qemuInert` plus
     `checks.crucible.phase2.gates.patchMicrotests`. The former compares the
     unpatched pinned QEMU with patched sim-off QEMU over raw boot serial,
-    device-I/O execution output, QMP, migration, and snapshot/restore surfaces;
-    the latter exercises every capability task and provides one pristine-QEMU
+    device-I/O execution output, QMP, and migration's byte-identical legacy
+    projection. Migration permits only the authenticated picosecond PIT
+    subsection; same-binary repeats and restore/resave remain byte-identical.
+    The latter exercises every capability task and provides one pristine-QEMU
     attribution negative for the atomic patch. The async virtio-rng delivery-timing
     residual is closed structurally by `phase2-qemu-rng-delivery-inert.nix`,
     which proves the sim-off delivery path byte-identical to the reference.
