@@ -120,10 +120,16 @@ def fixtures(gcc, clang, rustc):
             yield Fixture("clang-compilation-database", compiler,
                           base + ["-MJ", "compile.json"], c_sources,
                           cacheable=False)
-            yield Fixture("clang-wp-mixed-md", compiler,
-                          base + ["-Wp,-MD,forwarded.d,-DUNUSED=1",
-                                  "-frandom-seed=clang-wp-mixed-md"], c_sources,
-                          {"value.h": "#define VALUE 73\n"}, cacheable=False)
+            for suffix, flags in [
+                ("md", ["-Wp,-MD,forwarded.d,-DUNUSED=1"]),
+                ("mmd", ["-Wp,-MMD,forwarded.d,-DUNUSED=1"]),
+                ("mf", ["-Wp,-MD,forwarded.d,-DUNUSED=1", "-MF", "driver.d"]),
+                ("mf-before", ["-MF", "driver.d", "-Wp,-MD,forwarded.d,-DUNUSED=1"]),
+            ]:
+                fixture = "clang-wp-mixed-" + suffix
+                yield Fixture(fixture, compiler,
+                              base + flags + ["-frandom-seed=" + fixture], c_sources,
+                              {"value.h": "#define VALUE 73\n"})
             yield Fixture("clang-external-assembler-depfile", compiler,
                           base + ["-pipe", "-fno-integrated-as", "-Wa,--MD,asm.d",
                                   "-frandom-seed=external-assembler-depfile"], c_sources,
@@ -3684,6 +3690,13 @@ def check_clang_llvm_file_inputs(root, env, accache, sccache, clang, hits):
         ("clang-llvm-attrs-joined", ["-mllvm=-forceattrs-csv-path=attrs.csv"]),
         ("clang-llvm-attrs-value-separated",
          ["-mllvm", "-forceattrs-csv-path", "-mllvm", "attrs.csv"]),
+        ("clang-llvm-attrs-xclang",
+         ["-Xclang", "-mllvm", "-Xclang", "-forceattrs-csv-path=attrs.csv"]),
+        ("clang-llvm-attrs-xclang-value-separated",
+         ["-Xclang", "-mllvm", "-Xclang", "-forceattrs-csv-path",
+          "-Xclang", "-mllvm", "-Xclang", "attrs.csv"]),
+        ("clang-llvm-attrs-xclang-joined",
+         ["-Xclang=-mllvm", "-Xclang=-forceattrs-csv-path=attrs.csv"]),
     ]:
         work = root / fixture
         work.mkdir()
@@ -3736,6 +3749,47 @@ def check_clang_llvm_file_inputs(root, env, accache, sccache, clang, hits):
                             "artifacts": ["source.o", "source.d"]})
 
         print("PASS oracle", fixture, "LLVM file invalidation", flush=True)
+    return results
+
+
+def check_clang_llvm_xclang_mixed_passthrough(root, env, accache, sccache, clang, hits):
+    """Preserve Clang's accepted spelling when sccache cannot parse it."""
+    fixture = "clang-llvm-attrs-xclang-mixed"
+    work = root / fixture
+    work.mkdir()
+    (work / "source.c").write_text(
+        "int answer(int x) { return x > 100 ? x * 3 : x + 2; }\n")
+    attrs = work / "attrs.csv"
+    object_file = work / "source.o"
+    args = [clang, "-O2", "-c", "source.c", "-o", "source.o",
+            "-Xclang", "-mllvm", "-Xclang=-forceattrs-csv-path=attrs.csv"]
+
+    def compile_object(wrapper):
+        object_file.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+        return (completed.stdout, completed.stderr, object_file.read_bytes())
+
+    results = []
+    for revision, contents in enumerate(["answer,noinline\n", "answer,optnone\n"]):
+        attrs.write_text(contents)
+        direct = compile_object([])
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert compile_object([sccache]) == direct
+        assert hits() == before_hits, "sccache unexpectedly cached mixed -Xclang"
+
+        for _ in range(2):
+            assert compile_object([accache]) == direct
+            event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert (event["outcome"] == "bypass"
+                    and "argument parse" in event["reason"]), event
+        results.append({"fixture": fixture, "revision": revision,
+                        "oracle_hit": False, "accache": "bypass",
+                        "artifacts": ["source.o"]})
+
+    print("PASS oracle", fixture, "frontend passthrough", flush=True)
     return results
 
 
@@ -4081,6 +4135,9 @@ def check_clang_llvm_report_passthrough(root, env, accache, sccache, clang, hits
         ("clang-llvm-ir-dump",
          ["-mllvm", "-print-after=instcombine",
           "-mllvm", "-ir-dump-directory=dumps"], True),
+        ("clang-llvm-xclang-ir-dump",
+         ["-Xclang", "-mllvm", "-Xclang", "-print-after=instcombine",
+          "-Xclang", "-mllvm", "-Xclang", "-ir-dump-directory=dumps"], True),
         ("clang-llvm-unknown-report",
          ["-mllvm=-debug-pass=Structure"], False),
     ]:
@@ -5145,10 +5202,6 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                         assert (warm_event["outcome"] == "bypass"
                                 and reason in warm_event["reason"]), (
                             fixture.name, warm_event)
-                    if fixture.name == "clang-wp-mixed-md":
-                        assert (warm_event["outcome"] == "bypass"
-                                and "Clang mixed -Wp dependency output" in warm_event["reason"]), (
-                            fixture.name, warm_event)
                 results.append({"fixture": fixture.name, "revision": revision,
                                 "oracle_hit": oracle_hit, "accache": warm_event["outcome"],
                                 "oracle_missing_artifacts": sorted(set(baseline[3]) - set(oracle_warm[3])),
@@ -5251,6 +5304,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
             root, env, accache, sccache, clang, hits))
         results.extend(check_clang_llvm_file_inputs(root, env, accache,
                                                     sccache, clang, hits))
+        results.extend(check_clang_llvm_xclang_mixed_passthrough(
+            root, env, accache, sccache, clang, hits))
         results.extend(check_llvm_manifest_contracts(root, env, accache,
                                                      sccache, clang, rustc, hits))
         results.extend(check_llvm_scalar_tuning(root, env, accache,

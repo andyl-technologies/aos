@@ -214,7 +214,8 @@ reuse an earlier action under different assumptions.
 Clang's `-mllvm` options use the same classification. Identified file inputs
 are fingerprinted, so editing a function-attribute CSV invalidates an object;
 report and unknown options run directly through Clang. The oracle covers both
-the separated and joined `-mllvm` spellings and a live pass report.
+the separated and joined `-mllvm` spellings, cc1 forwarding through
+`-Xclang -mllvm -Xclang`, and a live pass report.
 Host-only CUDA and HIP actions in the AOS Clang also cache objects and depfiles
 and invalidate after header edits. This Clang cannot generate NVPTX device
 objects and its HIP device path fails in LLVM option parsing, so GPU device
@@ -286,7 +287,8 @@ and restores that actual file and invalidates it after a header edit. Pinned
 sccache fails publication with an explicit `-MF`; with implicit `-MD` or `-MMD`
 it warm-hits but omits the cc1 depfile.
 Clang `-Wp` requests that mix a dependency output with other forwarded CPP
-options bypass because the driver does not consistently use the forwarded path.
+options restore the actual depfile. The driver writes it beside the object, or
+to its explicit `-MF` destination, and ignores the path in the `-Wp` payload.
 Rust `-Csave-temps=yes` stores files inside randomly named `rmeta*` and `rustc*`
 directories as well as top-level bitcode and object files. All wrapped Rust
 compilers using one accache state directory take a shared lock for their output
