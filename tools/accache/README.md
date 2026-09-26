@@ -114,6 +114,10 @@ extracted into [frontend](frontend/UPSTREAM.md). Cacheable Rust invocations
 with nested response files expand those files before execution, matching
 sccache's frontend even though direct rustc rejects them. Every referenced
 response file is fingerprinted so an inner edit invalidates the action.
+Rust `-Zshell-argfiles @shell:path` also accepts quoted arguments. Accache
+fingerprints the shell argfile, restores supported library outputs on warm
+hits, and rebuilds when its contents change. Literal nested `@` arguments
+inside shell argfiles run directly through rustc.
 Other compiler arguments are passed unchanged. Unsupported invocations run
 the compiler and record a bypass reason. Non-UTF-8 arguments also run unchanged.
 

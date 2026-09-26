@@ -22,7 +22,7 @@ in
     sharedBuildCache = false;
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-kwgLJicESOaTdXAr1zlwHV4lTQX4LwnhjVpuRhECc9k=";
+      hash = "sha256-Z6Aeg4JVtgcBX2pC3vGMYMYn6OJA8irBBpRz/isDFuQ=";
     };
     doCheck = true;
     cargoTestFlags = "--workspace";

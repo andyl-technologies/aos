@@ -118,6 +118,7 @@ pub fn classify(
         kind == "rust",
         &mut invocation.extra_inputs,
         &mut BTreeSet::new(),
+        &mut RustArgfileFlags::default(),
         0,
     )?;
     if kind == "rust" && nested_response {
@@ -505,17 +506,61 @@ fn has_assembler_file_directive(bytes: &[u8]) -> bool {
         })
 }
 
+#[derive(Default)]
+struct RustArgfileFlags {
+    shell_argfiles: bool,
+    next_is_unstable_option: bool,
+}
+
+impl RustArgfileFlags {
+    fn observe(&mut self, argument: &str) {
+        if self.next_is_unstable_option {
+            self.shell_argfiles |= argument == "shell-argfiles";
+            self.next_is_unstable_option = false;
+        } else if argument == "-Z" {
+            self.next_is_unstable_option = true;
+        } else {
+            self.shell_argfiles |= argument == "-Zshell-argfiles";
+        }
+    }
+}
+
 fn response_inputs(
     args: &[String],
     rust: bool,
     inputs: &mut BTreeSet<PathBuf>,
     active: &mut BTreeSet<PathBuf>,
+    rust_flags: &mut RustArgfileFlags,
     depth: usize,
 ) -> Result<(Vec<String>, bool)> {
     ensure!(depth < 64, "response-file nesting limit exceeded");
     let mut expanded = Vec::new();
     let mut nested_response = false;
     for arg in args {
+        if rust
+            && rust_flags.shell_argfiles
+            && let Some(path) = arg.strip_prefix("@shell:")
+        {
+            // rustc treats tokens from any argfile as literal. Restrict the
+            // shell form to the top level so sccache's recursive expansion
+            // of ordinary @files cannot change that execution contract.
+            ensure!(depth == 0, "nested Rust shell argfile needs direct compilation");
+            let path = PathBuf::from(path);
+            inputs.insert(path.clone());
+            let data = fs::read_to_string(&path)?;
+            let arguments = accache_frontend::compiler::rust::split_rust_shell_response_file_args(&data)
+                .ok_or_else(|| anyhow::anyhow!("invalid Rust shell argfile quoting"))?;
+            let arguments = strings(arguments)?;
+            ensure!(
+                !arguments.iter().any(|argument| argument.starts_with('@')),
+                "literal @ argument in Rust shell argfile needs direct compilation"
+            );
+            for argument in arguments {
+                rust_flags.observe(&argument);
+                expanded.push(argument);
+            }
+            continue;
+        }
         if let Some(path) = arg.strip_prefix('@') {
             let path = PathBuf::from(path);
             let canonical = path.canonicalize()?;
@@ -530,11 +575,14 @@ fn response_inputs(
                 accache_frontend::compiler::gcc::split_gnu_response_file_args(&data)
             };
             let (contents, nested_in_contents) =
-                response_inputs(&strings(nested)?, rust, inputs, active, depth + 1)?;
+                response_inputs(&strings(nested)?, rust, inputs, active, rust_flags, depth + 1)?;
             expanded.extend(contents);
             nested_response |= depth > 0 || nested_in_contents;
             active.remove(&canonical);
         } else {
+            if rust {
+                rust_flags.observe(arg);
+            }
             expanded.push(arg.clone());
         }
     }

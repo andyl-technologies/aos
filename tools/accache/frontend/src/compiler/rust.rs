@@ -426,17 +426,52 @@ pub fn split_rust_response_file_args(contents: &str) -> Vec<OsString> {
         .collect()
 }
 
+/// Splits a rustc `@shell:path` file using its opt-in POSIX quoting rules.
+pub fn split_rust_shell_response_file_args(contents: &str) -> Option<Vec<OsString>> {
+    shlex::split(contents).map(|args| args.into_iter().map(OsString::from).collect())
+}
+
+struct ResponseArgument {
+    value: OsString,
+    literal: bool,
+}
+
 pub struct ExpandResponseFile<'a> {
     cwd: &'a Path,
-    stack: Vec<OsString>,
+    stack: Vec<ResponseArgument>,
+    shell_argfiles: bool,
+    next_is_unstable_option: bool,
 }
 
 impl<'a> ExpandResponseFile<'a> {
     pub fn new(cwd: &'a Path, args: &[OsString]) -> Self {
         ExpandResponseFile {
-            stack: args.iter().rev().map(|a| a.to_owned()).collect(),
+            stack: args.iter().rev().map(|arg| ResponseArgument {
+                value: arg.to_owned(),
+                literal: false,
+            }).collect(),
             cwd,
+            shell_argfiles: false,
+            next_is_unstable_option: false,
         }
+    }
+
+    fn observed_argument(&mut self, arg: OsString) -> OsString {
+        // rustc enables shell argfiles when it encounters this unstable flag,
+        // so the flag must precede the @shell:path that uses it.
+        if let Some(option) = arg.to_str() {
+            if self.next_is_unstable_option {
+                self.shell_argfiles |= option == "shell-argfiles";
+                self.next_is_unstable_option = false;
+            } else if option == "-Z" {
+                self.next_is_unstable_option = true;
+            } else {
+                self.shell_argfiles |= option == "-Zshell-argfiles";
+            }
+        } else {
+            self.next_is_unstable_option = false;
+        }
+        arg
     }
 }
 
@@ -445,12 +480,40 @@ impl Iterator for ExpandResponseFile<'_> {
 
     fn next(&mut self) -> Option<OsString> {
         loop {
-            let arg = self.stack.pop()?;
-            let file = match arg.split_prefix("@") {
-                Some(arg) => self.cwd.join(arg),
-                None => return Some(arg),
+            let ResponseArgument { value: arg, literal } = self.stack.pop()?;
+            if literal {
+                return Some(self.observed_argument(arg));
+            }
+            let path = match arg.split_prefix("@") {
+                Some(path) => path,
+                None => return Some(self.observed_argument(arg)),
             };
 
+            if self.shell_argfiles
+                && let Some(path) = arg.to_str().and_then(|text| text.strip_prefix("@shell:"))
+            {
+                let shell_file = self.cwd.join(path);
+                let contents = match fs::read_to_string(&shell_file) {
+                    Ok(contents) => contents,
+                    Err(error) => {
+                        debug!("failed to read @shell-file `{}`: {}", shell_file.display(), error);
+                        return Some(self.observed_argument(arg));
+                    }
+                };
+                let Some(arguments) = split_rust_shell_response_file_args(&contents) else {
+                    debug!("failed to parse @shell-file `{}`", shell_file.display());
+                    return Some(self.observed_argument(arg));
+                };
+                // rustc does not recursively expand @file tokens produced by
+                // an argfile. Keep those tokens literal in the execution argv.
+                self.stack.extend(arguments.into_iter().rev().map(|arg| ResponseArgument {
+                    value: arg,
+                    literal: true,
+                }));
+                continue;
+            }
+
+            let file = self.cwd.join(path);
             let mut contents = String::new();
             let res = fs::File::open(&file)
                 .and_then(|f| BufReader::new(f).read_to_string(&mut contents));
@@ -459,7 +522,10 @@ impl Iterator for ExpandResponseFile<'_> {
                 return Some(arg);
             }
             let new_args = split_rust_response_file_args(&contents);
-            self.stack.extend(new_args.into_iter().rev());
+            self.stack.extend(new_args.into_iter().rev().map(|arg| ResponseArgument {
+                value: arg,
+                literal: false,
+            }));
         }
     }
 }
@@ -1227,6 +1293,32 @@ use std::io::{self,Write};
         assert_eq!(parsed.output_dir.to_str(), Some("out"));
         assert!(parsed.dep_info.is_some());
         assert!(parsed.externs.is_empty());
+    }
+
+
+    #[test]
+    fn test_parse_shell_argfile_with_quoted_path() {
+        let td = tempfile::tempdir().unwrap();
+        File::create(td.path().join("args"))
+            .unwrap()
+            .write_all(b"--emit link,dep-info --crate-name example --crate-type lib --out-dir 'target files' foo.rs\n")
+            .unwrap();
+        let shell_file = OsString::from(format!("@shell:{}", td.path().join("args").display()));
+
+        for flags in [ovec!["-Zshell-argfiles"], ovec!["-Z", "shell-argfiles"]] {
+            let mut arguments = flags;
+            arguments.push(shell_file.clone());
+            let expanded: Vec<_> = ExpandResponseFile::new(td.path(), &arguments).collect();
+            assert!(expanded.contains(&OsString::from("target files")));
+
+            let result = parse_arguments(&arguments, td.path());
+            let parsed = match result {
+                CompilerArguments::Ok(args) => args,
+                other => panic!("Got unexpected parse result: {other:?}"),
+            };
+            assert_eq!(parsed.output_dir, PathBuf::from("target files"));
+            assert!(parsed.dep_info.is_some());
+        }
     }
 
 

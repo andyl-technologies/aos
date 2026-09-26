@@ -27,6 +27,11 @@ The Nix check also compares the extracted argument tables with the pinned
 source tarball: all 86 GCC, 100 Clang, and 37 Rust entries must match after
 ignoring only comments and formatting.
 
+Accache extends the extracted Rust response iterator for rustc's
+`-Zshell-argfiles @shell:path` syntax. The argument tables remain pinned;
+the extension uses POSIX quoting and leaves `@` tokens from a shell argfile
+literal, as rustc does. Pinned sccache does not parse this form for caching.
+
 ## Updating
 
 Update this revision and `tests/build/accache/sccache-oracle.nix` together.
