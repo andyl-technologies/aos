@@ -128,6 +128,11 @@ pub(crate) mod execution_argument_observe;
 pub(crate) mod execution_capture_candidate;
 mod execution_output_effect;
 pub(crate) mod execution_output_reserve;
+#[allow(
+    dead_code,
+    reason = "Storage output reserve is signed but awaits same-session Host proof and closed dispatch"
+)]
+mod execution_output_storage_reserve;
 mod guest_root;
 mod public_api;
 mod public_attach;

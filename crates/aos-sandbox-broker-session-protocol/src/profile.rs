@@ -81,7 +81,7 @@ const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDis
 ///
 /// Registration is not production advertisement. Closed provisional carriers
 /// remain excluded until their protected issuers and Host owners are joined.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 43] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 44] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -125,6 +125,7 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 43] = [
     BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2,
     BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1,
+    BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -157,6 +158,7 @@ pub fn authenticated_broker_methods_for_role_v1(
                     | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
                     | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+                    | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
             )
         })
         .filter(|method| {
@@ -459,7 +461,10 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => {
             BrokerSessionProtocolV1::Network
         }
-        BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
+        // The Storage method remains unnegotiable until its same-session Host
+        // proof and protected writer admission are implemented.
+        BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
     let (major, minor) = supported_broker_session_version_v1(protocol);
     let audience = if matches!(
@@ -1052,6 +1057,20 @@ mod tests {
     use super::*;
 
     const RESPONSE_MAXIMUM: u32 = 65_536;
+
+    #[test]
+    fn storage_output_reserve_remains_unnegotiable() {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT;
+        let audience = Audience::AUDIENCE_NODE_CONTROLLER;
+        let protocol = BrokerSessionProtocolV1::Storage;
+
+        assert!(authenticated_broker_method_profile_v1(method).is_none());
+        assert!(!authenticated_broker_methods_for_role_v1(protocol, audience).contains(&method));
+
+        let client = production_broker_client_hello_v1(protocol, audience, RESPONSE_MAXIMUM)
+            .expect("existing Storage hello remains available");
+        assert!(!client.required_methods.contains(&method.into()));
+    }
 
     #[test]
     fn mount_fuse_three_has_no_advertisable_methods_or_legacy_downgrade() {

@@ -56,6 +56,7 @@ BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 = 42;
 BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 = 43;
 BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1 = 44;
 BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 = 45;
+BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT = 46;
 message ReserveFuseWorkerIntentRequestV1 {
 RequestHeader header = 1;
 AssignmentFence fence = 2;
@@ -164,6 +165,10 @@ bytes original_plan_digest = 10;
 bytes original_semantic_request_digest = 11;
 bytes host_correlation_record_digest = 12;
 uint64 original_host_journal_sequence = 13;
+message ReserveStorageExecutionOutputRequestV1 {
+RequestHeader header = 1;
+bytes canonical_controller_attempt = 2;
+bytes canonical_controller_settlement = 3;
 message ObserveConsumerCgroupRequestV1 {
 RequestHeader header = 1;
 AssignmentFence fence = 2;

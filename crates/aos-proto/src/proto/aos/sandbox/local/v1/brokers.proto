@@ -111,6 +111,8 @@ enum BrokerMethod {
   BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1 = 44;
   // Closed Host-origin namespace readback, distinct from Host 1.0 MountScope.
   BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 = 45;
+  // Closed Storage logical output reserve; no production hello advertises it.
+  BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT = 46;
 }
 
 // FUSE 3.0 Controller intent candidate. These fields become authority only
@@ -385,6 +387,15 @@ message HostExecutionOutputReservationV1 {
   bytes original_semantic_request_digest = 11;
   bytes host_correlation_record_digest = 12; // Protected AOSHOP01 SHA-256.
   uint64 original_host_journal_sequence = 13;
+}
+
+// The Storage-audience plan binds this complete original Controller attempt
+// and settled Host receipt. Their checksums are structural only; Storage must
+// obtain a same-session authenticated Host readback before AOSEOR03 mutation.
+message ReserveStorageExecutionOutputRequestV1 {
+  RequestHeader header = 1;
+  bytes canonical_controller_attempt = 2; // Exact 816-byte AOSCIA01.
+  bytes canonical_controller_settlement = 3; // Exact 208-byte AOSCIS01.
 }
 
 // AOSSCG01 is a structural, 512-byte Storage capture source. It embeds the
