@@ -95,6 +95,9 @@
   nettyHttp2Repositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelNettyHttp2119;
   };
+  modernAnnotationRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelMavenModernAnnotations;
+  };
   protobufJava = helperScope.bazelProtobufJava;
   protobufJavaUtil = helperScope.bazelProtobufJavaUtil;
   grpcJavaPlugin =
@@ -167,6 +170,7 @@ in
     passthru.offlineGoogleAuthRepositories = googleAuthRepositories;
     passthru.offlineGoogleHttpModernRepositories = googleHttpModernRepositories;
     passthru.offlineNettyHttp2Repositories = nettyHttp2Repositories;
+    passthru.offlineModernAnnotationRepositories = modernAnnotationRepositories;
     passthru.offlineRepositories =
       mavenSourceRepositories
       // googleHttpRepositories
@@ -174,6 +178,7 @@ in
       // googleAuthRepositories
       // googleHttpModernRepositories
       // nettyHttp2Repositories
+      // modernAnnotationRepositories
       // {platforms = helperScope.bazelPlatformsSource;}
       // helperScope.bazelAsyncProfilerRepositories
       // helperScope.bazelNetty119.repositories
