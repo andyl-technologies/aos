@@ -524,6 +524,16 @@ def check_rust_diagnostic_passthrough(root, env, accache, sccache, rustc, hits):
         ("dump-mir", "-Zdump-mir=SimplifyCfg", "mir_dump/*.mir"),
         ("metrics-dir", "-Zmetrics-dir=metrics", "metrics/*.json"),
         ("nll-facts", "-Znll-facts=yes", "nll-facts/*/*.facts"),
+        ("dump-mono-stats", "-Zdump-mono-stats", "*.mono_items.md"),
+        ("profile-closures", "-Zprofile-closures", "closure_profile_*.csv"),
+        ("print-codegen-stats-json", "-Zprint-codegen-stats-json=stats.json", "stats.json"),
+        ("remark-dir", ["-Zremark-dir=remarks", "-Cremark=all",
+                        "-Copt-level=3", "-Cdebuginfo=1"], "remarks/*.yaml"),
+        ("split-dwarf-out-dir", ["-Zsplit-dwarf-out-dir=split-debug",
+                                 "-Csplit-debuginfo=unpacked", "-Cdebuginfo=2"],
+         "split-debug/*.dwo"),
+        ("temps-dir", ["-Ztemps-dir=temporaries", "-Csave-temps=yes"],
+         "temporaries/*.o"),
     ]
     for name, flag, side_pattern in cases:
         work = root / f"rust-{name}"
@@ -531,9 +541,15 @@ def check_rust_diagnostic_passthrough(root, env, accache, sccache, rustc, hits):
         (work / "target").mkdir()
         (work / "profiles").mkdir()
         (work / "metrics").mkdir()
-        (work / "library.rs").write_text("pub fn answer() -> u32 { 42 }\n")
+        (work / "remarks").mkdir()
+        (work / "split-debug").mkdir()
+        (work / "temporaries").mkdir()
+        (work / "library.rs").write_text(
+            "#[inline(always)] pub fn helper(x: u32) -> u32 { x + 1 }\n"
+            "pub fn answer() -> u32 { let f = |x| helper(x); f(41) }\n")
+        flags = flag if isinstance(flag, list) else [flag]
         args = [rustc, "--crate-name=example", "--crate-type=rlib", "--emit=link,dep-info",
-                "--out-dir=target", "library.rs", "-Cmetadata=oracle-" + name, flag]
+                "--out-dir=target", "library.rs", "-Cmetadata=oracle-" + name, *flags]
 
         def compile_library(wrapper):
             for path in work.rglob("*"):
@@ -551,7 +567,8 @@ def check_rust_diagnostic_passthrough(root, env, accache, sccache, rustc, hits):
         direct = compile_library([])
         assert {"target/libexample.rlib", "target/example.d"}.issubset(direct[1]), name
         if side_pattern:
-            assert direct[2] and any(direct[1][path][0] for path in direct[2]), (name, direct[2])
+            assert (direct[2] and (name == "remark-dir"
+                    or any(direct[1][path][0] for path in direct[2]))), (name, direct[2])
         else:
             assert b"parse_crate" in direct[0].stderr, name
 
@@ -567,7 +584,8 @@ def check_rust_diagnostic_passthrough(root, env, accache, sccache, rustc, hits):
                     and actual[1]["target/example.d"] == direct[1]["target/example.d"]), (
                 name, attempt, actual[1])
             if side_pattern:
-                assert actual[2] and any(actual[1][path][0] for path in actual[2]), (
+                assert (actual[2] and (name == "remark-dir"
+                        or any(actual[1][path][0] for path in actual[2]))), (
                     name, attempt, actual[2])
             else:
                 assert b"parse_crate" in actual[0].stderr, (name, attempt, actual[0].stderr)
@@ -1111,6 +1129,131 @@ def check_rust_profile_use(root, env, accache, sccache, rustc, clang, hits):
     return results
 
 
+def check_rust_sample_profile_use(root, env, accache, sccache, rustc, hits):
+    """Hash the contents of Rust's unstable sample profile input."""
+    results = []
+    rust_env = env | {"RUSTC_BOOTSTRAP": "1"}
+    for spelling, flag in [
+        ("joined", ["-Zprofile-sample-use=sample.prof"]),
+        ("separated", ["-Z", "profile-sample-use=sample.prof"]),
+    ]:
+        name = "rust-sample-profile-use-" + spelling
+        work = root / name
+        work.mkdir()
+        (work / "target").mkdir()
+        (work / "library.rs").write_text("pub fn answer() -> u32 { 42 }\n")
+        profile = work / "sample.prof"
+        args = [rustc, "--crate-name=example", "--crate-type=rlib",
+                "--emit=link,dep-info", "--out-dir=target", "library.rs",
+                "-Cmetadata=" + name, *flag]
+
+        def compile_library(wrapper):
+            for path in [work / "target/libexample.rlib", work / "target/example.d"]:
+                path.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=rust_env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (name, wrapper, completed.stderr)
+            return (completed.stdout, completed.stderr,
+                    (work / "target/libexample.rlib").read_bytes(),
+                    (work / "target/example.d").read_bytes())
+
+        for revision, samples in enumerate([100, 200]):
+            profile.write_text(f"foo:{samples}:0\n 1: {samples}\n")
+            direct = compile_library([])
+
+            before_cold_hits = hits()
+            assert compile_library([sccache]) == direct, (name, revision)
+            assert hits() == before_cold_hits, (
+                name, revision, "sccache ignored the changed sample profile")
+            before_hits = hits()
+            assert compile_library([sccache]) == direct, (name, revision)
+            assert hits() > before_hits, (name, revision, "sccache did not hit")
+
+            assert compile_library([accache]) == direct, (name, revision, "cold")
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+            assert cold["outcome"] == "miss", (name, revision, cold)
+            if revision:
+                assert any("sample.prof" in item for item in cold["changes"]), cold
+            assert compile_library([accache]) == direct, (name, revision, "warm")
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+            assert warm["outcome"] == "hit", (name, revision, warm)
+
+            results.append({"fixture": name, "revision": revision,
+                            "oracle_hit": True, "accache": "hit",
+                            "oracle_profile_input_tracked": True,
+                            "artifacts": ["target/example.d", "target/libexample.rlib"]})
+
+        print("PASS oracle", name, "profile invalidation", flush=True)
+
+    return results
+
+
+def check_rust_sanitizer_abilist(root, env, accache, sccache, rustc, hits):
+    """Invalidate a Rust dataflow sanitizer ABI list omitted from dep-info."""
+    work = root / "rust-sanitizer-abilist"
+    work.mkdir()
+    (work / "target").mkdir()
+    (work / "library.rs").write_text(
+        '#[no_mangle] pub extern "C" fn answer(x: u32) -> u32 { x + 42 }\n')
+    abilist = work / "abi.txt"
+    rust_env = env | {"RUSTC_BOOTSTRAP": "1"}
+    args = [rustc, "--crate-name=example", "--crate-type=rlib",
+            "--emit=link,dep-info", "--out-dir=target", "library.rs",
+            "-Zsanitizer=dataflow", "-Zsanitizer-dataflow-abilist=abi.txt",
+            "-Cunsafe-allow-abi-mismatch=sanitizer"]
+
+    def compile_library(wrapper):
+        output = work / "target/libexample.rlib"
+        depfile = work / "target/example.d"
+        output.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=rust_env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        return (completed.stdout, completed.stderr,
+                output.read_bytes(), depfile.read_bytes())
+
+    results = []
+    previous = None
+    for revision, contents in enumerate(["fun:answer=uninstrumented\n", ""]):
+        abilist.write_text(contents)
+        direct = compile_library([])
+        assert b"abi.txt" not in direct[3], "rustc started tracking ABI lists in dep-info"
+        if previous is not None:
+            assert direct[2] != previous[2], "ABI list did not change the object"
+
+        before_hits = hits()
+        oracle = compile_library([sccache])
+        if revision == 0:
+            assert oracle == direct, "sccache cold result differs"
+            assert hits() == before_hits, "sccache had an unexpected ABI-list hit"
+            before_hits = hits()
+            assert compile_library([sccache]) == direct
+            assert hits() > before_hits, "sccache did not hit the ABI-list action"
+        else:
+            assert hits() > before_hits, "sccache unexpectedly invalidated the ABI list"
+            assert oracle[2] == previous[2] and oracle[2] != direct[2], (
+                "sccache did not replay the stale object", oracle[2], direct[2])
+
+        assert compile_library([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+        assert cold["outcome"] == "miss", cold
+        if revision:
+            assert any("abi.txt" in item for item in cold["changes"]), cold
+        assert compile_library([accache]) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+        assert warm["outcome"] == "hit", warm
+
+        results.append({"fixture": "rust-sanitizer-abilist", "revision": revision,
+                        "oracle_hit": True, "accache": "hit",
+                        "oracle_stale_artifact": revision == 1,
+                        "artifacts": ["target/example.d", "target/libexample.rlib"]})
+        previous = direct
+
+    print("PASS oracle Rust sanitizer ABI-list invalidation", flush=True)
+    return results
+
+
 def check_unpacked_split_debug(root, env, accache, sccache, rustc, hits, crate_type):
     """Restore every rustc .dwo file omitted by pinned sccache warm hits."""
     fixture = f"rust-{crate_type}-unpacked-split-debug"
@@ -1496,6 +1639,10 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                clang, hits))
         results.extend(check_rust_profile_use(root, env, accache, sccache,
                                               rustc, clang, hits))
+        results.extend(check_rust_sample_profile_use(root, env, accache,
+                                                     sccache, rustc, hits))
+        results.extend(check_rust_sanitizer_abilist(root, env, accache,
+                                                   sccache, rustc, hits))
         for crate_type in ["rlib", "staticlib"]:
             results.extend(check_unpacked_split_debug(root, env, accache, sccache,
                                                       rustc, hits, crate_type))

@@ -116,10 +116,14 @@ records. Joined GCC `-d` debug dumps are included. Rust coverage includes
 nonincremental rlib/staticlib, metadata, dep-info, unpacked split debug
 `.dwo` files, and `-Csave-temps=yes` bitcode, object, and saved metadata files.
 Rust extern/native dependencies and proc macro consumers are covered by the
-input contract above.
-Unstable Rust diagnostic modes that write profiling data, MIR or NLL dumps,
-metrics, LLVM traces, or live timing reports bypass the cache so each invocation
-produces its own report.
+input contract above. Rust's unstable sample-profile and dataflow-sanitizer ABI
+list inputs are fingerprinted; editing either invalidates the action.
+Unstable Rust modes that write profiling data, MIR or NLL dumps, monomorphization
+statistics, closure reports, metrics, LLVM traces, codegen statistics,
+optimization remarks, or live timing reports bypass the cache so each
+invocation produces its own report. Alternate split-debug and temporary-file
+directories also bypass because their side files fall outside the ordinary
+output directory.
 GNU assembler `--MD` output forwarded through `-Wa` or `-Xassembler` is
 tracked for GCC and Clang with an external assembler. Clang's generated
 assembly path can make that depfile nondeterministic; a warm hit restores the
@@ -269,6 +273,9 @@ misses and names the changed binary input.
 Clang and Rust profile cases generate two real instrumentation profiles each
 and require a miss naming the changed `.profdata` file, followed by a warm hit
 for each profile.
+The dataflow-sanitizer ABI-list case changes a file absent from rustc's dep-info.
+Pinned sccache replays the old object, while accache misses and names the
+changed list before producing the new object.
 
 The suite asserts several pinned sccache output omissions: implicit `.d` files
 on warm `-MMD` hits without `-MF`, GCC `-aux-info` files, Clang serialized
