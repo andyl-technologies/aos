@@ -280,12 +280,16 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase2-plugin-whitebox-doorbell";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
       src = crucibleSrc;
 
       buildDeps = [
+        pkgs.pkg-config
         pkgs.rust
         pkgs.sed
+        pkgs.sqlite
       ];
+      runtimeDeps = [pkgs.sqlite];
 
       phases = [
         {
