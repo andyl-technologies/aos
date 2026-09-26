@@ -166,8 +166,10 @@ sandbox and is stopped in `finally`. No developer cache/server is used.
 The suite compares direct compilation, sccache, and accache using identical
 paths, flags, working directories, and environments. It checks exit status,
 stdout, stderr, the complete generated-file inventory, executable bits, and
-artifact bytes. It deletes outputs before warm runs, asserts cache hits, and
-changes dependencies to require misses. Separate tests exercise corruption,
+artifact bytes. GCC PCH files are process-dependent: that fixture checks file
+presence and exact cold-to-warm replay in each cache, while PCH consumer objects
+still receive byte-for-byte comparisons. It deletes outputs before warm runs,
+asserts cache hits, and changes dependencies to require misses. Separate tests exercise corruption,
 concurrent identical requests, PCH/modules, native libraries, proc macro file
 reads, and persistent target paths.
 
