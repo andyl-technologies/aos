@@ -782,6 +782,7 @@ in
   mkDerivation {
     pname = "darwin-sdk";
     inherit version;
+    passBuildScriptAsFile = true;
 
     src = fetchurl {
       urls = [
