@@ -871,6 +871,10 @@
 
     builder = phasesToScript allPhases shell useStructuredAttrs;
 
+    # Linux limits each exec argument to 128 KiB. Nix writes passAsFile
+    # attributes to files while preserving the script's store references.
+    largeBuilder = builtins.stringLength builder > 120000;
+
     # Extra args to pass through to builtins.derivation
     extraArgs = builtins.removeAttrs args [
       "name"
@@ -1027,10 +1031,10 @@
           {
             inherit name system;
             builder = shell;
-            args = [
-              "-c"
-              builder
-            ];
+            args =
+              if largeBuilder
+              then ["-c" ''exec "${shell}" "$__aosBuildScriptPath"'']
+              else ["-c" builder];
             inherit outputs;
 
             # Source
@@ -1133,6 +1137,14 @@
             else {}
           )
           // extraArgs
+          // (
+            if largeBuilder
+            then {
+              __aosBuildScript = builder;
+              passAsFile = (args.passAsFile or []) ++ ["__aosBuildScript"];
+            }
+            else {}
+          )
         )
       )
     );
