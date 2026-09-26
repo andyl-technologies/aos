@@ -3452,6 +3452,124 @@ def check_clang_llvm_file_inputs(root, env, accache, sccache, clang, hits):
     return results
 
 
+def check_llvm_inline_threshold(root, env, accache, sccache, clang, rustc, hits):
+    """Cache pure LLVM tuning flags in both supported compiler frontends."""
+    results = []
+    for language, compiler in [("clang", clang), ("rust", rustc)]:
+        fixture = language + "-llvm-inline-threshold"
+        work = root / fixture
+        work.mkdir()
+        object_file = work / ("source.o" if language == "clang" else "target/libexample.rlib")
+        depfile = work / ("source.d" if language == "clang" else "target/example.d")
+        if language == "clang":
+            (work / "source.c").write_text(
+                "static int callee(int x) { int v = x; "
+                "for (int i = 0; i < 12; ++i) v = (v * 31 + i) ^ ((v << 3) + i); "
+                "return v; }\n"
+                "int answer(int x) { return callee(x) + callee(x + 1); }\n")
+            base = [compiler, "-O2", "-c", "source.c", "-o", "source.o",
+                    "-MD", "-MF", "source.d", "-frandom-seed=" + fixture]
+        else:
+            (work / "target").mkdir()
+            (work / "source.rs").write_text(
+                "#[inline] fn callee(mut x: i32) -> i32 { "
+                "for i in 0..12 { x = x.wrapping_mul(31).wrapping_add(i) "
+                "^ ((x << 3) + i); } x }\n"
+                "pub fn answer(x: i32) -> i32 { callee(x) + callee(x + 1) }\n")
+            base = [compiler, "--crate-name=example", "--crate-type=rlib",
+                    "--emit=link,dep-info", "--out-dir=target", "-Copt-level=2", "source.rs"]
+
+        def compile_object(wrapper, threshold):
+            object_file.unlink(missing_ok=True)
+            depfile.unlink(missing_ok=True)
+            option = "-mllvm=-inline-threshold=" + threshold if language == "clang" \
+                else "-Cllvm-args=-inline-threshold=" + threshold
+            completed = subprocess.run([*wrapper, *base, option], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            return (completed.stdout, completed.stderr,
+                    object_file.read_bytes(), depfile.read_bytes())
+
+        first_object = None
+        for revision, threshold in enumerate(["0", "225"]):
+            direct = compile_object([], threshold)
+            if first_object is None:
+                first_object = direct[2]
+            else:
+                assert direct[2] != first_object, (fixture, "threshold had no object effect")
+
+            before_hits = hits()
+            assert compile_object([sccache], threshold) == direct
+            assert hits() == before_hits, (fixture, revision, "sccache reused another setting")
+            assert compile_object([sccache], threshold) == direct
+            assert hits() > before_hits, (fixture, revision, "sccache did not hit")
+
+            assert compile_object([accache], threshold) == direct
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert cold["outcome"] == "miss", (fixture, revision, cold)
+            assert compile_object([accache], threshold) == direct
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert warm["outcome"] == "hit", (fixture, revision, warm)
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": True, "accache": "hit",
+                            "artifacts": [str(object_file.relative_to(work)),
+                                          str(depfile.relative_to(work))]})
+
+        print("PASS oracle", fixture, "LLVM tuning and key separation", flush=True)
+    return results
+
+
+def check_clang_llvm_path_lists(root, env, accache, sccache, clang, hits):
+    """Fingerprint CHR selection files that LLVM reads outside the depfile."""
+    results = []
+    for option in ["chr-function-list", "chr-module-list"]:
+        fixture = "clang-llvm-" + option
+        work = root / fixture
+        work.mkdir()
+        (work / "source.c").write_text(
+            "int answer(int x) { return x > 10 ? x * 3 : x + 2; }\n")
+        selection = work / "selection.txt"
+        object_file = work / "source.o"
+        depfile = work / "source.d"
+        args = [clang, "-O2", "-c", "source.c", "-o", "source.o",
+                "-MD", "-MF", "source.d", "-mllvm", f"-{option}=selection.txt"]
+
+        def compile_object(wrapper):
+            object_file.unlink(missing_ok=True)
+            depfile.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            return (completed.stdout, completed.stderr,
+                    object_file.read_bytes(), depfile.read_bytes())
+
+        for revision, contents in enumerate(["answer\n", "unrelated\n"]):
+            selection.write_text(contents)
+            direct = compile_object([])
+            assert b"selection.txt" not in direct[3], (fixture, "input in depfile")
+
+            oracle_cold = compile_object([sccache])
+            before_hits = hits()
+            assert compile_object([sccache]) == oracle_cold
+            assert hits() > before_hits, (fixture, revision, "sccache did not hit")
+
+            assert compile_object([accache]) == direct
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert cold["outcome"] == "miss", (fixture, revision, cold)
+            if revision:
+                assert any("selection.txt" in item for item in cold["changes"]), cold
+            assert compile_object([accache]) == direct
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert warm["outcome"] == "hit", (fixture, revision, warm)
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": True, "accache": "hit",
+                            "artifacts": ["source.o", "source.d"],
+                            "oracle_stale_artifact": oracle_cold != direct})
+
+        print("PASS oracle", fixture, "LLVM file invalidation", flush=True)
+    return results
+
+
 def check_clang_llvm_report_passthrough(root, env, accache, sccache, clang, hits):
     """Preserve both known dump files and less familiar live LLVM reports."""
     results = []
@@ -4619,6 +4737,10 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
             root, env, accache, sccache, clang, hits))
         results.extend(check_clang_llvm_file_inputs(root, env, accache,
                                                     sccache, clang, hits))
+        results.extend(check_llvm_inline_threshold(root, env, accache,
+                                                   sccache, clang, rustc, hits))
+        results.extend(check_clang_llvm_path_lists(root, env, accache,
+                                                  sccache, clang, hits))
         results.extend(check_clang_llvm_report_passthrough(root, env, accache,
                                                            sccache, clang, hits))
         results.extend(check_rust_native_archives(root, env, accache, sccache,

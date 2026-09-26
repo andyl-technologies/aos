@@ -56,6 +56,8 @@ pub(super) fn classify(argument: &str) -> OptionEffect<'_> {
 
     for prefix in [
         "cgscc-inline-replay=",
+        "chr-function-list=",
+        "chr-module-list=",
         "codegen-data-use-path=",
         "extract-blocks-file=",
         "forceattrs-csv-path=",
@@ -76,6 +78,12 @@ pub(super) fn classify(argument: &str) -> OptionEffect<'_> {
         if let Some(path) = argument.strip_prefix(prefix) {
             return OptionEffect::FileInput(path);
         }
+    }
+
+    if matches!(name, "inline-threshold" | "preinline-threshold") {
+        // These scalar tuning options affect generated code, and the full
+        // compiler argument remains in the action key.
+        return OptionEffect::NoFileInput;
     }
 
     OptionEffect::Unknown
