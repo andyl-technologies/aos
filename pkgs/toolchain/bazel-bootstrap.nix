@@ -110,6 +110,9 @@
   velocityRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelVelocity;
   };
+  nettyTcnativeClassesRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelNettyTcnativeClasses2061;
+  };
   protobufJava = helperScope.bazelProtobufJava;
   protobufJavaUtil = helperScope.bazelProtobufJavaUtil;
   grpcJavaPlugin =
@@ -187,6 +190,10 @@ in
     passthru.offlineNettyDnsProxyRepositories = nettyDnsProxyRepositories;
     passthru.offlineLog4jCoreRepositories = log4jCoreRepositories;
     passthru.offlineVelocityRepositories = velocityRepositories;
+    passthru.offlineNettyTcnativeClassesRepositories = nettyTcnativeClassesRepositories;
+    passthru.offlineNettyBoringssl2061 = helperScope.bazelNettyBoringssl2061;
+    passthru.offlineNettyTcnativeNative2061 = helperScope.bazelNettyTcnativeNative2061;
+    passthru.offlineNettyTcnative2061NativeRepositories = helperScope.bazelNettyTcnative2061Repositories;
     passthru.offlineRepositories =
       mavenSourceRepositories
       // googleHttpRepositories
@@ -199,6 +206,8 @@ in
       // nettyDnsProxyRepositories
       // log4jCoreRepositories
       // velocityRepositories
+      // nettyTcnativeClassesRepositories
+      // helperScope.bazelNettyTcnative2061Repositories.repositories
       // {platforms = helperScope.bazelPlatformsSource;}
       // helperScope.bazelAsyncProfilerRepositories
       // helperScope.bazelNetty119.repositories
