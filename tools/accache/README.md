@@ -308,6 +308,9 @@ profile paths; each profile revision produces different object bytes.
 Clang sanitizer cases change an ignorelist under both the current and legacy
 flag spellings. Both caches miss on the edited list, warm-hit on a repeat, and
 produce the direct compiler's changed object.
+Three XRay cases change the always-instrument, never-instrument, and attribute
+list files. Clang includes these files in its depfile; both caches miss on an
+edit and restore the changed object and depfile on a warm hit.
 A Clang pass-plugin case rebuilds an LLVM plugin at the same path with different
 code. Both caches miss on the changed plugin, warm-hit on a repeat, and produce
 the direct compiler's changed object.
