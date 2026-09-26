@@ -28,6 +28,7 @@ const ENTITLEMENT_KEY_NAME: &str = "public-api-entitlement-public-key";
 const OPERATOR_RECOVERY_KEY_NAME: &str = "operator-recovery-controller-key-v1";
 const OPERATOR_STORAGE_OWNER_KEY_NAME: &str = "operator-recovery-storage-owner-key-v1";
 const PROJECT_AUTHORIZATION_ISSUER_NAME: &str = "project-authorization-issuer-v2";
+const CONTROLLER_SOURCE_TREE_SEED_ISSUER_NAME: &str = "controller-source-tree-seed-issuer-v1";
 
 /// Retains one fixed protected credential and rejects replacement before use.
 pub(crate) struct PinnedSystemdCredential {
@@ -56,6 +57,12 @@ impl PinnedSystemdCredential {
     /// Opens the separate public project-authorization issuer pin.
     pub(crate) fn load_project_authorization_issuer_v2() -> Result<Self, PublicApiSessionError> {
         Self::load_named(PROJECT_AUTHORIZATION_ISSUER_NAME)
+    }
+
+    /// Opens the separate public Controller Source-tree seed issuer pin.
+    pub(crate) fn load_controller_source_tree_seed_issuer_v1() -> Result<Self, PublicApiSessionError>
+    {
+        Self::load_named(CONTROLLER_SOURCE_TREE_SEED_ISSUER_NAME)
     }
 
     fn load_named(name: &'static str) -> Result<Self, PublicApiSessionError> {
@@ -296,6 +303,12 @@ mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt as _, symlink};
 
+    use ed25519_dalek::SigningKey;
+
+    use crate::hierarchy::source_seed::{
+        PinnedControllerSourceTreeSeedIssuerV1, encode_controller_source_tree_seed_credential_v1,
+    };
+
     #[test]
     fn accepts_only_private_single_link_regular_credentials() {
         let directory = tempfile::tempdir().unwrap();
@@ -381,5 +394,50 @@ mod tests {
 
         assert_eq!(original, new_bytes);
         assert_ne!(original_identity, new_identity);
+    }
+
+    #[test]
+    fn source_seed_issuer_absence_malformed_bytes_and_rotation_fail_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let descriptor = open(
+            directory.path(),
+            OFlags::RDONLY | OFlags::DIRECTORY,
+            Mode::empty(),
+        )
+        .unwrap();
+        let uid = rustix::process::geteuid().as_raw();
+        let name = CONTROLLER_SOURCE_TREE_SEED_ISSUER_NAME;
+        let path = directory.path().join(name);
+
+        assert!(read_one_with_identity(&descriptor, name, uid).is_err());
+
+        std::fs::write(&path, [0; 80]).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let (malformed, _) = read_one_with_identity(&descriptor, name, uid).unwrap();
+        assert!(PinnedControllerSourceTreeSeedIssuerV1::decode(&malformed).is_err());
+
+        let key = SigningKey::from_bytes(&[41; 32]);
+        let valid =
+            encode_controller_source_tree_seed_credential_v1(7, &key.verifying_key()).unwrap();
+        let first = directory.path().join("first");
+        std::fs::write(&first, valid).unwrap();
+        std::fs::set_permissions(&first, std::fs::Permissions::from_mode(0o400)).unwrap();
+        std::fs::rename(first, &path).unwrap();
+        let (bytes, identity) = read_one_with_identity(&descriptor, name, uid).unwrap();
+        assert_eq!(
+            PinnedControllerSourceTreeSeedIssuerV1::decode(&bytes)
+                .unwrap()
+                .generation(),
+            7
+        );
+
+        let replacement = directory.path().join("replacement");
+        std::fs::write(&replacement, valid).unwrap();
+        std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o400)).unwrap();
+        std::fs::rename(replacement, path).unwrap();
+        let (new_bytes, new_identity) = read_one_with_identity(&descriptor, name, uid).unwrap();
+
+        assert_eq!(bytes, new_bytes);
+        assert_ne!(identity, new_identity);
     }
 }

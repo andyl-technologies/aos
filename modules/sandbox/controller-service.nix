@@ -134,6 +134,9 @@
   projectAuthorizationIssuerCredential =
     lib.optional (cfg.credentials.projectAuthorizationIssuer != null)
     "project-authorization-issuer-v2:/run/credentials/@system/${cfg.credentials.projectAuthorizationIssuer}";
+  controllerSourceTreeSeedIssuerCredential =
+    lib.optional (cfg.credentials.controllerSourceTreeSeedIssuer != null)
+    "controller-source-tree-seed-issuer-v1:/run/credentials/@system/${cfg.credentials.controllerSourceTreeSeedIssuer}";
 in {
   options.aos.sandbox.controllerService = {
     enable = lib.mkEnableOption "the production unprivileged sandbox node controller";
@@ -232,6 +235,11 @@ in {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
           default = null;
           description = "Optional separately provisioned 80-byte AOSPAK02 project-authorization issuer pin; absence keeps protected project-authorization retention closed.";
+        };
+        controllerSourceTreeSeedIssuer = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Optional separately provisioned 80-byte AOSCSK01 Controller Source-tree seed public verifier; absence keeps fixed-issuer seed verification closed.";
         };
         publicApiEntitlements = lib.mkOption {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
@@ -503,7 +511,8 @@ in {
           ++ operatorRecoveryCredentials
           ++ publisherScopeCredential
           ++ publisherPolicySourceCredentials
-          ++ projectAuthorizationIssuerCredential;
+          ++ projectAuthorizationIssuerCredential
+          ++ controllerSourceTreeSeedIssuerCredential;
         Restart = "on-failure";
         RestartSec = "2s";
         TimeoutStartSec = "90s";

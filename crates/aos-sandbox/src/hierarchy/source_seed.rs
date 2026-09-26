@@ -21,6 +21,8 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use super::model::TreeLimitsV1;
+#[cfg(target_os = "linux")]
+use crate::public_api_session::PinnedSystemdCredential;
 use crate::role_credential::{decode_role_credential, encode_role_credential};
 
 const MAGIC: &[u8; 8] = b"AOSCSE01";
@@ -37,6 +39,9 @@ pub const CONTROLLER_SOURCE_TREE_SEED_BYTES_V1: usize = BODY_BYTES + 64;
 /// Reports a noncanonical, stale, or unauthenticated seed proposal.
 #[derive(Debug, Error)]
 pub enum ControllerSourceTreeSeedErrorV1 {
+    /// The fixed privileged issuer credential is missing or has changed.
+    #[error("Controller Source-tree seed issuer credential is unavailable")]
+    Credential,
     /// The packet, credential, or proposed limits are malformed.
     #[error("invalid Controller Source-tree seed framing")]
     NonCanonical,
@@ -150,6 +155,44 @@ impl ControllerSourceTreeSeedV1 {
 pub struct PinnedControllerSourceTreeSeedIssuerV1 {
     generation: u64,
     key: VerifyingKey,
+}
+
+/// Retains the fixed systemd issuer pin and its protected file identity.
+///
+/// Only the Controller's fixed credential name can supply the trust root for
+/// this path. Verification still grants no Source append authority.
+#[cfg(target_os = "linux")]
+struct ProtectedControllerSourceTreeSeedIssuerV1 {
+    credential: PinnedSystemdCredential,
+    pin: PinnedControllerSourceTreeSeedIssuerV1,
+}
+
+#[cfg(target_os = "linux")]
+impl ProtectedControllerSourceTreeSeedIssuerV1 {
+    fn from_systemd_credentials() -> Result<Self, ControllerSourceTreeSeedErrorV1> {
+        let credential = PinnedSystemdCredential::load_controller_source_tree_seed_issuer_v1()
+            .map_err(|_| ControllerSourceTreeSeedErrorV1::Credential)?;
+        let pin = PinnedControllerSourceTreeSeedIssuerV1::decode(credential.bytes())?;
+        credential
+            .recheck()
+            .map_err(|_| ControllerSourceTreeSeedErrorV1::Credential)?;
+        Ok(Self { credential, pin })
+    }
+
+    fn verify(
+        &self,
+        bytes: &[u8],
+        expected: ControllerSourceTreeSeedExpectedV1,
+    ) -> Result<VerifiedControllerSourceTreeSeedV1, ControllerSourceTreeSeedErrorV1> {
+        self.credential
+            .recheck()
+            .map_err(|_| ControllerSourceTreeSeedErrorV1::Credential)?;
+        let verified = verify_controller_source_tree_seed_v1(bytes, &self.pin, expected);
+        self.credential
+            .recheck()
+            .map_err(|_| ControllerSourceTreeSeedErrorV1::Credential)?;
+        verified
+    }
 }
 
 impl PinnedControllerSourceTreeSeedIssuerV1 {
@@ -365,6 +408,23 @@ pub fn verify_controller_source_tree_seed_v1(
         seed,
         packet_digest,
     })
+}
+
+/// Verifies a proposal using the Controller's fixed privileged issuer pin.
+///
+/// The caller still must derive `expected` from protected current Controller
+/// state. This check does not retain a packet, spend an epoch, or append Source.
+///
+/// # Errors
+///
+/// Rejects absent, malformed, or replaced credential custody, malformed or
+/// stale packet claims, and invalid signatures.
+#[cfg(target_os = "linux")]
+pub fn verify_controller_source_tree_seed_from_fixed_issuer_v1(
+    bytes: &[u8],
+    expected: ControllerSourceTreeSeedExpectedV1,
+) -> Result<VerifiedControllerSourceTreeSeedV1, ControllerSourceTreeSeedErrorV1> {
+    ProtectedControllerSourceTreeSeedIssuerV1::from_systemd_credentials()?.verify(bytes, expected)
 }
 
 fn limit_values(limits: TreeLimitsV1) -> [usize; 7] {
