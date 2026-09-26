@@ -186,11 +186,9 @@ initial policy defines reusable cumulative cohorts:
 
 1. scratch filesystem skeleton;
 2. runtime core, including libc/compiler runtime and CA trust;
-3. optional shell core;
+3. selected system userland;
 4. AOS CLI closure minus the preceding roots;
-5. future workload-family roots minus the canonical prefix;
-6. future application-specific closure delta;
-7. final launch, identity, and registration metadata.
+5. final launch, identity, and registration metadata.
 
 Changing an individual package should invalidate only the cohorts whose exact
 contents changed. Hub reports potential common cohorts, but adopting one is a
@@ -199,10 +197,11 @@ causes unrelated layer digest churn.
 
 ## Runtime contract
 
-The `aos` image uses the exact package roots from the production server golden
-system. A generated executable facade provides the same interactive command
-names, with the AOS profile path ordered ahead of the baked facade so packages
-installed later by APM can add commands.
+The `aos` image uses the evaluated `aos.containers.systemPackageSlice` of the
+production server package set, plus the backend's runtime core and AOS command
+outputs. A generated executable facade exposes the selected commands, with the
+APM profile path ordered ahead of the baked facade so packages installed later
+can add commands.
 
 The image authors an empty `0600`
 `/nix/var/nix/.aos-container-init.lock`. The initializer recreates and
@@ -210,9 +209,9 @@ re-protects that file when an operator replaces Nix state with an empty mount.
 It then performs this idempotent transaction while holding the lock
 exclusively:
 
-1. validate the immutable golden-root list against the embedded closure;
+1. validate the immutable baked-root list against the embedded closure;
 2. remove readiness state from an earlier PID-1 lifecycle;
-3. build a fresh GC-root directory containing one absolute symlink per golden
+3. build a fresh GC-root directory containing one absolute symlink per baked
    package root and atomically replace `/nix/var/nix/gcroots/aos-container-baked`;
 4. create the local Nix database if absent;
 5. load the embedded registration stream;

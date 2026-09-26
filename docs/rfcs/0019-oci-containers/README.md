@@ -30,12 +30,13 @@ separate Connect control plane for AOS publication, signed-release provenance,
 retention, garbage collection, and the Hub console.
 
 The first and initially only registered container image is `aos`. Its package
-baseline is derived from the production `systems.server` golden image's
-`environment.systemPackages`, including the complete `pkgs.aos` wrapper
-closure. It deliberately omits the kernel, initrd, boot loader, systemd boot
-transaction, system toplevel, and host policy. Additional packages are
-installed with user-scope APM or declared in a future Nix container definition,
-following the same role that a minimal Debian base image serves for `apt`.
+baseline is a typed slice of the evaluated `systems.server` package set,
+selected through `aos.containers.systemPackageSlice`, plus the runtime core
+and complete `pkgs.aos` command outputs. It omits the kernel, initrd, boot
+loader, systemd boot transaction, system toplevel, and the server's host-only
+package roots.
+Additional packages are installed with user-scope APM or selected by another
+module for the container slice.
 
 ## Motivation
 
@@ -91,19 +92,22 @@ The only repository-defined and Hub-registered image in the first release is
 accidental second registered definition until this RFC is deliberately
 amended.
 
-The `aos` image mirrors the production server golden image's interactive
-package baseline by taking its package roots from:
+The `aos` image selects its portable package roots from the production server
+configuration through the typed module option:
 
 ```nix
-systems.server.config.environment.systemPackages
+systems.server.config.aos.containers.systemPackageSlice
 ```
 
-The container definition adds no unrelated packages. `pkgs.aos` already joins
-that list through the base APM module. Tests compare the evaluated store-path
-sets rather than maintaining a second copied package list.
+The system's package module supplies the same portable-shell value to both
+`environment.systemPackages` and the container slice. Other modules can extend
+the slice, but every selected package must also belong to the evaluated system
+package set. The OCI backend adds libc, compiler runtime, CA trust, and the
+three AOS command outputs, then derives layers and baked GC roots from that
+single root set. Tests compare the evaluated store-path sets.
 
-"Mirrors" means the userland package baseline and AOS release identity. It
-does not mean the bootable system closure: containers have no kernel, initrd,
+The container shares the system's package definitions and AOS release identity.
+It does not include the bootable system closure: containers have no kernel, initrd,
 boot loader, systemd PID 1, host services, disk image, or host configuration.
 
 ### Scratch and canonical store paths
@@ -163,7 +167,7 @@ replacement deployments bake packages into a new image; cross-container
 persistence of a mutated store is not a first-release guarantee.
 
 Registration alone does not retain store paths across Nix garbage collection.
-The image embeds its exact golden package-root list, and init atomically
+The image embeds its exact selected package-root list, and init atomically
 reconciles symlink GC roots for that list on every start. This also repairs an
 empty mounted Nix database before APM can run.
 
@@ -200,8 +204,8 @@ The RFC is implemented only when all of the following are true:
 
 - two equivalent builds produce byte-identical layer, config, manifest, index,
   layout, and archive bytes;
-- the `aos` container package roots equal the production server golden image's
-  `environment.systemPackages` roots;
+- the `aos` container package roots equal its evaluated system-package slice
+  plus the backend's runtime core and AOS command outputs;
 - a standard container runtime loads or pulls the artifact and runs `aos`,
   `apm`, and `apr` without a Nix daemon;
 - user-scope APM installs and executes a package from a local registry;

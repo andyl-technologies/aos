@@ -83,7 +83,7 @@
 
     defaultDefinition = args:
       import ./aos-definition.nix {
-        inherit (args) lib pkgs goldenRoots;
+        inherit (args) lib pkgs systemPackageSlice;
         evidenceOverrides = args.evidenceOverrides or [];
         platform = platformFor args.targetPlatform;
       };
@@ -130,6 +130,16 @@ in {
         description = "Name of the OCI container associated with this system variant by default.";
       };
 
+      systemPackageSlice = lib.mkOption {
+        type = lib.types.listOf lib.types.package;
+        default = [];
+        apply = lib.uniqueBy builtins.toString;
+        description = ''
+          Packages selected from the evaluated system profile for the default
+          container. The backend adds its runtime core and AOS CLI roots.
+        '';
+      };
+
       definitions = lib.mkOption {
         type = lib.types.attrsOf (lib.types.submodule schema);
         default = {};
@@ -141,6 +151,15 @@ in {
   };
 
   config = {
+    assertions = lib.concatMap (
+      name:
+        map (check: {
+          inherit (check) assertion;
+          message = "aos.containers.definitions.${name}: ${check.message}";
+        })
+        config.aos.containers.definitions.${name}.assertions
+    ) (builtins.attrNames config.aos.containers.definitions);
+
     aos.abilities = {
       implementations.artifact-backend = {
         description = "Builds static contracts and OCI artifacts from checked package origins.";

@@ -1,7 +1,7 @@
 ##! tests/containers/runtime.nix -- focused Phase-2 container runtime checks.
 ##!
 ##! Exercises the production init transaction against an isolated rooted local
-##! store and validates the build-time golden-package facade without requiring
+##! store and validates the build-time selected-package facade without requiring
 ##! chroot, mounts, a container daemon, or host tools.
 {
   pkgs,
@@ -9,7 +9,7 @@
   containerImage,
   aosSystem,
   systemIdentity,
-  goldenRoots,
+  bakedRoots,
   forbiddenRuntimeRoots,
 }: let
   oci = pkgs.ociTools;
@@ -264,11 +264,11 @@ in
           gzip -dc ${facadeLayer}/blob \
             | tar --same-permissions --no-same-owner -xf - -C facade-root
           test "$(readlink facade-root/usr/bin/shared)" = ${lib.escapeShellArg "${firstPackage}/bin/shared"} \
-            || fail "golden facade did not preserve first-wins package order"
+            || fail "baked facade did not preserve first-wins package order"
           test "$(readlink facade-root/usr/bin/second-only)" = ${lib.escapeShellArg "${secondPackage}/sbin/second-only"} \
-            || fail "golden facade omitted an sbin executable"
+            || fail "baked facade omitted an sbin executable"
           test ! -e facade-root/usr/bin/.hidden-internal \
-            || fail "golden facade exposed a hidden wrapper implementation"
+            || fail "baked facade exposed a hidden wrapper implementation"
           jq -e '
             .schema == "aos.container.facade-policy/v1"
             and .directoryOrder == ["bin", "sbin"]
@@ -284,7 +284,7 @@ in
                 shadowedSource: $shadowed
               }]
             ' ${facadeLayer}/facade.json >/dev/null \
-            || fail "golden facade collision manifest is incorrect"
+            || fail "baked facade collision manifest is incorrect"
 
           mkdir production-metadata production-facade
           gzip -dc ${productionMetadata}/blob \
@@ -317,11 +317,11 @@ in
           cmp production-metadata/usr/lib/aos-container/store-paths \
             ${productionReferenceGraph}/store-paths \
             || fail "embedded production store inventory differs from the authoritative graph"
-          printf '%s\n' ${lib.concatMapStringsSep " " lib.escapeShellArg (map builtins.toString (lib.uniqueBy builtins.toString (goldenRoots ++ [pkgs.aos pkgs.aos.apm pkgs.aos.apr])))} \
+          printf '%s\n' ${lib.concatMapStringsSep " " lib.escapeShellArg (map builtins.toString bakedRoots)} \
             > expected-production-baked-roots
           cmp expected-production-baked-roots \
             production-metadata/usr/lib/aos-container/baked-roots \
-            || fail "embedded baked roots differ from the production golden package list"
+            || fail "embedded baked roots differ from the selected container package list"
           test "$(readlink production-metadata/var/lib/profiles)" \
             = /nix/var/nix/gcroots/aos-profiles \
             || fail "APM profiles are not rooted inside Nix gcroots"

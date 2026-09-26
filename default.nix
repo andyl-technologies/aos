@@ -2035,7 +2035,7 @@ in {
     container = rec {
       phase0 = import ./tests/containers/phase0.nix {
         inherit pkgs lib;
-        goldenRoots = discoverSystems.server.config.aos.containers.definitions.aos.packageRoots;
+        bakedRoots = discoverSystems.server.config.aos.containers.definitions.aos.packageRoots;
       };
       eval = import ./tests/containers/eval.nix {
         inherit pkgs lib;
@@ -2055,7 +2055,7 @@ in {
         inherit pkgs lib;
         containerImage = containerImages.aos;
         aosSystem = hostPlatform.system;
-        goldenRoots = discoverSystems.server.config.aos.containers.definitions.aos.packageRoots;
+        bakedRoots = discoverSystems.server.config.aos.containers.definitions.aos.packageRoots;
         # These are negative exact-path assertions, not test dependencies. Drop
         # string context so proving their absence does not build or retain the
         # bootable system artifacts the container deliberately excludes.

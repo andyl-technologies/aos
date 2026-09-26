@@ -28,6 +28,27 @@
     pkgs.zfstools
     pkgs.zram-generator
   ];
+  portableShellPackages = [
+    pkgs.bash
+    pkgs.coreutils
+    pkgs.findutils
+    pkgs.grep
+    pkgs.sed
+    pkgs.gawk
+  ];
+  hostUtilities = [
+    pkgs.util-linux
+    pkgs.e2fsprogs
+    pkgs.less
+    pkgs.docker
+    pkgs.policycoreutils
+    pkgs.qemu
+    pkgs.dnsutils
+    pkgs.getent
+    pkgs.iproute2
+    pkgs.iptables
+    pkgs.procps-ng
+  ];
   bundledPackage = package: {
     name = package.pname;
     value = {
@@ -52,25 +73,6 @@ in {
   # Keep the interactive image baseline explicit at the system-composition
   # boundary. Feature modules use absolute package paths, so selecting a
   # feature does not silently expand the login PATH.
-  environment.systemPackages = [
-    pkgs.bash
-    pkgs.coreutils
-    pkgs.findutils
-    pkgs.grep
-    pkgs.sed
-    pkgs.gawk
-    pkgs.util-linux
-    pkgs.e2fsprogs
-    pkgs.less
-
-    # Companion command and runtime packages without native modules.
-    pkgs.docker
-    pkgs.policycoreutils
-    pkgs.qemu
-    pkgs.dnsutils
-    pkgs.getent
-    pkgs.iproute2
-    pkgs.iptables
-    pkgs.procps-ng
-  ];
+  environment.systemPackages = portableShellPackages ++ hostUtilities;
+  aos.containers.systemPackageSlice = portableShellPackages;
 }

@@ -180,12 +180,12 @@ in {
       facade = mkOption {
         type = types.listOf facadeType;
         default = [];
-        description = "Explicit executable links selected ahead of the generated golden-package facade.";
+        description = "Explicit executable links selected ahead of the generated baked-package facade.";
       };
       allowedFacadeCollisions = mkOption {
         type = types.listOf safeName;
         default = [];
-        description = "Reviewed command-name collisions allowed by the ordered golden-package facade.";
+        description = "Reviewed command-name collisions allowed by the ordered baked-package facade.";
       };
       shell = mkOption {
         type = validatedBool;
@@ -354,6 +354,16 @@ in {
         0
         (annotationKeys ++ annotationValues);
     in [
+      {
+        assertion =
+          config.platform.architecture
+          == (
+            if config.platform.aosSystem == "x86_64-linux"
+            then "amd64"
+            else "arm64"
+          );
+        message = "container OCI architecture must match its AOS target system";
+      }
       {
         assertion = config.runtimePolicy.allowTestArtifacts || config.runtimePolicy.testArtifactRoots == [];
         message = "container runtimePolicy.testArtifactRoots requires runtimePolicy.allowTestArtifacts = true";

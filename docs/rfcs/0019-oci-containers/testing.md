@@ -10,7 +10,7 @@ the smallest responsible boundary.
 Evaluation checks cover:
 
 - exactly one registered definition named `aos`;
-- package-root parity with the production server golden image;
+- package-root parity with the evaluated container slice and backend roots;
 - supported AOS-to-OCI platform mapping;
 - valid layer names and ordering;
 - no duplicate roots or facade collisions;
