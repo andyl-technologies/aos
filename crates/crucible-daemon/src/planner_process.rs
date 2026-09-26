@@ -26,7 +26,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::thread;
 use std::time::Duration;
@@ -53,9 +53,12 @@ const MIN_EXECUTION_TIMEOUT: Duration = Duration::from_millis(1);
 const MAX_EXECUTION_TIMEOUT: Duration = Duration::from_secs(60);
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const MAX_STDERR_BYTES: usize = 64 * 1024;
+const WORKER_PEAK_RSS_PREFIX: &str = "campaign_planner_worker_vm_hwm_kib=";
 
 /// Hidden argument selecting the one-request canonical planner worker.
 pub const CANONICAL_PLANNER_WORKER_ARGUMENT: &str = "__crucible-campaign-planner-worker-v1";
+/// Private worker environment switch for fail-closed Linux peak-RSS evidence.
+pub const CANONICAL_PLANNER_WORKER_RSS_ENV: &str = "CRUCIBLE_PLANNER_WORKER_REPORT_RSS";
 
 /// Immutable launch contract for one canonical planner worker process.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -147,6 +150,7 @@ pub struct CanonicalPlannerProcessSupervisor {
     config: CanonicalPlannerProcessConfig,
     canceled: Arc<AtomicBool>,
     process_owner: Option<owner::ProcessOwner>,
+    worker_peak_rss_observer: Option<Arc<AtomicU64>>,
 }
 
 impl CanonicalPlannerProcessSupervisor {
@@ -161,9 +165,20 @@ impl CanonicalPlannerProcessSupervisor {
                 config,
                 canceled: Arc::clone(&canceled),
                 process_owner: None,
+                worker_peak_rss_observer: None,
             },
             CanonicalPlannerProcessCancellation { canceled },
         )
+    }
+
+    /// Enables a fail-closed peak-RSS observation for every successful worker.
+    ///
+    /// The observer retains the maximum `VmHWM` reported by the protected
+    /// process. Missing or malformed reports reject the proposal.
+    #[must_use]
+    pub fn with_worker_peak_rss_observer(mut self, observer: Arc<AtomicU64>) -> Self {
+        self.worker_peak_rss_observer = Some(observer);
+        self
     }
 
     fn execute_request(
@@ -201,6 +216,9 @@ impl CanonicalPlannerProcessSupervisor {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if self.worker_peak_rss_observer.is_some() {
+            command.env(CANONICAL_PLANNER_WORKER_RSS_ENV, "1");
+        }
         let (status, stdout, stderr) = process_owner.run(&mut command, |child| {
             revalidate_executable(&self.config.executable, &executable_before)?;
             pipes::exchange(child, &request_bytes, deadline, &self.canceled)
@@ -211,9 +229,14 @@ impl CanonicalPlannerProcessSupervisor {
 
         let (kind, body) = parse_frame(&stdout.bytes)?;
         match kind {
-            PROPOSAL_KIND => Ok(PlannerEngineOutput::new(
-                PlannerStepProposal::from_canonical_bytes(body)?,
-            )),
+            PROPOSAL_KIND => {
+                let proposal = PlannerStepProposal::from_canonical_bytes(body)?;
+                if let Some(observer) = &self.worker_peak_rss_observer {
+                    let peak_rss_kib = parse_worker_peak_rss(&stderr)?;
+                    observer.fetch_max(peak_rss_kib, Ordering::Release);
+                }
+                Ok(PlannerEngineOutput::new(proposal))
+            }
             REJECTION_KIND => Err(CanonicalPlannerProcessError::WorkerRejected(
                 String::from_utf8_lossy(body).into_owned(),
             )),
@@ -383,16 +406,70 @@ pub fn serve_canonical_planner_process_once(
         })
     };
     match result {
-        Ok(result) => write_frame(
-            &mut output,
-            PROPOSAL_KIND,
-            &result.proposal().canonical_bytes(),
-        ),
+        Ok(result) => {
+            write_frame(
+                &mut output,
+                PROPOSAL_KIND,
+                &result.proposal().canonical_bytes(),
+            )?;
+            if std::env::var_os(CANONICAL_PLANNER_WORKER_RSS_ENV).as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+            {
+                report_worker_peak_rss(io::stderr().lock())?;
+            }
+            Ok(())
+        }
         Err(error) => {
             let rejection = bounded_rejection(&error.to_string());
             write_frame(&mut output, REJECTION_KIND, rejection.as_bytes())
         }
     }
+}
+
+fn report_worker_peak_rss(mut diagnostic: impl Write) -> io::Result<()> {
+    let status = fs::read_to_string("/proc/self/status")?;
+    let peak_rss_kib = parse_linux_peak_rss(&status)?;
+    writeln!(diagnostic, "{WORKER_PEAK_RSS_PREFIX}{peak_rss_kib}")
+}
+
+fn parse_linux_peak_rss(status: &str) -> io::Result<u64> {
+    let line = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmHWM:"))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing worker VmHWM"))?;
+    let mut fields = line.split_whitespace();
+    let value = fields
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0);
+    match (value, fields.next(), fields.next()) {
+        (Some(value), Some("kB"), None) => Ok(value),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid worker VmHWM",
+        )),
+    }
+}
+
+fn parse_worker_peak_rss(stderr: &CapturedOutput) -> Result<u64, CanonicalPlannerProcessError> {
+    if stderr.overflow {
+        return Err(CanonicalPlannerProcessError::ProtocolViolation(
+            "canonical planner worker RSS report exceeded stderr limit",
+        ));
+    }
+    let bytes = std::str::from_utf8(&stderr.bytes).map_err(|_| {
+        CanonicalPlannerProcessError::ProtocolViolation(
+            "canonical planner worker RSS report is not UTF-8",
+        )
+    })?;
+    let value = bytes
+        .strip_prefix(WORKER_PEAK_RSS_PREFIX)
+        .and_then(|value| value.strip_suffix('\n'))
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0);
+    value.ok_or(CanonicalPlannerProcessError::ProtocolViolation(
+        "canonical planner worker RSS report is missing or invalid",
+    ))
 }
 
 #[derive(Debug)]
