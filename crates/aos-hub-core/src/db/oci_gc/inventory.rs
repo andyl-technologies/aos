@@ -225,6 +225,27 @@ pub struct OciProviderInventoryPlacement {
     pub binding_write_revision: i64,
 }
 
+/// One ready registry or cache placement selected to observe delete semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConditionalDeleteProbePlacement {
+    /// Placement id.
+    pub placement_id: i64,
+    /// Stable placement name.
+    pub placement_name: String,
+    /// Current placement optimistic-concurrency version.
+    pub placement_resource_version: i64,
+    /// Current placement writer-spec version.
+    pub placement_write_spec_version: i64,
+    /// Current ready/complete observation version.
+    pub placement_observation_version: i64,
+    /// Current binding id.
+    pub binding_id: i64,
+    /// Current binding resource version.
+    pub binding_resource_version: i64,
+    /// Current immutable writer revision.
+    pub binding_write_revision: i64,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PersistedInventoryDigestEntry {
@@ -253,7 +274,7 @@ struct ChainedInventoryCheckpoint<'a> {
 }
 
 impl Database {
-    /// Lists ready registry placements whose current delete capability is due.
+    /// Lists ready registry or cache placements whose delete capability is due.
     ///
     /// At most one deterministic placement is returned for each exact binding
     /// writer revision, because the capability is shared by that immutable
@@ -267,14 +288,14 @@ impl Database {
         &self,
         now: i64,
         limit: u32,
-    ) -> Result<Vec<OciProviderInventoryPlacement>> {
+    ) -> Result<Vec<ConditionalDeleteProbePlacement>> {
         if now < 0 || limit == 0 || limit > 100 {
             bail!("OCI conditional-delete due selector is invalid");
         }
         let oldest = now.saturating_sub(super::OCI_GC_MAX_INVENTORY_AGE_SECONDS);
         self.backend
             .query(
-                "SELECT placement.registry_id, placement.id, placement.name,
+                "SELECT placement.id, placement.name,
                         placement.resource_version, placement.write_spec_version,
                         observation.observation_version, placement.binding_id,
                         binding.resource_version, write_state.current_write_revision
@@ -284,7 +305,7 @@ impl Database {
                  JOIN bindings binding ON binding.id = placement.binding_id
                  JOIN binding_write_state write_state
                    ON write_state.binding_id = binding.id
-                 WHERE placement.registry_id IS NOT NULL
+                 WHERE (placement.registry_id IS NOT NULL OR placement.cache_id IS NOT NULL)
                    AND placement.desired_state <> 'offline'
                    AND observation.state = 'ready'
                    AND observation.completeness = 'complete'
@@ -294,7 +315,7 @@ impl Database {
                      JOIN surface_placement_observations candidate_observation
                        ON candidate_observation.placement_id = candidate.id
                      WHERE candidate.binding_id = placement.binding_id
-                       AND candidate.registry_id IS NOT NULL
+                       AND (candidate.registry_id IS NOT NULL OR candidate.cache_id IS NOT NULL)
                        AND candidate.desired_state <> 'offline'
                        AND candidate_observation.state = 'ready'
                        AND candidate_observation.completeness = 'complete')
@@ -320,16 +341,15 @@ impl Database {
             .await?
             .iter()
             .map(|row| {
-                Ok(OciProviderInventoryPlacement {
-                    registry_id: row.get(0)?,
-                    placement_id: row.get(1)?,
-                    placement_name: row.get(2)?,
-                    placement_resource_version: row.get(3)?,
-                    placement_write_spec_version: row.get(4)?,
-                    placement_observation_version: row.get(5)?,
-                    binding_id: row.get(6)?,
-                    binding_resource_version: row.get(7)?,
-                    binding_write_revision: row.get(8)?,
+                Ok(ConditionalDeleteProbePlacement {
+                    placement_id: row.get(0)?,
+                    placement_name: row.get(1)?,
+                    placement_resource_version: row.get(2)?,
+                    placement_write_spec_version: row.get(3)?,
+                    placement_observation_version: row.get(4)?,
+                    binding_id: row.get(5)?,
+                    binding_resource_version: row.get(6)?,
+                    binding_write_revision: row.get(7)?,
                 })
             })
             .collect()
@@ -502,7 +522,7 @@ impl Database {
                      OR (CAST(?4 AS VARCHAR) IS NULL AND CAST(?5 AS BIGINT) IS NULL
                        AND EXISTS (SELECT 1 FROM bindings local_binding
                          WHERE local_binding.id = ?1
-                           AND local_binding.kind = 'local_fs'))
+                           AND local_binding.kind IN ('local_fs', 'deployment_r2')))
                      OR EXISTS (SELECT 1 FROM binding_credential_heads head
                        JOIN binding_credential_revisions credential
                          ON credential.binding_id = head.binding_id
@@ -536,7 +556,7 @@ impl Database {
                   AND revision.revision = ?2
                  WHERE binding.id = ?1 AND binding.resource_version = ?3
                    AND (?7 = 'invalid'
-                     OR (CAST(?4 AS VARCHAR) IS NULL AND CAST(?5 AS BIGINT) IS NULL AND binding.kind = 'local_fs')
+                     OR (CAST(?4 AS VARCHAR) IS NULL AND CAST(?5 AS BIGINT) IS NULL AND binding.kind IN ('local_fs', 'deployment_r2'))
                      OR EXISTS (SELECT 1 FROM binding_credential_heads head
                        JOIN binding_credential_revisions credential
                          ON credential.binding_id = head.binding_id

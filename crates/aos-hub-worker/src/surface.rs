@@ -22,7 +22,7 @@ use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use base64::Engine as _;
 use sha2::{Digest as _, Sha256};
-use worker::Bucket;
+use worker::{Bucket, Env};
 
 use aos_hub_core::db::{BindingWriteRevisionRecord, Database, SurfacePlacementRecord};
 use aos_hub_core::fetch::{
@@ -71,9 +71,10 @@ struct WorkerR2BucketAdapter {
 /// Returns an error for an unavailable object store, a source limit, or an
 /// object identity that fails the plan's digest check.
 pub(crate) async fn execute_r2_storage_work(
-    bucket: Bucket,
+    env: &Env,
     plan: &StorageWorkPlan,
 ) -> Result<StorageWorkResult> {
+    let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
     let fetcher = R2SurfaceFetch {
         contract: R2Contract::new(WorkerR2BucketAdapter {
             bucket: bucket.as_ref().clone(),
@@ -359,6 +360,7 @@ pub(crate) async fn execute_r2_storage_work(
                 "placement copy source differs from its listed identity"
             );
             r2_copy_stream(
+                env,
                 fetcher.bucket.as_ref(),
                 &source_key,
                 &destination_key,
@@ -399,6 +401,7 @@ pub(crate) async fn execute_r2_storage_work(
         } => {
             let object_key = plan.object_key(path)?;
             let object = compose_oci_blob(
+                env,
                 &fetcher.contract,
                 &object_key,
                 staging_prefix,
@@ -417,8 +420,49 @@ pub(crate) async fn execute_r2_storage_work(
         }
         StorageWorkOperation::DeleteOciStaging { path } => {
             let object_key = plan.object_key(path)?;
-            fetcher.contract.delete(&object_key).await?;
+            crate::hybrid_object::delete_staging(env, &object_key).await?;
             (StorageWorkOutcome::OciStagingDeleted, 0)
+        }
+        StorageWorkOperation::DeleteIfMatches {
+            path,
+            claim_id,
+            expected_etag,
+            expected_size,
+            expected_hash,
+        } => {
+            let object_key = plan.object_key(path)?;
+            let claim = crate::hybrid_object::DeleteClaim {
+                claim_id: claim_id.clone(),
+                expected_etag: expected_etag.clone(),
+                expected_size: *expected_size,
+                expected_hash: expected_hash.clone(),
+            };
+            let outcome = crate::hybrid_object::delete_if_matches(env, &object_key, &claim).await?;
+            let outcome = match outcome {
+                crate::hybrid_object::DeleteOutcome::Deleted { etag } => {
+                    StorageWorkOutcome::ObjectDeleted { etag }
+                }
+                crate::hybrid_object::DeleteOutcome::NotFound => StorageWorkOutcome::NotFound,
+                crate::hybrid_object::DeleteOutcome::PreconditionFailed => {
+                    StorageWorkOutcome::DeletePreconditionFailed
+                }
+            };
+            (outcome, 0)
+        }
+        StorageWorkOperation::PutProbe {
+            path,
+            content_base64,
+        } => {
+            use base64::Engine as _;
+            let object_key = plan.object_key(path)?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(content_base64)?;
+            crate::hybrid_object::put(env, &object_key, &bytes).await?;
+            (StorageWorkOutcome::ProbeAcknowledged, 0)
+        }
+        StorageWorkOperation::DeleteProbe { path } => {
+            let object_key = plan.object_key(path)?;
+            crate::hybrid_object::delete_staging(env, &object_key).await?;
+            (StorageWorkOutcome::ProbeAcknowledged, 0)
         }
         StorageWorkOperation::CreateMultipart { path } => {
             let object_key = plan.object_key(path)?;
@@ -431,10 +475,7 @@ pub(crate) async fn execute_r2_storage_work(
             parts,
         } => {
             let object_key = plan.object_key(path)?;
-            fetcher
-                .contract
-                .complete_multipart(&object_key, upload_id, parts)
-                .await?;
+            crate::hybrid_object::complete(env, &object_key, upload_id, parts).await?;
             let head = fetcher
                 .contract
                 .head(&object_key)
@@ -464,6 +505,7 @@ pub(crate) async fn execute_r2_storage_work(
 }
 
 async fn compose_oci_blob(
+    env: &Env,
     contract: &R2Contract<WorkerR2BucketAdapter>,
     object_key: &str,
     staging_prefix: &str,
@@ -478,7 +520,7 @@ async fn compose_oci_blob(
             expected_sha256 == hex::encode(Sha256::digest(b"")),
             "empty OCI blob digest differs from its signed plan"
         );
-        contract.put(object_key, &[]).await?;
+        crate::hybrid_object::put(env, object_key, &[]).await?;
     } else {
         let upload_id = contract.create_multipart(object_key).await?;
         let materialized = async {
@@ -530,9 +572,7 @@ async fn compose_oci_blob(
                         .await?,
                 );
             }
-            contract
-                .complete_multipart(object_key, &upload_id, &parts)
-                .await
+            crate::hybrid_object::complete(env, object_key, &upload_id, &parts).await
         }
         .await;
         if materialized.is_err() {
@@ -1148,84 +1188,33 @@ fn is_transient_r2(message: &str) -> bool {
 
 /// Streams one R2 snapshot directly into another key in the same binding.
 async fn r2_copy_stream(
+    env: &Env,
     bucket: &wasm_bindgen::JsValue,
     source_key: &str,
     destination_key: &str,
     expected_size: u64,
     expected_etag: &str,
 ) -> Result<()> {
-    use js_sys::{Function, Promise, Reflect};
-    use wasm_bindgen::{JsCast, JsValue};
-    use wasm_bindgen_futures::JsFuture;
-
-    // Multipart keeps large copies within R2's single-PUT limit and bounds the
-    // amount of work in each storage request. The small-object path avoids the
-    // extra round trips for the common case.
-    if expected_size > 8 * 1024 * 1024 {
-        return r2_copy_multipart(
-            bucket,
-            source_key,
-            destination_key,
-            expected_size,
-            expected_etag,
-        )
-        .await;
+    if expected_size == 0 {
+        return crate::hybrid_object::put(env, destination_key, &[]).await;
     }
 
-    let object = r2_get(bucket, source_key)
-        .await?
-        .context("placement copy source has no body snapshot")?;
-    let size = Reflect::get(&object, &JsValue::from_str("size"))
-        .ok()
-        .and_then(|value| value.as_f64())
-        .filter(|value| {
-            value.is_finite()
-                && *value >= 0.0
-                && value.fract() == 0.0
-                && *value <= ((1_u64 << 53) - 1) as f64
-        })
-        .context("placement copy source returned an invalid size")? as u64;
-    let etag = Reflect::get(&object, &JsValue::from_str("etag"))
-        .ok()
-        .and_then(|value| value.as_string())
-        .context("placement copy source returned no ETag")?;
-    let etag = aos_hub_core::surface_write::strong_if_match_etag(&etag)?;
-    anyhow::ensure!(
-        size == expected_size && etag == expected_etag,
-        "placement copy body snapshot differs from its listed identity"
-    );
-    let body = Reflect::get(&object, &JsValue::from_str("body"))
-        .map_err(|error| anyhow::anyhow!("placement copy source body is unreadable: {error:?}"))?;
-    anyhow::ensure!(
-        expected_size == 0 || (!body.is_null() && !body.is_undefined()),
-        "placement copy source has no stream"
-    );
-    let value = if expected_size == 0 {
-        &JsValue::NULL
-    } else {
-        &body
-    };
-    let put: Function = Reflect::get(bucket, &JsValue::from_str("put"))
-        .map_err(|error| anyhow::anyhow!("placement copy R2 put is unavailable: {error:?}"))?
-        .dyn_into()
-        .map_err(|error| anyhow::anyhow!("placement copy R2 put is invalid: {error:?}"))?;
-    let promise: Promise = put
-        .call2(bucket, &JsValue::from_str(destination_key), value)
-        .map_err(|error| anyhow::anyhow!("placement copy R2 put failed: {error:?}"))?
-        .dyn_into()
-        .map_err(|error| anyhow::anyhow!("placement copy R2 put returned no promise: {error:?}"))?;
-    let stored = JsFuture::from(promise)
-        .await
-        .map_err(|error| anyhow::anyhow!("placement copy R2 stream failed: {error:?}"))?;
-    anyhow::ensure!(
-        !stored.is_null() && !stored.is_undefined(),
-        "placement copy R2 put did not store the destination"
-    );
-    Ok(())
+    // The final multipart commit is the visible mutation and is serialized
+    // through the destination key's object guard. Parts stream within R2.
+    r2_copy_multipart(
+        env,
+        bucket,
+        source_key,
+        destination_key,
+        expected_size,
+        expected_etag,
+    )
+    .await
 }
 
 /// Copies bounded R2 ranges into a multipart upload without materializing a part in WASM.
 async fn r2_copy_multipart(
+    env: &Env,
     bucket: &wasm_bindgen::JsValue,
     source_key: &str,
     destination_key: &str,
@@ -1293,9 +1282,7 @@ async fn r2_copy_multipart(
             parts.push(PartTag { part_number, etag });
             offset += length;
         }
-        adapter
-            .complete_multipart(destination_key, &upload_id, &parts)
-            .await?;
+        crate::hybrid_object::complete(env, destination_key, &upload_id, &parts).await?;
         Ok(())
     }
     .await;
@@ -1617,6 +1604,61 @@ pub(crate) async fn hybrid_r2_put(bucket: Bucket, object_key: &str, bytes: &[u8]
         bucket: bucket.as_ref().clone(),
     });
     contract.put(object_key, bytes).await
+}
+
+/// Stages an object body before the guard makes the multipart object visible.
+pub(crate) async fn hybrid_r2_create_multipart(bucket: Bucket, object_key: &str) -> Result<String> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    contract.create_multipart(object_key).await
+}
+
+/// Aborts a staged body after the guarded completion fails.
+pub(crate) async fn hybrid_r2_abort_multipart(
+    bucket: Bucket,
+    object_key: &str,
+    upload_id: &str,
+) -> Result<()> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    contract.abort_multipart(object_key, upload_id).await?;
+    Ok(())
+}
+
+/// Reads provider identity for an object-scoped hybrid delete guard.
+pub(crate) async fn hybrid_r2_head(
+    bucket: Bucket,
+    object_key: &str,
+) -> Result<Option<crate::r2_adapter::R2HeadObject>> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    contract.head(object_key).await
+}
+
+/// Deletes a key while its object-scoped guard holds the mutation turn.
+pub(crate) async fn hybrid_r2_delete(bucket: Bucket, object_key: &str) -> Result<()> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    contract.delete(object_key).await
+}
+
+/// Completes a multipart write while its object-scoped guard holds the turn.
+pub(crate) async fn hybrid_r2_complete(
+    bucket: Bucket,
+    object_key: &str,
+    upload_id: &str,
+    parts: &[PartTag],
+) -> Result<String> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    contract
+        .complete_multipart(object_key, upload_id, parts)
+        .await
 }
 
 /// Writes one SQL-admitted multipart part directly into deployment R2.

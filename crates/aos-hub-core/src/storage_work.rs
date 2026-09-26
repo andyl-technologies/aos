@@ -188,6 +188,31 @@ pub enum StorageWorkOperation {
         /// Exact surface-relative staging key recorded in the upload session.
         path: String,
     },
+    /// Removes one SQL-reviewed object only while its provider identity matches.
+    DeleteIfMatches {
+        /// Exact surface-relative object path frozen by the deletion claim.
+        path: String,
+        /// Durable SQL claim or request identity, stable across retries.
+        claim_id: String,
+        /// Strong provider ETag observed by the reviewed inventory.
+        expected_etag: String,
+        /// Reviewed provider object length.
+        expected_size: u64,
+        /// Reviewed content hash, when the inventory records one.
+        expected_hash: Option<String>,
+    },
+    /// Writes a bounded service-owned conditional-delete probe object.
+    PutProbe {
+        /// Reserved surface-relative probe key.
+        path: String,
+        /// Standard-base64 body, bounded to four KiB.
+        content_base64: String,
+    },
+    /// Removes a service-owned probe key after semantic observation.
+    DeleteProbe {
+        /// Reserved surface-relative probe key.
+        path: String,
+    },
     /// Creates one provider multipart upload for a SQL-frozen object path.
     CreateMultipart {
         /// Surface-relative object path selected by Native.
@@ -228,6 +253,9 @@ impl StorageWorkOperation {
             Self::CopyObject { .. } => "copy_object",
             Self::ComposeOciBlob { .. } => "compose_oci_blob",
             Self::DeleteOciStaging { .. } => "delete_oci_staging",
+            Self::DeleteIfMatches { .. } => "delete_if_matches",
+            Self::PutProbe { .. } => "put_probe",
+            Self::DeleteProbe { .. } => "delete_probe",
             Self::CreateMultipart { .. } => "create_multipart",
             Self::CompleteMultipart { .. } => "complete_multipart",
             Self::AbortMultipart { .. } => "abort_multipart",
@@ -456,6 +484,15 @@ pub enum StorageWorkOutcome {
     },
     /// R2 acknowledged idempotent removal of one unreachable staging object.
     OciStagingDeleted,
+    /// The object guard removed the exact reviewed provider identity.
+    ObjectDeleted {
+        /// Strong ETag matched before the serialized deletion.
+        etag: String,
+    },
+    /// The object guard observed an object different from the reviewed one.
+    DeletePreconditionFailed,
+    /// Reserved capability probe write or cleanup completed.
+    ProbeAcknowledged,
     /// R2 accepted a new multipart upload and returned its opaque identity.
     MultipartCreated {
         /// Opaque provider upload identity to persist in Native SQL.
@@ -802,6 +839,48 @@ impl StorageWorkPlan {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }
+            StorageWorkOperation::DeleteIfMatches {
+                path,
+                claim_id,
+                expected_etag,
+                expected_size,
+                expected_hash,
+            } => {
+                if !valid_relative_path(path, false)
+                    || claim_id.is_empty()
+                    || claim_id.len() > 128
+                    || !claim_id.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+                    })
+                    || crate::surface_write::strong_if_match_etag(expected_etag).is_err()
+                    || *expected_size > MAX_VERIFY_SOURCE_BYTES
+                    || expected_hash
+                        .as_ref()
+                        .is_some_and(|hash| hash.is_empty() || hash.len() > 128)
+                {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
+            StorageWorkOperation::PutProbe {
+                path,
+                content_base64,
+            } => {
+                use base64::Engine as _;
+                if !admitted_probe_path(path)
+                    || content_base64.len() > 5_464
+                    || base64::engine::general_purpose::STANDARD
+                        .decode(content_base64)
+                        .is_ok_and(|bytes| bytes.len() <= 4 * 1024)
+                        == false
+                {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
+            StorageWorkOperation::DeleteProbe { path } => {
+                if !admitted_probe_path(path) {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
             StorageWorkOperation::CreateMultipart { path } => {
                 if !valid_relative_path(path, false) {
                     return Err(StorageWorkError::InvalidPlan);
@@ -872,6 +951,20 @@ pub fn admitted_oci_blob_path(path: &str) -> bool {
                     .bytes()
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         })
+}
+
+fn admitted_probe_path(path: &str) -> bool {
+    valid_relative_path(path, false)
+        && path.starts_with(".aos-internal/conditional-delete-probes/")
+        && path
+            .strip_prefix(".aos-internal/conditional-delete-probes/")
+            .is_some_and(|name| {
+                !name.is_empty()
+                    && name.len() <= 128
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || byte == b'-')
+            })
 }
 
 fn valid_relative_path(path: &str, allow_empty: bool) -> bool {

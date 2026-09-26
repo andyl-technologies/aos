@@ -82,6 +82,7 @@
         systemd.services.aos-hub.serviceConfig.Environment = [
           "HUB_OCI_PULL_ENABLED=true"
           "HUB_OCI_PUSH_ENABLED=true"
+          "HUB_OCI_GC_ENABLED=true"
         ];
         environment.etc."tmpfiles.d/hub-hybrid-fleet-credentials.conf".text = ''
           d /run/credentials/@system 0700 root root -
@@ -130,6 +131,14 @@
     [[r2_buckets]]
     binding = "REGISTRY_BUCKET"
     bucket_name = "hybrid-fleet-r2"
+
+    [[durable_objects.bindings]]
+    name = "HYBRID_OBJECT_GUARD"
+    class_name = "HybridObjectGuard"
+
+    [[migrations]]
+    tag = "hybrid-object-guard-v1"
+    new_sqlite_classes = ["HybridObjectGuard"]
   '';
   workerSecrets = writeFixture "hub-hybrid-fleet-dev-vars" ''
     HUB_HYBRID_INGRESS_KEY=hybrid-fleet-ingress-key-with-at-least-thirty-two-bytes
@@ -1277,6 +1286,81 @@ in {
       assert cache_verification["outcome"]["object"]["key"] == f"{selector[4]}/{cache_path}", cache_verification
       assert cache_verification["outcome"]["sha256"] == cache_digest, cache_verification
       assert cache_verification["source_bytes"] == cache_size, cache_verification
+
+      probe_path = ".aos-internal/conditional-delete-probes/900-1"
+      probe_sequence = 0
+      def probe_work(operation):
+          global probe_sequence
+          probe_sequence += 1
+          issued = int(time.time())
+          plan = {
+              **cache_verification_plan,
+              "plan_id": f"{probe_sequence:032x}",
+              "issued_at": issued,
+              "expires_at": issued + 30,
+              "operation": operation,
+          }
+          request_body, request_signature = sign_storage_plan(plan)
+          return json.loads(client.succeed(
+              f"{CURL} -fsS -X POST -H 'content-type: application/json' "
+              f"-H 'x-aos-storage-work-signature: {request_signature}' "
+              f"--data-binary {shlex.quote(request_body.decode())} "
+              "https://aos.andyl.org/_internal/storage/v1/execute",
+              timeout=60,
+          ))["outcome"]
+
+      def write_probe(contents):
+          outcome = probe_work({
+              "kind": "put_probe",
+              "path": probe_path,
+              "content_base64": base64.b64encode(contents).decode(),
+          })
+          assert outcome["kind"] == "probe_acknowledged", outcome
+          observed = probe_work({"kind": "head", "path": probe_path})
+          assert observed["kind"] == "head", observed
+          return observed["object"]
+
+      first_probe = write_probe(b"reviewed identity")
+      second_probe = write_probe(b"replacement identity")
+      assert first_probe["etag"] != second_probe["etag"]
+      rejected_delete = probe_work({
+          "kind": "delete_if_matches",
+          "path": probe_path,
+          "claim_id": "fleet-mismatched-claim",
+          "expected_etag": first_probe["etag"],
+          "expected_size": first_probe["size"],
+          "expected_hash": None,
+      })
+      assert rejected_delete["kind"] == "delete_precondition_failed", rejected_delete
+      assert probe_work({"kind": "head", "path": probe_path})["object"] == second_probe
+      reviewed_delete = {
+          "kind": "delete_if_matches",
+          "path": probe_path,
+          "claim_id": "fleet-reviewed-claim",
+          "expected_etag": second_probe["etag"],
+          "expected_size": second_probe["size"],
+          "expected_hash": None,
+      }
+      removed = probe_work(reviewed_delete)
+      assert removed == {"kind": "object_deleted", "etag": second_probe["etag"]}, removed
+      later_probe = write_probe(b"later physical object")
+      assert probe_work(reviewed_delete) == removed
+      assert probe_work({"kind": "head", "path": probe_path})["object"] == later_probe
+      cleanup = probe_work({"kind": "delete_probe", "path": probe_path})
+      assert cleanup["kind"] == "probe_acknowledged", cleanup
+      assert probe_work({"kind": "head", "path": probe_path})["kind"] == "not_found"
+
+      for _ in range(90):
+          capability_state = native.succeed(
+              f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+              "-c \"SELECT state FROM oci_conditional_delete_capabilities "
+              "WHERE binding_id = (SELECT id FROM bindings "
+              "WHERE kind = 'deployment_r2')\""
+          ).strip()
+          if capability_state == "valid":
+              break
+          time.sleep(2)
+      assert capability_state == "valid", capability_state
 
       invalid_plan_time = int(time.time())
       rejected_plans = [

@@ -191,6 +191,7 @@ impl OciGcDeletionController {
                 content_hash: Some(claim.expected_hash.to_string()),
                 size: Some(expected_size),
             },
+            &claim.action_id,
         )
         .await
     }
@@ -270,9 +271,10 @@ async fn conditional_delete(
     deleter: &dyn SurfaceWrite,
     object_key: &str,
     precondition: SurfaceDeletePrecondition,
+    claim_id: &str,
 ) -> std::result::Result<ProviderSuccess, ProviderFailure> {
     let outcome = deleter
-        .delete_if_matches(object_key, &precondition)
+        .delete_if_matches_claimed(object_key, &precondition, claim_id)
         .await
         .map_err(ProviderFailure::retry)?;
     match outcome {
@@ -468,6 +470,7 @@ mod tests {
                 content_hash: Some(hash),
                 size: Some(bytes.len() as i64),
             },
+            "probe-success",
         )
         .await
         .unwrap();
@@ -520,6 +523,7 @@ mod tests {
                 content_hash: None,
                 size: None,
             },
+            "probe-mismatch",
         )
         .await;
         assert!(result.is_err());
@@ -549,6 +553,7 @@ mod tests {
                 content_hash: Some(hash),
                 size: Some(bytes.len() as i64),
             },
+            "probe-incomplete",
         )
         .await
         .unwrap_err();

@@ -27,7 +27,8 @@ use aos_hub_core::storage_work::{
     STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::{
-    FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
+    FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceDeleteOutcome,
+    SurfaceDeletePrecondition, SurfaceWrite, SurfaceWriteProvider,
 };
 use aos_registry_surface::{object, object_bundle};
 use async_trait::async_trait;
@@ -295,6 +296,9 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "copy_object",
                 "compose_oci_blob",
                 "delete_oci_staging",
+                "delete_if_matches",
+                "put_probe",
+                "delete_probe",
                 "create_multipart",
                 "complete_multipart",
                 "abort_multipart"
@@ -419,6 +423,28 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
             anyhow::ensure!(
                 result.source_bytes == 0,
                 "storage Worker staging deletion returned source bytes"
+            );
+        }
+        (
+            StorageWorkOperation::DeleteIfMatches { expected_etag, .. },
+            StorageWorkOutcome::ObjectDeleted { etag },
+        ) => {
+            anyhow::ensure!(
+                result.source_bytes == 0 && etag == expected_etag,
+                "storage Worker deleted a different object identity"
+            );
+        }
+        (
+            StorageWorkOperation::DeleteIfMatches { .. },
+            StorageWorkOutcome::NotFound | StorageWorkOutcome::DeletePreconditionFailed,
+        )
+        | (
+            StorageWorkOperation::PutProbe { .. } | StorageWorkOperation::DeleteProbe { .. },
+            StorageWorkOutcome::ProbeAcknowledged,
+        ) => {
+            anyhow::ensure!(
+                result.source_bytes == 0,
+                "storage Worker returned source bytes"
             );
         }
         (
@@ -1477,18 +1503,105 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
 
     async fn placement_deleter(
         &self,
-        _placement: &SurfacePlacementRecord,
-        _expected_binding_resource_version: i64,
-        _delete_credential_generation: i64,
+        placement: &SurfacePlacementRecord,
+        expected_binding_resource_version: i64,
+        delete_credential_generation: i64,
     ) -> Result<Box<dyn SurfaceWrite>> {
-        bail!("hybrid deletes require a conditional Worker work plan")
+        anyhow::ensure!(
+            delete_credential_generation == 1,
+            "invalid deployment R2 delete generation"
+        );
+        let current = self
+            .db
+            .surface_placement(placement.id)
+            .await?
+            .context("hybrid deletion placement disappeared")?;
+        anyhow::ensure!(
+            current.binding_id == placement.binding_id
+                && current.prefix == placement.prefix
+                && current.resource_version == placement.resource_version,
+            "hybrid deletion placement changed"
+        );
+        let binding = self
+            .db
+            .binding(placement.binding_id)
+            .await?
+            .context("hybrid deletion binding disappeared")?;
+        anyhow::ensure!(
+            binding.kind == "deployment_r2"
+                && binding.is_instance_default
+                && binding.resource_version == expected_binding_resource_version,
+            "hybrid deletion binding changed or is unsupported"
+        );
+        Ok(Box::new(HybridR2MultipartWriter {
+            placement: current,
+            binding,
+            work: Arc::clone(&self.work),
+        }))
     }
 
     async fn frozen_placement_deleter(
         &self,
-        _access: &FrozenSurfaceAccess,
+        access: &FrozenSurfaceAccess,
     ) -> Result<Box<dyn SurfaceWrite>> {
-        bail!("hybrid deletes require a conditional Worker work plan")
+        access.validate()?;
+        anyhow::ensure!(
+            access.delete_credential_purpose.is_none()
+                && access.delete_credential_generation.is_none(),
+            "deployment R2 has no external delete credential"
+        );
+        let placement = self
+            .db
+            .surface_placement(access.placement_id)
+            .await?
+            .context("frozen hybrid deletion placement disappeared")?;
+        anyhow::ensure!(
+            placement.registry_id == Some(access.registry_id)
+                && placement.name == access.placement_name
+                && placement.prefix == access.placement_prefix
+                && placement.binding_id == access.binding_id
+                && placement.resource_version == access.placement_resource_version
+                && placement.write_spec_version == access.placement_write_spec_version
+                && placement.observation_version == Some(access.placement_observation_version),
+            "frozen hybrid deletion placement changed"
+        );
+        let binding = self
+            .db
+            .binding(access.binding_id)
+            .await?
+            .context("frozen hybrid deletion binding disappeared")?;
+        anyhow::ensure!(
+            binding.kind == "deployment_r2"
+                && binding.is_instance_default
+                && binding.resource_version == access.binding_resource_version,
+            "frozen hybrid deletion binding changed or is unsupported"
+        );
+        let revision = self
+            .db
+            .binding_write_revision(access.binding_id, access.binding_write_revision)
+            .await?
+            .context("frozen hybrid delete revision disappeared")?;
+        anyhow::ensure!(
+            revision.writes_supported,
+            "frozen hybrid binding revision cannot write"
+        );
+        let capability = self
+            .db
+            .oci_conditional_delete_capability(access.binding_id, access.binding_write_revision)
+            .await?
+            .context("frozen hybrid delete capability disappeared")?;
+        anyhow::ensure!(
+            capability.state == "valid"
+                && capability.binding_resource_version == access.binding_resource_version
+                && capability.capability_fingerprint == access.delete_capability_fingerprint
+                && capability.resource_version >= access.delete_capability_resource_version,
+            "frozen hybrid delete capability changed"
+        );
+        Ok(Box::new(HybridR2MultipartWriter {
+            placement,
+            binding,
+            work: Arc::clone(&self.work),
+        }))
     }
 }
 
@@ -1512,12 +1625,66 @@ impl SurfaceWrite for HybridR2MultipartWriter {
         aos_hub_core::surface_write::md5_multipart_etag(parts)
     }
 
-    async fn write(&self, _path: &str, _bytes: &[u8]) -> Result<()> {
-        bail!("hybrid object bodies require Worker upload admission")
+    async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
+        write_hybrid_probe(&self.work, &self.placement, &self.binding, path, bytes).await
     }
 
-    async fn delete(&self, _path: &str) -> Result<()> {
-        bail!("hybrid object deletion requires conditional Worker work")
+    async fn delete(&self, path: &str) -> Result<()> {
+        delete_hybrid_probe(&self.work, &self.placement, &self.binding, path).await
+    }
+
+    async fn delete_if_matches(
+        &self,
+        path: &str,
+        expected: &SurfaceDeletePrecondition,
+    ) -> Result<SurfaceDeleteOutcome> {
+        anyhow::ensure!(
+            path.starts_with(".aos-internal/conditional-delete-probes/"),
+            "hybrid deletion requires a durable claim"
+        );
+        let claim_id = uuid::Uuid::new_v4().simple().to_string();
+        self.delete_if_matches_claimed(path, expected, &claim_id)
+            .await
+    }
+
+    async fn delete_if_matches_claimed(
+        &self,
+        path: &str,
+        expected: &SurfaceDeletePrecondition,
+        claim_id: &str,
+    ) -> Result<SurfaceDeleteOutcome> {
+        let etag = expected
+            .etag
+            .as_ref()
+            .context("hybrid deletion requires a strong ETag")?;
+        let size = expected
+            .size
+            .context("hybrid deletion requires a reviewed size")?;
+        let plan = self.work.plan_for_placement(
+            &self.placement,
+            &self.binding,
+            StorageWorkOperation::DeleteIfMatches {
+                path: path.into(),
+                claim_id: claim_id.into(),
+                expected_etag: etag.clone(),
+                expected_size: u64::try_from(size)?,
+                expected_hash: expected.content_hash.clone(),
+            },
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let result = self.work.execute(&plan).await?;
+        match result.outcome {
+            StorageWorkOutcome::ObjectDeleted { etag } => {
+                Ok(SurfaceDeleteOutcome::ConditionalDeleteAcknowledged { etag })
+            }
+            StorageWorkOutcome::NotFound => Ok(SurfaceDeleteOutcome::NotFound),
+            StorageWorkOutcome::DeletePreconditionFailed => {
+                Ok(SurfaceDeleteOutcome::PreconditionFailed {
+                    detail: "R2 object identity changed".into(),
+                })
+            }
+            _ => bail!("storage Worker returned an unexpected conditional deletion result"),
+        }
     }
 
     async fn create_multipart(&self, path: &str) -> Result<String> {
@@ -1583,11 +1750,14 @@ struct HybridOciStagingWriter {
 
 #[async_trait]
 impl SurfaceWrite for HybridOciStagingWriter {
-    async fn write(&self, _path: &str, _bytes: &[u8]) -> Result<()> {
-        bail!("hybrid OCI staging writes require Worker upload admission")
+    async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
+        write_hybrid_probe(&self.work, &self.placement, &self.binding, path, bytes).await
     }
 
     async fn delete(&self, path: &str) -> Result<()> {
+        if path.starts_with(".aos-internal/conditional-delete-probes/") {
+            return delete_hybrid_probe(&self.work, &self.placement, &self.binding, path).await;
+        }
         let plan = self.work.plan_for_placement(
             &self.placement,
             &self.binding,
@@ -1601,6 +1771,51 @@ impl SurfaceWrite for HybridOciStagingWriter {
         );
         Ok(())
     }
+}
+
+async fn write_hybrid_probe(
+    work: &RemoteStorageWorkClient,
+    placement: &SurfacePlacementRecord,
+    binding: &BindingRecord,
+    path: &str,
+    bytes: &[u8],
+) -> Result<()> {
+    anyhow::ensure!(bytes.len() <= 4 * 1024, "hybrid probe body is too large");
+    let plan = work.plan_for_placement(
+        placement,
+        binding,
+        StorageWorkOperation::PutProbe {
+            path: path.into(),
+            content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        },
+        aos_hub_core::clock::now_unix_secs(),
+    )?;
+    let result = work.execute(&plan).await?;
+    anyhow::ensure!(
+        matches!(result.outcome, StorageWorkOutcome::ProbeAcknowledged),
+        "storage Worker did not acknowledge probe write"
+    );
+    Ok(())
+}
+
+async fn delete_hybrid_probe(
+    work: &RemoteStorageWorkClient,
+    placement: &SurfacePlacementRecord,
+    binding: &BindingRecord,
+    path: &str,
+) -> Result<()> {
+    let plan = work.plan_for_placement(
+        placement,
+        binding,
+        StorageWorkOperation::DeleteProbe { path: path.into() },
+        aos_hub_core::clock::now_unix_secs(),
+    )?;
+    let result = work.execute(&plan).await?;
+    anyhow::ensure!(
+        matches!(result.outcome, StorageWorkOutcome::ProbeAcknowledged),
+        "storage Worker did not acknowledge probe cleanup"
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1684,6 +1899,9 @@ mod tests {
                 "copy_object".into(),
                 "compose_oci_blob".into(),
                 "delete_oci_staging".into(),
+                "delete_if_matches".into(),
+                "put_probe".into(),
+                "delete_probe".into(),
                 "create_multipart".into(),
                 "complete_multipart".into(),
                 "abort_multipart".into(),

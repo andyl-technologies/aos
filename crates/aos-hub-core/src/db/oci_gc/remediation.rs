@@ -709,7 +709,7 @@ impl Database {
                    AND capability.state = 'valid' AND capability.observed_at >= ?6
                    AND ((capability.delete_credential_purpose IS NULL
                          AND capability.delete_credential_generation IS NULL
-                         AND binding.kind = 'local_fs')
+                         AND binding.kind IN ('local_fs', 'deployment_r2'))
                      OR credential.validation_state = 'valid')
                    AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
                      WHERE registry_lock.registry_id = entry.registry_id)",
@@ -964,7 +964,7 @@ impl Database {
                        AND capability.state = 'valid'
                        AND ((oci_untracked_repair_plans.delete_credential_purpose IS NULL
                              AND oci_untracked_repair_plans.delete_credential_generation IS NULL
-                             AND binding.kind = 'local_fs')
+                             AND binding.kind IN ('local_fs', 'deployment_r2'))
                          OR (credential.validation_state = 'valid'
                            AND credential_head.current_generation =
                              oci_untracked_repair_plans.delete_credential_generation)))",

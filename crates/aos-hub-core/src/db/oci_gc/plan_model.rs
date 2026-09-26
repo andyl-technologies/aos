@@ -225,7 +225,7 @@ pub(super) fn oci_gc_snapshot_guard_statement(
                    AND snapshot.delete_credential_generation IS NULL))
                AND ((snapshot.delete_credential_purpose IS NULL
                      AND snapshot.delete_credential_generation IS NULL
-                     AND binding.kind = 'local_fs')
+                     AND binding.kind IN ('local_fs', 'deployment_r2'))
                  OR (delete_credential.validation_state = 'valid'
                    AND delete_credential_head.current_generation =
                      snapshot.delete_credential_generation))

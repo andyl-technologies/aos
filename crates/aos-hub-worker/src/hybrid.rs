@@ -227,8 +227,7 @@ async fn append_oci_upload_chunk(mut request: Request, env: &Env) -> Result<Resp
     }
     let chunk_sha256 = hex::encode(Sha256::digest(&bytes));
     let byte_size = bytes.len() as u64;
-    let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
-    if let Err(error) = crate::surface::hybrid_r2_put(bucket, &object_key, &bytes).await {
+    if let Err(error) = crate::hybrid_object::put(env, &object_key, &bytes).await {
         worker::console_error!("hybrid_oci_chunk_put_failed: {error:#}");
         return Response::error("OCI chunk storage write failed", 503);
     }
@@ -649,10 +648,7 @@ async fn upload_registry_object(mut request: Request, env: &Env) -> Result<Respo
         }
     }
     for placement in &admission.placements {
-        let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
-        if let Err(error) =
-            crate::surface::hybrid_r2_put(bucket, &placement.object_key, &bytes).await
-        {
+        if let Err(error) = crate::hybrid_object::put(env, &placement.object_key, &bytes).await {
             worker::console_error!("publication_r2_put_failed: {error:#}");
             return Response::error("publication storage write failed", 503);
         }
@@ -761,8 +757,7 @@ async fn upload_cache_object(mut request: Request, env: &Env) -> Result<Response
     {
         return Response::error("cache upload key is invalid", 502);
     }
-    let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
-    if let Err(error) = crate::surface::hybrid_r2_put(bucket, &object_key, &bytes).await {
+    if let Err(error) = crate::hybrid_object::put(env, &object_key, &bytes).await {
         worker::console_error!("hybrid_cache_upload_put_failed: {error:#}");
         return Response::error("cache upload storage write failed", 503);
     }
@@ -836,6 +831,9 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
             "copy_object".into(),
             "compose_oci_blob".into(),
             "delete_oci_staging".into(),
+            "delete_if_matches".into(),
+            "put_probe".into(),
+            "delete_probe".into(),
             "create_multipart".into(),
             "complete_multipart".into(),
             "abort_multipart".into(),
@@ -873,8 +871,7 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
     };
     let operation_kind = plan.operation.kind();
 
-    let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
-    let result = match crate::surface::execute_r2_storage_work(bucket, &plan).await {
+    let result = match crate::surface::execute_r2_storage_work(env, &plan).await {
         Ok(result) => result,
         Err(_error) => {
             worker::console_error!(

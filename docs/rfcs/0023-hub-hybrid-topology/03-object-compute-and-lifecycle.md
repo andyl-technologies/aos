@@ -119,6 +119,23 @@ positively observed for the exact binding revision as required by existing
 `FrozenSurfaceAccess` and OCI GC flows; unsupported backends fail closed for
 that workflow.
 
+Deployment R2 uses a separate object-scoped Durable Object for visible
+mutations. Its identity is the deployment and physical R2 key. Every hybrid
+visible put and multipart completion for that key passes through this guard,
+as does each reviewed physical deletion. Nonempty request bodies are staged
+as multipart parts in R2 by the ingress Worker; only compact completion
+metadata crosses to the guard. R2's Worker API has no atomic conditional
+delete operation, so the guard serializes HEAD, identity comparison, and
+DELETE with writes to the same key. A deletion plan carries the SQL claim ID,
+strong ETag, size, and reviewed hash. The guard persists the claim before
+deleting and retains its outcome indefinitely; a retried claim cannot delete
+a replacement at the same key. A crash after R2 deletion but before outcome
+persistence is resolved by the next guarded HEAD, while writes stay blocked
+by the pending claim. This guard is a correctness dependency for hybrid R2,
+distinct from the optional parsed-result cache above. Other backends need
+their own positively observed atomic condition or an equivalent serialized
+mutation boundary before physical GC can run.
+
 ## Failure and cost controls
 
 DO alarms, cache reads, and provider reads are observable separately. Metrics

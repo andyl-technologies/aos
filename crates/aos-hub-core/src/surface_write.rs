@@ -365,6 +365,26 @@ pub trait SurfaceWrite: BackendBounds {
         anyhow::bail!("this backend does not support identity-checked deletion")
     }
 
+    /// Deletes one reviewed object with a durable claim identity for retries.
+    ///
+    /// Providers that enforce the object condition atomically need no extra
+    /// claim state. Hybrid R2 uses the claim to prevent a replay from deleting
+    /// a later object at the same physical key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same conditions as
+    /// [`delete_if_matches`](Self::delete_if_matches).
+    async fn delete_if_matches_claimed(
+        &self,
+        path: &str,
+        expected: &SurfaceDeletePrecondition,
+        claim_id: &str,
+    ) -> Result<SurfaceDeleteOutcome> {
+        let _ = claim_id;
+        self.delete_if_matches(path, expected).await
+    }
+
     /// Begin a multipart upload targeting the logical `path`, returning the
     /// backend's opaque upload id.
     ///

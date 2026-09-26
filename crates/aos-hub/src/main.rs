@@ -1295,16 +1295,16 @@ async fn main() -> Result<()> {
                         Arc::clone(&inventory_db),
                         Arc::clone(work),
                     ));
+                let inventory_writers: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> =
+                    Arc::new(aos_hub::storage_work::HybridSurfaceWrites::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(work),
+                    ));
                 let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
                     Arc::clone(&inventory_db),
                     Arc::clone(&inventory_surfaces),
                 )
-                .with_writes(Arc::new(
-                    aos_hub::storage_work::HybridSurfaceWrites::new(
-                        Arc::clone(&inventory_db),
-                        Arc::clone(work),
-                    ),
-                ));
+                .with_writes(Arc::clone(&inventory_writers));
                 tokio::spawn(async move {
                     let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
                     loop {
@@ -1326,6 +1326,32 @@ async fn main() -> Result<()> {
                         "hybrid-inventory",
                     );
                 }
+                let deletion_controller =
+                    aos_hub_core::gc_controller::CacheGcDeletionController::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_writers),
+                    );
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = deletion_controller.run_due(now_secs(), 100).await {
+                            tracing::warn!(error = %format!("{error:#}"), "hybrid physical cache deletion pass failed");
+                        }
+                    }
+                });
+                let conditional_delete_probes =
+                    aos_hub_core::conditional_delete_probe::ConditionalDeleteProbeController::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces),
+                        Arc::clone(&inventory_writers),
+                    );
+                let oci_gc_controller =
+                    aos_hub_core::oci_gc_controller::OciGcDeletionController::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces),
+                        Arc::clone(&inventory_writers),
+                    );
                 tokio::spawn(async move {
                     let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
                     loop {
@@ -1337,6 +1363,18 @@ async fn main() -> Result<()> {
                         .await
                         {
                             tracing::warn!(error = %format!("{error:#}"), "cache tombstone reap failed");
+                        }
+                        if oci_gc_enabled {
+                            if let Err(error) = oci_gc_controller
+                                .run_due("hybrid-oci-gc", now_secs(), 100)
+                                .await
+                            {
+                                tracing::warn!(error = %format!("{error:#}"), "hybrid OCI GC deletion pass failed");
+                            }
+                        }
+                        if let Err(error) = conditional_delete_probes.run_due(now_secs(), 10).await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "hybrid conditional-delete probe failed");
                         }
                         let caches = match inventory_db.list_binary_caches().await {
                             Ok(caches) => caches,

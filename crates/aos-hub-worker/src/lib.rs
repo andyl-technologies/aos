@@ -147,6 +147,8 @@ pub mod handlers;
 #[cfg(target_arch = "wasm32")]
 mod hybrid;
 #[cfg(target_arch = "wasm32")]
+pub mod hybrid_object;
+#[cfg(target_arch = "wasm32")]
 pub mod indexer;
 // Pure (no `worker`/wasm dependency) DO-SQLite placeholder translation, so it
 // is unit-tested on the native target too — see [`placeholder`].
