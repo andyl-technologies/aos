@@ -3183,6 +3183,66 @@ static FrontendPluginRegistry::Add<StampAction> X("accache-stamp", "accache test
     return results
 
 
+def check_clang_named_module_file(root, env, accache, sccache, clang, hits):
+    """Invalidate a C++20 consumer when a named PCM input changes."""
+    fixture = "clang-named-module-file"
+    work = root / fixture
+    work.mkdir()
+    (work / "consumer.cpp").write_text(
+        "import example;\nint answer() { return value; }\n")
+    pcm = work / "example.pcm"
+    object_file = work / "consumer.o"
+    args = [clang, "-std=c++20", "-c", "consumer.cpp",
+            "-fmodule-file=example=example.pcm", "-o", "consumer.o"]
+
+    def compile_object(command):
+        object_file.unlink(missing_ok=True)
+        completed = subprocess.run([*command, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (fixture, command, completed.stderr)
+        return completed.stdout, completed.stderr, object_file.read_bytes()
+
+    results = []
+    first_object = None
+    for revision, value in enumerate([42, 73]):
+        (work / "module.cppm").write_text(
+            f"export module example;\nexport constexpr int value = {value};\n")
+        completed = subprocess.run(
+            [clang, "-std=c++20", "--precompile", "module.cppm",
+             "-o", str(pcm)],
+            cwd=work, env=env, capture_output=True, timeout=120)
+        assert completed.returncode == 0, (fixture, "module precompile", completed.stderr)
+
+        direct = compile_object([])
+        if first_object is None:
+            first_object = direct[2]
+        else:
+            assert direct[2] != first_object, (fixture, "PCM edit had no effect")
+
+        before_hits = hits()
+        assert compile_object([sccache]) == direct, (fixture, revision, "oracle cold")
+        assert hits() == before_hits, (fixture, "oracle ignored changed PCM")
+        before_hits = hits()
+        assert compile_object([sccache]) == direct, (fixture, revision, "oracle warm")
+        assert hits() > before_hits, (fixture, "oracle did not hit")
+
+        assert compile_object([accache]) == direct, (fixture, revision, "cold")
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", (fixture, revision, cold)
+        if revision:
+            assert any("example.pcm" in item for item in cold["changes"]), cold
+        assert compile_object([accache]) == direct, (fixture, revision, "warm")
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", (fixture, revision, warm)
+
+        results.append({"fixture": fixture, "revision": revision,
+                        "oracle_hit": True, "accache": "hit",
+                        "artifacts": ["consumer.o"]})
+
+    print("PASS oracle", fixture, "PCM invalidation", flush=True)
+    return results
+
+
 def check_rust_llvm_plugin(root, env, accache, sccache, rustc, clang, hits):
     """Track an LLVM pass plugin omitted from rustc dep-info."""
     work = root / "rust-llvm-plugin"
@@ -4463,6 +4523,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                                                sccache, clang, hits))
         results.extend(check_clang_frontend_plugin(root, env, accache,
                                                    sccache, clang, hits))
+        results.extend(check_clang_named_module_file(root, env, accache,
+                                                     sccache, clang, hits))
         results.extend(check_clang_llvm_file_inputs(root, env, accache,
                                                     sccache, clang, hits))
         results.extend(check_clang_llvm_report_passthrough(root, env, accache,
