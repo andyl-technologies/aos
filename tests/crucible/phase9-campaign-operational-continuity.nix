@@ -85,6 +85,9 @@ in
           require_result_line \
             ${campaignStoreComposition}/result \
             s3_faults_preserve_multiple_refs_and_transfer_gc=true
+          require_result_line \
+            ${campaignStoreComposition}/result \
+            paused_derived_s3_write_back_fault_recovery_gc=true
 
           require_result_line ${campaignColdContinuity}/result PASS
           require_result_line \
@@ -234,6 +237,7 @@ in
           archive_transfer_derived_refs_retained=2
           active_publication_transfer_write_back_gc=true
           s3_faults_preserve_multiple_refs_and_transfer_gc=true
+          paused_derived_s3_write_back_fault_recovery_gc=true
           public_finding_midpoint_debug=true
           authenticated_replay_violation_boundary=true
           authenticated_replay_selection_sequence=fast,q7

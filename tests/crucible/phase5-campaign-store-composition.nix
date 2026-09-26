@@ -152,7 +152,8 @@ in
             campaign_gc::tests::apply_and_restart::logical_quota_graph_gc_reclaims_admission_capacity_across_restart \
             campaign_gc::tests::apply_and_restart::packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_bytes \
             campaign_gc::tests::s3::s3_graph_admin_drives_global_gc_across_restart \
-            campaign_gc::tests::s3::s3_gc_retains_multiple_refs_and_transfer_during_backend_faults
+            campaign_gc::tests::s3::s3_gc_retains_multiple_refs_and_transfer_during_backend_faults \
+            campaign_gc::tests::s3::paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc
           do
             run_exact_lib_test crucible-daemon "$daemon_test"
           done
@@ -214,6 +215,7 @@ in
           interrupted_gc_journal=true
           active_publication_transfer_write_back_gc=true
           s3_faults_preserve_multiple_refs_and_transfer_gc=true
+          paused_derived_s3_write_back_fault_recovery_gc=true
           packed_restart_and_repack=true
           specialized_layers=compressed,encrypted,compressed-encrypted,logical-quota,physical-quota,namespaced,profile-validated,s3
           RESULT
