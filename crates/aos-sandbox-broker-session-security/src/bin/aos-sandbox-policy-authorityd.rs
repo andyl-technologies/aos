@@ -1642,6 +1642,7 @@ fn serve_closed_binding_replay(
         ClosedPolicyBindingDecisionV2::Absent => 0,
         ClosedPolicyBindingDecisionV2::CommittedHeld(_) => 1,
         ClosedPolicyBindingDecisionV2::CommittedReleased(_) => 2,
+        ClosedPolicyBindingDecisionV2::CommittedQualifiedHeld(_) => 3,
     };
 
     let mut reply =

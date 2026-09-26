@@ -151,7 +151,7 @@ fn verify_exact_held_replay(
     epoch: u64,
 ) -> io::Result<ClosedPolicyRootCasObservationV2> {
     match decision {
-        ClosedPolicyBindingDecisionV2::CommittedHeld(observation)
+        ClosedPolicyBindingDecisionV2::CommittedQualifiedHeld(observation)
             if recorded == Some(proposed)
                 && observation.binding() == binding
                 && observation.handoff_epoch() == epoch =>
@@ -560,7 +560,7 @@ mod tests {
         let observed = ClosedPolicyRootCasObservationV2::from_replayed_fields(binding, 9)
             .expect("held observation");
         let proposed = [11; 16];
-        let held = ClosedPolicyBindingDecisionV2::CommittedHeld(observed);
+        let held = ClosedPolicyBindingDecisionV2::CommittedQualifiedHeld(observed);
         assert_eq!(
             verify_exact_held_replay(held, Some(&proposed), &proposed, binding, 9)
                 .expect("exact held replay"),
@@ -569,6 +569,16 @@ mod tests {
         assert!(verify_exact_held_replay(held, Some(&[12; 16]), &proposed, binding, 9).is_err());
         assert!(verify_exact_held_replay(held, None, &proposed, binding, 9).is_err());
         assert!(verify_exact_held_replay(held, Some(&proposed), &proposed, binding, 10).is_err());
+        assert!(
+            verify_exact_held_replay(
+                ClosedPolicyBindingDecisionV2::CommittedHeld(observed),
+                Some(&proposed),
+                &proposed,
+                binding,
+                9,
+            )
+            .is_err()
+        );
         assert!(
             verify_exact_held_replay(
                 ClosedPolicyBindingDecisionV2::Absent,

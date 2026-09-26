@@ -62,8 +62,10 @@ use super::{
 
 mod hold;
 mod producer;
+mod proof;
 
 use hold::{HOLD_KEY, RootBindingHoldV1, current_hold, release_hold};
+use proof::{PROOF_KEY_PREFIX, RootQualifiedProofV1, proof_key};
 
 pub use producer::{
     propose_closed_current_create_explicit_policy_binding_v2,
@@ -363,8 +365,11 @@ pub struct ClosedPolicyRootCasObservationV2 {
 pub enum ClosedPolicyBindingDecisionV2 {
     /// The exact binding has not committed at the still-current Root epoch.
     Absent,
-    /// The exact binding committed and its Root hold remains unresolved.
+    /// The exact binding committed without retained signer proof and remains held.
     CommittedHeld(ClosedPolicyRootCasObservationV2),
+    /// The held binding also retained its exact verified Source/Cache signer flight.
+    /// This is still neither an acknowledgment nor an effect capability.
+    CommittedQualifiedHeld(ClosedPolicyRootCasObservationV2),
     /// The exact binding committed and its inert Root hold was durably retired.
     CommittedReleased(ClosedPolicyRootCasObservationV2),
 }
@@ -1047,7 +1052,7 @@ impl ClosedPolicyRootSessionV2<'_> {
         cache_hold: CachePolicyHoldV1,
         quota_digest: ObjectDigest,
     ) -> Result<ClosedPolicyRootCasObservationV2, PolicyCompilerJournalErrorV1> {
-        let _signed_cut = self.inspect_staged_signer_cut_with_observation(
+        let signed_cut = self.inspect_staged_signer_cut_with_observation(
             proposed,
             staged,
             expected_source,
@@ -1057,7 +1062,34 @@ impl ClosedPolicyRootSessionV2<'_> {
             cache_hold,
             quota_digest,
         )?;
-        self.commit_closed_binding(proposed)
+        let source_pin = self
+            .authority
+            .get(SOURCE_HOLD_PIN_KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let cache_pin = self
+            .authority
+            .get(CACHE_PIN_KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let source_generation = PinnedSourceHoldReadbackSignerV1::decode(source_pin)
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
+            .generation();
+        let cache_generation = PinnedCacheOwnerReadbackSignerV1::decode(cache_pin)
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
+            .generation();
+        let challenge = staged_closed_policy_signer_challenge_v2(staged, proposed)?;
+        let proof = RootQualifiedProofV1 {
+            binding: signed_cut.cache_cut().binding(),
+            epoch: signed_cut.cache_cut().epoch(),
+            source_generation,
+            cache_generation,
+            challenge: challenge.nonce(),
+            cut: challenge.cut(),
+            source_packet: signed_cut.source_packet(),
+            cache_packet: signed_cut.cache_packet(),
+            source_pin: ObjectDigest::from_bytes(Sha256::digest(source_pin).into()),
+            cache_pin: ObjectDigest::from_bytes(Sha256::digest(cache_pin).into()),
+        };
+        self.commit_closed_binding_with_proof(proposed, Some(proof))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1202,6 +1234,14 @@ impl ClosedPolicyRootSessionV2<'_> {
         &mut self,
         proposed: &[u8],
     ) -> Result<ClosedPolicyRootCasObservationV2, PolicyCompilerJournalErrorV1> {
+        self.commit_closed_binding_with_proof(proposed, None)
+    }
+
+    fn commit_closed_binding_with_proof(
+        &mut self,
+        proposed: &[u8],
+        proof: Option<RootQualifiedProofV1>,
+    ) -> Result<ClosedPolicyRootCasObservationV2, PolicyCompilerJournalErrorV1> {
         if self.postcommit.is_some() {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
@@ -1219,9 +1259,18 @@ impl ClosedPolicyRootSessionV2<'_> {
         );
         let exact_replay = predecessor == binding_head;
         let prior_hold = current_hold(&self.authority, predecessor, next_generation, count)?;
+        let qualified_proof_key = proof.map(|proof| proof_key(proof.binding));
+        let proof_bytes = proof.map(RootQualifiedProofV1::encode).transpose()?;
+        if proof.is_some_and(|proof| {
+            proof.binding != binding_head || proof.epoch != binding.handoff_epoch
+        }) {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let recorded_proof = self.authority.get(&proof_key(binding_head))?;
         if exact_replay {
             if self.authority.get(&key)? != Some(proposed)
                 || !prior_hold.is_some_and(|hold| hold.held && hold.binding == binding_head)
+                || recorded_proof != proof_bytes.as_ref().map(AsRef::as_ref)
             {
                 return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
             }
@@ -1250,32 +1299,39 @@ impl ClosedPolicyRootSessionV2<'_> {
                 held: true,
             }
             .encode()?;
-            let transaction = JournalTransaction::new(
-                transaction_id,
-                vec![
-                    JournalRecord::put(
-                        RecordNamespace::DesiredState,
-                        key.clone(),
-                        proposed.to_vec(),
-                    ),
-                    JournalRecord::put(
-                        RecordNamespace::DesiredState,
-                        ROOT_BINDING_HEAD_KEY.to_vec(),
-                        binding_head.as_bytes().to_vec(),
-                    ),
-                    JournalRecord::put(
-                        RecordNamespace::DesiredState,
-                        HOLD_KEY.to_vec(),
-                        held.to_vec(),
-                    ),
-                ],
-            )?;
-            // The binding, head pointer, and held decision become durable in
-            // one transaction before any Q04 response or release is possible.
+            let mut records = vec![
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    key.clone(),
+                    proposed.to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    ROOT_BINDING_HEAD_KEY.to_vec(),
+                    binding_head.as_bytes().to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    HOLD_KEY.to_vec(),
+                    held.to_vec(),
+                ),
+            ];
+            if let (Some(key), Some(value)) = (qualified_proof_key.as_ref(), proof_bytes.as_ref()) {
+                records.push(JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    key.clone(),
+                    value.to_vec(),
+                ));
+            }
+            let transaction = JournalTransaction::new(transaction_id, records)?;
+            // A qualified signer proof shares the binding/head/hold commit.
+            // A lost response cannot leave a proof with no Root decision.
             self.authority.commit(&transaction)?;
             if self.authority.get(&key)? != Some(proposed)
                 || self.authority.get(ROOT_BINDING_HEAD_KEY)? != Some(binding_head.as_bytes())
                 || self.authority.get(HOLD_KEY)? != Some(held.as_slice())
+                || self.authority.get(&proof_key(binding_head))?
+                    != proof_bytes.as_ref().map(AsRef::as_ref)
             {
                 return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
             }
@@ -1587,6 +1643,19 @@ fn current_root_binding_chain(
     if bindings.len() > MAXIMUM_POLICY_BINDINGS {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
+    for (key, value) in authority.records()? {
+        if !key.starts_with(PROOF_KEY_PREFIX) {
+            continue;
+        }
+        let proof = RootQualifiedProofV1::decode(value)?;
+        if key != proof_key(proof.binding).as_slice()
+            || !bindings.iter().any(|(binding, head)| {
+                proof.binding == *head && proof.epoch == binding.root_generation
+            })
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+    }
     bindings.sort_by_key(|(binding, _)| binding.root_generation);
     let mut predecessor = ObjectDigest::from_bytes([0; 32]);
     let mut operations = BTreeSet::new();
@@ -1744,7 +1813,37 @@ fn recover_closed_binding_decision_from_authority(
         root_generation: epoch,
         handoff_epoch: epoch,
     };
-    let decision = if hold.held {
+    let proof = authority
+        .get(&proof_key(binding))?
+        .map(RootQualifiedProofV1::decode)
+        .transpose()?;
+    if proof.is_some_and(|proof| proof.binding != binding || proof.epoch != epoch) {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    if let Some(proof) = proof {
+        let source_pin = authority
+            .get(SOURCE_HOLD_PIN_KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let cache_pin = authority
+            .get(CACHE_PIN_KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let source_generation = PinnedSourceHoldReadbackSignerV1::decode(source_pin)
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
+            .generation();
+        let cache_generation = PinnedCacheOwnerReadbackSignerV1::decode(cache_pin)
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
+            .generation();
+        if proof.source_generation != source_generation
+            || proof.cache_generation != cache_generation
+            || proof.source_pin.as_bytes() != Sha256::digest(source_pin).as_slice()
+            || proof.cache_pin.as_bytes() != Sha256::digest(cache_pin).as_slice()
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+    }
+    let decision = if hold.held && proof.is_some() {
+        ClosedPolicyBindingDecisionV2::CommittedQualifiedHeld(observation)
+    } else if hold.held {
         ClosedPolicyBindingDecisionV2::CommittedHeld(observation)
     } else {
         ClosedPolicyBindingDecisionV2::CommittedReleased(observation)
@@ -3137,9 +3236,72 @@ mod tests {
         .expect("exact cold Root replay");
         assert_eq!(
             decision,
-            ClosedPolicyBindingDecisionV2::CommittedHeld(committed)
+            ClosedPolicyBindingDecisionV2::CommittedQualifiedHeld(committed)
         );
         assert_eq!(recorded.as_deref(), Some(proposed.as_slice()));
+        let proof = RootQualifiedProofV1::decode(
+            authority
+                .get(&proof_key(committed.binding()))
+                .expect("proof readback")
+                .expect("qualified proof"),
+        )
+        .expect("canonical proof");
+        assert_eq!(proof.source_generation, 3);
+        assert_eq!(proof.cache_generation, 4);
+        assert_eq!(
+            proof.source_pin.as_bytes(),
+            Sha256::digest(source_pin).as_slice()
+        );
+        assert_eq!(
+            proof.cache_pin.as_bytes(),
+            Sha256::digest(cache_pin).as_slice()
+        );
+        assert_eq!(proof.challenge, challenge.nonce());
+        assert_eq!(proof.cut, challenge.cut());
+        assert_eq!(
+            proof.source_packet.as_bytes(),
+            Sha256::digest(source_packet).as_slice()
+        );
+        assert_eq!(
+            proof.cache_packet.as_bytes(),
+            Sha256::digest(cache_packet).as_slice()
+        );
+        drop(authority);
+        drop(cold_root);
+
+        let substituted_pin =
+            encode_source_hold_readback_signer_credential_v1(3, &wrong_key.verifying_key())
+                .expect("substituted Source pin");
+        let mut altered_root = open_test_root(directory.path());
+        altered_root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("protected Root writer")
+            .commit(
+                &JournalTransaction::new(
+                    [51; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        SOURCE_HOLD_PIN_KEY.to_vec(),
+                        substituted_pin.to_vec(),
+                    )],
+                )
+                .expect("pin substitution transaction"),
+            )
+            .expect("fixture pin substitution");
+        drop(altered_root);
+
+        let mut cold_root = open_test_root(directory.path());
+        let authority = cold_root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("cold Root writer");
+        assert!(
+            recover_closed_binding_decision_from_authority(
+                &authority,
+                committed.binding(),
+                committed.handoff_epoch(),
+            )
+            .is_err()
+        );
     }
 
     #[test]

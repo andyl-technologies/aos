@@ -658,11 +658,12 @@ fn decode_closed_binding_replay_reply(
         0 if proposed.iter().all(|byte| *byte == 0) => {
             Ok((ClosedPolicyBindingDecisionV2::Absent, None))
         }
-        1 | 2 if closed_policy_binding_digest_v2(proposed).ok() == Some(binding) => {
-            let decision = if reply[64] == 1 {
-                ClosedPolicyBindingDecisionV2::CommittedHeld(observation)
-            } else {
-                ClosedPolicyBindingDecisionV2::CommittedReleased(observation)
+        1 | 2 | 3 if closed_policy_binding_digest_v2(proposed).ok() == Some(binding) => {
+            let decision = match reply[64] {
+                1 => ClosedPolicyBindingDecisionV2::CommittedHeld(observation),
+                2 => ClosedPolicyBindingDecisionV2::CommittedReleased(observation),
+                3 => ClosedPolicyBindingDecisionV2::CommittedQualifiedHeld(observation),
+                _ => return Err(invalid_receipt()),
             };
             Ok((decision, Some(proposed.to_vec())))
         }
