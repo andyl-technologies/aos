@@ -97,6 +97,29 @@ pub(super) fn configure(
     invocation
         .extra_inputs
         .extend(parsed.profile.iter().cloned());
+
+    // These unstable inputs are not necessarily listed in rustc's depfile.
+    for (index, arg) in expanded.iter().enumerate() {
+        let option = if arg == "-Z" {
+            expanded.get(index + 1).map(String::as_str)
+        } else {
+            arg.strip_prefix("-Z")
+        };
+        let Some(option) = option else {
+            continue;
+        };
+        if let Some(path) = option.strip_prefix("profile-sample-use=") {
+            ensure!(!path.is_empty(), "Rust sample profile path is empty");
+            invocation.extra_inputs.insert(path.into());
+        }
+        if let Some(paths) = option.strip_prefix("sanitizer-dataflow-abilist=") {
+            for path in paths.split(',') {
+                ensure!(!path.is_empty(), "Rust sanitizer ABI list path is empty");
+                invocation.extra_inputs.insert(path.into());
+            }
+        }
+    }
+
     invocation
         .read_dirs
         .extend(parsed.crate_link_paths.iter().cloned());
@@ -218,6 +241,13 @@ fn invocation_specific_unstable_option(args: &[String]) -> Option<&str> {
                 | "dump-mir-graphviz"
                 | "metrics-dir"
                 | "nll-facts"
+                | "dump-mono-stats"
+                | "profile-closures"
+                | "print-codegen-stats-json"
+                | "remark-dir"
+                | "split-dwarf-out-dir"
+                | "temps-dir"
+                | "write-long-types-to-disk"
         ) {
             return Some(name);
         }
