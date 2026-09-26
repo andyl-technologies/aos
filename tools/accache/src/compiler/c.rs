@@ -270,6 +270,7 @@ pub(super) fn configure(
     // temporary directory, never to the caller's final output destinations.
     let mut index = 0;
     let mut assembler_depfile = false;
+    let mut assembler_listing_file = false;
     while index < common.len() {
         let arg = &common[index];
         if arg == "-Xassembler" && common.get(index + 1).is_some_and(|next| next == "--MD") {
@@ -291,27 +292,76 @@ pub(super) fn configure(
             index += 4;
             continue;
         }
+        if arg == "-Xassembler"
+            && let Some(option) = common.get(index + 1)
+            && let Some(listing) = assembler_listing_option(option)
+        {
+            ensure!(
+                parsed.uses_external_assembler,
+                "assembler listing requires an external assembler"
+            );
+            ensure!(
+                !listing.timestamped,
+                "assembler general listing contains a timestamp"
+            );
+            if let Some(path) = listing.output {
+                ensure!(
+                    !assembler_listing_file && !path.is_empty(),
+                    "assembler listing output cannot be tracked"
+                );
+                invocation.output(Path::new(path), false)?;
+                assembler_listing_file = true;
+            }
+            index += 2;
+            continue;
+        }
         if let Some(payload) = arg.strip_prefix("-Wa,") {
             let mut fields = payload.split(',');
             let mut preserved = Vec::new();
             let mut output = None;
+            let mut listing_file = None;
+            let mut has_listing = false;
             while let Some(field) = fields.next() {
                 if field == "--MD" {
                     ensure!(output.is_none(), "multiple assembler dependency outputs");
                     output = Some(fields.next().ok_or_else(|| {
                         anyhow::anyhow!("assembler dependency output has no filename")
                     })?);
+                } else if let Some(listing) = assembler_listing_option(field) {
+                    ensure!(
+                        !listing.timestamped,
+                        "assembler general listing contains a timestamp"
+                    );
+                    has_listing = true;
+                    if let Some(path) = listing.output {
+                        ensure!(listing_file.is_none(), "multiple assembler listing outputs");
+                        listing_file = Some(path);
+                    }
                 } else {
                     preserved.push(field);
                 }
             }
-            if let Some(path) = output {
+            if output.is_some() || has_listing {
                 ensure!(
-                    parsed.uses_external_assembler && !assembler_depfile && !path.is_empty(),
-                    "assembler dependency output cannot be tracked"
+                    parsed.uses_external_assembler,
+                    "assembler side output requires an external assembler"
                 );
-                invocation.output(Path::new(path), false)?;
-                assembler_depfile = true;
+                if let Some(path) = output {
+                    ensure!(
+                        !assembler_depfile && !path.is_empty(),
+                        "assembler dependency output cannot be tracked"
+                    );
+                    invocation.output(Path::new(path), false)?;
+                    assembler_depfile = true;
+                }
+                if let Some(path) = listing_file {
+                    ensure!(
+                        !assembler_listing_file && !path.is_empty(),
+                        "assembler listing output cannot be tracked"
+                    );
+                    invocation.output(Path::new(path), false)?;
+                    assembler_listing_file = true;
+                }
                 if !preserved.is_empty() {
                     scan.push(format!("-Wa,{}", preserved.join(",")));
                 }
@@ -451,6 +501,26 @@ fn default_dump_base(input: &Path, object: &Path) -> Result<OsString> {
         base.push(suffix);
     }
     Ok(base)
+}
+
+struct AssemblerListing<'a> {
+    output: Option<&'a str>,
+    timestamped: bool,
+}
+
+fn assembler_listing_option(option: &str) -> Option<AssemblerListing<'_>> {
+    let suffix = option.strip_prefix("-a")?;
+    let (letters, destination) = match suffix.split_once('=') {
+        Some((letters, destination)) => (letters, Some(destination)),
+        None => (suffix, None),
+    };
+    letters
+        .chars()
+        .all(|letter| "cdghilmns".contains(letter))
+        .then_some(AssemblerListing {
+            output: destination,
+            timestamped: letters.contains('g'),
+        })
 }
 
 fn probe_preprocessor_args(

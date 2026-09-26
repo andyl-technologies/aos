@@ -90,6 +90,9 @@ def fixtures(gcc, clang, rustc):
                 ("wa-depfile", ["-Wa,--MD,asm.d"]),
                 ("wa-mixed-depfile", ["-Wa,--noexecstack,--MD,asm.d"]),
                 ("xassembler-depfile", ["-Xassembler", "--MD", "-Xassembler", "asm.d"]),
+                ("wa-listing", ["-Wa,-al=listing.lst"]),
+                ("xassembler-listing", ["-Xassembler", "-al=listing.lst"]),
+                ("wa-listing-and-depfile", ["-Wa,-al=listing.lst,--MD,asm.d"]),
             ]:
                 yield Fixture("gcc-" + suffix, compiler,
                               base + ["-pipe", *flags, "-frandom-seed=" + suffix], c_sources,
@@ -104,6 +107,11 @@ def fixtures(gcc, clang, rustc):
                                   "-frandom-seed=external-assembler-depfile"], c_sources,
                           {"value.h": "#define VALUE 73\n"},
                           nondeterministic_outputs={"asm.d"})
+            yield Fixture("clang-external-assembler-listing", compiler,
+                          base + ["-pipe", "-fno-integrated-as", "-Wa,-al=listing.lst",
+                                  "-frandom-seed=external-assembler-listing"], c_sources,
+                          {"value.h": "#define VALUE 73\n"},
+                          nondeterministic_outputs={"listing.lst"})
         yield Fixture(name + "-imacros", compiler,
                       base + ["-imacros", "macros.h"],
                       {"source.c": "int answer(void) { return VALUE; }\n",
@@ -451,6 +459,57 @@ def check_clang_driver_dependency_file(root, env, accache, sccache, clang):
                         "artifacts": sorted(expected)})
 
     print("PASS oracle clang-driver-dependency-file passthrough", flush=True)
+    return results
+
+
+def check_assembler_general_listing_passthrough(root, env, accache, sccache, gcc, hits):
+    """Keep assembler reports with embedded timestamps live on every call."""
+    results = []
+    for name, flags in [
+        ("gcc-wa-general-listing", ["-Wa,-ag=listing.lst"]),
+        ("gcc-xassembler-general-listing", ["-Xassembler", "-ag=listing.lst"]),
+    ]:
+        work = root / name
+        work.mkdir()
+        (work / "source.c").write_text("int answer(void) { return 42; }\n")
+        args = [gcc, "-c", "source.c", "-o", "source.o", "-pipe", *flags,
+                "-frandom-seed=" + name]
+
+        def compile_object(wrapper):
+            (work / "source.o").unlink(missing_ok=True)
+            (work / "listing.lst").unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (name, wrapper, completed.stderr)
+            object_bytes = (work / "source.o").read_bytes()
+            listing = work / "listing.lst"
+            return (completed.stdout, completed.stderr, object_bytes,
+                    listing.read_bytes() if listing.exists() else None)
+
+        direct = compile_object([])
+        assert direct[3] is not None and b"time stamp" in direct[3], name
+
+        oracle_cold = compile_object([sccache])
+        assert oracle_cold[2] == direct[2] and oracle_cold[3] is not None, name
+        before_hits = hits()
+        oracle_warm = compile_object([sccache])
+        assert hits() > before_hits and oracle_warm[3] is None, (
+            name, "pinned sccache listing omission changed", oracle_warm)
+
+        for attempt in range(2):
+            actual = compile_object([accache])
+            assert (actual[:3] == direct[:3]
+                    and actual[3] is not None and b"time stamp" in actual[3]), (
+                name, attempt, actual)
+            event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert (event["outcome"] == "bypass"
+                    and "assembler general listing contains a timestamp" in event["reason"]), event
+
+        results.append({"fixture": name, "revision": 0, "oracle_hit": True,
+                        "accache": "bypass", "oracle_missing_artifacts": ["listing.lst"],
+                        "artifacts": ["listing.lst", "source.o"]})
+        print("PASS oracle", name, "passthrough", flush=True)
+
     return results
 
 
@@ -1151,7 +1210,11 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     "gcc-wa-depfile": {"asm.d"},
                     "gcc-wa-mixed-depfile": {"asm.d"},
                     "gcc-xassembler-depfile": {"asm.d"},
+                    "gcc-wa-listing": {"listing.lst"},
+                    "gcc-xassembler-listing": {"listing.lst"},
+                    "gcc-wa-listing-and-depfile": {"asm.d", "listing.lst"},
                     "clang-external-assembler-depfile": {"asm.d"},
+                    "clang-external-assembler-listing": {"listing.lst"},
                 }
                 if (side_files := missing_oracle_side_files.get(fixture.name)) and label == "sccache warm vs direct":
                     # These accepted flags produce files that pinned sccache
@@ -1341,6 +1404,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
 
         results.extend(check_clang_driver_dependency_file(root, env, accache,
                                                           sccache, clang))
+        results.extend(check_assembler_general_listing_passthrough(root, env,
+                                                                   accache, sccache, gcc, hits))
         results.extend(check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits))
         results.extend(check_ada_specs(root, env, accache, sccache, gcc, hits))
         results.extend(check_gcc_timing_passthrough(root, env, accache,
