@@ -364,6 +364,15 @@ pub(super) fn configure(
     let parsed_depfile = parsed.outputs.get("d").map(|output| output.path.as_path());
     let (preprocessing, forwarded_depfile) =
         probe_preprocessor_args(&preprocessing, invocation, clang, parsed_depfile)?;
+    if let (Some(forwarded), Some(path)) = (&forwarded_depfile, &gcc_depfile) {
+        // A CPP-level dependency request takes precedence over the driver's
+        // -MF even when the joined -MF appears later on the command line.
+        let output = super::output_name(path)?;
+        if output != super::output_name(forwarded)? {
+            invocation.outputs.retain(|name| name != &output);
+            invocation.optional_outputs.remove(&output);
+        }
+    }
     let mut scan = Vec::new();
     if let Some(language) = if clang {
         parsed.language.to_clang_arg()
@@ -607,7 +616,7 @@ pub(super) fn configure(
         .iter()
         .any(|arg| matches!(arg.as_str(), "-MD" | "-MMD"))
         && parsed.language.needs_c_preprocessing()
-        && !forwarded_depfile
+        && forwarded_depfile.is_none()
         && !parsed.outputs.contains_key("d")
         && cc1_depfile.is_none()
         && gcc_depfile.is_none()
@@ -675,7 +684,7 @@ fn probe_preprocessor_args(
     invocation: &mut Invocation,
     clang: bool,
     parsed_depfile: Option<&Path>,
-) -> Result<(Vec<String>, bool)> {
+) -> Result<(Vec<String>, Option<PathBuf>)> {
     let mut probe = Vec::new();
     let mut forwarded_depfile = None;
     let mut index = 0;
@@ -747,8 +756,8 @@ fn probe_preprocessor_args(
         index += 1;
     }
 
-    let has_forwarded_depfile = forwarded_depfile.is_some();
-    if let Some(filename) = forwarded_depfile {
+    let forwarded_depfile = forwarded_depfile.map(PathBuf::from);
+    if let Some(filename) = &forwarded_depfile {
         // The frontend can infer source.d from a forwarded -MD, but GCC
         // writes only the destination consumed by CPP. Replace that inferred
         // output so publication never expects a file the compiler did not make.
@@ -757,10 +766,10 @@ fn probe_preprocessor_args(
             invocation.outputs.retain(|output| output != &path);
             invocation.optional_outputs.remove(&path);
         }
-        invocation.output(Path::new(filename), false)?;
+        invocation.output(filename, false)?;
     }
 
-    Ok((probe, has_forwarded_depfile))
+    Ok((probe, forwarded_depfile))
 }
 
 enum DiagnosticSink {
