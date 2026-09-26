@@ -262,6 +262,13 @@ mkDerivation {
 };
 ```
 
+Every package also has a native `package.contract` projection, including a
+package with no authored abilities. For auto-discovered recipes, the catalog
+attribute is the contract identity; versioned variants can retain a shared
+derivation `pname` without collapsing their package identities. Functional
+qualification remains package-owned: a missing probe fails release
+qualification rather than generating a synthetic success case.
+
 The referenced module is ordinary module source shipped in the package's
 authenticated module output. It contributes typed options and ability values
 through the standard module fixed point:

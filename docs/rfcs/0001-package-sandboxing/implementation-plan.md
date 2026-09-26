@@ -189,7 +189,7 @@ no central module tree. (migration.md increment 1.)
       hand it to the renderer instead. One filter-list entry, not N top-level args.
 - [x] **Build-time renderer as a cheap sibling derivation.** Render
       `expose.units` to unit text + a manifest copy via a trivial builder
-      (`pkgs/build-support/trivial-builders.nix`), surfaced as `pkg.expose` via
+      (`pkgs/build-support/_trivial-builders.nix`), surfaced as `pkg.expose` via
       `passthru`. Editing a unit re-renders text and never rebuilds the payload;
       the payload closure never references its own integration.
 - [x] **Reuse the pure renderers.** Call `serviceToUnit`/`targetToUnit`/… from
