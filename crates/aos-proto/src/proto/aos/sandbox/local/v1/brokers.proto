@@ -429,6 +429,7 @@ message ObserveHostStorageOutputResponseV1 {
   AssignmentFence current_host_assignment = 3;
   bytes host_boot_id = 4; // Exact 16-byte Host boot identity.
   uint64 protected_host_journal_head_sequence = 5;
+  // Binds the protected store and sequence; not content or anti-rollback proof.
   bytes protected_host_journal_head_digest = 6;
 }
 

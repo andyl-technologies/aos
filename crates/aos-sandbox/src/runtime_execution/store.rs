@@ -149,7 +149,10 @@ impl ProtectedHostOutputReadbackV1 {
         self.journal_head_sequence
     }
 
-    /// Returns the protected Host journal-head commitment at readback.
+    /// Returns the store-binding and sequence commitment at readback.
+    ///
+    /// This token identifies a protected journal position, not its contents or
+    /// stand-alone anti-rollback evidence.
     #[must_use]
     pub const fn journal_head_digest(self) -> ObjectDigest {
         self.journal_head_digest
