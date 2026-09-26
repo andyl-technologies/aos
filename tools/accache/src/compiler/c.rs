@@ -109,14 +109,24 @@ pub(super) fn configure(
                 .find_map(|arg| arg.strip_prefix("-fprofile-note="))
         })
         .flatten();
+    let gcc_depfile = (!clang
+        && parsed.language.needs_c_preprocessing()
+        && expanded
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "-MD" | "-MMD")))
+    .then(|| gcc_driver_depfile(&expanded))
+    .flatten();
     for (name, output) in &parsed.outputs {
         if (*name != "gcno" || profile_note.is_none())
-            && (*name != "d" || cc1_depfile.is_none())
+            && (*name != "d" || (cc1_depfile.is_none() && gcc_depfile.is_none()))
         {
             invocation.output(&output.path, output.optional)?;
         }
     }
     if let Some(path) = &cc1_depfile {
+        invocation.output(path, false)?;
+    }
+    if let Some(path) = &gcc_depfile {
         invocation.output(path, false)?;
     }
     if parsed.outputs.contains_key("gcno")
@@ -485,6 +495,12 @@ pub(super) fn configure(
             index += 1;
             continue;
         }
+        if !clang && arg.starts_with("-MF") && arg.len() > 3 {
+            // The probe requests its own -MF after the caller's flags. Drop
+            // the joined form so it cannot write the caller's depfile.
+            index += 1;
+            continue;
+        }
         if !clang
             && (arg.starts_with("-fdump-")
                 || arg.starts_with("-fopt-info")
@@ -594,11 +610,32 @@ pub(super) fn configure(
         && !forwarded_depfile
         && !parsed.outputs.contains_key("d")
         && cc1_depfile.is_none()
+        && gcc_depfile.is_none()
         && let Some(object) = parsed.outputs.get("obj")
     {
         invocation.output(&object.path.with_extension("d"), false)?;
     }
     Ok(())
+}
+
+fn gcc_driver_depfile(args: &[String]) -> Option<PathBuf> {
+    // GCC uses the last -MF, including a joined spelling the pinned parser
+    // leaves among otherwise ordinary compiler arguments.
+    let mut selected = None;
+    let mut index = 0;
+    while index < args.len() {
+        let argument = &args[index];
+        if argument == "-MF" {
+            index += 1;
+            selected = args.get(index).map(PathBuf::from);
+        } else if let Some(path) = argument.strip_prefix("-MF")
+            && !path.is_empty()
+        {
+            selected = Some(PathBuf::from(path));
+        }
+        index += 1;
+    }
+    selected
 }
 
 fn default_dump_base(input: &Path, object: &Path) -> Result<OsString> {

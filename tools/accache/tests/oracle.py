@@ -965,6 +965,67 @@ def check_ada_specs(root, env, accache, sccache, gcc, hits):
     return results
 
 
+def check_gcc_joined_depfile(root, env, accache, sccache, gcc, hits):
+    """Restore dependency files named by GCC's joined -MF spellings."""
+    results = []
+    for fixture, flag, output in [
+        ("gcc-mf-joined", "-MFdeps.d", "deps.d"),
+        ("gcc-mf-joined-equals", "-MF=deps.d", "=deps.d"),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "source.c").write_text(
+            '#include "value.h"\nint answer(void) { return VALUE; }\n')
+        header = work / "value.h"
+        object_file = work / "source.o"
+        depfile = work / output
+        args = [gcc, "-MD", "-c", "source.c", "-o", "source.o", flag]
+
+        def compile_object(wrapper):
+            object_file.unlink(missing_ok=True)
+            depfile.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            return (completed.returncode, completed.stdout, completed.stderr,
+                    object_file.read_bytes() if object_file.exists() else None,
+                    depfile.read_bytes() if depfile.exists() else None)
+
+        first_object = None
+        for revision, value in enumerate([42, 73]):
+            header.write_text(f"#define VALUE {value}\n")
+            direct = compile_object([])
+            assert direct[0] == 0 and direct[3] and direct[4], (fixture, direct)
+            if first_object is None:
+                first_object = direct[3]
+            else:
+                assert direct[3] != first_object, (fixture, "header edit had no effect")
+
+            oracle_cold = compile_object([sccache])
+            if oracle_cold[0] == 0:
+                assert oracle_cold[3:] == direct[3:], (fixture, revision, oracle_cold)
+            before_hits = hits()
+            oracle_warm = compile_object([sccache])
+            oracle_hit = hits() > before_hits
+            if oracle_warm[0] == 0:
+                assert oracle_warm[3] == direct[3], (fixture, revision, oracle_warm)
+
+            assert compile_object([accache]) == direct, (fixture, revision, "cold")
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert cold["outcome"] == "miss", (fixture, revision, cold)
+            assert compile_object([accache]) == direct, (fixture, revision, "warm")
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert warm["outcome"] == "hit", (fixture, revision, warm)
+
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": oracle_hit,
+                            "oracle_exit_code": oracle_warm[0],
+                            "oracle_missing_artifacts": [output] if oracle_warm[4] is None else [],
+                            "accache": "hit", "artifacts": ["source.o", output]})
+
+        print("PASS oracle", fixture, "joined dependency output", flush=True)
+    return results
+
+
 def check_c_timing_passthrough(root, env, accache, sccache, gcc, clang, hits):
     """Keep per-invocation timing streams and append-only timing files live."""
     results = []
@@ -3548,6 +3609,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                              rustc, hits))
         results.extend(check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits))
         results.extend(check_ada_specs(root, env, accache, sccache, gcc, hits))
+        results.extend(check_gcc_joined_depfile(root, env, accache,
+                                                sccache, gcc, hits))
         results.extend(check_c_timing_passthrough(root, env, accache,
                                                   sccache, gcc, clang, hits))
         results.append(check_gcc_analyzer_stderr_passthrough(root, env,
