@@ -8,10 +8,12 @@ use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerAuthorizationArtifactsV1, BrokerClientHello, BrokerMethod,
     BrokerRequestEnvelope, BrokerResponseEnvelope, BrokerServerHello, Feature,
     HostNoApplySettlementPhaseV2, ObserveHostExecutionArgumentRequestV1,
-    QueryHostExecutionArgumentNoApplyRequestV1, RequestHeader, SettleHostExecutionNoApplyRequestV2,
-    TerminalHostExecutionArgumentNoApplyRequestV1, TerminalHostExecutionArgumentNoApplyResponseV1,
+    QueryHostExecutionArgumentNoApplyRequestV1, RequestHeader, ReserveHostExecutionOutputRequestV1,
+    SettleHostExecutionNoApplyRequestV2, TerminalHostExecutionArgumentNoApplyRequestV1,
+    TerminalHostExecutionArgumentNoApplyResponseV1,
 };
 use aos_sandbox::Journal;
+use aos_sandbox::controller_execution_preissue::ControllerExecutionReserveSourceV1;
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionDurableEndpointV1, BrokerSessionDurableHistoryV1, BrokerSessionDurableRecordV1,
     BrokerSessionKeyUsageV1, BrokerSessionOutcomeCompanionV1, BrokerSessionPeerBindingV1,
@@ -48,10 +50,12 @@ use aos_sandbox_protocol::host_execution_no_apply::{
     decode_host_no_apply_settlement_request_v2, match_archived_host_no_apply_outcome_v2,
     signed_host_no_apply_terminal_outcome_digest_v2,
 };
+use aos_sandbox_protocol::host_output::decode_host_output_reserve_request_v1;
 use aos_sandbox_protocol::semantics::host_execution_argument::{
     host_execution_argument_no_apply_grant_v1, host_execution_argument_observe_grant_v1,
     host_execution_argument_query_no_apply_grant_v1,
 };
+use aos_sandbox_protocol::semantics::host_output_reserve_grant_v1;
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use ed25519_dalek::SigningKey;
 use rustix::time::{ClockId, clock_gettime};
@@ -311,6 +315,55 @@ fn source() -> [u8; 336] {
     source
 }
 
+fn output_source() -> [u8; 688] {
+    let mut source = [0; 688];
+    source[..8].copy_from_slice(b"AOSCIR01");
+    source[8..16].copy_from_slice(b"AOSCIP01");
+    source[16..32].copy_from_slice(&[1; 16]);
+    source[32..48].copy_from_slice(&[2; 16]);
+    source[48..80].fill(3);
+    source[80..88].copy_from_slice(&5_u64.to_be_bytes());
+    source[88..96].copy_from_slice(&7_u64.to_be_bytes());
+    source[96..104].copy_from_slice(&9_u64.to_be_bytes());
+    source[104..120].fill(8);
+    source[120..128].copy_from_slice(&100_u64.to_be_bytes());
+    source[128..160].fill(9);
+    let preissue_digest = Sha256::new()
+        .chain_update(b"aos.sandbox.controller-execution-preissue.v1\0")
+        .chain_update(&source[8..160])
+        .finalize();
+    source[160..192].copy_from_slice(&preissue_digest);
+
+    source[192..200].copy_from_slice(b"AOSEOR02");
+    source[200..216].copy_from_slice(&[1; 16]);
+    source[216..232].copy_from_slice(&[2; 16]);
+    for (offset, value) in [(232, 1), (264, 2), (328, 3), (360, 4), (392, 5), (456, 6)] {
+        source[offset..offset + 32].fill(value);
+    }
+    source[296..328].fill(5);
+    source[424..432].copy_from_slice(&12_u64.to_be_bytes());
+    source[432..440].copy_from_slice(&20_u64.to_be_bytes());
+    source[440..448].copy_from_slice(&5_u64.to_be_bytes());
+    source[448..456].copy_from_slice(&7_u64.to_be_bytes());
+    let claim_digest = Sha256::digest(&source[192..488]);
+    source[488..520].copy_from_slice(&claim_digest);
+
+    source[520..552].fill(7);
+    source[552..568].fill(1);
+    source[568..584].fill(2);
+    source[584..600].fill(7);
+    source[600..608].copy_from_slice(&3_u64.to_be_bytes());
+    source[608..616].copy_from_slice(&4_u64.to_be_bytes());
+    source[616..624].copy_from_slice(&13_u64.to_be_bytes());
+    source[624..656].fill(5);
+    let carrier_digest = Sha256::new()
+        .chain_update(b"aos.sandbox.controller-execution-reserve-source.v1\0")
+        .chain_update(&source[..656])
+        .finalize();
+    source[656..688].copy_from_slice(&carrier_digest);
+    source
+}
+
 fn authorization_key(name: &str, usage: KeyUsage, byte: u8) -> KeyReference {
     KeyReference::new(
         StableKeyId::new(name.to_owned()).unwrap(),
@@ -351,7 +404,7 @@ fn artifact_signature(
 fn authorization_artifacts(
     method: BrokerMethod,
     request_id: [u8; 16],
-    canonical_source: &[u8; 336],
+    canonical_source: &[u8],
     original_session_binding: [u8; 32],
     original_signed_request_digest: [u8; 32],
 ) -> BrokerAuthorizationArtifactsV1 {
@@ -363,42 +416,44 @@ fn authorization_artifacts(
         ObjectDigest::from_bytes([5; 32]),
     )
     .unwrap();
-    let semantics = match method {
+    let (verb, target, commitment) = match method {
+        BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT => {
+            let semantics =
+                host_output_reserve_grant_v1(assignment, request_id, canonical_source).unwrap();
+            (semantics.verb(), semantics.target(), semantics.commitment())
+        }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
-            host_execution_argument_observe_grant_v1(assignment, request_id, canonical_source)
-                .unwrap()
+            let semantics =
+                host_execution_argument_observe_grant_v1(assignment, request_id, canonical_source)
+                    .unwrap();
+            (semantics.verb(), semantics.target(), semantics.commitment())
         }
         BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY => {
-            host_execution_argument_no_apply_grant_v1(
+            let semantics = host_execution_argument_no_apply_grant_v1(
                 assignment,
                 request_id,
                 canonical_source,
                 original_session_binding,
                 original_signed_request_digest,
             )
-            .unwrap()
+            .unwrap();
+            (semantics.verb(), semantics.target(), semantics.commitment())
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => {
-            host_execution_argument_query_no_apply_grant_v1(
+            let semantics = host_execution_argument_query_no_apply_grant_v1(
                 assignment,
                 request_id,
                 canonical_source,
                 original_session_binding,
                 original_signed_request_digest,
             )
-            .unwrap()
+            .unwrap();
+            (semantics.verb(), semantics.target(), semantics.commitment())
         }
         _ => panic!("unexpected Host method"),
     };
     let authority = authorization_key("ownership-authority", KeyUsage::OwnershipLease, 6);
-    let grant = BrokerGrant::new(
-        semantics.verb(),
-        semantics.target(),
-        semantics.commitment(),
-        4 * 1024,
-        0,
-    )
-    .unwrap();
+    let grant = BrokerGrant::new(verb, target, commitment, 4 * 1024, 0).unwrap();
     let plan = BrokerAuthorizationPlan::new(
         BrokerAudience::Host,
         ProtocolId::HostBroker,
@@ -460,7 +515,7 @@ fn signed_request(
     method: BrokerMethod,
     request_id: [u8; 16],
     body: Vec<u8>,
-    canonical_source: &[u8; 336],
+    canonical_source: &[u8],
     original_session_binding: [u8; 32],
     original_signed_request_digest: [u8; 32],
 ) -> (
@@ -690,6 +745,108 @@ fn open_test_journal(
     };
     owner.validate_all().unwrap();
     owner
+}
+
+#[test]
+fn signed_method35_packet_replays_without_proving_protected_output_custody() {
+    // Only the broker-session packet signer is authenticated here. The test
+    // artifacts are not verified Host plan/lease authority or an AOSEOR02 append.
+    let fixture = Fixture::new();
+    let mut client = fixture.client();
+    let mut broker = fixture.broker();
+    let method = BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT;
+    let (session, checkpoint) = session(&mut client, &mut broker, &[method]);
+    let source = output_source();
+    ControllerExecutionReserveSourceV1::decode_structural(&source).unwrap();
+    let request_id = [6; 16];
+    let body = ReserveHostExecutionOutputRequestV1 {
+        header: Some(header(request_id)).into(),
+        canonical_source: source.to_vec(),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let (sent, _) = signed_request(
+        &mut client,
+        &session,
+        &checkpoint,
+        method,
+        request_id,
+        body.clone(),
+        &source,
+        [0; 32],
+        [0; 32],
+    );
+
+    let packet = sent.canonical_packet();
+    let canonical = decode_canonical_request_v1(packet).unwrap();
+    let bindings =
+        authenticated_semantic_bindings_from_envelope_v1(canonical.message(), method).unwrap();
+    let traffic = BrokerSessionTrafficStateV1::from_provisional_transcript(session).unwrap();
+    let (received, next_traffic) =
+        match admit_server_received_authenticated_broker_method_request_v1(
+            &traffic,
+            packet,
+            None,
+            0,
+            peer(),
+            policy(),
+            99,
+            bindings,
+            checkpoint.context(),
+        )
+        .unwrap()
+        {
+            AuthenticatedBrokerMethodRequestAdmissionV1::New {
+                request,
+                next_traffic,
+            } => (request, next_traffic),
+            AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(_) => {
+                panic!("fresh method-35 packet replayed")
+            }
+        };
+    assert_eq!(received.canonical_packet(), packet);
+    assert_eq!(received.exact_body(), body);
+    assert!(received.authorization().is_some());
+    let decoded = decode_host_output_reserve_request_v1(
+        received.exact_body(),
+        received.peer(),
+        received.peer_policy(),
+        99,
+    )
+    .unwrap();
+    assert_eq!(decoded.source(), &source);
+
+    assert!(matches!(
+        admit_server_received_authenticated_broker_method_request_v1(
+            &next_traffic,
+            packet,
+            Some(&received),
+            0,
+            peer(),
+            policy(),
+            99,
+            bindings,
+            checkpoint.context(),
+        ),
+        Ok(AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(_))
+    ));
+    let mut tampered = packet.to_vec();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 1;
+    assert!(
+        admit_server_received_authenticated_broker_method_request_v1(
+            &traffic,
+            &tampered,
+            None,
+            0,
+            peer(),
+            policy(),
+            99,
+            bindings,
+            checkpoint.context(),
+        )
+        .is_err()
+    );
 }
 
 #[test]
