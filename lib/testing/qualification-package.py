@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
 import pathlib
@@ -19,12 +20,10 @@ import re
 import stat
 import struct
 import subprocess
+import sys
 import urllib.parse
 from dataclasses import dataclass
 from typing import Any, BinaryIO
-
-from qualification_k3s_bindings import bind_k3s_fleet
-
 
 ROOT = pathlib.Path.cwd()
 REQUEST = ROOT / "request.json"
@@ -42,7 +41,10 @@ NIX_STORE = os.environ["AOS_QUALIFICATION_NIX_STORE"]
 ZSTD = os.environ["AOS_QUALIFICATION_ZSTD"]
 UNAME = os.environ["AOS_QUALIFICATION_UNAME"]
 BOUND_IMAGE_VARIANT = os.environ.get("AOS_QUALIFICATION_BOUND_IMAGE_VARIANT")
-BOUND_K3S_TOPOLOGY = os.environ.get("AOS_QUALIFICATION_BOUND_K3S_TOPOLOGY")
+BOUND_SUBJECT_BINDER = os.environ.get("AOS_QUALIFICATION_SUBJECT_BINDER")
+BOUND_SUBJECT_BINDER_ARGUMENTS = json.loads(
+    os.environ.get("AOS_QUALIFICATION_SUBJECT_BINDER_ARGUMENTS", "{}")
+)
 
 PACKAGE_CASE = re.compile(
     r"^package-function/(?P<package>[A-Za-z0-9_.+@-]+)/"
@@ -57,6 +59,21 @@ PROBE_REGISTRY_SCHEMA = "aos.release.package-probes/v1"
 MANIFEST_OBJECT = "control/release-manifest-envelope"
 MAX_PROBE_RESULT_BYTES = 1024 * 1024
 MAX_I_JSON_INTEGER = (1 << 53) - 1
+
+
+def load_subject_binder(path: str):
+    """Loads the package-specific subject binder named by the scenario."""
+
+    spec = importlib.util.spec_from_file_location(
+        "aos_qualification_subject_binder", path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load package subject binder {path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def canonical(value: Any) -> bytes:
@@ -437,11 +454,19 @@ class PackageScenario:
         artifact_ids = decision["artifact"]["artifact_ids"]
         self.package_artifact_ids = list(artifact_ids)
         expected_subjects = list(artifact_ids)
-        if BOUND_K3S_TOPOLOGY is not None:
-            bindings = bind_k3s_fleet(
-                payload, PLATFORM, self.package, BOUND_IMAGE_VARIANT, BOUND_K3S_TOPOLOGY
+        if BOUND_SUBJECT_BINDER is not None:
+            binder = load_subject_binder(BOUND_SUBJECT_BINDER)
+            expected_subjects = binder.bind_subjects(
+                payload,
+                PLATFORM,
+                self.package,
+                BOUND_IMAGE_VARIANT,
+                BOUND_SUBJECT_BINDER_ARGUMENTS,
             )
-            expected_subjects = bindings.subjects
+            if not isinstance(expected_subjects, list) or not all(
+                isinstance(subject, str) for subject in expected_subjects
+            ):
+                raise RuntimeError("package subject binder returned invalid subjects")
         elif BOUND_IMAGE_VARIANT is not None:
             image = one(
                 [

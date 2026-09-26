@@ -65,7 +65,7 @@ in {
   };
 
   testScript = ''
-    ${builtins.readFile ../../lib/testing/k3s-lifecycle.py}
+    ${builtins.readFile ../../qualification/providers/k3s/k3s-lifecycle.py}
 
     import base64
     import shlex
