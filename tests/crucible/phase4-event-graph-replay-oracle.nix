@@ -262,15 +262,19 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase4-event-graph-replay-oracle";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
       src = crucibleSrc;
 
       buildDeps =
         [
           pkgs.coreutils
+          pkgs.pkg-config
           pkgs.rust
           pkgs.sed
+          pkgs.sqlite
         ]
         ++ dependencies;
+      runtimeDeps = [pkgs.sqlite];
 
       phases = [
         {
