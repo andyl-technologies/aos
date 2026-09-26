@@ -141,6 +141,7 @@
     export AOS_QUALIFICATION_CXX=${pkgs.cc}/bin/c++
     export AOS_QUALIFICATION_PERL=${pkgs.perl}/bin/perl
     export AOS_QUALIFICATION_PYTHON=${pkgs.python3}/bin/python3
+    export AOS_QUALIFICATION_RUSTC=${pkgs.rust}/bin/rustc
 
     ${declarativeProbe}
     export PATH=$buildPath
