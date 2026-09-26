@@ -79,10 +79,10 @@
       requiredInputs = cohort.requiredInputs or [];
       execution =
         cohort.execution or {
-        bootInput = "candidate-image";
-        fixtureRole = null;
-        recordsGuestKernel = true;
-      };
+          bootInput = "candidate-image";
+          fixtureRole = null;
+          recordsGuestKernel = true;
+        };
       report = cohort.report or {kind = "matrix";};
     }
     // cohort
@@ -146,7 +146,7 @@
     else matrixCohortInputs;
   requiresStagingHub =
     builtins.any (
-    cohort: builtins.elem "predecessor-image" cohort.requiredInputs
+      cohort: builtins.elem "predecessor-image" cohort.requiredInputs
     )
     qualificationCohorts;
   fixtureRoots = lib.unique (
@@ -490,11 +490,12 @@ in
   assert builtins.sort builtins.lessThan matrixQualifiedCells == matrixApplicableCellIds;
   assert builtins.length matrixCohortInputs == builtins.length (lib.unique (map (cohort: cohort.id) matrixCohortInputs));
   assert builtins.all (cohort:
-    cohort.id
-    != ""
-    && cohort.qualifiedCells != []
-    && cohort.testScript != ""
-    && cohort.candidateRuntimeCompanions != [])
+    (cohort.id
+      != ""
+      && cohort.qualifiedCells != []
+      && cohort.testScript != ""
+      && cohort.candidateRuntimeCompanions != [])
+    || throw "native adapter matrix cohort '${cohort.id}' is incomplete: ${toString (builtins.length cohort.qualifiedCells)} cells, ${toString (builtins.length cohort.candidateRuntimeCompanions)} companions, ${toString (builtins.stringLength cohort.testScript)} script bytes")
   matrixAdditionalCohorts;
   assert checks != [];
   assert (stagingHubUrl != null) == requiresStagingHub;

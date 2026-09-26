@@ -677,11 +677,24 @@
     mkSystem = mkFixtureSystem;
     qualificationImage = true;
   };
+  nativeRolloutObserver = import ./tests/fleet/_ability-execution-observer.nix {
+    inherit lib pkgs;
+  };
+  nativeRolloutForeign = import ./tests/fleet/_ability-rollout-foreign.nix {inherit pkgs;};
+  nativeRolloutImage =
+    (import ./tests/fleet/system-image-rollback.nix {
+      inherit lib pkgs;
+      mkSystem = mkFixtureSystem;
+      systems = discoverSystems;
+      extraFixtureModules = [nativeRolloutObserver.module nativeRolloutForeign.module];
+    })
+    .abilityRolloutFixture;
   nativeEffectRolloutCohorts = map (cellId:
     import ./tests/fleet/_ability-effect-boundary-rollout-cohort.nix {
       inherit lib pkgs cellId nativeAdapterMatrix;
       mkSystem = mkFixtureSystem;
       systems = discoverSystems;
+      rolloutImage = nativeRolloutImage;
     })
   nativeEffectBoundaryCells.groups.rollout;
 
@@ -708,6 +721,8 @@
     import ./tests/fleet/_ability-cancellation-rollout-cohort.nix {
       inherit lib pkgs cellId nativeAdapterMatrix;
       mkSystem = mkFixtureSystem;
+      systems = discoverSystems;
+      rolloutImage = nativeRolloutImage;
     })
   nativeCancellationCells.groups.rollout;
   nativeCancellationReferenceCohort = import ./tests/fleet/ability-native-cancellation-reference.nix {
@@ -721,11 +736,6 @@
     matrix = nativeAdapterMatrix.spec;
   };
   nativeProviderNegativeReference = import ./tests/fleet/ability-native-provider-negative-reference.nix {
-    inherit lib pkgs nativeAdapterMatrix;
-    mkSystem = mkFixtureSystem;
-    qualificationImage = true;
-  };
-  nativeProviderNegativeSystemdManager = import ./tests/fleet/ability-native-provider-negative-systemd-manager.nix {
     inherit lib pkgs nativeAdapterMatrix;
     mkSystem = mkFixtureSystem;
     qualificationImage = true;
@@ -801,12 +811,6 @@
             qualifiedCells = nativeProviderNegativeCells.groups.reference;
             inherit (nativeProviderNegativeReference) testScript;
             inherit (nativeProviderNegativeReference.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
-          {
-            id = "provider-negative-systemd-manager";
-            qualifiedCells = nativeProviderNegativeCells.groups.systemd-manager;
-            inherit (nativeProviderNegativeSystemdManager) testScript;
-            inherit (nativeProviderNegativeSystemdManager.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ];
 
