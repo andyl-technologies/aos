@@ -49,6 +49,8 @@ def fixtures(gcc, clang, rustc):
             ("split-debug", ["-g", "-gsplit-dwarf"]),
             ("optional-split-debug", ["-gsplit-dwarf"]),
             ("coverage", ["--coverage"]),
+            ("test-coverage", ["-ftest-coverage"]),
+            ("profile-arcs", ["-fprofile-arcs"]),
             ("profile-generation", ["-fprofile-generate"]),
             ("depfile", ["-MD", "-MF", "source.d", "-MT", "custom-target"]),
             ("default-depfile", ["-MMD", "-MP"]),
