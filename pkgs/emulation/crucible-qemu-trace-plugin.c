@@ -22,6 +22,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 #define FNV1A64_PRIME 1099511628211ULL
 #define MAX_TRACKED_VCPUS 256U
 #define RAW_COPY_CHUNK_BYTES (1024U * 1024U)
+#define RR_SWITCH_FLUSH_INTERVAL 256U
 #define TRACE_FINGERPRINT_SCHEMA "crucible.qemu.trace-fingerprint.v7"
 #define ZERO_SHA256_HEX \
   "0000000000000000000000000000000000000000000000000000000000000000"
@@ -889,6 +890,7 @@ on_rr_handoff(unsigned int from_vcpu, unsigned int to_vcpu,
       UINT64_MAX - rr_handoff_retired < source_retired_delta ||
       UINT64_MAX - rr_handoff_per_vcpu_retired[from_vcpu] <
           source_retired_delta) {
+    fflush(trace_file);
     qemu_plugin_outs(
         "crucible-qemu-trace-plugin: invalid RR handoff accounting\n");
     qemu_plugin_request_shutdown(1);
@@ -937,7 +939,11 @@ on_rr_handoff(unsigned int from_vcpu, unsigned int to_vcpu,
   }
 
   fprintf(trace_file, "]}\n");
-  fflush(trace_file);
+  /* Exact samples flush too. Bound abnormal-exit trace loss to fewer than 256
+   * completed handoffs without forcing a write at every scheduler turn. */
+  if (rr_switch_events % RR_SWITCH_FLUSH_INTERVAL == 0) {
+    fflush(trace_file);
+  }
   last_rr_switch_quantum = rr_switch_quantum;
 }
 
@@ -986,15 +992,20 @@ on_insn(unsigned int vcpu_index, void *userdata)
   stream_hash = fnv1a_u64(stream_hash, insn->vaddr);
   stream_hash = fnv1a_u64(stream_hash, (uint64_t)insn->size);
   stream_hash = fnv1a_bytes(stream_hash, insn->bytes, insn->size);
-  uint64_t rr_current_vcpu;
-  uint64_t rr_cursor_position;
-  uint64_t rr_switch_quantum;
-  if (read_rr_cursor_snapshot(
-          &rr_current_vcpu, &rr_cursor_position, &rr_switch_quantum)) {
-    last_valid_rr_current_vcpu = rr_current_vcpu;
-    last_valid_rr_cursor_position = rr_cursor_position;
-    last_valid_rr_switch_quantum = rr_switch_quantum;
-    last_valid_rr_cursor_available = true;
+  if (stop_at == 0) {
+    uint64_t rr_current_vcpu;
+    uint64_t rr_cursor_position;
+    uint64_t rr_switch_quantum;
+
+    /* Unbounded runs need the last live cursor for their exit sample. Bounded
+     * runs refresh it at each exact sample boundary, including the horizon. */
+    if (read_rr_cursor_snapshot(
+            &rr_current_vcpu, &rr_cursor_position, &rr_switch_quantum)) {
+      last_valid_rr_current_vcpu = rr_current_vcpu;
+      last_valid_rr_cursor_position = rr_cursor_position;
+      last_valid_rr_switch_quantum = rr_switch_quantum;
+      last_valid_rr_cursor_available = true;
+    }
   }
   reached_stop = stop_at != 0 && retired >= stop_at && !stop_requested;
   if (reached_stop) {
