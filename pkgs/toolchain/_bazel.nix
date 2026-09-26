@@ -1,7 +1,7 @@
 ##! Shared builder for Bazel versions.
 ##! Underscore prefix = not auto-discovered. Imported by bazel-N.nix files.
 ##!
-##! Three-stage bootstrap: (1) binary bazel-bootstrap vendors external deps
+##! Three-stage bootstrap: (1) source-built bazel-bootstrap vendors external deps
 ##! into a fixed-output derivation, (2) compile.sh builds a minimal Bazel
 ##! from javac, (3) that minimal Bazel builds the real Bazel using vendored
 ##! deps with --repository_disable_download.
@@ -1000,8 +1000,8 @@
     hash = srcHash;
   };
 
-  # Fixed-output derivation: vendor all external dependencies using
-  # bazel-bootstrap in --batch mode.
+  # Fixed-output derivation: vendor all external dependencies using the
+  # source-built Java bootstrap runner.
   vendorDeps = builtins.derivation {
     name = "bazel-vendor-deps-${version}";
     system = lib.system;
@@ -1015,32 +1015,7 @@
                 mkdir -p "$HOME"
                 export JAVA_HOME="${buildOpenjdk}"
 
-                INTERP=$(cat "${buildBootstrapTools}/nix-support/dynamic-linker")
-                BT_LIB=$(dirname "$INTERP")
-
-                # Repackage the bootstrap Bazel binary with patchelf'd ELF files.
-                # The bazel binary is a self-extracting ELF+zip — patchelf changes
-                # the ELF size, corrupting zip offsets. Use the shared repack script.
-                RPATH="$BT_LIB:${buildGccLibs}/lib"
-                python3 ${repackBazelPy} \
-                  "${buildBazelBootstrap}/lib/bazel-real" \
-                  "$INTERP" \
-                  "$RPATH" \
-                  "${buildPatchelf}/bin/patchelf" \
-                  "$TMPDIR/bazel-patched" \
-                  --no-patch-elf-prefix
-
-                # Create wrapper script (still need proc_self_exe_fix for
-                # /proc/self/exe since we invoke via explicit ld.so)
-                cat > "$TMPDIR/bazel" << BWRAP
-        #!${buildBash}/bin/bash
-        export BAZEL_REAL_PATH="$TMPDIR/bazel-patched"
-        export LD_PRELOAD="${buildBazelBootstrap}/lib/proc_self_exe_fix.so"
-        export LD_LIBRARY_PATH="${buildGccLibs}/lib:$BT_LIB''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-        exec $INTERP "$TMPDIR/bazel-patched" "\$@"
-        BWRAP
-                chmod +x "$TMPDIR/bazel"
-                export PATH="$TMPDIR:$PATH"
+                export PATH="${buildBazelBootstrap}/bin:$PATH"
 
                 # Extract dist zip
                 mkdir -p "$TMPDIR/bazel_src"
@@ -1106,7 +1081,13 @@
                 # Common vendor flags:
                 # --check_direct_dependencies=off: bootstrap version resolves different BCR versions
                 # --check_bazel_compatibility=off: bootstrap version may be older than required
-                VENDOR_FLAGS="--check_direct_dependencies=off --check_bazel_compatibility=off"
+                VENDOR_FLAGS=(
+                  --check_direct_dependencies=off
+                  --check_bazel_compatibility=off
+                  --repo_env=JAVA_HOME=${buildOpenjdk}
+                  --repo_env=PATH="$PATH"
+                  --repo_env=CC=${buildGcc}/bin/gcc
+                )
 
                 # Fetch module metadata first — triggers rules_java repo setup so
                 # we can patch _detect_java_version before the actual vendor step.
@@ -1114,7 +1095,7 @@
                   --output_user_root="$TMPDIR/bazel_cache" \
                   --server_javabase="${buildOpenjdk}" \
                   mod deps --curses=no \
-                  $VENDOR_FLAGS 2>&1 || true
+                  "''${VENDOR_FLAGS[@]}" 2>&1 || true
 
                 # Patch rules_java: replace _detect_java_version to read release file
                 # instead of running java -XshowSettings:properties (which fails under
@@ -1148,7 +1129,7 @@
         with open(filepath, 'w') as fh:
             fh.write(content)
         PYEOF
-                for f in $(find "$TMPDIR/bazel_cache" -path "*/external/rules_java*/local_java_repository.bzl" 2>/dev/null); do
+                for f in $(find "$TMPDIR/bazel-bootstrap-output" -path "*/external/rules_java*/local_java_repository.bzl" 2>/dev/null); do
                   chmod u+w "$f" 2>/dev/null || true
                   python3 "$TMPDIR/patch_detect.py" "$f"
                 done
@@ -1161,7 +1142,8 @@
                   --curses=no \
                   --vendor_dir="$out" \
                   --verbose_failures \
-                  $VENDOR_FLAGS
+                  --spawn_strategy=standalone \
+                  "''${VENDOR_FLAGS[@]}"
 
                 # Clean non-reproducible artifacts
                 find "$out" -name "*.pyc" -type f -delete
