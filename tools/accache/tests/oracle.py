@@ -36,6 +36,7 @@ class Fixture:
     precompile: list[str] = field(default_factory=list)
     nondeterministic_outputs: set[str] = field(default_factory=set)
     direct_exit_code: int | None = None
+    oracle_input_invalidation: bool = False
 
 
 def fixtures(gcc, clang, rustc):
@@ -382,6 +383,18 @@ def fixtures(gcc, clang, rustc):
             yield Fixture("clang-serialized-diagnostics", compiler,
                           base + ["--serialize-diagnostics", "source.dia"], c_sources,
                           {"value.h": "#define VALUE 73\n"})
+            for suffix, flag in [
+                ("extract-api-ignores", "--extract-api-ignores=extra.txt"),
+                ("embed-offload-object", "-fembed-offload-object=extra.txt"),
+                ("sanitize-system-ignorelist", "-fsanitize-system-ignorelist=extra.txt"),
+                ("ms-hotpatch-functions", "-fms-secure-hotpatch-functions-file=extra.txt"),
+            ]:
+                fixture = "clang-frontend-file-" + suffix
+                yield Fixture(fixture, compiler,
+                              base + [flag, "-frandom-seed=" + fixture],
+                              c_sources | {"extra.txt": "first\n"},
+                              {"extra.txt": "second\n"},
+                              oracle_input_invalidation=True)
         yield Fixture(name + "-default-output", compiler, ["-c", "source.c"], c_sources)
         yield Fixture(name + "-joined-output", compiler, ["-c", "source.c", "-osource.o"], c_sources)
         yield Fixture(name + "-response", compiler, ["@arguments.rsp"], c_sources | {
@@ -5310,7 +5323,11 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                               "gcc-html-graph-details": "details.html"}[fixture.name]
                     assert b"<svg" in direct[3][report][0], (
                         fixture.name, "AOS Graphviz did not render embedded SVG")
+                before_cold_hits = hits() if fixture.oracle_input_invalidation and revision else None
                 oracle_cold = invoke([sccache])
+                if before_cold_hits is not None:
+                    assert hits() == before_cold_hits, (
+                        fixture.name, "sccache ignored a changed file input")
                 if fixture.direct_exit_code is None:
                     compare(direct, oracle_cold, "sccache cold vs direct")
                     baseline = direct
@@ -5358,6 +5375,9 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                 accache_cold = invoke([accache])
                 compare(baseline, accache_cold, "accache cold vs baseline")
                 cold_event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+                if fixture.oracle_input_invalidation and revision:
+                    assert any("extra.txt" in change for change in cold_event["changes"]), (
+                        fixture.name, "accache did not explain the input edit", cold_event)
                 if fixture.name == "rust-nested-response" and revision:
                     assert any("inner.rsp" in change for change in cold_event["changes"]), (
                         fixture.name, "inner response edit was not tracked", cold_event)
