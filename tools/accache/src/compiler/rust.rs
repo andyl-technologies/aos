@@ -142,6 +142,7 @@ pub(super) fn configure(
             }
             for prefix in [
                 "internalize-public-api-file=",
+                "forceattrs-csv-path=",
                 "ms-secure-hotpatch-functions-file=",
                 "summary-file=",
                 "ir2vec-vocab-path=",

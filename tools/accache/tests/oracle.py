@@ -2562,13 +2562,17 @@ def check_rust_llvm_plugin(root, env, accache, sccache, rustc, clang, hits):
 
 
 def check_rust_llvm_file_inputs(root, env, accache, sccache, rustc, hits):
-    """Track an LLVM function-list input omitted from rustc dep-info."""
+    """Track LLVM section and function-attribute files omitted from dep-info."""
     results = []
-    for fixture, codegen in [
-        ("rust-llvm-list-joined", [
-            "-Cllvm-args=--basic-block-sections=functions.txt"]),
-        ("rust-llvm-list-separated", [
-            "-C", "llvm-args=--basic-block-sections=functions.txt"]),
+    for fixture, llvm_option, input_name, revisions, opt_level, separated in [
+        ("rust-llvm-list-joined", "--basic-block-sections=functions.txt",
+         "functions.txt", ["!answer\n!!1\n", "!other\n!!1\n"], 0, False),
+        ("rust-llvm-list-separated", "--basic-block-sections=functions.txt",
+         "functions.txt", ["!answer\n!!1\n", "!other\n!!1\n"], 0, True),
+        ("rust-llvm-attrs-joined", "--forceattrs-csv-path=attrs.csv",
+         "attrs.csv", ["answer,noinline\n", "answer,optnone\n"], 2, False),
+        ("rust-llvm-attrs-separated", "--forceattrs-csv-path=attrs.csv",
+         "attrs.csv", ["answer,noinline\n", "answer,optnone\n"], 2, True),
     ]:
         work = root / fixture
         work.mkdir()
@@ -2580,11 +2584,14 @@ def check_rust_llvm_file_inputs(root, env, accache, sccache, rustc, hits):
             '#[no_mangle] pub extern "C" fn other(x: i32) -> i32 {\n'
             '    if x < 0 { x * 5 } else { x - 7 }\n'
             '}\n')
-        list_file = work / "functions.txt"
+        input_file = work / input_name
         library = work / "target/libexample.rlib"
         depfile = work / "target/example.d"
+        codegen = (["-C", "llvm-args=" + llvm_option] if separated
+                   else ["-Cllvm-args=" + llvm_option])
         args = [rustc, "--crate-name=example", "--crate-type=rlib",
-                "--emit=link,dep-info", "--out-dir=target", "-Copt-level=0",
+                "--emit=link,dep-info", "--out-dir=target",
+                "-Copt-level=" + str(opt_level),
                 *codegen, "source.rs"]
 
         def compile_library(wrapper):
@@ -2597,14 +2604,15 @@ def check_rust_llvm_file_inputs(root, env, accache, sccache, rustc, hits):
                     library.read_bytes(), depfile.read_bytes())
 
         first_library = None
-        for revision, contents in enumerate(["!answer\n!!1\n", "!other\n!!1\n"]):
-            list_file.write_text(contents)
+        for revision, contents in enumerate(revisions):
+            input_file.write_text(contents)
             direct = compile_library([])
-            assert b"functions.txt" not in direct[3], "LLVM list appeared in dep-info"
+            assert input_name.encode() not in direct[3], (
+                fixture, "LLVM input appeared in dep-info")
             if first_library is None:
                 first_library = direct[2]
             else:
-                assert direct[2] != first_library, "LLVM list edit had no effect"
+                assert direct[2] != first_library, (fixture, "LLVM file edit had no effect")
 
             before_hits = hits()
             oracle_cold = compile_library([sccache])
@@ -2621,7 +2629,7 @@ def check_rust_llvm_file_inputs(root, env, accache, sccache, rustc, hits):
             cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
             assert cold["outcome"] == "miss", (fixture, revision, cold)
             if revision:
-                assert any("functions.txt" in item for item in cold["changes"]), cold
+                assert any(input_name in item for item in cold["changes"]), cold
             assert compile_library([accache]) == direct
             warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
             assert warm["outcome"] == "hit", (fixture, revision, warm)
