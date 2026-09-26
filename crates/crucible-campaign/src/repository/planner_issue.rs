@@ -582,6 +582,9 @@ impl CampaignRepository {
                         snapshot.snapshot.roots().observations,
                         snapshot.snapshot.roots().corpus,
                         prior_accounting,
+                    )
+                    .with_request_admissions(
+                        self.parent_budget_ledger(snapshot)?.request_admissions(),
                     ),
                     selected.source(),
                     &selected_request,
@@ -906,6 +909,7 @@ impl CampaignRepository {
                 return Err(integrity("planner-issue-proposal-predecessor-mismatch"));
             }
         }
+        upserts.insert(proposal_head_key(proposal.request()), proposal_content);
         Ok(())
     }
 
