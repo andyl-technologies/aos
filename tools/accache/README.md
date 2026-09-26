@@ -107,7 +107,8 @@ the compiler and record a bypass reason. Non-UTF-8 arguments also run unchanged.
 
 Covered output families include ordinary C/C++ objects, depfiles, split debug
 files, coverage notes, preprocessed source, assembly, PCH, explicit Clang
-modules, serialized Clang diagnostics, and nonincremental Rust rlib/staticlib,
+modules, serialized Clang diagnostics, GCC SARIF reports with default dump
+naming, and nonincremental Rust rlib/staticlib,
 metadata, dep-info, and unpacked split debug `.dwo` files. Rust extern/native
 dependencies and proc macro consumers are covered by the input contract above.
 
@@ -120,8 +121,10 @@ named metadata files. In a shared target directory, a directory snapshot cannot
 safely attribute those files to one action when compilers run concurrently.
 Pinned sccache accepts this flag but its warm hit drops those files. Accache
 preserves them by running rustc for each invocation. `-Csave-temps=no` remains
-cacheable. GCC dumps with implicit filenames and SARIF file options also bypass
-because they write side files outside the pinned frontend's output list.
+cacheable. GCC dumps with implicit filenames and SARIF reports with custom dump
+naming bypass because their side-file paths are not yet tracked. GCC's newer
+`-fdiagnostics-add-output` and `-fdiagnostics-set-output` flags also bypass
+until all of their possible file sinks are tracked.
 Explicitly named GCC dumps and optimization reports are cached with their
 requested output files.
 

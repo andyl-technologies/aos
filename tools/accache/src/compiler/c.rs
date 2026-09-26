@@ -53,6 +53,13 @@ pub(super) fn configure(
     // Explicit report destinations are outputs, while a dump with an implicit
     // name cannot be restored safely from the pinned frontend's output set.
     if !clang {
+        ensure!(
+            !expanded.iter().any(|arg| {
+                arg.starts_with("-fdiagnostics-add-output")
+                    || arg.starts_with("-fdiagnostics-set-output")
+            }),
+            "additional GCC diagnostic outputs need explicit tracking"
+        );
         for arg in &expanded {
             if arg.starts_with("-fopt-info") || arg.starts_with("-fdump-") {
                 if let Some((_, destination)) = arg.split_once('=') {
@@ -61,10 +68,45 @@ pub(super) fn configure(
                     anyhow::bail!("GCC dump writes an unnamed side output");
                 }
             }
+        }
+        if expanded
+            .iter()
+            .rev()
+            .find_map(|arg| arg.strip_prefix("-fdiagnostics-format="))
+            == Some("sarif-file")
+        {
+            // GCC forms a dump filename from the object stem and the source
+            // suffix. Custom dump naming has separate precedence rules, so
+            // pass those invocations through until they can be represented.
             ensure!(
-                arg != "-fdiagnostics-format=sarif-file",
-                "GCC SARIF report writes an untracked side output"
+                !expanded.iter().any(|arg| {
+                    arg == "-dumpbase"
+                        || arg.starts_with("-dumpbase=")
+                        || arg == "--dumpbase"
+                        || arg.starts_with("--dumpbase=")
+                        || arg == "-dumpdir"
+                        || arg.starts_with("-dumpdir=")
+                        || arg == "--dumpdir"
+                        || arg.starts_with("--dumpdir=")
+                }),
+                "GCC SARIF report uses custom dump naming"
             );
+            let object = parsed
+                .outputs
+                .get("obj")
+                .ok_or_else(|| anyhow::anyhow!("GCC SARIF report has no object output"))?;
+            let stem = object
+                .path
+                .file_stem()
+                .ok_or_else(|| anyhow::anyhow!("GCC SARIF report has no object stem"))?;
+            let source_suffix = parsed.input.extension();
+            let mut filename = stem.to_os_string();
+            if let Some(suffix) = source_suffix {
+                filename.push(".");
+                filename.push(suffix);
+            }
+            filename.push(".sarif");
+            invocation.output(&object.path.with_file_name(filename), false)?;
         }
     }
     for (index, arg) in expanded.iter().enumerate() {
@@ -137,6 +179,11 @@ pub(super) fn configure(
         if !clang && (arg.starts_with("-fdump-") || arg.starts_with("-fopt-info")) {
             // A dependency probe must not create or append to a caller's
             // report before the actual compilation or a cache restoration.
+            index += 1;
+            continue;
+        }
+        if !clang && arg == "-fdiagnostics-format=sarif-file" {
+            // The discovery compile must not create a caller-visible report.
             index += 1;
             continue;
         }
