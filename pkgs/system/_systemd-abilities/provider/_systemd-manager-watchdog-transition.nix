@@ -4,6 +4,7 @@
   resourceInterface,
   resourceKind,
   transitionFragment,
+  valueExpression,
 }: context: let
   matchesResourceKind = import ./_systemd-transition-resource.nix resourceKind context;
   actionable = builtins.filter (change:
@@ -88,12 +89,9 @@
       operations = [method];
       inherit (desired) lifetime;
     };
-    inputs = {
-      source = "literal";
-      value = {
-        kind = "manager-watchdog";
-        desired = desired.value;
-      };
+    inputs = valueExpression {
+      kind = "manager-watchdog";
+      desired = desired.value;
     };
     preconditions = [];
     accesses = [

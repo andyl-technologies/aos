@@ -921,6 +921,7 @@ fn expression_uses_sensitive_reference(
 
     match expression {
         ValueExpression::ResourceReference { .. } => true,
+        ValueExpression::RequestOutput { .. } => true,
         ValueExpression::AggregateOutput { reference } => plan
             .interfaces()
             .get(&reference.interface)
@@ -1178,7 +1179,8 @@ fn insert_expression_artifacts(
         },
         ValueExpression::ResourceReference { .. }
         | ValueExpression::AggregateOutput { .. }
-        | ValueExpression::OperationResult { .. } => {}
+        | ValueExpression::OperationResult { .. }
+        | ValueExpression::RequestOutput { .. } => {}
     }
     Ok(())
 }

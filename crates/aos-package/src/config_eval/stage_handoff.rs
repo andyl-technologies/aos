@@ -605,8 +605,12 @@ fn selected_transaction_storage(
         bail!("resolved initrd transaction-storage view has no exact checked caller binding")
     };
 
+    let materialized = revision
+        .realization
+        .literal_value()
+        .context("initrd transaction-storage realization is unresolved")?;
     let realization: TransactionStorageRealization =
-        serde_json::from_value(revision.realization.as_json().clone())
+        serde_json::from_value(materialized.as_json().clone())
             .context("decoding initrd transaction-storage realization")?;
     ensure!(
         realization.schema == "aos.boot.transaction-storage-realization/v1",

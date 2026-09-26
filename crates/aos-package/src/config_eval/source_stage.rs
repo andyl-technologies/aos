@@ -23,7 +23,7 @@ use aos_ability_model::{
     BindingSource, ControllerAssignment, DesiredStateDocument, EnvironmentDocument, ExecutionStage,
     InstanceId, InterfaceDocument, InterfaceKey, LocalKey, PackageDocument, ProviderImplementation,
     ProviderImplementationReference, RequestId, ResourceId, ResourcePermission, ResourceReference,
-    RevisionId, ValueExpression, VersionedDocument,
+    RevisionId, ValueExpression, ValuePhase, VersionedDocument,
 };
 use aos_ability_plan::{
     SourceStageBinding, SourceStageBundle, SourceStageFixedPoint, SourceStageRequest,
@@ -111,7 +111,7 @@ pub fn materialize_source_stage(
         stage: spec.stage,
     };
     ensure!(
-        spec.stage == ExecutionStage::Initrd && fixed_point.environment == environment_id,
+        fixed_point.environment == environment_id,
         "source stage fixed point names another execution environment"
     );
     ensure!(
@@ -119,12 +119,12 @@ pub fn materialize_source_stage(
         "source stage fixed point retains unresolved provider requests"
     );
 
-    let contract_bytes = read_bounded(&spec.static_contract.path, "initrd static contract")?;
+    let contract_bytes = read_bounded(&spec.static_contract.path, "source-stage static contract")?;
     let static_contract = SourceStageStaticContract {
         identity: spec.static_contract.identity,
         sha256: Sha256Digest::of_bytes(&contract_bytes),
     };
-    let mut catalog = load_static_catalog(&contract_bytes)?;
+    let mut catalog = load_static_catalog(&contract_bytes, spec.stage)?;
     load_source_artifacts(&spec.artifact_outputs, exported_graph_path, &mut catalog)?;
     let used_artifacts = resolve_fixed_point_artifacts(&mut fixed_point, &catalog)?;
     let declared_artifacts = spec
@@ -161,8 +161,11 @@ pub fn materialize_source_stage(
         &checked_binding,
         &catalog.interfaces,
     )?;
-    let mut evaluator = super::native_activation::production_evaluator()?
-        .with_source_fixed_point(spec.base_lib.clone(), static_contract.identity.clone())?;
+    let mut evaluator = super::native_activation::production_evaluator()?.with_source_fixed_point(
+        spec.base_lib.clone(),
+        static_contract.identity.clone(),
+        spec.stage,
+    )?;
     let transition = TransitionPlanner::new(&context).plan_source_template(
         source_authority,
         &checked_binding,
@@ -214,8 +217,8 @@ fn validate_spec(spec: &SourceStageMaterializationSpec) -> Result<()> {
         "unsupported source-stage materialization schema"
     );
     ensure!(
-        spec.stage == ExecutionStage::Initrd,
-        "only initrd source stages are materialized"
+        matches!(spec.stage, ExecutionStage::Initrd | ExecutionStage::Host),
+        "only initrd and host source stages are materialized"
     );
     validate_absolute_path(&spec.static_contract.identity, "static contract identity")?;
     validate_absolute_path(
@@ -266,16 +269,21 @@ fn validate_absolute_path(path: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn load_static_catalog(contract_bytes: &[u8]) -> Result<SourceCatalog> {
+fn load_static_catalog(contract_bytes: &[u8], stage: ExecutionStage) -> Result<SourceCatalog> {
     use aos_ability_validate::{
         StaticAbilityArtifactClass, StaticAbilityContractExpectation, StaticAbilityExecutionStage,
     };
 
+    let expected_stage = match stage {
+        ExecutionStage::Initrd => StaticAbilityExecutionStage::Initrd,
+        ExecutionStage::Host => StaticAbilityExecutionStage::Host,
+        _ => bail!("source-stage static contract has an unsupported execution stage"),
+    };
     let checked = aos_ability_validate::validate_static_ability_artifacts_at_store_root(
         contract_bytes,
         &StaticAbilityContractExpectation {
             artifact_class: StaticAbilityArtifactClass::Bootable,
-            execution_stage: Some(StaticAbilityExecutionStage::Initrd),
+            execution_stage: Some(expected_stage),
             platform: None,
         },
         Path::new("/nix/store"),
@@ -383,13 +391,12 @@ fn resolve_fixed_point_artifacts(
     fixed_point: &mut SourceStageFixedPoint,
     catalog: &SourceCatalog,
 ) -> Result<BTreeSet<PackageOutputSelector>> {
-    fn resolve(
-        value: &mut AbilityValue,
+    fn resolve_json(
+        json: &mut serde_json::Value,
         catalog: &SourceCatalog,
         used: &mut BTreeSet<PackageOutputSelector>,
     ) -> Result<()> {
-        let mut json = value.as_json().clone();
-        resolve_artifact_selectors(&mut json, |selector| {
+        resolve_artifact_selectors(json, |selector| {
             used.insert(selector.clone());
             catalog
                 .package_outputs
@@ -403,7 +410,28 @@ fn resolve_fixed_point_artifacts(
                     )
                 })
         })?;
+        Ok(())
+    }
+
+    fn resolve(
+        value: &mut AbilityValue,
+        catalog: &SourceCatalog,
+        used: &mut BTreeSet<PackageOutputSelector>,
+    ) -> Result<()> {
+        let mut json = value.as_json().clone();
+        resolve_json(&mut json, catalog, used)?;
         *value = AbilityValue::new(json)?;
+        Ok(())
+    }
+
+    fn resolve_expression(
+        expression: &mut ValueExpression,
+        catalog: &SourceCatalog,
+        used: &mut BTreeSet<PackageOutputSelector>,
+    ) -> Result<()> {
+        let mut json = serde_json::to_value(&*expression)?;
+        resolve_json(&mut json, catalog, used)?;
+        *expression = serde_json::from_value(json)?;
         Ok(())
     }
 
@@ -416,7 +444,7 @@ fn resolve_fixed_point_artifacts(
         .values_mut()
         .chain(fixed_point.composition_requests.values_mut())
     {
-        resolve(&mut request.parameters, catalog, &mut used)?;
+        resolve_expression(&mut request.parameters, catalog, &mut used)?;
     }
     for requirement in fixed_point.composition_requirements.values_mut() {
         if let Some(fallback) = requirement.requirement.fallback.as_mut() {
@@ -432,7 +460,7 @@ fn resolve_fixed_point_artifacts(
     }
     for resource in fixed_point.resolved_resources.values_mut() {
         resolve(&mut resource.value, catalog, &mut used)?;
-        resolve(&mut resource.realization, catalog, &mut used)?;
+        resolve_expression(&mut resource.realization, catalog, &mut used)?;
         ensure!(
             resource.revision.is_none(),
             "source fixed point must not supply a resource revision"
@@ -772,9 +800,10 @@ impl<'a> SourceComposition<'a> {
                         == Some(&owner_implementation.package.package.name),
                 "child resource delegation differs from its selected parent request"
             );
-            if owner_binding.provider_instance == source.provider_instance
-                && owner_binding.slot == source.slot
-            {
+            // A child effect provider may be a different instance from the
+            // parent controller. The parent request and slot, not provider
+            // identity equality, authorize delegation of that resource.
+            if owner_binding.slot == source.slot {
                 Some(*owner_binding_name)
             } else {
                 None
@@ -842,7 +871,8 @@ impl<'a> SourceComposition<'a> {
             );
         }
         let mut references = Vec::new();
-        collect_resource_references(request.parameters.as_json(), &mut references)?;
+        let parameters = serde_json::to_value(&request.parameters)?;
+        collect_resource_references(&parameters, &mut references)?;
         for reference in references {
             ensure!(
                 !reference.operations.is_empty(),
@@ -986,6 +1016,12 @@ impl<'a> SourceComposition<'a> {
                     descriptor.phase == output.phase && descriptor.lifetime == output.lifetime,
                     "source output descriptor differs from its interface contract"
                 );
+                // Planning values have already been consumed by the completed
+                // fixed point. They are per-request values, not aggregate
+                // outputs in the desired runtime state.
+                if output.phase == ValuePhase::Planning {
+                    continue;
+                }
                 outputs.push(AggregateOutput {
                     aggregate: AggregateId {
                         provider: selected.provider.clone(),

@@ -103,6 +103,7 @@
 
   transition = context:
     lib.abilities.resourceControllerTransition {
+      abilities = config.aos.abilities;
       inherit context;
       terminalInterface = effectsInterface;
       actions = {

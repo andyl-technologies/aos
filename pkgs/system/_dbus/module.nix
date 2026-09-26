@@ -17,7 +17,6 @@
   controllerMethods = builtins.attrNames controllerDeclaration.methods;
   packageArtifact = lib.abilities.packageOutput {};
   registrationConfigurationPath = resultOf "system-registration" "configuration-path";
-  registrationResource = resultOf "system-registration" "resource";
   registrationConfigurationResource = resultOf "system-registration" "configuration-resource";
 
   producer = key: interface: parameters:
@@ -146,7 +145,6 @@
       prerequisites = [
         (resultOf "runtime-storage" "resource")
         (resultOf "state-storage" "resource")
-        registrationResource
         registrationConfigurationResource
       ];
       after = [];

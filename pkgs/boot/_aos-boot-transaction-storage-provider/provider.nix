@@ -5,6 +5,7 @@
   packageName,
   ...
 }: let
+  valueExpression = lib.abilities.valueExpressionForAbilities config.aos.abilities;
   alias = "boot-transaction-storage-view";
   interface = config.aos.abilities.interfaces.${alias};
   identity = lib.abilities.interfaceIdentity (
@@ -150,10 +151,7 @@
         operations = ["materialize"];
         lifetime = "transaction";
       };
-      inputs = {
-        source = "literal";
-        value = desired.value;
-      };
+      inputs = valueExpression desired.value;
       preconditions = [];
       accesses = [
         {

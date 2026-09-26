@@ -372,7 +372,14 @@
     then (semanticRequirement abilities.requirementTemplates.${entry.request.requirement}).methods
     else (generatedRequirements.${entry.request.requirement} or (fail "request '${entry.binding.request}' has no exact requirement")).requirement.methods;
   controlsKind = kind: entry:
-    builtins.any (methodName: let
+    (
+      entry.implementation.compositionType
+      != null
+      && entry.implementation.desiredType == null
+      && entry.interface.name == kind
+      && requestedMethods entry == []
+    )
+    || builtins.any (methodName: let
       method = entry.interface.methods.${methodName} or null;
     in
       method
@@ -486,9 +493,18 @@
       "compose result for '${controller.binding.implementation}'"
       ["outputs" "realizations" "requests"]
       authored;
+    # A composer with no desired type only expands typed child requests. Its
+    # merged input is planning state, not a second runtime resource to realize.
+    runtimeResources =
+      if controller.implementation.desiredType == null
+      then
+        if controller.implementation.compositionType == null
+        then fail "controller '${controller.binding.implementation}' has neither a composition nor desired resource type"
+        else {}
+      else resourceMap;
   in
-    if builtins.attrNames result.realizations != builtins.attrNames resourceMap
-    then fail "controller '${controller.binding.implementation}' did not realize exactly its supplied resources"
+    if builtins.attrNames result.realizations != builtins.attrNames runtimeResources
+    then fail "controller '${controller.binding.implementation}' returned realizations different from its runtime resources"
     else {
       inherit groupKey resources result;
       context = contextFor provision;
@@ -700,7 +716,11 @@
         realization = composition.result.realizations.${resource.resource.key};
       };
     })
-    composition.resources)
+    (
+      if composition.implementation.desiredType == null
+      then []
+      else composition.resources
+    ))
   compositionGroups));
 
   normalizeProviderOutput = value:

@@ -70,7 +70,7 @@ pub fn validate_value(
     schema: &ValueSchema,
     expression: &ValueExpression,
 ) -> Result<(), ValidationErrors> {
-    validate_value_with_literal_source(schema, expression, LiteralSource::Authored, None)
+    validate_value_with_literal_source(schema, expression, LiteralSource::Authored, None, None)
 }
 
 /// Validates one closed value-schema declaration without evaluating a value.
@@ -126,6 +126,7 @@ pub(crate) fn validate_materialized_value(
         },
         LiteralSource::Materialized,
         None,
+        None,
     )
 }
 
@@ -139,6 +140,21 @@ pub(crate) fn validate_composition_value(
         expression,
         LiteralSource::Authored,
         Some(aggregate_validator),
+        None,
+    )
+}
+
+pub(crate) fn validate_binding_value(
+    schema: &ValueSchema,
+    expression: &ValueExpression,
+    request_validator: &RequestReferenceValidator<'_>,
+) -> Result<(), ValidationErrors> {
+    validate_value_with_literal_source(
+        schema,
+        expression,
+        LiteralSource::Authored,
+        None,
+        Some(request_validator),
     )
 }
 
@@ -147,6 +163,7 @@ fn validate_value_with_literal_source(
     expression: &ValueExpression,
     literal_source: LiteralSource,
     aggregate_validator: Option<&AggregateReferenceValidator<'_>>,
+    request_validator: Option<&RequestReferenceValidator<'_>>,
 ) -> Result<(), ValidationErrors> {
     let mut diagnostics = Vec::new();
     if !schema.is_within_limits(
@@ -201,6 +218,7 @@ fn validate_value_with_literal_source(
         &mut diagnostics,
         None,
         aggregate_validator,
+        request_validator,
         literal_source,
     );
     if diagnostics.is_empty() {
@@ -234,6 +252,9 @@ pub(crate) type AggregateReferenceValidator<'a> = dyn Fn(
         &mut Vec<Diagnostic>,
     ) + 'a;
 
+pub(crate) type RequestReferenceValidator<'a> = dyn Fn(&ValueSchema, &aos_ability_model::RequestOutputReference, &SchemaPath, &mut Vec<Diagnostic>)
+    + 'a;
+
 pub(crate) fn validate_expression(
     schema: &ValueSchema,
     expression: &ValueExpression,
@@ -249,6 +270,7 @@ pub(crate) fn validate_expression(
         diagnostics,
         result_validator,
         aggregate_validator,
+        None,
         LiteralSource::Authored,
     );
 }
@@ -260,6 +282,7 @@ fn validate_expression_with_literal_source(
     diagnostics: &mut Vec<Diagnostic>,
     result_validator: Option<&ResultReferenceValidator<'_>>,
     aggregate_validator: Option<&AggregateReferenceValidator<'_>>,
+    request_validator: Option<&RequestReferenceValidator<'_>>,
     literal_source: LiteralSource,
 ) {
     if let ValueExpression::OperationResult { reference } = expression {
@@ -292,6 +315,21 @@ fn validate_expression_with_literal_source(
         }
         return;
     }
+    if let ValueExpression::RequestOutput { reference } = expression {
+        if let Some(validate_request) = request_validator {
+            validate_request(schema, reference, path, diagnostics);
+        } else {
+            push_diagnostic(
+                diagnostics,
+                schema_diagnostic(
+                    DiagnosticCode::MissingReference,
+                    path,
+                    "request output requires a binding validation context".to_string(),
+                ),
+            );
+        }
+        return;
+    }
 
     if let ValueSchema::Refined { value, constraints } = schema {
         validate_expression_with_literal_source(
@@ -301,6 +339,7 @@ fn validate_expression_with_literal_source(
             diagnostics,
             result_validator,
             aggregate_validator,
+            request_validator,
             literal_source,
         );
         if let ValueExpression::Literal { value } = expression {
@@ -320,6 +359,7 @@ fn validate_expression_with_literal_source(
             diagnostics,
             result_validator,
             aggregate_validator,
+            request_validator,
             literal_source,
         );
         return;
@@ -339,6 +379,7 @@ fn validate_expression_with_literal_source(
                 diagnostics,
                 result_validator,
                 aggregate_validator,
+                request_validator,
                 literal_source,
             );
         } else {
@@ -387,6 +428,7 @@ fn validate_expression_with_literal_source(
             diagnostics,
             result_validator,
             aggregate_validator,
+            request_validator,
             literal_source,
         );
         return;
@@ -422,6 +464,7 @@ fn validate_expression_with_literal_source(
                     diagnostics,
                     result_validator,
                     aggregate_validator,
+                    request_validator,
                     literal_source,
                 );
             }
@@ -434,6 +477,7 @@ fn validate_expression_with_literal_source(
                 diagnostics,
                 result_validator,
                 aggregate_validator,
+                request_validator,
                 literal_source,
             );
         }
@@ -455,6 +499,7 @@ fn validate_expression_with_literal_source(
                 diagnostics,
                 result_validator,
                 aggregate_validator,
+                request_validator,
                 literal_source,
             );
         }
@@ -472,6 +517,16 @@ fn validate_expression_with_literal_source(
         }
         ValueExpression::AggregateOutput { .. } => {}
         ValueExpression::OperationResult { .. } => {}
+        ValueExpression::RequestOutput { .. } => {
+            push_diagnostic(
+                diagnostics,
+                schema_diagnostic(
+                    DiagnosticCode::MissingReference,
+                    path,
+                    "request output requires a binding validation context".to_string(),
+                ),
+            );
+        }
     }
 }
 
@@ -846,7 +901,8 @@ fn validate_standalone_size_and_strings(
             ValueExpression::Literal { .. }
             | ValueExpression::ResourceReference { .. }
             | ValueExpression::AggregateOutput { .. }
-            | ValueExpression::OperationResult { .. } => {}
+            | ValueExpression::OperationResult { .. }
+            | ValueExpression::RequestOutput { .. } => {}
         }
     }
 
@@ -884,6 +940,7 @@ fn validate_expression_object(
     diagnostics: &mut Vec<Diagnostic>,
     result_validator: Option<&ResultReferenceValidator<'_>>,
     aggregate_validator: Option<&AggregateReferenceValidator<'_>>,
+    request_validator: Option<&RequestReferenceValidator<'_>>,
     literal_source: LiteralSource,
 ) {
     match schema {
@@ -922,6 +979,7 @@ fn validate_expression_object(
                     diagnostics,
                     result_validator,
                     aggregate_validator,
+                    request_validator,
                     literal_source,
                 );
             }
@@ -938,6 +996,7 @@ fn validate_expression_object(
                 diagnostics,
                 result_validator,
                 aggregate_validator,
+                request_validator,
                 literal_source,
             );
         }
@@ -954,6 +1013,7 @@ fn validate_expression_object(
                 diagnostics,
                 result_validator,
                 aggregate_validator,
+                request_validator,
                 literal_source,
             );
         }
@@ -996,6 +1056,7 @@ fn validate_expression_object(
                 diagnostics,
                 result_validator,
                 aggregate_validator,
+                request_validator,
                 literal_source,
             );
         }
@@ -1011,6 +1072,7 @@ fn validate_expression_record(
     diagnostics: &mut Vec<Diagnostic>,
     result_validator: Option<&ResultReferenceValidator<'_>>,
     aggregate_validator: Option<&AggregateReferenceValidator<'_>>,
+    request_validator: Option<&RequestReferenceValidator<'_>>,
     literal_source: LiteralSource,
 ) {
     let optional: BTreeSet<&str> = optional_fields.iter().map(LocalKey::as_str).collect();
@@ -1026,6 +1088,7 @@ fn validate_expression_record(
                 diagnostics,
                 result_validator,
                 aggregate_validator,
+                request_validator,
                 literal_source,
             );
         } else if !optional.contains(name.as_str()) {
@@ -1062,6 +1125,7 @@ fn validate_expression_document_record(
     diagnostics: &mut Vec<Diagnostic>,
     result_validator: Option<&ResultReferenceValidator<'_>>,
     aggregate_validator: Option<&AggregateReferenceValidator<'_>>,
+    request_validator: Option<&RequestReferenceValidator<'_>>,
     literal_source: LiteralSource,
 ) {
     let optional: BTreeSet<&str> = optional_fields.iter().map(String::as_str).collect();
@@ -1075,6 +1139,7 @@ fn validate_expression_document_record(
                 diagnostics,
                 result_validator,
                 aggregate_validator,
+                request_validator,
                 literal_source,
             );
         } else if !optional.contains(name.as_str()) {
@@ -1519,6 +1584,7 @@ fn expression_kind(expression: &ValueExpression) -> &'static str {
         | ValueExpression::ResourceReference { .. } => "object",
         ValueExpression::AggregateOutput { .. } => "aggregate output",
         ValueExpression::OperationResult { .. } => "operation result",
+        ValueExpression::RequestOutput { .. } => "request output",
     }
 }
 

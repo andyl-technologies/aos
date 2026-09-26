@@ -212,14 +212,17 @@ impl CommandHandlerResourceCatalog {
                 .cloned()
                 .ok_or_else(|| invalid("resource interface disappeared from checked plan"))?;
             let revision = resolved_resource_revision(plan, &reference.resource)?;
-            let spec = CommandHandlerResourceSpec {
-                resource: revision.resource.clone(),
-                kind: revision.kind.clone(),
-                lifetime: revision.lifetime,
-                revision: revision.revision,
-                value: revision.value.clone(),
-                realization: revision.realization.clone(),
-            };
+            let spec =
+                CommandHandlerResourceSpec {
+                    resource: revision.resource.clone(),
+                    kind: revision.kind.clone(),
+                    lifetime: revision.lifetime,
+                    revision: revision.revision,
+                    value: revision.value.clone(),
+                    realization: revision.realization.literal_value().cloned().ok_or_else(
+                        || invalid("command handler resource realization is unresolved"),
+                    )?,
+                };
             entries.push(CommandHandlerResourceEntry::new(
                 package,
                 assignment,
@@ -1362,7 +1365,8 @@ fn closed_resource_references_from_plan(
         for resource in resources_to_scan {
             let revision = resolved_resource_revision(plan, &resource)?;
             collect_resource_references(revision.value.as_json(), &mut references)?;
-            collect_resource_references(revision.realization.as_json(), &mut references)?;
+            let realization = serde_json::to_value(&revision.realization).map_err(err)?;
+            collect_resource_references(&realization, &mut references)?;
         }
         if references.len() == previous_count {
             break;

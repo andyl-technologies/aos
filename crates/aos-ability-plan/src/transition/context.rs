@@ -181,7 +181,7 @@ pub struct ScopedDesiredState {
     pub aggregate_inputs: Vec<AggregateInput>,
     /// Lists lower-interface requests authored by this provider.
     pub child_requests: Vec<BindingRequest>,
-    /// Lists desired revisions of provider-owned resources.
+    /// Lists desired revisions of owned or exactly granted resources.
     pub resources: Vec<ResourceRevision>,
     /// Lists outputs published by provider-owned aggregates.
     pub outputs: Vec<AggregateOutput>,
@@ -205,7 +205,7 @@ pub struct ScopedObservations {
     pub freshness: FreshnessCondition,
     /// Lists exact provider inventory entries for this provider.
     pub providers: Vec<ProviderInventory>,
-    /// Lists authenticated revisions of provider-owned resources.
+    /// Lists authenticated revisions of owned or exactly granted resources.
     pub resources: Vec<ResourceRevision>,
     /// Lists authenticated controller assignments owned by this provider.
     pub controllers: Vec<ControllerAssignment>,
@@ -275,11 +275,35 @@ pub struct TransitionContext {
     pub controllers: Vec<ControllerAssignment>,
 }
 
+fn granted_resources_for_provider(
+    provider: &InstanceId,
+    bindings: &[Binding],
+) -> BTreeSet<aos_ability_model::ResourceId> {
+    bindings
+        .iter()
+        .flat_map(|binding| {
+            let caller = (binding.request.consumer == *provider
+                && binding.caller_grant.principal == *provider)
+                .then_some(binding.caller_grant.resources.as_slice())
+                .unwrap_or_default();
+            let provider_grant = (binding.provider == *provider
+                && binding.provider_grant.principal == *provider)
+                .then_some(binding.provider_grant.resources.as_slice())
+                .unwrap_or_default();
+
+            caller.iter().chain(provider_grant)
+        })
+        .map(|permission| permission.resource.clone())
+        .collect()
+}
+
 pub(super) fn scoped_desired_state(
     snapshot: &VerifiedPlanningSnapshot,
     provider: &InstanceId,
 ) -> ScopedDesiredState {
     let desired = snapshot.checked_binding().desired_state();
+    let granted_resources =
+        granted_resources_for_provider(provider, snapshot.checked_binding().bindings());
     ScopedDesiredState {
         instances: desired
             .instances
@@ -302,7 +326,10 @@ pub(super) fn scoped_desired_state(
         resources: desired
             .resources
             .iter()
-            .filter(|revision| revision.resource.provider == *provider)
+            .filter(|revision| {
+                revision.resource.provider == *provider
+                    || granted_resources.contains(&revision.resource)
+            })
             .cloned()
             .collect(),
         outputs: desired
@@ -337,6 +364,7 @@ pub(super) fn scoped_source_desired_state(
     provider: &InstanceId,
 ) -> ScopedDesiredState {
     let desired = binding.desired_state();
+    let granted_resources = granted_resources_for_provider(provider, binding.bindings());
     ScopedDesiredState {
         instances: desired
             .instances
@@ -359,7 +387,10 @@ pub(super) fn scoped_source_desired_state(
         resources: desired
             .resources
             .iter()
-            .filter(|revision| revision.resource.provider == *provider)
+            .filter(|revision| {
+                revision.resource.provider == *provider
+                    || granted_resources.contains(&revision.resource)
+            })
             .cloned()
             .collect(),
         outputs: desired
@@ -393,6 +424,8 @@ pub(super) fn scoped_observations(
     provider: &InstanceId,
 ) -> ScopedObservations {
     let environment = desired.checked_binding().environment();
+    let granted_resources =
+        granted_resources_for_provider(provider, desired.checked_binding().bindings());
     ScopedObservations {
         environment: environment.environment.clone(),
         platform: environment.platform.clone(),
@@ -407,7 +440,10 @@ pub(super) fn scoped_observations(
         resources: environment
             .resources
             .iter()
-            .filter(|revision| revision.resource.provider == *provider)
+            .filter(|revision| {
+                revision.resource.provider == *provider
+                    || granted_resources.contains(&revision.resource)
+            })
             .cloned()
             .collect(),
         controllers: environment
@@ -427,6 +463,7 @@ pub(super) fn scoped_source_observations(
     provider: &InstanceId,
 ) -> ScopedObservations {
     let environment = binding.environment();
+    let granted_resources = granted_resources_for_provider(provider, binding.bindings());
     ScopedObservations {
         environment: environment.environment.clone(),
         platform: environment.platform.clone(),
@@ -441,7 +478,10 @@ pub(super) fn scoped_source_observations(
         resources: environment
             .resources
             .iter()
-            .filter(|revision| revision.resource.provider == *provider)
+            .filter(|revision| {
+                revision.resource.provider == *provider
+                    || granted_resources.contains(&revision.resource)
+            })
             .cloned()
             .collect(),
         controllers: environment
@@ -771,10 +811,13 @@ mod tests {
             .iter()
             .map(|assignment| assignment.resource.clone())
             .collect::<BTreeSet<_>>();
-        let expected = BTreeSet::from([own, outgoing, incoming]);
+        let granted_resources = granted_resources_for_provider(&provider, &binding_plan);
+        let expected_granted = BTreeSet::from([outgoing.clone(), incoming.clone()]);
+        let expected_visible = BTreeSet::from([own, outgoing, incoming]);
 
-        assert_eq!(visible_resources, expected);
-        assert_eq!(visible_controller_resources, expected);
+        assert_eq!(granted_resources, expected_granted);
+        assert_eq!(visible_resources, expected_visible);
+        assert_eq!(visible_controller_resources, expected_visible);
     }
 
     #[test]
@@ -843,7 +886,9 @@ mod tests {
                 kind: aos_ability_model::InterfaceName::new("aos.test-resource").unwrap(),
                 lifetime: aos_ability_model::ResourceLifetime::Instance,
                 value: aos_ability_model::AbilityValue::new(serde_json::json!(true)).unwrap(),
-                realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+                realization: aos_ability_model::ValueExpression::Literal {
+                    value: AbilityValue::new(serde_json::Value::Null).unwrap(),
+                },
                 revision: desired_revision,
             })
             .collect::<Vec<_>>();
@@ -920,7 +965,9 @@ mod tests {
                 kind: aos_ability_model::InterfaceName::new("aos.test-resource").unwrap(),
                 lifetime: aos_ability_model::ResourceLifetime::Instance,
                 value: aos_ability_model::AbilityValue::new(serde_json::json!(true)).unwrap(),
-                realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+                realization: aos_ability_model::ValueExpression::Literal {
+                    value: AbilityValue::new(serde_json::Value::Null).unwrap(),
+                },
                 revision: desired_revision,
             })
             .collect::<Vec<_>>();
@@ -956,7 +1003,9 @@ mod tests {
             kind: aos_ability_model::InterfaceName::new("aos.test-resource").unwrap(),
             lifetime: ResourceLifetime::Persistent,
             value: AbilityValue::new(serde_json::json!(true)).unwrap(),
-            realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+            realization: aos_ability_model::ValueExpression::Literal {
+                value: AbilityValue::new(serde_json::Value::Null).unwrap(),
+            },
             revision: RevisionId(Sha256Digest::separated(
                 "aos.test.transition-context/v1",
                 b"persistent",
@@ -994,7 +1043,9 @@ mod tests {
                 kind: aos_ability_model::InterfaceName::new("aos.test-resource").unwrap(),
                 lifetime,
                 value: AbilityValue::new(serde_json::json!(true)).unwrap(),
-                realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+                realization: aos_ability_model::ValueExpression::Literal {
+                    value: AbilityValue::new(serde_json::Value::Null).unwrap(),
+                },
                 revision: RevisionId(Sha256Digest::separated(
                     "aos.test.transition-context/v1",
                     b"bounded",
@@ -1018,7 +1069,9 @@ mod tests {
             kind: aos_ability_model::InterfaceName::new("aos.test-resource").unwrap(),
             lifetime: ResourceLifetime::Persistent,
             value: AbilityValue::new(serde_json::json!(true)).unwrap(),
-            realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+            realization: aos_ability_model::ValueExpression::Literal {
+                value: AbilityValue::new(serde_json::Value::Null).unwrap(),
+            },
             revision: RevisionId(Sha256Digest::separated(
                 "aos.test.transition-context/v1",
                 b"current",

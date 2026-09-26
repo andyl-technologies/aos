@@ -81,6 +81,7 @@
     };
   transition = context:
     lib.abilities.resourceControllerTransition {
+      abilities = config.aos.abilities;
       inherit context terminalInterface;
       actions = {
         create = {

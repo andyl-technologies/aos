@@ -26,7 +26,7 @@ in {
         description = "Contributes polkit's system-bus activation and policy artifacts.";
         interface = contributionInterface.name;
         inherit (contributionInterface) abi descriptor;
-        methods = ["observe"];
+        methods = [];
         guarantees = [];
         strength = "required";
         fallback = null;

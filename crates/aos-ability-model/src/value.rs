@@ -15,7 +15,8 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::identity::{
-    AggregateId, IncarnationId, InstanceId, InterfaceKey, LocalKey, ResourceId, ScopedOperationKey,
+    AggregateId, IncarnationId, InstanceId, InterfaceKey, LocalKey, RequestId, ResourceId,
+    ScopedOperationKey,
 };
 use crate::interface::ProviderImplementationReference;
 use crate::limits::ABILITY_LIMITS_V1;
@@ -355,6 +356,16 @@ pub struct OperationResultReference {
     pub output: LocalKey,
 }
 
+/// Refers to a declared runtime output of one selected consumer request.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestOutputReference {
+    /// Identifies the exact selected producer request.
+    pub request: RequestId,
+    /// Names the interface-local output port supplied by its binding.
+    pub output: LocalKey,
+}
+
 /// Names a plan node that can produce a typed result.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
@@ -462,9 +473,23 @@ pub enum ValueExpression {
         /// Identifies the producer and output port.
         reference: OperationResultReference,
     },
+    /// Retains a selected request output until effect construction assigns its producer.
+    RequestOutput {
+        /// Identifies the bound request and declared output port.
+        reference: RequestOutputReference,
+    },
 }
 
 impl ValueExpression {
+    /// Returns the complete value when this expression is already materialized.
+    #[must_use]
+    pub const fn literal_value(&self) -> Option<&AbilityValue> {
+        match self {
+            Self::Literal { value } => Some(value),
+            _ => None,
+        }
+    }
+
     /// Returns the expression's known top-level JSON representation.
     #[must_use]
     pub fn top_level_json_kind(&self) -> Option<crate::schema::JsonValueKind> {
@@ -477,7 +502,9 @@ impl ValueExpression {
             Self::Object { .. }
             | Self::ArtifactReference { .. }
             | Self::ResourceReference { .. } => Some(JsonValueKind::Object),
-            Self::AggregateOutput { .. } | Self::OperationResult { .. } => None,
+            Self::AggregateOutput { .. }
+            | Self::OperationResult { .. }
+            | Self::RequestOutput { .. } => None,
         }
     }
 
@@ -533,7 +560,8 @@ impl ValueExpression {
                 | Self::ArtifactReference { .. }
                 | Self::ResourceReference { .. }
                 | Self::AggregateOutput { .. }
-                | Self::OperationResult { .. } => {}
+                | Self::OperationResult { .. }
+                | Self::RequestOutput { .. } => {}
             }
         }
 

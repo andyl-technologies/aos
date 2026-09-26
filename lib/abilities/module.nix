@@ -971,7 +971,7 @@
     desiredType = mkOption {
       type = moduleTypes.nullOr portableType;
       default = null;
-      description = "Provider realization value accepted after this implementation is selected.";
+      description = "Runtime resource realization type. A composer without one expands child requests only.";
     };
     compositionType = mkOption {
       type = moduleTypes.nullOr portableType;
@@ -1266,7 +1266,11 @@
       ++ parentLifetime;
   in
     if outputLifetimes == []
-    then throw "Ability request '${request.requirement}' has no selected interface output lifetime."
+    then
+      # An input-only ability lives with its provider-instance aggregate.
+      if interface != null && interface.aggregation.scope == "provider-instance"
+      then "instance"
+      else throw "Ability request '${request.requirement}' has no selected interface lifetime."
     else builtins.foldl' lifetime.longest "attempt" outputLifetimes;
 
   normalizeRequest = request: let

@@ -3,6 +3,7 @@
   effectsInterface,
   resourceInterface,
   transitionFragment,
+  valueExpression,
 }: context: let
   matchesResourceKind = import ./_systemd-transition-resource.nix resourceInterface.name context;
   actionable = builtins.filter (change:
@@ -87,12 +88,7 @@
       operations = [method];
       inherit (desired) lifetime;
     };
-    inputs = {
-      source = "literal";
-      value = {
-        bootstrap = null;
-      };
-    };
+    inputs = valueExpression {bootstrap = null;};
     preconditions = [];
     accesses = [
       {

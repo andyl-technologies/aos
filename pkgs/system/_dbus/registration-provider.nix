@@ -12,11 +12,6 @@
   controllerIdentity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration controllerDeclaration
   );
-  controller = config.aos.abilities.implementations."${packageName}:${controllerAlias}";
-  realizationSchema =
-    lib.abilities.singletonSchemaDiscriminator
-    "D-Bus registration controller realization"
-    controller.desiredType;
   emptyResult = {
     requests = {};
     outputs = {};
@@ -42,22 +37,6 @@
       binding = bindingFor context.bindings requestName;
     })
     (builtins.attrNames context.requests);
-  registrationReference = instance: {
-    _type = "aos-resource-reference";
-    interface = controllerIdentity;
-    resource = {
-      provider = instance.id;
-      key = aggregationSlot;
-    };
-    operations = ["observe"];
-    lifetime = "instance";
-  };
-  outputsFor = instance: entries:
-    builtins.listToAttrs (builtins.map (entry: {
-        name = entry.requestName;
-        value.resource = registrationReference instance;
-      })
-      entries);
   exactlyOne = description: entries:
     if builtins.length entries == 1
     then builtins.head entries
@@ -67,7 +46,6 @@
   in
     emptyResult
     // {
-      outputs = outputsFor context.instance [entry];
       resourceFragments.${aggregationSlot} = {
         kind = controllerIdentity.name;
         lifetime = "instance";
@@ -84,7 +62,6 @@
   in
     emptyResult
     // {
-      outputs = outputsFor context.instance checked;
       resourceFragments = lib.optionalAttrs (checked != []) {
         ${aggregationSlot} = {
           kind = controllerIdentity.name;
@@ -184,18 +161,13 @@
           configuration-resource = configurationChild.outputs.resource.value;
         })
         requests;
-    realizations.${aggregationSlot}.schema = realizationSchema;
+    realizations = {};
   };
 in {
   config.aos.abilities.implementations = {
     ${controllerAlias} = {
       provide = provideBase;
       inherit compose;
-      transition = import ./registration-transition.nix {
-        configurationInterface = lib.abilities.interfaces.serviceManagement.interfaces.managedConfiguration.identity;
-        registrationResourceKind = controllerIdentity.name;
-        inherit (lib.abilities) transitionFragment;
-      };
     };
     ${registrationSourceAlias}.provide = provideRegistrationSource;
   };

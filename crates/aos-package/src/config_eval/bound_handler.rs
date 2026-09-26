@@ -658,7 +658,7 @@ fn validate_fixed_point_resource(
         expected.kind == resource.kind
             && expected.lifetime == resource.lifetime
             && expected.value == resource.value
-            && expected.realization == resource.realization
+            && expected.realization.literal_value() == Some(&resource.realization)
             && expected.revision == resource.revision,
         "bound-handler resource differs from the checked fixed point"
     );

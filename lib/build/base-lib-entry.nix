@@ -77,6 +77,10 @@ let
     freeze.decodeStorePaths
     (builtins.fromJSON
       (builtins.unsafeDiscardStringContext (builtins.readFile ./host-package-modules.json)));
+  hostProviderModules =
+    freeze.decodeStorePaths
+    (builtins.fromJSON
+      (builtins.unsafeDiscardStringContext (builtins.readFile ./host-provider-modules.json)));
   frozenHostEvaluationInputs =
     builtins.fromJSON
     (builtins.unsafeDiscardStringContext (builtins.readFile ./host-evaluation-inputs.json));
@@ -249,6 +253,31 @@ in rec {
     };
   in
     builtins.seq resolution.checked resolution.evaluation;
+
+  ## Replays the image's selected host providers in one complete module graph.
+  ## Source transitions use this frozen selection rather than re-running the
+  ## bounded provider-selection loop for every transition batch.
+  evalCompleteHostConfig = {
+    sourceModuleRoots ? {},
+    packageImportRoots ? {},
+    operatorModules ? [],
+    runtimeModules ? [],
+    factsModules ? [],
+    configurationModules ? [],
+  }: let
+    contextualize = storeViewLib.contextualizeModule sourceModuleRoots;
+    packageModules = builtins.map contextualize hostPackageModules;
+    selectionEvaluation = evalConfigurationSelection {
+      inherit operatorModules runtimeModules factsModules packageModules packageImportRoots;
+    };
+    stageConfigurationModules = selectionEvaluation.config.aos.abilities.stages.host.modules;
+  in
+    evalCompleteConfig {
+      inherit operatorModules runtimeModules factsModules packageModules packageImportRoots;
+      inherit (frozenHostEvaluationInputs) environment abilityInstances abilityBindings abilityRequests abilityRequirements;
+      selectedProviderModules = builtins.map contextualize hostProviderModules;
+      configurationModules = stageConfigurationModules ++ configurationModules;
+    };
 
   ## Maps the frozen canonical initrd inputs into one checked read view.
   initrdEvaluationInputs = storeView: let

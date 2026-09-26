@@ -15,8 +15,9 @@ use aos_ability_model::{
     DecisionNode, DependencyEdge, DependencyKind, DeploymentObligation, EffectPlanDocument,
     InstanceId, LocalKey, MergeNode, Operation, OperationResultReference, PackageDocument,
     PlanNodeKey, ProviderAdoptionAuthorization, ProviderAdoptionEndpoint, ProviderImplementation,
-    ProviderImplementationReference, ProviderReadiness, ResourceId, ResourceLifetime, ScopePath,
-    ValueExpression, VersionedDocument, compare_edges, compare_operation_keys,
+    ProviderImplementationReference, ProviderReadiness, RequestOutputReference, ResourceId,
+    ResourceLifetime, ResultProducerKey, ScopePath, ValueExpression, ValuePhase, VersionedDocument,
+    compare_edges, compare_operation_keys, compare_resource_ids,
 };
 use aos_ability_validate::{CheckedBindingPlan, CheckedTransitionAuthority, ValidationContext};
 use aos_contract::Sha256Digest;
@@ -819,7 +820,8 @@ fn collect_expression_results(
             ValueExpression::Literal { .. }
             | ValueExpression::ArtifactReference { .. }
             | ValueExpression::ResourceReference { .. }
-            | ValueExpression::AggregateOutput { .. } => {}
+            | ValueExpression::AggregateOutput { .. }
+            | ValueExpression::RequestOutput { .. } => {}
         }
     }
 }
@@ -834,6 +836,268 @@ fn retain_foreign_results(
     if !references.is_empty() {
         results.insert(consumer, references);
     }
+}
+
+fn collect_request_outputs(
+    expression: &ValueExpression,
+    references: &mut BTreeSet<RequestOutputReference>,
+) {
+    let mut pending = vec![expression];
+    while let Some(expression) = pending.pop() {
+        match expression {
+            ValueExpression::List { items } => pending.extend(items),
+            ValueExpression::Object { fields } => pending.extend(fields.values()),
+            ValueExpression::PathWithin { base, .. } => pending.push(base),
+            ValueExpression::CanonicalJson { value, .. } => pending.push(value),
+            ValueExpression::RequestOutput { reference } => {
+                references.insert(reference.clone());
+            }
+            ValueExpression::Literal { .. }
+            | ValueExpression::ArtifactReference { .. }
+            | ValueExpression::ResourceReference { .. }
+            | ValueExpression::AggregateOutput { .. }
+            | ValueExpression::OperationResult { .. } => {}
+        }
+    }
+}
+
+fn replace_request_outputs(
+    expression: &mut ValueExpression,
+    resolved: &BTreeMap<RequestOutputReference, OperationResultReference>,
+) {
+    match expression {
+        ValueExpression::List { items } => {
+            for item in items {
+                replace_request_outputs(item, resolved);
+            }
+        }
+        ValueExpression::Object { fields } => {
+            for field in fields.values_mut() {
+                replace_request_outputs(field, resolved);
+            }
+        }
+        ValueExpression::PathWithin { base, .. } => replace_request_outputs(base, resolved),
+        ValueExpression::CanonicalJson { value, .. } => replace_request_outputs(value, resolved),
+        ValueExpression::RequestOutput { reference } => {
+            if let Some(result) = resolved.get(reference) {
+                *expression = ValueExpression::OperationResult {
+                    reference: result.clone(),
+                };
+            }
+        }
+        ValueExpression::Literal { .. }
+        | ValueExpression::ArtifactReference { .. }
+        | ValueExpression::ResourceReference { .. }
+        | ValueExpression::AggregateOutput { .. }
+        | ValueExpression::OperationResult { .. } => {}
+    }
+}
+
+fn resolve_request_output(
+    context: &ValidationContext,
+    binding_plan: &CheckedBindingPlan,
+    operations: &[Operation],
+    consumer: &Operation,
+    reference: &RequestOutputReference,
+) -> Result<OperationResultReference, TransitionError> {
+    let invalid = |reason: &str| TransitionError::InvalidFragment {
+        provider: consumer.target.resource.provider.clone(),
+        reason: reason.to_string(),
+    };
+    let matching_bindings = binding_plan
+        .bindings()
+        .iter()
+        .filter(|binding| binding.request == reference.request)
+        .collect::<Vec<_>>();
+    let [binding] = matching_bindings.as_slice() else {
+        return Err(invalid(
+            "runtime request output requires one exact selected binding",
+        ));
+    };
+    let request = binding_plan
+        .document()
+        .requests
+        .iter()
+        .find(|request| request.id == reference.request)
+        .ok_or_else(|| invalid("runtime request output names an absent checked request"))?;
+    let interface = context
+        .interface(&binding.interface)
+        .ok_or_else(|| invalid("runtime request output has no exact interface descriptor"))?;
+    let output = interface
+        .interface
+        .outputs
+        .get(&reference.output)
+        .or_else(|| {
+            let mut outputs = request.methods.iter().filter_map(|method| {
+                interface
+                    .interface
+                    .methods
+                    .get(method)
+                    .and_then(|method| method.outputs.get(&reference.output))
+            });
+            let selected = outputs.next()?;
+            outputs.next().is_none().then_some(selected)
+        });
+    let output =
+        output.ok_or_else(|| invalid("runtime request output has no unique declared port"))?;
+    if output.phase != ValuePhase::Runtime || output.lifetime < consumer.target.lifetime {
+        return Err(invalid(
+            "runtime request output phase or lifetime is incompatible with its consumer",
+        ));
+    }
+
+    let slots = binding
+        .caller_grant
+        .aggregate_slots
+        .iter()
+        .filter(|permission| permission.aggregate.provider == binding.provider)
+        .collect::<Vec<_>>();
+    let [slot] = slots.as_slice() else {
+        return Err(invalid(
+            "runtime request output requires one exact aggregate slot",
+        ));
+    };
+    let resource = ResourceId {
+        provider: binding.provider.clone(),
+        key: slot.slot.clone(),
+    };
+    let producers = operations
+        .iter()
+        .filter(|operation| {
+            operation.target.resource == resource
+                && binding_plan
+                    .binding(&operation.binding)
+                    .is_some_and(|terminal| terminal.request.consumer == binding.provider)
+                && context
+                    .interface(&operation.interface)
+                    .and_then(|interface| interface.interface.methods.get(&operation.method))
+                    .and_then(|method| method.outputs.get(&reference.output))
+                    .is_some_and(|produced| {
+                        produced.schema == output.schema
+                            && produced.phase == output.phase
+                            && produced.visibility == output.visibility
+                            && produced.lifetime == output.lifetime
+                    })
+        })
+        .collect::<Vec<_>>();
+    let [producer] = producers.as_slice() else {
+        return Err(invalid(
+            "runtime request output has no unique matching effect producer",
+        ));
+    };
+    if producer.key == consumer.key {
+        return Err(invalid(
+            "runtime request output cannot depend on its own effect",
+        ));
+    }
+
+    Ok(OperationResultReference {
+        producer: ResultProducerKey::Operation {
+            key: producer.key.clone(),
+        },
+        output: reference.output.clone(),
+    })
+}
+
+fn lower_request_outputs(
+    context: &ValidationContext,
+    binding_plan: &CheckedBindingPlan,
+    operations: &mut [Operation],
+) -> Result<Vec<DependencyEdge>, TransitionError> {
+    let producers = operations.to_vec();
+    let mut edges = Vec::new();
+    for consumer in operations {
+        let mut references = BTreeSet::new();
+        collect_request_outputs(&consumer.inputs, &mut references);
+        if references.is_empty() {
+            continue;
+        }
+
+        let mut resolved = BTreeMap::new();
+        for reference in references {
+            let result =
+                resolve_request_output(context, binding_plan, &producers, consumer, &reference)?;
+            edges.push(DependencyEdge {
+                from: result_producer_node(&result),
+                to: PlanNodeKey::Operation {
+                    key: consumer.key.clone(),
+                },
+                kind: DependencyKind::Data,
+            });
+            resolved.insert(reference, result);
+        }
+        replace_request_outputs(&mut consumer.inputs, &resolved);
+        consumer.input_phase = ValuePhase::Runtime;
+    }
+    Ok(edges)
+}
+
+fn precondition_edges(
+    operations: &[Operation],
+    binding_plan: &CheckedBindingPlan,
+) -> Vec<DependencyEdge> {
+    let current: BTreeMap<_, _> = binding_plan
+        .environment()
+        .resources
+        .iter()
+        .map(|revision| (&revision.resource, revision.revision))
+        .collect();
+    let desired: BTreeMap<_, _> = binding_plan
+        .desired_state()
+        .resources
+        .iter()
+        .map(|revision| (&revision.resource, revision.revision))
+        .collect();
+    let mut writers: BTreeMap<&ResourceId, Vec<&Operation>> = BTreeMap::new();
+    for operation in operations {
+        if operation
+            .accesses
+            .iter()
+            .any(|access| access.resource == operation.target.resource && access.mode.is_write())
+        {
+            writers
+                .entry(&operation.target.resource)
+                .or_default()
+                .push(operation);
+        }
+    }
+
+    let mut edges = Vec::new();
+    for consumer in operations {
+        for precondition in &consumer.preconditions {
+            let Some(expected_revision) = precondition.expected_revision else {
+                continue;
+            };
+            let Some([producer]) = writers.get(&precondition.resource).map(Vec::as_slice) else {
+                continue;
+            };
+            if producer.key == consumer.key {
+                continue;
+            }
+
+            let expects_current = current.get(&precondition.resource) == Some(&expected_revision);
+            let expects_desired = desired.get(&precondition.resource) == Some(&expected_revision);
+            let producer_node = PlanNodeKey::Operation {
+                key: producer.key.clone(),
+            };
+            let consumer_node = PlanNodeKey::Operation {
+                key: consumer.key.clone(),
+            };
+            let (from, to) = if expects_desired {
+                (producer_node, consumer_node)
+            } else if expects_current {
+                (consumer_node, producer_node)
+            } else {
+                continue;
+            };
+            edges.push(DependencyEdge {
+                from,
+                to,
+                kind: DependencyKind::RequiredSuccess,
+            });
+        }
+    }
+    edges
 }
 
 pub(super) fn merge_fragments(
@@ -1054,6 +1318,18 @@ pub(super) fn merge_fragments(
         provider_readiness.extend(fragment.provider_readiness);
         obligations.extend(fragment.obligations);
     }
+    // A checked request-output reference is itself an explicit cross-provider
+    // dependency. Resolve it to the one terminal method producing that port.
+    for edge in lower_request_outputs(context, binding_plan, &mut operations)? {
+        if !edges.contains(&edge) && !imported_edges.contains(&edge) {
+            edges.push(edge);
+        }
+    }
+    for edge in precondition_edges(&operations, binding_plan) {
+        if !edges.contains(&edge) {
+            edges.push(edge);
+        }
+    }
     edges.extend(imported_edges);
     edges.extend(provider_adoption_handoffs(
         context,
@@ -1062,6 +1338,17 @@ pub(super) fn merge_fragments(
         provider_adoptions,
         linked_healthy_adoptions,
     )?);
+    for operation in &mut operations {
+        // Resource accesses and preconditions are sets in the provider contract.
+        // Sort them at the fragment boundary, where every provider uses the
+        // same canonical ResourceId order. Keep duplicates for validation.
+        operation
+            .preconditions
+            .sort_by(|left, right| compare_resource_ids(&left.resource, &right.resource));
+        operation
+            .accesses
+            .sort_by(|left, right| compare_resource_ids(&left.resource, &right.resource));
+    }
     operations.sort_by(|left, right| compare_operation_keys(&left.key, &right.key));
     decisions.sort_by(|left, right| compare_operation_keys(&left.key, &right.key));
     merges.sort_by(|left, right| compare_operation_keys(&left.key, &right.key));
@@ -1337,12 +1624,119 @@ fn insert_artifact(
 
 #[cfg(test)]
 mod tests {
-    use aos_ability_model::{AccessMode, ProviderStateFormat};
+    use aos_ability_model::{
+        AccessMode, AggregateId, AggregateSlotPermission, OperationPrecondition,
+        ProviderStateFormat,
+    };
 
     use super::*;
 
     fn operation_fixture() -> Operation {
         aos_ability_validate::test_support::checked_lifecycle_effect_plan().operations()[0].clone()
+    }
+
+    #[test]
+    fn desired_revision_precondition_orders_the_realizing_write_before_a_reader() {
+        let plan = aos_ability_validate::test_support::checked_lifecycle_effect_plan();
+        let producer = plan.operations()[0].clone();
+        let revision = plan
+            .binding_plan()
+            .desired_state()
+            .resources
+            .iter()
+            .find(|revision| revision.resource == producer.target.resource)
+            .expect("fixture target must have a desired revision");
+        let mut reader = producer.clone();
+        reader.key.key = LocalKey::new("dependent-reader").expect("static key is valid");
+        reader.preconditions = vec![OperationPrecondition {
+            resource: revision.resource.clone(),
+            expected_revision: Some(revision.revision),
+            expected_incarnation: None,
+        }];
+        reader.accesses[0].mode = AccessMode::Read;
+
+        let edges = precondition_edges(&[producer.clone(), reader.clone()], plan.binding_plan());
+
+        assert_eq!(
+            edges,
+            vec![DependencyEdge {
+                from: PlanNodeKey::Operation { key: producer.key },
+                to: PlanNodeKey::Operation { key: reader.key },
+                kind: DependencyKind::RequiredSuccess,
+            }]
+        );
+    }
+
+    #[test]
+    fn selected_runtime_request_output_lowers_to_one_exact_producer_and_data_edge() {
+        let mut fixture = aos_ability_validate::test_support::plan_fixture();
+        let output = LocalKey::new("ready").expect("static output key is valid");
+        let method = LocalKey::new("observe").expect("static method key is valid");
+        let descriptor = fixture.interfaces[0]
+            .interface
+            .methods
+            .get_mut(&method)
+            .and_then(|method| method.outputs.get_mut(&output))
+            .expect("fixture method must declare its result");
+        descriptor.phase = ValuePhase::Runtime;
+        descriptor.lifetime = ResourceLifetime::Instance;
+        fixture.refresh_interface();
+
+        let producer = fixture.effect_plan.operations[0].clone();
+        let provider = producer.target.resource.provider.clone();
+        let group = fixture.interfaces[0]
+            .interface
+            .aggregation
+            .controller_group
+            .clone();
+        fixture.binding_plan.bindings[0]
+            .caller_grant
+            .aggregate_slots
+            .push(AggregateSlotPermission {
+                aggregate: AggregateId { provider, group },
+                slot: producer.target.resource.key.clone(),
+            });
+        fixture.refresh_commitments();
+
+        let binding_plan = fixture
+            .context
+            .validate_binding_plan(fixture.binding_plan, fixture.binding_inputs)
+            .expect("fixture binding with one aggregate slot must validate");
+        let mut consumer = producer.clone();
+        consumer.key.key = LocalKey::new("consumer").expect("static operation key is valid");
+        consumer.target.resource.key =
+            LocalKey::new("other-resource").expect("static resource key is valid");
+        consumer.inputs = ValueExpression::RequestOutput {
+            reference: RequestOutputReference {
+                request: binding_plan.bindings()[0].request.clone(),
+                output: output.clone(),
+            },
+        };
+        let mut operations = [producer.clone(), consumer.clone()];
+
+        let edges = lower_request_outputs(&fixture.context, &binding_plan, &mut operations)
+            .expect("checked runtime request output must lower to its exact producer");
+
+        assert_eq!(
+            operations[1].inputs,
+            ValueExpression::OperationResult {
+                reference: OperationResultReference {
+                    producer: ResultProducerKey::Operation {
+                        key: producer.key.clone(),
+                    },
+                    output,
+                },
+            }
+        );
+        assert_eq!(operations[1].input_phase, ValuePhase::Runtime);
+        assert_eq!(
+            edges,
+            vec![DependencyEdge {
+                from: PlanNodeKey::Operation { key: producer.key },
+                to: PlanNodeKey::Operation { key: consumer.key },
+                kind: DependencyKind::Data,
+            }]
+        );
     }
 
     #[test]

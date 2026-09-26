@@ -9,6 +9,7 @@ pub(super) fn validate_request(
     in_scope_instances: &BTreeSet<InstanceId>,
     request_authorities: &BTreeMap<InstanceId, aos_ability_model::DeclarationAuthority>,
     provider_authors: &BTreeMap<InstanceId, BTreeSet<LocalKey>>,
+    request_outputs: &RequestOutputResolver<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     check_strict_order(
@@ -102,10 +103,17 @@ pub(super) fn validate_request(
             continue;
         };
 
-        let expression = ValueExpression::Literal {
-            value: request.parameters.clone(),
+        let validate_output = |expected: &aos_ability_model::ValueSchema,
+                               reference: &aos_ability_model::RequestOutputReference,
+                               path: &SchemaPath,
+                               diagnostics: &mut Vec<Diagnostic>| {
+            request_outputs.validate(request, expected, reference, path, diagnostics);
         };
-        if let Err(errors) = validate_value(&interface.interface.request, &expression) {
+        if let Err(errors) = validate_binding_value(
+            &interface.interface.request,
+            &request.parameters,
+            &validate_output,
+        ) {
             for mut item in errors.into_diagnostics() {
                 let mut prefixed = SchemaPath::root()
                     .child("requests")
@@ -674,6 +682,7 @@ pub(super) fn validate_aggregate_inputs(
     inputs: &BindingValidationInputs,
     binding_indices: &BTreeMap<aos_ability_model::BindingId, usize>,
     resources: &BTreeSet<aos_ability_model::ResourceId>,
+    request_outputs: &RequestOutputResolver<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let mut occupied_slots: BTreeMap<
@@ -759,10 +768,20 @@ pub(super) fn validate_aggregate_inputs(
         let Some(interface) = context.interface(&binding.interface) else {
             continue;
         };
-        let expression = ValueExpression::Literal {
-            value: aggregate_input.value.clone(),
+        let Some(recipient) = request_outputs.request(&aggregate_input.request) else {
+            continue;
         };
-        if let Err(errors) = validate_value(&interface.interface.request, &expression) {
+        let validate_output = |expected: &aos_ability_model::ValueSchema,
+                               reference: &aos_ability_model::RequestOutputReference,
+                               path: &SchemaPath,
+                               diagnostics: &mut Vec<Diagnostic>| {
+            request_outputs.validate(recipient, expected, reference, path, diagnostics);
+        };
+        if let Err(errors) = validate_binding_value(
+            &interface.interface.request,
+            &aggregate_input.value,
+            &validate_output,
+        ) {
             for mut item in errors.into_diagnostics() {
                 let mut prefixed = path.child("value").components().to_vec();
                 prefixed.extend(item.path);
@@ -774,7 +793,7 @@ pub(super) fn validate_aggregate_inputs(
             continue;
         }
 
-        if let Err(error) = authorize_materialized_references(
+        if let Err(error) = authorize_expression_references(
             context.interface_catalog(),
             binding,
             &binding.caller_grant,

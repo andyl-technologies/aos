@@ -17,9 +17,9 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, DiagnosticCode, LocalKey, ModuleLocator,
+    ABILITY_LIMITS_V1, AbilityValue, DiagnosticCode, ExecutionStage, LocalKey, ModuleLocator,
     ProviderImplementation, ProviderImplementationReference,
 };
 use aos_ability_plan::{CompositionEvaluator, EvaluationError, SourceEvaluationRequest};
@@ -207,7 +207,13 @@ pub struct RestrictedAbilityEvaluator {
     limits: AbilityEvaluationLimits,
     store_view: Option<StoreViewLocator>,
     identity_store: Option<OsString>,
-    source_fixed_point: Option<(PathBuf, String)>,
+    source_fixed_point: Option<SourceFixedPointContext>,
+}
+
+struct SourceFixedPointContext {
+    base_lib: PathBuf,
+    static_contract: String,
+    stage: ExecutionStage,
 }
 
 impl RestrictedAbilityEvaluator {
@@ -239,7 +245,7 @@ impl RestrictedAbilityEvaluator {
         })
     }
 
-    /// Selects the image's frozen module fixed point for source-stage evaluation.
+    /// Selects the image's frozen module fixed point for one source stage.
     ///
     /// # Errors
     ///
@@ -248,6 +254,7 @@ impl RestrictedAbilityEvaluator {
         mut self,
         base_lib: PathBuf,
         static_contract: String,
+        stage: ExecutionStage,
     ) -> Result<Self> {
         let (_, suffix) = store_root_and_suffix(&base_lib)?;
         ensure!(
@@ -255,7 +262,15 @@ impl RestrictedAbilityEvaluator {
             "source fixed-point evaluator requires one exact base library root"
         );
         store_root_and_suffix(Path::new(&static_contract))?;
-        self.source_fixed_point = Some((base_lib, static_contract));
+        ensure!(
+            matches!(stage, ExecutionStage::Initrd | ExecutionStage::Host),
+            "source fixed-point evaluator requires an initrd or host stage"
+        );
+        self.source_fixed_point = Some(SourceFixedPointContext {
+            base_lib,
+            static_contract,
+            stage,
+        });
         Ok(self)
     }
 
@@ -655,7 +670,7 @@ impl CompositionEvaluator for RestrictedAbilityEvaluator {
         Vec<std::result::Result<Option<AbilityValue>, EvaluationError>>,
         EvaluationError,
     > {
-        let Some((base_lib, static_contract)) = &self.source_fixed_point else {
+        let Some(source) = &self.source_fixed_point else {
             return Ok(requests
                 .iter()
                 .map(|request| {
@@ -669,15 +684,14 @@ impl CompositionEvaluator for RestrictedAbilityEvaluator {
                 })
                 .collect());
         };
-        evaluate_source_fixed_point(self, base_lib, static_contract, requests)
+        evaluate_source_fixed_point(self, source, requests)
             .map_err(|error| EvaluationError::new(bounded_error_message(&error)))
     }
 }
 
 fn evaluate_source_fixed_point(
     evaluator: &RestrictedAbilityEvaluator,
-    base_lib: &Path,
-    static_contract: &str,
+    source: &SourceFixedPointContext,
     requests: &[SourceEvaluationRequest],
 ) -> Result<Vec<std::result::Result<Option<AbilityValue>, EvaluationError>>> {
     if requests.is_empty() {
@@ -696,13 +710,13 @@ fn evaluate_source_fixed_point(
         })
         .collect::<Vec<_>>();
     let encoded_calls = serde_json::to_string(&calls).context("encoding source transitions")?;
-    let nar_hash = direct_nar_hash(base_lib)?;
+    let nar_hash = direct_nar_hash(&source.base_lib)?;
     let locked_source = locked_evaluator_input_in(
-        &EvaluatorInput::canonical(base_lib.to_path_buf()),
+        &EvaluatorInput::canonical(source.base_lib.clone()),
         Some(&nar_hash),
         None,
     )?;
-    let registered_roots = source_module_roots(base_lib)?
+    let registered_roots = source_module_roots(&source.base_lib, source.stage)?
         .into_iter()
         .map(|root| {
             let nar_hash = direct_nar_hash(&root)?;
@@ -717,17 +731,27 @@ fn evaluate_source_fixed_point(
         .to_str()
         .context("private source evaluator store path is not UTF-8")?
         .to_string();
+    let evaluation = match source.stage {
+        ExecutionStage::Initrd => {
+            "baseLib.evalCompleteInitrdConfig { inherit storeView sourceModuleRoots packageImportRoots; }"
+        }
+        ExecutionStage::Host => {
+            "baseLib.evalCompleteHostConfig { inherit sourceModuleRoots packageImportRoots; }"
+        }
+        _ => bail!("source fixed-point evaluator has an unsupported stage"),
+    };
     let expression = SOURCE_FIXED_POINT_EXPRESSION
         .replace("@BASE_LIB@", &locked_source)
         .replace("@ROOTS@", &registered_roots)
         .replace("@PRIVATE_STORE_ROOT@", &nix_string(&private_store_root))
-        .replace("@STATIC_CONTRACT@", &nix_string(static_contract))
+        .replace("@STATIC_CONTRACT@", &nix_string(&source.static_contract))
+        .replace("@EVALUATION@", evaluation)
         .replace("@CALLS@", &nix_string(&encoded_calls));
     ensure!(
         expression.len() <= evaluator.limits.expression_bytes,
         "source transition batch exceeds the evaluator expression bound"
     );
-    // The base library authenticates the selected initrd module records and
+    // The base library authenticates the selected stage's module records and
     // confines their imports. Match the on-host evaluator's store read view.
     let mut command = evaluator.command("path:/nix/store/", &environment);
     command.args(["--option", "max-call-depth", "8192"]);
@@ -741,7 +765,8 @@ fn evaluate_source_fixed_point(
         .context("evaluating source transitions from the module fixed point")?;
     ensure!(
         output.status.success(),
-        "source module transition evaluation failed: {}",
+        "source module transition evaluation failed with {}: {}",
+        output.status,
         String::from_utf8_lossy(&output.stderr).trim()
     );
     let values: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
@@ -771,18 +796,25 @@ struct FrozenModuleRoot {
 }
 
 pub(super) fn host_source_module_roots(base_lib: &Path) -> Result<BTreeSet<PathBuf>> {
-    frozen_module_roots(base_lib, &["host-package-modules.json"])
-}
-
-fn source_module_roots(base_lib: &Path) -> Result<BTreeSet<PathBuf>> {
     frozen_module_roots(
         base_lib,
-        &[
-            "host-package-modules.json",
-            "initrd-package-modules.json",
-            "initrd-provider-modules.json",
-        ],
+        &["host-package-modules.json", "host-provider-modules.json"],
     )
+}
+
+fn source_module_roots(base_lib: &Path, stage: ExecutionStage) -> Result<BTreeSet<PathBuf>> {
+    match stage {
+        ExecutionStage::Host => host_source_module_roots(base_lib),
+        ExecutionStage::Initrd => frozen_module_roots(
+            base_lib,
+            &[
+                "host-package-modules.json",
+                "initrd-package-modules.json",
+                "initrd-provider-modules.json",
+            ],
+        ),
+        _ => bail!("source fixed-point evaluator has an unsupported stage"),
+    }
 }
 
 fn frozen_module_roots(base_lib: &Path, files: &[&str]) -> Result<BTreeSet<PathBuf>> {
@@ -851,7 +883,7 @@ let
     static_contract = @STATIC_CONTRACT@;
   };
   calls = builtins.fromJSON @CALLS@;
-  implementations = (baseLib.evalCompleteInitrdConfig { inherit storeView sourceModuleRoots packageImportRoots; }).config.aos.abilities.implementations;
+  implementations = (@EVALUATION@).config.aos.abilities.implementations;
   reject = message: throw ("AOS_ABILITY_DIAGNOSTIC_V1[value-type-mismatch]: " + message);
   closed = depth: value:
     if depth > 64 then reject "source transition result exceeds the structural depth limit"

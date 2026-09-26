@@ -57,6 +57,7 @@
         name = "terminal-${binding.slot}";
         value = {
           requirement = "terminal";
+          owner_request = requestName;
           slot = binding.slot;
           scope = request.scope ++ ["terminal"];
           parameters = request.parameters;
@@ -71,6 +72,7 @@
           name = "${suffix}-${binding.slot}";
           value = {
             inherit requirement parameters;
+            owner_request = requestName;
             slot = binding.slot;
             scope = request.scope ++ [suffix];
           };
@@ -187,6 +189,7 @@
     total_recovery_millis = 120000;
   };
   emptyTransition = lib.abilities.transitionFragment {};
+  valueExpression = lib.abilities.valueExpressionForAbilities config.aos.abilities;
   selectedRevision = context: change: let
     revisions =
       if change.desired != null
@@ -253,10 +256,7 @@
       operations = [method];
       inherit (revision) lifetime;
     };
-    inputs = {
-      source = "literal";
-      value = revision.value;
-    };
+    inputs = valueExpression revision.value;
     preconditions = [];
     accesses = [
       {
@@ -267,6 +267,8 @@
     controller = selectedController context change.resource;
   };
   transitionFor = terminalIdentity: resourceIdentity: createMethod: removeMethod: context: let
+    # The scoped view includes granted child resources for coordination; this
+    # implementation mutates only resources owned by its provider instance.
     methodFor = change:
       if builtins.elem change.kind ["create" "update" "reconcile-stopped" "reconcile-divergent"]
       then createMethod
@@ -279,7 +281,7 @@
       if method == null
       then []
       else [(operation context terminalIdentity resourceIdentity method change)])
-    context.changes;
+    (builtins.filter (change: change.resource.provider == context.provider) context.changes);
   in
     emptyTransition // {inherit operations;};
   rolloutDeadline = {
@@ -348,10 +350,6 @@
       producer = operationNode key;
       inherit output;
     };
-    literal = value: {
-      source = "literal";
-      inherit value;
-    };
     operationResult = key: output: {
       source = "operation-result";
       reference = result key output;
@@ -370,13 +368,13 @@
       rolloutOperation {
         inherit context change key method phase branchContext mode inputPhase;
         binding = terminalBinding context rolloutTerminalIdentity change method;
-        inputs = object ({rollout = literal revision.value;} // fields);
+        inputs = object ({rollout = valueExpression revision.value;} // fields);
       };
     mutate = key: method: phase: branchContext:
       terminal key method phase branchContext "exclusive-write" {} "planning";
     observe = key: method: phase:
       terminal key method phase [] "read" (
-        lib.optionalAttrs (method == "observe-health") {health = literal null;}
+        lib.optionalAttrs (method == "observe-health") {health = valueExpression null;}
       ) "planning";
     platform = key: requestPrefix: selected: method: targetOperation: phase: branchContext: mode: inputs: inputPhase: let
       binding = rolloutBinding context change requestPrefix selected.identity method;
@@ -403,7 +401,7 @@
       "preparing"
       []
       "exclusive-write"
-      (literal revision.value)
+      (valueExpression revision.value)
       "planning";
     drain = mutate "drain" "drain" "converging" [];
     holdFallback = mutate "hold-fallback" "hold" "recovering" (branch "fallback");
@@ -418,7 +416,7 @@
       "recovering"
       (branch "fallback")
       "exclusive-write"
-      (literal revision.value)
+      (valueExpression revision.value)
       "planning";
     markHealthyBoot =
       platform
@@ -430,7 +428,7 @@
       "recovering"
       (branch "healthy")
       "exclusive-write"
-      (literal revision.value)
+      (valueExpression revision.value)
       "planning";
     observeBoot = observe "observe-boot" "observe-boot" "converging";
     observeCandidateHealth =
@@ -443,7 +441,7 @@
       "converging"
       []
       "read"
-      (literal revision.value)
+      (valueExpression revision.value)
       "planning";
     observeHealth = terminal "observe-health" "observe-health" "converging" [] "read" {
       health = operationResult "observe-candidate-health" "observation";
@@ -463,8 +461,8 @@
       []
       "read"
       (object {
-        rollout = literal revision.value;
-        entry = literal null;
+        rollout = valueExpression revision.value;
+        entry = valueExpression null;
       })
       "planning";
     select = terminal "select" "select" "publishing" [] "exclusive-write" {
@@ -481,7 +479,7 @@
       []
       "exclusive-write"
       (object {
-        rollout = literal revision.value;
+        rollout = valueExpression revision.value;
         entry = operationResult "resolve-boot-entry" "entry";
       })
       "runtime";
@@ -495,7 +493,7 @@
       "publishing"
       []
       "exclusive-write"
-      (literal {reason = "activate-image";})
+      (valueExpression {reason = "activate-image";})
       "planning";
     settleHoldFallback =
       mutate "settle-hold-fallback" "hold" "recovering" (branch "fallback");
@@ -513,7 +511,7 @@
       "recovering"
       (branch "fallback")
       "exclusive-write"
-      (literal {reason = "restore-image";})
+      (valueExpression {reason = "restore-image";})
       "planning";
     releaseStorage =
       platform
@@ -525,7 +523,7 @@
       "recovering"
       []
       "exclusive-write"
-      (literal revision.value)
+      (valueExpression revision.value)
       "planning";
     retire = terminal "retire" "retire" "recovering" [] "exclusive-write" {
       platform = operationResult "release-boot-payloads" "observation";
@@ -663,7 +661,8 @@
     builtins.foldl'
     mergeTransitions
     emptyTransition
-    (builtins.map (rolloutForChange context) context.changes);
+    (builtins.map (rolloutForChange context)
+      (builtins.filter (change: change.resource.provider == context.provider) context.changes));
 in {
   config.aos.abilities.implementations = {
     configuration-materialization = {

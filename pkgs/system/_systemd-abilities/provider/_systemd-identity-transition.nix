@@ -4,6 +4,7 @@
   resourceInterface,
   resourceKind,
   transitionFragment,
+  valueExpression,
 }: context: let
   matchesResourceKind = import ./_systemd-transition-resource.nix resourceKind context;
   deadline = {
@@ -95,10 +96,7 @@
       operations = [method];
       inherit (desired) lifetime;
     };
-    inputs = {
-      source = "literal";
-      value.desired = desired.value;
-    };
+    inputs = valueExpression {desired = desired.value;};
     preconditions = [];
     accesses = [
       {

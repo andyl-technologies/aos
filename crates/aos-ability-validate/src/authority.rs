@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use aos_ability_model::{
     AbilityValue, AccessMode, ArtifactReference, AuthorityGrant, AuthorityRole, Binding,
     InterfaceDocument, InterfaceKey, MethodReference, MethodSemantics, Operation, ResourceId,
-    ResourceLifetime, ResourceReference, ValueSchema, compare_resource_ids,
+    ResourceLifetime, ResourceReference, ValueExpression, ValueSchema, compare_resource_ids,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -262,6 +262,139 @@ pub(crate) fn authorize_materialized_references(
     }
 
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn authorize_expression_references(
+    interfaces: &BTreeMap<InterfaceKey, InterfaceDocument>,
+    binding: &Binding,
+    grant: &AuthorityGrant,
+    schema: &ValueSchema,
+    expression: &ValueExpression,
+    artifacts: &ArtifactIndex,
+    resources: &std::collections::BTreeSet<ResourceId>,
+    minimum_lifetime: ResourceLifetime,
+    required_lifetime: Option<ResourceLifetime>,
+) -> Result<(), ValueAuthorizationError> {
+    let recurse = |schema, expression| {
+        authorize_expression_references(
+            interfaces,
+            binding,
+            grant,
+            schema,
+            expression,
+            artifacts,
+            resources,
+            minimum_lifetime,
+            required_lifetime,
+        )
+    };
+
+    match schema {
+        ValueSchema::Refined { value, .. } => return recurse(value, expression),
+        ValueSchema::Optional { value } if !matches!(expression, ValueExpression::Literal { value } if value.as_json().is_null()) =>
+        {
+            return recurse(value, expression);
+        }
+        ValueSchema::DisjointUnion { variants } => {
+            if let Some(kind) = expression.top_level_json_kind()
+                && let Some(variant) = variants
+                    .iter()
+                    .find(|variant| variant.top_level_json_kind() == Some(kind))
+            {
+                return recurse(variant, expression);
+            }
+        }
+        _ => {}
+    }
+
+    match expression {
+        ValueExpression::Literal { value } => authorize_materialized_references(
+            interfaces,
+            binding,
+            grant,
+            schema,
+            value,
+            artifacts,
+            resources,
+            minimum_lifetime,
+            required_lifetime,
+        ),
+        ValueExpression::ArtifactReference { reference } => {
+            if artifacts.get(&reference.content) == Some(reference) {
+                Ok(())
+            } else {
+                Err(ValueAuthorizationError::ArtifactNotRetained)
+            }
+        }
+        ValueExpression::ResourceReference { reference } => authorize_resource_reference(
+            interfaces,
+            binding,
+            grant,
+            reference,
+            resources,
+            minimum_lifetime,
+            required_lifetime,
+        ),
+        ValueExpression::List { items } => {
+            if let ValueSchema::List { element, .. } = schema {
+                for item in items {
+                    recurse(element, item)?;
+                }
+            }
+            Ok(())
+        }
+        ValueExpression::Object { fields } => {
+            match schema {
+                ValueSchema::Map { value, .. } => {
+                    for field in fields.values() {
+                        recurse(value, field)?;
+                    }
+                }
+                ValueSchema::Record {
+                    fields: schemas, ..
+                } => {
+                    for (name, field) in fields {
+                        if let Some(field_schema) = schemas.get(name.as_str()) {
+                            recurse(field_schema, field)?;
+                        }
+                    }
+                }
+                ValueSchema::DocumentRecord {
+                    fields: schemas, ..
+                } => {
+                    for (name, field) in fields {
+                        if let Some(field_schema) = schemas.get(name) {
+                            recurse(field_schema, field)?;
+                        }
+                    }
+                }
+                ValueSchema::TaggedUnion { tag, variants } => {
+                    let selected = fields
+                        .get(tag.as_str())
+                        .and_then(|field| match field {
+                            ValueExpression::Literal { value } => value.as_json().as_str(),
+                            _ => None,
+                        })
+                        .and_then(|name| variants.get(name));
+                    if let Some(variant) = selected {
+                        recurse(variant, expression)?;
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        ValueExpression::PathWithin { base, .. } => recurse(schema, base),
+        ValueExpression::CanonicalJson {
+            source_schema,
+            value,
+            ..
+        } => recurse(source_schema, value),
+        ValueExpression::AggregateOutput { .. }
+        | ValueExpression::OperationResult { .. }
+        | ValueExpression::RequestOutput { .. } => Ok(()),
+    }
 }
 
 fn authorize_resource_reference(

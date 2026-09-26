@@ -112,6 +112,7 @@
         resources;
     };
     transition = import ./_systemd-identity-transition.nix {
+      valueExpression = lib.abilities.valueExpressionForAbilities config.aos.abilities;
       inherit effectsInterface;
       resourceInterface = specification.selected.identity;
       inherit (specification) resourceKind;

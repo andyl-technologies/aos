@@ -121,7 +121,7 @@ pub struct BindingRequest {
     /// Defines the longest resource lifetime the consumer requests.
     pub lifetime: ResourceLifetime,
     /// Carries the typed consumer value supplied to the selected provider.
-    pub parameters: AbilityValue,
+    pub parameters: ValueExpression,
 }
 
 /// Binds one request to an exact provider under separate caller/provider grants.
@@ -199,7 +199,7 @@ pub struct ResourceRevision {
     /// Retains the exact semantic desired or observed resource value.
     pub value: AbilityValue,
     /// Retains the selected provider's typed backend realization.
-    pub realization: AbilityValue,
+    pub realization: ValueExpression,
     /// Identifies its semantic desired or observed content.
     pub revision: RevisionId,
 }

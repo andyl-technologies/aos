@@ -8,22 +8,22 @@ use std::collections::{BTreeMap, BTreeSet};
 use aos_ability_model::document::ProviderState;
 use aos_ability_model::identity::{compare_instance_ids, compare_request_ids};
 use aos_ability_model::{
-    AccessMode, AggregateId, AuthorityGrant, Binding, BindingPlanDocument, BindingSource,
-    Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase, InstanceId, InterfaceKey,
-    LocalKey, PROVIDER_STATE_FORMAT_V1, PackageDocument, PlanId, ProviderImplementation, RequestId,
-    RequirementDeclaration, RequirementStrength, ResourceReference, ValueExpression,
-    VersionedDocument, compare_resource_ids,
+    AccessMode, AggregateId, AuthorityGrant, Binding, BindingPlanDocument, BindingRequest,
+    BindingSource, Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase, InstanceId,
+    InterfaceKey, LocalKey, PROVIDER_STATE_FORMAT_V1, PackageDocument, PlanId,
+    ProviderImplementation, RequestId, RequirementDeclaration, RequirementStrength,
+    ResourceReference, ValueExpression, VersionedDocument, compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
 
 use crate::ValidationErrors;
-use crate::authority::{ArtifactIndex, authorize_materialized_references};
+use crate::authority::{ArtifactIndex, authorize_expression_references};
 use crate::error::push_diagnostic;
 use crate::graph::{
     BindingProviderState, BindingValidationInputs, CheckedBindingPlan, ValidationContext,
     check_strict_order, diagnostic,
 };
-use crate::schema::{SchemaPath, validate_materialized_value, validate_value};
+use crate::schema::{SchemaPath, validate_binding_value};
 use aos_contract::limits::BoundedWriter;
 use package::validate_package_document;
 
@@ -77,6 +77,8 @@ mod document;
 mod grants;
 #[path = "binding/preparation.rs"]
 mod preparation;
+#[path = "binding/request_outputs.rs"]
+mod request_outputs;
 
 pub(crate) use document::validate_binding_document;
 use document::{merged_resource_revisions, validate_binding_inputs, validate_input_document};
@@ -87,6 +89,7 @@ use grants::{
     validate_request,
 };
 pub(crate) use preparation::prepare_binding_candidates;
+use request_outputs::RequestOutputResolver;
 
 #[cfg(test)]
 mod tests {

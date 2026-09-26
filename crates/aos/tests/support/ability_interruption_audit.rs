@@ -798,8 +798,13 @@ fn checked_plan(
     fixture.binding_plan.bindings[0].caller_grant.resources[0].access = access;
 
     let input = AbilityValue::new(minimal_value(&descriptor.parameters, &fixture)?)?;
-    fixture.binding_inputs.desired_state.child_requests[0].parameters = input.clone();
-    fixture.binding_plan.requests[0].parameters = input.clone();
+    fixture.binding_inputs.desired_state.child_requests[0].parameters =
+        aos_ability_model::ValueExpression::Literal {
+            value: input.clone(),
+        };
+    fixture.binding_plan.requests[0].parameters = aos_ability_model::ValueExpression::Literal {
+        value: input.clone(),
+    };
     let interface_key = fixture.effect_plan.operations[0].interface.clone();
     let operation = &mut fixture.effect_plan.operations[0];
     operation.key.key = LocalKey::new(&matrix_method.method)?;

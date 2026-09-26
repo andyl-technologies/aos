@@ -497,7 +497,7 @@ pub struct AggregateInput {
     /// Identifies the exact binding whose caller grant admitted this aggregate input.
     pub grant: BindingId,
     /// Carries the checked aggregate input value.
-    pub value: AbilityValue,
+    pub value: ValueExpression,
 }
 
 /// Names one aggregate output without collapsing provider or interface identity.
