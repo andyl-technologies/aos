@@ -12,7 +12,7 @@ struct ProductQemuResources {
     private_dirty_kib: u64,
     writable_shared_guest_mappings: usize,
     ring_backings: BTreeSet<(String, u64)>,
-    overlay_backing: (u64, u64),
+    overlay_backings: BTreeSet<(u64, u64)>,
 }
 
 #[derive(Debug)]
@@ -27,7 +27,11 @@ impl ProductHotForkResourceAudit {
         for source in &self.sources {
             let path = PathBuf::from(format!("/proc/{}", source.pid));
             if !path.exists() {
-                continue;
+                return Err(format!(
+                    "frozen Envoy HotFork source {} vanished before service stop",
+                    source.pid
+                )
+                .into());
             }
             let now = proc_field_kib(&path.join("smaps_rollup"), "Private_Dirty:")?;
             growth_kib = growth_kib.saturating_add(now.saturating_sub(source.private_dirty_kib));
@@ -93,7 +97,7 @@ fn sample_envoy_hot_fork_resources(
         .filter(|(_, arguments)| arguments.first() == Some(&expected_qemu))
         .map(|(pid, _)| pid)
         .collect::<Vec<_>>();
-    if qemu_pids.len() < 10 {
+    if qemu_pids.len() != 10 {
         return Ok(None);
     }
 
@@ -124,7 +128,11 @@ fn sample_envoy_hot_fork_resources(
         let Some(source) = processes.remove(&child.parent_pid) else {
             return Ok(None);
         };
-        if source.ring_backings.is_empty() || child.ring_backings.is_empty() {
+        if source.ring_backings.is_empty()
+            || child.ring_backings.is_empty()
+            || source.overlay_backings.is_empty()
+            || child.overlay_backings.is_empty()
+        {
             return Ok(None);
         }
         if !source.ring_backings.is_disjoint(&child.ring_backings) {
@@ -132,7 +140,10 @@ fn sample_envoy_hot_fork_resources(
             return Ok(None);
         }
         for process in [&source, &child] {
-            if !overlay_backings.insert(process.overlay_backing)
+            if process
+                .overlay_backings
+                .iter()
+                .any(|backing| !overlay_backings.insert(*backing))
                 || process
                     .ring_backings
                     .iter()
@@ -159,9 +170,12 @@ fn sample_envoy_hot_fork_resources(
         .iter()
         .map(|process| process.private_dirty_kib)
         .sum::<u64>();
+    // Each guest has 512 MiB RAM. A full private copy of every child's RAM
+    // would exceed this half-RAM-per-child dirty ceiling at child readiness.
+    const MAX_CHILD_PRIVATE_DIRTY_KIB: u64 = 5 * 256 * 1024;
     if total_descriptors > 16_384
         || total_threads > 256
-        || child_private_dirty_kib > 4 * 1024 * 1024
+        || child_private_dirty_kib > MAX_CHILD_PRIVATE_DIRTY_KIB
         || sources
             .iter()
             .chain(&children)
@@ -219,7 +233,7 @@ fn product_qemu_resources(pid: u32) -> Result<Option<ProductQemuResources>, Stri
                 return false;
             };
             match (u64::from_str_radix(start, 16), u64::from_str_radix(end, 16)) {
-                (Ok(start), Ok(end)) => end.saturating_sub(start) >= 512 * 1024 * 1024,
+                (Ok(start), Ok(end)) => end.saturating_sub(start) >= 256 * 1024 * 1024,
                 _ => false,
             }
         })
@@ -228,10 +242,42 @@ fn product_qemu_resources(pid: u32) -> Result<Option<ProductQemuResources>, Stri
     let Ok(descriptors) = fs::read_dir(process.join("fd")) else {
         return Ok(None);
     };
-    let descriptor_count = descriptors.count();
-    let Ok(overlay) = fs::metadata(process.join("cwd/crucible-root-overlay.qcow2")) else {
-        return Ok(None);
-    };
+    let mut descriptor_count = 0;
+    let mut overlay_backings = BTreeSet::new();
+    for descriptor in descriptors {
+        let Ok(descriptor) = descriptor else {
+            return Ok(None);
+        };
+        descriptor_count += 1;
+        let Ok(target) = fs::read_link(descriptor.path()) else {
+            return Ok(None);
+        };
+        if !target
+            .to_string_lossy()
+            .contains("crucible-root-overlay.qcow2")
+        {
+            continue;
+        }
+        let Ok(fdinfo) = fs::read_to_string(process.join("fdinfo").join(descriptor.file_name()))
+        else {
+            return Ok(None);
+        };
+        let Some(flags) = fdinfo
+            .lines()
+            .find_map(|line| line.strip_prefix("flags:"))
+            .and_then(|value| value.split_whitespace().next())
+            .and_then(|value| u64::from_str_radix(value, 8).ok())
+        else {
+            return Ok(None);
+        };
+        if flags & 0o3 == 0 {
+            continue;
+        }
+        let Ok(metadata) = fs::metadata(descriptor.path()) else {
+            return Ok(None);
+        };
+        overlay_backings.insert((metadata.dev(), metadata.ino()));
+    }
     let Ok(status) = fs::read_to_string(process.join("status")) else {
         return Ok(None);
     };
@@ -252,7 +298,7 @@ fn product_qemu_resources(pid: u32) -> Result<Option<ProductQemuResources>, Stri
         private_dirty_kib,
         writable_shared_guest_mappings,
         ring_backings,
-        overlay_backing: (overlay.dev(), overlay.ino()),
+        overlay_backings,
     }))
 }
 
