@@ -43,6 +43,7 @@ pub(super) fn configure(
     for output in parsed.outputs.values() {
         invocation.output(&output.path, output.optional)?;
     }
+    invocation.source_input = Some(parsed.input.clone());
     invocation.extra_inputs.insert(parsed.input.clone());
     invocation
         .extra_inputs

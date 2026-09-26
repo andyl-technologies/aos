@@ -127,6 +127,9 @@ def run_suite(root):
         invoke(gcc, derivation_args, expected, {
             "out": output, "name": f"package-{index}", "src": f"/nix/store/source-{index}",
             "NIX_LDFLAGS": f"-Wl,-rpath,{output}/lib",
+            "CMAKE_C_COMPILER_LAUNCHER": f"/nix/store/launcher-{index}/bin/accache",
+            "CMAKE_CXX_COMPILER_LAUNCHER": f"/nix/store/launcher-{index}/bin/accache",
+            "NIX_BUILD_CORES": str(index),
         })
 
     # Compiler names use the first executable on PATH, then validate that exact
