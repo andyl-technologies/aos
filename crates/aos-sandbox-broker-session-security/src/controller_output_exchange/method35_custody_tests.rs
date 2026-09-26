@@ -7,18 +7,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_proto::aos::sandbox::local::v1::{
     ApplyRuntimeRequest, AssignmentFence, Audience, BrokerAuthorizationArtifactsV1,
-    BrokerClientHello, BrokerMethod, BrokerRequestEnvelope, BrokerServerHello, Feature,
-    ObserveHostStorageOutputRequestV1, RequestHeader, ReserveHostExecutionOutputRequestV1,
-    ReserveStorageExecutionOutputRequestV1, RuntimeAction,
+    BrokerClientHello, BrokerMethod, BrokerRequestEnvelope, BrokerResponseEnvelope,
+    BrokerServerHello, Feature, ObserveHostStorageOutputRequestV1, RequestHeader,
+    ReserveHostExecutionOutputRequestV1, ReserveStorageExecutionOutputRequestV1, RuntimeAction,
 };
 use aos_sandbox::controller_execution_preissue::ControllerExecutionReserveSourceV1;
 use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionOwnerV1, ProtectedHostOutputReservationV1,
 };
 use aos_sandbox_broker_session_protocol::{
-    BrokerSessionProtocolV1, BrokerSessionTrafficStateV1, decode_canonical_client_hello_v1,
-    decode_canonical_request_v1, decode_canonical_server_hello_v1,
-    maximum_broker_session_request_bytes_v1, verify_broker_session_transcript_v1,
+    BrokerSessionProtocolV1, BrokerSessionTrafficStateV1, VerifiedBrokerSessionTranscriptV1,
+    decode_canonical_client_hello_v1, decode_canonical_request_v1,
+    decode_canonical_server_hello_v1, maximum_broker_session_request_bytes_v1,
+    verify_broker_session_transcript_v1,
 };
 use aos_sandbox_core::format::{
     encode_broker_authorization_plan, encode_ownership_lease, encode_signature, encode_trust_policy,
@@ -47,9 +48,11 @@ use aos_sandbox_host::{
 };
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
-    AuthenticatedBrokerMethodRequestAdmissionV1,
+    AuthenticatedBrokerMethodOutcomeAdmissionV1, AuthenticatedBrokerMethodRequestAdmissionV1,
+    AuthenticatedBrokerMethodRequestV1,
     admit_server_received_authenticated_broker_method_request_v1,
     authenticated_semantic_bindings_from_envelope_v1,
+    prepare_server_sent_authenticated_broker_method_outcome_v1,
 };
 use aos_sandbox_protocol::host_storage_output_readback::{
     decode_host_storage_output_readback_request_v1,
@@ -472,6 +475,38 @@ fn signed_method_request(
     artifacts: BrokerAuthorizationArtifactsV1,
     boottime: u64,
 ) -> aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1 {
+    signed_method_request_with_context(
+        client_path,
+        broker_path,
+        method,
+        audience,
+        request_id,
+        body,
+        artifacts,
+        boottime,
+    )
+    .request
+}
+
+struct SignedHostRequestContext {
+    request: AuthenticatedBrokerMethodRequestV1,
+    pending: Box<BrokerSessionTrafficStateV1>,
+    broker: ProtectedBrokerSessionBrokerV1,
+    transcript: VerifiedBrokerSessionTranscriptV1,
+    client_process: [u8; 16],
+}
+
+#[allow(clippy::too_many_arguments)]
+fn signed_method_request_with_context(
+    client_path: &Path,
+    broker_path: &Path,
+    method: BrokerMethod,
+    audience: Audience,
+    request_id: [u8; 16],
+    body: Vec<u8>,
+    artifacts: BrokerAuthorizationArtifactsV1,
+    boottime: u64,
+) -> SignedHostRequestContext {
     let mut client = ProtectedBrokerSessionClientV1::load(client_path).unwrap();
     let mut broker = ProtectedBrokerSessionBrokerV1::load(broker_path).unwrap();
     let features = vec![
@@ -549,7 +584,16 @@ fn signed_method_request(
     )
     .unwrap()
     {
-        AuthenticatedBrokerMethodRequestAdmissionV1::New { request, .. } => request,
+        AuthenticatedBrokerMethodRequestAdmissionV1::New {
+            request,
+            next_traffic,
+        } => SignedHostRequestContext {
+            request,
+            pending: next_traffic,
+            broker,
+            transcript,
+            client_process: client.process_execution_id_bytes(),
+        },
         AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(_) => {
             panic!("fresh signed Host request replayed")
         }
@@ -865,7 +909,7 @@ async fn signed_method35_custody_supports_protected_method48_readback() {
         &readback_body,
     )
     .unwrap();
-    let authenticated_readback = signed_method_request(
+    let mut signed_readback = signed_method_request_with_context(
         &storage_client_path,
         &storage_broker_path,
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT,
@@ -886,14 +930,14 @@ async fn signed_method35_custody_supports_protected_method48_readback() {
     let mut callsite = DormantHostBrokerCompositionV1::new(&mut cold_host);
     let response = dispatch_host_storage_output_with_claim_for_test_v1(
         &cold_claim,
-        authenticated_readback.method(),
-        authenticated_readback.authorization().is_some(),
+        signed_readback.request.method(),
+        signed_readback.request.authorization().is_some(),
         false,
         boot,
         || {
             callsite.observe_authenticated_storage_output(
                 &cold_claim,
-                &authenticated_readback,
+                &signed_readback.request,
                 boot,
             )
         },
@@ -921,14 +965,14 @@ async fn signed_method35_custody_supports_protected_method48_readback() {
     // the Host journal head or minting a new output reservation.
     let replay = dispatch_host_storage_output_with_claim_for_test_v1(
         &cold_claim,
-        authenticated_readback.method(),
-        authenticated_readback.authorization().is_some(),
+        signed_readback.request.method(),
+        signed_readback.request.authorization().is_some(),
         false,
         boot,
         || {
             callsite.observe_authenticated_storage_output(
                 &cold_claim,
-                &authenticated_readback,
+                &signed_readback.request,
                 boot,
             )
         },
@@ -936,4 +980,60 @@ async fn signed_method35_custody_supports_protected_method48_readback() {
     )
     .unwrap();
     assert_eq!(replay, response);
+
+    let packet = signed_readback
+        .broker
+        .finalize_method_outcome(
+            BrokerResponseEnvelope {
+                request_id: HOST_READBACK_REQUEST_ID.to_vec(),
+                method: BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT.into(),
+                body: response.clone(),
+                ..Default::default()
+            },
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT,
+            signed_readback.transcript.session_binding(),
+            signed_readback.broker.process_execution_id_bytes(),
+            1,
+            HOST_READBACK_REQUEST_ID,
+            signed_readback.request.signed_request_digest(),
+        )
+        .unwrap();
+    let broker_context = signed_readback
+        .broker
+        .context_for_handshake(signed_readback.client_process)
+        .unwrap();
+    let (outcome, next_traffic) = match prepare_server_sent_authenticated_broker_method_outcome_v1(
+        &signed_readback.pending,
+        &signed_readback.request,
+        &packet,
+        None,
+        0,
+        &broker_context,
+    )
+    .unwrap()
+    {
+        AuthenticatedBrokerMethodOutcomeAdmissionV1::New {
+            outcome,
+            next_traffic,
+        } => (outcome, next_traffic),
+        AuthenticatedBrokerMethodOutcomeAdmissionV1::ExactReplay(_) => {
+            panic!("fresh protected Host readback outcome replayed")
+        }
+    };
+    assert!(matches!(
+        outcome.result(),
+        aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodResultV1::Success { exact_body, .. }
+            if exact_body == &response
+    ));
+    assert!(matches!(
+        prepare_server_sent_authenticated_broker_method_outcome_v1(
+            &next_traffic,
+            &signed_readback.request,
+            &packet,
+            Some(&outcome),
+            0,
+            &broker_context,
+        ),
+        Ok(AuthenticatedBrokerMethodOutcomeAdmissionV1::ExactReplay(_))
+    ));
 }
