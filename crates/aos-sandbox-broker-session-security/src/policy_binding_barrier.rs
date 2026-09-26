@@ -22,7 +22,7 @@ use aos_sandbox::cache_residency::{
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, ClosedPolicyRootCasObservationV2,
-    PolicyCompilerInputV1, RootEffectAckV1, StagedClosedPolicyRootBaseV2,
+    PolicyCompilerInputV1, RootEffectAckV1, RootV8EffectAckV1, StagedClosedPolicyRootBaseV2,
     StagedClosedPolicySignerChallengeV2, closed_policy_binding_digest_v2,
     closed_policy_effect_handoff_v2, compare_closed_policy_binding_hold_claims_v2,
     current_parentless_create_project_source_v1,
@@ -57,6 +57,7 @@ use crate::policy_authority_client::{
     recover_committed_source_held_binding_v8,
 };
 use crate::policy_root_ack_client::acknowledge_held_root_effect_v1;
+use crate::policy_root_ack_v8_client::acknowledge_held_root_v8_effect;
 
 /// Commits one held Q04 cut without opening public Create or effect handoff.
 ///
@@ -713,6 +714,72 @@ pub fn acknowledge_fixed_parentless_create_v8_effect_v1(
                 .acknowledge_controller_policy_v8_effect_v1(ack)
                 .map_err(io::Error::other)?;
             Ok(ack)
+        },
+    )
+    .map_err(io::Error::other)?
+}
+
+/// Obtains Root's protected V8 ACK under the retained all-owner held barrier.
+///
+/// The Controller-signed AOSQ8K01 digest is compared to exact historical
+/// AOSPCP02 replay while Controller, Source, protected Cache, and physical
+/// Cache writers remain held. This does not release any owner or open Create.
+///
+/// # Errors
+///
+/// Rejects a changed Controller ACK, Root CAS, accepted Create, held Cache
+/// quota, signer, or ambiguous Root response without exact cold replay.
+pub fn acknowledge_fixed_parentless_create_root_v8_effect_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<RootV8EffectAckV1> {
+    let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
+    with_current_create_cache_signer_terminal_barrier_v6(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |controller, _, source, _, held| -> io::Result<_> {
+            let ack = controller
+                .controller_policy_v8_effect_ack_v1()
+                .map_err(io::Error::other)?
+                .ok_or_else(invalid_cut)?;
+            let attempt = ack.attempt();
+            if attempt.hold() != controller_hold
+                || controller
+                    .controller_policy_v8_attempt_v1()
+                    .map_err(io::Error::other)?
+                    != Some(attempt)
+                || ack.accepted_generation() != source.accepted_generation()
+            {
+                return Err(invalid_cut());
+            }
+            let (proposed, replay) =
+                replay_exact_held_v8_cut(controller_hold, source_hold, held, attempt)?;
+            let handoff = closed_policy_effect_handoff_v2(&proposed).map_err(io::Error::other)?;
+            if handoff.operation != operation
+                || handoff.sandbox != sandbox
+                || handoff.epoch != controller_hold.epoch()
+                || handoff.accepted_generation != ack.accepted_generation()
+                || handoff.effect_transaction != ack.effect_transaction()
+                || replay.proof() != ack.root_proof()
+                || replay.quota() != ack.cache_quota()
+            {
+                return Err(invalid_cut());
+            }
+            Ok(ack)
+        },
+        |controller, _, prepared| -> io::Result<_> {
+            let ack = prepared?;
+            with_process_controller_hold_signer_v1(|generation, key| {
+                acknowledge_held_root_v8_effect(controller, ack, generation, key)
+            })
         },
     )
     .map_err(io::Error::other)?

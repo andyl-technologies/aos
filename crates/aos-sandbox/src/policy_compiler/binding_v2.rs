@@ -64,6 +64,7 @@ use super::{
 };
 
 mod ack;
+mod ack_v8;
 mod held_proof;
 mod hold;
 mod producer;
@@ -77,6 +78,10 @@ use proof::{PROOF_KEY_PREFIX, RootQualifiedProofV1, proof_key};
 pub use ack::{
     ROOT_EFFECT_ACK_RECORD_BYTES_V1, RootEffectAckErrorV1, RootEffectAckV1,
     acknowledge_fixed_closed_root_effect_v1, recover_fixed_closed_root_effect_ack_v1,
+};
+pub use ack_v8::{
+    ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1, RootV8EffectAckErrorV1, RootV8EffectAckV1,
+    acknowledge_fixed_closed_root_v8_effect_v1, recover_fixed_closed_root_v8_effect_ack_v1,
 };
 
 pub use producer::{

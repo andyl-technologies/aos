@@ -90,6 +90,7 @@ pub mod policy_authority_client;
 pub mod policy_binding_barrier;
 pub mod policy_cache_readback_client;
 pub mod policy_root_ack_client;
+pub mod policy_root_ack_v8_client;
 pub mod policy_signer_credential;
 mod production_activation;
 mod production_dispatch;

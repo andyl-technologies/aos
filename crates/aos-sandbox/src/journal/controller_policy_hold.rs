@@ -225,6 +225,24 @@ impl ControllerPolicyV8EffectAckV1 {
         ))
     }
 
+    /// Encodes the canonical protected ACK for Controller-only signing.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid ACK fields.
+    pub fn record_bytes(self) -> Result<[u8; 320], JournalError> {
+        self.encode()
+    }
+
+    /// Decodes a canonical ACK without asserting current Controller custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed or noncanonical record bytes.
+    pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, JournalError> {
+        Self::decode(bytes)
+    }
+
     fn validate(self) -> Result<(), JournalError> {
         self.attempt.validate()?;
         if self.accepted_generation == 0
