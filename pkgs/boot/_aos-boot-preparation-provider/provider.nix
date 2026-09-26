@@ -5,6 +5,7 @@
   packageName,
   ...
 }: let
+  valueExpression = lib.abilities.valueExpressionForAbilities config.aos.abilities;
   interface = lib.abilities.interfaces.bootPreparation.interfaces.preparation;
   terminalDeclaration = config.aos.abilities.interfaces."${packageName}:boot-preparation-command";
   terminalInterface = lib.abilities.interfaceIdentity (
@@ -161,10 +162,7 @@
         operations = ["prepare"];
         lifetime = "transaction";
       };
-      inputs = {
-        source = "literal";
-        value = desired.value;
-      };
+      inputs = valueExpression desired.value;
       preconditions = [];
       accesses = [
         {

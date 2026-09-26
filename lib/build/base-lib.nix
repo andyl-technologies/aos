@@ -293,8 +293,13 @@
   initrdPackageModulesFile = plainJson "initrd-package-modules.json" (frozenModuleRecords checkedInitrdPackageModules);
   initrdProviderModulesFile = plainJson "initrd-provider-modules.json" (frozenModuleRecords checkedInitrdProviderModules);
   hostPackageModulesFile = plainJson "host-package-modules.json" (frozenModuleRecords checkedHostPackageModules);
+  hostProviderModulesFile = plainJson "host-provider-modules.json" (frozenModuleRecords checkedHostProviderModules);
   hostEvaluationInputsFile = plainJson "host-evaluation-inputs.json" {
     environment = hostAbilityEnvironment;
+    abilityInstances = hostAbilityInstances;
+    abilityBindings = hostAbilityBindings;
+    abilityRequests = hostAbilityRequests;
+    abilityRequirements = hostAbilityRequirements;
   };
   initrdEvaluationInputsFile = plainJson "initrd-evaluation-inputs.json" {
     environment = initrdAbilityEnvironment;
@@ -320,7 +325,9 @@
     initrdAuthenticatedRoots;
   # Frozen package records do not add output roots here. Module sources need
   # explicit roots because their paths are replayed during host evaluation.
-  hostModuleRoots = lib.unique (builtins.map (record: record.configRoot) checkedHostPackageModules);
+  hostModuleRoots = lib.unique (builtins.map
+    (record: record.configRoot)
+    (checkedHostPackageModules ++ checkedHostProviderModules));
   checkedHostAuthenticatedRoots =
     builtins.map
     (root:
@@ -417,6 +424,7 @@
     cp ${frozenPkgsFile} "$out/frozen-pkgs.json"
     cp ${frozenArtifactsFile} "$out/frozen-artifacts.json"
     cp ${hostPackageModulesFile} "$out/host-package-modules.json"
+    cp ${hostProviderModulesFile} "$out/host-provider-modules.json"
     cp ${hostEvaluationInputsFile} "$out/host-evaluation-inputs.json"
     cp ${initrdPackageModulesFile} "$out/initrd-package-modules.json"
     cp ${initrdProviderModulesFile} "$out/initrd-provider-modules.json"

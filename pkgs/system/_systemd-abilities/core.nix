@@ -1641,7 +1641,7 @@ in {
               description = "Contributes systemd's system-bus activation and policy artifacts.";
               interface = dbusRegistrationInterface.name;
               inherit (dbusRegistrationInterface) abi descriptor;
-              methods = ["observe"];
+              methods = [];
               guarantees = [];
               strength = "required";
               fallback = null;

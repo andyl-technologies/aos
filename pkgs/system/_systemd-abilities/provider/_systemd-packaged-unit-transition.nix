@@ -3,6 +3,7 @@
   effectsInterface,
   resourceInterface,
   transitionFragment,
+  valueExpression,
 }: context: let
   matchesResourceKind = import ./_systemd-transition-resource.nix "aos.systemd.packaged-unit" context;
   actionable = builtins.filter (change:
@@ -86,12 +87,9 @@
       operations = [method];
       inherit (desired) lifetime;
     };
-    inputs = {
-      source = "literal";
-      value = {
-        kind = "packaged-unit";
-        desired = desired.value;
-      };
+    inputs = valueExpression {
+      kind = "packaged-unit";
+      desired = desired.value;
     };
     preconditions = [];
     accesses = [

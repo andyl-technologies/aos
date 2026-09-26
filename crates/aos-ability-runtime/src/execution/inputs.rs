@@ -20,6 +20,9 @@ pub enum InputResolutionError {
     /// Pure aggregate references must be lowered before runtime admission.
     #[error("aggregate output reference was not lowered during effect planning")]
     UnresolvedAggregateOutput,
+    /// Request outputs must be assigned an exact effect producer before execution.
+    #[error("request output reference was not lowered during effect planning")]
+    UnresolvedRequestOutput,
     /// A typed artifact or resource reference could not be encoded.
     #[error("typed input reference could not be encoded: {0}")]
     Encoding(#[source] serde_json::Error),
@@ -202,6 +205,7 @@ fn expression_footprint(
         ValueExpression::AggregateOutput { .. } => {
             Err(InputResolutionError::UnresolvedAggregateOutput)
         }
+        ValueExpression::RequestOutput { .. } => Err(InputResolutionError::UnresolvedRequestOutput),
         ValueExpression::OperationResult { reference } => {
             let value = transaction.resolved_result(reference)?;
             json_footprint(value, depth, limits)
@@ -426,6 +430,7 @@ fn resolve_expression(
         ValueExpression::AggregateOutput { .. } => {
             Err(InputResolutionError::UnresolvedAggregateOutput)
         }
+        ValueExpression::RequestOutput { .. } => Err(InputResolutionError::UnresolvedRequestOutput),
         ValueExpression::OperationResult { reference } => {
             transaction.resolved_result(reference).cloned()
         }

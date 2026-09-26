@@ -10,6 +10,7 @@
   # This digest only stabilizes human-readable derivation names. The complete
   # rendering input remains an explicit derivation input through `passAsFile`.
   derivationDisplayName = prefix: content: "${prefix}-${builtins.hashString "sha256" content}";
+  valueExpression = lib.abilities.valueExpressionForAbilities config.aos.abilities;
 
   implementationAlias = "systemd-packaged-unit";
   implementationName = "${packageName}:${implementationAlias}";
@@ -20,6 +21,7 @@
     lib.abilities.interfaceDocumentFromDeclaration config.aos.abilities.interfaces."${packageName}:systemd-packaged-unit"
   );
   packagedUnitTransition = import ./_systemd-packaged-unit-transition.nix {
+    inherit valueExpression;
     effectsInterface = packagedUnitEffectsInterface;
     resourceInterface = packagedUnitInterface;
     inherit (lib.abilities) transitionFragment;
@@ -35,6 +37,7 @@
     lib.abilities.interfaceDocumentFromDeclaration config.aos.abilities.interfaces."${packageName}:systemd-service-effects"
   );
   serviceTransition = import ./_systemd-service-transition.nix {
+    inherit valueExpression;
     effectsInterface = serviceEffectsInterface;
     resourceInterface = serviceManagement.interfaces.serviceInstance.identity;
     inherit (lib.abilities) transitionFragment;
@@ -46,6 +49,7 @@
     lib.abilities.interfaceDocumentFromDeclaration config.aos.abilities.interfaces."${packageName}:systemd-manager-watchdog-effects"
   );
   managerWatchdogTransition = import ./_systemd-manager-watchdog-transition.nix {
+    inherit valueExpression;
     effectsInterface = managerWatchdogEffectsInterface;
     resourceInterface = managerWatchdogInterface;
     resourceKind = managerWatchdogInterface.name;
@@ -57,6 +61,7 @@
   networkConfigurationController = config.aos.abilities.implementations.${networkConfigurationImplementation};
   networkConfigurationEffectsInterface = builtins.head networkConfigurationController.requirements.network-configuration-effects.accepted_interfaces;
   networkConfigurationTransition = import ./_systemd-network-configuration-transition.nix {
+    inherit valueExpression;
     effectsInterface = networkConfigurationEffectsInterface;
     resourceInterface = networkConfiguration.identity;
     inherit (lib.abilities) transitionFragment;

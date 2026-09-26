@@ -89,28 +89,6 @@
     if initrdAbilityEvaluation == null
     then throw "systemd initrd requires the completed initrd ability fixed point"
     else initrdAbilityEvaluation.config.aos.abilities;
-  sourceGraph = lib.abilities.sourceStageFixedPoint abilityGraph;
-  sourceSelectors = lib.abilities.collectPackageOutputSelectors sourceGraph;
-  sourceArtifactFor = selector: let
-    package = buildContext.packageSet.${selector.package}
-      or (throw "source-stage selector names unavailable package '${selector.package}'");
-  in
-    if selector.output == (package.outputName or "out")
-    then package
-    else package.${selector.output}
-      or (throw "source-stage selector names unavailable output '${selector.package}.${selector.output}'");
-  sourceArtifactOutputs =
-    builtins.map (selector: {
-      inherit selector;
-      path = builtins.toString (sourceArtifactFor selector);
-    })
-    sourceSelectors;
-  sourceArtifactRoots = lib.uniqueBy builtins.toString (builtins.map sourceArtifactFor sourceSelectors);
-  sourceFixedPoint = buildContext.writeTextFile {
-    name = "aos-initrd-source-fixed-point";
-    destination = "/fixed-point.json";
-    text = builtins.toJSON sourceGraph;
-  };
   expectedContractIdentity = "${staticContractBuild.artifact}/contract.json";
   checkedStaticContract =
     if initrdStaticContract == null
@@ -120,48 +98,19 @@
     else
       throw
       "systemd initrd static contract '${initrdStaticContract.identity}' differs from completed fixed point '${expectedContractIdentity}'";
-  specification = buildContext.writeTextFile {
-    name = "aos-initrd-source-stage-materialization";
-    destination = "/specification.json";
-    text = builtins.toJSON {
-      schema = "aos.ability.source-stage-materialization/v1";
+  sourceStageBundle =
+    (lib.abilities.materializeSourceStage {
+      inherit lib abilityGraph;
       stage = "initrd";
-      authority = abilityGraph.environment.authority;
-      key = abilityGraph.environment.key;
-      platform = {
-        system = buildContext.targetPlatform.os;
-        architecture = buildContext.targetPlatform.cpu;
-      };
       staticContract = checkedStaticContract;
-      fixedPoint = "${sourceFixedPoint}/fixed-point.json";
       baseLib =
         if buildContext.initrdEvaluationLib == null
         then throw "systemd initrd requires the frozen initrd evaluation library"
-        else builtins.toString buildContext.initrdEvaluationLib;
-      artifactOutputs = sourceArtifactOutputs;
-    };
-  };
-  sourceStageBundle =
-    buildContext.runCommand "aos-initrd-source-stage-bundle" {
-      # The source-stage validator reads checked package projections while
-      # building the image. The initrd contract does not retain their source
-      # derivation closures after this validation completes.
-      buildDeps = staticContractBuild.retainedPackageContractArtifacts;
-      outputChecks = {};
-      exportReferencesGraph.sourceStageArtifacts = sourceArtifactRoots;
-      # The bundle records verified artifact identities. Those strings are
-      # evidence, not additional boot-time closure roots.
-      unsafeDiscardReferences.out = true;
-      dontNukeRefs = true;
-    } ''
-      export AOS_ABILITY_EVALUATOR_CACHE="$TMPDIR/aos-ability-evaluator"
-      # runCommand prepares $out as a directory; consumers install this file.
-      ${buildContext.buildTools.packageRuntime}/bin/aos-package-runtime \
-        __ability-materialize-source-stage \
-        --spec ${specification}/specification.json \
-        --exported-graph "$NIX_ATTRS_JSON_FILE" \
-        --out "$out/source-stage-bundle.json"
-    '';
+        else buildContext.initrdEvaluationLib;
+      inherit (buildContext) targetPlatform packageSet runCommand writeTextFile;
+      packageRuntime = buildContext.buildTools.packageRuntime;
+      inherit (staticContractBuild) retainedPackageContractArtifacts;
+    }).bundle;
   handoff = let
     stageConfig = initrdAbilityEvaluation.config;
     parameters = stageConfig.aos.boot.handoffParameters;

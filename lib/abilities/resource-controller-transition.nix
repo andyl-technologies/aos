@@ -5,6 +5,7 @@
 ##! checks needed by single-resource terminal controllers.
 {
   transitionFragment,
+  valueExpression,
   context,
   terminalInterface,
   actions,
@@ -134,10 +135,7 @@
       operations = [action.method];
       lifetime = state.lifetime;
     };
-    inputs = {
-      source = "literal";
-      value = state.value;
-    };
+    inputs = valueExpression state.value;
     preconditions = [];
     accesses = [
       {

@@ -195,9 +195,10 @@ pub fn lifecycle_plan_fixture() -> PlanFixture {
 
     let methods = vec![key("observe"), key("start")];
     fixture.binding_inputs.desired_state.child_requests[0].methods = methods.clone();
-    fixture.binding_inputs.desired_state.child_requests[0].parameters =
-        AbilityValue::new(serde_json::json!({"subject": "fixture"}))
-            .expect("lifecycle request parameters must be bounded");
+    fixture.binding_inputs.desired_state.child_requests[0].parameters = ValueExpression::Literal {
+        value: AbilityValue::new(serde_json::json!({"subject": "fixture"}))
+            .expect("lifecycle request parameters must be bounded"),
+    };
     fixture.binding_plan.requests[0].methods = methods.clone();
     fixture.binding_plan.requests[0].parameters =
         fixture.binding_inputs.desired_state.child_requests[0]
@@ -448,7 +449,9 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
             "lifetime": "instance",
         }))
         .unwrap(),
-        realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+        realization: ValueExpression::Literal {
+            value: AbilityValue::new(serde_json::Value::Null).unwrap(),
+        },
         revision: RevisionId(Sha256Digest::of_bytes("stateful owner metadata revision")),
     };
     for revisions in [
@@ -489,8 +492,10 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         methods: vec![key("control"), key("observe")],
         guarantees: Vec::new(),
         lifetime: ResourceLifetime::Persistent,
-        parameters: AbilityValue::new(serde_json::json!(true))
-            .expect("owner request parameters must be bounded"),
+        parameters: ValueExpression::Literal {
+            value: AbilityValue::new(serde_json::json!(true))
+                .expect("owner request parameters must be bounded"),
+        },
     };
     let terminal_resource = fixture.effect_plan.operations[0].target.resource.clone();
     let owner_binding = Binding {
@@ -630,7 +635,9 @@ pub fn plan_fixture() -> PlanFixture {
         kind: interface_key.name.clone(),
         lifetime: aos_ability_model::ResourceLifetime::Instance,
         value: AbilityValue::new(serde_json::json!(true)).unwrap(),
-        realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+        realization: ValueExpression::Literal {
+            value: AbilityValue::new(serde_json::Value::Null).unwrap(),
+        },
         revision: RevisionId(digest('6')),
     };
     let environment = EnvironmentDocument {
@@ -675,8 +682,10 @@ pub fn plan_fixture() -> PlanFixture {
         methods: vec![key("observe")],
         guarantees: Vec::new(),
         lifetime: ResourceLifetime::Instance,
-        parameters: AbilityValue::new(serde_json::json!(true))
-            .expect("test request parameters must be bounded"),
+        parameters: ValueExpression::Literal {
+            value: AbilityValue::new(serde_json::json!(true))
+                .expect("test request parameters must be bounded"),
+        },
     };
     let desired_state = DesiredStateDocument {
         schema: DesiredStateDocument::SCHEMA.to_string(),
@@ -880,7 +889,9 @@ pub fn planned_provider_chain_fixture() -> PlanFixture {
             kind: fixture.binding_plan.bindings[0].interface.name.clone(),
             lifetime: aos_ability_model::ResourceLifetime::Instance,
             value: AbilityValue::new(serde_json::json!(true)).unwrap(),
-            realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+            realization: ValueExpression::Literal {
+                value: AbilityValue::new(serde_json::Value::Null).unwrap(),
+            },
             revision: RevisionId(digest(digit)),
         };
         fixture

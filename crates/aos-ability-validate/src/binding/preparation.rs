@@ -164,6 +164,7 @@ pub(crate) fn prepare_binding_candidates(
     else {
         return Err(ValidationErrors::new(diagnostics));
     };
+    let request_outputs = RequestOutputResolver::new(context, &plan);
     for (index, request) in plan.requests.iter().enumerate() {
         validate_request(
             request,
@@ -172,6 +173,7 @@ pub(crate) fn prepare_binding_candidates(
             &input_index.in_scope_instances,
             &input_index.request_authorities,
             &input_index.provider_authors,
+            &request_outputs,
             &mut diagnostics,
         );
     }

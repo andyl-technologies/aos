@@ -90,6 +90,7 @@ pub(crate) fn load_or_admit_source_stage(
             .with_source_fixed_point(
                 PathBuf::from(template.bundle().evaluation_base_lib()),
                 static_contract_identity.to_string(),
+                template.bundle().fixed_point().environment.stage,
             )?;
         let admission = template
             .bundle()

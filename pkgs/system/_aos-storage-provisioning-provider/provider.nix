@@ -4,6 +4,7 @@
   lib,
   ...
 }: let
+  valueExpression = lib.abilities.valueExpressionForAbilities config.aos.abilities;
   alias = "storage-provisioning";
   interface = lib.abilities.interfaces.blockStorage.interfaces.provisioning;
   contentObject = lib.abilities.interfaces.contentAddressedArtifacts;
@@ -237,10 +238,6 @@
         inherit output;
       };
     };
-    literal = value: {
-      source = "literal";
-      inherit value;
-    };
     object = fields: {
       source = "object";
       inherit fields;
@@ -394,26 +391,26 @@
         else throw "storage provisioning requires one exact persistent host-network revision";
       bootstrapInput =
         if hostNetworkRevision.value.authority == "operator"
-        then literal null
+        then valueExpression null
         else result "merge" acquisitionMergeKey "network-bootstrap";
       bootstrapEdges =
         lib.optional
         (hostNetworkRevision.value.authority != "operator")
         (edge "merge" acquisitionMergeKey "operation" networkApplyKey "data");
-      requestInput = literal desired.value;
+      requestInput = valueExpression desired.value;
       metadataInputs = extra: object ({request = requestInput;} // extra);
       authorizationInputs = metadataInputs {
-        configuration = literal config.aos.metadata.storageProvisioning.authorizationConfiguration;
+        configuration = valueExpression config.aos.metadata.storageProvisioning.authorizationConfiguration;
         acquired_metadata = result "merge" acquisitionMergeKey "acquired-metadata";
       };
       acquisitionInputs = metadataInputs {
         platform = result "operation" detectKey "platform";
-        blkid = literal (executable "util-linux" "sbin/blkid");
-        mount = literal (executable "util-linux" "bin/mount");
-        umount = literal (executable "util-linux" "bin/umount");
+        blkid = valueExpression (executable "util-linux" "sbin/blkid");
+        mount = valueExpression (executable "util-linux" "bin/mount");
+        umount = valueExpression (executable "util-linux" "bin/umount");
       };
       markerInputs = metadataInputs {
-        lsblk = literal (executable "util-linux" "bin/lsblk");
+        lsblk = valueExpression (executable "util-linux" "bin/lsblk");
       };
       detectOperation = operation {
         key = detectKey;
@@ -425,9 +422,9 @@
         targetResource = resource;
         targetLifetime = "transaction";
         inputs = metadataInputs {
-          blkid = literal (executable "util-linux" "sbin/blkid");
-          mount = literal (executable "util-linux" "bin/mount");
-          umount = literal (executable "util-linux" "bin/umount");
+          blkid = valueExpression (executable "util-linux" "sbin/blkid");
+          mount = valueExpression (executable "util-linux" "bin/mount");
+          umount = valueExpression (executable "util-linux" "bin/umount");
         };
         access = "read";
         controller = controllerIdentity;
@@ -442,7 +439,7 @@
         targetInterface = networkBinding.interface;
         targetResource = networkResource;
         targetLifetime = "instance";
-        inputs = literal {
+        inputs = valueExpression {
           scope = "configured-connectivity";
           address_families = ["ipv4" "ipv6"];
         };
@@ -501,11 +498,11 @@
         targetLifetime = "transaction";
         inputs = metadataInputs {
           authorized_input = object {
-            kind = literal "direct-result";
+            kind = valueExpression "direct-result";
             input = result "operation" authorizationKey "authorized-provisioning-input";
           };
           marker = result "operation" markerKey "marker";
-          store_view = literal desired.realization.store_view;
+          store_view = valueExpression desired.realization.store_view;
         };
         access = "exclusive-write";
         controller = controllerIdentity;
@@ -546,7 +543,7 @@
         targetResource = checkedContentResource;
         targetLifetime = "persistent";
         inputs = object {
-          request = literal checkedContentRequest;
+          request = valueExpression checkedContentRequest;
           blob = result "operation" authorizationKey "authorized-input-blob";
         };
         access = "exclusive-write";

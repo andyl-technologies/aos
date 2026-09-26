@@ -137,7 +137,9 @@ fn desired_realization_must_match_the_selected_controller_schema() {
             .iter_mut()
             .filter(|revision| revision.resource == resource)
         {
-            revision.realization = invalid.clone();
+            revision.realization = ValueExpression::Literal {
+                value: invalid.clone(),
+            };
         }
     }
     fixture.refresh_commitments();
@@ -701,8 +703,12 @@ fn environment_artifact_authorizes_an_exact_aggregate_input_reference() {
     };
     let value = AbilityValue::new(serde_json::to_value(&artifact).expect("artifact reference"))
         .expect("bounded artifact reference");
-    fixture.binding_inputs.desired_state.child_requests[0].parameters = value.clone();
-    fixture.binding_plan.requests[0].parameters = value.clone();
+    fixture.binding_inputs.desired_state.child_requests[0].parameters = ValueExpression::Literal {
+        value: value.clone(),
+    };
+    fixture.binding_plan.requests[0].parameters = ValueExpression::Literal {
+        value: value.clone(),
+    };
     install_aggregate_input_value(&mut fixture, value);
 
     let error = fixture
@@ -831,7 +837,9 @@ fn conditional_ordering_fixture(direct_order: bool) -> PlanFixture {
         kind: fixture.binding_plan.bindings[0].interface.name.clone(),
         lifetime: aos_ability_model::ResourceLifetime::Instance,
         value: aos_ability_model::AbilityValue::new(serde_json::json!(true)).unwrap(),
-        realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+        realization: ValueExpression::Literal {
+            value: AbilityValue::new(serde_json::Value::Null).unwrap(),
+        },
         revision: RevisionId(digest('8')),
     };
     fixture
@@ -1014,7 +1022,9 @@ fn add_ungranted_resource(fixture: &mut PlanFixture) -> ResourceId {
         kind: fixture.binding_plan.bindings[0].interface.name.clone(),
         lifetime: aos_ability_model::ResourceLifetime::Instance,
         value: aos_ability_model::AbilityValue::new(serde_json::json!(true)).unwrap(),
-        realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+        realization: ValueExpression::Literal {
+            value: AbilityValue::new(serde_json::Value::Null).unwrap(),
+        },
         revision: RevisionId(digest('a')),
     };
     fixture
@@ -1257,7 +1267,7 @@ fn install_aggregate_input_value(fixture: &mut PlanFixture, value: AbilityValue)
         aggregate: permission.aggregate.clone(),
         slot: permission.slot.clone(),
         grant: binding.id.clone(),
-        value,
+        value: ValueExpression::Literal { value },
     }];
     fixture.refresh_commitments();
 }

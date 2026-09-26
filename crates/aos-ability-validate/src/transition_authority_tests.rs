@@ -919,7 +919,9 @@ fn multi_export_owner_fixture(
             kind: fixture.binding_plan.bindings[0].interface.name.clone(),
             lifetime: aos_ability_model::ResourceLifetime::Instance,
             value: aos_ability_model::AbilityValue::new(serde_json::json!(true)).unwrap(),
-            realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+            realization: aos_ability_model::ValueExpression::Literal {
+                value: AbilityValue::new(serde_json::Value::Null).unwrap(),
+            },
             revision: RevisionId(Sha256Digest::of_bytes("owner revision")),
         };
         let owner_request = BindingRequest {
@@ -935,8 +937,10 @@ fn multi_export_owner_fixture(
             methods: vec![key("observe")],
             guarantees: Vec::new(),
             lifetime: aos_ability_model::ResourceLifetime::Persistent,
-            parameters: AbilityValue::new(serde_json::json!(true))
-                .expect("owner request parameters must be bounded"),
+            parameters: aos_ability_model::ValueExpression::Literal {
+                value: AbilityValue::new(serde_json::json!(true))
+                    .expect("owner request parameters must be bounded"),
+            },
         };
         let policy_revision = fixture.binding_plan.policy_revision;
         let owner_binding = Binding {

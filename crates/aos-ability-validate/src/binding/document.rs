@@ -45,6 +45,7 @@ pub(crate) fn validate_binding_document(
     else {
         return Err(ValidationErrors::new(diagnostics));
     };
+    let request_outputs = RequestOutputResolver::new(context, &document);
 
     check_order_by(
         &document.requests,
@@ -151,7 +152,13 @@ pub(crate) fn validate_binding_document(
         }
     }
 
-    validate_desired_resource_realizations(context, &document, &inputs, &mut diagnostics);
+    validate_desired_resource_realizations(
+        context,
+        &document,
+        &inputs,
+        &request_outputs,
+        &mut diagnostics,
+    );
 
     validate_aggregate_inputs(
         context,
@@ -159,6 +166,7 @@ pub(crate) fn validate_binding_document(
         &inputs,
         &binding_indices,
         &resources,
+        &request_outputs,
         &mut diagnostics,
     );
 
@@ -211,6 +219,7 @@ pub(crate) fn validate_binding_document(
             &input_index.in_scope_instances,
             &input_index.request_authorities,
             &input_index.provider_authors,
+            &request_outputs,
             &mut diagnostics,
         );
         let binding_count = request_bindings
@@ -271,6 +280,7 @@ pub(super) fn validate_desired_resource_realizations(
     context: &ValidationContext,
     plan: &BindingPlanDocument,
     inputs: &BindingValidationInputs,
+    request_outputs: &RequestOutputResolver<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for (index, resource) in inputs.desired_state.resources.iter().enumerate() {
@@ -294,7 +304,7 @@ pub(super) fn validate_desired_resource_realizations(
             .iter()
             .filter(|binding| binding.provider == controller.controller.provider)
             .collect::<Vec<_>>();
-        if resource.realization.as_json().is_null()
+        if matches!(&resource.realization, ValueExpression::Literal { value } if value.as_json().is_null())
             && controller_provider_bindings.iter().any(|binding| {
                 binding.source == BindingSource::ExistingPin && binding.provider_package.is_none()
             })
@@ -420,7 +430,24 @@ pub(super) fn validate_desired_resource_realizations(
             );
             continue;
         };
-        if let Err(errors) = validate_materialized_value(schema, &resource.realization) {
+        let Some(recipient) = request_outputs.request(&binding.request) else {
+            continue;
+        };
+        let validate_output = |expected: &aos_ability_model::ValueSchema,
+                               reference: &aos_ability_model::RequestOutputReference,
+                               path: &SchemaPath,
+                               diagnostics: &mut Vec<Diagnostic>| {
+            request_outputs.validate_for_lifetime(
+                recipient,
+                resource.lifetime,
+                expected,
+                reference,
+                path,
+                diagnostics,
+            );
+        };
+        if let Err(errors) = validate_binding_value(schema, &resource.realization, &validate_output)
+        {
             for error in errors.into_diagnostics() {
                 let mut item = resource_realization_diagnostic(
                     error.code,
@@ -574,7 +601,8 @@ pub(super) fn validate_published_resource(
             ),
         );
     }
-    if !resource.realization.as_json().is_null() {
+    if !matches!(&resource.realization, ValueExpression::Literal { value } if value.as_json().is_null())
+    {
         push_diagnostic(
             diagnostics,
             resource_realization_diagnostic(

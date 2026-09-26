@@ -435,7 +435,9 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
             methods: vec![key("observe")],
             guarantees: Vec::new(),
             lifetime: ResourceLifetime::Instance,
-            parameters: ability_value(serde_json::json!(true)),
+            parameters: aos_ability_model::ValueExpression::Literal {
+                value: ability_value(serde_json::json!(true)),
+            },
         };
         let permission = ResourcePermission {
             resource: resource.clone(),

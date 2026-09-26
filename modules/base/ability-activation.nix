@@ -144,6 +144,22 @@
       __toString = _: path;
     }
     else staticAbilityContractSource;
+  hostStaticContractPath = "${staticAbilityContract}/contract.json";
+  hostSourceStageBundle =
+    (lib.abilities.materializeSourceStage {
+      inherit lib targetPlatform;
+      stage = "host";
+      abilityGraph = config.aos.abilities;
+      staticContract = {
+        identity = hostStaticContractPath;
+        path = hostStaticContractPath;
+      };
+      baseLib = config.aos.config.evalAtBoot.baseLib;
+      packageSet = pkgs;
+      packageRuntime = pkgs.aos.packageRuntime;
+      inherit (pkgs) runCommand writeTextFile;
+      inherit (staticAbilityContractBuild) retainedPackageContractArtifacts;
+    }).bundle;
 in {
   options = {
     aos.abilities.activationInput = lib.mkOption {
@@ -170,10 +186,20 @@ in {
         contract carries no runtime grants.
       '';
     };
+
+    system.build.hostSourceStageBundle = lib.mkOption {
+      type = lib.types.package;
+      readOnly = true;
+      description = ''
+        Host-stage source bundle materialized from the completed ability fixed
+        point and the image's checked static package contract.
+      '';
+    };
   };
 
   config = {
     system.build.staticAbilityContract = staticAbilityContract;
+    system.build.hostSourceStageBundle = hostSourceStageBundle;
     aos.boot.initrd.packageRoots = lib.mkIf config.aos.boot.initrd.abilityHandoff.enable [
       # This output carries the package declarations and the boot-time
       # materializer; the CLI output is not needed before switch-root.

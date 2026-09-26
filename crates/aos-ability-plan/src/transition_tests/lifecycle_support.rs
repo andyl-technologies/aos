@@ -146,7 +146,9 @@ pub(super) fn lifecycle_environment(
             kind: interface.name.clone(),
             lifetime: ResourceLifetime::Instance,
             value: AbilityValue::new(serde_json::json!(true)).unwrap(),
-            realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+            realization: aos_ability_model::ValueExpression::Literal {
+                value: AbilityValue::new(serde_json::Value::Null).unwrap(),
+            },
             revision: RevisionId(aos_contract::Sha256Digest::of_bytes("old unit revision")),
         },
         ResourceRevision {
@@ -154,7 +156,9 @@ pub(super) fn lifecycle_environment(
             kind: interface.name.clone(),
             lifetime: ResourceLifetime::Instance,
             value: AbilityValue::new(serde_json::json!(true)).unwrap(),
-            realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
+            realization: aos_ability_model::ValueExpression::Literal {
+                value: AbilityValue::new(serde_json::Value::Null).unwrap(),
+            },
             revision: RevisionId(aos_contract::Sha256Digest::of_bytes("new unit revision")),
         },
     ];
@@ -249,7 +253,9 @@ pub(super) fn lifecycle_planning_snapshot(
         methods: vec![key("start")],
         guarantees: stage_guarantees.clone(),
         lifetime: ResourceLifetime::Instance,
-        parameters: ability_value(serde_json::json!({"subject": "example.service"})),
+        parameters: aos_ability_model::ValueExpression::Literal {
+            value: ability_value(serde_json::json!({"subject": "example.service"})),
+        },
     };
     let manager_request = BindingRequest {
         authority: DeclarationAuthority::Package {
@@ -269,7 +275,9 @@ pub(super) fn lifecycle_planning_snapshot(
         methods: vec![key("observe"), key("start")],
         guarantees: stage_guarantees.clone(),
         lifetime: ResourceLifetime::Instance,
-        parameters: ability_value(serde_json::json!({"subject": "example.service"})),
+        parameters: aos_ability_model::ValueExpression::Literal {
+            value: ability_value(serde_json::json!({"subject": "example.service"})),
+        },
     };
     let environment_digest = environment
         .content_digest()

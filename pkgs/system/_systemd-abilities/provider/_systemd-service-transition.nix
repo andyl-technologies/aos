@@ -3,6 +3,7 @@
   effectsInterface,
   resourceInterface,
   transitionFragment,
+  valueExpression,
 }: context: let
   matchesResourceKind = import ./_systemd-transition-resource.nix "aos.service.instance" context;
   operationDeadline = {
@@ -43,12 +44,27 @@
     if builtins.length matches == 1
     then builtins.head matches
     else throw "systemd service transition requires one exact ${authorityFor change} resource state for '${change.resource.key}'";
-  referencedStateFor = snapshot: reference: let
-    matches = builtins.filter (resource: resource.resource == reference.resource) snapshot.resources;
+  referencedStateFor = authority: reference: let
+    matches = builtins.filter (change: change.resource == reference.resource) context.changes;
+    change =
+      if builtins.length matches == 1
+      then builtins.head matches
+      else throw "systemd service prerequisite requires one exact visible resource change";
+    revision =
+      if authority == "teardown"
+      then change.current
+      else change.desired;
+    lifetime =
+      if authority == "teardown"
+      then change.current_lifetime
+      else change.desired_lifetime;
   in
-    if builtins.length matches == 1
-    then builtins.head matches
-    else throw "systemd service prerequisite must resolve one exact resource state";
+    if revision == null || lifetime != reference.lifetime
+    then throw "systemd service prerequisite has no matching ${authority} revision and lifetime"
+    else {
+      inherit (change) resource;
+      inherit revision;
+    };
   bindingFor = change: method: let
     authorityRole = authorityFor change;
     matches = builtins.filter (entry:
@@ -91,12 +107,7 @@
         value = reference;
       })
       prerequisiteReferences));
-    snapshot =
-      if change.kind == "remove"
-      then context.before
-      else context.after;
-    prerequisiteStates = builtins.map (referencedStateFor snapshot) uniquePrerequisites;
-    resourceLessThan = left: right: builtins.toJSON left.resource < builtins.toJSON right.resource;
+    prerequisiteStates = builtins.map (referencedStateFor (authorityFor change)) uniquePrerequisites;
   in {
     key = scopedKey "${method}-${change.resource.key}";
     branch_context = [];
@@ -112,20 +123,18 @@
       operations = [method];
       inherit (desired) lifetime;
     };
-    inputs = {
-      source = "literal";
-      value = {
-        kind = "service";
-        desired = desired.value;
-      };
+    inputs = valueExpression {
+      kind = "service";
+      desired = desired.value;
     };
-    preconditions = builtins.sort resourceLessThan (builtins.map (resource: {
+    preconditions =
+      builtins.map (resource: {
         inherit (resource) resource;
         expected_revision = resource.revision;
         expected_incarnation = null;
       })
-      prerequisiteStates);
-    accesses = builtins.sort resourceLessThan (
+      prerequisiteStates;
+    accesses =
       [
         {
           resource = change.resource;
@@ -136,8 +145,7 @@
         inherit (resource) resource;
         mode = "read";
       })
-      prerequisiteStates
-    );
+      prerequisiteStates;
     controller = controllerFor change.resource;
     deadline = operationDeadline;
     recovery = {

@@ -10,6 +10,7 @@
   requestOutputDescriptor,
   semanticInterface,
   canonicalizeResolvedValue,
+  valueExpressionFor,
 }: let
   filterAttrs = predicate: values:
     builtins.listToAttrs (builtins.map (name: {
@@ -202,16 +203,28 @@
     else if builtins.isList value
     then builtins.map (resolveRequestValue requestName recipientLifetime trail) value
     else value;
+  requestIdFor = name: let
+    request = retainedRequests.${name}
+      or retainedCompositionRequests.${name}
+      or (throw "source-stage expression names absent request '${name}'");
+  in {
+    consumer = retainedInstanceIdentities.${request.consumer}
+      or (throw "source-stage expression request '${name}' has no consumer identity");
+    inherit (request) scope;
+    key = (provenanceFor name request).localKey;
+  };
+  valueExpression = valueExpressionFor requestIdFor;
   projectRequest = name: request: requirement: {
     provenance = provenanceFor name request;
     inherit (request) consumer scope lifetime;
-    parameters =
+    parameters = valueExpression (
       canonicalizeResolvedValue
       "source-stage request '${name}'"
       (requestTypeFor name)
       (normalizeOwnedValue
         (declarationOwner request)
-        (resolveRequestValue name request.lifetime [] request.parameters));
+        (resolveRequestValue name request.lifetime [] request.parameters))
+    );
     inherit requirement;
   };
   projectRootRequest = name: request:
@@ -298,6 +311,21 @@
       if binding == null
       then null
       else abilities.implementations.${binding.implementation}.desiredType;
+    compositionType =
+      if binding == null
+      then null
+      else abilities.implementations.${binding.implementation}.compositionType;
+    resourceInterfaces = builtins.attrValues (builtins.listToAttrs (builtins.map (candidate: {
+        name = builtins.toJSON (interfaceIdentity (interfaceDocumentFromDeclaration candidate));
+        value = candidate;
+      })
+      (builtins.filter (candidate: candidate.name == resource.kind) (builtins.attrValues semanticInterfaces))));
+    resourceType =
+      if compositionType != null
+      then compositionType
+      else if builtins.length resourceInterfaces == 1
+      then (builtins.head resourceInterfaces).requestType
+      else throw "source-stage resource '${name}' has no unique resource interface type";
     requestName =
       if binding == null
       then "resource '${name}'"
@@ -309,15 +337,20 @@
       else resource
     )
     // {
-      value = normalizeOwnedValue owner (resolveRequestValue requestName resource.lifetime [] resource.value);
-      realization =
+      value =
+        canonicalizeResolvedValue
+        "source-stage resource '${name}' value"
+        resourceType
+        (normalizeOwnedValue owner (resolveRequestValue requestName resource.lifetime [] resource.value));
+      realization = valueExpression (
         if desiredType == null
         then normalizeOwnedValue owner (resolveRequestValue requestName resource.lifetime [] resource.realization)
         else
           canonicalizeResolvedValue
           "source-stage resource '${name}' realization"
           desiredType
-          (normalizeOwnedValue owner (resolveRequestValue requestName resource.lifetime [] resource.realization));
+          (normalizeOwnedValue owner (resolveRequestValue requestName resource.lifetime [] resource.realization))
+      );
     };
 in
   {

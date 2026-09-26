@@ -40,56 +40,9 @@
     };
     optional = ["registrations"];
   };
-  observation = types.record {
-    fields = {
-      schema = types.enum ["aos.ability.dbus-system-registration-observation/v1"];
-      expected = aggregateRequest;
-      state = types.enum ["absent" "materialized" "unknown"];
-      configuration_path = {
-        type = types.optional types.executionPath;
-        optional = true;
-      };
-    };
-  };
-  realization = types.record {
-    fields.schema = types.enum ["aos.dbus.system-registration-realization/v1"];
-  };
   output = phase: lifetime: description: schema: {
     inherit phase lifetime description schema;
     visibility = "protected";
-  };
-  method = name: description: access: stopsProvider: parameters: outputs: {
-    inherit description parameters outputs;
-    semantics = {
-      requiredTargetAccess = access;
-      inherit stopsProvider;
-    };
-    targetResource = resourceKind;
-    permittedOperations = [name];
-    guarantees = [];
-    outcome = {
-      completionEvidence = observation;
-      observationEvidence = observation;
-      supportsRejectedBeforeEffect = true;
-      indeterminate = "reconcile";
-    };
-  };
-  controllerMethods = {
-    materialize = method "materialize" "Materializes the collision-checked system-bus registration set." "exclusive-write" false aggregateRequest {
-      observation = output "runtime" "attempt" "Reports the exact registration configuration state." observation;
-      retained-resource = output "runtime" "instance" "References the retained registration set." types.resourceReference;
-    };
-    observe = method "observe" "Observes the exact system-bus registration set." "read" false aggregateRequest {
-      observation = output "observation" "attempt" "Reports the exact registration configuration state." observation;
-    };
-    release = method "release" "Releases the materialized system-bus registration set." "exclusive-write" true aggregateRequest {
-      observation = output "runtime" "attempt" "Reports absence of the released registration configuration." observation;
-    };
-  };
-  registrationSourceMethods = {
-    observe = method "observe" "Observes the aggregate containing this package registration." "read" false registrationSourceRequest {
-      observation = output "observation" "attempt" "Reports the aggregate registration configuration state." observation;
-    };
   };
   lifecycle = {
     persistentDeleteMethod = null;
@@ -105,15 +58,10 @@
   };
   controllerDeclaration = declareInterface {
     name = resourceKind;
-    description = "Owns one system-bus configuration assembled from authorized package registrations.";
+    description = "Composes one system-bus configuration from authorized package registrations.";
     abi = 1;
     requestType = baseRequest;
-    methods = controllerMethods;
     inherit lifecycle aggregation;
-    outputs.resource =
-      output "planning" "instance"
-      "References the exact aggregate system-bus registration resource."
-      types.resourceReference;
     outputs.configuration-path =
       output "planning" "instance"
       "Returns the generated system-bus configuration path."
@@ -129,13 +77,8 @@
     description = "Provides authenticated package activation and policy directories to the system bus.";
     abi = 1;
     requestType = registrationSourceRequest;
-    methods = registrationSourceMethods;
     inherit lifecycle;
     inherit aggregation;
-    outputs.resource =
-      output "planning" "instance"
-      "References the aggregate system-bus registration resource."
-      types.resourceReference;
     guarantees = [];
   };
 in {
@@ -147,10 +90,10 @@ in {
 
     implementations = {
       ${controllerAlias} = {
-        description = "Materializes one system-bus configuration assembled from authorized registrations.";
+        description = "Composes one system-bus configuration from authorized registrations.";
         interface = controllerAlias;
         artifact = packageArtifact;
-        methods = builtins.attrNames controllerMethods;
+        methods = [];
         guarantees = [];
         requirements = {
           configuration-materialization = {
@@ -168,20 +111,20 @@ in {
           path = "registration-provider.nix";
         };
         compositionType = aggregateRequest;
-        desiredType = realization;
+        desiredType = null;
         requiredFeatures = [];
       };
       ${registrationSourceAlias} = {
         description = "Merges one authenticated package registration into the system-bus configuration.";
         interface = registrationSourceAlias;
         artifact = packageArtifact;
-        methods = builtins.attrNames registrationSourceMethods;
+        methods = [];
         guarantees = [];
         providerModule = {
           artifact = moduleArtifact;
           path = "registration-provider.nix";
         };
-        desiredType = realization;
+        desiredType = null;
         requiredFeatures = [];
       };
     };

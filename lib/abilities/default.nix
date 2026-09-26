@@ -15,14 +15,34 @@
     inherit mkOption schemas;
     moduleTypes = moduleOptionTypes;
   };
-  resourceControllerTransition = args:
-    import ./resource-controller-transition.nix ({inherit transitionFragment;} // args);
+  resourceControllerTransition = args @ {abilities, ...}:
+    import ./resource-controller-transition.nix (
+      {
+        inherit transitionFragment;
+        valueExpression = valueExpressionForAbilities abilities;
+      }
+      // builtins.removeAttrs args ["abilities"]
+    );
   diagnostics = import ./diagnostic.nix;
   packageOutputSelectors = import ./package-output-selectors.nix {inherit diagnostics;};
   packageOutputSelectorsFor = limits:
     import ./package-output-selectors.nix {inherit diagnostics limits;};
   requestOutputDescriptor = args:
     import ./request-output-descriptor.nix args;
+  valueExpressionFor = requestIdFor:
+    import ./value-expression.nix {inherit requestIdFor;};
+  valueExpressionForAbilities = abilities:
+    valueExpressionFor (name: let
+      request = abilities.requests.${name}
+        or abilities.compositionRequests.${name}
+        or (throw "value expression names absent request '${name}'");
+    in {
+      consumer = abilities.instanceIdentities.${request.consumer}
+        or (throw "value expression request '${name}' has no consumer identity");
+      inherit (request) scope;
+      key = request.localKey
+        or (throw "value expression request '${name}' has no local key");
+    });
   semanticInterface = args:
     import ./semantic-interface.nix args;
   packageProjectionFor = {
@@ -32,11 +52,17 @@
     import ./package-projection.nix {inherit lib abilities;};
   sourceStageFixedPoint = abilities:
     import ./source-stage-fixed-point.nix {
-      inherit abilities guaranteeIdentity normalizeRequirement lifetime;
+      inherit abilities guaranteeIdentity normalizeRequirement lifetime valueExpressionFor;
       inherit interfaceIdentity interfaceDocumentFromDeclaration requestOutputDescriptor semanticInterface;
       inherit (packageOutputSelectors) normalizePackageOutputSelectors;
       canonicalizeResolvedValue = abilityTypes.canonicalizeResolved;
     };
+  materializeSourceStage = args:
+    import ./source-stage-materialization.nix ({
+        inherit sourceStageFixedPoint;
+        inherit (packageOutputSelectors) collectPackageOutputSelectors;
+      }
+      // args);
   packageAbilitiesFromProjection = projection: {
     inherit (projection) guarantees interfaces;
     implementations = builtins.listToAttrs (map (implementation: {
@@ -815,6 +841,8 @@ in rec {
   inherit
     schemas
     resourceControllerTransition
+    valueExpressionFor
+    valueExpressionForAbilities
     declareInterface
     descriptorFor
     guaranteeIdentity
@@ -829,6 +857,7 @@ in rec {
     packageOutputSelectorsFor
     packageProjectionFor
     sourceStageFixedPoint
+    materializeSourceStage
     requestOutputDescriptor
     semanticInterface
     lifetime

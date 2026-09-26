@@ -13,7 +13,7 @@ use aos_ability_model::{
     DesiredStateDocument, EffectPlanDocument, EnvironmentDocument, EnvironmentId, InstanceId,
     InterfaceDocument, InterfaceKey, InterfaceName, LocalKey, PackageDocument, PlanId, RequestId,
     RequirementDeclaration, ResourceId, ResourceLifetime, ResourceReference, ResourceRevision,
-    RevisionId, ScopePath, ValuePhase, VersionedDocument,
+    RevisionId, ScopePath, ValueExpression, ValuePhase, VersionedDocument,
 };
 use aos_ability_validate::{
     BindingValidationInputs, CheckedBindingPlan, ValidatedEffectTemplate, ValidationContext,
@@ -104,7 +104,7 @@ pub struct SourceStageExecutionObserver {
 pub struct SourceStageInstance {
     /// Retains the exact module authority and local declaration key.
     pub provenance: SourceStageDeclarationProvenance,
-    /// Identifies the package implementation used by this instance, when any.
+    /// Pins the selected provider package independently of module authorship.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<LocalKey>,
     /// Selects an instance's configured implementation, when it has one.
@@ -127,10 +127,11 @@ impl SourceStageInstance {
             .is_none_or(|owner| owner == package);
         let declaration_matches = match (&self.package, &self.implementation) {
             (None, None) => true,
+            (Some(owner), None) => owner == package,
             (Some(owner), Some(implementation)) => {
                 owner == package && &implementation.package == owner
             }
-            _ => false,
+            (None, Some(_)) => false,
         };
 
         authority_matches && declaration_matches
@@ -175,7 +176,7 @@ pub struct SourceStageRequest {
     /// Declares the request's semantic resource lifetime.
     pub lifetime: ResourceLifetime,
     /// Carries typed request parameters.
-    pub parameters: AbilityValue,
+    pub parameters: ValueExpression,
 }
 
 /// Identifies a requirement without deriving provenance from a declaration key.
@@ -247,7 +248,7 @@ pub struct SourceStageResolvedResource {
     /// Retains the exact semantic desired resource value.
     pub value: AbilityValue,
     /// Retains the selected provider's typed backend realization.
-    pub realization: AbilityValue,
+    pub realization: ValueExpression,
     /// Carries the centrally derived semantic revision after materialization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<RevisionId>,
@@ -1367,6 +1368,8 @@ mod tests {
         assert!(!instance.accepts_binding_package(&other));
 
         instance.package = Some(selected.clone());
+        assert!(instance.accepts_binding_package(&selected));
+        assert!(!instance.accepts_binding_package(&other));
         instance.implementation = Some(SourceStageImplementation {
             package: selected.clone(),
             local_key: LocalKey::new("service").expect("implementation key"),
@@ -1817,8 +1820,10 @@ mod tests {
                 .get_mut(&binding.request)
                 .expect("fixture binding request")
         };
-        request.parameters = AbilityValue::new(serde_json::json!({"marker": request_marker}))
-            .expect("fixture request parameters");
+        request.parameters = ValueExpression::Literal {
+            value: AbilityValue::new(serde_json::json!({"marker": request_marker}))
+                .expect("fixture request parameters"),
+        };
 
         fixed_point
             .derive_resource_revisions(&packages)

@@ -281,6 +281,9 @@ fn authorize_expression(
         ValueExpression::OperationResult { .. } => {
             Err("runtime operation result cannot appear in a pure aggregate output")
         }
+        ValueExpression::RequestOutput { .. } => {
+            Err("runtime request output cannot appear in a pure aggregate output")
+        }
         ValueExpression::PathWithin { base, .. } => authorize_expression(
             context,
             principal,
@@ -778,7 +781,8 @@ fn preflight_projection_expressions(
             | ValueExpression::ArtifactReference { .. }
             | ValueExpression::ResourceReference { .. }
             | ValueExpression::AggregateOutput { .. }
-            | ValueExpression::OperationResult { .. } => {}
+            | ValueExpression::OperationResult { .. }
+            | ValueExpression::RequestOutput { .. } => {}
         }
     }
     Ok(())

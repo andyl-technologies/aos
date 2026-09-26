@@ -130,6 +130,13 @@ not return side effects. New lower aliases must occur in the authenticated
 declaration's bounded discovery vocabulary; generated resource instances may
 use checked child keys without inventing new interface protocols.
 
+An input-only composer may have no methods, outputs, or runtime desired type.
+Its provider-instance aggregate gives its requests an instance lifetime, and
+`compose` may expand that aggregate into a typed child request. The aggregate
+is planning state; only the selected child publishes a runtime resource and
+constructs its effect. D-Bus registration uses this form to assemble one
+configuration resource from package-owned registration requests.
+
 `transition` receives old and desired owned state, a change classification,
 checked bindings/resources, and the admitted observation snapshot. It returns
 method calls and dependencies as a finite graph. The Rust planner performs

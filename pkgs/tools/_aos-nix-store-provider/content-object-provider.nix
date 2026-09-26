@@ -78,6 +78,7 @@
     };
 
   emptyTransition = lib.abilities.transitionFragment {};
+  valueExpression = lib.abilities.valueExpressionForAbilities config.aos.abilities;
   revisionFor = context: change: let
     revisions =
       if change.desired != null
@@ -144,12 +145,9 @@
       operations = [method];
       lifetime = "persistent";
     };
-    inputs = {
-      source = "literal";
-      value = {
-        request = revision.value;
-        blob = null;
-      };
+    inputs = valueExpression {
+      request = revision.value;
+      blob = null;
     };
     preconditions = [];
     accesses = [
@@ -203,7 +201,7 @@
         if action == null
         then []
         else [(operationFor context change action.method action.phase action.access)])
-      context.changes;
+      (builtins.filter (change: change.resource.provider == context.provider) context.changes);
     };
 in {
   config.aos.abilities.implementations.${alias} = {inherit provide compose transition;};

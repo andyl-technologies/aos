@@ -540,7 +540,11 @@ fn wrong_binding_method_and_context_are_rejected() {
         kind: fixed_resource.kind.clone(),
         lifetime: fixed_resource.lifetime,
         value: fixed_resource.value.clone(),
-        realization: fixed_resource.realization.clone(),
+        realization: fixed_resource
+            .realization
+            .literal_value()
+            .expect("fixed test resource realization")
+            .clone(),
         revision: fixed_resource.revision,
     };
     validate_fixed_point_resource(checked.binding_plan(), &fixed_spec)

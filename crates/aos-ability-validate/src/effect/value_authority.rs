@@ -52,6 +52,7 @@ pub(super) fn validate_nested_authority(
         ),
         ValueExpression::AggregateOutput { .. } => {}
         ValueExpression::OperationResult { .. } => {}
+        ValueExpression::RequestOutput { .. } => {}
         ValueExpression::PathWithin { base, .. } => validate_nested_authority(
             context,
             schema,
@@ -436,7 +437,7 @@ fn validate_resource_reference(
 ) {
     if context.interface(&reference.interface).is_none()
         || !resources.contains(&reference.resource)
-        || reference.lifetime > binding.lifetime
+        || reference.lifetime < binding.lifetime
         || grant.is_none_or(|grant| {
             !grant_permits(grant, &reference.resource, AccessMode::Read, None)
                 || reference.operations.iter().any(|requested| {
@@ -458,5 +459,51 @@ fn validate_resource_reference(
             &reference.resource,
             diagnostics,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use aos_ability_model::ResourceLifetime;
+
+    use super::validate_resource_reference;
+    use crate::test_support::plan_fixture;
+
+    #[test]
+    fn persistent_reference_outlives_an_instance_binding() {
+        let fixture = plan_fixture();
+        let operation = &fixture.effect_plan.operations[0];
+        let binding = &fixture.binding_plan.bindings[0];
+        let resources = BTreeSet::from([operation.target.resource.clone()]);
+        let mut reference = operation.target.clone();
+        reference.lifetime = ResourceLifetime::Persistent;
+
+        let mut diagnostics = Vec::new();
+        validate_resource_reference(
+            &fixture.context,
+            &reference,
+            operation,
+            0,
+            binding,
+            Some(&binding.caller_grant),
+            &resources,
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty());
+
+        reference.lifetime = ResourceLifetime::Attempt;
+        validate_resource_reference(
+            &fixture.context,
+            &reference,
+            operation,
+            0,
+            binding,
+            Some(&binding.caller_grant),
+            &resources,
+            &mut diagnostics,
+        );
+        assert_eq!(diagnostics.len(), 1);
     }
 }
