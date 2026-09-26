@@ -5,10 +5,29 @@
   operationCount = 32;
   ninepWarmupCount = 8;
   idleThresholdPpm = 900000;
+  # The sim fixture exposes a fixed 4 GHz TSC. Provide its known frequency
+  # before Linux's PIT calibration loops at 50 ps per retired instruction.
+  s2Kernel = pkgs.linux.overrideAttrs (previous: {
+    pname = "linux-crucible-s2";
+    phases =
+      map
+      (phase:
+        if phase.name == "patch"
+        then
+          phase
+          // {
+            script = phase.script + ''
+              patch -p1 < ${./linux-tsc-known-frequency.patch}
+            '';
+          }
+        else phase)
+      previous.phases;
+  });
   # Linux's 100 ms LAPIC calibration costs about two billion instructions at
   # 50 ps/instruction. The focused companion below covers LAPIC exactness.
   kernelCommandLine = lib.concatStringsSep " " [
     "console=ttyS0 reboot=k panic=1 rdinit=/init quiet noapic nolapic"
+    "lpj=1 tsc_early_khz=4000000"
     "nokaslr norandmaps random.trust_cpu=off net.ifnames=0"
   ];
   workloadSource = builtins.readFile ./phase0-s2-workload.c;
@@ -356,7 +375,7 @@
       pkgs.bash
       pkgs.coreutils
       pkgs.kmod
-      pkgs.linux
+      s2Kernel
       pkgs.util-linux
       workload
       poweroffHelper
@@ -410,7 +429,7 @@
 
             ln -sfn ${pkgs.bash}/bin/bash root/bin/sh
             ln -sfn ${pkgs.bash}/bin/bash root/bin/bash
-            ln -sfn ${pkgs.linux}/lib/modules root/lib/modules
+            ln -sfn ${s2Kernel}/lib/modules root/lib/modules
             ln -sfn ${poweroffHelper}/bin/s2-poweroff root/sbin/poweroff
 
             cat > root/init <<'INIT'
@@ -496,7 +515,7 @@ in
 
     BLOCK_IMAGE = "${blockImage}/block.img";
     INITRAMFS = "${initramfs}/initrd.img";
-    KERNEL = builtins.toString pkgs.linux;
+    KERNEL = builtins.toString s2Kernel;
     QEMU = "${pkgs.qemu-crucible}/bin/qemu-system-x86_64";
     IDLE_THRESHOLD_PPM = builtins.toString idleThresholdPpm;
     OPERATION_COUNT = builtins.toString operationCount;
