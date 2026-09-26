@@ -42,6 +42,10 @@ mod resource_isolation;
 mod scenario;
 
 const MAX_SOURCE_QUANTA: u64 = 30_000;
+const NATIVE_RENDEZVOUS_INTERVAL_TICKS: u64 = 50_000_000_000;
+const NATIVE_TERMINAL_MARGIN_NANOS: u64 = 30_000_000_000;
+const NATIVE_RUN_CEILING_TICKS: u64 =
+    (scenario::REACTIVATION_NANOS + NATIVE_TERMINAL_MARGIN_NANOS) * crucible::SIM_TICKS_PER_NS;
 
 fn native_execution_context(
     input: &CrucibleAttemptExecution,
@@ -391,7 +395,7 @@ fn lifecycle_config(
     run_state_root: PathBuf,
     artifacts: Arc<dyn DagStore>,
 ) -> ProductionVmLifecycleConfig {
-    ProductionVmLifecycleConfig::new(
+    let config = ProductionVmLifecycleConfig::new(
         &paths.qemu,
         &paths.plugin,
         &paths.kernel,
@@ -401,10 +405,42 @@ fn lifecycle_config(
     .with_root_image_format(QemuRootImageFormat::Raw)
     .with_kernel_cmdline_prefix("console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init")
     .with_signal_artifacts(Arc::clone(&artifacts))
-    .with_world_artifacts(artifacts)
-    .with_run_ceiling_ticks(50_000_000_000)
-    .with_quantum_budget(MAX_SOURCE_QUANTA)
-    .with_completion_timeout(Duration::from_secs(300))
+    .with_world_artifacts(artifacts);
+
+    native_lifecycle_bounds(config)
+}
+
+fn native_lifecycle_bounds(config: ProductionVmLifecycleConfig) -> ProductionVmLifecycleConfig {
+    // The terminal ceiling must outlive the 81-second reactivation. The
+    // 50-millisecond rendezvous interval bounds each RUN independently.
+    config
+        .with_run_ceiling_ticks(NATIVE_RUN_CEILING_TICKS)
+        .with_rendezvous_interval_ticks(NATIVE_RENDEZVOUS_INTERVAL_TICKS)
+        .with_quantum_budget(MAX_SOURCE_QUANTA)
+        .with_completion_timeout(Duration::from_secs(300))
+}
+
+#[test]
+fn native_lifecycle_bounds_cover_the_last_fault_event() {
+    let config = native_lifecycle_bounds(ProductionVmLifecycleConfig::new(
+        "qemu",
+        "plugin",
+        "kernel",
+        "root",
+        "run-state",
+    ));
+    let last_fault_ticks = scenario::REACTIVATION_NANOS * crucible::SIM_TICKS_PER_NS;
+    let ninep_fault_end_ticks = (scenario::PERMANENT_FAILURE_NANOS
+        + scenario::NINEP_FAULT_WINDOW_NANOS)
+        * crucible::SIM_TICKS_PER_NS;
+
+    assert!(config.run_ceiling_ticks() > last_fault_ticks);
+    assert!(config.run_ceiling_ticks() > ninep_fault_end_ticks);
+    assert_eq!(
+        config.rendezvous_interval_ticks(),
+        Some(NATIVE_RENDEZVOUS_INTERVAL_TICKS)
+    );
+    assert!(NATIVE_RENDEZVOUS_INTERVAL_TICKS < config.run_ceiling_ticks());
 }
 
 fn source_progress_is_reportable(quantum: u64) -> bool {
