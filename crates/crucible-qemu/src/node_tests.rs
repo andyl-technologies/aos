@@ -44,6 +44,28 @@ mod sequence_restore;
 mod shutdown_and_preemption;
 
 type SharedLog = Arc<Mutex<Vec<ChannelCall>>>;
+
+#[test]
+fn logical_time_calibration_checks_scaled_raw_retirement() {
+    let calibration = QemuLogicalTimeCalibration {
+        logical_icount: 2_107,
+        raw_icount: 42,
+    };
+    assert!(matches!(calibration.offset(), Ok(7)));
+
+    let underflow = QemuLogicalTimeCalibration {
+        logical_icount: 2_099,
+        raw_icount: 42,
+    };
+    assert!(underflow.offset().is_err());
+
+    let overflow = QemuLogicalTimeCalibration {
+        logical_icount: u64::MAX,
+        raw_icount: u64::MAX,
+    };
+    assert!(overflow.offset().is_err());
+}
+
 type SharedFaultCommands = Arc<Mutex<Vec<(FaultCommandHeaderV1, Vec<u8>)>>>;
 type SharedFaultEvents = Arc<Mutex<VecDeque<DequeuedFaultEvent>>>;
 type SharedRetainedStreamState = Arc<Mutex<Option<(crate::QmpDescriptorName, u64, u64, bool)>>>;
@@ -590,7 +612,7 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
     ) -> Result<QemuLogicalTimeCalibration, QemuNodeChannelError> {
         Ok(QemuLogicalTimeCalibration {
             logical_icount: 11,
-            raw_icount: 11,
+            raw_icount: 0,
         })
     }
 

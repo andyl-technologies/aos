@@ -59,19 +59,22 @@ fn block_recovery_selector_accepts_only_the_documented_value() {
     assert!(error.to_string().contains("must be unset or exactly 1"));
 }
 
-fn runtime_trace(target_ns: i64) -> String {
+fn runtime_trace(target_ps: i64) -> String {
     format!(
-        "crucible_sim_determinism_idle phase=request seq=1 raw=7999999 virtual_ns=7999999 target_ns=8000000 deadline_ns=-1 rr_owner=0 rr_cursor=1 cpu_count=4 halted=0xf work=0x0 exit=0x0 interrupt=0x0 stop=0x0 state=2\n\
-             crucible_sim_determinism_idle phase=complete seq=2 raw=7999999 virtual_ns=8000000 target_ns=8000000 deadline_ns=-1 rr_owner=0 rr_cursor=1 cpu_count=4 halted=0xf work=0x0 exit=0x0 interrupt=0x0 stop=0x0 state=2\n\
-             crucible_sim_determinism_idle phase=request seq=3 raw=8000000 virtual_ns=8000000 target_ns={target_ns} deadline_ns=-1 rr_owner=0 rr_cursor=1 cpu_count=4 halted=0xf work=0x0 exit=0x0 interrupt=0x0 stop=0x0 state=2\n\
-             crucible_sim_determinism_idle phase=complete seq=4 raw=8000000 virtual_ns={target_ns} target_ns={target_ns} deadline_ns=-1 rr_owner=0 rr_cursor=1 cpu_count=4 halted=0xf work=0x0 exit=0x0 interrupt=0x0 stop=0x0 state=2\n"
+        "crucible_sim_determinism_idle phase=request seq=1 raw=159999 virtual_ps=7999950 target_tick=8000000 deadline_ps=-1 rr_owner=0 rr_cursor=1 cpu_count=4 halted=0xf work=0x0 exit=0x0 interrupt=0x0 stop=0x0 state=2\n\
+             crucible_sim_determinism_idle phase=complete seq=2 raw=159999 virtual_ps=8000000 target_tick=8000000 deadline_ps=-1 rr_owner=0 rr_cursor=1 cpu_count=4 halted=0xf work=0x0 exit=0x0 interrupt=0x0 stop=0x0 state=2\n\
+             crucible_sim_determinism_idle phase=request seq=3 raw=160000 virtual_ps=8000000 target_tick={target_ps} deadline_ps=-1 rr_owner=0 rr_cursor=1 cpu_count=4 halted=0xf work=0x0 exit=0x0 interrupt=0x0 stop=0x0 state=2\n\
+             crucible_sim_determinism_idle phase=complete seq=4 raw=160000 virtual_ps={target_ps} target_tick={target_ps} deadline_ps=-1 rr_owner=0 rr_cursor=1 cpu_count=4 halted=0xf work=0x0 exit=0x0 interrupt=0x0 stop=0x0 state=2\n"
     )
 }
 
 fn runtime_diagnostics(trace: String) -> RuntimeDeterminismDiagnostics {
     RuntimeDeterminismDiagnostics {
         baseline: RuntimeDeterminismBaseline {
-            calibration: Err(String::from("test calibration")),
+            calibration: Ok(QemuLogicalTimeCalibration {
+                logical_icount: 8_000_000,
+                raw_icount: 160_000,
+            }),
             idle_state: Err(String::from("test idle state")),
             timer_witness: Err(String::from("test timer witness")),
             rr_current_vcpu: 0,
@@ -101,7 +104,27 @@ fn boundary(target: u64, rr_current_vcpu: u32, rr_position_in_quantum: u64) -> B
             hash: ContentHash::from_bytes(&target.to_be_bytes()),
         },
         sample,
+        calibration: QemuLogicalTimeCalibration {
+            logical_icount: target,
+            raw_icount: target / FLIGHT_TICKS_PER_INSTRUCTION,
+        },
     }
+}
+
+fn boundaries_with_fractional_phase(
+    lower: BoundaryEvidence,
+    upper: BoundaryEvidence,
+) -> Vec<BoundaryEvidence> {
+    let mut fractional = lower.clone();
+    fractional.target = FRACTIONAL_PHASE_LOWER_TARGET;
+    fractional.sample.sample_icount = FRACTIONAL_PHASE_LOWER_TARGET;
+    fractional.sample.device_state_digest[0] = FRACTIONAL_PHASE_LOWER_TARGET.to_le_bytes()[0];
+    fractional.calibration.logical_icount = FRACTIONAL_PHASE_LOWER_TARGET;
+    fractional.fingerprint = ExecutionFingerprint {
+        hash: ContentHash::from_bytes(&FRACTIONAL_PHASE_LOWER_TARGET.to_be_bytes()),
+    };
+
+    vec![fractional, lower, upper]
 }
 
 fn idle_evidence(timer_generation: u64) -> IdleEvidence {
@@ -149,7 +172,7 @@ fn idle_comparator_ignores_only_process_local_timer_generation() {
 
 #[test]
 fn comparator_reports_first_differing_boundary_component() {
-    let reference = vec![boundary(2_000_000, 0, 47), boundary(2_000_001, 0, 48)];
+    let reference = vec![boundary(2_000_001, 0, 47), boundary(2_000_051, 0, 48)];
     let mut candidate = reference.clone();
     candidate[1].sample.ram_digest[7] = 1;
 
@@ -157,7 +180,7 @@ fn comparator_reports_first_differing_boundary_component() {
         .expect_err("changed RAM digest must be reported");
     assert_eq!(
         error,
-        "negative: boundary 1 window (2000000,2000001]: ram_digest differs"
+        "negative: boundary 1 window (2000001,2000051]: ram_digest differs"
     );
 }
 
@@ -182,8 +205,35 @@ fn runtime_comparator_reports_the_first_post_boundary_tuple() {
         compare_runtime_determinism_diagnostics([("reference", &reference), ("hostile", &hostile)]);
 
     assert!(report.contains("first_split=reference/hostile index=0"));
-    assert!(report.contains("target_ns: 9000000"));
-    assert!(report.contains("target_ns: 9000001"));
+    assert!(report.contains("target_tick: 9000000"));
+    assert!(report.contains("target_tick: 9000001"));
+}
+
+#[test]
+fn runtime_comparator_rejects_empty_post_boundary_trace() {
+    let reference =
+        runtime_diagnostics(runtime_trace(9_000_000).replace("raw=160000", "raw=159999"));
+    let candidate = runtime_diagnostics(runtime_trace(9_000_000));
+
+    let report = compare_runtime_determinism_diagnostics([
+        ("reference", &reference),
+        ("hostile", &candidate),
+    ]);
+
+    assert!(report.contains("reference_post_8m_trace_empty"));
+    assert!(!report.contains("post_8m_native_sequences_identical=true"));
+}
+
+#[test]
+fn post_boundary_trace_excludes_the_same_raw_count_before_eight_million_picoseconds() {
+    let trace = runtime_trace(9_000_000).replace("raw=159999", "raw=160000");
+    let records =
+        parse_qemu_runtime_determinism_trace(&trace).expect("runtime trace should decode");
+
+    let suffix = post_final_busy_boundary(&records, 160_000);
+
+    assert_eq!(suffix.len(), 3);
+    assert_eq!(suffix[0].sequence(), 2);
 }
 
 #[test]
@@ -199,15 +249,15 @@ fn recovery_preserves_unauthenticated_request_identity() {
 
 #[test]
 fn adjacent_samples_prove_one_instruction_localization() {
-    let boundaries = vec![
+    let boundaries = boundaries_with_fractional_phase(
         boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, 47),
         boundary(INSTRUCTION_EXACT_UPPER_TARGET, 0, 48),
-    ];
+    );
 
     let evidence = instruction_exact_evidence(&boundaries)
         .expect("adjacent exact samples must produce localization evidence");
-    assert_eq!(evidence.lower_target, 2_000_000);
-    assert_eq!(evidence.upper_target, 2_000_001);
+    assert_eq!(evidence.lower_target, 2_000_001);
+    assert_eq!(evidence.upper_target, 2_000_051);
     assert_eq!(evidence.lower_rr_vcpu, evidence.upper_rr_vcpu);
     assert_eq!(evidence.lower_rr_position + 1, evidence.upper_rr_position);
     assert_eq!(
@@ -231,12 +281,37 @@ fn adjacent_samples_prove_one_instruction_localization() {
 }
 
 #[test]
+fn fractional_phase_rejects_retired_state_change() {
+    let lower = boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, 47);
+    let upper = boundary(INSTRUCTION_EXACT_UPPER_TARGET, 0, 48);
+    let mut boundaries = boundaries_with_fractional_phase(lower, upper);
+    boundaries[1].sample.rr_position_in_quantum += 1;
+
+    let error = instruction_exact_evidence(&boundaries)
+        .expect_err("one picosecond must not retire an instruction");
+    assert!(error.contains("fractional-phase sample changed retired state"));
+}
+
+#[test]
+fn fractional_phase_requires_a_timer_projection_change() {
+    let lower = boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, 47);
+    let upper = boundary(INSTRUCTION_EXACT_UPPER_TARGET, 0, 48);
+    let mut boundaries = boundaries_with_fractional_phase(lower, upper);
+    let phase_device_digest = boundaries[0].sample.device_state_digest;
+    boundaries[1].sample.device_state_digest = phase_device_digest;
+
+    let error = instruction_exact_evidence(&boundaries)
+        .expect_err("one picosecond must advance the timer projection");
+    assert!(error.contains("omitted timer projection"));
+}
+
+#[test]
 fn adjacent_samples_accept_a_terminal_rr_handoff() {
     let lower = boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, RR_SWITCH_QUANTUM - 1);
     let mut upper = boundary(INSTRUCTION_EXACT_UPPER_TARGET, 1, 0);
     upper.sample.vcpus[0].register_digest[0] = INSTRUCTION_EXACT_UPPER_TARGET.to_le_bytes()[0];
     upper.sample.vcpus[1].register_digest = [0; 32];
-    let boundaries = vec![lower, upper];
+    let boundaries = boundaries_with_fractional_phase(lower, upper);
 
     let evidence = instruction_exact_evidence(&boundaries)
         .expect("the terminal instruction must advance to the next RR owner");
@@ -248,10 +323,10 @@ fn adjacent_samples_accept_a_terminal_rr_handoff() {
 
 #[test]
 fn adjacent_samples_reject_a_nonadvancing_rr_cursor() {
-    let boundaries = vec![
+    let boundaries = boundaries_with_fractional_phase(
         boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, 47),
         boundary(INSTRUCTION_EXACT_UPPER_TARGET, 0, 47),
-    ];
+    );
 
     let error = instruction_exact_evidence(&boundaries)
         .expect_err("an unchanged RR cursor cannot certify one retired instruction");
@@ -260,10 +335,10 @@ fn adjacent_samples_reject_a_nonadvancing_rr_cursor() {
 
 #[test]
 fn adjacent_samples_reject_the_wrong_terminal_owner() {
-    let boundaries = vec![
+    let boundaries = boundaries_with_fractional_phase(
         boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, RR_SWITCH_QUANTUM - 1),
         boundary(INSTRUCTION_EXACT_UPPER_TARGET, 2, 0),
-    ];
+    );
 
     let error = instruction_exact_evidence(&boundaries)
         .expect_err("a terminal handoff that skips the next owner must fail");
@@ -276,20 +351,36 @@ fn adjacent_samples_reject_a_changed_quantum() {
     let mut upper = boundary(INSTRUCTION_EXACT_UPPER_TARGET, 0, 48);
     upper.sample.rr_switch_quantum += 1;
 
-    let error = instruction_exact_evidence(&[lower, upper])
+    let error = instruction_exact_evidence(&boundaries_with_fractional_phase(lower, upper))
         .expect_err("a changed RR quantum cannot certify one instruction");
     assert!(error.contains("one exact RR successor"));
 }
 
 #[test]
-fn adjacent_samples_reject_an_unrelated_state_change() {
+fn adjacent_samples_reject_changed_ram_shape() {
+    let lower = boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, 47);
+    let mut upper = boundary(INSTRUCTION_EXACT_UPPER_TARGET, 0, 48);
+    upper.sample.ram_bytes += 1;
+
+    let error = instruction_exact_evidence(&boundaries_with_fractional_phase(lower, upper))
+        .expect_err("a changed RAM shape must not certify one instruction");
+    assert!(error.contains("changed invariant fingerprint shape: ["));
+    assert!(error.contains("ram_bytes"));
+}
+
+#[test]
+fn adjacent_samples_allow_a_single_instruction_ram_write() {
     let lower = boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, 47);
     let mut upper = boundary(INSTRUCTION_EXACT_UPPER_TARGET, 0, 48);
     upper.sample.ram_digest[0] = 1;
 
-    let error = instruction_exact_evidence(&[lower, upper])
-        .expect_err("an unrelated RAM change must not certify one instruction");
-    assert!(error.contains("changed invariant fingerprint shape or RAM state"));
+    let evidence = instruction_exact_evidence(&boundaries_with_fractional_phase(lower, upper))
+        .expect("a retired instruction may write RAM");
+    assert!(
+        evidence
+            .changed_components
+            .contains(&String::from("ram_digest"))
+    );
 }
 
 #[test]

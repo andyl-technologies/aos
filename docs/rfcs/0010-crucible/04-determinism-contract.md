@@ -323,7 +323,7 @@ differ.
 | E10 | CPU model variation | Different host CPUs expose different feature bits / instruction semantics | Fixed `-cpu <model>` (never `-cpu host`); the model is part of the scenario hash | launch |
 | E11 | Kernel address-space randomization (KASLR) | Randomized kernel base changes addresses throughout `T` | KASLR stays **enabled** (stock guest cmdline). Its randomization is a pure function of the boot entropy, which is itself seeded deterministically host-side (E8/E9: `fw_cfg` random-seed, controlled RDRAND, no host-entropy passthrough), so the kernel base is reproducible across replays. S6/T-RISK-6 verified this bit-stability under fully seeded boot entropy. Crucible neither adds nor requires `nokaslr`. | launch |
 | E12 | Userspace ASLR (`norandmaps`) | Randomized mmap/stack/brk bases change `T` | ASLR stays **enabled** (stock guest cmdline). Userspace randomization derives from the same deterministically seeded boot entropy (E8/E9), so mmap/stack/brk bases are reproducible across replays. S6/T-RISK-6 verified this bit-stability under fully seeded boot entropy. Crucible neither adds nor requires `norandmaps`. | launch |
-| E13 | Multi-vCPU instruction interleaving (MTTCG excluded; multi-vCPU = single-threaded RR-TCG) | Concurrent vCPUs would interleave nondeterministically under MTTCG (`thread=multi`); stock `-accel tcg` also leaves Crucible's RR quantum, deterministic IPI, shmem dispatch, and preemption paths inactive | Select the TCG-derived `sim` accelerator explicitly as `-accel sim,thread=single`; stock TCG and MTTCG are excluded. All `N` vCPUs time-share ONE host thread under single-threaded round-robin TCG with `-icount`, switching at a fixed content-addressed `rr_switch_quantum` in node-icount (never QEMU's adaptive `rr_quantum`, never realtime). The interleaving is then a pure function of `(image, cmdline, seed, I, rr_switch_quantum, N)` | launch + patch |
+| E13 | Multi-vCPU instruction interleaving (MTTCG excluded; multi-vCPU = single-threaded RR-TCG) | Concurrent vCPUs would interleave nondeterministically under MTTCG (`thread=multi`); stock `-accel tcg` also leaves Crucible's RR quantum, deterministic IPI, shmem dispatch, and preemption paths inactive | Select the TCG-derived `sim` accelerator explicitly as `-accel sim,thread=single`; stock TCG and MTTCG are excluded. All `N` vCPUs time-share ONE host thread under single-threaded round-robin TCG with `-icount`, switching at a fixed content-addressed `rr_switch_quantum` in retired instructions (never QEMU's adaptive `rr_quantum`, never realtime). The interleaving is then a pure function of `(image, cmdline, seed, I, rr_switch_quantum, N)` | launch + patch |
 | E14 | Host thread scheduling of QEMU threads | Order of QEMU's own threads (vCPU, iothread, main loop) affects timing | Single vCPU plus icount makes guest progress independent of host thread order; the plugin's synchronous time-control handshake forces a defined order at idle/advance points | plugin + patch |
 | E15 | Floating-point nondeterminism | FP results vary by rounding mode / FMA contraction / library | Under a fixed `-cpu` and TCG soft-float, FP is a deterministic function of inputs; cross-host reproducibility holds because TCG emulates, not delegates to host FPU. No action beyond E10 | (covered by E10) |
 | E16 | Uninitialized memory / device reset values | Power-on memory and device registers differ run to run | Deterministic machine reset: RAM zeroed (or fixed-pattern), device reset values fixed; part of the genesis bake (05) | launch + patch |
@@ -331,9 +331,9 @@ differ.
 | E18 | Network arrival timing | Frames delivered "as they arrive" race producer vs consumer | Contract B (4.4): every frame carries a delivery icount; the scheduler assigns it; transport timing is irrelevant | plugin + patch |
 | E19 | Block / 9p I/O completion timing | Disk/filesystem completions land at host-timing-dependent points | I/O sub-nodes (15) are first-class scheduling nodes with deterministic completion icounts; completions obey the injection contract | plugin + patch |
 | E20 | Snapshot/restore state loss | An incomplete descriptor restore drops icount or TCG state and diverges from a fresh replay | Version-nine device and direct-plus-delta RAM descriptors must preserve icount, bias, and TCG/device state completely; verified by the replay oracle | patch |
-| E21 | RR vCPU-switch quantum | The granularity and order in which vCPUs are switched on the single host thread determines the interleaving | Fixed content-addressed `rr_switch_quantum` in node-icount units, with a fixed ascending vCPU rotation; never QEMU's adaptive `rr_quantum`, never realtime | launch + patch |
+| E21 | RR vCPU-switch quantum | The granularity and order in which vCPUs are switched on the single host thread determines the interleaving | Fixed content-addressed `rr_switch_quantum` in retired-instruction units, with a fixed ascending vCPU rotation; never QEMU's adaptive `rr_quantum`, never realtime | launch + patch |
 | E22 | Inter-vCPU IPI / cross-CPU interrupt timing | A vCPU-to-vCPU IPI taken one instruction earlier/later on the target forks the path | The IPI becomes visible to the target at a deterministic node-icount = sender's icount + a fixed modeled IPI latency, delivered at the next RR switch boundary; never at a host-timing-dependent point | patch |
-| E23 | Per-vCPU TSC / RNG | Each vCPU's timestamp counter or entropy reads could diverge per vCPU | Every per-vCPU TSC/RNG value is derived from the node icount, and a uniform `-cpu` model is pinned across ALL vCPUs (no per-vCPU feature variation), so per-vCPU reads are pure functions of node icount | launch |
+| E23 | Per-vCPU TSC / RNG | Each vCPU's timestamp counter or entropy reads could diverge per vCPU | TSC derives from the exact logical picosecond clock divided by 250; seeded RNG reads follow deterministic raw retirement and RR order. A uniform `-cpu` model is pinned across ALL vCPUs (no per-vCPU feature variation) | launch |
 | E24 | vCPU bringup / hotplug | Secondary-vCPU SIPI/INIT timing or runtime topology change perturbs `T` | Topology is fixed at the genesis bake (no runtime hotplug); secondary-vCPU SIPI/INIT sequencing is deterministic under RR-TCG + icount | launch + patch |
 
 - **[DET-18]** Each entropy source E1–E20 MUST be eliminated by its stated
@@ -832,20 +832,21 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     fingerprint, and proves replayed aggregate-icount trajectories are
     bit-identical. The later launch rejection, content-hash quantum pinning, and
     IPI/entropy details remain covered by the following tasks.
-- [x] **T-DET-29** Pin the RR switch quantum: fix `rr_switch_quantum` (node-icount
-  units) and the ascending vCPU rotation, fold `rr_switch_quantum`/`N`/rotation
+- [x] **T-DET-29** Pin the RR switch quantum: fix `rr_switch_quantum` in
+  retired-instruction units and the ascending vCPU rotation, fold `rr_switch_quantum`/`N`/rotation
   into the scenario content hash, and reject MTTCG (`thread=multi`), the adaptive
   `rr_quantum`, and any realtime-based switching in the launch config. —
   satisfies [DET-23], [DET-42]; spec §4.6 (E13, E21), §4.2.1.
   - Completed by `checks.crucible.phase2.qemuMultiVcpuLaunch`, consumed by
     `checks.crucible.phase1.gates.layer0Determinism`: the deterministic QEMU
     launch profile emits `-accel sim,thread=single`, fixed `-smp N`, fixed
-    `rr_switch_quantum` in node-icount units, and records ascending vCPU rotation
+    `rr_switch_quantum` in retired-instruction units, and records ascending vCPU rotation
     plus `N`/quantum/rotation in scenario hash material. The pre-spawn validator
     rejects MTTCG, missing/duplicate RR quantum declarations, adaptive icount
     mode, realtime icount switching, and QEMU realtime launch flags before spawn.
 - [x] **T-DET-30** Verify per-vCPU entropy uniformity and IPI determinism: a
-  uniform `-cpu` pin across all vCPUs, per-vCPU TSC/RNG derived from node icount
+  uniform `-cpu` pin across all vCPUs, per-vCPU TSC derived from logical
+  picoseconds and RNG ordered by raw retirement and RR rotation
   (E23), inter-vCPU IPI delivered at a deterministic node-icount via a fixed
   modeled latency at the next RR switch (E22), and deterministic secondary-vCPU
   SIPI/INIT bringup with no runtime hotplug (E24). — satisfies [DET-18] (E22, E23,
