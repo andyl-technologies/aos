@@ -9,7 +9,52 @@
   interfaceDocumentFromDeclaration,
   requestOutputDescriptor,
   semanticInterface,
+  canonicalizeResolvedValue,
 }: let
+  filterAttrs = predicate: values:
+    builtins.listToAttrs (builtins.map (name: {
+        inherit name;
+        value = values.${name};
+      })
+      (builtins.filter (name: predicate name values.${name}) (builtins.attrNames values)));
+  # Package runtime contracts omit build-only implementations, so their
+  # bindings and dependent declarations cannot enter the executable stage.
+  retainedBindings = filterAttrs (_: binding:
+    abilities.implementations.${binding.implementation}.activationAvailable)
+  abilities.bindings;
+  omittedBindings = filterAttrs (name: _: !(builtins.hasAttr name retainedBindings)) abilities.bindings;
+  retainedRequestNames = builtins.map (binding: binding.request) (builtins.attrValues retainedBindings);
+  retainedRequests = filterAttrs (name: _: builtins.elem name retainedRequestNames) abilities.requests;
+  retainedCompositionRequests =
+    filterAttrs (name: _: builtins.elem name retainedRequestNames) abilities.compositionRequests;
+  omittedRequests = filterAttrs (name: _: !(builtins.elem name retainedRequestNames)) abilities.requests;
+  omittedCompositionRequests =
+    filterAttrs (name: _: !(builtins.elem name retainedRequestNames)) abilities.compositionRequests;
+  retainedActorNames =
+    builtins.map (binding: binding.providerInstance) (builtins.attrValues retainedBindings)
+    ++ builtins.map (request: request.consumer)
+    (builtins.attrValues retainedRequests ++ builtins.attrValues retainedCompositionRequests);
+  omittedActorNames =
+    builtins.map (binding: binding.providerInstance) (builtins.attrValues omittedBindings)
+    ++ builtins.map (request: request.consumer)
+    (builtins.attrValues omittedRequests ++ builtins.attrValues omittedCompositionRequests);
+  retainedInstances = filterAttrs (name: _:
+    !(builtins.elem name omittedActorNames) || builtins.elem name retainedActorNames)
+  abilities.instances;
+  retainedInstanceIdentities =
+    filterAttrs (name: _: builtins.hasAttr name retainedInstances) abilities.instanceIdentities;
+  retainedCompositionRequirements = filterAttrs (name: _:
+    builtins.any (request: request.requirement == name)
+    (builtins.attrValues retainedCompositionRequests))
+  abilities.compositionRequirements;
+  retainedCompositionOutputs =
+    filterAttrs (name: _: builtins.elem name retainedRequestNames) abilities.compositionOutputs;
+  retainedResources = filterAttrs (_: resource:
+    (resource.controller or null)
+    == null
+    || builtins.hasAttr resource.controller retainedBindings)
+  abilities.resolvedResources;
+
   normalizeOwnedValue = owner: value:
     if owner == null
     then value
@@ -45,6 +90,24 @@
     else {
       inherit (implementation) package localKey;
     };
+  selectedInterface = context: implementation:
+    if builtins.isString implementation.interface
+    then semanticInterfaces.${implementation.interface}
+      or (throw "${context} selects absent interface '${implementation.interface}'")
+    else let
+      identity = builtins.toJSON implementation.interface;
+      matchingInterfaces = interfacesByIdentity.${identity} or [];
+    in
+      if builtins.length matchingInterfaces == 1
+      then builtins.head matchingInterfaces
+      else throw "${context} has no exact interface declaration";
+  requestTypeFor = name: let
+    binding = bindingsByRequest.${name}
+      or (throw "source-stage request '${name}' has no selected binding");
+    implementation = abilities.implementations.${binding.implementation}
+      or (throw "source-stage request '${name}' selects an absent implementation");
+  in
+    (selectedInterface "source-stage request '${name}'" implementation).requestType;
   provenanceFor = context: declaration: let
     localKey = declaration.localKey or null;
     inferredLocalKey =
@@ -55,12 +118,32 @@
     inherit (declaration) authority;
     localKey = inferredLocalKey;
   };
-  packageForInstance = instance:
-    if instance.implementation != null
-    then (implementationReference "instance implementation" instance.implementation).package
-    else null;
+  # Generated provider instances can be system-authored. Their package pin
+  # comes from the exact selected implementation, not declaration authority.
+  selectedPackagesByInstance =
+    builtins.foldl' (packages: binding: let
+      package = (implementationReference "binding implementation" binding.implementation).package;
+      prior = packages.${binding.providerInstance} or null;
+    in
+      if prior != null && prior != package
+      then throw "source-stage provider instance '${binding.providerInstance}' selects implementations from different packages"
+      else packages // {${binding.providerInstance} = package;})
+    {}
+    (builtins.attrValues retainedBindings);
+  packageForInstance = name: instance: let
+    selected = selectedPackagesByInstance.${name} or null;
+    declared =
+      if instance.implementation != null
+      then (implementationReference "instance implementation" instance.implementation).package
+      else null;
+  in
+    if selected != null && declared != null && selected != declared
+    then throw "source-stage provider instance '${name}' has conflicting package provenance"
+    else if declared != null
+    then declared
+    else selected;
   projectInstance = name: instance: let
-    package = packageForInstance instance;
+    package = packageForInstance name instance;
   in
     {
       provenance = provenanceFor name instance;
@@ -80,17 +163,7 @@
       or (throw "source-stage output '${requestName}.${outputName}' needs one selected binding");
     implementation = abilities.implementations.${binding.implementation}
       or (throw "source-stage output selects absent implementation '${binding.implementation}'");
-    interface =
-      if builtins.isString implementation.interface
-      then semanticInterfaces.${implementation.interface}
-        or (throw "source-stage output selects absent interface '${implementation.interface}'")
-      else let
-        identity = builtins.toJSON implementation.interface;
-        matchingInterfaces = interfacesByIdentity.${identity} or [];
-      in
-        if builtins.length matchingInterfaces == 1
-        then builtins.head matchingInterfaces
-        else throw "source-stage output '${requestName}.${outputName}' has no exact interface declaration";
+    interface = selectedInterface "source-stage output '${requestName}.${outputName}'" implementation;
     request = abilities.requests.${requestName}
       or abilities.compositionRequests.${requestName}
       or (throw "source-stage output '${requestName}.${outputName}' has no exact request");
@@ -133,9 +206,12 @@
     provenance = provenanceFor name request;
     inherit (request) consumer scope lifetime;
     parameters =
-      normalizeOwnedValue
-      (declarationOwner request)
-      (resolveRequestValue name request.lifetime [] request.parameters);
+      canonicalizeResolvedValue
+      "source-stage request '${name}'"
+      (requestTypeFor name)
+      (normalizeOwnedValue
+        (declarationOwner request)
+        (resolveRequestValue name request.lifetime [] request.parameters));
     inherit requirement;
   };
   projectRootRequest = name: request:
@@ -166,7 +242,7 @@
   bindingEntries = builtins.map (binding: {
     name = binding.request;
     value = binding;
-  }) (builtins.attrValues abilities.bindings);
+  }) (builtins.attrValues retainedBindings);
   bindingsByRequest = let
     selected = builtins.listToAttrs bindingEntries;
   in
@@ -192,7 +268,7 @@
       name = request.requirement;
       value = true;
     })
-    (builtins.attrValues abilities.requests)));
+    (builtins.attrValues retainedRequests)));
   projectedRequirements = builtins.listToAttrs (builtins.map (name: {
       inherit name;
       value = semanticRequirement name abilities.requirementTemplates.${name};
@@ -207,7 +283,7 @@
   projectedOutputs =
     builtins.mapAttrs
     (requestName: outputs: builtins.mapAttrs (projectOutput requestName) outputs)
-    abilities.compositionOutputs;
+    retainedCompositionOutputs;
   projectResolvedResource = name: resource: let
     controller = resource.controller or null;
     binding =
@@ -218,6 +294,10 @@
       if binding == null
       then null
       else (implementationReference "resource '${name}' controller" binding.implementation).package;
+    desiredType =
+      if binding == null
+      then null
+      else abilities.implementations.${binding.implementation}.desiredType;
     requestName =
       if binding == null
       then "resource '${name}'"
@@ -230,25 +310,32 @@
     )
     // {
       value = normalizeOwnedValue owner (resolveRequestValue requestName resource.lifetime [] resource.value);
-      realization = normalizeOwnedValue owner (resolveRequestValue requestName resource.lifetime [] resource.realization);
+      realization =
+        if desiredType == null
+        then normalizeOwnedValue owner (resolveRequestValue requestName resource.lifetime [] resource.realization)
+        else
+          canonicalizeResolvedValue
+          "source-stage resource '${name}' realization"
+          desiredType
+          (normalizeOwnedValue owner (resolveRequestValue requestName resource.lifetime [] resource.realization));
     };
 in
   {
     inherit
       (abilities)
       environment
-      instanceIdentities
       compositionPendingRequests
       ;
-    bindings = builtins.mapAttrs projectBinding abilities.bindings;
+    instanceIdentities = retainedInstanceIdentities;
+    bindings = builtins.mapAttrs projectBinding retainedBindings;
     compositionRequirements =
-      builtins.mapAttrs projectCompositionRequirement abilities.compositionRequirements;
+      builtins.mapAttrs projectCompositionRequirement retainedCompositionRequirements;
     requirements = projectedRequirements;
-    instances = builtins.mapAttrs projectInstance abilities.instances;
-    requests = builtins.mapAttrs projectRootRequest abilities.requests;
-    compositionRequests = builtins.mapAttrs projectCompositionRequest abilities.compositionRequests;
+    instances = builtins.mapAttrs projectInstance retainedInstances;
+    requests = builtins.mapAttrs projectRootRequest retainedRequests;
+    compositionRequests = builtins.mapAttrs projectCompositionRequest retainedCompositionRequests;
     compositionOutputs = projectedOutputs;
-    resolvedResources = builtins.mapAttrs projectResolvedResource abilities.resolvedResources;
+    resolvedResources = builtins.mapAttrs projectResolvedResource retainedResources;
   }
   // (
     if abilities.resolvedExecutionObserver == null
