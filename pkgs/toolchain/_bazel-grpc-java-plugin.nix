@@ -6,14 +6,17 @@
   protobuf,
   abseil-cpp,
   zlib,
+  pluginVersion ? "1.48.1",
+  pluginRev ? "6e2e18bb728793df32b2ba195a954ad380e546de",
+  pluginHash ? "sha256-mMiazItb6iWjz0TpiT8IhvsArYixnpp2j5Ng/u1EAMw=",
 }: let
-  version = "1.48.1";
+  version = pluginVersion;
 
   source = fetchgit {
     url = "https://github.com/grpc/grpc-java.git";
     ref = "v${version}";
-    rev = "6e2e18bb728793df32b2ba195a954ad380e546de";
-    hash = "sha256-mMiazItb6iWjz0TpiT8IhvsArYixnpp2j5Ng/u1EAMw=";
+    rev = pluginRev;
+    hash = pluginHash;
 
     git = buildPackages.git-minimal;
     caCertificates = buildPackages.ca-certificates;
