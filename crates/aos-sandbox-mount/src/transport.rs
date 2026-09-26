@@ -4,9 +4,9 @@
 //! Delegating the connected descriptor delegates this legacy channel; packet
 //! writers are not independently authenticated by its `SCM_RIGHTS` carrier.
 
-use std::io::IoSliceMut;
+use std::io::{IoSlice, IoSliceMut};
 use std::mem::MaybeUninit;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::time::Duration;
 
 use aos_sandbox_linux::seqpacket::ConnectionPeerIdentity;
@@ -14,8 +14,8 @@ use aos_sandbox_protocol::{MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, PeerCr
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 use rustix::net::sockopt::{Timeout, set_socket_timeout, socket_acceptconn, socket_type};
 use rustix::net::{
-    RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendFlags, SocketFlags,
-    SocketType, accept_with, recvmsg, send,
+    RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendAncillaryBuffer,
+    SendAncillaryMessage, SendFlags, SocketFlags, SocketType, accept_with, recvmsg, send, sendmsg,
 };
 
 use crate::{MountError, Result};
@@ -165,6 +165,44 @@ impl MountConnection {
         }
         Ok(())
     }
+
+    /// Sends one bounded packet with exactly the borrowed descriptor supplied by the broker.
+    ///
+    /// `SCM_RIGHTS` gives the receiver a duplicate of the same open file
+    /// description while the broker retains its descriptor. This carrier does
+    /// not authorize a Mount result: the signed response must declare the exact
+    /// descriptor role before a caller can select this method. Mount 2.0 has no
+    /// FUSE descriptor role and its live service continues to use [`Self::send`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid packet length, ancillary setup, send
+    /// failure, or a short write. The borrowed descriptor remains with the
+    /// broker on every path.
+    pub fn send_with_descriptor(&self, bytes: &[u8], descriptor: BorrowedFd<'_>) -> Result<()> {
+        if bytes.is_empty() || bytes.len() > MAXIMUM_RESPONSE_BYTES as usize {
+            return Err(protocol_field("invalid descriptor response packet length"));
+        }
+
+        let descriptors = [descriptor];
+        let mut control_space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+        let mut control = SendAncillaryBuffer::new(&mut control_space);
+        if !control.push(SendAncillaryMessage::ScmRights(&descriptors)) {
+            return Err(MountError::State(
+                "mount descriptor response exceeded its ancillary buffer".to_owned(),
+            ));
+        }
+
+        let payload = [IoSlice::new(bytes)];
+        let written = sendmsg(&self.fd, &payload, &mut control, SendFlags::NOSIGNAL)
+            .map_err(transport_error)?;
+        if written != bytes.len() {
+            return Err(MountError::State(
+                "mount descriptor response packet was partially written".to_owned(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn protocol_field(field: &'static str) -> MountError {
@@ -181,12 +219,11 @@ fn transport_error(error: rustix::io::Errno) -> MountError {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use std::os::fd::AsFd as _;
-
     use rustix::net::{
         AddressFamily, SendAncillaryBuffer, SendAncillaryMessage, SocketAddrUnix, bind, connect,
         listen, sendmsg, socket_with,
     };
+    use std::io::{Read as _, Seek as _, Write as _};
 
     use super::*;
 
@@ -251,6 +288,52 @@ mod tests {
                 .unwrap()
                 .contains(FdFlags::CLOEXEC)
         );
+    }
+
+    #[test]
+    fn descriptor_response_transfers_the_same_open_file_description() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.sock");
+        let (listener, client) = listener(&path);
+        let mut retained = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(directory.path().join("retained"))
+            .unwrap();
+        retained.write_all(b"abc").unwrap();
+        retained.rewind().unwrap();
+
+        let connection = listener.accept().unwrap();
+        connection
+            .send_with_descriptor(b"receipt", retained.as_fd())
+            .unwrap();
+
+        let mut bytes = [0; 7];
+        let mut iov = [IoSliceMut::new(&mut bytes)];
+        let mut control_space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+        let mut control = RecvAncillaryBuffer::new(&mut control_space);
+        let received = recvmsg(&client, &mut iov, &mut control, RecvFlags::CMSG_CLOEXEC).unwrap();
+        assert_eq!(received.bytes, bytes.len());
+        assert_eq!(&bytes, b"receipt");
+
+        let mut descriptors = control
+            .drain()
+            .flat_map(|message| match message {
+                RecvAncillaryMessage::ScmRights(descriptors) => descriptors,
+                _ => panic!("unexpected ancillary message"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(descriptors.len(), 1);
+        let mut worker = std::fs::File::from(descriptors.pop().unwrap());
+        assert!(fcntl_getfd(&worker).unwrap().contains(FdFlags::CLOEXEC));
+
+        let mut first = [0];
+        let mut second = [0];
+        worker.read_exact(&mut first).unwrap();
+        retained.read_exact(&mut second).unwrap();
+        assert_eq!(first, [b'a']);
+        assert_eq!(second, [b'b']);
     }
 
     #[test]
