@@ -1087,6 +1087,26 @@ pub trait ImmutableBlobBackend: Send + Sync {
     /// `id`, or another backend failure when placement cannot complete.
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError>;
 
+    /// Places an ordered batch of immutable objects and returns one receipt per input.
+    ///
+    /// Backends may commit the set together when they can preserve the same
+    /// authentication and durable-receipt guarantees as individual puts.
+    /// The default preserves ordinary per-object publication semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error if any source fails authentication or placement.
+    /// Objects published before an error may remain unreferenced.
+    fn put_many_if_absent(
+        &self,
+        objects: &[(ContentId, BlobHandle)],
+    ) -> Result<Vec<PutReceipt>, StoreError> {
+        objects
+            .iter()
+            .map(|(id, source)| self.put_if_absent(*id, source))
+            .collect()
+    }
+
     /// Publishes authenticated bytes through an admitted physical repair capability.
     ///
     /// The default uses ordinary conditional publication. Backends whose

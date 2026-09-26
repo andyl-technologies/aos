@@ -30,6 +30,9 @@ const MAX_PAGE_PROOF_BYTES: usize = 60 * 1024 * 1024;
 const MAX_LOOKUP_PROOF_NODES: usize = DIGEST_NIBBLES as usize + 1;
 const MAX_LOOKUP_PROOF_BYTES: usize = MAX_LOOKUP_PROOF_NODES * MAX_MERKLE_NODE_ENVELOPE_BYTES;
 const MAX_MERKLE_NODE_ENVELOPE_BYTES: usize = 64 * 1024;
+// Keep each publication within the durable SQLite leaf's atomic-batch bounds.
+const MAX_NODE_PUBLICATION_BATCH: usize = 64;
+const MAX_NODE_PUBLICATION_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Failure while reading or updating an authenticated campaign collection.
 #[derive(Debug, Error)]
@@ -905,7 +908,7 @@ impl MerkleMap {
 
     /// Publishes only nodes reachable from the canonical final batch root.
     ///
-    /// Intermediate overlay roots are never authoritative. Children are stored
+    /// Intermediate overlay roots are never authoritative. Children are staged
     /// before their parents, and an interrupted publication leaves only
     /// unreferenced immutable objects; the caller still owns the ref CAS.
     pub(crate) fn insert_many(
@@ -945,15 +948,28 @@ impl MerkleMap {
         let entry_count = self.read_overlay_node(root, 0, overlay)?.entry_count;
         let mut stack = vec![(root, false)];
         let mut visited = BTreeSet::new();
+        let mut pending = Vec::new();
+        let mut pending_bytes = 0_u64;
 
         while let Some((id, ready)) = stack.pop() {
             let Some(node) = overlay.get(&id) else {
                 continue;
             };
             if ready {
-                if self.persist_node(node)? != id {
+                let (prepared_id, source) = Self::prepare_node(node)?;
+                if prepared_id != id {
                     return Err(invalid("batch-node-publication-id-mismatch"));
                 }
+                let length = source.logical_length();
+                if pending.len() == MAX_NODE_PUBLICATION_BATCH
+                    || pending_bytes + length > MAX_NODE_PUBLICATION_BYTES
+                {
+                    self.publish_node_batch(&pending)?;
+                    pending.clear();
+                    pending_bytes = 0;
+                }
+                pending_bytes += length;
+                pending.push((id, source));
                 continue;
             }
             if !visited.insert(id) {
@@ -965,6 +981,7 @@ impl MerkleMap {
                 MerkleEntry::Leaf { .. } => None,
             }));
         }
+        self.publish_node_batch(&pending)?;
 
         Ok(MerkleMapRoot {
             content_id: root,
@@ -1459,6 +1476,15 @@ impl MerkleMap {
     }
 
     fn persist_node(&self, node: &MerkleNode) -> Result<ContentId, CampaignStoreError> {
+        let (content_id, source) = Self::prepare_node(node)?;
+        let receipt = self.backend.put_if_absent(content_id, &source)?;
+        if receipt.id != content_id {
+            return Err(invalid("store-receipt-id-mismatch"));
+        }
+        Ok(content_id)
+    }
+
+    fn prepare_node(node: &MerkleNode) -> Result<(ContentId, BlobHandle), CampaignStoreError> {
         node.validate()?;
         let body = codec::encode(node);
         let envelope = ObjectEnvelope::for_record(
@@ -1468,12 +1494,26 @@ impl MerkleMap {
         )?;
         let bytes = envelope.canonical_bytes();
         let content_id = envelope.content_id();
-        let source = BlobHandle::from_bytes(bytes);
-        let receipt = self.backend.put_if_absent(content_id, &source)?;
-        if receipt.id != content_id {
-            return Err(invalid("store-receipt-id-mismatch"));
+        Ok((content_id, BlobHandle::from_bytes(bytes)))
+    }
+
+    fn publish_node_batch(
+        &self,
+        objects: &[(ContentId, BlobHandle)],
+    ) -> Result<(), CampaignStoreError> {
+        if objects.is_empty() {
+            return Ok(());
         }
-        Ok(content_id)
+        let receipts = self.backend.put_many_if_absent(objects)?;
+        if receipts.len() != objects.len()
+            || receipts
+                .iter()
+                .zip(objects)
+                .any(|(receipt, (id, _))| receipt.id != *id)
+        {
+            return Err(invalid("store-batch-receipt-mismatch"));
+        }
+        Ok(())
     }
 
     fn read_node(
