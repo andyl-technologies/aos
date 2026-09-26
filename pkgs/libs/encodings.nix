@@ -15,6 +15,7 @@
   };
   indexer = import ../tools/mkfontscale.nix {
     inherit (buildPackages) fetchurl stdenv freetype zlib bzip2 xorgproto;
+    inherit lib;
     mkDerivation = args: buildPackages.mkDerivation (args // {pname = "font-encoding-indexer";});
     inherit buildPackages;
     libfontenc = bootstrapFontenc;
