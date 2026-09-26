@@ -161,6 +161,8 @@ pub use protected_owner::{
 };
 #[cfg(target_os = "linux")]
 pub use public_create_source::with_current_create_cache_signer_barrier_v5;
+#[cfg(target_os = "linux")]
+pub use public_create_source::with_current_create_cache_signer_terminal_barrier_v6;
 pub use public_create_source::{
     CurrentCreatePolicyBarrierHeadsV2, CurrentCreatePolicySourceErrorV1,
     CurrentCreateProjectPolicySourceV1, checked_parentless_create_policy_draft_v1,

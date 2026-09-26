@@ -886,6 +886,111 @@ pub fn with_current_create_cache_signer_barrier_v5<R>(
     })
 }
 
+/// Runs a terminal observation after Cache postflight under every held writer.
+///
+/// Root may be acquired last during `inspect`. Cache validates its complete
+/// replay, clock, four named writers, hold, and physical flock before
+/// `terminal` runs. Controller and Source names, accepted Create, publisher,
+/// ancestry, and held claims are then rechecked before that continuation.
+/// The continuation may only acknowledge an inert observation; it cannot
+/// release an owner, publish a binding, or dispatch an effect.
+///
+/// # Errors
+///
+/// Rejects stale owner custody or changed Source/Controller currentness.
+/// Neither a failed Cache postflight nor a failed Controller/Source check
+/// invokes the terminal continuation.
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+pub fn with_current_create_cache_signer_terminal_barrier_v6<Prepared, Output>(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    inspect: impl FnOnce(
+        &mut Journal,
+        &mut ProtectedSourceDomainJournalOwnerV1,
+        &CurrentCreateProjectPolicySourceV1,
+        CurrentCreatePolicyBarrierHeadsV2,
+        &CacheResidencyWriterReadbackV2,
+    ) -> Prepared,
+    terminal: impl FnOnce(&mut Journal, &mut ProtectedSourceDomainJournalOwnerV1, Prepared) -> Output,
+) -> Result<Output, CurrentCreatePolicySourceErrorV1> {
+    let controller_uid = controller.protected_owner_uid()?;
+    let require_controller_name = |journal: &Journal| {
+        journal.require_protected_named_location(
+            Path::new("/var/lib/aos/sandboxd"),
+            "controller.journal",
+            controller_uid,
+            production_journal_limits(),
+        )
+    };
+    require_controller_name(controller)?;
+    source_domains.require_fixed_named_writer_v1()?;
+    let source = current_parentless_create_project_source_v1(controller, operation, sandbox)?;
+    let ancestry = current_source_domain_ancestry(source_domains, source.project())?;
+    let controller_hold = controller
+        .controller_policy_hold_v1()?
+        .filter(|hold| hold.is_held())
+        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    let source_hold = source_domains
+        .closed_policy_source_hold_v1()?
+        .filter(|hold| hold.is_held())
+        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    if !matching_held_create_sources(&source, ancestry, controller_hold, source_hold) {
+        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+    }
+
+    cache
+        .with_held_cache_owner_readback_after_postflight_v3(physical, |held| {
+            let selected = held.selected();
+            if selected.project() != source.project()
+                || selected.partition().disclosure() != source.cache_domain()
+                || selected.head().as_bytes() == &[0; 32]
+                || held.hold().project() != source.project()
+                || held.hold().partition() != selected.partition().digest()
+                || held.hold().cache_head() != selected.head()
+                || held.hold().binding() != controller_hold.binding()
+                || held.hold().epoch() != controller_hold.epoch()
+            {
+                return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+            }
+            let heads = CurrentCreatePolicyBarrierHeadsV2 {
+                ancestry,
+                physical_partition: selected.partition().digest(),
+                physical_cache: selected.head(),
+            };
+            let prepared = inspect(controller, source_domains, &source, heads, held);
+
+            Ok((prepared, |prepared| {
+                let result = (|| -> Result<Output, CurrentCreatePolicySourceErrorV1> {
+                    require_controller_name(controller)?;
+                    source_domains.require_fixed_named_writer_v1()?;
+                    let current_source = current_parentless_create_project_source_v1(
+                        controller, operation, sandbox,
+                    )?;
+                    let current_ancestry =
+                        current_source_domain_ancestry(source_domains, source.project())?;
+                    if current_source.commitment() != source.commitment()
+                        || current_ancestry != ancestry
+                    {
+                        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+                    }
+                    if controller.controller_policy_hold_v1()? != Some(controller_hold)
+                        || source_domains.closed_policy_source_hold_v1()? != Some(source_hold)
+                    {
+                        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+                    }
+                    Ok(terminal(controller, source_domains, prepared))
+                })();
+                Ok(result)
+            }))
+        })
+        .map_err(CurrentCreatePolicySourceErrorV1::from)?
+}
+
 #[cfg(target_os = "linux")]
 fn finish_held_create_source_cut<T>(
     result: Result<T, CurrentCreatePolicySourceErrorV1>,
