@@ -1028,14 +1028,15 @@ corresponding projection. The projection body names its request as a typed
 envelope child, so closure traversal retains the authoritative request without
 store listing.
 
-New genesis also anchors `crucible.campaign.planner-scan-index.v2` under the
-exploration root. This separate ordered index contains every request, including
-closed and currently unaffordable continuations. Two nested Merkle levels order
-positions by semantic branch-point hash and request content digest; leaf values
-are the exact current request content IDs. Request transitions update the index
-atomically, and cold validation recomputes every delta. Other transitions
-preserve it. An indexed lineage cannot drop or omit positions. Current histories
-require the anchor.
+New genesis also anchors `crucible.campaign.planner-scan-index.v3` under the
+exploration root. This ordered active index retains every request whose immutable
+proposal cap is unspent, including temporarily closed or unaffordable
+continuations. Two nested Merkle levels order positions by semantic branch-point
+hash and request content digest; leaf values are the exact request content IDs.
+Request transitions add positions, and a planner Issue retires its selected
+position only on the final allowed proposal ordinal. Historical membership
+remains authenticated in exploration. Cold validation recomputes every delta,
+so a lineage cannot omit an unspent request or restore a spent one.
 
 Planner page construction reads only the requested ordered window plus one
 lookahead position. Invocation closure validation reuses exact roots already

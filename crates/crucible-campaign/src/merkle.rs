@@ -914,6 +914,34 @@ impl MerkleMap {
         upserts: &BTreeMap<CampaignHash, ContentId>,
     ) -> Result<MerkleMapRoot, CampaignStoreError> {
         let (root, overlay) = self.overlay_after_upserts(prior, upserts)?;
+        self.publish_overlay(root, &overlay)
+    }
+
+    /// Computes a canonical batch root for upserts and removals without writes.
+    pub(crate) fn root_after_edits(
+        &self,
+        prior: ContentId,
+        edits: &BTreeMap<CampaignHash, Option<ContentId>>,
+    ) -> Result<ContentId, CampaignStoreError> {
+        self.overlay_after_edits(prior, edits)
+            .map(|(root, _overlay)| root)
+    }
+
+    /// Publishes only nodes reachable from the final mixed-edit root.
+    pub(crate) fn edit_many(
+        &self,
+        prior: ContentId,
+        edits: &BTreeMap<CampaignHash, Option<ContentId>>,
+    ) -> Result<MerkleMapRoot, CampaignStoreError> {
+        let (root, overlay) = self.overlay_after_edits(prior, edits)?;
+        self.publish_overlay(root, &overlay)
+    }
+
+    fn publish_overlay(
+        &self,
+        root: ContentId,
+        overlay: &BTreeMap<ContentId, MerkleNode>,
+    ) -> Result<MerkleMapRoot, CampaignStoreError> {
         let entry_count = self.read_overlay_node(root, 0, &overlay)?.entry_count;
         let mut stack = vec![(root, false)];
         let mut visited = BTreeSet::new();
@@ -942,6 +970,106 @@ impl MerkleMap {
             content_id: root,
             entry_count,
         })
+    }
+
+    fn overlay_after_edits(
+        &self,
+        prior: ContentId,
+        edits: &BTreeMap<CampaignHash, Option<ContentId>>,
+    ) -> Result<(ContentId, BTreeMap<ContentId, MerkleNode>), CampaignStoreError> {
+        let mut overlay = BTreeMap::new();
+        let mut current = prior;
+        for (key, value) in edits {
+            let node = self.read_overlay_node(current, 0, &overlay)?;
+            current = match value {
+                Some(value) => {
+                    self.insert_overlay_node(current, node, *key, *value, &mut overlay)?
+                }
+                None => self.remove_overlay_node(current, node, *key, &mut overlay)?,
+            }
+            .content_id;
+        }
+        Ok((current, overlay))
+    }
+
+    fn remove_overlay_node(
+        &self,
+        original_id: ContentId,
+        mut node: MerkleNode,
+        key: CampaignHash,
+        overlay: &mut BTreeMap<ContentId, MerkleNode>,
+    ) -> Result<NodeUpdate, CampaignStoreError> {
+        let slot = digest_nibble(key, node.depth);
+        let replacement = match node.entries.get(&slot).cloned() {
+            Some(MerkleEntry::Leaf { key: stored, .. }) if stored == key => None,
+            Some(MerkleEntry::Node {
+                content_id,
+                entry_count,
+            }) => {
+                let depth = node.depth.checked_add(1).ok_or(invalid("depth-overflow"))?;
+                let child = self.read_overlay_node(content_id, depth, overlay)?;
+                if child.entry_count != entry_count {
+                    return Err(invalid("child-entry-count-mismatch"));
+                }
+                let update = self.remove_overlay_node(content_id, child, key, overlay)?;
+                if !update.changed {
+                    return Ok(NodeUpdate {
+                        content_id: original_id,
+                        entry_count: node.entry_count,
+                        changed: false,
+                    });
+                }
+                match update.entry_count {
+                    0 => None,
+                    1 => Some(self.only_overlay_leaf(update.content_id, depth, overlay)?),
+                    _ => Some(MerkleEntry::Node {
+                        content_id: update.content_id,
+                        entry_count: update.entry_count,
+                    }),
+                }
+            }
+            _ => {
+                return Ok(NodeUpdate {
+                    content_id: original_id,
+                    entry_count: node.entry_count,
+                    changed: false,
+                });
+            }
+        };
+
+        if let Some(entry) = replacement {
+            node.entries.insert(slot, entry);
+        } else {
+            node.entries.remove(&slot);
+        }
+        node.recompute_count()?;
+        let content_id = calculate_node_id(&node)?;
+        overlay.insert(content_id, node.clone());
+        Ok(NodeUpdate {
+            content_id,
+            entry_count: node.entry_count,
+            changed: true,
+        })
+    }
+
+    fn only_overlay_leaf(
+        &self,
+        id: ContentId,
+        depth: u8,
+        overlay: &BTreeMap<ContentId, MerkleNode>,
+    ) -> Result<MerkleEntry, CampaignStoreError> {
+        let node = self.read_overlay_node(id, depth, overlay)?;
+        if node.entry_count != 1 || node.entries.len() != 1 {
+            return Err(invalid("single-leaf-node-count-mismatch"));
+        }
+        match node.entries.into_values().next() {
+            Some(leaf @ MerkleEntry::Leaf { .. }) => Ok(leaf),
+            Some(MerkleEntry::Node { content_id, .. }) => {
+                let child_depth = depth.checked_add(1).ok_or(invalid("depth-overflow"))?;
+                self.only_overlay_leaf(content_id, child_depth, overlay)
+            }
+            None => Err(invalid("single-leaf-node-is-empty")),
+        }
     }
 
     fn overlay_after_upserts(
@@ -1665,6 +1793,74 @@ mod tests {
         let backend = Arc::new(MemoryBlobBackend::new("campaign-test", 16 * 1024 * 1024));
         let map = MerkleMap::new(backend.clone());
         (backend, map)
+    }
+
+    #[test]
+    fn deletion_matches_canonical_rebuild_and_preserves_prior_root() {
+        let (backend, map) = map();
+        let empty = map.empty().expect("empty map");
+        let entries =
+            [0x10, 0x11, 0x12, 0x20].map(|key| (hash(key), value(&format!("value-{key}"))));
+        let mut prior = empty;
+        for (key, value) in entries {
+            prior = map.insert(prior.content_id(), key, value).expect("insert");
+        }
+
+        let edits = BTreeMap::from([(hash(0x11), None), (hash(0x30), Some(value("new")))]);
+        let before_preview = backend.object_count().expect("objects before preview");
+        let preview = map
+            .root_after_edits(prior.content_id(), &edits)
+            .expect("unpublished preview");
+        assert_eq!(
+            backend.object_count().expect("objects after preview"),
+            before_preview
+        );
+        let expected = map
+            .build_from_sorted(
+                entries
+                    .into_iter()
+                    .filter(|(key, _)| *key != hash(0x11))
+                    .chain([(hash(0x30), value("new"))]),
+            )
+            .expect("canonical rebuild");
+        assert_eq!(preview, expected.content_id());
+        assert_eq!(
+            map.edit_many(prior.content_id(), &edits).expect("publish"),
+            expected
+        );
+        assert_eq!(
+            map.get(prior.content_id(), hash(0x11)).expect("old root"),
+            Some(entries[1].1)
+        );
+        assert_eq!(map.get(preview, hash(0x11)).expect("new root"), None);
+        assert!(backend.object_count().expect("count") > 0);
+
+        let mut forged = map.read_node(prior.content_id(), 0).expect("prior root");
+        let MerkleEntry::Node { entry_count, .. } =
+            forged.entries.get_mut(&1).expect("shared-prefix child")
+        else {
+            panic!("shared-prefix child must be a node");
+        };
+        *entry_count += 1;
+        forged.recompute_count().expect("forged count");
+        let forged_id = map.persist_node(&forged).expect("publish forged root");
+        assert!(matches!(
+            map.edit_many(forged_id, &BTreeMap::from([(hash(0x11), None)])),
+            Err(CampaignStoreError::InvalidMerkle {
+                reason: "child-entry-count-mismatch"
+            })
+        ));
+
+        let remaining = BTreeMap::from([
+            (hash(0x10), None),
+            (hash(0x12), None),
+            (hash(0x20), None),
+            (hash(0x30), None),
+        ]);
+        assert_eq!(
+            map.edit_many(preview, &remaining).expect("clear map"),
+            empty
+        );
     }
 
     #[test]

@@ -155,3 +155,170 @@ fn indexed_pages_match_canonical_order_across_request_shapes_and_restart() {
         before
     );
 }
+
+#[test]
+fn retiring_spent_positions_compacts_pages_without_losing_request_history() {
+    let (repository, lineage, policy, _) = counted_fixture();
+    repository
+        .create("scan-retirement", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let template = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "scan-retirement",
+    );
+    let mut positions = BTreeSet::new();
+    for number in 0_u32..17 {
+        let request = BranchRequest::new(
+            BranchRequest::identity(
+                template.branch_point(),
+                template.parent(),
+                template.opportunity(),
+                template.domain(),
+            ),
+            template.source().clone(),
+            BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
+                CampaignHash::derive("scan-retirement", &number.to_le_bytes()),
+            )),
+            template.budget(),
+            template.stop().clone(),
+        )
+        .expect("request");
+        let head = repository.head("scan-retirement").expect("head");
+        repository
+            .submit_known_branch_request("scan-retirement", head.snapshot_id(), &request)
+            .expect("request transition");
+        positions.insert(PlanningScanPosition::new(
+            request.branch_point(),
+            request.id().expect("request id"),
+        ));
+    }
+
+    let head = repository.head("scan-retirement").expect("head");
+    let mut exploration = head.snapshot().roots().exploration;
+    assert_eq!(
+        repository
+            .indexed_planner_scan_positions(exploration, None, 17)
+            .expect("initial page")
+            .len(),
+        17
+    );
+    let retired = *positions.first().expect("first position");
+    let projected = repository
+        .planner_scan_index_after(
+            exploration,
+            &[],
+            Some((retired.source(), retired.branch_point())),
+            false,
+        )
+        .expect("retirement preview");
+    let published = repository
+        .planner_scan_index_after(
+            exploration,
+            &[],
+            Some((retired.source(), retired.branch_point())),
+            true,
+        )
+        .expect("publish retirement");
+    assert_eq!(projected, published);
+    exploration = repository
+        .merkle
+        .insert(exploration, planner_scan_index_anchor_key(), published)
+        .expect("install active index")
+        .content_id();
+
+    assert_eq!(
+        repository
+            .indexed_planner_scan_positions(exploration, None, 17)
+            .expect("active page")
+            .into_keys()
+            .collect::<Vec<_>>(),
+        positions.iter().copied().skip(1).collect::<Vec<_>>()
+    );
+    let request_content = retired.source().content_id();
+    assert_eq!(
+        repository
+            .merkle
+            .get(
+                exploration,
+                map_key_content("exploration.branch-request", request_content),
+            )
+            .expect("historical request"),
+        Some(request_content)
+    );
+    assert!(matches!(
+        repository.planner_scan_index_after(
+            exploration,
+            &[],
+            Some((retired.source(), retired.branch_point())),
+            false,
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "planner-scan-index-retired-request-missing"
+        })
+    ));
+
+    let replacement = BranchRequest::new(
+        BranchRequest::identity(
+            template.branch_point(),
+            template.parent(),
+            template.opportunity(),
+            template.domain(),
+        ),
+        template.source().clone(),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "scan-retirement",
+            b"same-branch-replacement",
+        ))),
+        template.budget(),
+        template.stop().clone(),
+    )
+    .expect("replacement request");
+    let replacement_id = replacement.id().expect("replacement id");
+    let replacement_content = repository
+        .put_branch_request(&replacement)
+        .expect("publish replacement");
+    exploration = repository
+        .merkle
+        .insert(
+            exploration,
+            map_key_content("exploration.branch-request", replacement_content),
+            replacement_content,
+        )
+        .expect("historical replacement")
+        .content_id();
+    let next_retired = *positions.iter().nth(1).expect("second position");
+    let inserts = [(replacement_id, replacement.branch_point())];
+    let retirement = Some((next_retired.source(), next_retired.branch_point()));
+    let preview = repository
+        .planner_scan_index_after(exploration, &inserts, retirement, false)
+        .expect("same-branch replacement preview");
+    let published = repository
+        .planner_scan_index_after(exploration, &inserts, retirement, true)
+        .expect("same-branch replacement publication");
+    assert_eq!(preview, published);
+    exploration = repository
+        .merkle
+        .insert(exploration, planner_scan_index_anchor_key(), published)
+        .expect("install replacement index")
+        .content_id();
+    let expected = positions
+        .iter()
+        .copied()
+        .skip(2)
+        .chain([PlanningScanPosition::new(
+            replacement.branch_point(),
+            replacement_id,
+        )])
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        repository
+            .indexed_planner_scan_positions(exploration, None, 17)
+            .expect("replaced positions")
+            .into_keys()
+            .collect::<BTreeSet<_>>(),
+        expected
+    );
+}

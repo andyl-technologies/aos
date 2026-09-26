@@ -3,6 +3,82 @@
 use super::*;
 
 #[test]
+fn spent_requests_leave_active_scan_without_losing_cold_history() -> Result<(), Box<dyn Error>> {
+    const REQUESTS: usize = 17;
+    let campaign = "active-scan-retirement";
+    let fixture = GateFixture::new(
+        campaign,
+        CampaignMode::Strict,
+        tree_search_explorer()?,
+        &BTreeMap::new(),
+    )?;
+    fixture.create_funded_running(campaign, &BTreeMap::new(), REQUESTS as u64)?;
+    for number in 0..REQUESTS {
+        let label = format!("{campaign}-{number}");
+        let (domain, alternatives) = discrete_domain(&label, 1)?;
+        let value = ChoiceValue::Discrete(alternatives[0]);
+        let request = request_for_source(
+            &fixture,
+            &domain,
+            value.clone(),
+            CandidateSource::finite(BTreeSet::from([value]))?,
+            BranchRequestCause::Operator(command_id(&label, "request")),
+            &label,
+            BranchBudget::new(1, 1)?,
+        )?;
+        let head = fixture.repository.head(campaign)?;
+        discover_and_submit(&fixture, campaign, head.snapshot_id(), &request)?;
+    }
+
+    let mut planner = planner_driver(&fixture)?;
+    assert!(matches!(
+        planner.step(campaign)?,
+        CampaignPlannerStepOutcome::Advanced {
+            disposition: PlannerDisposition::ContinueScan { .. },
+            ..
+        }
+    ));
+    for number in 0..REQUESTS {
+        let CampaignPlannerStepOutcome::Advanced {
+            disposition:
+                PlannerDisposition::Issue {
+                    issued_proposals, ..
+                },
+            ..
+        } = planner.step(campaign)?
+        else {
+            return Err(format!("request {number} did not issue").into());
+        };
+        assert_eq!(issued_proposals.len(), 1);
+    }
+
+    let cold = CampaignRepository::with_component_authorities(
+        fixture.blobs.clone(),
+        fixture.refs.clone(),
+        fixture.planner_authority.clone(),
+        fixture.debugger_authority.clone(),
+    )?;
+    let head = cold.head(campaign)?;
+    let grant = cold.apply_control(
+        campaign,
+        &ControlRequest {
+            command: command_id(campaign, "later-budget-grant"),
+            expected_snapshot: head.snapshot_id(),
+            action: CampaignControlAction::GrantBudget(BudgetGrant::new(1, 1)?),
+        },
+    )?;
+    assert_eq!(cold.head(campaign)?.snapshot_id(), grant.new_snapshot);
+    assert!(!matches!(
+        planner.step(campaign)?,
+        CampaignPlannerStepOutcome::Advanced {
+            disposition: PlannerDisposition::Issue { .. },
+            ..
+        }
+    ));
+    Ok(())
+}
+
+#[test]
 fn proposal_head_tracks_pending_and_out_of_order_admission() -> Result<(), Box<dyn Error>> {
     let fixture = GateFixture::new(
         "proposal-head-pending",
