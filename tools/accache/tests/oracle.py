@@ -1304,8 +1304,9 @@ def check_gcc_nested_specs(root, env, accache, sccache, gcc, hits):
 
 
 def check_gcc_compiler_prefix(root, env, accache, sccache, gcc, hits,
-                              fixture, option, directory=False, separated=False):
-    """Hash an assembler selected by a GCC directory or filename prefix."""
+                              fixture, option, directory=False, separated=False,
+                              compiler_path=False):
+    """Hash an assembler selected by a GCC option or COMPILER_PATH."""
     work = root / fixture
     work.mkdir()
     (work / "tools").mkdir()
@@ -1315,12 +1316,13 @@ def check_gcc_compiler_prefix(root, env, accache, sccache, gcc, hits,
         [gcc, "-print-prog-name=as"], cwd=work, env=env, text=True).strip()
     assert Path(assembler).is_file(), (fixture, assembler)
     wrapper_source = work / "tool.c"
-    tool_name = "as" if directory else "prefix-as"
+    tool_name = "as" if directory or compiler_path else "prefix-as"
     wrapper = work / "tools" / tool_name
     object_file = work / "source.o"
     prefix = str(work / "tools") + "/" if directory else str(work / "tools/prefix-")
-    selected = [option, prefix] if separated else [option + prefix]
+    selected = [] if compiler_path else ([option, prefix] if separated else [option + prefix])
     args = [gcc, *selected, "-c", "source.S", "-o", "source.o"]
+    compile_env = env | {"COMPILER_PATH": str(work / "tools")} if compiler_path else env
 
     def build_assembler(value):
         # The generated executable delegates to AOS as but changes a symbol
@@ -1342,7 +1344,7 @@ def check_gcc_compiler_prefix(root, env, accache, sccache, gcc, hits,
 
     def compile_object(command):
         object_file.unlink(missing_ok=True)
-        completed = subprocess.run([*command, *args], cwd=work, env=env,
+        completed = subprocess.run([*command, *args], cwd=work, env=compile_env,
                                    capture_output=True, timeout=120)
         assert completed.returncode == 0, (fixture, command, completed.stderr)
         return completed.stdout, completed.stderr, object_file.read_bytes()
@@ -1367,12 +1369,12 @@ def check_gcc_compiler_prefix(root, env, accache, sccache, gcc, hits,
         assert hits() > before_hits, (fixture, "oracle did not hit")
 
         assert compile_object([accache]) == direct, (fixture, revision, "cold")
-        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=compile_env))
         assert cold["outcome"] == "miss", (fixture, revision, cold)
         if revision:
             assert any(str(wrapper) in item for item in cold["changes"]), cold
         assert compile_object([accache]) == direct, (fixture, revision, "warm")
-        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=compile_env))
         assert warm["outcome"] == "hit", (fixture, revision, warm)
 
         results.append({"fixture": fixture, "revision": revision,
@@ -4038,15 +4040,16 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
         results.append(check_assembler_include_invalidation(root, env, accache,
                                                             sccache, gcc, hits))
         results.extend(check_gcc_nested_specs(root, env, accache, sccache, gcc, hits))
-        for fixture, option, directory, separated in [
-            ("gcc-file-prefix-assembler", "-B", False, False),
-            ("gcc-long-prefix-assembler", "--prefix=", False, False),
-            ("gcc-directory-prefix-assembler", "-B", True, False),
-            ("gcc-separated-directory-prefix-assembler", "-B", True, True),
+        for fixture, option, directory, separated, compiler_path in [
+            ("gcc-file-prefix-assembler", "-B", False, False, False),
+            ("gcc-long-prefix-assembler", "--prefix=", False, False, False),
+            ("gcc-directory-prefix-assembler", "-B", True, False, False),
+            ("gcc-separated-directory-prefix-assembler", "-B", True, True, False),
+            ("gcc-compiler-path-assembler", "", False, False, True),
         ]:
             results.extend(check_gcc_compiler_prefix(
                 root, env, accache, sccache, raw_gcc, hits,
-                fixture, option, directory, separated))
+                fixture, option, directory, separated, compiler_path))
         results.extend(check_gcc_profile_note_outputs(root, env, accache,
                                                       sccache, gcc, hits))
         results.extend(check_gcc_auto_profile_inputs(root, env, accache,

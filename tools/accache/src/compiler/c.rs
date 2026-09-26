@@ -5,7 +5,7 @@ use crate::model::{DynamicOutputs, Manifest};
 use accache_frontend::compiler::{Language, c::CCompilerKind, clang, gcc};
 use anyhow::{Result, ensure};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
@@ -16,6 +16,7 @@ pub(super) fn configure(
     kind: &str,
     compiler: &str,
     args: &[String],
+    environment: &BTreeMap<String, String>,
     manifest: &Manifest,
 ) -> Result<()> {
     let clang = kind == "clang"
@@ -355,6 +356,21 @@ pub(super) fn configure(
         if arg == "-fauto-profile" {
             // GCC reads this default path even though it is absent from -MD.
             invocation.extra_inputs.insert("fbdata.afdo".into());
+        }
+    }
+    if !clang && let Some(path) = environment.get("COMPILER_PATH") {
+        // GCC may select as, cc1, or another subprogram from these directories.
+        // The environment value alone does not identify a replaced executable.
+        for directory in path.split(':') {
+            // GCC treats an empty search segment as the working directory.
+            let directory = if directory.is_empty() {
+                "."
+            } else {
+                directory
+            };
+            if Path::new(directory).is_dir() {
+                invocation.read_dirs.insert(directory.into());
+            }
         }
     }
     for pair in preprocessing.windows(2) {
