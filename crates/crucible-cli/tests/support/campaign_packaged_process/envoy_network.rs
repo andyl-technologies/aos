@@ -7,6 +7,7 @@ use crucible_campaign::{
 };
 use crucible_core::NetworkFaultSelectable;
 
+#[path = "envoy_network/resource_audit.rs"]
 mod resource_audit;
 
 const ATTEMPT_WAIT: Duration = Duration::from_secs(600);
