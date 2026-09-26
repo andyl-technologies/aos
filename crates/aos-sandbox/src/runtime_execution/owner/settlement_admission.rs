@@ -214,7 +214,16 @@ fn exact_live_witness_replay(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
     use aos_sandbox_core::ExecutionId;
+    #[cfg(target_os = "linux")]
+    use aos_sandbox_core::runtime_backend::RequiredBackendCapabilitiesV1;
+    #[cfg(target_os = "linux")]
+    use ed25519_dalek::SigningKey;
+    #[cfg(target_os = "linux")]
+    use tempfile::TempDir;
 
     use super::*;
 
@@ -250,6 +259,126 @@ mod tests {
             current_boot,
             second.boottime_nanoseconds
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    fn provisioned_owner(directory: &TempDir) -> DormantRuntimeExecutionOwnerV1 {
+        let uid = directory
+            .path()
+            .metadata()
+            .expect("directory metadata")
+            .uid();
+        let mut owner =
+            DormantRuntimeExecutionOwnerV1::open_protected_at_uid_for_test(directory.path(), uid)
+                .expect("four protected owner journals");
+        let runtime_currentness = RuntimeCurrentnessV1::new(
+            SandboxId::from_bytes([1; 16]),
+            IncarnationId::from_bytes([2; 16]),
+            NodeId::from_bytes([3; 16]),
+            AssignmentEpoch::new(4),
+            ObjectDigest::from_bytes([5; 32]),
+            DesiredGeneration::new(6),
+            NamespaceGeneration::new(7),
+        )
+        .expect("runtime currentness");
+        let plan = ResolvedRuntimePlanV1::new(
+            runtime_currentness,
+            RequiredBackendCapabilitiesV1::new(Vec::new()).expect("empty requirements"),
+            ObjectDigest::from_bytes([20; 32]),
+            ObjectDigest::from_bytes([21; 32]),
+            ObjectDigest::from_bytes([22; 32]),
+            ObjectDigest::from_bytes([23; 32]),
+        )
+        .expect("resolved plan");
+        let runtime = RuntimeHandleCommitmentV1::new(
+            runtime_currentness,
+            plan.plan_commitment(),
+            ObjectDigest::from_bytes([24; 32]),
+        )
+        .expect("runtime handle");
+        let probe = BackendProbeCurrentnessV1::new(
+            NodeId::from_bytes([3; 16]),
+            ObjectDigest::from_bytes([10; 32]),
+            Revision::new(11),
+            ObjectDigest::from_bytes([12; 32]),
+        )
+        .expect("backend probe");
+        let boot = read_kernel_admission_clock()
+            .expect("kernel boot")
+            .host_boot_id;
+        let provisioning = DormantRuntimeExecutionProvisioningV1::new(
+            SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes(),
+            ObjectDigest::from_bytes([13; 32]),
+            ObservationSequence::new(14),
+            runtime,
+            PayloadBootId::new([15; 16]).expect("payload boot"),
+            probe,
+            BackendCapabilitiesV1::new(Vec::new()).expect("empty capabilities"),
+            ObjectDigest::from_bytes([16; 32]),
+            ObjectDigest::from_bytes([17; 32]),
+            SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes(),
+            ObjectDigest::from_bytes([18; 32]),
+            ObjectDigest::from_bytes([19; 32]),
+            boot,
+            plan,
+        )
+        .expect("complete owner provisioning");
+        let records = encode_runtime_owner_peer_records(&provisioning).expect("peer records");
+        let transaction = runtime_owner_peer_transaction(&records).expect("peer transaction");
+        let mut authority = owner
+            .peer_journal
+            .claim_protected_authority(RecordNamespace::HostExecution)
+            .expect("peer writer");
+        assert!(authority.is_materialized_empty().expect("empty peer"));
+        authority
+            .commit(&transaction)
+            .expect("durable peer records");
+        drop(authority);
+
+        owner
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn provisioned_host_owner_claim_initializes_and_cold_reopens_all_four_journals() {
+        let directory = TempDir::new_in(std::env::current_dir().expect("current directory"))
+            .expect("test directory");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+
+        let mut owner = provisioned_owner(&directory);
+        let claim = owner.claim().expect("initial protected owner claim");
+        assert_eq!(
+            claim.host_verifier().boot_id(),
+            read_kernel_admission_clock().unwrap().host_boot_id
+        );
+        assert_eq!(
+            claim.currentness().runtime().handle(),
+            ObjectDigest::from_bytes([24; 32])
+        );
+        let initial_cut = claim
+            .protected_host_settlement_cut_v1()
+            .expect("initialized Effect cut");
+        claim.revalidate().expect("current four-journal claim");
+        drop(claim);
+        drop(owner);
+
+        let uid = directory
+            .path()
+            .metadata()
+            .expect("directory metadata")
+            .uid();
+        let mut cold =
+            DormantRuntimeExecutionOwnerV1::open_protected_at_uid_for_test(directory.path(), uid)
+                .expect("cold four-journal reopen");
+        let replayed = cold.claim().expect("cold protected owner claim");
+        assert_eq!(
+            replayed
+                .protected_host_settlement_cut_v1()
+                .expect("cold Effect cut"),
+            initial_cut
+        );
+        replayed.revalidate().expect("cold currentness");
     }
 
     #[test]
