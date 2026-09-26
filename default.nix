@@ -1930,6 +1930,9 @@ in {
       runtime-python-outputs = import ./tests/build/runtime-python-outputs.nix {
         pkgs = buildPackages;
       };
+      propagated-dependency-closure = import ./tests/build/propagated-dependency-closure.nix {
+        pkgs = buildPackages;
+      };
       structured-attrs-export = import ./tests/build/structured-attrs-export.nix {
         pkgs = buildPackages;
       };
@@ -1962,7 +1965,7 @@ in {
     in
       {
         inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-dev-cache-identity;
-        inherit artifact-consumption base-lib-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe initrd-stage-contract kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
+        inherit artifact-consumption base-lib-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe initrd-stage-contract kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
         # These checks inspect realized closures, so keep them out of the pure evaluation layer.
         inherit config-eval config-materialize darling-harness;
         config-manifest = config-manifest;
@@ -1982,7 +1985,7 @@ in {
               else []
             )
             ++ lib.optional (artifact-consumption != null) artifact-consumption
-            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-dev-cache-identity base-lib-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
+            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-dev-cache-identity base-lib-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
             ++ builtins.attrValues (builtins.removeAttrs renderedEvalSuites ["rendered-system"])
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
