@@ -325,6 +325,10 @@ exercise corruption, concurrent identical requests, PCH/modules, native
 libraries, proc macro file reads, persistent target paths, and source/header
 names containing spaces. Clang PCH coverage includes its `-Xclang -emit-pch`
 driver form and a header mutation.
+GCC include-search fixtures cover `-idirafter`, both `-iwithprefix` placements,
+and `-nostdinc` with an explicit include directory. Each edits the selected
+header and compares direct, sccache, and accache outputs through a miss and
+warm hit.
 
 The nested Rust response fixture uses pinned sccache as its output reference:
 direct rustc rejects an inner `@file`, while sccache expands it. The fixture
