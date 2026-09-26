@@ -160,6 +160,20 @@ def fixtures(gcc, clang, rustc):
                               base + ["-fanalyzer", flag], analyzer_sources,
                               {"value.h": "#define VALUE 73\n"},
                               nondeterministic_outputs=nondeterministic)
+            diagnostic_sources = {
+                "source.c": ('#include "value.h"\n'
+                             'int answer(void) { int *p = 0; return *p + VALUE; }\n'),
+                "value.h": "#define VALUE 42\n",
+            }
+            for suffix, flag in [
+                ("exploded-paths", "-fdump-analyzer-exploded-paths"),
+                ("feasibility", "-fdump-analyzer-feasibility"),
+            ]:
+                # These dumps only appear when the analyzer finds a path to a
+                # diagnostic. A null dereference supplies a stable path.
+                yield Fixture("gcc-analyzer-" + suffix, compiler,
+                              base + ["-fanalyzer", flag], diagnostic_sources,
+                              {"value.h": "#define VALUE 73\n"})
             for suffix in ["debug", "earlydebug"]:
                 yield Fixture("gcc-" + suffix + "-dump", compiler,
                               base + ["-g", "-fdump-" + suffix], c_sources,
@@ -1758,6 +1772,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                     "gcc-analyzer-text", "gcc-analyzer-exploded-graph",
                                     "gcc-analyzer-exploded-nodes-2",
                                     "gcc-analyzer-exploded-nodes-3",
+                                    "gcc-analyzer-exploded-paths",
+                                    "gcc-analyzer-feasibility",
                                     "gcc-analyzer-state-purge", "gcc-analyzer-supergraph",
                                     "gcc-analyzer-json", "gcc-debug-dump",
                                     "gcc-earlydebug-dump"} and label == "sccache warm vs direct":
@@ -1768,6 +1784,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                       "gcc-analyzer-text": 1,
                                       "gcc-analyzer-exploded-graph": 1,
                                       "gcc-analyzer-exploded-nodes-2": 1,
+                                      "gcc-analyzer-exploded-paths": 1,
+                                      "gcc-analyzer-feasibility": 3,
                                       "gcc-analyzer-state-purge": 1,
                                       "gcc-analyzer-json": 1,
                                       "gcc-debug-dump": 1,
@@ -1864,6 +1882,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                     "gcc-analyzer-text", "gcc-analyzer-exploded-graph",
                                     "gcc-analyzer-exploded-nodes-2",
                                     "gcc-analyzer-exploded-nodes-3",
+                                    "gcc-analyzer-exploded-paths",
+                                    "gcc-analyzer-feasibility",
                                     "gcc-analyzer-state-purge", "gcc-analyzer-supergraph",
                                     "gcc-analyzer-json", "gcc-debug-dump",
                                     "gcc-earlydebug-dump",
