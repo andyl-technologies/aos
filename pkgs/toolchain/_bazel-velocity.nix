@@ -2,7 +2,6 @@
 {
   mkDerivation,
   fetchurl,
-  fetchgit,
   buildPackages,
   bazelMavenBootstrap,
   bazelLog4j,
@@ -70,18 +69,21 @@
     urls = ["https://deb.debian.org/debian/pool/main/w/werken.xpath/werken.xpath_0.9.4.orig.tar.gz"];
     hash = "sha256-CF/nDpy20iFgIR3ALIyujVli8C7Akx1nIg+EnIjNeqo=";
   };
-  xomSource = fetchgit {
-    url = "https://github.com/elharo/xom.git";
-    ref = "master";
-    rev = "8b55d083da2c13b37c9d5c519506d2a7d15081b5";
-    hash = "sha256-KXnOwnbYH2j3WyR80B/3wJtZ2byo2nDsUyVKRzG+EIc=";
-    name = "xom-1.1-java-source-only";
-
-    git = buildPackages.git-minimal;
-    caCertificates = buildPackages.ca-certificates;
-    coreutils = buildPackages.coreutils;
-    sparsePatterns = ["/src/nu/xom/**/*.java"];
-  };
+  xomRevision = "8b55d083da2c13b37c9d5c519506d2a7d15081b5";
+  xomSourceFiles = import ./_bazel-xom-sources.nix;
+  xomSources = builtins.map (file:
+    file
+    // {
+      src = fetchurl {
+        urls = ["https://raw.githubusercontent.com/elharo/xom/${xomRevision}/${file.path}"];
+        inherit (file) hash;
+      };
+    })
+  xomSourceFiles;
+  unpackXom = builtins.concatStringsSep "\n" (builtins.map (file: ''
+      install -Dm644 ${file.src} "source-xom/${file.path}"
+    '')
+    xomSources);
 
   upstreamResources = [
     {
@@ -140,9 +142,10 @@ in
           mv werken.xpath-0.9.4.orig source-werken
           (cd source-werken && patch -p1 < ${./patches/bazel-velocity-werken-jdom1.patch})
 
-          # XOM's Maven sources archive embeds compiled classes. Its Java
-          # sources come from a sparse upstream checkout instead.
-          python3 - ${xomSource} source-* <<'PY'
+          # XOM's source archives contain compiled classes. Fetch only its
+          # hash-pinned Java source files from the matching Git revision.
+          ${unpackXom}
+          python3 - source-* <<'PY'
           from pathlib import Path
           import sys
 
@@ -186,7 +189,7 @@ in
             ! -path '*/org/w3c/dom/UserDataHandler.java' -print > xml-sources.list
           mkdir classes-xml
           javac -J-Xss32m --release 8 -proc:none -encoding UTF-8 \
-            -sourcepath "source-jaxen:source-jdom:source-saxpath:source-dom4j:source-xerces:${xomSource}/src" \
+            -sourcepath "source-jaxen:source-jdom:source-saxpath:source-dom4j:source-xerces:source-xom/src" \
             -cp "$classpath" -d classes-xml @xml-sources.list
 
           find source-antlr -type f -name '*.java' -print > antlr-sources.list

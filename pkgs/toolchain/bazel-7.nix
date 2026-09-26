@@ -92,7 +92,7 @@
   bazelVelocity = import ./_bazel-velocity.nix {
     mkDerivation = buildPackages.mkDerivation;
     fetchurl = buildPackages.fetchurl;
-    inherit fetchgit buildPackages bazelMavenBootstrap bazelLog4j bazelAvalonApi bazelLegacyJavaHttp;
+    inherit buildPackages bazelMavenBootstrap bazelLog4j bazelAvalonApi bazelLegacyJavaHttp;
   };
   bazelGoogleHttp = import ./_bazel-google-http.nix {
     mkDerivation = buildPackages.mkDerivation;
