@@ -9,21 +9,26 @@
   bazelLegacyJavaHttp,
   bazelBlockHound,
   bazelByteBuddy,
+  version ? "4.1.93.Final",
+  archiveHashes ? {
+    buffer = "sha256-aJVDZUrjmeTlLvW2EiaEgpQe00yYoss5TcU7G7xbucE=";
+    resolver = "sha256-laQVXoAVzKhETienb9ZwxvDAB/gr0eBfetTRdOckEl0=";
+    transport = "sha256-XlEYYkfTYVVHi0wRB5XH/4aqr753Uy73seSF6wiYkvY=";
+  },
 }: let
-  version = "4.1.93.Final";
   buildJdk = buildPackages.openjdk-17;
   archives = [
     {
       name = "buffer";
-      hash = "sha256-aJVDZUrjmeTlLvW2EiaEgpQe00yYoss5TcU7G7xbucE=";
+      hash = archiveHashes.buffer;
     }
     {
       name = "resolver";
-      hash = "sha256-laQVXoAVzKhETienb9ZwxvDAB/gr0eBfetTRdOckEl0=";
+      hash = archiveHashes.resolver;
     }
     {
       name = "transport";
-      hash = "sha256-XlEYYkfTYVVHi0wRB5XH/4aqr753Uy73seSF6wiYkvY=";
+      hash = archiveHashes.transport;
     }
   ];
   sources =

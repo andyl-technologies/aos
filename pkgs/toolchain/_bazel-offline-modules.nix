@@ -4,6 +4,7 @@
   fetchgit,
   fetchurl,
   buildPackages,
+  bazelSource8,
 }: let
   moduleSource = import ./_bazel-module-source.nix {inherit fetchgit buildPackages;};
   registryRevision = "18e405773f40bfe226ef2e2ea7bc0f1a71d39fd9";
@@ -218,6 +219,116 @@
   stardocModule = fetchurl {
     urls = ["${stardocRegistryRoot}/MODULE.bazel"];
     hash = "sha256-NUj66k7l3aVYD5rxUOedD2rqk0/GDBzFD0792UIHWec=";
+  };
+
+  rulesAppleRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/rules_apple/3.16.0";
+  rulesAppleSource = moduleSource {
+    name = "rules_apple";
+    version = "3.16.0";
+    url = "https://github.com/bazelbuild/rules_apple.git";
+    ref = "3.16.0";
+    rev = "5f7d38d51351d2ff0cbe3ffb9b74c00b1294b8a6";
+    hash = "sha256-0sMEz0U8FLT4QFeOGbs8fTZQy3YGIfh9lteD9IzusMk=";
+  };
+  rulesAppleModule = fetchurl {
+    urls = ["${rulesAppleRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-DRyvC4N1lCzpjqlEvnVKGIdAQeTgRZQB2SVXdiTTpUo=";
+  };
+  rulesApplePatch = fetchurl {
+    urls = ["${rulesAppleRegistryRoot}/patches/module_dot_bazel_version.patch"];
+    hash = "sha256-tc1zjSKWZcwJgw84Baye8gdG6De+/REqSj9Ra17Xcoo=";
+  };
+
+  chicoryRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/chicory/1.1.0";
+  chicorySource = moduleSource {
+    name = "chicory";
+    version = "1.1.0";
+    url = "https://github.com/dylibso/chicory.git";
+    ref = "1.1.0";
+    rev = "469f7b273cc05db1db7ac2a5d59e91b41fcda8cc";
+    hash = "sha256-+ZnY8+f8SPDj9171ovzS7H3oaLzMlinCJhbS2PHQJdo=";
+    # Upstream tracks two precompiled WASM tools without file extensions.
+    extraExcludes = [
+      "!/wabt/src/main/resources/wat2wasm"
+      "!/wabt/src/main/resources/wast2json"
+    ];
+  };
+  chicoryPatch = fetchurl {
+    urls = ["${chicoryRegistryRoot}/patches/rm-errorprone-annotations.patch"];
+    hash = "sha256-l85uwkvGGeWu8n440DwCX47s04syKq7QHHzSzKjVR9E=";
+  };
+  chicoryOverlayHashes = {
+    "MODULE.bazel" = "sha256-LTH1To/fCWPp9K9t9VPe96q2kntGIdpFVbwhICGXU0A=";
+    "host-module/annotations/BUILD.bazel" = "sha256-MQZi1EDrUnxd080ZSsmuT78tM29qz7l4I94/xy2kBFQ=";
+    "host-module/processor/BUILD.bazel" = "sha256-nxWfD+O80D0wNsVoqery0rzib7ZkS3fza9gaEm2C55w=";
+    "log/BUILD.bazel" = "sha256-XqbVcm6y4+rgiyVYc2s1y8RSZ+QDVZ0AOd8l+uiggNY=";
+    "runtime/BUILD.bazel" = "sha256-0MJQDX44Qe9rfBHcNeVQCPrAwQcG8mbrYj+g66xqlPM=";
+    "wasi/BUILD.bazel" = "sha256-x0iC+Po7ZDOYy8z/B5Yh/rU+G2AA3OGYhv1BcWO3lPI=";
+    "wasm/BUILD.bazel" = "sha256-M0GF0CnFj3QIWr+QiJj8Bm3zWVBFr+OB8LDo9gKDeek=";
+  };
+  chicoryOverlays = builtins.mapAttrs (path: hash:
+    fetchurl {
+      urls = ["${chicoryRegistryRoot}/overlay/${path}"];
+      inherit hash;
+    })
+  chicoryOverlayHashes;
+  chicoryOverlayScript = builtins.concatStringsSep "\n" (builtins.map (path: ''
+    mkdir -p ${builtins.dirOf path}
+    cp ${builtins.getAttr path chicoryOverlays} ${path}
+  '') (builtins.attrNames chicoryOverlayHashes));
+
+  appleSupportRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/apple_support/1.23.1";
+  appleSupportSource = moduleSource {
+    name = "apple_support";
+    version = "1.23.1";
+    url = "https://github.com/bazelbuild/apple_support.git";
+    ref = "1.23.1";
+    rev = "4c51f10063687af77eabbbdc035124d798ca3a3f";
+    hash = "sha256-EGVl830AkhaY3ujSih69kyajdL0ob4tEnQyL9yIlCIQ=";
+  };
+  appleSupportModule = fetchurl {
+    urls = ["${appleSupportRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-U3Y/7UVqloz5GbMkBCfPOp1UgexUZqvJ1dxRvHAIdEI=";
+  };
+  appleSupportPatch = fetchurl {
+    urls = ["${appleSupportRegistryRoot}/patches/module_dot_bazel_version.patch"];
+    hash = "sha256-yqwfzmg9lIV674KI+GHtlok/967e8C2Ap8bPggzPm58=";
+  };
+
+  rulesSwiftRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/rules_swift/2.1.1";
+  rulesSwiftSource = moduleSource {
+    name = "rules_swift";
+    version = "2.1.1";
+    url = "https://github.com/bazelbuild/rules_swift.git";
+    ref = "2.1.1";
+    rev = "f9681793be03df5fbaeb2f46223de5f74e9096f4";
+    hash = "sha256-21wJ3j9WyqRSLC9vSHzs2xu2SIG7n/pf9dgZnYgJmy8=";
+  };
+  rulesSwiftModule = fetchurl {
+    urls = ["${rulesSwiftRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-SUkAqA+UT8eqYVAMIHPZcp3/C3ZPDom4JOt0aVm8EEY=";
+  };
+  rulesSwiftPatch = fetchurl {
+    urls = ["${rulesSwiftRegistryRoot}/patches/module_dot_bazel_version.patch"];
+    hash = "sha256-/kZbNxPjPQxNaVxijhzrPhwIf8mGwidxih95QYLXSo4=";
+  };
+
+  cAresRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/c-ares/1.15.0";
+  cAresSource = moduleSource {
+    name = "c-ares";
+    version = "1.15.0";
+    url = "https://github.com/c-ares/c-ares.git";
+    ref = "cares-1_15_0";
+    rev = "e982924acee7f7313b4baa4ee5ec000c5e373c30";
+    hash = "sha256-m3EIqqQo9Mt51Fv2Yk9oZ3qy+tHQv18MV35Bv4K2djI=";
+  };
+  cAresBuildPatch = fetchurl {
+    urls = ["${cAresRegistryRoot}/patches/add_build_file.patch"];
+    hash = "sha256-+SUCFxBIkR0GE9FRFPps/e6AnA9cQIGANBHK14UAKwQ=";
+  };
+  cAresModulePatch = fetchurl {
+    urls = ["${cAresRegistryRoot}/patches/module_dot_bazel.patch"];
+    hash = "sha256-SVQeSrnvd7IishMhmg8S3PK6/6bbt1IqwVEqKDfdYgk=";
   };
 in {
   rules_cc = moduleSource {
@@ -520,6 +631,8 @@ in {
         script = ''
           patch --batch -p0 < ${jvmExternalPatch}
           cmp MODULE.bazel ${jvmExternalModule}
+          # Module overrides bypass Bazel's single_version_override patch.
+          patch --batch --fuzz=0 -p1 < ${bazelSource8}/third_party/rules_jvm_external_6.0.patch
         '';
       }
       {
@@ -662,6 +775,181 @@ in {
           sed '/^### INTERNAL ONLY/,$d' MODULE.bazel > MODULE.bazel.released
           cmp MODULE.bazel.released ${stardocModule}
           mv MODULE.bazel.released MODULE.bazel
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  rules_apple = mkDerivation {
+    pname = "bazel-rules-apple-bcr-source";
+    version = "3.16.0";
+    src = rulesAppleSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir rules-apple-source
+          cp -a "$src"/. rules-apple-source/
+          chmod -R u+w rules-apple-source
+          cd rules-apple-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch -p1 < ${rulesApplePatch}
+          cmp MODULE.bazel ${rulesAppleModule}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  chicory = mkDerivation {
+    pname = "bazel-chicory-bcr-source";
+    version = "1.1.0";
+    src = chicorySource;
+
+    buildDeps = [buildPackages.patch];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir chicory-source
+          cp -a "$src"/. chicory-source/
+          chmod -R u+w chicory-source
+          cd chicory-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch -p0 < ${chicoryPatch}
+          ${chicoryOverlayScript}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  apple_support = mkDerivation {
+    pname = "bazel-apple-support-bcr-source";
+    version = "1.23.1";
+    src = appleSupportSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir apple-support-source
+          cp -a "$src"/. apple-support-source/
+          chmod -R u+w apple-support-source
+          cd apple-support-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch -p1 < ${appleSupportPatch}
+          cmp MODULE.bazel ${appleSupportModule}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  rules_swift = mkDerivation {
+    pname = "bazel-rules-swift-bcr-source";
+    version = "2.1.1";
+    src = rulesSwiftSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir rules-swift-source
+          cp -a "$src"/. rules-swift-source/
+          chmod -R u+w rules-swift-source
+          cd rules-swift-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch -p1 < ${rulesSwiftPatch}
+          cmp MODULE.bazel ${rulesSwiftModule}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  "c-ares" = mkDerivation {
+    pname = "bazel-c-ares-bcr-source";
+    version = "1.15.0";
+    src = cAresSource;
+
+    buildDeps = [buildPackages.patch];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir c-ares-source
+          cp -a "$src"/. c-ares-source/
+          chmod -R u+w c-ares-source
+          cd c-ares-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch -p0 < ${cAresBuildPatch}
+          patch --batch -p0 < ${cAresModulePatch}
         '';
       }
       {

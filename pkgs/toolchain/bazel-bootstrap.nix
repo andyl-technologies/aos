@@ -65,7 +65,7 @@
     if bootstrapSource == null
     then
       if bootstrapVersion == "8.6.0"
-      then helperScope.bazelSource8
+      then helperScope.bazelSource8Prepared
       else if bootstrapVersion == "9.2.0"
       then helperScope.bazelSource9
       else helperScope.bazelSource
@@ -75,6 +75,41 @@
     if builtins.compareVersions bootstrapVersion "8.0.0" >= 0
     then callHelper ./_bazel-maven-bootstrap.nix {includeModernLibraries = true;}
     else helperScope.bazelMavenBootstrap;
+  mavenSourceRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = callHelper ./_bazel-maven-bootstrap.nix {
+      includeModernLibraries = true;
+    };
+  };
+  googleHttpRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelGoogleHttp;
+  };
+  tomcatAnnotationRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelTomcatAnnotations6053;
+  };
+  googleAuthRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelGoogleAuth123;
+  };
+  googleHttpModernRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelGoogleHttp1433;
+  };
+  nettyHttp2Repositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelNettyHttp2119;
+  };
+  modernAnnotationRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelMavenModernAnnotations;
+  };
+  guavaModernRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelGuava3345;
+  };
+  nettyDnsProxyRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelNettyDnsProxy119;
+  };
+  log4jCoreRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelLog4jCore;
+  };
+  velocityRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelVelocity;
+  };
   protobufJava = helperScope.bazelProtobufJava;
   protobufJavaUtil = helperScope.bazelProtobufJavaUtil;
   grpcJavaPlugin =
@@ -136,9 +171,43 @@ in
     # Release tooling can pass these verified Bazel 8 checkouts as module
     # overrides while fetching the remaining graph with downloads disabled.
     passthru.offlineModules = helperScope.bazelOfflineModules;
-    passthru.offlineRepositories = {
-      platforms = helperScope.bazelPlatformsSource;
-    };
+    passthru.offlineSource = source;
+    passthru.offlineSource8Prepared = helperScope.bazelSource8Prepared;
+    passthru.offlineNettyModules = helperScope.bazelNetty119;
+    passthru.offlineNettyNativeRepositories = helperScope.bazelNetty119NativeRepositories;
+    passthru.offlineCommonProtos = helperScope.bazelCommonProtos241;
+    passthru.offlineMavenSourceRepositories = mavenSourceRepositories;
+    passthru.offlineGoogleHttpRepositories = googleHttpRepositories;
+    passthru.offlineTomcatAnnotationRepositories = tomcatAnnotationRepositories;
+    passthru.offlineGoogleAuthRepositories = googleAuthRepositories;
+    passthru.offlineGoogleHttpModernRepositories = googleHttpModernRepositories;
+    passthru.offlineNettyHttp2Repositories = nettyHttp2Repositories;
+    passthru.offlineModernAnnotationRepositories = modernAnnotationRepositories;
+    passthru.offlineGuavaModernRepositories = guavaModernRepositories;
+    passthru.offlineNettyDnsProxyRepositories = nettyDnsProxyRepositories;
+    passthru.offlineLog4jCoreRepositories = log4jCoreRepositories;
+    passthru.offlineVelocityRepositories = velocityRepositories;
+    passthru.offlineRepositories =
+      mavenSourceRepositories
+      // googleHttpRepositories
+      // tomcatAnnotationRepositories
+      // googleAuthRepositories
+      // googleHttpModernRepositories
+      // nettyHttp2Repositories
+      // modernAnnotationRepositories
+      // guavaModernRepositories
+      // nettyDnsProxyRepositories
+      // log4jCoreRepositories
+      // velocityRepositories
+      // {platforms = helperScope.bazelPlatformsSource;}
+      // helperScope.bazelAsyncProfilerRepositories
+      // helperScope.bazelNetty119.repositories
+      // helperScope.bazelNetty119NativeRepositories.repositories
+      // {
+        "rules_jvm_external++maven+com_google_api_grpc_proto_google_common_protos_2_41_0" = helperScope.bazelCommonProtos241.repository;
+        "rules_jvm_external++maven+com_google_guava_listenablefuture_9999_0_empty_to_avoid_conflict_with_guava" = helperScope.bazelCommonProtos241.emptyListenableFuture;
+      }
+      // {"grpc++grpc_repo_deps_ext+com_github_cncf_xds" = helperScope.bazelGrpcXdsSource;};
 
     buildDeps =
       [
@@ -187,6 +256,11 @@ in
 
           mkdir -p derived/jars derived/maven
           cp -r ${mavenJars}/maven/. derived/maven/
+          ${lib.optionalString (builtins.compareVersions bootstrapVersion "8.0.0" >= 0) ''
+            # The older Gson wins classpath assembly and cannot read Bazel 8's lockfile.
+            chmod u+w derived/maven/com/google/code/gson/gson/2.9.0
+            rm derived/maven/com/google/code/gson/gson/2.9.0/gson-2.9.0.jar
+          ''}
           ln -s ${protobufJava}/share/java/protobuf-java-${protobufJava.version}.jar \
             derived/jars/protobuf-java.jar
           ln -s ${protobufJavaUtil}/share/java/protobuf-java-util-${protobufJavaUtil.version}.jar \

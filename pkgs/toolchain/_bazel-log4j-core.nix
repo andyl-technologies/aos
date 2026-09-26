@@ -46,6 +46,7 @@ in
   mkDerivation {
     pname = "bazel-log4j-core";
     inherit version;
+    passthru.sourceTargets = ["org/apache/logging/log4j/log4j-core/${version}/log4j-core-${version}.jar"];
     src = fetchurl {
       urls = ["https://repo.maven.apache.org/maven2/org/apache/logging/log4j/log4j-core/${version}/log4j-core-${version}-sources.jar"];
       hash = "sha256-fywGuBy/f7pvxeT2B8e0fL2JPDFc0sI32mW5QcqLEng=";

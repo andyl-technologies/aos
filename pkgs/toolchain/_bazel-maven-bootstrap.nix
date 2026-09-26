@@ -922,6 +922,8 @@ in
     version = "7.7.1";
     src = (builtins.head sources).src;
 
+    passthru.sourceTargets = builtins.map (source: source.target) sources;
+
     buildDeps = [
       buildJdk
       bazelAsm
