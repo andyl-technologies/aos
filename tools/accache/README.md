@@ -99,8 +99,8 @@ the compiler and record a bypass reason. Non-UTF-8 arguments also run unchanged.
 Covered output families include ordinary C/C++ objects, depfiles, split debug
 files, coverage notes, preprocessed source, assembly, PCH, explicit Clang
 modules, serialized Clang diagnostics, and nonincremental Rust rlib/staticlib,
-metadata, and dep-info. Rust extern/native dependencies and proc macro
-consumers are covered by the input contract above.
+metadata, dep-info, and unpacked split debug `.dwo` files. Rust extern/native
+dependencies and proc macro consumers are covered by the input contract above.
 
 Incremental Rust, executable/proc-macro compilation, ordinary linking, and
 upstream parser exclusions bypass. Frontend parsing compatibility is not a
@@ -194,6 +194,10 @@ bytes must match direct rustc and pinned sccache on cold and warm runs.
 The frontend check also requires incremental Rust to bypass caching.
 An oracle case verifies that sccache's warm `-Csave-temps=yes` hit omits
 bitcode files while accache runs rustc and preserves them on both invocations.
+Another case checks four `.dwo` files from unpacked Rust split debug output:
+pinned sccache omits them on a warm hit, while accache restores their bytes and
+lists them in the action provenance. Their changing CGU names are discovered
+after compilation within the declared output directory.
 Another oracle case changes a GNU assembler `.include` under a `.S` file:
 pinned sccache incorrectly replays the old object, while accache reports the
 changed include in its miss explanation and returns the new compiler output.

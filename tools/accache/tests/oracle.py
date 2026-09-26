@@ -436,6 +436,69 @@ def check_rust_profile_use(root, env, accache, sccache, rustc, clang, hits):
     return results
 
 
+def check_unpacked_split_debug(root, env, accache, sccache, rustc, hits):
+    """Restore every rustc .dwo file omitted by pinned sccache warm hits."""
+    work = root / "rust-unpacked-split-debug"
+    work.mkdir()
+    target = work / "target"
+    target.mkdir()
+    modules = "\n".join(
+        f"mod m{index} {{ #[inline(never)] pub fn value() -> u32 {{ {index} }} }}"
+        for index in range(16))
+    terms = " + ".join(f"m{index}::value()" for index in range(16))
+    (work / "library.rs").write_text(
+        modules + '\npub fn answer() -> (&\'static str, u32) { '
+        f'(include_str!("value.txt"), {terms})' + ' }\n')
+    value = work / "value.txt"
+    args = [rustc, "--crate-name=example", "--crate-type=rlib",
+            "--emit=link,dep-info", "--out-dir=target", "library.rs",
+            "-Cdebuginfo=2", "-Csplit-debuginfo=unpacked",
+            "-Cextra-filename=-oracle", "-Ccodegen-units=4"]
+
+    def compile_library(wrapper):
+        for path in target.iterdir():
+            path.unlink()
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        files = {path.name: path.read_bytes() for path in target.iterdir()}
+        return completed.stdout, completed.stderr, files
+
+    results = []
+    for revision, content in enumerate(["first", "second"]):
+        value.write_text(content)
+        direct = compile_library([])
+        dwo = {name for name in direct[2] if name.endswith(".dwo")}
+        assert len(dwo) > 1, "multiple codegen units produced fewer than two .dwo files"
+        assert compile_library([sccache]) == direct
+        before_hits = hits()
+        oracle_warm = compile_library([sccache])
+        assert hits() > before_hits, "sccache did not hit the unpacked action"
+        assert set(direct[2]) - set(oracle_warm[2]) == dwo, oracle_warm[2]
+        assert all(oracle_warm[2][name] == direct[2][name]
+                   for name in oracle_warm[2]), "sccache changed non-DWO outputs"
+
+        assert compile_library([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", cold
+        assert all(any(Path(path).name == name for path in cold["artifacts"])
+                   for name in dwo), cold
+        if revision:
+            assert any("value.txt" in item for item in cold["changes"]), cold
+        assert compile_library([accache]) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", warm
+        assert all(any(Path(path).name == name for path in warm["artifacts"])
+                   for name in dwo), warm
+        results.append({"fixture": "rust-unpacked-split-debug", "revision": revision,
+                        "oracle_hit": True, "accache": "hit",
+                        "oracle_missing_artifacts": sorted("target/" + name for name in dwo),
+                        "artifacts": sorted("target/" + name for name in direct[2])})
+
+    print("PASS oracle Rust unpacked split debug restoration", flush=True)
+    return results
+
+
 def run_suite(root, accache, sccache, gcc, clang, rustc):
     root = Path(root)
     # Keep socket names short even under long Nix build-directory names.
@@ -600,6 +663,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                clang, hits))
         results.extend(check_rust_profile_use(root, env, accache, sccache,
                                               rustc, clang, hits))
+        results.extend(check_unpacked_split_debug(root, env, accache, sccache,
+                                                  rustc, hits))
 
         report = json.dumps({"fixtures": results, "sccache_stats": stats()}, sort_keys=True)
         if destination := os.environ.get("ACCACHE_ORACLE_REPORT"):
