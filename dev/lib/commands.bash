@@ -164,7 +164,7 @@ _aos_dev_complete() {
   elif (( COMP_CWORD == 2 )); then
     COMPREPLY=( $(compgen -W 'package image container check build eval packages images containers checks builds evals ci format nix rust go bazel all init doctor verify-mount status usage entries intermediates builds prune compact clear' -- "$current") )
   elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == build || ${COMP_WORDS[1]} == run ]]; then
-    COMPREPLY=( $(compgen -W "$(aos-dev list "${COMP_WORDS[2]}" 2>/dev/null)" -- "$current") )
+    COMPREPLY=( $(compgen -W "$(aos-dev list "${COMP_WORDS[2]}" "$current" 2>/dev/null)" -- "$current") )
   fi
 }
 complete -F _aos_dev_complete aos-dev
