@@ -98,6 +98,11 @@ in
             done
             export LDFLAGS
           ''
+          + lib.optionalString stdenv.hostPlatform.isDarwin ''
+            # Darwin jemalloc exports its extension API with je_ names. BIND
+            # calls the same five functions by their unprefixed names.
+            export CPPFLAGS="''${CPPFLAGS:+$CPPFLAGS }-Dmallocx=je_mallocx -Drallocx=je_rallocx -Dsallocx=je_sallocx -Dsdallocx=je_sdallocx -Dmallctl=je_mallctl"
+          ''
           + ''
             ./configure \
               $configureFlags \
@@ -122,6 +127,12 @@ in
               --with-libidn2=${libidn2} \
               --with-cmocka=detect \
               --with-jemalloc=detect
+          ''
+          + lib.optionalString stdenv.hostPlatform.isDarwin ''
+            # BIND adds -flat_namespace to every Darwin link. Its uninstalled
+            # shared libraries have final install names, which ld64.lld cannot
+            # resolve transitively under that mode during the build.
+            find . -name Makefile -type f -exec sed -i 's/-Wl,-flat_namespace//g' {} +
           '';
       }
       {
@@ -130,7 +141,8 @@ in
       }
       {
         name = "check";
-        script = ''
+        # Darwin unit binaries require a native executor for later qualification.
+        script = lib.optionalString (!stdenv.hostPlatform.isDarwin) ''
           # BIND defaults each test binary to one loop worker per detected CPU.
           # Large builders can then expose an upstream netmgr teardown race in
           # qpdb_test, while two workers still exercise its concurrent paths.
