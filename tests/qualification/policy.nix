@@ -65,58 +65,60 @@
       inherit reportOnly;
     };
 
+  probeFixture = lib.qualification.commandProbe {
+    primary = {
+      input = "A C source file that prints one fixed line.";
+      operation = "Compile the source and execute the resulting program.";
+      expected = "The compiled program prints fixture followed by a newline.";
+      files."fixture.c" = ''
+        #include <stdio.h>
+
+        int main(void) {
+            return fputs("fixture\n", stdout) == EOF;
+        }
+      '';
+      steps = [
+        {
+          argv = ["@cc@" "fixture.c" "-o" "fixture"];
+          exit_code = 0;
+          stdout.exact = "";
+          stderr.exact = "";
+        }
+        {
+          argv = ["@work@/primary/fixture"];
+          exit_code = 0;
+          stdout.exact = "fixture\n";
+          stderr.exact = "";
+        }
+      ];
+      artifacts = [];
+    };
+    badInput = {
+      input = "A path that does not exist.";
+      operation = "Attempt to read the absent input.";
+      expected = "The operation rejects the missing file with status 7 and a fixed diagnostic.";
+      files = {};
+      steps = [
+        {
+          argv = [
+            "@python@"
+            "-c"
+            "import sys; from pathlib import Path; missing = not Path('absent').exists(); sys.stderr.write('missing input\\n' if missing else 'unexpected input\\n'); raise SystemExit(7 if missing else 0)"
+          ];
+          exit_code = 7;
+          stdout.exact = "";
+          stderr.exact = "missing input\n";
+          observes_rejection = true;
+        }
+      ];
+      artifacts = [];
+    };
+  };
   declarativeProbe = testing.mkQualificationPackageProbe {
     name = "fixture";
-    spec = {
-      schema_version = "aos.release.package-probe/v1";
-      package = "fixture";
-      primary = {
-        input = "A C source file that prints one fixed line.";
-        operation = "Compile the source and execute the resulting program.";
-        expected = "The compiled program prints fixture followed by a newline.";
-        files."fixture.c" = ''
-          #include <stdio.h>
-
-          int main(void) {
-              return fputs("fixture\n", stdout) == EOF;
-          }
-        '';
-        steps = [
-          {
-            argv = ["@cc@" "fixture.c" "-o" "fixture"];
-            exit_code = 0;
-            stdout.exact = "";
-            stderr.exact = "";
-          }
-          {
-            argv = ["@work@/primary/fixture"];
-            exit_code = 0;
-            stdout.exact = "fixture\n";
-            stderr.exact = "";
-          }
-        ];
-        artifacts = [];
-      };
-      bad_input = {
-        input = "A path that does not exist.";
-        operation = "Attempt to read the absent input.";
-        expected = "The operation rejects the missing file with status 7 and a fixed diagnostic.";
-        files = {};
-        steps = [
-          {
-            argv = [
-              "@python@"
-              "-c"
-              "import sys; from pathlib import Path; missing = not Path('absent').exists(); sys.stderr.write('missing input\\n' if missing else 'unexpected input\\n'); raise SystemExit(7 if missing else 0)"
-            ];
-            exit_code = 7;
-            stdout.exact = "";
-            stderr.exact = "missing input\n";
-            observes_rejection = true;
-          }
-        ];
-        artifacts = [];
-      };
+    spec = import ../../lib/testing/qualification-package-spec.nix {inherit lib;} {
+      packageName = "fixture";
+      packageProbe = probeFixture;
     };
   };
   declarativeProbeCheck = pkgs.runCommand "qualification-package-declarative-probe-check" {} ''

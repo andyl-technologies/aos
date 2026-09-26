@@ -30,20 +30,15 @@
     else toolMarkers.${fragment.tool};
   renderTemplate = template:
     builtins.concatStringsSep "" (map renderFragment template.fragments);
-  renderOptionalTemplate = template:
-    if template == null
-    then null
-    else {exact = renderTemplate template;};
-  renderStep = step: {
-    argv = map renderTemplate step.argv;
-    stdin =
-      if step.stdin == null
-      then null
-      else renderTemplate step.stdin;
-    stdout = renderOptionalTemplate step.stdout;
-    stderr = renderOptionalTemplate step.stderr;
-    inherit (step) exit_code timeout_seconds observes_rejection;
-  };
+  renderStep = step:
+    {
+      argv = map renderTemplate step.argv;
+      inherit (step) exit_code observes_rejection;
+    }
+    // lib.optionalAttrs (step.stdin != null) {stdin = renderTemplate step.stdin;}
+    // lib.optionalAttrs (step.stdout != null) {stdout.exact = renderTemplate step.stdout;}
+    // lib.optionalAttrs (step.stderr != null) {stderr.exact = renderTemplate step.stderr;}
+    // lib.optionalAttrs (step.timeout_seconds != null) {inherit (step) timeout_seconds;};
   renderOperation = operation: {
     inherit (operation) input expected artifacts;
     operation = operation.operation;
