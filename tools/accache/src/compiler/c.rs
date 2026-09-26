@@ -48,18 +48,23 @@ pub(super) fn configure(
         .extra_inputs
         .extend(parsed.extra_hash_files.iter().cloned());
     let expanded = strings(gcc::ExpandIncludeFile::new(&cwd, &arguments))?;
-    // GCC accepts these options through sccache's generic argument path, but
-    // they create extra files outside the parsed output set. Passing through
-    // preserves those requested reports until their names can be discovered.
+    // GCC accepts report options through sccache's generic argument path.
+    // Explicit report destinations are outputs, while a dump with an implicit
+    // name cannot be restored safely from the pinned frontend's output set.
     if !clang {
-        ensure!(
-            !expanded.iter().any(|arg| {
-                arg.starts_with("-fdump-")
-                    || arg.starts_with("-fopt-info")
-                    || arg == "-fdiagnostics-format=sarif-file"
-            }),
-            "GCC report option writes untracked side outputs"
-        );
+        for arg in &expanded {
+            if arg.starts_with("-fopt-info") || arg.starts_with("-fdump-") {
+                if let Some((_, destination)) = arg.split_once('=') {
+                    invocation.output(Path::new(destination), false)?;
+                } else if arg.starts_with("-fdump-") {
+                    anyhow::bail!("GCC dump writes an unnamed side output");
+                }
+            }
+            ensure!(
+                arg != "-fdiagnostics-format=sarif-file",
+                "GCC SARIF report writes an untracked side output"
+            );
+        }
     }
     for (index, arg) in expanded.iter().enumerate() {
         // sccache's Clang table classifies serialized diagnostics as pass-through;
@@ -126,6 +131,12 @@ pub(super) fn configure(
             "--serialize-diagnostics" | "-serialize-diagnostics" | "-aux-info"
         ) {
             index += 2;
+            continue;
+        }
+        if !clang && (arg.starts_with("-fdump-") || arg.starts_with("-fopt-info")) {
+            // A dependency probe must not create or append to a caller's
+            // report before the actual compilation or a cache restoration.
+            index += 1;
             continue;
         }
         scan.push(arg.clone());
