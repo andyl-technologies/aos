@@ -217,7 +217,7 @@
     rootfsDeps =
       [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
       ++ (lib.optional envoyProduct envoyNetworkRootImage)
-      ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite) pkgs.crucible)
+      ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) pkgs.crucible)
       ++ (
         if guestChoice || hotForkFlight
         then [networkChoiceInitramfs]
@@ -281,7 +281,7 @@
       echo 'campaign-host-setup-complete=true'
       ${pkgs.coreutils}/bin/head -n 200 "$setup_log"
       export CRUCIBLE_PROCESS_FLIGHT_BINARY=${flight}/bin/crucible
-      ${lib.optionalString (findingExactBundle || findingSignalBundle || findingForkWrite) "export CRUCIBLE_EXACT_BUNDLE_BINARY=${pkgs.crucible}/bin/crucible"}
+      ${lib.optionalString (findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) "export CRUCIBLE_EXACT_BUNDLE_BINARY=${pkgs.crucible}/bin/crucible"}
       export CRUCIBLE_FLIGHT_QEMU=${pkgs.qemu-crucible}/bin/qemu-system-x86_64
       export CRUCIBLE_FLIGHT_PLUGIN=${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
       export CRUCIBLE_FLIGHT_DEPLOYMENT=/tmp/executor.toml
