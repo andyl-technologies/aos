@@ -208,7 +208,7 @@
       }
       {
         label = "separate suite runtime closure";
-        needle = "runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
+        needle = "runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux pkgs.sqlite]";
       }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPkg [
@@ -255,12 +255,16 @@ in
   pkgs.mkDerivation {
     pname = "crucible-phase5-cli-hermetic-discovery";
     version = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     src = crucibleSrc;
 
     buildDeps = [
       pkgs.coreutils
       pkgs.rust
       pkgs.sed
+
+      pkgs.pkg-config
+      pkgs.sqlite
     ];
 
     CRUCIBLE_T_CLI_5_FAILURES = failureText;

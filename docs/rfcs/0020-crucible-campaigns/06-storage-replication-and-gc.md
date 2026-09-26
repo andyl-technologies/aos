@@ -630,7 +630,7 @@ policy = "crucible.campaign.object-profile.v1"
 `admitted_kinds` MUST contain every listed campaign kind exactly once so a
 successful startup cannot defer an unsupported repository operation until
 later. `nodes` uses a unique `id` plus one closed `[nodes.spec]` variant. The
-current schema admits `directory`, `compressed-directory`, `encrypted-directory`,
+current schema admits `directory`, `sqlite`, `compressed-directory`, `encrypted-directory`,
 `compressed-encrypted-directory`, `packed`, `verified`, `routed`, `tiered`,
 `read-through`, `write-through`, `write-back`, `durability-policy`, `metrics`,
 `logical-quota`, `physical-quota`, `namespaced`, and `profile-validated` with
@@ -639,6 +639,12 @@ the same fields and bounds as `StoreNodeSpec`. `routes` and durability
 spellings. Every child is a node-ID string. The graph validator still rejects
 cycles, missing/unreachable nodes, incomplete routes or durability maps,
 invalid tier/write policies, and unsafe capability placement.
+
+The `sqlite` leaf stores immutable objects in `objects.sqlite3` under its
+exclusive `root`. Its WAL and inventory lock share that root and count toward
+physical filesystem quotas. The leaf retains a separate authenticated
+inventory and planned-delete capability for GC; reopening the same graph
+authenticates previously published content IDs.
 
 Every physical, journal, quota-state, and ref path is absolute, normalized,
 already present, exact effective UID/GID owned, and not group/other writable.
@@ -1037,7 +1043,7 @@ compressed_length:u64be || chunk_bytes:u32be || key_id_binding[32])`. It makes
 the logical and compressed lengths safe to consume during bounded physical
 inventory without first decompressing each complete object.
 
-The initial `LogicalQuota` composition owns exactly one durable directory,
+The initial `LogicalQuota` composition owns exactly one durable directory, SQLite,
 compressed-directory, encrypted-directory, compressed-encrypted-directory, or
 packed leaf. Admission rejects
 an ephemeral memory or non-leaf child and any second incoming edge to that
@@ -1083,7 +1089,7 @@ bytes)`. Same-directory staging, file sync, atomic rename, and directory sync
 make each acknowledged state transition restart-safe. The state root is an
 absolute, non-overlapping administrative path in the graph identity.
 
-The `PhysicalQuota` composition owns exactly one persistent directory,
+The `PhysicalQuota` composition owns exactly one persistent directory, SQLite,
 compressed-directory, encrypted-directory, compressed-encrypted-directory, or
 packed leaf. A `LogicalQuota` may in turn exclusively own that physical-quota
 node, so authenticated logical accounting and real allocation enforcement
@@ -1211,7 +1217,7 @@ bypass these checks.
 `StoreGraph::build_with_admin` returns the ordinary immutable graph and a
 separate, non-cloneable `StoreGraphAdmin`. The graph does not retain or expose
 physical inventory/delete authority. The administrative value retains exactly
-one capability for every admitted memory, directory, compressed-directory,
+one capability for every admitted memory, directory, SQLite, compressed-directory,
 encrypted-directory, compressed-encrypted-directory, or packed leaf except that
 a logical- or physical-quota node owns and replaces its child's direct
 capability. It lends those boundaries in canonical

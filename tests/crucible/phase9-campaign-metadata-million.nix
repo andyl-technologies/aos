@@ -9,6 +9,7 @@ in
   pkgs.mkDerivation {
     pname = "crucible-phase9-campaign-metadata-million";
     version = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     src = source;
 
     buildDeps = [
@@ -20,8 +21,10 @@ in
       pkgs.rust
       pkgs.sed
       pkgs.crucible
+
+      pkgs.sqlite
     ];
-    runtimeDeps = [pkgs.openssl];
+    runtimeDeps = [pkgs.openssl pkgs.sqlite];
 
     phases = [
       {
@@ -107,7 +110,7 @@ in
           admissions=1000000
           requests=62500
           request_size=16
-          storage_backend=directory
+          storage_backend=sqlite
           planner_supervisor=packaged-process
           hot_and_cold_paged_queue=true
           fixed_object_index_physical_rss_ratchets=true

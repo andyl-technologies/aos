@@ -26,7 +26,8 @@ use crucible_campaign::{
     StopCondition, WorkerSlotId,
 };
 use crucible_cas::content_store::{
-    BlobStoreAdmin, DirectoryBlobBackend, DirectoryRefBackend, ObjectKind,
+    DirectoryRefBackend, ObjectKind, StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreNodeId,
+    StoreNodeSpec,
 };
 use crucible_daemon::{CanonicalPlannerProcessConfig, CanonicalPlannerProcessSupervisor};
 use rustix::time::{ClockId, Timespec, clock_gettime};
@@ -36,6 +37,22 @@ const REQUEST_SIZE: usize = 16;
 const PAGE_SIZE: usize = 512;
 const REQUIRED_ADMISSIONS: usize = 1_000_000;
 const REQUIRED_ANCESTRY: usize = ancestry_for_admissions(REQUIRED_ADMISSIONS);
+const CAMPAIGN_OBJECT_KINDS: [ObjectKind; 14] = [
+    ObjectKind::CampaignFact,
+    ObjectKind::CampaignSnapshot,
+    ObjectKind::MerkleNode,
+    ObjectKind::Scenario,
+    ObjectKind::Configuration,
+    ObjectKind::Policy,
+    ObjectKind::ExactManifest,
+    ObjectKind::RamExtent,
+    ObjectKind::DiskExtent,
+    ObjectKind::DeviceState,
+    ObjectKind::Observation,
+    ObjectKind::Finding,
+    ObjectKind::Projection,
+    ObjectKind::Trace,
+];
 
 // Host monotonic time is reported only as diagnostic evidence. It never enters
 // a planner request, campaign state, or a simulation timeout.
@@ -147,9 +164,25 @@ struct CorpusMeasurement {
     index_bytes: u64,
     logical_bytes: u64,
     physical_bytes: u64,
+    allocated_bytes: u64,
     coordinator_peak_rss_kib: u64,
     planner_worker_peak_rss_kib: u64,
     combined_peak_rss_upper_bound_kib: u64,
+}
+
+fn sqlite_blob_graph(root: &Path) -> Result<(Arc<StoreGraph>, StoreGraphAdmin), Box<dyn Error>> {
+    let leaf = StoreNodeId::new("campaign-million-blobs")?;
+    let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: leaf.clone(),
+        admitted_kinds: BTreeSet::from(CAMPAIGN_OBJECT_KINDS),
+        nodes: BTreeMap::from([(
+            leaf,
+            StoreNodeSpec::Sqlite {
+                root: root.join("blobs"),
+            },
+        )]),
+    })?;
+    Ok((Arc::new(graph), maintenance))
 }
 
 fn run_corpus(
@@ -165,10 +198,7 @@ fn run_corpus(
         "performance store must be empty"
     );
 
-    let blobs = Arc::new(DirectoryBlobBackend::new(
-        "campaign-million-blobs",
-        root.join("blobs"),
-    ));
+    let (blobs, maintenance) = sqlite_blob_graph(root)?;
     let refs = Arc::new(DirectoryRefBackend::new(root.join("refs")));
     let planner_authority = PlannerAuthorityKey::from_bytes([0x91; 32])?;
     let debugger_authority = DebuggerAuthorityKey::from_bytes([0x92; 32])?;
@@ -334,23 +364,11 @@ fn run_corpus(
     let hot_elapsed = measurement_elapsed_since(hot_started)?;
     drop(planner);
     drop(repository);
-    let cold = CampaignRepository::with_component_authorities(
-        Arc::new(DirectoryBlobBackend::new(
-            "campaign-million-blobs",
-            root.join("blobs"),
-        )),
-        Arc::new(DirectoryRefBackend::new(root.join("refs"))),
-        PlannerAuthorityKey::from_bytes([0x91; 32])?,
-        debugger_authority,
-    )?;
-    let cold_started = clock_gettime(ClockId::Monotonic);
-    assert_eq!(cold.head(CAMPAIGN)?.snapshot_id(), parent);
-    let (cold_claimable, cold_pages) = scan_queue(&cold, parent)?;
-    let cold_elapsed = measurement_elapsed_since(cold_started)?;
-    drop(cold);
 
     let mut index_bytes = 0_u64;
-    let mut fence = blobs.acquire_inventory_fence()?;
+    let physical = maintenance.physical();
+    assert_eq!(physical.len(), 1);
+    let mut fence = physical[0].admin().acquire_inventory_fence()?;
     let inventory = fence.visit_inventory(&mut |record| {
         if record.id().kind() == ObjectKind::MerkleNode {
             index_bytes = index_bytes.checked_add(record.logical_length()).ok_or(
@@ -362,7 +380,28 @@ fn run_corpus(
         Ok(())
     })?;
     drop(fence);
-    let physical_bytes = allocated_tree_bytes(root)?;
+    drop(physical);
+    let (warm_allocated_bytes, warm_physical_bytes) = storage_tree_bytes(root)?;
+    drop(maintenance);
+    drop(blobs);
+
+    let (cold_blobs, cold_maintenance) = sqlite_blob_graph(root)?;
+    let cold = CampaignRepository::with_component_authorities(
+        cold_blobs,
+        Arc::new(DirectoryRefBackend::new(root.join("refs"))),
+        PlannerAuthorityKey::from_bytes([0x91; 32])?,
+        debugger_authority,
+    )?;
+    let cold_started = clock_gettime(ClockId::Monotonic);
+    assert_eq!(cold.head(CAMPAIGN)?.snapshot_id(), parent);
+    let (cold_claimable, cold_pages) = scan_queue(&cold, parent)?;
+    let cold_elapsed = measurement_elapsed_since(cold_started)?;
+    let (cold_allocated_bytes, cold_physical_bytes) = storage_tree_bytes(root)?;
+    let allocated_bytes = warm_allocated_bytes.max(cold_allocated_bytes);
+    let physical_bytes = warm_physical_bytes.max(cold_physical_bytes);
+    drop(cold);
+    drop(cold_maintenance);
+
     let coordinator_peak_rss_kib = peak_rss_kib()?;
     let planner_worker_peak_rss_kib = worker_peak_rss.load(Ordering::Acquire);
     assert!(
@@ -384,12 +423,13 @@ fn run_corpus(
         index_bytes,
         logical_bytes: inventory.logical_bytes(),
         physical_bytes,
+        allocated_bytes,
         coordinator_peak_rss_kib,
         planner_worker_peak_rss_kib,
         combined_peak_rss_upper_bound_kib,
     };
     println!(
-        "campaign_million_profile admissions={} requests={} request_size={REQUEST_SIZE} hot_claimable={} cold_claimable={} hot_pages={} cold_pages={} objects={} index_bytes={} logical_bytes={} physical_bytes={} coordinator_peak_rss_kib={} planner_worker_peak_rss_kib={} combined_peak_rss_upper_bound_kib={} setup_ns={} planner_ns={} hot_queue_ns={} cold_reopen_queue_ns={}",
+        "campaign_million_profile admissions={} requests={} request_size={REQUEST_SIZE} hot_claimable={} cold_claimable={} hot_pages={} cold_pages={} objects={} index_bytes={} logical_bytes={} physical_bytes={} allocated_bytes={} coordinator_peak_rss_kib={} planner_worker_peak_rss_kib={} combined_peak_rss_upper_bound_kib={} setup_ns={} planner_ns={} hot_queue_ns={} cold_reopen_queue_ns={}",
         measured.admissions,
         measured.request_count,
         measured.hot_claimable,
@@ -400,6 +440,7 @@ fn run_corpus(
         measured.index_bytes,
         measured.logical_bytes,
         measured.physical_bytes,
+        measured.allocated_bytes,
         measured.coordinator_peak_rss_kib,
         measured.planner_worker_peak_rss_kib,
         measured.combined_peak_rss_upper_bound_kib,
@@ -514,22 +555,27 @@ fn scan_queue(
     Ok((attempts, pages))
 }
 
-fn allocated_tree_bytes(root: &Path) -> Result<u64, Box<dyn Error>> {
+fn storage_tree_bytes(root: &Path) -> Result<(u64, u64), Box<dyn Error>> {
     let mut pending = vec![root.to_path_buf()];
-    let mut total = 0_u64;
+    let mut allocated = 0_u64;
+    let mut conservative = 0_u64;
     while let Some(path) = pending.pop() {
         let metadata = std::fs::symlink_metadata(&path)?;
         assert!(
             !metadata.file_type().is_symlink(),
             "performance storage contains a symlink"
         );
-        total = total
-            .checked_add(
-                metadata
-                    .blocks()
-                    .checked_mul(512)
-                    .ok_or("block byte overflow")?,
-            )
+        let allocated_entry = metadata
+            .blocks()
+            .checked_mul(512)
+            .ok_or("block byte overflow")?;
+        allocated = allocated
+            .checked_add(allocated_entry)
+            .ok_or("allocated byte count overflow")?;
+        // CoW filesystems can report transiently sparse block counts for the
+        // database or WAL. File length is the conservative budget witness.
+        conservative = conservative
+            .checked_add(allocated_entry.max(metadata.len()))
             .ok_or("physical byte count overflow")?;
         if metadata.is_dir() {
             for entry in std::fs::read_dir(&path)? {
@@ -537,7 +583,7 @@ fn allocated_tree_bytes(root: &Path) -> Result<u64, Box<dyn Error>> {
             }
         }
     }
-    Ok(total)
+    Ok((allocated, conservative))
 }
 
 fn peak_rss_kib() -> Result<u64, Box<dyn Error>> {

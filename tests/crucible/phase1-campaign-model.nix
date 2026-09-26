@@ -20,9 +20,11 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase1-campaign-model";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
 
-      buildDeps = [pkgs.coreutils pkgs.rust];
+      buildDeps = [pkgs.coreutils pkgs.rust pkgs.pkg-config pkgs.sqlite];
       ATTR_PATH = attrPath;
       TASK_IDS = builtins.concatStringsSep "," taskIds;
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
