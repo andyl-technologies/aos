@@ -44,6 +44,7 @@ in
         "crucible-phase2-qemu-fingerprint-projection-manifest"
         + lib.optionalString refreshMode "-refresh";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
       src = crucibleSrc;
 
       buildDeps = [
@@ -54,8 +55,10 @@ in
         pkgs.pkg-config
         pkgs.rust
         pkgs.sed
+        pkgs.sqlite
         qemuPackage
       ];
+      runtimeDeps = [pkgs.sqlite];
 
       phases = [
         {
@@ -69,6 +72,7 @@ in
           name = "configure-rust";
           script = ''
             export CARGO_HOME="$TMPDIR/cargo"
+            export RUSTFLAGS="-C link-arg=-Wl,-rpath,${pkgs.sqlite}/lib"
             mkdir -p source/.cargo
             if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
               sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
