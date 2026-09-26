@@ -198,6 +198,12 @@
   semanticJson = value:
     builtins.unsafeDiscardStringContext (builtins.toJSON value);
 
+  # Authored module values are typed before source-stage output resolution.
+  # The projection restores collection order without materializing deferred
+  # expressions or adding another value-schema authority.
+  canonicalizeSchemaCollections =
+    import ./canonicalize-resolved-value.nix {inherit semanticJson;};
+
   strictRecordType = file: fields: let
     fieldNames = builtins.attrNames fields;
     base = moduleTypes.submodule {
@@ -445,6 +451,12 @@ in rec {
         }
       ]
     else throw "${context} must use an option type from lib.abilities.types";
+
+  ## Restores schema-declared collection order after symbolic value resolution.
+  # The value was already type checked by its authored module option. Runtime
+  # expressions stay symbolic until the source-stage validator checks them.
+  canonicalizeResolved = context: abilityType: value:
+    canonicalizeSchemaCollections context (schemaOf context abilityType) value;
 
   ## Reports whether an ability type can merge and validate one value.
   accepts = context: abilityType: value:

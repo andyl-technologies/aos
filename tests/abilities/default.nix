@@ -106,6 +106,58 @@
       value = ["beta"];
     }
   ];
+  resolvedCollectionType = lib.abilities.types.record {
+    fields.inputs = lib.abilities.types.list {
+      element = lib.abilities.types.record {
+        fields = {
+          name = lib.abilities.types.string {
+            maxLength = 16;
+            syntax = null;
+          };
+          path = lib.abilities.types.deferredResult lib.abilities.types.executionPath;
+        };
+      };
+      maxItems = 4;
+      unique = true;
+      canonicalOrder = true;
+    };
+  };
+  resolvedMarker = {
+    _type = "aos-request-output-reference";
+    request = "system:runtime-directory";
+    output = "execution-path";
+  };
+  reorderedResolvedCollection =
+    lib.abilities.types.canonicalizeResolved
+    "resolved collection test"
+    resolvedCollectionType
+    {
+      inputs = [
+        {
+          name = "zeta";
+          path = resolvedMarker;
+        }
+        {
+          name = "alpha";
+          path = "/run/alpha";
+        }
+      ];
+    };
+  duplicateResolvedCollection = fails (lib.abilities.types.canonicalizeResolved
+    "duplicate collection test"
+    resolvedCollectionType
+    {
+      inputs = [
+        {
+          name = "alpha";
+          path = "/run/alpha";
+        }
+        {
+          name = "alpha";
+          path = "/run/alpha";
+        }
+      ];
+    });
 
   scalarUnionType = lib.abilities.types.disjointUnion [
     (lib.abilities.types.string {
@@ -510,6 +562,9 @@ in {
   assert canonicalListSchema.unique && canonicalListSchema.canonical_order;
   assert canonicalListType._aosDocType.unique && canonicalListType._aosDocType.canonical_order;
   assert mergedCanonicalList == ["alpha" "beta"];
+  assert builtins.map (item: item.name) reorderedResolvedCollection.inputs == ["alpha" "zeta"];
+  assert (builtins.elemAt reorderedResolvedCollection.inputs 1).path == resolvedMarker;
+  assert duplicateResolvedCollection;
   assert !canonicalListType.check ["alpha" "alpha"];
   assert !canonicalListType.check ["beta" "alpha"];
   assert scalarUnionType.check true;

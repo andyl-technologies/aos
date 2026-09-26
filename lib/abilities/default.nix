@@ -35,6 +35,7 @@
       inherit abilities guaranteeIdentity normalizeRequirement lifetime;
       inherit interfaceIdentity interfaceDocumentFromDeclaration requestOutputDescriptor semanticInterface;
       inherit (packageOutputSelectors) normalizePackageOutputSelectors;
+      canonicalizeResolvedValue = abilityTypes.canonicalizeResolved;
     };
   packageAbilitiesFromProjection = projection: {
     inherit (projection) guarantees interfaces;
