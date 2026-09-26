@@ -1,4 +1,4 @@
-From ba55d5eaa8fe63fe34e6e385a452d46abf54b084 Mon Sep 17 00:00:00 2001
+From ea82c841a85f07021cab97915e03ce92cecad029 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -12249,7 +12249,7 @@ index b2d5e3499320c4f0adc7718ded4f1ab0a521fe1a..48da57eb7f7be29510c81c0276f5a361
 +    return true;
 +}
 diff --git a/hw/acpi/ich9.c b/hw/acpi/ich9.c
-index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..0773d0a751fb806416895cbbc1d90fe24a7e7f4d 100644
+index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..f6a172bdcfb027b3649362036b01ed462d3fdbd5 100644
 --- a/hw/acpi/ich9.c
 +++ b/hw/acpi/ich9.c
 @@ -27,10 +27,12 @@
@@ -12297,7 +12297,7 @@ index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..0773d0a751fb806416895cbbc1d90fe2
      pm->pm_io_base = 0;
      ich9_pm_iospace_update(pm, pm_io_base);
      return 0;
-@@ -222,16 +245,146 @@ static const VMStateDescription vmstate_pcihp_state = {
+@@ -222,16 +245,155 @@ static const VMStateDescription vmstate_pcihp_state = {
      }
  };
  
@@ -12334,7 +12334,10 @@ index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..0773d0a751fb806416895cbbc1d90fe2
 +
 +static bool ich9_pm_timer_exact_needed(void *opaque)
 +{
-+    return qemu_timer_tcg_ps_enabled();
++    ICH9LPCPMRegs *pm = opaque;
++
++    return icount_crucible_sim_mode() ||
++           timer_has_fractional_expiry(pm->acpi_regs.tmr.timer);
 +}
 +
 +static const VMStateDescription vmstate_ich9_pm_timer_exact = {
@@ -12361,7 +12364,9 @@ index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..0773d0a751fb806416895cbbc1d90fe2
 +{
 +    ICH9LPCPMRegs *pm = opaque;
 +
-+    return qemu_timer_tcg_ps_enabled() && pm->enable_tco;
++    return pm->enable_tco &&
++           (icount_crucible_sim_mode() ||
++            timer_has_fractional_expiry(pm->tco_regs.tco_timer));
 +}
 +
 +static const VMStateDescription vmstate_ich9_tco_timer_exact = {
@@ -12388,7 +12393,9 @@ index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..0773d0a751fb806416895cbbc1d90fe2
 +{
 +    ICH9LPCPMRegs *pm = opaque;
 +
-+    return pm->swsmi_timer_enabled;
++    return pm->swsmi_timer_enabled &&
++           (icount_crucible_sim_mode() ||
++            timer_has_fractional_expiry(pm->swsmi_timer));
 +}
 +
 +static const VMStateDescription vmstate_ich9_swsmi_timer_exact = {
@@ -12415,7 +12422,9 @@ index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..0773d0a751fb806416895cbbc1d90fe2
 +{
 +    ICH9LPCPMRegs *pm = opaque;
 +
-+    return pm->periodic_timer_enabled;
++    return pm->periodic_timer_enabled &&
++           (icount_crucible_sim_mode() ||
++            timer_has_fractional_expiry(pm->periodic_timer));
 +}
 +
 +static const VMStateDescription vmstate_ich9_periodic_timer_exact = {
@@ -12445,7 +12454,7 @@ index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..0773d0a751fb806416895cbbc1d90fe2
          VMSTATE_INT64(acpi_regs.tmr.overflow_time, ICH9LPCPMRegs),
          VMSTATE_GPE_ARRAY(acpi_regs.gpe.sts, ICH9LPCPMRegs),
          VMSTATE_GPE_ARRAY(acpi_regs.gpe.en, ICH9LPCPMRegs),
-@@ -244,6 +397,11 @@ const VMStateDescription vmstate_ich9_pm = {
+@@ -244,6 +406,11 @@ const VMStateDescription vmstate_ich9_pm = {
          &vmstate_tco_io_state,
          &vmstate_cpuhp_state,
          &vmstate_pcihp_state,
@@ -12458,7 +12467,7 @@ index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..0773d0a751fb806416895cbbc1d90fe2
      }
  };
 diff --git a/hw/acpi/ich9_tco.c b/hw/acpi/ich9_tco.c
-index 6300db65b7223c0016dbc702be4b7534bb079267..72871cb2c9e791f115af3cd494e22737e8903fbb 100644
+index 6300db65b7223c0016dbc702be4b7534bb079267..93c1c99cbe3ea0999450d75b30605ce9655e914e 100644
 --- a/hw/acpi/ich9_tco.c
 +++ b/hw/acpi/ich9_tco.c
 @@ -30,14 +30,27 @@ enum {
@@ -12516,15 +12525,6 @@ index 6300db65b7223c0016dbc702be4b7534bb079267..72871cb2c9e791f115af3cd494e22737
              rld = (uint16_t)elapsed | (tr->tco.rld & ~TCO_RLD_MASK);
          } else {
              rld = tr->tco.rld;
-@@ -252,7 +279,7 @@ void acpi_pm_tco_init(TCOIORegs *tr, MemoryRegion *parent)
- 
- const VMStateDescription vmstate_tco_io_sts = {
-     .name = "tco io device status",
--    .version_id = 1,
-+    .version_id = 2,
-     .minimum_version_id = 1,
-     .fields = (const VMStateField[]) {
-         VMSTATE_UINT16(tco.rld, TCOIORegs),
 @@ -267,7 +294,7 @@ const VMStateDescription vmstate_tco_io_sts = {
          VMSTATE_UINT8(tco.wdcnt, TCOIORegs),
          VMSTATE_UINT16(tco.tmr, TCOIORegs),
@@ -16713,7 +16713,7 @@ index eaa4e843c028b94248cb4a2a65268dbbd5dbcbe2..de295b2b583e3d3d373b0230434d3115
          VMSTATE_STRUCT(state, ISASerialState, 0, vmstate_serial, SerialState),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/char/serial.c b/hw/char/serial.c
-index 4339562ab003a71fc227931a76daa66fa0c7c142..1718f42deee07804ac81198e11cc1d984779a105 100644
+index 4339562ab003a71fc227931a76daa66fa0c7c142..cb4be0df165d0d9a3d1149122d5a742bcd4014bf 100644
 --- a/hw/char/serial.c
 +++ b/hw/char/serial.c
 @@ -25,9 +25,11 @@
@@ -16777,13 +16777,17 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..1718f42deee07804ac81198e11cc1d98
      } else {
          if (s->lsr & UART_LSR_DR)
              s->lsr |= UART_LSR_OE;
-@@ -630,10 +643,16 @@ static void serial_event(void *opaque, QEMUChrEvent event)
+@@ -630,10 +643,20 @@ static void serial_event(void *opaque, QEMUChrEvent event)
          serial_receive_break(s);
  }
  
 +static bool serial_timing_exact_needed(void *opaque)
 +{
-+    return qemu_timer_tcg_ps_enabled();
++    SerialState *s = opaque;
++
++    return icount_crucible_sim_mode() ||
++           timer_has_fractional_expiry(s->fifo_timeout_timer) ||
++           timer_has_fractional_expiry(s->modem_status_poll);
 +}
 +
  static int serial_pre_save(void *opaque)
@@ -16794,7 +16798,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..1718f42deee07804ac81198e11cc1d98
  
      return 0;
  }
-@@ -643,6 +662,9 @@ static int serial_pre_load(void *opaque)
+@@ -643,6 +666,9 @@ static int serial_pre_load(void *opaque)
      SerialState *s = opaque;
      s->thr_ipending = -1;
      s->poll_msl = -1;
@@ -16804,7 +16808,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..1718f42deee07804ac81198e11cc1d98
      return 0;
  }
  
-@@ -685,9 +707,44 @@ static int serial_post_load(void *opaque, int version_id)
+@@ -685,9 +711,44 @@ static int serial_post_load(void *opaque, int version_id)
      /* Initialize fcr via setter to perform essential side-effects */
      serial_write_fcr(s, s->fcr_vmstate);
      serial_update_parameters(s);
@@ -16816,9 +16820,9 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..1718f42deee07804ac81198e11cc1d98
 +    if (s->timing_exact_loaded) {
 +        s->char_transmit_time = s->char_transmit_time_vmstate;
 +    }
-+    return 0;
-+}
-+
+     return 0;
+ }
+ 
 +static int serial_timing_exact_post_load(void *opaque, int version_id)
 +{
 +    SerialState *s = opaque;
@@ -16829,9 +16833,9 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..1718f42deee07804ac81198e11cc1d98
 +        return -EINVAL;
 +    }
 +    s->timing_exact_loaded = true;
-     return 0;
- }
- 
++    return 0;
++}
++
 +static const VMStateDescription vmstate_serial_timing_exact = {
 +    .name = "serial/timing-ps",
 +    .version_id = 1,
@@ -16849,7 +16853,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..1718f42deee07804ac81198e11cc1d98
  static bool serial_thr_ipending_needed(void *opaque)
  {
      SerialState *s = opaque;
-@@ -781,7 +838,7 @@ static const VMStateDescription vmstate_serial_fifo_timeout_timer = {
+@@ -781,7 +842,7 @@ static const VMStateDescription vmstate_serial_fifo_timeout_timer = {
      .minimum_version_id = 1,
      .needed = serial_fifo_timeout_timer_needed,
      .fields = (const VMStateField[]) {
@@ -16858,7 +16862,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..1718f42deee07804ac81198e11cc1d98
          VMSTATE_END_OF_LIST()
      }
  };
-@@ -816,11 +873,103 @@ static const VMStateDescription vmstate_serial_poll = {
+@@ -816,11 +877,103 @@ static const VMStateDescription vmstate_serial_poll = {
      .minimum_version_id = 1,
      .fields = (const VMStateField[]) {
          VMSTATE_INT32(poll_msl, SerialState),
@@ -16963,7 +16967,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..1718f42deee07804ac81198e11cc1d98
  const VMStateDescription vmstate_serial = {
      .name = "serial",
      .version_id = 3,
-@@ -828,6 +977,7 @@ const VMStateDescription vmstate_serial = {
+@@ -828,6 +981,7 @@ const VMStateDescription vmstate_serial = {
      .pre_save = serial_pre_save,
      .pre_load = serial_pre_load,
      .post_load = serial_post_load,
@@ -16971,7 +16975,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..1718f42deee07804ac81198e11cc1d98
      .fields = (const VMStateField[]) {
          VMSTATE_UINT16_V(divider, SerialState, 2),
          VMSTATE_UINT8(rbr, SerialState),
-@@ -849,6 +999,7 @@ const VMStateDescription vmstate_serial = {
+@@ -849,6 +1003,7 @@ const VMStateDescription vmstate_serial = {
          &vmstate_serial_fifo_timeout_timer,
          &vmstate_serial_timeout_ipending,
          &vmstate_serial_poll,
@@ -22720,7 +22724,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
  }
  
 diff --git a/hw/intc/apic_common.c b/hw/intc/apic_common.c
-index 49c03a5bceef38412a82779b49c0b686954eb935..49a31224ad84907e1b3aea414066e87cc9591b8f 100644
+index 49c03a5bceef38412a82779b49c0b686954eb935..421c10ed74495fb03bf4f6f2da898ba107db9781 100644
 --- a/hw/intc/apic_common.c
 +++ b/hw/intc/apic_common.c
 @@ -19,8 +19,11 @@
@@ -22925,7 +22929,7 @@ index 49c03a5bceef38412a82779b49c0b686954eb935..49a31224ad84907e1b3aea414066e87c
      if (info->post_load) {
          info->post_load(s);
      }
-@@ -364,6 +468,215 @@ static const VMStateDescription vmstate_apic_common_sipi = {
+@@ -364,6 +468,217 @@ static const VMStateDescription vmstate_apic_common_sipi = {
      }
  };
  
@@ -22963,7 +22967,9 @@ index 49c03a5bceef38412a82779b49c0b686954eb935..49a31224ad84907e1b3aea414066e87c
 +{
 +    APICCommonState *s = APIC_COMMON(opaque);
 +
-+    return qemu_timer_tcg_ps_enabled() ||
++    return icount_crucible_sim_mode() ||
++           s->initial_count_load_phase_ps != 0 ||
++           s->next_time_phase_ps != 0 ||
 +           s->crucible_timer_arm_sequence != 0;
 +}
 +
@@ -23141,7 +23147,7 @@ index 49c03a5bceef38412a82779b49c0b686954eb935..49a31224ad84907e1b3aea414066e87c
  static const VMStateDescription vmstate_apic_common = {
      .name = "apic",
      .version_id = 3,
-@@ -372,6 +685,7 @@ static const VMStateDescription vmstate_apic_common = {
+@@ -372,6 +687,7 @@ static const VMStateDescription vmstate_apic_common = {
      .pre_save = apic_dispatch_pre_save,
      .post_load = apic_dispatch_post_load,
      .priority = MIG_PRI_APIC,
@@ -23149,7 +23155,7 @@ index 49c03a5bceef38412a82779b49c0b686954eb935..49a31224ad84907e1b3aea414066e87c
      .fields = (const VMStateField[]) {
          VMSTATE_UINT32(apicbase, APICCommonState),
          VMSTATE_UINT8(id, APICCommonState),
-@@ -397,6 +711,8 @@ static const VMStateDescription vmstate_apic_common = {
+@@ -397,6 +713,8 @@ static const VMStateDescription vmstate_apic_common = {
      },
      .subsections = (const VMStateDescription * const []) {
          &vmstate_apic_common_sipi,
@@ -23158,7 +23164,7 @@ index 49c03a5bceef38412a82779b49c0b686954eb935..49a31224ad84907e1b3aea414066e87c
          NULL
      }
  };
-@@ -451,6 +767,7 @@ static void apic_common_class_init(ObjectClass *klass, const void *data)
+@@ -451,6 +769,7 @@ static void apic_common_class_init(ObjectClass *klass, const void *data)
  {
      DeviceClass *dc = DEVICE_CLASS(klass);
  
@@ -25250,7 +25256,7 @@ index 1b3f1e824ac45834e9290dfc1681a25736536d97..45826fe9ec7b1379eb53193515563961
      s->machine_done.notify = ioapic_machine_done_notify;
      qemu_add_machine_init_done_notifier(&s->machine_done);
 diff --git a/hw/intc/ioapic_common.c b/hw/intc/ioapic_common.c
-index d3bcd5699f528054b81b0163e6423d728a569d29..508d0c686310e28b4bfc8daf0516f93d1d1b8744 100644
+index d3bcd5699f528054b81b0163e6423d728a569d29..bbfef55f103ac943fcd827ae6cee36b33c3cc357 100644
 --- a/hw/intc/ioapic_common.c
 +++ b/hw/intc/ioapic_common.c
 @@ -22,6 +22,10 @@
@@ -25306,7 +25312,7 @@ index d3bcd5699f528054b81b0163e6423d728a569d29..508d0c686310e28b4bfc8daf0516f93d
      if (info->post_load) {
          info->post_load(s);
      }
-@@ -181,12 +211,120 @@ static void ioapic_print_info(InterruptStatsProvider *obj, GString *buf)
+@@ -181,12 +211,124 @@ static void ioapic_print_info(InterruptStatsProvider *obj, GString *buf)
      ioapic_print_redtbl(buf, s);
  }
  
@@ -25357,8 +25363,12 @@ index d3bcd5699f528054b81b0163e6423d728a569d29..508d0c686310e28b4bfc8daf0516f93d
 +
 +static bool ioapic_crucible_service_needed(void *opaque)
 +{
-+    (void)opaque;
-+    return qemu_timer_tcg_ps_enabled();
++    IOAPICCommonState *s = IOAPIC_COMMON(opaque);
++
++    /* Plain QEMU never migrates the storm counter or integral delay timer. */
++    return icount_crucible_sim_mode() ||
++           s->delayed_ioapic_service_phase_ps != 0 ||
++           timer_has_fractional_expiry(s->delayed_ioapic_service_timer);
 +}
 +
 +static int ioapic_crucible_service_post_load(void *opaque, int version_id)
@@ -25427,7 +25437,7 @@ index d3bcd5699f528054b81b0163e6423d728a569d29..508d0c686310e28b4bfc8daf0516f93d
      .fields = (const VMStateField[]) {
          VMSTATE_UINT8(id, IOAPICCommonState),
          VMSTATE_UINT8(ioregsel, IOAPICCommonState),
-@@ -194,7 +332,11 @@ static const VMStateDescription vmstate_ioapic_common = {
+@@ -194,7 +336,11 @@ static const VMStateDescription vmstate_ioapic_common = {
          VMSTATE_UINT32_V(irr, IOAPICCommonState, 2),
          VMSTATE_UINT64_ARRAY(ioredtbl, IOAPICCommonState, IOAPIC_NUM_PINS),
          VMSTATE_END_OF_LIST()
@@ -25440,7 +25450,7 @@ index d3bcd5699f528054b81b0163e6423d728a569d29..508d0c686310e28b4bfc8daf0516f93d
  };
  
  static void ioapic_common_class_init(ObjectClass *klass, const void *data)
-@@ -202,6 +344,7 @@ static void ioapic_common_class_init(ObjectClass *klass, const void *data)
+@@ -202,6 +348,7 @@ static void ioapic_common_class_init(ObjectClass *klass, const void *data)
      DeviceClass *dc = DEVICE_CLASS(klass);
      InterruptStatsProviderClass *ic = INTERRUPT_STATS_PROVIDER_CLASS(klass);
  
@@ -36490,7 +36500,7 @@ index be4196b21c4fb092ea0da9520988380460931dfb..8c11907ba44ffa2234aaf347ed550143
      nc->write = m48txx_sysbus_write;
      nc->toggle_lock = m48txx_sysbus_toggle_lock;
 diff --git a/hw/rtc/mc146818rtc.c b/hw/rtc/mc146818rtc.c
-index ba396435d1af30a82b1e14325df261d331fc9cac..cefbaffdbc290f9aa7fe6f7a7dc4d0a0217033b1 100644
+index ba396435d1af30a82b1e14325df261d331fc9cac..f49bdbe5264dcab61f41e6baa7cfa59e702e2b3e 100644
 --- a/hw/rtc/mc146818rtc.c
 +++ b/hw/rtc/mc146818rtc.c
 @@ -26,6 +26,9 @@
@@ -36562,8 +36572,7 @@ index ba396435d1af30a82b1e14325df261d331fc9cac..cefbaffdbc290f9aa7fe6f7a7dc4d0a0
 -static uint64_t get_rtc_ns_since_last_update(MC146818RtcState *s)
 +static uint64_t get_guest_rtc_ns_raw(MC146818RtcState *s,
 +                                     uint64_t guest_clock)
- {
--    return qemu_clock_get_ns(rtc_clock) - s->last_update + s->offset;
++{
 +    return s->base_rtc * NANOSECONDS_PER_SECOND +
 +        guest_clock - s->last_update + s->offset;
 +}
@@ -36644,7 +36653,8 @@ index ba396435d1af30a82b1e14325df261d331fc9cac..cefbaffdbc290f9aa7fe6f7a7dc4d0a0
 +
 +static uint64_t *rtc_fault_timer_arm_sequence(
 +    MC146818RtcState *s, uint16_t timer_role)
-+{
+ {
+-    return qemu_clock_get_ns(rtc_clock) - s->last_update + s->offset;
 +    switch (timer_role) {
 +    case QEMU_CRUCIBLE_CLOCK_TIMER_PERIODIC:
 +        return &s->crucible_periodic_timer_arm_sequence;
@@ -37678,7 +37688,7 @@ index ba396435d1af30a82b1e14325df261d331fc9cac..cefbaffdbc290f9aa7fe6f7a7dc4d0a0
          }
      }
  
-@@ -807,17 +1636,197 @@ static const VMStateDescription vmstate_rtc_irq_reinject_on_ack_count = {
+@@ -807,17 +1636,203 @@ static const VMStateDescription vmstate_rtc_irq_reinject_on_ack_count = {
      }
  };
  
@@ -37759,7 +37769,13 @@ index ba396435d1af30a82b1e14325df261d331fc9cac..cefbaffdbc290f9aa7fe6f7a7dc4d0a0
 +
 +static bool rtc_exact_timers_needed(void *opaque)
 +{
-+    return rtc_tcg_ps_enabled();
++    MC146818RtcState *s = opaque;
++
++    return icount_crucible_sim_mode() ||
++           s->next_periodic_phase_ps != 0 ||
++           s->next_alarm_phase_ps != 0 ||
++           timer_has_fractional_expiry(s->periodic_timer) ||
++           timer_has_fractional_expiry(s->update_timer);
 +}
 +
 +static const VMStateDescription vmstate_rtc_exact_timers = {
@@ -37877,14 +37893,16 @@ index ba396435d1af30a82b1e14325df261d331fc9cac..cefbaffdbc290f9aa7fe6f7a7dc4d0a0
          VMSTATE_INT64(next_periodic_time, MC146818RtcState),
          VMSTATE_UNUSED(3*8),
          VMSTATE_UINT32(irq_coalesced, MC146818RtcState),
-@@ -825,12 +1834,14 @@ static const VMStateDescription vmstate_rtc = {
+@@ -825,12 +1840,16 @@ static const VMStateDescription vmstate_rtc = {
          VMSTATE_UINT64(base_rtc, MC146818RtcState),
          VMSTATE_UINT64(last_update, MC146818RtcState),
          VMSTATE_INT64(offset, MC146818RtcState),
 -        VMSTATE_TIMER_PTR(update_timer, MC146818RtcState),
 -        VMSTATE_UINT64(next_alarm_time, MC146818RtcState),
 +        VMSTATE_TIMER_NS_PROJECTION_PTR(update_timer, MC146818RtcState),
-+        VMSTATE_INT64(next_alarm_time, MC146818RtcState),
++        /* Preserve the upstream uint64 wire schema with signed ps arithmetic. */
++        VMSTATE_SINGLE(next_alarm_time, MC146818RtcState, 0,
++                       vmstate_info_uint64, int64_t),
          VMSTATE_END_OF_LIST()
      },
      .subsections = (const VMStateDescription * const []) {
@@ -37894,7 +37912,7 @@ index ba396435d1af30a82b1e14325df261d331fc9cac..cefbaffdbc290f9aa7fe6f7a7dc4d0a0
          NULL
      }
  };
-@@ -858,10 +1869,55 @@ static void rtc_get_date(Object *obj, struct tm *current_tm, Error **errp)
+@@ -858,10 +1877,55 @@ static void rtc_get_date(Object *obj, struct tm *current_tm, Error **errp)
  {
      MC146818RtcState *s = MC146818_RTC(obj);
  
@@ -37951,7 +37969,7 @@ index ba396435d1af30a82b1e14325df261d331fc9cac..cefbaffdbc290f9aa7fe6f7a7dc4d0a0
  static void rtc_realizefn(DeviceState *dev, Error **errp)
  {
      ISADevice *isadev = ISA_DEVICE(dev);
-@@ -890,6 +1946,21 @@ static void rtc_realizefn(DeviceState *dev, Error **errp)
+@@ -890,6 +1954,21 @@ static void rtc_realizefn(DeviceState *dev, Error **errp)
      }
  
      rtc_set_date_from_host(isadev);
@@ -37973,7 +37991,7 @@ index ba396435d1af30a82b1e14325df261d331fc9cac..cefbaffdbc290f9aa7fe6f7a7dc4d0a0
  
      switch (s->lost_tick_policy) {
      case LOST_TICK_POLICY_SLEW:
-@@ -905,6 +1976,38 @@ static void rtc_realizefn(DeviceState *dev, Error **errp)
+@@ -905,6 +1984,38 @@ static void rtc_realizefn(DeviceState *dev, Error **errp)
  
      s->periodic_timer = timer_new_ns(rtc_clock, rtc_periodic_timer, s);
      s->update_timer = timer_new_ns(rtc_clock, rtc_update_timer, s);
@@ -38012,7 +38030,7 @@ index ba396435d1af30a82b1e14325df261d331fc9cac..cefbaffdbc290f9aa7fe6f7a7dc4d0a0
      check_update_timer(s);
  
      s->suspend_notifier.notify = rtc_notify_suspend;
-@@ -1011,6 +2114,7 @@ static void rtc_class_initfn(ObjectClass *klass, const void *data)
+@@ -1011,6 +2122,7 @@ static void rtc_class_initfn(ObjectClass *klass, const void *data)
      ResettableClass *rc = RESETTABLE_CLASS(klass);
      AcpiDevAmlIfClass *adevc = ACPI_DEV_AML_IF_CLASS(klass);
  
@@ -40799,7 +40817,7 @@ index 0424539c78fb6dbf70184b935253ec9efd5b1c04..052f966a68732f44bed47c7db4f1475a
  #endif
              qemu_irq_raise(s->irq);
 diff --git a/hw/timer/hpet.c b/hw/timer/hpet.c
-index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd24f3a8d2 100644
+index 42285cff762b03428c608c0e1d3943ba60cb880f..987d537e214a85e9df3dd1f1ea93ce8b714744b1 100644
 --- a/hw/timer/hpet.c
 +++ b/hw/timer/hpet.c
 @@ -25,9 +25,12 @@
@@ -40877,7 +40895,8 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
  
 -static uint64_t ticks_to_ns(uint64_t value)
 +static bool ticks_to_ns_checked(uint64_t value, uint64_t *result)
-+{
+ {
+-    return value * HPET_CLK_PERIOD;
 +    if (value > UINT64_MAX / HPET_CLK_PERIOD) {
 +        return false;
 +    }
@@ -40886,8 +40905,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
 +}
 +
 +static bool ticks_to_ps_checked(uint64_t value, uint64_t *result)
- {
--    return value * HPET_CLK_PERIOD;
++{
 +    if (value > UINT64_MAX / (HPET_CLK_PERIOD * 1000)) {
 +        return false;
 +    }
@@ -41031,7 +41049,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
      return 0;
  }
  
-@@ -322,17 +443,178 @@ static const VMStateDescription vmstate_hpet_timer = {
+@@ -322,17 +443,192 @@ static const VMStateDescription vmstate_hpet_timer = {
          VMSTATE_UINT64(fsb, HPETTimer),
          VMSTATE_UINT64(period, HPETTimer),
          VMSTATE_UINT8(wrap_flag, HPETTimer),
@@ -41054,13 +41072,27 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
 +        VMSTATE_UINT64(cmp64, HPETTimer),
 +        VMSTATE_INT64(last_ns_save, HPETTimer),
 +        VMSTATE_UINT16(last_phase_ps_save, HPETTimer),
-+        VMSTATE_END_OF_LIST()
-+    }
-+};
-+
+         VMSTATE_END_OF_LIST()
+     }
+ };
+ 
 +static bool hpet_crucible_clock_needed(void *opaque)
 +{
-+    return qemu_timer_tcg_ps_enabled();
++    HPETState *s = opaque;
++
++    if (icount_crucible_sim_mode() || s->hpet_offset_ps % 1000 != 0) {
++        return true;
++    }
++    for (unsigned i = 0; i < s->num_timers; i++) {
++        HPETTimer *timer = &s->timer[i];
++
++        if (timer->last_ps % 1000 != 0 ||
++            timer_has_fractional_expiry(timer->qemu_timer) ||
++            timer->crucible_timer_arm_sequence != 0) {
++            return true;
++        }
++    }
++    return false;
 +}
 +
 +static int hpet_crucible_clock_post_load(void *opaque, int version_id)
@@ -41104,10 +41136,10 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
 +        VMSTATE_STRUCT_VARRAY_UINT8(timer, HPETState, num_timers, 0,
 +                                    vmstate_hpet_timer_crucible_clock,
 +                                    HPETTimer),
-         VMSTATE_END_OF_LIST()
-     }
- };
- 
++        VMSTATE_END_OF_LIST()
++    }
++};
++
 +static bool hpet_fingerprint_projection(QEMUFile *f, const void *opaque,
 +                                        Error **errp)
 +{
@@ -41211,7 +41243,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
      .fields = (const VMStateField[]) {
          VMSTATE_UINT64(config, HPETState),
          VMSTATE_UINT64(isr, HPETState),
-@@ -346,21 +628,143 @@ static const VMStateDescription vmstate_hpet = {
+@@ -346,21 +642,143 @@ static const VMStateDescription vmstate_hpet = {
      .subsections = (const VMStateDescription * const []) {
          &vmstate_hpet_rtc_irq_level,
          &vmstate_hpet_offset,
@@ -41363,7 +41395,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
  }
  
  /*
-@@ -370,7 +774,24 @@ static void hpet_timer(void *opaque)
+@@ -370,7 +788,24 @@ static void hpet_timer(void *opaque)
  {
      HPETTimer *t = opaque;
      uint64_t period = t->period;
@@ -41389,7 +41421,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
  
      if (timer_is_periodic(t) && period != 0) {
          while (hpet_time_after(cur_tick, t->cmp64)) {
-@@ -391,7 +812,7 @@ static void hpet_timer(void *opaque)
+@@ -391,7 +826,7 @@ static void hpet_timer(void *opaque)
  
  static void hpet_set_timer(HPETTimer *t)
  {
@@ -41398,7 +41430,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
  
      t->wrap_flag = 0;
      t->cmp64 = hpet_calculate_cmp64(t, cur_tick, t->cmp);
-@@ -412,7 +833,27 @@ static void hpet_set_timer(HPETTimer *t)
+@@ -412,7 +847,27 @@ static void hpet_set_timer(HPETTimer *t)
  static void hpet_del_timer(HPETTimer *t)
  {
      HPETState *s = t->state;
@@ -41426,7 +41458,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
  
      if (s->isr & (1 << t->tn)) {
          /* For level-triggered interrupt, this leaves ISR set but lowers irq.  */
-@@ -440,8 +881,20 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
+@@ -440,8 +895,20 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
              version = seqlock_read_begin(&s->state_version);
              if (unlikely(!hpet_enabled(s))) {
                  cur_tick = s->hpet_counter;
@@ -41448,7 +41480,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
              }
          } while (seqlock_read_retry(&s->state_version, version));
          trace_hpet_ram_read_reading_counter(addr & 4, cur_tick);
-@@ -512,9 +965,32 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
+@@ -512,9 +979,32 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
              seqlock_write_begin(&s->state_version);
              s->config = new_val;
              if (activating_bit(old_val, new_val, HPET_CFG_ENABLE)) {
@@ -41482,7 +41514,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
                  for (i = 0; i < s->num_timers; i++) {
                      if (timer_enabled(&s->timer[i]) && (s->isr & (1 << i))) {
                          update_irq(&s->timer[i], 1);
-@@ -523,7 +999,7 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
+@@ -523,7 +1013,7 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
                  }
              } else if (deactivating_bit(old_val, new_val, HPET_CFG_ENABLE)) {
                  /* Halt main counter and disable interrupt generation. */
@@ -41491,7 +41523,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
                  for (i = 0; i < s->num_timers; i++) {
                      hpet_del_timer(&s->timer[i]);
                  }
-@@ -667,11 +1143,13 @@ static void hpet_reset(DeviceState *d)
+@@ -667,11 +1157,13 @@ static void hpet_reset(DeviceState *d)
          timer->config |=  (uint64_t)s->intcap << 32;
          timer->period = 0ULL;
          timer->wrap_flag = 0;
@@ -41505,7 +41537,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
      s->config = 0ULL;
      hpet_fw_cfg.hpet[s->hpet_id].event_timer_block_id = (uint32_t)s->capability;
      hpet_fw_cfg.hpet[s->hpet_id].address = sbd->mmio[0].addr;
-@@ -711,6 +1189,57 @@ static void hpet_init(Object *obj)
+@@ -711,6 +1203,57 @@ static void hpet_init(Object *obj)
      sysbus_init_mmio(sbd, &s->iomem);
  }
  
@@ -41563,7 +41595,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
  static void hpet_realize(DeviceState *dev, Error **errp)
  {
      SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
-@@ -757,6 +1286,38 @@ static void hpet_realize(DeviceState *dev, Error **errp)
+@@ -757,6 +1300,38 @@ static void hpet_realize(DeviceState *dev, Error **errp)
  
      qdev_init_gpio_in(dev, hpet_handle_legacy_irq, 2);
      qdev_init_gpio_out(dev, &s->pit_enabled, 1);
@@ -41602,7 +41634,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..231cc57ab41f4aa5090403af5aeb01fd
  }
  
  static const Property hpet_device_properties[] = {
-@@ -769,6 +1330,7 @@ static void hpet_device_class_init(ObjectClass *klass, const void *data)
+@@ -769,6 +1344,7 @@ static void hpet_device_class_init(ObjectClass *klass, const void *data)
  {
      DeviceClass *dc = DEVICE_CLASS(klass);
  
@@ -42069,7 +42101,7 @@ index 1a8b6bf9abe54632011ba7fd37fc6d2400bfbbe8..a826f9c1daaa1f245ecb034f4c6e0a82
  
  static void pit_class_initfn(ObjectClass *klass, const void *data)
 diff --git a/hw/timer/i8254_common.c b/hw/timer/i8254_common.c
-index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..55953213b08ace26ca9e6d372fd855c7a31f2f57 100644
+index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..eb65cdf56ef4b726ccc852e63db453fd2cce1d2c 100644
 --- a/hw/timer/i8254_common.c
 +++ b/hw/timer/i8254_common.c
 @@ -26,10 +26,13 @@
@@ -42231,7 +42263,7 @@ index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..55953213b08ace26ca9e6d372fd855c7
  }
  
  void pit_get_channel_info(PITCommonState *pit, int channel, PITChannelInfo *info)
-@@ -155,11 +225,35 @@ void pit_reset_common(PITCommonState *pit)
+@@ -155,11 +225,34 @@ void pit_reset_common(PITCommonState *pit)
          s = &pit->channels[i];
          s->mode = 3;
          s->gate = (i != 2);
@@ -42246,7 +42278,6 @@ index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..55953213b08ace26ca9e6d372fd855c7
 +            s->count_load_phase_ps = 0;
 +        }
          s->count = 0x10000;
-+        s->next_transition_time = -1;
 +        s->next_transition_phase_ps = 0;
          if (i == 0 && !s->irq_disabled) {
 -            s->next_transition_time =
@@ -42270,7 +42301,7 @@ index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..55953213b08ace26ca9e6d372fd855c7
          }
      }
  }
-@@ -197,6 +291,78 @@ static const VMStateDescription vmstate_pit_channel = {
+@@ -197,6 +290,82 @@ static const VMStateDescription vmstate_pit_channel = {
      }
  };
  
@@ -42278,7 +42309,11 @@ index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..55953213b08ace26ca9e6d372fd855c7
 +{
 +    PITCommonState *s = opaque;
 +
-+    return qemu_timer_tcg_ps_enabled() ||
++    return icount_crucible_sim_mode() ||
++           s->channels[0].count_load_phase_ps != 0 ||
++           s->channels[1].count_load_phase_ps != 0 ||
++           s->channels[2].count_load_phase_ps != 0 ||
++           s->channels[0].next_transition_phase_ps != 0 ||
 +           s->channels[0].crucible_timer_arm_sequence != 0;
 +}
 +
@@ -42349,7 +42384,7 @@ index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..55953213b08ace26ca9e6d372fd855c7
  static int pit_dispatch_pre_save(void *opaque)
  {
      PITCommonState *s = opaque;
-@@ -209,23 +375,99 @@ static int pit_dispatch_pre_save(void *opaque)
+@@ -209,23 +378,99 @@ static int pit_dispatch_pre_save(void *opaque)
      return 0;
  }
  
@@ -42449,7 +42484,7 @@ index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..55953213b08ace26ca9e6d372fd855c7
      .fields = (const VMStateField[]) {
          VMSTATE_UINT32_V(channels[0].irq_disabled, PITCommonState, 3),
          VMSTATE_STRUCT_ARRAY(channels, PITCommonState, 3, 2,
-@@ -233,6 +475,10 @@ static const VMStateDescription vmstate_pit_common = {
+@@ -233,6 +478,10 @@ static const VMStateDescription vmstate_pit_common = {
          VMSTATE_INT64(channels[0].next_transition_time,
                        PITCommonState), /* formerly irq_timer */
          VMSTATE_END_OF_LIST()
@@ -42460,7 +42495,7 @@ index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..55953213b08ace26ca9e6d372fd855c7
      }
  };
  
-@@ -244,6 +490,7 @@ static void pit_common_class_init(ObjectClass *klass, const void *data)
+@@ -244,6 +493,7 @@ static void pit_common_class_init(ObjectClass *klass, const void *data)
  {
      DeviceClass *dc = DEVICE_CLASS(klass);
  
@@ -57711,7 +57746,7 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..eff8dc4e5e7a3693797bc130fa0647ff
  /**
   * qemu_thread_atexit_add:
 diff --git a/include/qemu/timer.h b/include/qemu/timer.h
-index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..b8b5fa07b3dc97be5021d4ab2477655c76e2a8c3 100644
+index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..ac8d43a91385549ef8a7a916d435991faeb77415 100644
 --- a/include/qemu/timer.h
 +++ b/include/qemu/timer.h
 @@ -6,6 +6,8 @@
@@ -57889,7 +57924,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..b8b5fa07b3dc97be5021d4ab2477655c
  /**
   * timer_expired:
   * @ts: the timer
-@@ -717,12 +833,27 @@ bool timer_expired(const QEMUTimer *timer_head, int64_t current_time);
+@@ -717,12 +833,41 @@ bool timer_expired(const QEMUTimer *timer_head, int64_t current_time);
   * timer_expire_time_ns:
   * @ts: the timer
   *
@@ -57914,6 +57949,20 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..b8b5fa07b3dc97be5021d4ab2477655c
 +/* Return 1 for a split pending expiry, 0 when inactive, or -ERANGE. */
 +int timer_expire_time_ns_phase(const QEMUTimer *ts, int64_t *expire_time_ns,
 +                               uint16_t *phase_ps);
++
++/* Invalid or fractional deadlines require the exact-phase owner to validate. */
++static inline bool timer_has_fractional_expiry(const QEMUTimer *timer)
++{
++    int64_t expiry_ns;
++    uint16_t phase_ps;
++    int status;
++
++    if (!timer) {
++        return false;
++    }
++    status = timer_expire_time_ns_phase(timer, &expiry_ns, &phase_ps);
++    return status < 0 || (status > 0 && phase_ps != 0);
++}
 +
  /**
   * timer_get:
@@ -61043,7 +61092,7 @@ index f7dcdd7d1b6b7b5397eb1b6aab5cb5816a92f1a8..366ad0c3d0cbcc26e74d0f3ccfe66054
  int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis,
                             Error **errp);
 diff --git a/migration/vmstate-types.c b/migration/vmstate-types.c
-index 8c01215c2516c832f2ca1cdb6b2d6aef3bcf19f3..1626799fe2821b94a5d290e2a3ed0b38a911c73e 100644
+index 8c01215c2516c832f2ca1cdb6b2d6aef3bcf19f3..04404c3a53bf82d132f56424e89ef8e052aa46ee 100644
 --- a/migration/vmstate-types.c
 +++ b/migration/vmstate-types.c
 @@ -18,9 +18,177 @@
@@ -61158,7 +61207,7 @@ index 8c01215c2516c832f2ca1cdb6b2d6aef3bcf19f3..1626799fe2821b94a5d290e2a3ed0b38
 +}
 +
 +const VMStateInfo vmstate_info_timer_ns_projection = {
-+    .name = "timer-ns-projection",
++    .name = "timer",
 +    .load = load_timer_ns_projection,
 +    .save = save_timer_ns_projection,
 +};
@@ -148528,13 +148577,14 @@ index df1fb4c7780813b1f2063035e2447f7dbc3427b9..71d7d41e27464e7293a58e73c9194346
  
      close(temp_fd);
 diff --git a/ui/input.c b/ui/input.c
-index b82622c8645d9ae13f9b399346c73937cda8e51f..740b2d0d257ba42d7b66339a2fa0bb1b25761140 100644
+index b82622c8645d9ae13f9b399346c73937cda8e51f..23627a47dbddd052827a70e966f5d340a8373cd9 100644
 --- a/ui/input.c
 +++ b/ui/input.c
-@@ -1,11 +1,17 @@
+@@ -1,11 +1,18 @@
  #include "qemu/osdep.h"
 +#include "qemu/cutils.h"
 +#include "qemu/module.h"
++#include "exec/icount.h"
  #include "system/system.h"
  #include "qapi/error.h"
  #include "qapi/qapi-commands-ui.h"
@@ -148549,7 +148599,7 @@ index b82622c8645d9ae13f9b399346c73937cda8e51f..740b2d0d257ba42d7b66339a2fa0bb1b
  #include "system/runstate.h"
  
  struct QemuInputHandlerState {
-@@ -47,6 +53,485 @@ static QEMUTimer *kbd_timer;
+@@ -47,6 +54,501 @@ static QEMUTimer *kbd_timer;
  static uint32_t kbd_default_delay_ms = 10;
  static uint32_t queue_count;
  static uint32_t queue_limit = 1024;
@@ -149023,11 +149073,27 @@ index b82622c8645d9ae13f9b399346c73937cda8e51f..740b2d0d257ba42d7b66339a2fa0bb1b
 +    kbd_queue_loaded = false;
 +}
 +
-+static void qemu_input_queue_migration_init(void)
++static void qemu_input_queue_machine_done(Notifier *notifier, void *opaque)
 +{
++    (void)notifier;
++    (void)opaque;
++
++    if (!icount_crucible_sim_mode()) {
++        return;
++    }
++
 +    register_savevm_live("ui-input-queue", 0,
 +                         QEMU_INPUT_QUEUE_VMSTATE_VERSION,
 +                         &qemu_input_queue_vmstate, NULL);
++}
++
++static Notifier qemu_input_queue_machine_done_notifier = {
++    .notify = qemu_input_queue_machine_done,
++};
++
++static void qemu_input_queue_migration_init(void)
++{
++    qemu_add_machine_init_done_notifier(&qemu_input_queue_machine_done_notifier);
 +    qemu_register_reset(qemu_input_queue_reset, NULL);
 +}
 +
@@ -149035,7 +149101,7 @@ index b82622c8645d9ae13f9b399346c73937cda8e51f..740b2d0d257ba42d7b66339a2fa0bb1b
  
  static void notify_input_changed(uint32_t mask)
  {
-@@ -280,14 +765,13 @@ static void qemu_input_queue_process(void *opaque)
+@@ -280,14 +782,13 @@ static void qemu_input_queue_process(void *opaque)
      g_assert(item->type == QEMU_INPUT_QUEUE_DELAY);
      QTAILQ_REMOVE(queue, item, node);
      queue_count--;
@@ -149052,7 +149118,7 @@ index b82622c8645d9ae13f9b399346c73937cda8e51f..740b2d0d257ba42d7b66339a2fa0bb1b
              return;
          case QEMU_INPUT_QUEUE_EVENT:
              qemu_input_event_send(item->src, &item->evt);
-@@ -298,7 +782,7 @@ static void qemu_input_queue_process(void *opaque)
+@@ -298,7 +799,7 @@ static void qemu_input_queue_process(void *opaque)
          }
          QTAILQ_REMOVE(queue, item, node);
          queue_count--;
@@ -149061,7 +149127,7 @@ index b82622c8645d9ae13f9b399346c73937cda8e51f..740b2d0d257ba42d7b66339a2fa0bb1b
      }
  }
  
-@@ -315,8 +799,7 @@ static void qemu_input_queue_delay(QemuInputEventQueueHead *queue,
+@@ -315,8 +816,7 @@ static void qemu_input_queue_delay(QemuInputEventQueueHead *queue,
      queue_count++;
  
      if (start_timer) {
@@ -149071,7 +149137,7 @@ index b82622c8645d9ae13f9b399346c73937cda8e51f..740b2d0d257ba42d7b66339a2fa0bb1b
      }
  }
  
-@@ -327,6 +810,9 @@ static void qemu_input_queue_event(QemuInputEventQueueHead *queue,
+@@ -327,6 +827,9 @@ static void qemu_input_queue_event(QemuInputEventQueueHead *queue,
  
      item->type = QEMU_INPUT_QUEUE_EVENT;
      item->src = src;
@@ -149081,7 +149147,7 @@ index b82622c8645d9ae13f9b399346c73937cda8e51f..740b2d0d257ba42d7b66339a2fa0bb1b
      item->evt = *evt;
      QTAILQ_INSERT_TAIL(queue, item, node);
      queue_count++;
-@@ -409,7 +895,7 @@ void qemu_input_event_send_key_linux(QemuConsole *src, unsigned int lnx,
+@@ -409,7 +912,7 @@ void qemu_input_event_send_key_linux(QemuConsole *src, unsigned int lnx,
      if (QTAILQ_EMPTY(&kbd_queue)) {
          qemu_input_event_send(src, &evt);
          qemu_input_event_sync();
@@ -149090,7 +149156,7 @@ index b82622c8645d9ae13f9b399346c73937cda8e51f..740b2d0d257ba42d7b66339a2fa0bb1b
          qemu_input_queue_event(&kbd_queue, src, &evt);
          qemu_input_queue_sync(&kbd_queue);
      }
-@@ -427,13 +913,8 @@ void qemu_input_event_send_key_delay(uint32_t delay_ms)
+@@ -427,13 +930,8 @@ void qemu_input_event_send_key_delay(uint32_t delay_ms)
          return;
      }
  
