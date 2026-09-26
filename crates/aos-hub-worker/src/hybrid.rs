@@ -4,6 +4,9 @@
 //! context. Storage-work and byte-delivery routes have no generic origin
 //! fallback: they must be implemented by the Worker storage data plane.
 
+use std::cell::Cell;
+use std::sync::Arc;
+
 use aos_hub_core::hybrid_ingress::{
     oci_chunk_range_matches, HybridCachePartAdmission, HybridCachePartAdmissionRequest,
     HybridCachePartCompletionRequest, HybridCachePartPreflight, HybridCacheUploadAdmission,
@@ -21,6 +24,7 @@ use aos_hub_core::storage_work::{
     STORAGE_WORK_SIGNATURE_HEADER,
 };
 use base64::Engine as _;
+use futures_util::lock::{Mutex, OwnedMutexGuard};
 use futures_util::StreamExt as _;
 use sha2::{Digest as _, Sha256};
 use wasm_bindgen::JsValue;
@@ -30,6 +34,28 @@ use worker::{
 
 const MAX_CONTROL_BODY_BYTES: usize = aos_hub_core::connect::CONNECT_REQUEST_BODY_LIMIT_BYTES;
 const MAX_CONTROL_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+thread_local! {
+    // Buffered upload bodies share one isolate's memory. Cloudflare can run
+    // other isolates in parallel, while a local workerd cannot absorb an
+    // unbounded burst of large bodies in one instance.
+    static UPLOAD_GATES: [Arc<Mutex<()>>; 2] = [
+        Arc::new(Mutex::new(())),
+        Arc::new(Mutex::new(())),
+    ];
+    static NEXT_UPLOAD_GATE: Cell<usize> = const { Cell::new(0) };
+}
+
+async fn acquire_upload_permit() -> OwnedMutexGuard<()> {
+    let gate = UPLOAD_GATES.with(|gates| {
+        NEXT_UPLOAD_GATE.with(|next| {
+            let index = next.get();
+            next.set((index + 1) % gates.len());
+            Arc::clone(&gates[index])
+        })
+    });
+    gate.lock_owned().await
+}
 
 /// Dispatches hybrid control and authenticated storage-work requests.
 ///
@@ -127,6 +153,7 @@ fn is_oci_upload_session(path: &str) -> bool {
 }
 
 async fn append_oci_upload_chunk(mut request: Request, env: &Env) -> Result<Response> {
+    let _permit = acquire_upload_permit().await;
     let preflight_request = upload_phase_request_with_method(&request, &[], worker::Method::Patch)?;
     let preflight_response =
         match proxy_with_upload_phase(preflight_request, env, Some("preflight")).await {
@@ -278,6 +305,7 @@ async fn upload_registry_part(mut request: Request, env: &Env) -> Result<Respons
     if request.method() != worker::Method::Put {
         return Response::error("method not allowed", 405);
     }
+    let _permit = acquire_upload_permit().await;
     let url = request.url()?;
     let Some((upload_id, part_number)) = url
         .path()
@@ -428,6 +456,7 @@ async fn upload_cache_part(mut request: Request, env: &Env) -> Result<Response> 
     if request.method() != worker::Method::Put {
         return Response::error("method not allowed", 405);
     }
+    let _permit = acquire_upload_permit().await;
     let url = request.url()?;
     let Some((upload_id, part_number)) = url
         .path()
@@ -529,6 +558,7 @@ async fn upload_registry_object(mut request: Request, env: &Env) -> Result<Respo
     if request.method() != worker::Method::Put {
         return Response::error("method not allowed", 405);
     }
+    let _permit = acquire_upload_permit().await;
     // Authenticate and freeze the SQL destinations before consuming client bytes.
     let admission_request = upload_phase_request(&request, &[])?;
     let admission_response = proxy_upload_phase(admission_request, env, "admit").await?;
@@ -643,6 +673,7 @@ async fn upload_cache_object(mut request: Request, env: &Env) -> Result<Response
     if request.method() != worker::Method::Put {
         return Response::error("method not allowed", 405);
     }
+    let _permit = acquire_upload_permit().await;
     let url = request.url()?;
     let Some(encoded_path) = url.path().rsplit('/').next() else {
         return Response::error("invalid cache upload path", 400);
