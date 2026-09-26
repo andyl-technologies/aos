@@ -4,10 +4,14 @@
 }: let
   workloadSource = builtins.readFile ./phase0-s5-workload.c;
   pluginSource = builtins.readFile ./phase0-s5-virtual-memory-plugin.c;
+  qmpClientSource = builtins.readFile ./phase0-s5-qmp.py;
   linuxResetSource = builtins.readFile ./phase0-s5-linux-reset.S;
   linuxResetLinkerScript = builtins.readFile ./x86-direct-reset.ld;
   rrSwitchQuantum = 4096;
-  kernelCommandLine = "console=ttyS0 reboot=k panic=1 rdinit=/init nokaslr norandmaps random.trust_cpu=off";
+  # QEMU's 4 GHz TSC advances once per 250 ps. Supply that known rate and
+  # skip delay calibration, while the test-only APIC patch supplies its known
+  # 1 GHz period. The default waits exhaust sim's 50 ps/instruction boot budget.
+  kernelCommandLine = "console=ttyS0 earlycon=uart8250,io,0x3f8,115200 reboot=k panic=1 rdinit=/init lpj=1 tsc_early_khz=4000000 nokaslr norandmaps random.trust_cpu=off";
 
   # Keep the Linux MMU and mmap path while avoiding the deployment kernel's
   # unrelated driver initialization under sim's fixed 50 ps/instruction clock.
@@ -18,6 +22,7 @@
     buildDeps = [
       pkgs.bc
       pkgs.bison
+      pkgs.elfutils
       pkgs.flex
       pkgs.gawk
       pkgs.gnumake
@@ -26,6 +31,7 @@
       pkgs.patch
       pkgs.perl
       pkgs.python3
+      pkgs.zlib
     ];
     hardeningDisable = ["all"];
 
@@ -41,6 +47,8 @@
         name = "patch";
         script = ''
           patch -p1 < ${../../pkgs/kernel/linux-gawk-array-argument.patch}
+          patch -p1 < ${./linux-tsc-known-frequency.patch}
+          patch -p1 < ${./phase0-s5-apic-known-period.patch}
         '';
       }
       {
@@ -50,7 +58,9 @@
           cat > .s5.config <<'KCONFIG'
           CONFIG_64BIT=y
           CONFIG_X86_64=y
+          CONFIG_PRINTK=y
           CONFIG_BINFMT_ELF=y
+          CONFIG_ADVISE_SYSCALLS=y
           CONFIG_BLK_DEV_INITRD=y
           CONFIG_RD_GZIP=y
           CONFIG_MMU=y
@@ -66,13 +76,17 @@
           make ARCH=x86_64 LLVM=1 HOSTCC=cc HOSTCXX=c++ olddefconfig
 
           grep -Fxq 'CONFIG_BINFMT_ELF=y' .config
+          grep -Fxq 'CONFIG_ADVISE_SYSCALLS=y' .config
           grep -Fxq 'CONFIG_BLK_DEV_INITRD=y' .config
+          grep -Fxq 'CONFIG_PRINTK=y' .config
           grep -Fxq 'CONFIG_SERIAL_8250_CONSOLE=y' .config
         '';
       }
       {
         name = "build";
         script = ''
+          # Kbuild's host objtool needs the AOS libelf and zlib runtime paths.
+          export LD_LIBRARY_PATH="${pkgs.elfutils}/lib:${pkgs.openssl}/lib:${pkgs.zlib}/lib"
           make -j"$NIX_BUILD_CORES" ARCH=x86_64 LLVM=1 HOSTCC=cc HOSTCXX=c++ bzImage
         '';
       }
@@ -81,6 +95,7 @@
         script = ''
           mkdir -p "$out/boot"
           cp arch/x86/boot/bzImage "$out/boot/vmlinuz"
+          cp System.map "$out/boot/System.map"
           cp .config "$out/boot/config"
         '';
       }
@@ -242,7 +257,8 @@ in
     src = null;
 
     plugin = pluginSource;
-    passAsFile = ["plugin"];
+    qmpClient = qmpClientSource;
+    passAsFile = ["plugin" "qmpClient"];
 
     buildDeps = [
       pkgs.coreutils
@@ -253,8 +269,8 @@ in
       pkgs.grep
       pkgs.jq
       pkgs.pkg-config
+      pkgs.python3
       pkgs.qemu-crucible
-      pkgs.socat
     ];
 
     QEMU = "${pkgs.qemu-crucible}/bin/qemu-system-x86_64";
@@ -265,6 +281,7 @@ in
         name = "build-s5-plugin";
         script = ''
           cp "$pluginPath" phase0-s5-virtual-memory-plugin.c
+          cp "$qmpClientPath" qmp-client.py
           cc -fPIC -shared -O2 -Wall -Wextra -Werror \
             $(pkg-config --cflags glib-2.0) \
             -I${pkgs.qemu-crucible}/include \
@@ -288,12 +305,18 @@ in
             socket="$1"
             request="$2"
             response="$3"
+            budget="''${4:-5}"
             response_err="$response.err"
 
-            {
-              printf '{"execute":"qmp_capabilities"}\r\n'
-              printf '%s\r\n' "$request"
-            } | socat -T 2 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
+            [ "$budget" -gt 0 ] || return 1
+            if [ "$budget" -gt 5 ]; then
+              budget=5
+            fi
+            if ! timeout "$budget" python3 qmp-client.py "$socket" "$request" \
+                 > "$response" 2> "$response_err"; then
+              cat "$response_err" >&2
+              return 1
+            fi
 
             if [ ! -s "$response" ]; then
               cat "$response_err" >&2
@@ -309,13 +332,12 @@ in
 
           wait_for_socket() {
             socket="$1"
-            waited=0
-            while [ "$waited" -lt 600 ]; do
+            deadline="$2"
+            while [ "$(date +%s)" -lt "$deadline" ]; do
               if [ -S "$socket" ]; then
                 return 0
               fi
               sleep 0.1
-              waited=$((waited + 1))
             done
             return 1
           }
@@ -323,11 +345,17 @@ in
           wait_for_pause() {
             label="$1"
             socket="$2"
+            deadline="$3"
             current_status="$TMPDIR/qmp-status-current-$label.json"
             last_status="$TMPDIR/qmp-status-$label.json"
-            waited=0
-            while [ "$waited" -lt 1200 ]; do
-              if qmp_cmd "$socket" '{"execute":"query-status"}' "$current_status"; then
+            current_registers="$TMPDIR/qmp-registers-current-$label.json"
+            last_registers="$TMPDIR/qmp-registers-$label.json"
+            next_snapshot=0
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              remaining=$((deadline - $(date +%s)))
+              [ "$remaining" -gt 0 ] || break
+              kill -0 "$qemu_pid" 2>/dev/null || return 1
+              if qmp_cmd "$socket" '{"execute":"query-status"}' "$current_status" "$remaining"; then
                 cp "$current_status" "$last_status"
                 status=$(jq -r -s '[.[] | select(has("return"))][-1].return.status // empty' "$last_status")
                 case "$status" in
@@ -340,8 +368,21 @@ in
                     ;;
                 esac
               fi
-              sleep 0.25
-              waited=$((waited + 1))
+
+              # Keep a recent PC even if QMP becomes unavailable at deadline.
+              remaining=$((deadline - $(date +%s)))
+              elapsed=$((300 - remaining))
+              if [ "$remaining" -gt 0 ] && [ "$elapsed" -ge "$next_snapshot" ]; then
+                if qmp_cmd "$socket" \
+                  '{"execute":"human-monitor-command","arguments":{"command-line":"info registers"}}' \
+                  "$current_registers" "$remaining"; then
+                  cp "$current_registers" "$last_registers"
+                  pc=$(jq -r -s '[.[] | select(has("return"))][-1].return | capture("RIP=(?<pc>[0-9a-fA-F]+)").pc // empty' "$last_registers")
+                  echo "S5 $label guest PC after ''${elapsed}s: $pc"
+                fi
+                next_snapshot=$((elapsed + 30))
+              fi
+              sleep 1
             done
             return 1
           }
@@ -415,25 +456,13 @@ in
 
           report_pause_timeout() {
             label="$1"
-            socket="$2"
 
             echo "--- S5 $label QMP status ---" >&2
             cat "$TMPDIR/qmp-status-$label.json" >&2 || true
-            qmp_cmd "$socket" \
-              '{"execute":"query-cpus-fast"}' \
-              "$TMPDIR/qmp-cpus-$label.json" || true
-            cat "$TMPDIR/qmp-cpus-$label.json" >&2 || true
-            qmp_cmd "$socket" \
-              '{"execute":"human-monitor-command","arguments":{"command-line":"info registers -a"}}' \
-              "$TMPDIR/qmp-registers-$label.json" || true
             cat "$TMPDIR/qmp-registers-$label.json" >&2 || true
-            qmp_cmd "$socket" \
-              '{"execute":"human-monitor-command","arguments":{"command-line":"info pic"}}' \
-              "$TMPDIR/qmp-pic-$label.json" || true
-            cat "$TMPDIR/qmp-pic-$label.json" >&2 || true
 
             echo "--- S5 $label serial tail ---" >&2
-            tail -n 80 "$TMPDIR/serial-$label.log" >&2 || true
+            tr -d '\r' < "$TMPDIR/serial-$label.log" | awk 'NF' | tail -n 80 >&2 || true
             echo "--- S5 $label trace tail ---" >&2
             tail -n 32 "$TMPDIR/trace-$label.jsonl" >&2 || true
           }
@@ -445,6 +474,7 @@ in
           run_qemu() {
             label="$1"
             read_mode="$2"
+            deadline=$(($(date +%s) + 300))
             qmp_socket="$TMPDIR/qmp-$label.sock"
             serial="$TMPDIR/serial-$label.log"
             trace="$TMPDIR/trace-$label.jsonl"
@@ -477,12 +507,16 @@ in
               -no-reboot &
             qemu_pid="$!"
 
-            wait_for_socket "$qmp_socket" || fail "$label QMP socket did not appear"
-            wait_for_pause "$label" "$qmp_socket" || {
-              report_pause_timeout "$label" "$qmp_socket"
+            wait_for_socket "$qmp_socket" "$deadline" || fail "$label QMP socket did not appear"
+            wait_for_pause "$label" "$qmp_socket" "$deadline" || {
+              cleanup_qemu
+              report_pause_timeout "$label"
               fail "$label did not pause after S5 markers"
             }
-            qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" || true
+            remaining=$((deadline - $(date +%s)))
+            [ "$remaining" -gt 0 ] || fail "$label exhausted its QMP deadline"
+            qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" "$remaining" ||
+              fail "$label could not quit QEMU after marker pause"
             wait "$qemu_pid" || fail "$label QEMU exited unsuccessfully"
             qemu_pid=""
           }
