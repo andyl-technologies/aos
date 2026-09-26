@@ -890,16 +890,14 @@ class PackageScenario:
             "AOS_QUALIFICATION_PACKAGE_PROFILE": str(self._profile_current()),
             "AOS_QUALIFICATION_PROBE_REPORT": str(report),
             "AOS_QUALIFICATION_PROBE_WORK": str(work),
-            "AOS_QUALIFICATION_BASH": os.environ["AOS_QUALIFICATION_BASH"],
-            "AOS_QUALIFICATION_CC": os.environ["AOS_QUALIFICATION_CC"],
-            "AOS_QUALIFICATION_CXX": os.environ["AOS_QUALIFICATION_CXX"],
-            "AOS_QUALIFICATION_PERL": os.environ["AOS_QUALIFICATION_PERL"],
             "AOS_QUALIFICATION_PYTHON": os.environ["AOS_QUALIFICATION_PYTHON"],
             "AOS_QUALIFICATION_NIX_STORE": os.environ["AOS_QUALIFICATION_NIX_STORE"],
         }
-        rustc = os.environ.get("AOS_QUALIFICATION_RUSTC")
-        if rustc:
-            environment["AOS_QUALIFICATION_RUSTC"] = rustc
+        for name in ("BASH", "CC", "CXX", "PERL", "RUSTC"):
+            variable = f"AOS_QUALIFICATION_{name}"
+            executable = os.environ.get(variable)
+            if executable:
+                environment[variable] = executable
         if closure_python_path:
             environment["PYTHONPATH"] = closure_python_path
         if closure_perl_path:

@@ -13,18 +13,51 @@
   sortedPackageNames = builtins.sort builtins.lessThan packageNames;
   mkPackageProbe = import ./qualification-package-probe.nix {inherit pkgs lib;};
   packageProbeSpec = import ./qualification-package-spec.nix {inherit lib;};
-  containsRustHarness = value:
+  harnessNamesIn = value:
     if builtins.isList value
-    then builtins.any containsRustHarness value
+    then builtins.concatMap harnessNamesIn value
     else if builtins.isAttrs value
     then
       if (value.kind or null) == "harness"
-      then (value.tool or null) == "rust-compiler"
-      else builtins.any containsRustHarness (builtins.attrValues value)
-    else false;
-  requiresRustCompiler = builtins.any (packageName:
-    containsRustHarness pkgs.${packageName}.contract.value.qualification.package_probe)
-  sortedPackageNames;
+      then [value.tool]
+      else builtins.concatMap harnessNamesIn (builtins.attrValues value)
+    else [];
+  requiredHarnessNames = builtins.sort builtins.lessThan (lib.unique (builtins.concatMap (packageName:
+    harnessNamesIn pkgs.${packageName}.contract.value.qualification.package_probe)
+  sortedPackageNames));
+  # Python drives every probe. Other tools enter the executor closure only
+  # when a typed harness fragment requests them.
+  optionalHarnesses = {
+    bash = {
+      variable = "AOS_QUALIFICATION_BASH";
+      executable = "${pkgs.bash}/bin/bash";
+    };
+    "c-compiler" = {
+      variable = "AOS_QUALIFICATION_CC";
+      executable = "${pkgs.cc}/bin/cc";
+    };
+    "cxx-compiler" = {
+      variable = "AOS_QUALIFICATION_CXX";
+      executable = "${pkgs.cc}/bin/c++";
+    };
+    perl = {
+      variable = "AOS_QUALIFICATION_PERL";
+      executable = "${pkgs.perl}/bin/perl";
+    };
+    "rust-compiler" = {
+      variable = "AOS_QUALIFICATION_RUSTC";
+      executable = "${pkgs.rust}/bin/rustc";
+    };
+  };
+  optionalHarnessNames = builtins.filter (name: name != "python") requiredHarnessNames;
+  optionalHarnessVariables =
+    map
+    (name: optionalHarnesses.${name}.variable)
+    (builtins.attrNames optionalHarnesses);
+  optionalHarnessExports = builtins.concatStringsSep "\n" (map (name: let
+    harness = optionalHarnesses.${name} or (throw "unknown qualification harness '${name}'");
+  in "export ${harness.variable}=${lib.escapeShellArg harness.executable}")
+  optionalHarnessNames);
   probeFor = packageName: let
     package = pkgs.${packageName};
     contract = package.contract or (throw "qualification package '${packageName}' has no contract");
@@ -92,16 +125,9 @@
     export AOS_QUALIFICATION_NIX_STORE=${lib.escapeShellArg "${pkgs.nix}/bin/nix-store"}
     export AOS_QUALIFICATION_ZSTD=${lib.escapeShellArg "${pkgs.zstd}/bin/zstd"}
     export AOS_QUALIFICATION_UNAME=${lib.escapeShellArg "${pkgs.coreutils}/bin/uname"}
-    export AOS_QUALIFICATION_BASH=${lib.escapeShellArg "${pkgs.bash}/bin/bash"}
-    export AOS_QUALIFICATION_CC=${lib.escapeShellArg "${pkgs.cc}/bin/cc"}
-    export AOS_QUALIFICATION_CXX=${lib.escapeShellArg "${pkgs.cc}/bin/c++"}
-    export AOS_QUALIFICATION_PERL=${lib.escapeShellArg "${pkgs.perl}/bin/perl"}
+    unset ${builtins.concatStringsSep " " optionalHarnessVariables}
+    ${optionalHarnessExports}
     export AOS_QUALIFICATION_PYTHON=${lib.escapeShellArg "${pkgs.python3}/bin/python3"}
-    ${
-      if requiresRustCompiler
-      then ''export AOS_QUALIFICATION_RUSTC=${lib.escapeShellArg "${pkgs.rust}/bin/rustc"}''
-      else ''unset AOS_QUALIFICATION_RUSTC''
-    }
 
     umask 077
     mkdir -p \

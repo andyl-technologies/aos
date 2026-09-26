@@ -136,10 +136,7 @@
     export AOS_QUALIFICATION_PACKAGE_PROFILE=$PWD/work/profile
     export AOS_QUALIFICATION_PROBE_REPORT=$PWD/work/result.json
     export AOS_QUALIFICATION_PROBE_WORK=$PWD/work
-    export AOS_QUALIFICATION_BASH=${pkgs.bash}/bin/bash
     export AOS_QUALIFICATION_CC=${pkgs.cc}/bin/cc
-    export AOS_QUALIFICATION_CXX=${pkgs.cc}/bin/c++
-    export AOS_QUALIFICATION_PERL=${pkgs.perl}/bin/perl
     export AOS_QUALIFICATION_PYTHON=${pkgs.python3}/bin/python3
 
     ${declarativeProbe}
