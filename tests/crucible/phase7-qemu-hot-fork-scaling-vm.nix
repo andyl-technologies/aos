@@ -474,6 +474,22 @@ in
         'qemu_child_pairing=exact_source_boundary' /tmp/production-stress-result
       ${pkgs.grep}/bin/grep -Fxq 'source_threads_leaked=0' /tmp/production-stress-result
       ${pkgs.grep}/bin/grep -Fxq 'source_descriptors_leaked=0' /tmp/production-stress-result
+      ${pkgs.grep}/bin/grep -Fxq 'stress_final_qemu_processes=0' /tmp/production-stress-result
+      for resource in source_disk target_disk run_state store; do
+        ${pkgs.gawk}/bin/awk -F= -v resource="$resource" '
+          $1 == "stress_" resource "_midpoint_bytes" {
+            midpoint_count++;
+            if ($2 !~ /^[0-9]+$/) bad = 1;
+            midpoint = $2 + 0;
+          }
+          $1 == "stress_" resource "_final_bytes" {
+            final_count++;
+            if ($2 !~ /^[0-9]+$/) bad = 1;
+            final = $2 + 0;
+          }
+          END { exit midpoint_count == 1 && final_count == 1 && !bad && final <= midpoint ? 0 : 1 }
+        ' /tmp/production-stress-result
+      done
 
       run_exact_normal_lib_test \
         crucible-daemon \
@@ -505,6 +521,21 @@ in
         ${pkgs.grep}/bin/grep -Fxq "$evidence" /tmp/performance-ratchet-result
       done
 
+      run_exact_lib_test \
+        crucible-daemon \
+        qemu_hot_fork_world_factory::tests::native_acceptance::final_audit::production_hot_fork_resource_roots_are_clean_after_packaged_flights \
+        /tmp/final-resource-audit-result
+      for evidence in \
+        final_attempt_processes=0 \
+        final_qemu_processes=0 \
+        final_attempt_descriptors=0 \
+        final_attempt_process_memory_bytes=0 \
+        final_attempt_storage_entries=0; do
+        require_exact_test_marker "$evidence" /tmp/final-resource-audit-result
+      done
+      require_exact_test_marker \
+        final_store_verified_objects=2 /tmp/final-resource-audit-result
+
       cat /tmp/host-clone-cost-result \
         /tmp/fault-clone-cost-result \
         /tmp/daemon-scaling-result \
@@ -514,7 +545,8 @@ in
         /tmp/simultaneous-siblings-result \
         /tmp/production-stress-result \
         /tmp/manager-pressure-result \
-        /tmp/performance-ratchet-result > /tmp/hot-fork-scaling-measurements
+        /tmp/performance-ratchet-result \
+        /tmp/final-resource-audit-result > /tmp/hot-fork-scaling-measurements
       printf '%s\n' \
         PASS \
         'gate=gate:hot-fork-scaling' \
@@ -532,6 +564,7 @@ in
         'standalone_stress_path=removed' \
         'pressure=cgroup-memory,pids,project-quota' \
         'descendant_template_generations=3' \
+        'final_resource_audit=process,descriptors,memory,attempt-storage,content-store' \
         'check=${attrPath}' \
         'tasks=${builtins.concatStringsSep "," taskIds}' \
         >> /tmp/hot-fork-scaling-measurements

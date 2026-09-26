@@ -832,6 +832,10 @@ fn production_whole_world_survives_ten_thousand_lifecycles_without_leaks() {
     let baseline_threads = process_thread_count(&baseline_processes);
     let baseline_descriptors = process_descriptor_count(&baseline_processes);
     let mut midpoint_private_dirty_kib = 0;
+    let mut midpoint_source_disk_bytes = 0;
+    let mut midpoint_target_disk_bytes = 0;
+    let mut midpoint_run_state_bytes = 0;
+    let mut midpoint_store_bytes = 0;
 
     for lifecycle_index in 0..LIFECYCLES {
         let child = start_hot_child(NativeHotChildStart {
@@ -855,6 +859,12 @@ fn production_whole_world_survives_ten_thousand_lifecycles_without_leaks() {
             let private_dirty_kib = process_memory_evidence(&processes).private_dirty_kib;
             if completed == LIFECYCLES / 2 {
                 midpoint_private_dirty_kib = private_dirty_kib;
+                midpoint_source_disk_bytes =
+                    allocated_tree_bytes(&paths.storage_root.join("production-stress-source"));
+                midpoint_target_disk_bytes =
+                    allocated_tree_bytes(&paths.storage_root.join("production-stress-target"));
+                midpoint_run_state_bytes = allocated_tree_bytes(&paths.run_state_root);
+                midpoint_store_bytes = allocated_tree_bytes(&paths.artifacts);
             }
             println!("stress_private_dirty_{completed}_kib={private_dirty_kib}");
         }
@@ -862,12 +872,38 @@ fn production_whole_world_survives_ten_thousand_lifecycles_without_leaks() {
     let final_processes = cgroup_processes(&source_cgroup);
     let final_private_dirty_kib = process_memory_evidence(&final_processes).private_dirty_kib;
     assert!(final_private_dirty_kib.saturating_sub(midpoint_private_dirty_kib) <= 4 * 1024);
+    assert_eq!(final_processes, baseline_processes);
+    assert!(cgroup_processes(&paths.cgroup_root.join("production-stress-target")).is_empty());
+
+    // Repeating an identical child workload after warmup must not accumulate
+    // attempt storage, run-state artifacts, or DAG objects with each fork.
+    let final_source_disk_bytes =
+        allocated_tree_bytes(&paths.storage_root.join("production-stress-source"));
+    let final_target_disk_bytes =
+        allocated_tree_bytes(&paths.storage_root.join("production-stress-target"));
+    let final_run_state_bytes = allocated_tree_bytes(&paths.run_state_root);
+    let final_store_bytes = allocated_tree_bytes(&paths.artifacts);
+    assert!(final_source_disk_bytes <= midpoint_source_disk_bytes);
+    assert!(final_target_disk_bytes <= midpoint_target_disk_bytes);
+    assert!(final_run_state_bytes <= midpoint_run_state_bytes);
+    assert!(final_store_bytes <= midpoint_store_bytes);
+
     world.retire().expect("retire production stress source");
+    assert!(cgroup_processes(&source_cgroup).is_empty());
     println!("production_whole_world_lifecycles={LIFECYCLES}");
     println!("qemu_child_pairing=exact_source_boundary");
     println!("source_threads_leaked=0");
     println!("source_descriptors_leaked=0");
     println!("source_private_dirty_late_growth_limit_kib=4096");
+    println!("stress_source_disk_midpoint_bytes={midpoint_source_disk_bytes}");
+    println!("stress_source_disk_final_bytes={final_source_disk_bytes}");
+    println!("stress_target_disk_midpoint_bytes={midpoint_target_disk_bytes}");
+    println!("stress_target_disk_final_bytes={final_target_disk_bytes}");
+    println!("stress_run_state_midpoint_bytes={midpoint_run_state_bytes}");
+    println!("stress_run_state_final_bytes={final_run_state_bytes}");
+    println!("stress_store_midpoint_bytes={midpoint_store_bytes}");
+    println!("stress_store_final_bytes={final_store_bytes}");
+    println!("stress_final_qemu_processes=0");
 }
 
 #[test]

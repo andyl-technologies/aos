@@ -224,6 +224,18 @@
       require_case_marker "$negative_case" "$marker"
     done
 
+    final_audit_case=qemu_hot_fork_world_factory::tests::native_acceptance::final_audit::production_hot_fork_resource_roots_are_clean_after_packaged_flights
+    run_case "$final_audit_case"
+    for marker in \
+      'final_attempt_processes=0' \
+      'final_qemu_processes=0' \
+      'final_attempt_descriptors=0' \
+      'final_attempt_process_memory_bytes=0' \
+      'final_attempt_storage_entries=0' \
+      'final_store_verified_objects=2'; do
+      require_case_marker "$final_audit_case" "$marker"
+    done
+
     printf '%s\n' \
       'PASS' \
       'gate=gate:world-fork-atomicity' \
@@ -247,6 +259,7 @@
       'native_real_resource_alias_rejected_before=child-readiness,world-publication' \
       'native_real_resource_alias_source_unchanged=true' \
       'failures=fork,adoption,target-cleanup,repository-publication' \
+      'final_resource_audit=process,descriptors,memory,attempt-storage,content-store' \
       'check=${attrPath}' \
       'tasks=${builtins.concatStringsSep "," taskIds}' \
       > ${resultPath}
