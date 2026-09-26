@@ -31,6 +31,7 @@ mod resources;
 mod root_challenge_record;
 mod source_hold_pin;
 mod source_hold_readback;
+mod source_hold_readback_v2;
 #[cfg(target_os = "linux")]
 mod source_signer_readback;
 
@@ -180,7 +181,11 @@ pub use source_hold_readback::{
     SourceHoldReadbackErrorV1, encode_source_hold_readback_signer_credential_v1,
     sign_current_source_hold_readback_v1, verify_current_source_hold_readback_v1,
 };
+pub use source_hold_readback_v2::{
+    SOURCE_HOLD_READBACK_BYTES_V2, verify_source_hold_readback_with_names_v2,
+};
 #[cfg(target_os = "linux")]
 pub use source_signer_readback::{
     SourceSignerReadbackErrorV1, sign_fixed_source_signer_readback_v1,
+    sign_fixed_source_signer_readback_v2,
 };

@@ -265,6 +265,20 @@ pub(super) fn sign_fields(
     signing_key: &SigningKey,
 ) -> [u8; SOURCE_HOLD_READBACK_BYTES_V1] {
     let mut packet = [0; SOURCE_HOLD_READBACK_BYTES_V1];
+    packet[..BODY_BYTES]
+        .copy_from_slice(&source_hold_body_v1(challenge, project, hold, generation));
+    let signature = signing_key.sign(&signature_preimage(&packet[..BODY_BYTES]));
+    packet[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
+    packet
+}
+
+pub(super) fn source_hold_body_v1(
+    challenge: SourceHoldReadbackChallengeV1,
+    project: ProjectId,
+    hold: SourceDomainPolicyHoldV1,
+    generation: u64,
+) -> [u8; BODY_BYTES] {
+    let mut packet = [0; BODY_BYTES];
     packet[..8].copy_from_slice(MAGIC);
     packet[8..10].copy_from_slice(&1_u16.to_be_bytes());
     packet[16..24].copy_from_slice(&generation.to_be_bytes());
@@ -277,8 +291,6 @@ pub(super) fn sign_fields(
     packet[152..184].copy_from_slice(hold.ancestry().as_bytes());
     packet[184..216].copy_from_slice(hold.binding().as_bytes());
     packet[216..224].copy_from_slice(&hold.epoch().to_be_bytes());
-    let signature = signing_key.sign(&signature_preimage(&packet[..BODY_BYTES]));
-    packet[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
     packet
 }
 

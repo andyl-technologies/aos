@@ -20,11 +20,12 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::time::Duration;
 
-use aos_sandbox::journal::SourceDomainPolicyHoldV1;
+use aos_sandbox::journal::{ProtectedJournalNamesV1, SourceDomainPolicyHoldV1};
 use aos_sandbox::policy_compiler::{
-    PinnedSourceHoldReadbackSignerV1, SOURCE_HOLD_READBACK_BYTES_V1, SourceHoldReadbackChallengeV1,
-    StagedClosedPolicySignerChallengeV2, sign_fixed_source_signer_readback_v1,
-    verify_current_source_hold_readback_v1,
+    PinnedSourceHoldReadbackSignerV1, SOURCE_HOLD_READBACK_BYTES_V1, SOURCE_HOLD_READBACK_BYTES_V2,
+    SourceHoldReadbackChallengeV1, StagedClosedPolicySignerChallengeV2,
+    sign_fixed_source_signer_readback_v1, sign_fixed_source_signer_readback_v2,
+    verify_current_source_hold_readback_v1, verify_source_hold_readback_with_names_v2,
 };
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use rustix::net::sockopt::{socket_acceptconn, socket_peercred};
@@ -37,8 +38,11 @@ pub const SOURCE_SIGNER_SOCKET_PATH_V1: &str = "/run/aos/sandbox-source-signerd.
 const CREDENTIAL_DIRECTORY: &str = "/run/credentials/aos-sandbox-source-signerd.service";
 const REQUEST_MAGIC: &[u8; 8] = b"AOSSSR01";
 const REPLY_MAGIC: &[u8; 8] = b"AOSSSP01";
+const REQUEST_NAMES_MAGIC: &[u8; 8] = b"AOSSSR02";
+const REPLY_NAMES_MAGIC: &[u8; 8] = b"AOSSSP02";
 const REQUEST_BYTES: usize = 72;
 const REPLY_BYTES: usize = 8 + SOURCE_HOLD_READBACK_BYTES_V1;
+const REPLY_NAMES_BYTES: usize = 8 + SOURCE_HOLD_READBACK_BYTES_V2;
 const FLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -76,6 +80,51 @@ pub fn request_root_source_signer_readback_v1(
     let packet = read_reply(&mut stream)?;
     verify_current_source_hold_readback_v1(&packet, signer, challenge, project, expected_hold)
         .map_err(io::Error::other)?;
+    Ok(packet)
+}
+
+/// Requests a Source-only signature over the held head and fixed physical names.
+///
+/// This remains nonauthorizing. Root must spend the challenge under the
+/// matching Source writer and join its Controller/Cache cut before SUBMIT.
+///
+/// # Errors
+///
+/// Rejects unsafe signer custody, malformed transport, changed pin or hold,
+/// and mismatched directory, journal, or lock inode identities.
+#[allow(clippy::too_many_arguments)]
+pub fn request_root_source_signer_readback_with_names_v2(
+    challenge: SourceHoldReadbackChallengeV1,
+    project: ProjectId,
+    expected_hold: SourceDomainPolicyHoldV1,
+    expected_names: ProtectedJournalNamesV1,
+    signer: &PinnedSourceHoldReadbackSignerV1,
+    signer_uid: u32,
+    socket_gid: u32,
+) -> io::Result<[u8; SOURCE_HOLD_READBACK_BYTES_V2]> {
+    if project.as_bytes() == &[0; 16] || signer_uid == 0 || socket_gid == 0 {
+        return Err(invalid_data("invalid Source signer request identity"));
+    }
+    require_socket_path_custody(signer_uid, socket_gid)?;
+    let mut stream = UnixStream::connect(SOURCE_SIGNER_SOCKET_PATH_V1)?;
+    require_socket_path_custody(signer_uid, socket_gid)?;
+    stream.set_read_timeout(Some(REPLY_TIMEOUT))?;
+    stream.set_write_timeout(Some(FLIGHT_TIMEOUT))?;
+
+    let mut request = encode_request(challenge, project);
+    request[..8].copy_from_slice(REQUEST_NAMES_MAGIC);
+    stream.write_all(&request)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let packet = read_names_reply(&mut stream)?;
+    verify_source_hold_readback_with_names_v2(
+        &packet,
+        signer,
+        challenge,
+        project,
+        expected_hold,
+        expected_names,
+    )
+    .map_err(io::Error::other)?;
     Ok(packet)
 }
 
@@ -158,6 +207,18 @@ fn read_reply(stream: &mut UnixStream) -> io::Result<[u8; SOURCE_HOLD_READBACK_B
     reply[8..]
         .try_into()
         .map_err(|_| invalid_data("invalid Source signer packet length"))
+}
+
+fn read_names_reply(stream: &mut UnixStream) -> io::Result<[u8; SOURCE_HOLD_READBACK_BYTES_V2]> {
+    let mut reply = [0; REPLY_NAMES_BYTES];
+    stream.read_exact(&mut reply)?;
+    let mut trailing = [0];
+    if &reply[..8] != REPLY_NAMES_MAGIC || stream.read(&mut trailing)? != 0 {
+        return Err(invalid_data("invalid Source signer names reply"));
+    }
+    reply[8..]
+        .try_into()
+        .map_err(|_| invalid_data("invalid Source signer names packet length"))
 }
 
 fn require_socket_path_custody(signer_uid: u32, socket_gid: u32) -> io::Result<()> {
@@ -254,21 +315,48 @@ fn serve_request(
     if stream.read(&mut trailing)? != 0 {
         return Err(invalid_data("trailing Source signer request bytes").into());
     }
-    let (challenge, project) = decode_request(&request)?;
+    let (challenge, project, with_names) = decode_request_mode(&request)?;
     let signing_key = credentials.signing_key()?;
-    let packet = sign_fixed_source_signer_readback_v1(
-        controller_uid,
-        project,
-        challenge,
-        credentials.generation(),
-        &signing_key,
-    )?;
-    let mut reply = [0; REPLY_BYTES];
-    reply[..8].copy_from_slice(REPLY_MAGIC);
-    reply[8..].copy_from_slice(&packet);
-    stream.write_all(&reply)?;
+    if with_names {
+        let packet = sign_fixed_source_signer_readback_v2(
+            controller_uid,
+            project,
+            challenge,
+            credentials.generation(),
+            &signing_key,
+        )?;
+        let mut reply = [0; REPLY_NAMES_BYTES];
+        reply[..8].copy_from_slice(REPLY_NAMES_MAGIC);
+        reply[8..].copy_from_slice(&packet);
+        stream.write_all(&reply)?;
+    } else {
+        let packet = sign_fixed_source_signer_readback_v1(
+            controller_uid,
+            project,
+            challenge,
+            credentials.generation(),
+            &signing_key,
+        )?;
+        let mut reply = [0; REPLY_BYTES];
+        reply[..8].copy_from_slice(REPLY_MAGIC);
+        reply[8..].copy_from_slice(&packet);
+        stream.write_all(&reply)?;
+    }
     stream.shutdown(std::net::Shutdown::Write)?;
     Ok(())
+}
+
+fn decode_request_mode(
+    request: &[u8; REQUEST_BYTES],
+) -> io::Result<(SourceHoldReadbackChallengeV1, ProjectId, bool)> {
+    let with_names = &request[..8] == REQUEST_NAMES_MAGIC;
+    if !with_names && &request[..8] != REQUEST_MAGIC {
+        return Err(invalid_data("foreign Source signer request"));
+    }
+    let mut canonical = *request;
+    canonical[..8].copy_from_slice(REQUEST_MAGIC);
+    let (challenge, project) = decode_request(&canonical)?;
+    Ok((challenge, project, with_names))
 }
 
 #[cfg(test)]
@@ -286,15 +374,40 @@ mod tests {
             decode_request(&bytes).expect("canonical request"),
             (challenge, project)
         );
+        let mut names = bytes;
+        names[..8].copy_from_slice(REQUEST_NAMES_MAGIC);
+        assert_eq!(
+            decode_request_mode(&names).expect("names request"),
+            (challenge, project, true)
+        );
 
         let mut foreign = bytes;
         foreign[..8].copy_from_slice(b"AOSCSC02");
         assert!(decode_request(&foreign).is_err());
+        assert!(decode_request_mode(&foreign).is_err());
         let mut zero_project = bytes;
         zero_project[56..72].fill(0);
         assert!(decode_request(&zero_project).is_err());
         let mut zero_nonce = bytes;
         zero_nonce[8..24].fill(0);
         assert!(decode_request(&zero_nonce).is_err());
+        names[8..24].fill(0);
+        assert!(decode_request_mode(&names).is_err());
+    }
+
+    #[test]
+    fn names_reply_requires_distinct_version_and_exact_eof() {
+        let read = |magic: &[u8; 8], extra: &[u8]| {
+            let (mut root, mut signer) = UnixStream::pair().expect("Source signer pair");
+            let mut reply = [0; REPLY_NAMES_BYTES];
+            reply[..8].copy_from_slice(magic);
+            signer.write_all(&reply).expect("reply");
+            signer.write_all(extra).expect("extra");
+            signer.shutdown(std::net::Shutdown::Write).expect("EOF");
+            read_names_reply(&mut root)
+        };
+        assert!(read(REPLY_NAMES_MAGIC, &[]).is_ok());
+        assert!(read(REPLY_MAGIC, &[]).is_err());
+        assert!(read(REPLY_NAMES_MAGIC, &[1]).is_err());
     }
 }

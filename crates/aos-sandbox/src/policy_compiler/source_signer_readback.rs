@@ -13,7 +13,10 @@ use thiserror::Error;
 
 use crate::cache_residency::signer_mount::require_signer_mount;
 use crate::hierarchy::protected_journal::replay_project_ancestry_head_v1;
-use crate::journal::{Journal, JournalError, ReadOnlyProtectedJournal, SourceDomainPolicyHoldV1};
+use crate::journal::{
+    Journal, JournalError, ProtectedJournalNamesV1, ReadOnlyProtectedJournal,
+    SourceDomainPolicyHoldV1,
+};
 use crate::lifecycle::protected_journal_join::{
     PROTECTED_SOURCE_DOMAIN_JOURNAL, PROTECTED_SOURCE_DOMAIN_ROOT, source_domain_journal_limits,
 };
@@ -21,6 +24,9 @@ use crate::lifecycle::protected_journal_join::{
 use super::source_hold_readback::{
     SOURCE_HOLD_READBACK_BYTES_V1, SourceHoldReadbackChallengeV1, SourceHoldReadbackErrorV1,
     sign_fields,
+};
+use super::source_hold_readback_v2::{
+    SOURCE_HOLD_READBACK_BYTES_V2, sign_source_hold_readback_with_names_v2,
 };
 
 const SIGNER_SOURCE_VIEW: &str = "/run/aos/sandbox-source-signer-journal";
@@ -60,6 +66,54 @@ pub fn sign_fixed_source_signer_readback_v1(
     signer_generation: u64,
     signing_key: &SigningKey,
 ) -> Result<[u8; SOURCE_HOLD_READBACK_BYTES_V1], SourceSignerReadbackErrorV1> {
+    with_current_source_signer_view(
+        expected_controller_uid,
+        project,
+        signer_generation,
+        |hold, _| sign_fields(challenge, project, hold, signer_generation, signing_key),
+    )
+}
+
+/// Signs the held Source head and exact fixed journal/lock inode identities.
+///
+/// The signer still has only a read-only view. This V2 packet is
+/// nonauthorizing until Root joins it to a challenge committed under the
+/// matching Controller-retained Source writer and rechecks that cut.
+///
+/// # Errors
+///
+/// Rejects stale or replaced fixed names, mount, hold, ancestry, or signer
+/// generation, and incomplete protected replay.
+pub fn sign_fixed_source_signer_readback_v2(
+    expected_controller_uid: u32,
+    project: ProjectId,
+    challenge: SourceHoldReadbackChallengeV1,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+) -> Result<[u8; SOURCE_HOLD_READBACK_BYTES_V2], SourceSignerReadbackErrorV1> {
+    with_current_source_signer_view(
+        expected_controller_uid,
+        project,
+        signer_generation,
+        |hold, names| {
+            sign_source_hold_readback_with_names_v2(
+                challenge,
+                project,
+                hold,
+                names,
+                signer_generation,
+                signing_key,
+            )
+        },
+    )
+}
+
+fn with_current_source_signer_view<const N: usize>(
+    expected_controller_uid: u32,
+    project: ProjectId,
+    signer_generation: u64,
+    sign: impl FnOnce(SourceDomainPolicyHoldV1, ProtectedJournalNamesV1) -> [u8; N],
+) -> Result<[u8; N], SourceSignerReadbackErrorV1> {
     if project.as_bytes() == &[0; 16] || signer_generation == 0 || expected_controller_uid == 0 {
         return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
     }
@@ -78,7 +132,7 @@ pub fn sign_fixed_source_signer_readback_v1(
         mount.root_identity(),
     )?;
     let hold = replay_source_hold(&mut readback, project)?;
-    let packet = sign_fields(challenge, project, hold, signer_generation, signing_key);
+    let packet = sign(hold, readback.physical_names_v1());
 
     readback.check_named_currentness()?;
     if require_signer_mount(SIGNER_SOURCE_VIEW, PROTECTED_SOURCE_DOMAIN_ROOT, signer_uid)
@@ -151,6 +205,12 @@ mod tests {
             uid,
         )
         .expect("read-only Source journal");
+        assert_eq!(
+            readback.physical_names_v1(),
+            writer
+                .protected_writer_physical_names_v1()
+                .expect("writer names")
+        );
         assert!(replay_source_hold(&mut readback, ProjectId::from_bytes([9; 16])).is_err());
 
         for name in [

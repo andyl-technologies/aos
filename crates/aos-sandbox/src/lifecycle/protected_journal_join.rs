@@ -139,6 +139,22 @@ impl ProtectedSourceDomainJournalOwnerV1 {
         )
     }
 
+    /// Returns the fixed Source directory, journal, and lock inode identities.
+    ///
+    /// The caller must retain this writer and compare the result to a
+    /// Source-signed read-only view while the same Root challenge is active.
+    /// The identities alone grant no policy or effect authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a replaced fixed name or unhealthy protected writer.
+    pub fn fixed_physical_names_v1(
+        &self,
+    ) -> Result<crate::journal::ProtectedJournalNamesV1, JournalError> {
+        self.require_fixed_named_writer_v1()?;
+        self.journal.protected_writer_physical_names_v1()
+    }
+
     fn require_named_writer_at(
         &self,
         directory: &Path,
