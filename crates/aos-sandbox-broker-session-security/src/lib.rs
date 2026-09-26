@@ -54,16 +54,14 @@ mod cache_index_buffer;
 mod cache_public_pin;
 mod cache_signer_credential;
 pub mod cache_signer_exchange;
-mod source_signer_credential;
-pub mod source_signer_exchange;
 mod cache_source_membership;
-mod controller_authority_effect;
-mod controller_attach_credentials;
-mod controller_cache_readback_credential;
-mod controller_guest_root_credentials;
-mod controller_attach_exchange;
 mod controller_argument_exchange;
+mod controller_attach_credentials;
+mod controller_attach_exchange;
+mod controller_authority_effect;
+mod controller_cache_readback_credential;
 mod controller_capture_candidate_exchange;
+mod controller_guest_root_credentials;
 mod controller_hold_credential;
 mod controller_output_exchange;
 mod controller_ownership;
@@ -82,13 +80,13 @@ mod host_consumer_cgroup_transfer;
 mod host_execution_handoff;
 mod lifecycle_domain_effect;
 mod lifecycle_host_inventory;
-pub mod policy_authority_client;
-pub mod policy_cache_readback_client;
-pub mod policy_binding_barrier;
 pub mod manifest;
 pub mod ownership_authority_client;
 pub mod ownership_authority_runtime;
 pub mod ownership_authority_server;
+pub mod policy_authority_client;
+pub mod policy_binding_barrier;
+pub mod policy_cache_readback_client;
 pub mod policy_signer_credential;
 mod production_activation;
 mod production_dispatch;
@@ -96,8 +94,8 @@ mod production_receive;
 mod production_response;
 mod production_root_mount_source_provider;
 mod production_service;
-mod production_source_provider_catalog;
 mod production_source_provider;
+mod production_source_provider_catalog;
 mod production_source_provider_storage;
 #[allow(
     dead_code,
@@ -110,6 +108,8 @@ mod recovery;
     reason = "sealed handshake boot access stays unreachable until P0-10"
 )]
 mod self_execution;
+mod source_signer_credential;
+pub mod source_signer_exchange;
 mod storage_create_preparation;
 mod storage_host_consumer_client;
 
