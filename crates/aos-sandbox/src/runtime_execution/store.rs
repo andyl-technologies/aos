@@ -3632,9 +3632,25 @@ mod output_v2_tests {
             preliminary_sequence,
         )
         .expect("preliminary coordinate");
+        assert!(matches!(
+            store.commit_host_settlement_preliminary_v1(
+                preliminary,
+                marker_epoch,
+                before_marker_cut,
+            ),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        assert!(matches!(
+            store.commit_host_settlement_preliminary_v1(
+                preliminary.with_test_marker_digest(ObjectDigest::from_bytes([99; 32])),
+                marker_epoch,
+                marker_cut,
+            ),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
         assert_eq!(
             store
-                .append_host_settlement_stage_v1(preliminary)
+                .commit_host_settlement_preliminary_v1(preliminary, marker_epoch, marker_cut)
                 .expect("durable preliminary coordinate"),
             preliminary
         );
@@ -3699,6 +3715,10 @@ mod output_v2_tests {
                 .expect("cold Host stage replay"),
             [Some(preliminary), None, None]
         );
+        assert!(matches!(
+            recovered.commit_host_settlement_preliminary_v1(preliminary, marker_epoch, marker_cut),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
         assert_eq!(
             recovered
                 .append_host_settlement_stage_v1(preliminary)

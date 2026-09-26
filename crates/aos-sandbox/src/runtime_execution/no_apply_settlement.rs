@@ -160,6 +160,41 @@ impl HostSettlementRecordV1 {
         Ok(record)
     }
 
+    /// Matches a recovered stage to every input of its original signed request.
+    ///
+    /// This is an exact historical comparison, not a renewal of the pre-append
+    /// Host cut or a validation of Controller's protected archive.
+    pub(crate) fn matches_preliminary_source(
+        self,
+        marker: HostExecutionNoApplyRecordV1,
+        handoff_digest: ObjectDigest,
+        original_h_head: ObjectDigest,
+        signed_terminal_outcome: ObjectDigest,
+        session_binding: [u8; 32],
+        challenge: [u8; 16],
+    ) -> bool {
+        let Ok(observed) =
+            HostObservedSettlementIdentityV1::from_marker_and_handoff(marker, handoff_digest)
+        else {
+            return false;
+        };
+        let Ok(archives) =
+            ControllerAssertedSettlementArchivesV1::new(original_h_head, signed_terminal_outcome)
+        else {
+            return false;
+        };
+        Self::preliminary(
+            observed,
+            archives,
+            self.epoch,
+            self.pre_lease_cut,
+            session_binding,
+            challenge,
+            self.commit_sequence,
+        )
+        .is_ok_and(|expected| expected == self)
+    }
+
     pub(crate) fn seal_floor(
         self,
         controller_floor: ObjectDigest,
@@ -588,5 +623,86 @@ mod tests {
             .finalize();
         corrupt[RECORD_BYTES - 32..].copy_from_slice(&checksum);
         assert!(HostSettlementRecordV1::decode_canonical(&corrupt).is_err());
+    }
+
+    #[test]
+    fn cold_preliminary_replay_requires_exact_signed_source_and_host_handoff() {
+        let marker = marker();
+        let handoff = ObjectDigest::from_bytes([14; 32]);
+        let h_head = ObjectDigest::from_bytes([15; 32]);
+        let terminal = ObjectDigest::from_bytes([16; 32]);
+        let session = [18; 32];
+        let challenge = [19; 16];
+        let observed = HostObservedSettlementIdentityV1::from_marker_and_handoff(marker, handoff)
+            .expect("Host marker and handoff");
+        let archives = ControllerAssertedSettlementArchivesV1::new(h_head, terminal)
+            .expect("Controller assertions");
+        let preliminary = HostSettlementRecordV1::preliminary(
+            observed,
+            archives,
+            11,
+            ObjectDigest::from_bytes([17; 32]),
+            session,
+            challenge,
+            13,
+        )
+        .expect("preliminary stage");
+
+        assert!(
+            preliminary
+                .matches_preliminary_source(marker, handoff, h_head, terminal, session, challenge,)
+        );
+        let mut foreign_fields = marker.fields();
+        foreign_fields.original_request_id = [22; 16];
+        let foreign_marker =
+            HostExecutionNoApplyRecordV1::new(foreign_fields).expect("foreign marker");
+        assert!(!preliminary.matches_preliminary_source(
+            foreign_marker,
+            handoff,
+            h_head,
+            terminal,
+            session,
+            challenge,
+        ));
+        for (marker, handoff, h_head, terminal, session, challenge) in [
+            (
+                marker,
+                ObjectDigest::from_bytes([22; 32]),
+                h_head,
+                terminal,
+                session,
+                challenge,
+            ),
+            (
+                marker,
+                handoff,
+                ObjectDigest::from_bytes([22; 32]),
+                terminal,
+                session,
+                challenge,
+            ),
+            (
+                marker,
+                handoff,
+                h_head,
+                ObjectDigest::from_bytes([22; 32]),
+                session,
+                challenge,
+            ),
+            (marker, handoff, h_head, terminal, [22; 32], challenge),
+            (marker, handoff, h_head, terminal, session, [22; 16]),
+        ] {
+            assert!(
+                !preliminary.matches_preliminary_source(
+                    marker, handoff, h_head, terminal, session, challenge,
+                )
+            );
+        }
+        assert!(
+            !preliminary
+                .seal_floor(ObjectDigest::from_bytes([20; 32]), 16)
+                .expect("sealed stage")
+                .matches_preliminary_source(marker, handoff, h_head, terminal, session, challenge)
+        );
     }
 }

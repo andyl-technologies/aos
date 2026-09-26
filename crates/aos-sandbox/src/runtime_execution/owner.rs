@@ -2699,6 +2699,94 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         })
     }
 
+    /// Commits a prepared preliminary coordinate while its Host writer claim is held.
+    ///
+    /// This commits no Controller disposition and grants no Host Apply. The
+    /// caller must have authenticated the Controller's request and must retain
+    /// this claim from preparation through the append. A failed append has an
+    /// unknown outcome and requires a cold protected readback of the original
+    /// request; the prepared value cannot be retried under a new claim.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed Host cut, marker, or stage history, a forged prepared
+    /// record, stale Host currentness, or uncertain journal durability.
+    #[allow(dead_code, reason = "signed method-42 dispatch remains closed")]
+    pub fn commit_host_settlement_preliminary_v1(
+        &mut self,
+        prepared: PreparedHostSettlementPreliminaryV1,
+    ) -> Result<[u8; HOST_SETTLEMENT_RECORD_BYTES], DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        let record = HostSettlementRecordV1::decode_canonical(&prepared.canonical_record)
+            .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        self.execution.commit_host_settlement_preliminary_v1(
+            record,
+            prepared.cut.epoch,
+            prepared.cut.digest,
+        )?;
+        self.validate_current()
+            .map_err(|_| JournalRuntimeExecutionError::SettlementOutcomeUnknown)?;
+        if self
+            .execution
+            .load_host_settlement_history_v1(record.execution)
+            .map_err(|_| JournalRuntimeExecutionError::SettlementOutcomeUnknown)?
+            != [Some(record), None, None]
+        {
+            return Err(JournalRuntimeExecutionError::SettlementOutcomeUnknown.into());
+        }
+        Ok(record.encode_canonical())
+    }
+
+    /// Rejoins a cold-recovered preliminary stage to one exact original request.
+    ///
+    /// A matching return value is historical custody only. It does not revive
+    /// the writer cut that preceded the append or authorize Controller's CAS.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed marker, handoff, Controller assertion, session, or
+    /// challenge, as well as malformed or orphaned protected Host history.
+    #[allow(dead_code, reason = "signed method-43 query remains closed")]
+    pub fn match_host_settlement_preliminary_v1(
+        &self,
+        source: &ControllerExecutionArgumentAttemptV1,
+        original_session_binding: [u8; 32],
+        original_signed_request_digest: [u8; 32],
+        handoff_digest: ObjectDigest,
+        original_h_head: ObjectDigest,
+        signed_terminal_outcome: ObjectDigest,
+        settlement_session_binding: [u8; 32],
+        challenge: [u8; 16],
+    ) -> Result<Option<[u8; HOST_SETTLEMENT_RECORD_BYTES]>, DormantRuntimeExecutionOwnerErrorV1>
+    {
+        let Some(history) = self.query_host_settlement_history_v1(
+            source,
+            original_session_binding,
+            original_signed_request_digest,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(bytes) = history.stage_bytes(HostNoApplySettlementPhaseV2::Preliminary) else {
+            return Ok(None);
+        };
+        let preliminary = HostSettlementRecordV1::decode_canonical(bytes)
+            .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+
+        if !preliminary.matches_preliminary_source(
+            history.marker(),
+            handoff_digest,
+            original_h_head,
+            signed_terminal_outcome,
+            settlement_session_binding,
+            challenge,
+        ) {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness);
+        }
+        self.validate_current()?;
+        Ok(Some(preliminary.encode_canonical()))
+    }
+
     /// Rejects an argument execution with a protected terminal no-Apply marker.
     ///
     /// Absence is not a send grant. Callers must separately validate the exact

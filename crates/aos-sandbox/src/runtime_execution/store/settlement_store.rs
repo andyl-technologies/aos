@@ -126,6 +126,33 @@ impl JournalRuntimeExecutionStoreV1<'_> {
         Ok(stages)
     }
 
+    /// Appends a preliminary stage only from the unchanged protected Host cut.
+    ///
+    /// The archive digests in the record remain Controller assertions. This
+    /// gate prevents a prepared stage from being committed after another Host
+    /// effect or a competing settlement append advanced the writer sequence.
+    pub(crate) fn commit_host_settlement_preliminary_v1(
+        &mut self,
+        record: HostSettlementRecordV1,
+        expected_epoch: u64,
+        expected_cut: ObjectDigest,
+    ) -> Result<HostSettlementRecordV1, JournalRuntimeExecutionError> {
+        if record.stage != HostSettlementStageV1::Preliminary
+            || record.epoch != expected_epoch
+            || record.pre_lease_cut != expected_cut
+            || self.protected_host_settlement_cut_v1()? != (expected_epoch, expected_cut)
+            || self.next_host_settlement_sequence_v1(expected_epoch)? != record.commit_sequence
+            || self
+                .load_host_settlement_history_v1(record.execution)?
+                .iter()
+                .any(Option::is_some)
+        {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+
+        self.append_host_settlement_stage_v1(record)
+    }
+
     /// Appends exactly the next Host settlement stage under protected custody.
     ///
     /// This is a structural journal primitive, not a Controller-currentness

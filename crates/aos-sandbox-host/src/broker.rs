@@ -50,6 +50,7 @@ use aos_sandbox_protocol::host_execution_no_apply::{
     ValidatedHostExecutionNoApplyRequestV1, ValidatedHostNoApplySettlementRequestV2,
     decode_host_execution_argument_no_apply_request_v1,
     decode_host_execution_argument_query_no_apply_request_v1,
+    decode_host_no_apply_settlement_request_v2,
 };
 use aos_sandbox_protocol::host_output::{
     ValidatedHostOutputQueryRequestV1, ValidatedHostOutputReserveRequestV1,
@@ -1355,6 +1356,99 @@ where
             )
             .map(Some)
             .map_err(|_| HostError::Fence("Host preliminary cut changed"))
+    }
+
+    /// Retains the first Host settlement stage from a signed Controller request.
+    ///
+    /// The signed request authenticates the Controller's H/T assertions; Host
+    /// independently rejoins its current marker and completed handoff before
+    /// appending. This stage is nonauthorizing and cannot release Apply or
+    /// settle Controller Create. Method-42 transport remains closed until its
+    /// complete cross-owner exchange and recovery are qualified.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign signed method, stale Host custody, changed protected
+    /// cut, conflicting stage, or an append with unknown durability.
+    #[allow(dead_code, reason = "signed method-42 dispatch remains closed")]
+    pub fn commit_no_apply_preliminary_v2(
+        &self,
+        claim: &mut DormantRuntimeExecutionClaimV1<'_>,
+        authenticated: &AuthenticatedBrokerMethodRequestV1,
+        now_boottime_nanoseconds: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        if authenticated.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            || authenticated.method() != BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+            || authenticated.authorization().is_none()
+        {
+            return Err(HostError::Fence(
+                "Host settlement request is not authenticated",
+            ));
+        }
+        let request = decode_host_no_apply_settlement_request_v2(
+            authenticated.exact_body(),
+            authenticated.peer(),
+            authenticated.peer_policy(),
+            now_boottime_nanoseconds,
+        )?;
+        let Some(prepared) =
+            self.prepare_no_apply_preliminary_v2(claim, &request, authenticated.session_binding())?
+        else {
+            return Ok(None);
+        };
+        let committed = claim
+            .commit_host_settlement_preliminary_v1(prepared)
+            .map_err(|_| HostError::Fence("Host preliminary append needs protected recovery"))?;
+        Ok(Some(committed.to_vec()))
+    }
+
+    /// Rejoins one historical stage to current Host marker and handoff custody.
+    ///
+    /// The caller must reauthenticate the original signed stage request before
+    /// supplying it here. This readback cannot renew the Host pre-append cut.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign original source, changed HostState handoff, or any
+    /// conflicting protected stage field.
+    #[allow(dead_code, reason = "signed method-43 recovery remains closed")]
+    pub fn match_no_apply_preliminary_v2(
+        &self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        request: &ValidatedHostNoApplySettlementRequestV2,
+        settlement_session_binding: [u8; 32],
+    ) -> Result<Option<Vec<u8>>> {
+        if request.phase() != HostNoApplySettlementPhaseV2::Preliminary
+            || request.coordinate() != HostNoApplyControllerCoordinateV2::Preliminary
+        {
+            return Err(HostError::Fence("Host preliminary request is invalid"));
+        }
+        let original = request.original();
+        let source =
+            ControllerExecutionArgumentAttemptV1::decode_canonical(original.canonical_attempt())
+                .map_err(|_| HostError::Fence("original Host settlement source is invalid"))?;
+        let Some(handoff) = self.verified_completed_no_apply_handoff_v1(
+            claim,
+            &source,
+            original.original_session_binding(),
+            original.original_signed_request_digest(),
+        )?
+        else {
+            return Ok(None);
+        };
+        let record = claim
+            .match_host_settlement_preliminary_v1(
+                &source,
+                original.original_session_binding(),
+                original.original_signed_request_digest(),
+                handoff.handoff_digest(),
+                request.archive_head(),
+                request.signed_terminal_outcome(),
+                settlement_session_binding,
+                request.challenge(),
+            )
+            .map_err(|_| HostError::Fence("Host preliminary replay is not exact"))?;
+        Ok(record.map(|bytes| bytes.to_vec()))
     }
 
     fn original_argument_intent(
