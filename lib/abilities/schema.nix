@@ -5,6 +5,7 @@
 ##! helpers also validate concrete Nix values early, before serialization.
 let
   diagnostics = import ./diagnostic.nix;
+  lifetime = import ./lifetime.nix;
 
   fail = message:
     diagnostics.throw "value-type-mismatch" "ability schema: ${message}";
@@ -1068,7 +1069,7 @@ let
           && isResourceId value.resource
           && value.operations == uniqueSortedStrings "resource operations" value.operations
           && builtins.all isLocalKey value.operations
-          && builtins.elem value.lifetime ["attempt" "transaction" "instance" "persistent"]
+          && builtins.elem value.lifetime lifetime.values
         then value
         else invalid "a resource-reference"
       else if schema.kind == "provider-assignment"

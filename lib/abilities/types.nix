@@ -10,6 +10,9 @@
   moduleTypes,
   schemas,
 }: let
+  lifetimeSemantics = import ./lifetime.nix;
+  lifetimeSchema = schemas.enum lifetimeSemantics.values;
+  lifetimeModuleType = moduleTypes.enum lifetimeSemantics.values;
   schemaDocumentType = schema: let
     nested = value: schemaDocumentType value;
   in
@@ -528,12 +531,7 @@ in rec {
     "observation"
   ];
 
-  lifetime = decorate "resource lifetime" (schemas.enum [
-    "attempt"
-    "transaction"
-    "instance"
-    "persistent"
-  ]) (moduleTypes.enum ["attempt" "transaction" "instance" "persistent"]);
+  lifetime = decorate "resource lifetime" lifetimeSchema lifetimeModuleType;
 
   packageOutputSelector = packageOutputType;
   relativePath =
@@ -956,7 +954,7 @@ in rec {
       interface = interfaceKeyType;
       resource = resourceIdType;
       operations = moduleTypes.listOf localKeyType;
-      lifetime = moduleTypes.enum ["attempt" "transaction" "instance" "persistent"];
+      lifetime = moduleTypes.enum lifetimeSemantics.values;
     };
   in
     authored

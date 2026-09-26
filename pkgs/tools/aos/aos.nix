@@ -144,6 +144,7 @@
           cp ${../../../tests/abilities/conformance/evaluator.nix} "$out/default.nix"
           cp ${../../../lib/abilities/schema.nix} "$out/schema.nix"
           cp ${../../../lib/abilities/diagnostic.nix} "$out/diagnostic.nix"
+          cp ${../../../lib/abilities/lifetime.nix} "$out/lifetime.nix"
           cp ${abilityConformanceCorpus} "$out/corpus.json"
         '';
       }
