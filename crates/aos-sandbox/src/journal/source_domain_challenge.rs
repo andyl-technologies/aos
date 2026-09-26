@@ -15,8 +15,8 @@ use aos_sandbox_core::{ObjectDigest, ProjectId};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    source_domain_policy_hold, Journal, JournalError, JournalRecord, JournalTransaction,
-    ProtectedJournalNamesV1, RecordNamespace, SourceDomainPolicyHoldV1,
+    Journal, JournalError, JournalRecord, JournalTransaction, ProtectedJournalNamesV1,
+    RecordNamespace, SourceDomainPolicyHoldV1, source_domain_policy_hold,
 };
 
 const KEY: &[u8] = b"\0aos-source-domain-root-challenge-v1\0";
@@ -312,53 +312,69 @@ mod tests {
             .record_source_domain_challenge_v1(hold, project, [9; 16], cut, names)
             .expect("first challenge");
         assert_eq!(first.issue(), 1);
-        assert!(first
-            .matches_current([9; 16], cut, project, hold, names)
-            .unwrap());
-        assert!(!first
-            .matches_current([10; 16], cut, project, hold, names)
-            .unwrap());
-        assert!(!first
-            .matches_current(
-                [9; 16],
-                ObjectDigest::from_bytes([11; 32]),
-                project,
-                hold,
-                names,
-            )
-            .unwrap());
-        assert!(!first
-            .matches_current([9; 16], cut, ProjectId::from_bytes([12; 16]), hold, names,)
-            .unwrap());
-        assert!(!first
-            .matches_current(
-                [9; 16],
-                cut,
-                project,
-                SourceDomainPolicyHoldV1::new(
-                    hold.operation(),
-                    hold.sandbox(),
-                    hold.controller_source(),
-                    hold.ancestry(),
-                    hold.binding(),
-                    hold.epoch() + 1,
+        assert!(
+            first
+                .matches_current([9; 16], cut, project, hold, names)
+                .unwrap()
+        );
+        assert!(
+            !first
+                .matches_current([10; 16], cut, project, hold, names)
+                .unwrap()
+        );
+        assert!(
+            !first
+                .matches_current(
+                    [9; 16],
+                    ObjectDigest::from_bytes([11; 32]),
+                    project,
+                    hold,
+                    names,
                 )
-                .unwrap(),
-                names,
-            )
-            .unwrap());
-        assert!(writer
-            .record_source_domain_challenge_v1(hold, project, [9; 16], cut, names)
-            .is_err());
+                .unwrap()
+        );
+        assert!(
+            !first
+                .matches_current([9; 16], cut, ProjectId::from_bytes([12; 16]), hold, names,)
+                .unwrap()
+        );
+        assert!(
+            !first
+                .matches_current(
+                    [9; 16],
+                    cut,
+                    project,
+                    SourceDomainPolicyHoldV1::new(
+                        hold.operation(),
+                        hold.sandbox(),
+                        hold.controller_source(),
+                        hold.ancestry(),
+                        hold.binding(),
+                        hold.epoch() + 1,
+                    )
+                    .unwrap(),
+                    names,
+                )
+                .unwrap()
+        );
+        assert!(
+            writer
+                .record_source_domain_challenge_v1(hold, project, [9; 16], cut, names)
+                .is_err()
+        );
         let mut changed_names = names.to_bytes();
         changed_names[47] ^= 1;
         let changed_names = ProtectedJournalNamesV1::from_bytes(&changed_names).unwrap();
-        assert!(!first
-            .matches_current([9; 16], cut, project, hold, changed_names)
-            .unwrap());
-        assert!(writer
-            .record_source_domain_challenge_v1(hold, project, [10; 16], cut, changed_names)
-            .is_err());
+        assert!(
+            !first
+                .matches_current([9; 16], cut, project, hold, changed_names)
+                .unwrap()
+        );
+        assert!(
+            writer
+                .record_source_domain_challenge_v1(hold, project, [10; 16], cut, changed_names)
+                .is_err()
+        );
         drop(writer);
 
         let (mut writer, _) = Journal::open_protected_at_uid(
