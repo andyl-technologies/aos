@@ -120,6 +120,7 @@ fn production_factory_forks_complete_live_world_atomically() {
         .begin_fresh(&source.scenario_def(), &source, &source_context)
         .expect("launch production source world");
     eprintln!("atomic-world phase=source-launch-exit lane=source cgroup=source run-state=source");
+    let source_started = operational_monotonic_nanoseconds();
     let mut configuration = Configuration::genesis(source.scenario_def());
     let mut observed_http = false;
     let mut observed_block = false;
@@ -140,9 +141,11 @@ fn production_factory_forks_complete_live_world_atomically() {
             .expect("drive production source world");
         if source_progress_is_reportable(quantum) {
             eprintln!(
-                "atomic-world phase=source-quantum-exit quantum={quantum} frontier={} events={} advanced-node={:?}",
+                "atomic-world phase=source-quantum-exit quantum={quantum} elapsed-ms={} frontier={} events={} choices={} advanced-node={:?}",
+                operational_elapsed_milliseconds(source_started),
                 outcome.frontier.ticks,
                 outcome.event_log_entries.len(),
+                outcome.discovered_choices.len(),
                 outcome.advanced_node
             );
         }
