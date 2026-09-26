@@ -16,6 +16,11 @@
     roots = [pkgs.cc pkgs.gccUnwrapped pkgs.llvm pkgs.rust];
     cacheDir = "/unused";
     stateDir = "/unused-state";
+    llvmOptions = {
+      "enable-loopinterchange" = "flag";
+      "inlinehint-threshold" = "scalar";
+      "ms-secure-hotpatch-functions-file" = "file_input";
+    };
   };
 in
   pkgs.mkDerivation {

@@ -3,9 +3,18 @@
 use anyhow::{Result, ensure};
 use std::{collections::BTreeSet, path::PathBuf};
 
+use crate::model::{LlvmOptionKind, Manifest};
+
+/// Files LLVM reads or replaces outside the compiler's normal depfile.
+pub(super) struct OptionEffects {
+    pub(super) inputs: BTreeSet<PathBuf>,
+    pub(super) outputs: BTreeSet<PathBuf>,
+}
+
 /// Describes effects accache can account for without inspecting LLVM itself.
 pub(super) enum OptionEffect<'a> {
     FileInput(&'a str),
+    FileOutput(&'a str),
     NoFileInput,
     NeedsValue,
     InvocationReport,
@@ -13,12 +22,19 @@ pub(super) enum OptionEffect<'a> {
 }
 
 /// Classifies a sequence because LLVM accepts a value in the next argument.
-pub(super) fn file_inputs(arguments: &[&str], compiler: &str) -> Result<BTreeSet<PathBuf>> {
-    let mut inputs = BTreeSet::new();
+pub(super) fn file_effects(
+    arguments: &[&str],
+    compiler: &str,
+    manifest: &Manifest,
+) -> Result<OptionEffects> {
+    let mut effects = OptionEffects {
+        inputs: BTreeSet::new(),
+        outputs: BTreeSet::new(),
+    };
     let mut index = 0;
 
     while let Some(argument) = arguments.get(index) {
-        let mut effect = classify(argument);
+        let mut effect = classify(argument, manifest);
         if matches!(effect, OptionEffect::NeedsValue) {
             let value = arguments
                 .get(index + 1)
@@ -26,11 +42,15 @@ pub(super) fn file_inputs(arguments: &[&str], compiler: &str) -> Result<BTreeSet
             // Classifying the joined spelling keeps literal modes such as
             // basic-block-sections=all identical across both LLVM forms.
             let joined = format!("{argument}={value}");
-            effect = classify(&joined);
+            effect = classify(&joined, manifest);
             match effect {
                 OptionEffect::FileInput(path) => {
                     ensure!(!path.is_empty(), "LLVM file input is empty");
-                    inputs.insert(path.into());
+                    effects.inputs.insert(path.into());
+                }
+                OptionEffect::FileOutput(path) => {
+                    ensure!(!path.is_empty(), "LLVM file output is empty");
+                    effects.outputs.insert(path.into());
                 }
                 OptionEffect::NoFileInput => {}
                 _ => {
@@ -44,7 +64,11 @@ pub(super) fn file_inputs(arguments: &[&str], compiler: &str) -> Result<BTreeSet
         match effect {
             OptionEffect::FileInput(path) => {
                 ensure!(!path.is_empty(), "LLVM file input is empty");
-                inputs.insert(path.into());
+                effects.inputs.insert(path.into());
+            }
+            OptionEffect::FileOutput(path) => {
+                ensure!(!path.is_empty(), "LLVM file output is empty");
+                effects.outputs.insert(path.into());
             }
             OptionEffect::NoFileInput => {}
             OptionEffect::InvocationReport => {
@@ -57,10 +81,10 @@ pub(super) fn file_inputs(arguments: &[&str], compiler: &str) -> Result<BTreeSet
         index += 1;
     }
 
-    Ok(inputs)
+    Ok(effects)
 }
 
-pub(super) fn classify(argument: &str) -> OptionEffect<'_> {
+pub(super) fn classify<'a>(argument: &'a str, manifest: &Manifest) -> OptionEffect<'a> {
     let argument = argument.trim_start_matches('-');
     let name = argument.split_once('=').map_or(argument, |(name, _)| name);
     if matches!(
@@ -170,5 +194,74 @@ pub(super) fn classify(argument: &str) -> OptionEffect<'_> {
         return OptionEffect::NoFileInput;
     }
 
-    OptionEffect::Unknown
+    // Built-in report exclusions take precedence over package contracts: a
+    // caller cannot turn invocation-wide diagnostics into a reusable action.
+    match manifest.llvm_options.get(name) {
+        Some(LlvmOptionKind::Flag) => {
+            if argument.contains('=') {
+                OptionEffect::Unknown
+            } else {
+                OptionEffect::NoFileInput
+            }
+        }
+        Some(LlvmOptionKind::Scalar) => {
+            if argument.contains('=') {
+                OptionEffect::NoFileInput
+            } else {
+                OptionEffect::NeedsValue
+            }
+        }
+        Some(LlvmOptionKind::FileInput) => match argument.split_once('=') {
+            Some((_, path)) => OptionEffect::FileInput(path),
+            None => OptionEffect::NeedsValue,
+        },
+        Some(LlvmOptionKind::FileOutput) => match argument.split_once('=') {
+            Some((_, path)) => OptionEffect::FileOutput(path),
+            None => OptionEffect::NeedsValue,
+        },
+        None => OptionEffect::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn manifest() -> Manifest {
+        Manifest {
+            schema: 1,
+            compilers: BTreeMap::new(),
+            closure: Vec::new(),
+            remove_environment: Vec::new(),
+            read_roots: Vec::new(),
+            llvm_options: BTreeMap::from([
+                ("extra-input".into(), LlvmOptionKind::FileInput),
+                ("extra-output".into(), LlvmOptionKind::FileOutput),
+                ("print-after".into(), LlvmOptionKind::Flag),
+            ]),
+        }
+    }
+
+    #[test]
+    fn declared_paths_cover_both_llvm_value_spellings() {
+        let effects = file_effects(
+            &["--extra-input=profile.txt", "--extra-output", "result.txt"],
+            "Clang",
+            &manifest(),
+        )
+        .unwrap();
+
+        assert_eq!(effects.inputs, BTreeSet::from([PathBuf::from("profile.txt")]));
+        assert_eq!(effects.outputs, BTreeSet::from([PathBuf::from("result.txt")]));
+    }
+
+    #[test]
+    fn manifest_cannot_reclassify_invocation_reports() {
+        let error = file_effects(&["--print-after=instcombine"], "Rust", &manifest())
+            .err()
+            .unwrap();
+
+        assert!(error.to_string().contains("invocation report"));
+    }
 }

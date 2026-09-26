@@ -10,6 +10,8 @@
   cacheDir,
   stateDir,
   readRoots ? ["."],
+  # Recipe-owned contracts for LLVM options absent from accache's built-ins.
+  llvmOptions ? {},
   # These names are removed from the compiler process, not merely ignored by
   # its key. Callers that intentionally use env!("out") must override this
   # list; retaining the value correctly partitions actions by output path.
@@ -72,8 +74,10 @@
             --argjson compilers ${lib.escapeShellArg (builtins.toJSON compilers)} \
             --argjson remove ${lib.escapeShellArg (builtins.toJSON removeEnvironment)} \
             --argjson reads ${lib.escapeShellArg (builtins.toJSON readRoots)} \
-            '{schema: 1, compilers: $compilers, remove_environment: $remove, read_roots: $reads,
-              closure: [.compilers[] | {path, narHash}] | sort_by(.path)}' \
+            --argjson llvm_options ${lib.escapeShellArg (builtins.toJSON llvmOptions)} \
+            '({schema: 1, compilers: $compilers, remove_environment: $remove, read_roots: $reads,
+              closure: [.compilers[] | {path, narHash}] | sort_by(.path)}
+              | if $llvm_options == {} then . else . + {llvm_options: $llvm_options} end)' \
             "$NIX_ATTRS_JSON_FILE" > "$out/manifest.json"
         '';
       }

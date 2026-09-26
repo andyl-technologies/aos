@@ -100,9 +100,11 @@ pub(super) fn configure(
             llvm_arguments.push(llvm_arg);
         }
         // LLVM values can follow a second -mllvm rather than an equals sign.
-        invocation
-            .extra_inputs
-            .extend(llvm::file_inputs(&llvm_arguments, "Clang")?);
+        let llvm_effects = llvm::file_effects(&llvm_arguments, "Clang", manifest)?;
+        invocation.extra_inputs.extend(llvm_effects.inputs);
+        for path in llvm_effects.outputs {
+            invocation.output(&path, false)?;
+        }
     }
     let mut cc1_depfile = None;
     if clang {

@@ -159,10 +159,15 @@ pub(super) fn configure(
         let Some(llvm_args) = option.strip_prefix("llvm-args=") else {
             continue;
         };
-        invocation.extra_inputs.extend(llvm::file_inputs(
+        let llvm_effects = llvm::file_effects(
             &llvm_args.split_whitespace().collect::<Vec<_>>(),
             "Rust",
-        )?);
+            manifest,
+        )?;
+        invocation.extra_inputs.extend(llvm_effects.inputs);
+        for path in llvm_effects.outputs {
+            invocation.output(&path, false)?;
+        }
     }
 
     // The dep-info probe below names the crate artifacts rustc actually read,
