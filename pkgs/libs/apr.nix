@@ -49,8 +49,15 @@ in
               "-c"
               ''
                 import subprocess
-                result = subprocess.run(["@out@/bin/apr-1-config", "--version"], capture_output=True, text=True)
-                assert result.returncode == 0 and result.stdout.strip() == "${version}", (result.returncode, result.stdout, result.stderr)
+
+                result = subprocess.run(
+                    ["@out@/bin/apr-1-config", "--version"],
+                    capture_output=True,
+                    text=True,
+                )
+                assert result.returncode == 0, result
+                assert result.stdout.strip() == "${version}", result
+
                 print("APR version passed")
               ''
             ];
@@ -74,8 +81,15 @@ in
               ''
                 import subprocess
                 import sys
-                result = subprocess.run(["@out@/bin/apr-1-config", "--aos-invalid-option"], capture_output=True, text=True)
-                assert result.returncode != 0 and "Usage: apr-1-config" in result.stdout, (result.returncode, result.stdout, result.stderr)
+
+                result = subprocess.run(
+                    ["@out@/bin/apr-1-config", "--aos-invalid-option"],
+                    capture_output=True,
+                    text=True,
+                )
+                assert result.returncode != 0, result
+                assert "Usage: apr-1-config" in result.stdout, result
+
                 sys.stderr.write("APR rejected invalid input\n")
                 raise SystemExit(7)
               ''
