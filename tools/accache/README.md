@@ -355,6 +355,10 @@ Clang and Rust profile cases generate two real instrumentation profiles each
 and require a miss naming the changed `.profdata` file, followed by a warm hit
 for each profile. Clang cases cover explicit, directory, and implicit default
 profile paths; each profile revision produces different object bytes.
+Clang sample-guided optimization also reads `-fprofile-sample-use=path` outside
+the preprocessor depfile. Reversing hot and cold samples changes the object;
+pinned sccache replays the old object, while accache fingerprints the profile,
+names it in the miss explanation, and restores the new object on a warm hit.
 Clang sanitizer cases change an ignorelist under both the current and legacy
 flag spellings. Both caches miss on the edited list, warm-hit on a repeat, and
 produce the direct compiler's changed object.

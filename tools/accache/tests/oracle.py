@@ -1944,6 +1944,73 @@ def check_clang_profile_list(root, env, accache, sccache, clang, hits):
     return results
 
 
+def check_clang_sample_profile(root, env, accache, sccache, clang, hits):
+    """Invalidate a sample-guided object when its unlisted profile changes."""
+    fixture = "clang-sample-profile"
+    work = root / fixture
+    work.mkdir()
+    (work / "source.c").write_text(
+        "int hot(int x) { return x * 7 + 3; }\n"
+        "int cold(int x) { return x / 7 + 3; }\n"
+        "int answer(int x) {\n"
+        "  if (x > 0) return hot(x);\n"
+        "  return cold(x);\n"
+        "}\n")
+    profile = work / "sample.prof"
+    object_file = work / "source.o"
+    depfile = work / "source.d"
+    args = [clang, "-O2", "-gline-tables-only", "-c", "source.c",
+            "-fprofile-sample-use=sample.prof", "-MD", "-MF", "source.d",
+            "-o", "source.o"]
+
+    def compile_object(wrapper):
+        object_file.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+        return (completed.stdout, completed.stderr,
+                object_file.read_bytes(), depfile.read_bytes())
+
+    first_object = None
+    results = []
+    for revision, counts in enumerate([(999999, 1), (1, 999999)]):
+        profile.write_text(
+            f"answer:1000000:0\n 1: {counts[0]}\n 2: {counts[1]}\n")
+        direct = compile_object([])
+        assert b"sample.prof" not in direct[3], (fixture, "profile appeared in dep-info")
+        if first_object is None:
+            first_object = direct[2]
+            assert compile_object([sccache]) == direct, (fixture, "oracle cold")
+        else:
+            assert direct[2] != first_object, (fixture, "profile edit had no effect")
+            before_hits = hits()
+            oracle = compile_object([sccache])
+            assert hits() > before_hits, (fixture, "oracle did not reuse its stale action")
+            assert oracle[2] == first_object, (fixture, "oracle defect changed")
+
+        before_hits = hits()
+        assert compile_object([sccache])[2] == first_object, (fixture, "oracle warm")
+        assert hits() > before_hits, (fixture, "oracle did not hit")
+
+        assert compile_object([accache]) == direct, (fixture, revision, "cold")
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", (fixture, revision, cold)
+        if revision:
+            assert any("sample.prof" in item for item in cold["changes"]), cold
+        assert compile_object([accache]) == direct, (fixture, revision, "warm")
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", (fixture, revision, warm)
+
+        results.append({"fixture": fixture, "revision": revision,
+                        "oracle_hit": True, "accache": "hit",
+                        "oracle_stale_artifact": revision == 1,
+                        "artifacts": ["source.o", "source.d"]})
+
+    print("PASS oracle", fixture, "sample profile invalidation", flush=True)
+    return results
+
+
 def check_clang_profile_remapping(root, env, accache, sccache, clang, hits):
     """Track C++ profile remappings even though Clang omits them from dep-info."""
     source = (
@@ -3829,6 +3896,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                               sccache, clang, hits))
         results.extend(check_clang_profile_list(root, env, accache,
                                                 sccache, clang, hits))
+        results.extend(check_clang_sample_profile(root, env, accache,
+                                                  sccache, clang, hits))
         results.extend(check_clang_profile_remapping(root, env, accache,
                                                      sccache, clang, hits))
         results.extend(check_clang_layout_seed(root, env, accache,
