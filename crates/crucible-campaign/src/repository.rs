@@ -55,9 +55,9 @@ use crate::{BranchAcceptanceCount, BranchAcceptanceSummary};
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
 /// Bounds the number of snapshots authenticated in one campaign ancestry.
 ///
-/// The sequential million-admission corpus uses a genesis, two controls, two
-/// request transitions per 16 choices, and one canonical issue per admission.
-/// This ceiling covers its 1,125,003 snapshots with bounded headroom. Closure
+/// The million-admission corpus uses a genesis, two controls, two request
+/// transitions per 16 choices, and one ordered finite Issue per 16 choices.
+/// This ceiling covers its 187,503 snapshots with bounded headroom. Closure
 /// object limits independently bound the authenticated objects in that chain.
 pub const MAX_CAMPAIGN_SNAPSHOT_ANCESTRY: usize = 1_250_001;
 const MAX_SNAPSHOT_ANCESTRY: usize = MAX_CAMPAIGN_SNAPSHOT_ANCESTRY;
