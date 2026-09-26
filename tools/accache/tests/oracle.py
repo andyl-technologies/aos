@@ -1523,6 +1523,60 @@ def check_clang_profile_use(root, env, accache, sccache, clang, hits):
     return results
 
 
+def check_clang_sanitizer_ignorelist(root, env, accache, sccache, clang, hits):
+    """Invalidate a sanitized object when its ignorelist changes."""
+    results = []
+    for fixture, option in [
+        ("clang-sanitizer-ignorelist", "-fsanitize-ignorelist=ignorelist.txt"),
+        ("clang-sanitizer-blacklist", "-fsanitize-blacklist=ignorelist.txt"),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "source.c").write_text("int checked(int a, int b) { return a + b; }\n")
+        ignorelist = work / "ignorelist.txt"
+        object_file = work / "source.o"
+        args = [clang, "-O1", "-c", "source.c", "-fsanitize=signed-integer-overflow",
+                option, "-o", "source.o"]
+
+        def compile_object(wrapper):
+            object_file.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            return completed.stdout, completed.stderr, object_file.read_bytes()
+
+        original_object = None
+        for revision, contents in enumerate(["# empty\n", "fun:checked\n"]):
+            ignorelist.write_text(contents)
+            direct = compile_object([])
+            if original_object is None:
+                original_object = direct[2]
+            else:
+                assert direct[2] != original_object, (fixture, "ignorelist edit had no effect")
+
+            before_hits = hits()
+            assert compile_object([sccache]) == direct
+            assert hits() == before_hits, (fixture, "sccache ignored the changed ignorelist")
+            before_hits = hits()
+            assert compile_object([sccache]) == direct
+            assert hits() > before_hits, (fixture, "sccache did not warm-hit")
+
+            assert compile_object([accache]) == direct
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert cold["outcome"] == "miss", (fixture, revision, cold)
+            if revision:
+                assert any("ignorelist.txt" in item for item in cold["changes"]), cold
+            assert compile_object([accache]) == direct
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert warm["outcome"] == "hit", (fixture, revision, warm)
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": True, "accache": "hit",
+                            "artifacts": ["source.o"]})
+
+        print("PASS oracle", fixture, "ignorelist invalidation", flush=True)
+    return results
+
+
 def check_rust_native_archives(root, env, accache, sccache, gcc, rustc, hits):
     """Hash native archives for joined and separated Rust library flags."""
     results = []
@@ -2365,6 +2419,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                 sccache, clang, hits))
         results.extend(check_clang_profile_use(root, env, accache, sccache,
                                                clang, hits))
+        results.extend(check_clang_sanitizer_ignorelist(root, env, accache,
+                                                        sccache, clang, hits))
         results.extend(check_rust_native_archives(root, env, accache, sccache,
                                                   gcc, rustc, hits))
         results.extend(check_rust_extern_inputs(root, env, accache,
