@@ -150,6 +150,16 @@ in
             as --32 ${./phase2-qemu-fault-guest.S} -o fault-guest-x86.o
             ld -m elf_i386 -T ${./phase2-qemu-fault-guest.ld} \
               fault-guest-x86.o -o fault-guest-x86.elf
+            guest_entry="$(${pkgs.binutils}/bin/nm -n fault-guest-x86.elf | \
+              sed -n 's/^\([0-9a-f]*\) T _start$/0x\1/p')"
+            test -n "$guest_entry"
+            as --32 --defsym GUEST_ENTRY="$guest_entry" \
+              ${./phase2-qemu-fault-direct-reset.S} -o fault-direct-reset.o
+            ld -m elf_i386 -T ${./x86-direct-reset.ld} \
+              fault-direct-reset.o -o fault-direct-reset.elf
+            objcopy -O binary --gap-fill 0 \
+              fault-direct-reset.elf fault-direct-reset.bin
+            test "$(wc -c < fault-direct-reset.bin)" -eq 65536
             ${pkgs.llvm}/bin/clang --target=aarch64-none-elf \
               -c ${./phase2-qemu-fault-guest-aarch64.S} \
               -o fault-guest-aarch64.o
@@ -202,8 +212,9 @@ in
                 x86_64)
                   architecture_id=2
                   qemu_binary=${qemuPackage}/bin/qemu-system-x86_64
-                  machine_args='-machine pc -m 64M'
+                  machine_args="-machine pc -m 64M -bios $PWD/fault-direct-reset.bin -device loader,file=$PWD/fault-guest-x86.elf"
                   guest=fault-guest-x86.elf
+                  boot_args=""
                   result_address="$x86_result_address"
                   ;;
                 aarch64)
@@ -211,6 +222,7 @@ in
                   qemu_binary=${qemuPackage}/bin/qemu-system-aarch64
                   machine_args='-machine virt -cpu max -m 64M'
                   guest=fault-guest-aarch64.elf
+                  boot_args="-kernel $guest"
                   result_address="$aarch64_result_address"
                   ;;
                 *)
@@ -240,7 +252,7 @@ in
                 -no-reboot \
                 -serial none \
                 -monitor none \
-                -kernel "$guest" \
+                $boot_args \
                 -plugin "$plugin_args" \
                 > "logs/$architecture-$mode-$register-$phase$case_suffix.log" 2>&1
               mutation_status=$?

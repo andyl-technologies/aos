@@ -417,6 +417,12 @@ in rec {
     qemuLiveWhiteboxDoorbell = import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;};
     qemuLiveBlockRealization = import ./phase2-qemu-live-block-realization.nix {inherit pkgs lib;};
     qemuInstructionFaults = import ./phase2-qemu-instruction-faults.nix {inherit pkgs lib;};
+    qemuInstructionResultEvidence = import ./phase2-qemu-instruction-faults.nix {
+      inherit pkgs lib;
+      focusedResultEvidence = true;
+      attrPath = "checks.crucible.phase2.qemuInstructionResultEvidence";
+    };
+    qemuRegisterMutation = import ./phase2-qemu-register-mutation.nix {inherit pkgs lib;};
     qemuHardwareErrorFaults = import ./phase2-qemu-hardware-error-faults.nix {inherit pkgs lib;};
     qemuVcpuService = import ./phase2-qemu-vcpu-service.nix {inherit pkgs lib;};
     qemuNodeLifecycle = import ./phase2-qemu-node-lifecycle.nix {inherit pkgs lib;};
