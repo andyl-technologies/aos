@@ -7,13 +7,8 @@
     "block-dependent-effect"
     "reject-foreign-resource-mutation"
   ];
-  alreadyQualified = [
-    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/reject-foreign-resource-mutation"
-    "service-management/aos.service-management/abi-1/reload/block-dependent-effect"
-  ];
   selected = builtins.filter (cell:
-    builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) scenarios
-    && !builtins.elem cell.id alreadyQualified)
+    builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) scenarios)
   matrix.cells;
   byAdapters = adapters:
     map (cell: cell.id) (builtins.filter (cell: builtins.elem cell.adapter adapters) selected);
@@ -21,13 +16,11 @@
     "image-rollout"
     "kubernetes-object"
     "systemd-bootstrap"
-    "systemd-manager"
-    ];
+  ];
   groups = {
     reference = map (cell: cell.id) (
       builtins.filter (cell: !builtins.elem cell.adapter specializedAdapters) selected
     );
-    systemd-manager = byAdapters ["systemd-manager"];
     kubernetes-object = byAdapters ["kubernetes-object"];
     systemd-bootstrap = byAdapters ["systemd-bootstrap"];
     kubernetes = groups.kubernetes-object ++ groups.systemd-bootstrap;
@@ -35,7 +28,6 @@
   };
   all =
     groups.reference
-    ++ groups.systemd-manager
     ++ groups.kubernetes
     ++ groups.rollout;
 in
