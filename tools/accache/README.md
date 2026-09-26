@@ -128,8 +128,13 @@ modules, and serialized Clang diagnostics. GCC coverage includes SARIF and
 plain HTML diagnostic reports, numbered tree, RTL, IPA, language, debug,
 early-debug, and analyzer dumps (including graph and compressed JSON forms),
 Ada and Go specs, final instruction dumps, and compressed optimization
-records. Joined GCC `-d` debug dumps are included. Rust coverage includes
-nonincremental rlib/staticlib, metadata, dep-info, unpacked split debug
+records. Joined GCC `-d` debug dumps are included.
+
+GCC auxiliary declarations from both `-aux-info path` and `-aux-info=path`
+are restored on warm hits; pinned sccache omits the files.
+
+Rust coverage includes nonincremental rlib/staticlib, metadata, dep-info,
+unpacked split debug
 `.dwo` files, and `-Csave-temps=yes` bitcode, object, and saved metadata files.
 Rust extern/native dependencies and proc macro consumers are covered by the
 input contract above. Rust's unstable sample-profile and dataflow-sanitizer ABI
