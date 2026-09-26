@@ -1,0 +1,176 @@
+##! ICU4J runtime and Unicode resources built from source.
+{
+  mkDerivation,
+  fetchurl,
+  buildPackages,
+}: let
+  version = "78.3";
+  buildJdk = buildPackages.openjdk-17;
+  icu4c = buildPackages.icu;
+in
+  mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
+    pname = "icu4j";
+    inherit version;
+
+    src = fetchurl {
+      urls = ["https://repo.maven.apache.org/maven2/com/ibm/icu/icu4j/${version}/icu4j-${version}-sources.jar"];
+      hash = "sha256-uEWL4cKWrsbFLqjxlfJ+gzxdYDD6FaSzYaDoMDDDw/4=";
+    };
+
+    buildDeps = [
+      buildJdk
+      buildPackages.python3
+      buildPackages.gnumake
+      buildPackages.cc
+      buildPackages.binutils
+      icu4c
+    ];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          # The Maven source archive is useful only if every member remains
+          # source or metadata. Check members before extracting any of them.
+          python3 - "$src" <<'PY'
+          from pathlib import Path, PurePosixPath
+          from zipfile import ZipFile
+          import stat
+          import sys
+
+          archive_path = Path(sys.argv[1])
+          compiled_suffixes = {
+              ".class", ".jar", ".so", ".dylib", ".dll", ".a", ".o",
+              ".wasm", ".exe", ".bin", ".zip", ".tar", ".gz", ".xz",
+              ".res", ".icu", ".dat",
+          }
+          compiled_signatures = tuple(bytes.fromhex(value) for value in (
+              "cafebabe", "7f454c46", "0061736d", "213c617263683e0a",
+              "feedface", "cefaedfe", "feedfacf", "cffaedfe",
+              "4d5a", "504b0304", "504b0506",
+          ))
+
+          with ZipFile(archive_path) as archive:
+              for member in archive.infolist():
+                  path = PurePosixPath(member.filename)
+                  kind = stat.S_IFMT(member.external_attr >> 16)
+                  if path.is_absolute() or ".." in path.parts or kind == stat.S_IFLNK:
+                      raise SystemExit(f"Unsafe ICU4J source member: {path}")
+                  if member.is_dir():
+                      continue
+
+                  data = archive.read(member)
+                  if path.suffix.lower() in compiled_suffixes or data.startswith(compiled_signatures):
+                      raise SystemExit(f"Compiled ICU4J source member: {path}")
+
+                  destination = Path(path)
+                  destination.parent.mkdir(parents=True, exist_ok=True)
+                  destination.write_bytes(data)
+
+          sources = sorted(Path("com").rglob("*.java"))
+          if not sources or not Path("com/ibm/icu/lang/UCharacter.java").is_file():
+              raise SystemExit("ICU4J source archive is incomplete")
+          Path("java-sources").write_text("".join(f"{path}\n" for path in sources))
+          PY
+        '';
+      }
+      {
+        name = "generate-data";
+        script = ''
+          # ICU4C has already generated its binary data from the same pinned
+          # text tree. Rebuild its package list with the extra Unicode core
+          # data that ICU4J needs but ICU4C normally embeds in native code.
+          cp -a ${icu4c.cross}/source icu4c
+          chmod -R u+w icu4c
+
+          PYTHONPATH="$PWD/icu4c/python" python3 -m icutools.databuilder \
+            --mode gnumake \
+            --seqmode parallel \
+            --src_dir "$PWD/icu4c/data" \
+            --include_uni_core_data > icu4c/data/rules.mk
+
+          rm -f icu4c/data/out/tmp/icudata.lst \
+            icu4c/data/out/tmp/icudt78l.dat icu4c/data/packagedata
+          rm -rf icu4c/data/out/icu4j
+
+          # The data tools compile a temporary ELF library with ICU4C's
+          # native compiler. Do not pass target C flags into that compiler.
+          (
+            unset AOS_CROSS_COMPILING AOS_TARGET_ARCH AOS_TARGET_PLATFORM
+            unset AOS_OBJECT_FORMAT AOS_HARDENING_ENABLE AOS_HARDENING_DISABLE
+            unset NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS
+            unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH
+            unset LIBRARY_PATH CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
+            make -C icu4c/data JAR=${buildJdk}/bin/jar icu4j-data
+          )
+
+          ${buildJdk}/bin/jar tf icu4c/data/out/icu4j/icudata.jar > data-members
+          for resource in ucase.icu uprops.icu ubidi.icu nfc.nrm; do
+            grep -Fxq "com/ibm/icu/impl/data/icudata/$resource" data-members
+          done
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          mkdir classes
+          ${buildJdk}/bin/javac --release 17 -proc:none -encoding UTF-8 \
+            -d classes @java-sources
+
+          # The two data archives were generated by the source-built ICU4C
+          # tools, and contain disjoint resource paths for ICU4J.
+          (
+            cd classes
+            ${buildJdk}/bin/jar xf ../icu4c/data/out/icu4j/icudata.jar
+            ${buildJdk}/bin/jar xf ../icu4c/data/out/icu4j/icutzdata.jar
+          )
+        '';
+      }
+      {
+        name = "check";
+        script = ''
+          cat > IcuSourceSmoke.java <<'JAVA'
+          import com.ibm.icu.lang.UCharacter;
+
+          final class IcuSourceSmoke {
+              public static void main(String[] args) {
+                  String folded = UCharacter.foldCase("Stra\u00dfe", true);
+                  if (!"strasse".equals(folded)) {
+                      throw new AssertionError(folded);
+                  }
+              }
+          }
+          JAVA
+
+          ${buildJdk}/bin/javac --release 17 -encoding UTF-8 \
+            -cp classes -d classes IcuSourceSmoke.java
+          ${buildJdk}/bin/java -cp classes IcuSourceSmoke
+          rm classes/IcuSourceSmoke.class
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/share/java" "$out/share/licenses/icu4j"
+          ${buildJdk}/bin/jar --create \
+            --file "$out/share/java/icu4j-${version}.jar" \
+            --no-manifest --date=1980-01-01T00:00:02Z -C classes .
+          cp ${icu4c}/share/icu/${version}/LICENSE \
+            "$out/share/licenses/icu4j/LICENSE"
+        '';
+      }
+    ];
+
+    meta = {
+      description = "ICU Unicode services for Java, built from source and generated data";
+      homepage = "https://icu.unicode.org/";
+      license = "Unicode-3.0";
+    };
+  }
