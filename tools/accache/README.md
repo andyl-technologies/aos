@@ -120,7 +120,9 @@ input contract above.
 GNU assembler `--MD` output forwarded through `-Wa` or `-Xassembler` is
 tracked for GCC and Clang with an external assembler. Clang's generated
 assembly path can make that depfile nondeterministic; a warm hit restores the
-exact cold artifact.
+exact cold artifact. Named [GNU assembler listings](https://sourceware.org/binutils/docs/as/a.html)
+forwarded through those flags are also tracked and restored. General listings
+using `-ag` bypass the cache because their report contains a timestamp.
 
 Incremental Rust, executable/proc-macro compilation, ordinary linking, and
 upstream parser exclusions bypass. Frontend parsing compatibility is not a
