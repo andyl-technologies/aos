@@ -2,6 +2,7 @@
 {pkgs}: let
   revision = "8396f0209d74d496b7cb27cdf323cd3ff8d4a291";
   src = pkgs.fetchurl {
+    name = "sccache-${revision}.tar.gz";
     urls = ["https://codeload.github.com/mozilla/sccache/tar.gz/${revision}"];
     hash = "sha256-mVfx49aVm1ni3Y+cqxe1/MtAKCG2Y2UMOQxah4JBxlM=";
   };
