@@ -32,7 +32,7 @@ pub enum CampaignGateTargetKind {
         selectors: &'static [ExactSelector],
         /// Repository-relative Nix sources that select and run the target.
         nix_sources: &'static [&'static str],
-        /// Installed test-binary name invoked by the flight.
+        /// Installed command invoked by the flight.
         runner: &'static str,
         /// Evidence lines the flight must publish after the selector passes.
         evidence: &'static [&'static str],
@@ -135,6 +135,11 @@ const HOT_FORK_EQUIVALENCE_SELECTORS: &[ExactSelector] = &[
         name: "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_source_preparation_failure_exposes_no_template",
     },
 ];
+
+const CAMPAIGN_METADATA_MILLION_SELECTORS: &[ExactSelector] = &[ExactSelector {
+    source: "crates/crucible-daemon/tests/gate_campaign_metadata_million.rs",
+    name: "million_real_admissions_fit_compact_metadata_budget",
+}];
 
 const LAZY_FRONTIER_MERKLE_SELECTORS: &[ExactSelector] = &[ExactSelector {
     source: "crates/crucible-campaign/src/merkle/bulk.rs",
@@ -493,10 +498,17 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     automated(
         "gate:campaign-metadata-million",
         "crucible-daemon",
-        &[integration_target(
-            "crucible-daemon",
-            "gate_campaign_metadata_million",
-        )],
+        &[CampaignGateTarget {
+            package: "crucible-daemon",
+            kind: CampaignGateTargetKind::IntegrationExact {
+                test_target: "gate_campaign_metadata_million",
+                selectors: CAMPAIGN_METADATA_MILLION_SELECTORS,
+                nix_sources: &["tests/crucible/phase9-campaign-metadata-million.nix"],
+                runner: "cargo",
+                evidence: &["gate=gate:campaign-metadata-million", "admissions=1000000"],
+                ignored: true,
+            },
+        }],
         "checks.crucible.phase9.gates.campaignMetadataMillion",
     ),
     automated(
@@ -544,28 +556,25 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     automated(
         "gate:campaign-performance",
         "crucible-daemon",
-        &[
-            integration_target("crucible-daemon", "gate_campaign_metadata_million"),
-            CampaignGateTarget {
-                package: "crucible-daemon",
-                kind: CampaignGateTargetKind::LibExactAggregate {
-                    selectors: HOT_FORK_SCALING_SELECTORS,
-                    producer_nix_source: "tests/crucible/phase7-qemu-hot-fork-scaling-vm.nix",
-                    producer_nix_attr: "checks.crucible.phase7.gates.hotForkScaling.rawGate",
-                    producer_gate: "gate:hot-fork-scaling",
-                    aggregate_nix_source: "tests/crucible/phase9-campaign-performance.nix",
-                    evidence_input: "nativeScaling",
-                    evidence: &[
-                        "metadataMillion",
-                        "real_admissions=1000000",
-                        "short_branch_planner_queue_under_5_percent=true",
-                        "same_pinned_host_reference=true",
-                        "durable_metadata_budget_authenticated=true",
-                    ],
-                    ignored: true,
-                },
+        &[CampaignGateTarget {
+            package: "crucible-daemon",
+            kind: CampaignGateTargetKind::LibExactAggregate {
+                selectors: HOT_FORK_SCALING_SELECTORS,
+                producer_nix_source: "tests/crucible/phase7-qemu-hot-fork-scaling-vm.nix",
+                producer_nix_attr: "checks.crucible.phase7.gates.hotForkScaling.rawGate",
+                producer_gate: "gate:hot-fork-scaling",
+                aggregate_nix_source: "tests/crucible/phase9-campaign-performance.nix",
+                evidence_input: "nativeScaling",
+                evidence: &[
+                    "metadataMillion",
+                    "real_admissions=1000000",
+                    "short_branch_planner_queue_under_5_percent=true",
+                    "same_pinned_host_reference=true",
+                    "durable_metadata_budget_authenticated=true",
+                ],
+                ignored: true,
             },
-        ],
+        }],
         "checks.crucible.phase9.gates.campaignPerformance",
     ),
     automated(
