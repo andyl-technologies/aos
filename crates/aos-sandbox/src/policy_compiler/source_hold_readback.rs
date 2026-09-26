@@ -17,7 +17,6 @@
 
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
-use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use crate::hierarchy::protected_journal::HierarchyProtectedJournalOwnerV1;
@@ -25,6 +24,7 @@ use crate::journal::{
     SourceDomainChallengeV1, SourceDomainPolicyHoldV1, replay_source_domain_challenge_v1,
 };
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::role_credential::{decode_role_credential, encode_role_credential};
 
 const MAGIC: &[u8; 8] = b"AOSSRB01";
 const KEY_MAGIC: &[u8; 8] = b"AOSSPK01";
@@ -98,22 +98,8 @@ impl PinnedSourceHoldReadbackSignerV1 {
     ///
     /// Rejects a foreign role, altered checksum, zero generation, or bad key.
     pub fn decode(bytes: &[u8]) -> Result<Self, SourceHoldReadbackErrorV1> {
-        if bytes.len() != KEY_BYTES || bytes.get(..8) != Some(KEY_MAGIC) {
-            return Err(SourceHoldReadbackErrorV1::NonCanonical);
-        }
-        let checksum = Sha256::new()
-            .chain_update(KEY_DOMAIN)
-            .chain_update(&bytes[..48])
-            .finalize();
-        if bytes[48..] != checksum[..] {
-            return Err(SourceHoldReadbackErrorV1::NonCanonical);
-        }
-        let generation = u64::from_be_bytes(take::<8>(bytes, 8)?);
-        let key = VerifyingKey::from_bytes(&take::<32>(bytes, 16)?)
-            .map_err(|_| SourceHoldReadbackErrorV1::NonCanonical)?;
-        if generation == 0 {
-            return Err(SourceHoldReadbackErrorV1::NonCanonical);
-        }
+        let (generation, key) = decode_role_credential(bytes, KEY_MAGIC, KEY_DOMAIN)
+            .ok_or(SourceHoldReadbackErrorV1::NonCanonical)?;
         Ok(Self { generation, key })
     }
 
@@ -141,19 +127,8 @@ pub fn encode_source_hold_readback_signer_credential_v1(
     generation: u64,
     key: &VerifyingKey,
 ) -> Result<[u8; KEY_BYTES], SourceHoldReadbackErrorV1> {
-    if generation == 0 {
-        return Err(SourceHoldReadbackErrorV1::NonCanonical);
-    }
-    let mut bytes = [0; KEY_BYTES];
-    bytes[..8].copy_from_slice(KEY_MAGIC);
-    bytes[8..16].copy_from_slice(&generation.to_be_bytes());
-    bytes[16..48].copy_from_slice(key.as_bytes());
-    let checksum = Sha256::new()
-        .chain_update(KEY_DOMAIN)
-        .chain_update(&bytes[..48])
-        .finalize();
-    bytes[48..].copy_from_slice(&checksum);
-    Ok(bytes)
+    encode_role_credential(generation, key, KEY_MAGIC, KEY_DOMAIN)
+        .ok_or(SourceHoldReadbackErrorV1::NonCanonical)
 }
 
 /// Signs the exact held Source record after checking its current hierarchy head.

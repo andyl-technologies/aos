@@ -18,10 +18,10 @@ use std::path::Path;
 
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
-use sha2::{Digest as _, Sha256};
 
 use crate::controller_service::journal::production_journal_limits;
 use crate::journal::{ControllerPolicyHoldV1, Journal, JournalError, RecordNamespace};
+use crate::role_credential::{decode_role_credential, encode_role_credential};
 
 use super::public_create_source::current_parentless_create_project_source_v1;
 
@@ -88,22 +88,8 @@ impl PinnedControllerHoldSignerV1 {
     ///
     /// Rejects a foreign role, zero generation, malformed key, or alteration.
     pub fn decode(bytes: &[u8]) -> Result<Self, ControllerHoldReadbackErrorV1> {
-        if bytes.len() != CREDENTIAL_BYTES || bytes.get(..8) != Some(KEY_MAGIC) {
-            return Err(ControllerHoldReadbackErrorV1::NonCanonical);
-        }
-        let checksum = Sha256::new()
-            .chain_update(KEY_DOMAIN)
-            .chain_update(&bytes[..48])
-            .finalize();
-        if bytes[48..] != checksum[..] {
-            return Err(ControllerHoldReadbackErrorV1::NonCanonical);
-        }
-        let generation = u64::from_be_bytes(take::<8>(bytes, 8)?);
-        let key = VerifyingKey::from_bytes(&take::<32>(bytes, 16)?)
-            .map_err(|_| ControllerHoldReadbackErrorV1::NonCanonical)?;
-        if generation == 0 {
-            return Err(ControllerHoldReadbackErrorV1::NonCanonical);
-        }
+        let (generation, key) = decode_role_credential(bytes, KEY_MAGIC, KEY_DOMAIN)
+            .ok_or(ControllerHoldReadbackErrorV1::NonCanonical)?;
         Ok(Self { generation, key })
     }
 
@@ -129,19 +115,8 @@ pub fn encode_controller_hold_signer_credential_v1(
     generation: u64,
     key: &VerifyingKey,
 ) -> Result<[u8; CREDENTIAL_BYTES], ControllerHoldReadbackErrorV1> {
-    if generation == 0 {
-        return Err(ControllerHoldReadbackErrorV1::NonCanonical);
-    }
-    let mut bytes = [0; CREDENTIAL_BYTES];
-    bytes[..8].copy_from_slice(KEY_MAGIC);
-    bytes[8..16].copy_from_slice(&generation.to_be_bytes());
-    bytes[16..48].copy_from_slice(key.as_bytes());
-    let checksum = Sha256::new()
-        .chain_update(KEY_DOMAIN)
-        .chain_update(&bytes[..48])
-        .finalize();
-    bytes[48..].copy_from_slice(&checksum);
-    Ok(bytes)
+    encode_role_credential(generation, key, KEY_MAGIC, KEY_DOMAIN)
+        .ok_or(ControllerHoldReadbackErrorV1::NonCanonical)
 }
 
 /// Reports a signed Controller hold checked against a root-held challenge.

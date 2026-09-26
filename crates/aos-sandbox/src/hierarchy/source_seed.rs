@@ -21,6 +21,7 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use super::model::TreeLimitsV1;
+use crate::role_credential::{decode_role_credential, encode_role_credential};
 
 const MAGIC: &[u8; 8] = b"AOSCSE01";
 const KEY_MAGIC: &[u8; 8] = b"AOSCSK01";
@@ -158,22 +159,8 @@ impl PinnedControllerSourceTreeSeedIssuerV1 {
     ///
     /// Rejects a foreign role, altered checksum, zero generation, or bad key.
     pub fn decode(bytes: &[u8]) -> Result<Self, ControllerSourceTreeSeedErrorV1> {
-        if bytes.len() != CREDENTIAL_BYTES || bytes.get(..8) != Some(KEY_MAGIC) {
-            return Err(ControllerSourceTreeSeedErrorV1::NonCanonical);
-        }
-        let checksum = Sha256::new()
-            .chain_update(KEY_DOMAIN)
-            .chain_update(&bytes[..48])
-            .finalize();
-        if bytes[48..] != checksum[..] {
-            return Err(ControllerSourceTreeSeedErrorV1::NonCanonical);
-        }
-        let generation = u64::from_be_bytes(take::<8>(bytes, 8)?);
-        let key = VerifyingKey::from_bytes(&take::<32>(bytes, 16)?)
-            .map_err(|_| ControllerSourceTreeSeedErrorV1::NonCanonical)?;
-        if generation == 0 {
-            return Err(ControllerSourceTreeSeedErrorV1::NonCanonical);
-        }
+        let (generation, key) = decode_role_credential(bytes, KEY_MAGIC, KEY_DOMAIN)
+            .ok_or(ControllerSourceTreeSeedErrorV1::NonCanonical)?;
         Ok(Self { generation, key })
     }
 
@@ -201,19 +188,8 @@ pub fn encode_controller_source_tree_seed_credential_v1(
     generation: u64,
     key: &VerifyingKey,
 ) -> Result<[u8; CREDENTIAL_BYTES], ControllerSourceTreeSeedErrorV1> {
-    if generation == 0 {
-        return Err(ControllerSourceTreeSeedErrorV1::NonCanonical);
-    }
-    let mut bytes = [0; CREDENTIAL_BYTES];
-    bytes[..8].copy_from_slice(KEY_MAGIC);
-    bytes[8..16].copy_from_slice(&generation.to_be_bytes());
-    bytes[16..48].copy_from_slice(key.as_bytes());
-    let checksum = Sha256::new()
-        .chain_update(KEY_DOMAIN)
-        .chain_update(&bytes[..48])
-        .finalize();
-    bytes[48..].copy_from_slice(&checksum);
-    Ok(bytes)
+    encode_role_credential(generation, key, KEY_MAGIC, KEY_DOMAIN)
+        .ok_or(ControllerSourceTreeSeedErrorV1::NonCanonical)
 }
 
 /// Signs an administrative proposal without issuing or appending it.

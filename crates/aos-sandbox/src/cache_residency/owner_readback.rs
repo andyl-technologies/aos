@@ -28,6 +28,7 @@ use thiserror::Error;
 
 use super::effect_owner::{CacheOwnerErrorV1, CacheOwnerLimitsV1};
 use crate::journal::CachePolicyHoldV1;
+use crate::role_credential::{decode_role_credential, encode_role_credential};
 
 const MAGIC: &[u8; 8] = b"AOSCRB01";
 const VERSION: u16 = 1;
@@ -100,23 +101,8 @@ impl PinnedCacheOwnerReadbackSignerV1 {
     /// Rejects raw keys, foreign roles, zero generations, malformed keys,
     /// or altered framing.
     pub fn decode(bytes: &[u8]) -> Result<Self, CacheOwnerReadbackErrorV1> {
-        if bytes.len() != KEY_CREDENTIAL_BYTES || bytes.get(..8) != Some(KEY_MAGIC) {
-            return Err(CacheOwnerReadbackErrorV1::NonCanonical);
-        }
-        let checksum = Sha256::new()
-            .chain_update(KEY_DOMAIN)
-            .chain_update(&bytes[..48])
-            .finalize();
-        if bytes[48..] != checksum[..] {
-            return Err(CacheOwnerReadbackErrorV1::NonCanonical);
-        }
-
-        let generation = u64::from_be_bytes(take::<8>(bytes, 8)?);
-        let key = VerifyingKey::from_bytes(&take::<32>(bytes, 16)?)
-            .map_err(|_| CacheOwnerReadbackErrorV1::NonCanonical)?;
-        if generation == 0 {
-            return Err(CacheOwnerReadbackErrorV1::NonCanonical);
-        }
+        let (generation, key) = decode_role_credential(bytes, KEY_MAGIC, KEY_DOMAIN)
+            .ok_or(CacheOwnerReadbackErrorV1::NonCanonical)?;
         Ok(Self { generation, key })
     }
 
@@ -145,19 +131,8 @@ pub fn encode_cache_owner_readback_signer_credential_v1(
     generation: u64,
     key: &VerifyingKey,
 ) -> Result<[u8; KEY_CREDENTIAL_BYTES], CacheOwnerReadbackErrorV1> {
-    if generation == 0 {
-        return Err(CacheOwnerReadbackErrorV1::NonCanonical);
-    }
-    let mut bytes = [0; KEY_CREDENTIAL_BYTES];
-    bytes[..8].copy_from_slice(KEY_MAGIC);
-    bytes[8..16].copy_from_slice(&generation.to_be_bytes());
-    bytes[16..48].copy_from_slice(key.as_bytes());
-    let checksum = Sha256::new()
-        .chain_update(KEY_DOMAIN)
-        .chain_update(&bytes[..48])
-        .finalize();
-    bytes[48..].copy_from_slice(&checksum);
-    Ok(bytes)
+    encode_role_credential(generation, key, KEY_MAGIC, KEY_DOMAIN)
+        .ok_or(CacheOwnerReadbackErrorV1::NonCanonical)
 }
 
 /// Reports a verified but non-authorizing physical owner statement.

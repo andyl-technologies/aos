@@ -138,6 +138,7 @@ pub mod publisher_sessions;
 pub mod reconciler;
 #[cfg(target_os = "linux")]
 pub mod resource_inventory;
+mod role_credential;
 pub mod runtime_authority;
 pub mod runtime_execution;
 #[cfg(target_os = "linux")]
