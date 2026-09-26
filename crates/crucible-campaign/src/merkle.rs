@@ -942,7 +942,7 @@ impl MerkleMap {
         root: ContentId,
         overlay: &BTreeMap<ContentId, MerkleNode>,
     ) -> Result<MerkleMapRoot, CampaignStoreError> {
-        let entry_count = self.read_overlay_node(root, 0, &overlay)?.entry_count;
+        let entry_count = self.read_overlay_node(root, 0, overlay)?.entry_count;
         let mut stack = vec![(root, false)];
         let mut visited = BTreeSet::new();
 
