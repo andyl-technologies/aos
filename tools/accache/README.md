@@ -182,8 +182,9 @@ files: transitive headers can create names unrelated to the selected object.
 The scope lock prevents concurrent wrapped writers from being attributed to
 the wrong action. Do not run an unwrapped Ada binding generator concurrently
 in the same working directory.
-GCC `-time[=file]` bypasses caching because its timing output is invocation
-specific and the file form appends to an existing file.
+GCC `-time[=file]` and GCC/Clang `-ftime-report` bypass caching because their
+timing output is invocation specific; the `-time=file` form also appends to
+an existing file.
 GCC `-fdump-analyzer-stderr` also bypasses because its trace contains process
 addresses that change between compiler invocations.
 

@@ -42,6 +42,10 @@ pub(super) fn configure(
         )
     })?;
     let expanded = strings(gcc::ExpandIncludeFile::new(&cwd, &arguments))?;
+    ensure!(
+        !expanded.iter().any(|arg| arg == "-ftime-report"),
+        "compiler timing output is not a replayable artifact"
+    );
     let profile_note = (!clang)
         .then(|| {
             expanded

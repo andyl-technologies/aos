@@ -809,15 +809,17 @@ def check_ada_specs(root, env, accache, sccache, gcc, hits):
     return results
 
 
-def check_gcc_timing_passthrough(root, env, accache, sccache, gcc, hits):
+def check_c_timing_passthrough(root, env, accache, sccache, gcc, clang, hits):
     """Keep per-invocation timing streams and append-only timing files live."""
     results = []
-    for name, flag in [("gcc-time-stderr", "-time"),
-                       ("gcc-time-file", "-time=timings.txt")]:
+    for name, compiler, flag in [("gcc-time-stderr", gcc, "-time"),
+                                 ("gcc-time-file", gcc, "-time=timings.txt"),
+                                 ("gcc-time-report", gcc, "-ftime-report"),
+                                 ("clang-time-report", clang, "-ftime-report")]:
         work = root / name
         work.mkdir()
         (work / "source.c").write_text("int answer(void) { return 42; }\n")
-        args = [gcc, "-c", "source.c", "-o", "source.o", flag]
+        args = [compiler, "-c", "source.c", "-o", "source.o", flag]
         timing = work / "timings.txt"
 
         def compile_object(wrapper):
@@ -830,6 +832,9 @@ def check_gcc_timing_passthrough(root, env, accache, sccache, gcc, hits):
 
         direct = compile_object([])
         assert direct[2], (name, "direct compiler produced no object")
+        if name.endswith("-time-report"):
+            expected_header = b"Time variable" if name.startswith("gcc-") else b"Total"
+            assert expected_header in direct[1], (name, direct[1])
         assert compile_object([sccache])[2] == direct[2]
         before_hits = hits()
         assert compile_object([sccache])[2] == direct[2]
@@ -837,7 +842,10 @@ def check_gcc_timing_passthrough(root, env, accache, sccache, gcc, hits):
 
         for _ in range(2):
             previous_size = timing.stat().st_size if timing.exists() else 0
-            assert compile_object([accache])[2] == direct[2]
+            actual = compile_object([accache])
+            assert actual[2] == direct[2]
+            if name.endswith("-time-report"):
+                assert expected_header in actual[1], (name, actual[1])
             event = json.loads(subprocess.check_output([accache, "explain"], env=env))
             assert event["outcome"] == "bypass" and "timing output" in event["reason"], event
             if timing.exists():
@@ -1996,8 +2004,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
             root, env, accache, sccache, rustc))
         results.extend(check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits))
         results.extend(check_ada_specs(root, env, accache, sccache, gcc, hits))
-        results.extend(check_gcc_timing_passthrough(root, env, accache,
-                                                   sccache, gcc, hits))
+        results.extend(check_c_timing_passthrough(root, env, accache,
+                                                  sccache, gcc, clang, hits))
         results.append(check_gcc_analyzer_stderr_passthrough(root, env,
                                                              accache, sccache, gcc, hits))
         results.append(check_saved_temporaries(root, env, accache, sccache, rustc, hits))
