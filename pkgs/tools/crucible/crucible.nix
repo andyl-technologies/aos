@@ -155,13 +155,15 @@
   };
   debugGatewayArtifactContract = {
     family = "crucible-gpl-debug-gateway-release-and-test";
-    nativeInputs = map toString [buildRustDev];
+    nativeInputs = map toString [buildRustDev buildPkgConfig sqlite];
     licenseScope = "GPL-2.0-only";
   };
+  debugGatewayCargoEnv = {LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";};
   debugGatewayArtifacts = mkCargoArtifacts {
     pname = "crucible-debug-gateway-artifacts";
     inherit version cargoDeps;
     cargoArtifactContract = debugGatewayArtifactContract;
+    cargoEnv = debugGatewayCargoEnv;
     src = mkCargoDummySource {
       srcRoot = ../../../crates;
       name = "crucible-debug-gateway-dummy-source";
@@ -172,7 +174,8 @@
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
     ];
-    buildDeps = [buildRustDev];
+    buildDeps = [buildRustDev buildPkgConfig sqlite];
+    runtimeDeps = [sqlite];
   };
   controller = mkCargoPackage {
     pname = "crucible-controller";
@@ -404,14 +407,15 @@
     inherit cargoDeps;
     cargoArtifacts = debugGatewayArtifacts;
     cargoArtifactContract = debugGatewayArtifactContract;
+    cargoEnv = debugGatewayCargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
 
     cargoFlags = "-p crucible-debug-gateway";
     cargoTestFlags = "-p crucible-debug-gateway";
     doCheck = true;
-    buildDeps = [buildRustDev];
-    runtimeDeps = [];
+    buildDeps = [buildRustDev buildPkgConfig sqlite];
+    runtimeDeps = [sqlite];
 
     postInstall = ''
       mkdir -p "$out/share/licenses/crucible-debug-gateway"
