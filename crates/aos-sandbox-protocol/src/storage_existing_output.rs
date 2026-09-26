@@ -39,12 +39,12 @@ pub struct ExistingOutputRequestV1 {
     pub record_digest: [u8; 32],
 }
 
-/// Storage's current logical row, bound to one exact request.
+/// Storage's current logical row, bound to one exact query or held begin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExistingOutputResponseV1 {
     /// Echoed request nonce.
     pub nonce: [u8; 32],
-    /// Domain-separated digest of the canonical request.
+    /// Domain-separated digest of the canonical query request or held begin.
     pub request_digest: [u8; 32],
     /// Execution identity.
     pub execution: [u8; 16],
