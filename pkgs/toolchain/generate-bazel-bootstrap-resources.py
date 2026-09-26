@@ -1,4 +1,4 @@
-"""Recreate Bazel 7 bootstrap resources from its pinned Starlark source."""
+"""Recreate Bazel bootstrap resources from pinned Starlark sources."""
 
 import argparse
 import ast
@@ -17,6 +17,7 @@ WORKSPACE_OUTPUTS = frozenset(
     {
         "coverage.WORKSPACE",
         "rules_license.WORKSPACE",
+        "rules_suffix.WORKSPACE",
         "cc_configure.WORKSPACE",
         "jdk.WORKSPACE",
     }
@@ -119,23 +120,33 @@ def workspace_contents(build_file: Path, rule: dict, repositories: dict) -> str:
 
 
 def write_workspace_resources(source_root: Path) -> list[Path]:
-    """Write the four generated WORKSPACE resources into the source tree."""
+    """Write the version's declared WORKSPACE resources into the source tree."""
+
+    declarations = [
+        (source_root / relative_build_file, rule)
+        for relative_build_file in WORKSPACE_BUILD_FILES
+        for rule in workspace_rules(source_root / relative_build_file)
+    ]
+    if not declarations:
+        # Bazel 9 removed WORKSPACE support and declares no such resources.
+        return []
 
     repositories = workspace_repositories(source_root)
     written = []
-    for relative_build_file in WORKSPACE_BUILD_FILES:
-        build_file = source_root / relative_build_file
-        for rule in workspace_rules(build_file):
-            if rule["out"] not in WORKSPACE_OUTPUTS:
-                continue
+    declared = set()
+    for build_file, rule in declarations:
+        output_name = rule["out"]
+        if output_name not in WORKSPACE_OUTPUTS:
+            raise ValueError(f"Unknown Bazel bootstrap WORKSPACE resource: {output_name}")
+        declared.add(output_name)
 
-            output = build_file.parent / rule["out"]
-            if output.exists():
-                raise FileExistsError(f"Generated Bazel resource already exists: {output}")
-            output.write_text(workspace_contents(build_file, rule, repositories))
-            written.append(output)
+        output = build_file.parent / output_name
+        if output.exists():
+            raise FileExistsError(f"Generated Bazel resource already exists: {output}")
+        output.write_text(workspace_contents(build_file, rule, repositories))
+        written.append(output)
 
-    if {path.name for path in written} != WORKSPACE_OUTPUTS:
+    if {path.name for path in written} != declared:
         raise ValueError("Bazel bootstrap WORKSPACE resource set is incomplete")
     return written
 

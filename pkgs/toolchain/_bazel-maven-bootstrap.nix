@@ -4,6 +4,7 @@
   fetchurl,
   buildPackages,
   bazelZstdJni155,
+  includeModernLibraries ? false,
 }: let
   bazelAsm = import ./_bazel-asm.nix {
     inherit mkDerivation fetchurl buildPackages;
@@ -605,7 +606,18 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/org/jctools/jctools-core/3.3.0/jctools-core-3.3.0-sources.jar";
       hash = "sha256-R51NwF2/ifRpE1S9aEuqJ+evbhn8YvMl/RHLxhCUAvw=";
     }
-  ];
+  ] ++ (if includeModernLibraries then [
+    {
+      target = "com/google/code/gson/gson/2.11.0/gson-2.11.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/code/gson/gson/2.11.0/gson-2.11.0-sources.jar";
+      hash = "sha256-SahT9xvIdO4YmKStUAm1fQxTblqZiziQJT/79LcnatM=";
+    }
+    {
+      target = "org/commonmark/commonmark/0.25.0/commonmark-0.25.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/commonmark/commonmark/0.25.0/commonmark-0.25.0-sources.jar";
+      hash = "sha256-5naJrhUSG51OLWK+lFfR86YZH9SHxrnoKKQIgFnobQU=";
+    }
+  ] else []);
 
   sources = builtins.genList (
     index: let
