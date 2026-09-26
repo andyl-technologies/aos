@@ -300,7 +300,6 @@ impl ImmutableBlobBackend for DirectoryBlobBackend {
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
         let _inventory_lock = self.acquire_inventory_lock()?;
         let mut inventory_state = self.load_or_create_inventory_state()?;
-        self.advance_inventory_state(&mut inventory_state)?;
         let path = self.object_path(id);
         let directory = path.parent().ok_or(StoreError::InvalidComposition {
             reason: "object path has no containing directory",
@@ -308,13 +307,21 @@ impl ImmutableBlobBackend for DirectoryBlobBackend {
         create_dir_all_durable(directory)?;
 
         if path.exists() {
+            // The authenticated loose file is the inventory membership here;
+            // state-v1 records only its generation, not a separate object map.
             source.verified_as(id)?;
             if !self.contains(id)? {
                 return Err(StoreError::NotFound { id });
             }
+            // Complete a prior publisher's interrupted link-before-sync window
+            // before returning a durable receipt for the existing object.
             sync_directory(directory)?;
             return Ok(directory_receipt(&self.name, id, source.logical_length()));
         }
+
+        // Only a new object changes the inventory; persist its generation
+        // before publishing the link so interrupted puts remain detectable.
+        self.advance_inventory_state(&mut inventory_state)?;
 
         let (staging_path, mut staging) = self.create_staging(directory)?;
         let publish_result = (|| {
