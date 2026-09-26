@@ -103,6 +103,10 @@ Incremental Rust, executable/proc-macro compilation, ordinary linking, and
 upstream parser exclusions bypass. Frontend parsing compatibility is not a
 claim of support for every compiler/version/platform, nor for arbitrary new
 side-effect flags. This package targets the AOS Linux compiler toolchains.
+Rust `-Csave-temps=yes` also bypasses: it creates temporary bitcode, object,
+and metadata files whose names are not available before compilation. Pinned
+sccache accepts this flag but its warm hit drops those files. Accache preserves
+them by running rustc for each invocation. `-Csave-temps=no` remains cacheable.
 
 ## Storage and concurrency
 
@@ -180,6 +184,8 @@ The nested Rust response fixture uses pinned sccache as its output reference:
 direct rustc rejects an inner `@file`, while sccache expands it. The fixture
 mutates that inner file and requires a miss with provenance naming the change.
 The frontend check also requires incremental Rust to bypass caching.
+An oracle case verifies that sccache's warm `-Csave-temps=yes` hit omits
+bitcode files while accache runs rustc and preserves them on both invocations.
 
 The suite asserts several pinned sccache output omissions: implicit `.d` files
 on warm `-MMD` hits without `-MF`, GCC `-aux-info` files, Clang serialized
