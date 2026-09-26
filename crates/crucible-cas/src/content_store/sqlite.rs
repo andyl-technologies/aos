@@ -697,6 +697,9 @@ fn invalid_object_data() -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
+    #![allow(clippy::expect_used)]
+
     use std::os::unix::fs::{MetadataExt, symlink};
 
     use super::*;
@@ -780,7 +783,7 @@ mod tests {
             "{}.{}.{}",
             id.kind().as_str(),
             id.schema_version() + 1,
-            &id.encode().rsplit('.').next().expect("digest field"),
+            id.encode().rsplit('.').next().expect("digest field"),
         ))
         .expect("same digest with different schema");
         assert!(!reopened.contains(other_schema).expect("distinct ID absent"));
