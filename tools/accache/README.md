@@ -124,9 +124,13 @@ the compiler and record a bypass reason. Non-UTF-8 arguments also run unchanged.
 Covered output families include ordinary C/C++ objects, depfiles (including
 GCC/Clang `-Wp,-MD` and `-Wp,-MMD` and GCC `-Xpreprocessor -MD`), split debug
 files, coverage notes, preprocessed source, assembly, PCH, explicit Clang
-modules, and serialized Clang diagnostics. GCC coverage includes SARIF and
-plain HTML diagnostic reports, numbered tree, RTL, IPA, language, debug,
-early-debug, and analyzer dumps (including graph and compressed JSON forms),
+modules, and serialized Clang diagnostics. GCC's joined `-MFpath` and
+`-MF=path` forms also restore the actual dependency file, including the
+literal leading `=` in the second form.
+
+GCC coverage includes SARIF and plain HTML diagnostic reports, numbered tree,
+RTL, IPA, language, debug, early-debug, and analyzer dumps (including graph
+and compressed JSON forms),
 Ada and Go specs, final instruction dumps, and compressed optimization
 records. Joined GCC `-d` debug dumps are included.
 
