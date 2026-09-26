@@ -182,7 +182,8 @@ still receive byte-for-byte comparisons. It deletes outputs before warm runs,
 asserts cache hits, and changes dependencies to require misses. Separate tests
 exercise corruption, concurrent identical requests, PCH/modules, native
 libraries, proc macro file reads, persistent target paths, and source/header
-names containing spaces.
+names containing spaces. Clang PCH coverage includes its `-Xclang -emit-pch`
+driver form and a header mutation.
 
 The nested Rust response fixture uses pinned sccache as its output reference:
 direct rustc rejects an inner `@file`, while sccache expands it. The fixture
