@@ -215,14 +215,16 @@ fn campaign_advance_can_outlive_multiple_host_poll_slices() {
     ]);
     let crash_detector = QemuCrashDetector::new("vm-a");
 
-    let report = run_bounded_qemu_node_step(
+    let report = match run_bounded_qemu_node_step(
         &mut target,
         &mut runtime,
         policy,
         &crash_detector,
         horizon(20),
-    )
-    .expect("a host polling slice is not a campaign stop outcome");
+    ) {
+        Ok(report) => report,
+        Err(error) => panic!("a host polling slice is not a campaign stop outcome: {error}"),
+    };
 
     assert!(matches!(
         report.outcome,
@@ -255,14 +257,16 @@ fn campaign_advance_detects_child_exit_within_one_host_poll_slice() {
     let mut runtime = ScriptedRuntime::new([QemuAsyncWaitOutcome::TimedOut]);
     let crash_detector = QemuCrashDetector::new("vm-a");
 
-    let report = run_bounded_qemu_node_step(
+    let report = match run_bounded_qemu_node_step(
         &mut target,
         &mut runtime,
         policy,
         &crash_detector,
         horizon(20),
-    )
-    .expect("an exited child is reported as an infrastructure crash");
+    ) {
+        Ok(report) => report,
+        Err(error) => panic!("an exited child is reported as an infrastructure crash: {error}"),
+    };
 
     assert!(matches!(
         report.outcome,

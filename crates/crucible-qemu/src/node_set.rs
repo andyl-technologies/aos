@@ -663,13 +663,17 @@ mod campaign_marker_parking_tests {
             logical_icount: 100,
             raw_icount: 43,
         };
-        let error = campaign_marker_parked_at(
+        let error = match campaign_marker_parked_at(
             &node,
             projected_stop,
             mismatched_calibration,
             std::slice::from_ref(&event),
-        )
-        .expect_err("the stopped raw count must be exactly one beyond the marker");
+        ) {
+            Err(error) => error,
+            Ok(marker) => {
+                panic!("the stopped raw count must be exactly one beyond the marker: {marker:?}")
+            }
+        };
         assert!(error.to_string().contains(
             "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V1 node=west marker=fault.transport.ready pre_raw=41 post_raw=42 observed_tick=99 logical_offset=57 marker_event_raw=41 physical_stop_raw=43 physical_stop_tick=100"
         ));
