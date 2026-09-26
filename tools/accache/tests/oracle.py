@@ -321,6 +321,17 @@ def fixtures(gcc, clang, rustc):
                       ["--crate-name=example", "--crate-type=" + crate_type,
                        "--out-dir=target", "library.rs", "--emit=" + emits],
                       rust_sources, {"value.txt": "second"})
+    for name, emits in [
+        ("named-link", "link=target/custom.rlib"),
+        ("named-dep-info", "link,dep-info=target/custom.d"),
+        ("named-link-and-metadata", "link=target/custom.rlib,metadata"),
+    ]:
+        # The pinned Rust frontend treats per-emission paths as noncacheable.
+        # Passthrough still preserves rustc's explicitly named output files.
+        yield Fixture("rust-" + name, rustc,
+                      ["--crate-name=example", "--crate-type=rlib",
+                       "--out-dir=target", "library.rs", "--emit=" + emits],
+                      rust_sources, {"value.txt": "second"}, cacheable=False)
     yield Fixture("rust-response", rustc, ["@arguments.rsp"], rust_sources | {
         "arguments.rsp": "--crate-name=example\n--crate-type=rlib\n--emit=link,dep-info\n--out-dir=target\nlibrary.rs\n",
     })
@@ -1210,6 +1221,14 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     assert oracle_hit, (fixture.name, "sccache did not hit", stats())
                 else:
                     assert warm_event["outcome"] != "hit", (fixture.name, warm_event)
+                    if fixture.name.startswith("rust-named-"):
+                        # The pinned parser checks for a literal link or
+                        # metadata emission before rejecting named emit kinds.
+                        reason = ("not a cacheable compilation" if fixture.name == "rust-named-link"
+                                  else "unsupported --emit")
+                        assert (warm_event["outcome"] == "bypass"
+                                and reason in warm_event["reason"]), (
+                            fixture.name, warm_event)
                 results.append({"fixture": fixture.name, "revision": revision,
                                 "oracle_hit": oracle_hit, "accache": warm_event["outcome"],
                                 "oracle_missing_artifacts": sorted(set(baseline[3]) - set(oracle_warm[3])),
