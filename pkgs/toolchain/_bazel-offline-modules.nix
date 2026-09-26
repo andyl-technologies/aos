@@ -169,6 +169,42 @@
       hash = "sha256-9G3QDBp5OuyYP7vwPKjqK+uTUZmjhLpKSE7nshz8guc=";
     })
   ];
+
+  rulesProtoRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/rules_proto/7.0.2";
+  rulesProtoSource = moduleSource {
+    name = "rules_proto";
+    version = "7.0.2";
+    url = "https://github.com/bazelbuild/rules_proto.git";
+    ref = "7.0.2";
+    rev = "c138c719d7bdca9805d6974c9b3a40ebf40fb840";
+    hash = "sha256-zizYBFXpD3p45a6wMBuVUWqPQPQbdC9DiBDPf9bBPCA=";
+  };
+  rulesProtoModule = fetchurl {
+    urls = ["${rulesProtoRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-v4F5O9bSrYmjekBpPlbGGw7jD3p/268+q79fOd5H3qI=";
+  };
+  rulesProtoPatch = fetchurl {
+    urls = ["${rulesProtoRegistryRoot}/patches/module_dot_bazel_version.patch"];
+    hash = "sha256-kxckjuQWVpV7S42vfiX3heOtrOWXlhW/tAfaQFbgNjA=";
+  };
+
+  grpcJavaRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/grpc-java/1.66.0";
+  grpcJavaSource = moduleSource {
+    name = "grpc-java";
+    version = "1.66.0";
+    url = "https://github.com/grpc/grpc-java.git";
+    ref = "v1.66.0";
+    rev = "cf784069508fc5767a85c915e43bb43ccfc84c76";
+    hash = "sha256-vU0Z3Y7BLa6TTxi27rPLEPPftBGUZbK+KerylxXVubM=";
+  };
+  grpcJavaModule = fetchurl {
+    urls = ["${grpcJavaRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-hv8mIJ+shGrbidsR83FLPcAJD7L7gVdWc8x0iAzaTn4=";
+  };
+  grpcJavaPatch = fetchurl {
+    urls = ["${grpcJavaRegistryRoot}/patches/module_dot_bazel.patch"];
+    hash = "sha256-TUbU6+Jm8Kj2MG5uY9bxXcESlNtR4a+dTwE0MJahrQU=";
+  };
 in {
   rules_cc = moduleSource {
     name = "rules_cc";
@@ -252,6 +288,24 @@ in {
     ref = "1.0.0";
     rev = "f85e7d6309f28f031bf049f7d6283ce0d41d7546";
     hash = "sha256-GTSHr08f0eSfV8QQ7YdlxEZt1sEkdzLXSFBcMs0YSdk=";
+  };
+
+  rules_pkg = moduleSource {
+    name = "rules_pkg";
+    version = "1.0.1";
+    url = "https://github.com/bazelbuild/rules_pkg.git";
+    ref = "1.0.1";
+    rev = "6a44f01087cf504eeee7dffce7cabe042a2f0bac";
+    hash = "sha256-OJRWcI7fKtf9pBt8iJlfEC4+4skADIkeTY0cmR9aOj0=";
+  };
+
+  rules_go = moduleSource {
+    name = "rules_go";
+    version = "0.48.0";
+    url = "https://github.com/bazel-contrib/rules_go.git";
+    ref = "v0.48.0";
+    rev = "354a98f4acf2333b7603ede50dd5fbc20ae315b1";
+    hash = "sha256-Xjag+Of9Qa89gvhZLV4wbuJmjHgiEScrnOFhB6uKFvk=";
   };
 
   grpc = mkDerivation {
@@ -487,6 +541,76 @@ in {
         script = ''
           ${builtins.concatStringsSep "\n" (builtins.map (patchFile: ''patch --batch -p0 < ${patchFile}'') blake3Patches)}
           cmp MODULE.bazel ${blake3Module}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  rules_proto = mkDerivation {
+    pname = "bazel-rules-proto-bcr-source";
+    version = "7.0.2";
+    src = rulesProtoSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir rules-proto-source
+          cp -a "$src"/. rules-proto-source/
+          chmod -R u+w rules-proto-source
+          cd rules-proto-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch -p1 < ${rulesProtoPatch}
+          cmp MODULE.bazel ${rulesProtoModule}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  grpc-java = mkDerivation {
+    pname = "bazel-grpc-java-bcr-source";
+    version = "1.66.0";
+    src = grpcJavaSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir grpc-java-source
+          cp -a "$src"/. grpc-java-source/
+          chmod -R u+w grpc-java-source
+          cd grpc-java-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch -p1 < ${grpcJavaPatch}
+          cmp MODULE.bazel ${grpcJavaModule}
         '';
       }
       {
