@@ -24,6 +24,7 @@ def run_suite(root):
     env = {key: value for key, value in os.environ.items() if not key.startswith("ACCACHE_")}
     env.update(ACCACHE_DIR=str(root / "cache"), ACCACHE_STATE_DIR=str(root / "state"))
     env["ACCACHE_MANIFEST"] = os.environ["ACCACHE_MANIFEST"]
+    env.pop("RUSTC_BOOTSTRAP", None)
     env["LC_ALL"] = "C"
     env["VALUE"] = "first"
 
@@ -193,6 +194,66 @@ def run_suite(root):
     invoke(rustc, rust_args)
     invoke(rustc, consumer)
     invoke(rustc, consumer, "hit")
+
+    # The binary-dependency probe enables RUSTC_BOOTSTRAP on stable rustc.
+    # Proc macros can see that variable and generate different source reads,
+    # so their probes must run with the same environment as compilation.
+    (work / "selector.rs").write_text(
+        'extern crate proc_macro;\n'
+        'use proc_macro::TokenStream;\n'
+        '#[proc_macro]\n'
+        'pub fn selected(_: TokenStream) -> TokenStream {\n'
+        '    let name = if std::env::var_os("RUSTC_BOOTSTRAP").is_some() {\n'
+        '        "bootstrap.txt"\n'
+        '    } else {\n'
+        '        "regular.txt"\n'
+        '    };\n'
+        '    format!("include_str!({name:?})").parse().unwrap()\n'
+        '}\n')
+    (work / "selected.rs").write_text('pub const TEXT: &str = selector::selected!();\n')
+    (work / "bootstrap.txt").write_text("bootstrap")
+    (work / "regular.txt").write_text("regular-one")
+    macro_read_root = work / "macro-read-root"
+    macro_read_root.mkdir()
+    macro_manifest = json.loads(Path(env["ACCACHE_MANIFEST"]).read_text())
+    macro_manifest["read_roots"] = [str(macro_read_root)]
+    macro_manifest_path = root / "macro-manifest.json"
+    macro_manifest_path.write_text(json.dumps(macro_manifest))
+    subprocess.run([rustc, "--edition=2024", "--crate-name", "selector",
+                    "--crate-type", "proc-macro", "selector.rs", "-o",
+                    "target/libselector.so"], cwd=work, env=env,
+                   check=True, capture_output=True)
+    selected_args = ["--edition=2024", "--crate-name", "selected",
+                     "--crate-type", "rlib", "--out-dir", "target",
+                     "--emit=link,dep-info", "--extern",
+                     "selector=target/libselector.so", "-L", "dependency=target",
+                     "selected.rs"]
+    selected_output = work / "target/libselected.rlib"
+    selected_depfile = work / "target/selected.d"
+    original_selected = None
+    for revision, value in enumerate(["regular-one", "regular-two"]):
+        (work / "regular.txt").write_text(value)
+        subprocess.run([rustc, *selected_args], cwd=work, env=env,
+                       check=True, capture_output=True)
+        direct_selected = selected_output.read_bytes()
+        if original_selected is not None:
+            assert direct_selected != original_selected
+        original_selected = direct_selected
+        selected_output.unlink()
+        selected_depfile.unlink()
+
+        observed = invoke(rustc, selected_args, "miss", {
+            "ACCACHE_MANIFEST": str(macro_manifest_path),
+        })
+        assert any(path.endswith("regular.txt")
+                   for path in observed["identity"]["inputs"])
+        assert selected_output.read_bytes() == direct_selected
+        selected_output.unlink()
+        selected_depfile.unlink()
+        invoke(rustc, selected_args, "hit", {
+            "ACCACHE_MANIFEST": str(macro_manifest_path),
+        })
+        assert selected_output.read_bytes() == direct_selected
 
     # Separate derivations differ in their bookkeeping and install rpath even
     # for identical compiler inputs. The manifest removes those variables from

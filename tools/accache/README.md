@@ -153,12 +153,14 @@ unpacked split debug
 Rust extern/native dependencies and proc macro consumers are covered by the
 input contract above. Rust's unstable sample-profile and dataflow-sanitizer ABI
 list inputs are fingerprinted; editing either invalidates the action.
-The dependency probe uses the AOS rustc's `-Zbinary-dep-depinfo` to name the
-crate artifacts it actually reads, including transitive rlibs and proc-macro
-libraries. The probe alone sets `RUSTC_BOOTSTRAP=1`; the compilation keeps the
-caller's environment. This avoids hashing unrelated files in Cargo's shared
-`-L dependency` directory while concurrent crates are being built. Native
-library search directories retain their conservative inventory.
+Ordinary library actions use the AOS rustc's `-Zbinary-dep-depinfo` to name the
+crate artifacts it actually reads, including transitive rlibs. The probe alone
+sets `RUSTC_BOOTSTRAP=1`; the compilation keeps the caller's environment. This
+avoids hashing unrelated files in Cargo's shared `-L dependency` directory
+while concurrent crates are being built. Proc-macro consumers instead use an
+environment-matched probe and conservatively inventory their crate search
+directories: a macro can read `RUSTC_BOOTSTRAP` and emit different file reads.
+Native library search directories also retain their conservative inventory.
 The pinned built-in `-Zcodegen-backend=llvm` uses the compiler closure and can
 be cached. Other backend names and paths need declared `read_roots` because a
 runtime backend can read files missing from rustc's dep-info; an explicit

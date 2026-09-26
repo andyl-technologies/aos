@@ -316,7 +316,9 @@ impl Invocation {
                 fs::remove_file(&self.dependencies)?;
             }
             let mut probe = command(compiler, scan, environment);
-            if self.kind.starts_with("rust-") {
+            if self.kind.starts_with("rust-")
+                && scan.iter().any(|arg| arg == "-Zbinary-dep-depinfo=yes")
+            {
                 // The pinned AOS rustc exposes binary-dep-depinfo behind -Z.
                 // Only the probe needs this capability; the actual compile
                 // retains the caller's environment and stable-channel rules.
