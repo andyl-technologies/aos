@@ -171,7 +171,7 @@ here is a conformance error of this document.
 | `gate:tree-hardlinks` | 06 | TREE-11 |
 | `gate:tree-history-independence` | 06 | TREE-24, TEST-3 |
 | `gate:tree-keys` | 06 | TREE-1 |
-| `gate:tree-well-formed` | 06 | TREE-17, TREE-30, TREE-4, TREE-8 |
+| `gate:tree-well-formed` | 06 | TREE-17, TREE-30, TREE-34, TREE-4, TREE-8 |
 | `gate:verify-before-admit` | 05 | OBJ-5, CDC-14 |
 | `gate:view-identity` | 01 | prose in 01 |
 | `gate:worker-no-network` | 03 | ARCH-7 |

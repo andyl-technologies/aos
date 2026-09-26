@@ -221,3 +221,56 @@ one exists.
 8. **Native working tree.** Whether a future version replaces the host
    filesystem under the upper with a Terrane-owned log-structured working
    tree. Explicitly out of scope for 1.0 and not precluded by any format.
+   See the informative section below for the extension points 1.0 keeps
+   open.
+
+## Informative: the shape of a native working tree
+
+A later version may make Terrane a complete local filesystem in the sense
+that a pool of block devices, with no other filesystem beneath it, holds
+both the committed history and the live working set. This section records
+how that would compose from 1.0 and which 1.0 decisions keep it possible.
+It defines nothing.
+
+The missing component is one layer: a **live tree**, a mutable, per-host,
+log-structured working set over the same chunks and packs. Dirty entries
+and partial chunk fragments live in an in-memory map with a write-ahead
+intent log on the block backend; write-back turns fragments into chunks and
+packs at commit; a snapshot is a commit; a clone is a fork; `fsync` is a
+small commit whose durability is the intent-log flush rather than a full
+pack seal. Served through a `native` surface (a kernel client or, at first,
+FUSE), it gives the pool, dataset, snapshot, clone, send and receive, scrub,
+resilver, compression, and dedup semantics of a conventional
+copy-on-write filesystem, plus branches and merge.
+
+What 1.0 already provides: raw-device storage and the superblock flip
+([`16-blockdev-backend.md`](16-blockdev-backend.md)); replication, striping,
+scrub, and resilver ([`15-redundancy.md`](15-redundancy.md)); snapshots and
+clones as refs ([`09-refs-and-commits.md`](09-refs-and-commits.md));
+inherited per-root properties ([`08-properties.md`](08-properties.md));
+send and receive as negotiated diffs ([`21-bandwidth.md`](21-bandwidth.md));
+the commit-boundary consistency model with `sync` writers
+([`20-consistency.md`](20-consistency.md)).
+
+What 1.0 deliberately leaves additive room for:
+
+- entry types `8` through `15` for devices, FIFOs, and sockets
+  ([`06-tree-format.md`](06-tree-format.md) TREE-34);
+- ownership and timestamps as registered attributes rather than fixed
+  fields, so a live tree can carry them without changing identity rules
+  for canonical trees (TREE-9, TREE-10);
+- new properties such as a record size for small random writes, registered
+  additively ([`reference/property-registry.md`](reference/property-registry.md));
+- a new surface name for the native client and a new reference format for
+  the intent log, both additive under
+  [`26-surfaces.md`](26-surfaces.md) and the registries;
+- a writer mode finer than `sync` whose durability point is the intent log,
+  as an extension of the mode table in
+  [`20-consistency.md`](20-consistency.md).
+
+Two costs would remain by design: sharing stays chunk-granular
+([`01-goals-nongoals-invariants.md`](01-goals-nongoals-invariants.md)
+NG-7), so a record-size property would bound the rechunk cost of small
+overwrites rather than remove it; and a FUSE-served live tree will not
+match an in-kernel filesystem on write-heavy workloads, so the native
+surface is the step that decides whether the replacement is complete.

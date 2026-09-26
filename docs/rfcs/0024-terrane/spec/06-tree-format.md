@@ -198,6 +198,13 @@ child-ref  = [ last-key: bstr, child: bstr .size 32, count: uint, weight: uint ]
   MUST NOT rely on them for correctness, and a writer MUST compute them
   exactly so that they are part of the canonical bytes.
 
+- **[TREE-34]** Entry `type` values `8` through `15` are reserved for
+  special files a live filesystem may need (character and block devices,
+  FIFOs, sockets) and for a future native working tree. A 1.0 decoder MUST
+  reject them; a later version assigns them without renumbering existing
+  types, so a 1.0 tree remains decodable by every later version. *Gate:*
+  `gate:tree-well-formed`.
+
 ## Boundary function
 
 The boundary function decides where one node ends and the next begins. It
