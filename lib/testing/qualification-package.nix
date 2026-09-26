@@ -15,7 +15,8 @@
   packageProbeSpec = import ./qualification-package-spec.nix {inherit lib;};
   probeFor = packageName: let
     package = pkgs.${packageName};
-    packageProbe = package.contract.value.qualification.package_probe;
+    contract = package.contract or (throw "qualification package '${packageName}' has no contract");
+    packageProbe = contract.value.qualification.package_probe;
   in
     mkPackageProbe {
       name = packageName;
@@ -24,7 +25,7 @@
   probes = builtins.listToAttrs (map (packageName: {
       name = packageName;
       value = probeFor packageName;
-  })
+    })
     sortedPackageNames);
   probeNames = builtins.attrNames probes;
   probeRegistry = pkgs.writeTextFile {
@@ -44,11 +45,6 @@
         ${pkgs.buildPackages.python3}/bin/python3 -m py_compile \
         $out/share/aos-release/qualification-package.py
     '';
-  };
-  k3sBindings = pkgs.writeTextFile {
-    name = "${name}-k3s-bindings";
-    destination = "/qualification_k3s_bindings.py";
-    text = builtins.readFile ./qualification_k3s_bindings.py;
   };
   runtimePath = lib.makeBinPath [
     pkgs.bash
@@ -73,7 +69,6 @@
     export AOS_PROFILE_ROOT=$PWD/profiles
     export APM_SYSTEM_CONFIG_DIR=$PWD/empty-system-config
     export LC_ALL=C
-    export PYTHONPATH=${k3sBindings}
 
     export AOS_QUALIFICATION_PLATFORM=${lib.escapeShellArg pkgs.stdenv.hostPlatform.system}
     export AOS_QUALIFICATION_IDENTITY=${lib.escapeShellArg identity}

@@ -821,20 +821,22 @@
   recoveryPackageRule = builtins.head (
     builtins.filter (rule: rule.name == "aos-recovery") releaseQualification.package_rules
   );
+  mkQualificationRecoveryPackageScenario = import ./qualification/providers/recovery/qualification-recovery-package.nix {inherit pkgs;};
   recoveryPackageScenario =
     if hostPlatform.isLinux
     then
-      testing.mkQualificationRecoveryPackageScenario {
+      mkQualificationRecoveryPackageScenario {
         name = "aos-qualification-${hostPlatform.system}-aos-recovery";
         packageExecutable = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
         imageExecutable = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
         systemVariant = recoveryPackageRule.execution.system_variant;
       }
     else null;
+  mkQualificationK3sPackageScenario = import ./qualification/providers/k3s/qualification-k3s-package.nix {inherit pkgs lib;};
   k3sPackageScenarios = lib.optionalAttrs hostPlatform.isLinux (
     builtins.listToAttrs (map (rule: let
         name = "aos-qualification-${hostPlatform.system}-${rule.name}-fleet";
-        scenario = testing.mkQualificationK3sPackageScenario {
+        scenario = mkQualificationK3sPackageScenario {
           inherit name;
           identity = qualificationExecutorIdentity;
           packageExecutable = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";

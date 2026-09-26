@@ -15,6 +15,17 @@ K3S_TOPOLOGIES = {
 }
 
 
+def bind_subjects(manifest, platform, package, image_variant, arguments):
+    """Returns the exact K3s fleet subjects for the generic package runner."""
+
+    if not isinstance(arguments, dict) or set(arguments) != {"topology"}:
+        raise ValueError("K3s fleet subject binding requires one topology")
+
+    return bind_k3s_fleet(
+        manifest, platform, package, image_variant, arguments["topology"]
+    ).subjects
+
+
 @dataclass(frozen=True)
 class K3sFleetBindings:
     """Carries the exact package outputs and artifact subjects for one fleet."""
