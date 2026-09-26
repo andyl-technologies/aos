@@ -2338,6 +2338,82 @@ def check_clang_profile_use(root, env, accache, sccache, clang, hits):
     return results
 
 
+def check_clang_memory_profile_use(root, env, accache, sccache, clang, hits):
+    """Hash indexed MemProf feedback even when it leaves object bytes unchanged."""
+    fixture = "clang-memory-profile-use"
+    work = root / fixture
+    work.mkdir()
+    (work / "source.c").write_text(
+        "#include <stdlib.h>\n"
+        "int main(void) { volatile char *p=malloc(16); p[0]=42; "
+        "int x=p[0]; free((void*)p); return x==42?0:1; }\n")
+    yaml = work / "profile.yaml"
+    profile = work / "profile.memprofdata"
+    object_file = work / "source.o"
+    depfile = work / "source.d"
+    profdata = str(Path(clang).with_name("llvm-profdata"))
+    args = [clang, "-O2", "-gmlt", "-fdebug-info-for-profiling", "-c", "source.c",
+            "-o", "source.o", "-MD", "-MF", "source.d",
+            "-fmemory-profile-use=profile.memprofdata"]
+
+    def compile_object(wrapper):
+        object_file.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+        return (completed.stdout, completed.stderr,
+                object_file.read_bytes(), depfile.read_bytes())
+
+    results = []
+    previous_profile = None
+    for revision, total_size in enumerate([16, 16000]):
+        # llvm-profdata accepts a compact YAML MemProf record without linking
+        # an instrumented executable or a profiling runtime in this check.
+        yaml.write_text(
+            "---\nHeapProfileRecords:\n"
+            "  - GUID: 0xdb956436e78dd5fa\n"
+            "    AllocSites:\n"
+            "      - Callstack:\n"
+            "          - { Function: 0xdb956436e78dd5fa, LineOffset: 0, "
+            "Column: 35, IsInlineFrame: false }\n"
+            "        MemInfoBlock:\n"
+            f"          AllocCount: 1\n          TotalSize: {total_size}\n"
+            "          TotalLifetime: 0\n"
+            "          TotalLifetimeAccessDensity: 12000\n"
+            "...\n")
+        subprocess.run([profdata, "merge", "--memprof-version=4", "profile.yaml",
+                        "-o", "profile.memprofdata"], cwd=work, env=env,
+                       check=True, capture_output=True)
+        current_profile = profile.read_bytes()
+        assert current_profile != previous_profile, (fixture, "profile edit was ineffective")
+        previous_profile = current_profile
+
+        direct = compile_object([])
+        assert b"profile.memprofdata" not in direct[3], (fixture, "profile in depfile")
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() == before_hits, (fixture, "sccache ignored the edited profile")
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() > before_hits, (fixture, "sccache did not warm-hit")
+
+        assert compile_object([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", (fixture, revision, cold)
+        if revision:
+            assert any("profile.memprofdata" in item for item in cold["changes"]), cold
+        assert compile_object([accache]) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", (fixture, revision, warm)
+        results.append({"fixture": fixture, "revision": revision,
+                        "oracle_hit": True, "accache": "hit",
+                        "artifacts": ["source.o", "source.d"]})
+
+    print("PASS oracle", fixture, "MemProf feedback invalidation", flush=True)
+    return results
+
+
 def check_clang_sanitizer_ignorelist(root, env, accache, sccache, clang, hits):
     """Invalidate a sanitized object when its ignorelist changes."""
     results = []
@@ -5073,6 +5149,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                                                 sccache, clang, hits))
         results.extend(check_clang_profile_use(root, env, accache, sccache,
                                                clang, hits))
+        results.extend(check_clang_memory_profile_use(root, env, accache,
+                                                       sccache, clang, hits))
         results.extend(check_clang_sanitizer_ignorelist(root, env, accache,
                                                         sccache, clang, hits))
         results.extend(check_clang_xray_lists(root, env, accache,

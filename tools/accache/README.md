@@ -446,6 +446,11 @@ Clang and Rust profile cases generate two real instrumentation profiles each
 and require a miss naming the changed `.profdata` file, followed by a warm hit
 for each profile. Clang cases cover explicit, directory, and implicit default
 profile paths; each profile revision produces different object bytes.
+An indexed [LLVM MemProf](https://llvm.org/docs/MemProf.html) oracle changes
+`-fmemory-profile-use=path` feedback absent from Clang's depfile. Both caches
+miss after the file edit and warm-hit on a repeat. The two valid profiles
+produce the same object bytes in this fixture, so the test asserts the input
+identity and miss explanation rather than a code generation change.
 Clang sample-guided optimization also reads `-fprofile-sample-use=path` outside
 the preprocessor depfile. Reversing hot and cold samples changes the object;
 pinned sccache replays the old object, while accache fingerprints the profile,
