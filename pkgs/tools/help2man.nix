@@ -1,5 +1,6 @@
 ##! Generate manual pages from command help output.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -33,6 +34,79 @@ in
       role = "public-package";
     };
     pname = "help2man";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "The installed help2man command as a documented executable.";
+        operation = "Generate a manual page from its help and version output.";
+        expected = "The page contains a help2man title and NAME section.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import os
+                import subprocess
+
+                environment = os.environ.copy()
+                environment["LC_ALL"] = "C"
+                executable = "@out@/bin/help2man"
+                result = subprocess.run(
+                    [executable, "--no-info", executable],
+                    capture_output=True,
+                    text=True,
+                    env=environment,
+                )
+                assert result.returncode == 0, result.stderr
+                assert ".TH HELP2MAN" in result.stdout
+                assert ".SH NAME" in result.stdout
+                print("help2man generated manual page")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "help2man generated manual page\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "A missing executable.";
+        operation = "Request help and version output from that executable.";
+        expected = "Help2man rejects the missing executable with status 127.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import os
+                import subprocess
+
+                environment = os.environ.copy()
+                environment["LC_ALL"] = "C"
+                result = subprocess.run(
+                    ["@out@/bin/help2man", "--no-info", "./qualification-missing"],
+                    capture_output=True,
+                    text=True,
+                    env=environment,
+                )
+                assert result.returncode == 127, result.stderr
+                assert "can't get `--help' info" in result.stderr
+                print("help2man rejected missing executable")
+              ''
+            ];
+            exit_code = 0;
+            observes_rejection = true;
+            stdout.exact = "help2man rejected missing executable\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://ftp.gnu.org/gnu/help2man/help2man-${version}.tar.xz"];
