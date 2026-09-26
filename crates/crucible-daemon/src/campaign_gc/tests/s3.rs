@@ -1170,9 +1170,18 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
         );
     }
 
+    drop(journal);
+    drop(ledger);
+    drop(repository);
+    drop(refs);
+    drop(graph);
+    drop(admin);
+    drop(staging);
+
     let reopened_config = write_back_graph_config(service.endpoint.clone(), temp.path());
     let (reopened_graph, _) = build_graph_with_config(service, reopened_config);
-    let reopened = CampaignRepository::new(Arc::new(reopened_graph), refs);
+    let reopened_refs = Arc::new(DirectoryRefBackend::new(temp.path().join("refs")));
+    let reopened = CampaignRepository::new(Arc::new(reopened_graph), reopened_refs);
     assert_eq!(reopened.state("s3-west").expect("reopen paused west"), CampaignState::Paused);
     let resumed = reopened
         .apply_control(
