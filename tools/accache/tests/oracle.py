@@ -2869,6 +2869,72 @@ def check_rust_codegen_backend(root, env, accache, sccache, rustc, hits):
     return results
 
 
+def check_rust_replayable_reports(root, env, accache, sccache, rustc, hits):
+    """Replay deterministic compiler reports with their matching library."""
+    cases = [
+        ("print-codegen-stats", b"===", "stdout"),
+        ("print-llvm-passes", b"Pass Arguments:", "stderr"),
+        ("print-mono-items", b"MONO_ITEM", "stdout"),
+        ("print-type-sizes", b"print-type-size", "stdout"),
+        ("input-stats", b"ast-stats", "stderr"),
+        ("macro-stats", b"macro-stats", "stderr"),
+        ("meta-stats", b"meta-stats", "stderr"),
+    ]
+    results = []
+    rust_env = env | {"RUSTC_BOOTSTRAP": "1"}
+    for name, marker, stream in cases:
+        fixture = "rust-" + name
+        work = root / fixture
+        work.mkdir()
+        (work / "target").mkdir()
+        source = work / "library.rs"
+        args = [rustc, "--crate-name=example", "--crate-type=rlib",
+                "--emit=link,dep-info", "--out-dir=target", "library.rs", "-Z" + name]
+
+        def compile_library(wrapper):
+            (work / "target/libexample.rlib").unlink(missing_ok=True)
+            (work / "target/example.d").unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=rust_env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            return (completed.stdout, completed.stderr,
+                    (work / "target/libexample.rlib").read_bytes(),
+                    (work / "target/example.d").read_bytes())
+
+        first_library = None
+        for revision, value in enumerate([42, 73]):
+            source.write_text(
+                "pub struct Pair { pub left: u32, pub right: u32 }\n"
+                f"pub fn answer() -> u32 {{ Pair {{ left: 2, right: {value} }}.right }}\n")
+            direct = compile_library([])
+            report = direct[0] if stream == "stdout" else direct[1]
+            assert marker in report, (fixture, revision, report)
+            if first_library is None:
+                first_library = direct[2]
+            else:
+                assert direct[2] != first_library, (fixture, "source edit had no effect")
+
+            assert compile_library([sccache]) == direct, (fixture, revision, "oracle cold")
+            before_hits = hits()
+            assert compile_library([sccache]) == direct, (fixture, revision, "oracle warm")
+            assert hits() > before_hits, (fixture, revision, "oracle did not hit")
+
+            assert compile_library([accache]) == direct, (fixture, revision, "cold")
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+            assert cold["outcome"] == "miss", (fixture, revision, cold)
+            assert compile_library([accache]) == direct, (fixture, revision, "warm")
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+            assert warm["outcome"] == "hit", (fixture, revision, warm)
+
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": True, "accache": "hit",
+                            "artifacts": ["target/libexample.rlib", "target/example.d"]})
+
+        print("PASS oracle", fixture, "report replay", flush=True)
+
+    return results
+
+
 def check_rust_shell_argfiles(root, env, accache, sccache, rustc, hits):
     """Cache quoted Rust argfiles and invalidate after an option edit."""
     results = []
@@ -3787,6 +3853,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                               sccache, rustc, clang, hits))
         results.extend(check_rust_codegen_backend(root, env, accache,
                                                   sccache, rustc, hits))
+        results.extend(check_rust_replayable_reports(root, env, accache,
+                                                     sccache, rustc, hits))
         results.extend(check_rust_shell_argfiles(root, env, accache,
                                                  sccache, rustc, hits))
         results.append(check_rust_shell_literal_at_passthrough(

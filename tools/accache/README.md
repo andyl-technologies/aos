@@ -151,6 +151,10 @@ runtime backend can read files missing from rustc's dep-info; an explicit
 backend file is fingerprinted separately. A missing or unloadable backend
 passes through with rustc's own diagnostic. The oracle has no valid alternate
 backend, so caching a working external backend is not yet verified.
+The pinned rustc's `-Zprint-codegen-stats`, `-Zprint-llvm-passes`,
+`-Zprint-mono-items`, `-Zprint-type-sizes`, `-Zinput-stats`, `-Zmacro-stats`,
+and `-Zmeta-stats` write deterministic stdout or stderr reports. The oracle
+checks their exact replay on warm hits and rebuilds after source edits.
 Rust `-Cllvm-args` basic-block section lists and identified LLVM file inputs
 are fingerprinted separately because rustc omits them from dep-info. Four
 oracle families cover joined and separated `-C` with a section list and a
