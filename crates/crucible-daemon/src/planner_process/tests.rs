@@ -78,6 +78,38 @@ fn cancellation_is_sticky_before_process_launch() {
 }
 
 #[test]
+fn worker_peak_rss_report_is_strict_and_nonzero() {
+    assert_eq!(
+        parse_linux_peak_rss("Name:\tcrucible\nVmHWM:\t1234 kB\n").expect("Linux peak RSS"),
+        1234
+    );
+    for status in ["VmHWM:\t0 kB\n", "VmHWM:\t1234 MB\n", "VmRSS:\t1234 kB\n"] {
+        assert!(parse_linux_peak_rss(status).is_err(), "{status}");
+    }
+
+    let report = |bytes: &[u8], overflow| CapturedOutput {
+        bytes: bytes.to_vec(),
+        overflow,
+    };
+    assert_eq!(
+        parse_worker_peak_rss(&report(b"campaign_planner_worker_vm_hwm_kib=1234\n", false))
+            .expect("exact worker report"),
+        1234
+    );
+    for bytes in [
+        &b""[..],
+        &b"campaign_planner_worker_vm_hwm_kib=0\n"[..],
+        &b"campaign_planner_worker_vm_hwm_kib=1234\nextra\n"[..],
+        &b"campaign_planner_worker_vm_hwm_kib=18446744073709551616\n"[..],
+    ] {
+        assert!(parse_worker_peak_rss(&report(bytes, false)).is_err());
+    }
+    assert!(
+        parse_worker_peak_rss(&report(b"campaign_planner_worker_vm_hwm_kib=1234\n", true)).is_err()
+    );
+}
+
+#[test]
 fn canonical_worker_returns_only_one_untrusted_proposal_frame() {
     let request = canonical_request(0x51);
     let mut input = Vec::new();

@@ -7,7 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use crucible_campaign::{
@@ -95,7 +98,7 @@ fn million_real_admissions_fit_compact_metadata_budget() -> Result<(), Box<dyn E
         "physical budget exceeded: {measured:?}"
     );
     assert!(
-        measured.peak_rss_kib <= 4 * 1024 * 1024,
+        measured.combined_peak_rss_upper_bound_kib <= 4 * 1024 * 1024,
         "RSS budget exceeded: {measured:?}"
     );
     Ok(())
@@ -132,7 +135,9 @@ struct CorpusMeasurement {
     index_bytes: u64,
     logical_bytes: u64,
     physical_bytes: u64,
-    peak_rss_kib: u64,
+    coordinator_peak_rss_kib: u64,
+    planner_worker_peak_rss_kib: u64,
+    combined_peak_rss_upper_bound_kib: u64,
 }
 
 fn run_corpus(
@@ -238,7 +243,9 @@ fn run_corpus(
     let basis = repository.publish_canonical_frontier_planner_basis()?;
     let (engine, artifact, state) = basis.into_parts();
     let config = CanonicalPlannerProcessConfig::new(worker, Duration::from_secs(60))?;
+    let worker_peak_rss = Arc::new(AtomicU64::new(0));
     let (supervisor, _cancellation) = CanonicalPlannerProcessSupervisor::new(config);
+    let supervisor = supervisor.with_worker_peak_rss_observer(Arc::clone(&worker_peak_rss));
     let client = PlannerClient::new(
         AuthorizedPlannerService::new(CanonicalFrontierPlanner, supervisor, planner_authority),
         PlannerAuthorityKey::from_bytes([0x91; 32])?,
@@ -344,7 +351,16 @@ fn run_corpus(
     })?;
     drop(fence);
     let physical_bytes = allocated_tree_bytes(root)?;
-    let peak_rss_kib = peak_rss_kib()?;
+    let coordinator_peak_rss_kib = peak_rss_kib()?;
+    let planner_worker_peak_rss_kib = worker_peak_rss.load(Ordering::Acquire);
+    assert!(
+        planner_worker_peak_rss_kib > 0,
+        "protected planner worker did not report peak RSS"
+    );
+    // The two process peaks need not coincide, so their sum is a safe bound.
+    let combined_peak_rss_upper_bound_kib = coordinator_peak_rss_kib
+        .checked_add(planner_worker_peak_rss_kib)
+        .ok_or("combined peak RSS overflow")?;
     let measured = CorpusMeasurement {
         admissions,
         request_count: admissions / REQUEST_SIZE,
@@ -356,10 +372,12 @@ fn run_corpus(
         index_bytes,
         logical_bytes: inventory.logical_bytes(),
         physical_bytes,
-        peak_rss_kib,
+        coordinator_peak_rss_kib,
+        planner_worker_peak_rss_kib,
+        combined_peak_rss_upper_bound_kib,
     };
     println!(
-        "campaign_million_profile admissions={} requests={} request_size={REQUEST_SIZE} hot_claimable={} cold_claimable={} hot_pages={} cold_pages={} objects={} index_bytes={} logical_bytes={} physical_bytes={} peak_rss_kib={} setup_ns={} planner_ns={} hot_queue_ns={} cold_reopen_queue_ns={}",
+        "campaign_million_profile admissions={} requests={} request_size={REQUEST_SIZE} hot_claimable={} cold_claimable={} hot_pages={} cold_pages={} objects={} index_bytes={} logical_bytes={} physical_bytes={} coordinator_peak_rss_kib={} planner_worker_peak_rss_kib={} combined_peak_rss_upper_bound_kib={} setup_ns={} planner_ns={} hot_queue_ns={} cold_reopen_queue_ns={}",
         measured.admissions,
         measured.request_count,
         measured.hot_claimable,
@@ -370,7 +388,9 @@ fn run_corpus(
         measured.index_bytes,
         measured.logical_bytes,
         measured.physical_bytes,
-        measured.peak_rss_kib,
+        measured.coordinator_peak_rss_kib,
+        measured.planner_worker_peak_rss_kib,
+        measured.combined_peak_rss_upper_bound_kib,
         setup_elapsed.as_nanos(),
         planner_elapsed.as_nanos(),
         hot_elapsed.as_nanos(),
@@ -514,11 +534,12 @@ fn peak_rss_kib() -> Result<u64, Box<dyn Error>> {
         .lines()
         .find_map(|line| line.strip_prefix("VmHWM:"))
         .ok_or("missing Linux peak RSS")?;
-    let value = line
-        .split_whitespace()
-        .next()
-        .ok_or("empty Linux peak RSS")?;
-    Ok(value.parse()?)
+    let mut fields = line.split_whitespace();
+    let value: u64 = fields.next().ok_or("empty Linux peak RSS")?.parse()?;
+    if value == 0 || fields.next() != Some("kB") || fields.next().is_some() {
+        return Err("invalid Linux peak RSS".into());
+    }
+    Ok(value)
 }
 
 fn command_id(operation: &str, request_index: usize) -> CampaignCommandId {
