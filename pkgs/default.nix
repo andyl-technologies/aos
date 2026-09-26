@@ -8,8 +8,20 @@
   buildPackages ? null,
   firmwarePackages ? null,
   targetPackages ? null,
+  sharedGoCacheDir ? null,
+  sharedBazelCacheDir ? null,
+  sharedRustTargetDir ? null,
+  sharedRustIncremental ? false,
+  ordinaryToolchainPackages ? null,
 }: let
+  anySharedCache =
+    sharedGoCacheDir
+    != null
+    || sharedBazelCacheDir != null
+    || sharedRustTargetDir != null
+    || sharedRustIncremental;
   fetchurl = lib.fetchurl;
+  fetchgit = lib.fetchgit;
   mkUpstream = import ./build-support/_upstream.nix {
     inherit lib fetchurl;
     platform = stdenv.hostPlatform.system;
@@ -116,6 +128,14 @@
   # nuke-references itself (to break the self-referential cycle).
   rawMkDerivation = stdenv.mkDerivation;
   defaultMaintainers = ["Andyl, Inc."];
+
+  # Keep public compiler and language-toolchain attrs on their ordinary
+  # outputs. Some recipes name target libraries as runtime inputs, so merely
+  # disabling wrappers on their final derivation is not enough to preserve
+  # the whole ladder's identity.
+  isToolchainName = name:
+    builtins.elem name ["gcc" "gcc-libs" "binutils" "bazel-bootstrap" "openjdk-bootstrap"]
+    || builtins.match "(rust|go|llvm|openjdk|bazel)(-.*)?" name != null;
 
   withDistributionMeta = extra: drv:
     drv
@@ -405,7 +425,7 @@
     lowerArgs =
       # `configModule` is an mkDerivation-level arg consumed here, not passed
       # down to the raw builder (mirrors how `expose` is handled).
-      (builtins.removeAttrs args ["configModule"])
+      (builtins.removeAttrs args ["configModule" "sharedBuildCache"])
       // {
         meta =
           (args.meta or {})
@@ -547,18 +567,19 @@
         python3 = resolvedBuildPackages.python3;
         caCertificates = resolvedBuildPackages.ca-certificates;
         inherit bootstrapTools;
-        extraPaths = [
-          stdenv.coreutils
-          stdenv.tar
-          stdenv.gzip
-          stdenv.bash
-          stdenv.gnumake
-          stdenv.sed
-          stdenv.grep
-          stdenv.gawk
-          stdenv.findutils
-          resolvedBuildPackages.git
-        ];
+        extraPaths =
+          [
+            stdenv.coreutils
+            stdenv.tar
+            stdenv.gzip
+            stdenv.bash
+            stdenv.gnumake
+            stdenv.sed
+            stdenv.grep
+            stdenv.gawk
+            stdenv.findutils
+          ]
+          ++ lib.optional (args.requiresGit or true) resolvedBuildPackages.git;
         # Packaged fetch tools resolve their own runtime libraries. Retain an
         # explicit caller override without imposing one on every subprocess.
         extraLibPaths = args.extraLibPaths or [];
@@ -786,10 +807,52 @@
       }
       // (args.cargoArtifactContract or {});
     inheritedArtifacts = args.cargoArtifacts or null;
+    # Development builds keep Cargo's own target directory across Nix
+    # sandboxes. A contract-derived key separates toolchains, dependencies,
+    # features, and compiler settings while source edits keep the same cache.
+    sharedCargoTarget =
+      sharedRustTargetDir
+      != null
+      && (args.sharedBuildCache or true)
+      && !(args.installCargoArtifacts or false)
+      && !isToolchainName (args.pname or args.name or "");
+    cargoTargetKey = builtins.hashString "sha256" (builtins.toJSON {
+      inherit cargoArtifactContract;
+      cargoDeps = toString args.cargoDeps;
+      cargoRoot = args.cargoRoot or ".";
+      cargoFlags = args.cargoFlags or "";
+      cargoBuildCommands = args.cargoBuildCommands or [];
+      gitDeps = args.gitDeps or [];
+      rustFlags = args.RUSTFLAGS or "";
+      cc = toString stdenv.cc;
+      inherit cargoBuildToolchainEnv;
+    });
+    cargoTargetDir = "${sharedRustTargetDir}/${args.pname or args.name or "cargo"}-${builtins.substring 0 20 cargoTargetKey}";
+    cargoSourceId = builtins.hashString "sha256" (builtins.toJSON {
+      source = toString args.src;
+      patches = map toString (args.patches or []);
+      postUnpack = args.postUnpack or "";
+      prePatch = args.prePatch or "";
+      postPatch = args.postPatch or "";
+      preConfigure = args.preConfigure or "";
+      postConfigure = args.postConfigure or "";
+      preBuild = args.preBuild or "";
+    });
+    incrementalCargoBuild =
+      sharedRustIncremental
+      && (args.sharedBuildCache or true)
+      && !(args.installCargoArtifacts or false)
+      && !isToolchainName (args.pname or args.name or "");
+    # The mutable target directory replaces the dummy-source artifact seed in
+    # development mode. Do not extract that tarball into an active shared tree.
+    effectiveArtifacts =
+      if sharedCargoTarget
+      then null
+      else inheritedArtifacts;
     cargoBuildOnlyReferences =
       [args.cargoDeps cargoBuildTool]
       ++ lib.optional stdenv.isCross cargoBuildToolchain
-      ++ lib.optional (inheritedArtifacts != null) inheritedArtifacts;
+      ++ lib.optional (effectiveArtifacts != null) effectiveArtifacts;
     artifactsCompatible =
       inheritedArtifacts
       == null
@@ -808,7 +871,12 @@
         // {
           inherit cargoArtifactContract;
           cargoEnv = cargoEffectiveEnv;
-        });
+          cargoArtifacts = effectiveArtifacts;
+        })
+      // lib.optionalAttrs sharedCargoTarget {
+        inherit cargoSourceId;
+        cargoCacheLock = resolvedBuildPackages.util-linux;
+      };
     # Remove cargo-specific attrs before passing to mkDerivation
     restArgs = removeAttrs args cargoSpecificAttrs;
   in
@@ -819,9 +887,16 @@
         mkDerivation (
           restArgs
           // cargoBuildToolchainEnv
+          // lib.optionalAttrs sharedCargoTarget {
+            CARGO_TARGET_DIR = cargoTargetDir;
+          }
+          // lib.optionalAttrs incrementalCargoBuild {
+            CARGO_INCREMENTAL = "1";
+          }
           // {
             buildDeps =
               [cargoBuildTool resolvedBuildPackages.jq]
+              ++ lib.optional sharedCargoTarget resolvedBuildPackages.util-linux
               ++ (
                 if args.cargoNextest or false
                 then [resolvedBuildPackages.cargo-nextest]
@@ -858,6 +933,7 @@
         installBins = false;
         installLibs = false;
         installCargoArtifacts = true;
+        sharedBuildCache = false;
         passthru = (args.passthru or {}) // {isCargoArtifacts = true;};
         doCheck = false;
         dontStrip = true;
@@ -880,6 +956,11 @@
     );
 
   mkGoPackage = args: let
+    sharedGoBuild =
+      sharedGoCacheDir
+      != null
+      && (args.sharedBuildCache or true)
+      && !isToolchainName (args.pname or args.name or "");
     goArgs =
       builtins.intersectAttrs (builtins.listToAttrs (
         map (n: {
@@ -900,6 +981,9 @@
     addBuilderOverrides mkGoPackage args (
       mkDerivation (
         restArgs
+        // lib.optionalAttrs sharedGoBuild {
+          GOCACHE = sharedGoCacheDir;
+        }
         // {
           buildDeps = [resolvedBuildPackages.go] ++ (args.buildDeps or []);
           phases = phases.goPhases goArgsWithDefaults;
@@ -936,6 +1020,11 @@
     );
 
   mkBazelPackage = args: let
+    sharedBazelBuild =
+      sharedBazelCacheDir
+      != null
+      && (args.sharedBuildCache or true)
+      && !isToolchainName (args.pname or args.name or "");
     # Extract bazel-specific parameters
     bazel = args.bazel or resolvedBuildPackages.bazel;
     jdk = args.jdk or resolvedBuildPackages.openjdk;
@@ -981,6 +1070,9 @@
     addBuilderOverrides mkBazelPackage args (
       mkDerivation (
         restArgs
+        // lib.optionalAttrs sharedBazelBuild {
+          AOS_BAZEL_DISK_CACHE = sharedBazelCacheDir;
+        }
         // {
           buildDeps =
             [
@@ -1061,7 +1153,7 @@
     auto = builtins.intersectAttrs (builtins.functionArgs fn) (
       packageArgumentScope
       // {
-        inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream callPackage;
+        inherit mkDerivation fetchurl fetchgit mkUpstream mkGithubUpstream mkManualUpstream callPackage;
       }
     );
   in
@@ -1635,7 +1727,12 @@
             then linuxHostedCc // {pname = "gcc";}
             else stdenv.gcc
           ))
-        // {version = "16.2.0";};
+        // {
+          version =
+            if stdenv.hostPlatform.isDarwin
+            then darwinGcc.version
+            else "16.2.0";
+        };
       glibc =
         (withDistributionMeta {
             description = "GNU C Library for the AOS target runtime";
@@ -1683,10 +1780,8 @@
             else stdenv.cc
           ))
         // {version = "0.1.0";};
-      # The unwrapped gcc-16.2.0-stage2. `pkgs.gcc` is the wrapped
-      # gcc-16.2.0-wrapped; the perl Config scrub needs to substitute
-      # and block the unwrapped one, since that's what Configure
-      # records via specs/PATH.
+      # The Linux toolchain's unwrapped GCC stage2. Perl's Config scrub uses
+      # this path instead of the public wrapper recorded via specs/PATH.
       gccUnwrapped =
         (withDistributionMeta {
             description = "Unwrapped GNU Compiler Collection for the AOS target toolchain";
@@ -1701,7 +1796,12 @@
             then stdenv.gccStage2
             else stdenv.gcc
           ))
-        // {version = "16.2.0";};
+        // {
+          version =
+            if stdenv.hostPlatform.isDarwin
+            then darwinGcc.version
+            else "16.2.0";
+        };
       gcc-libs =
         if stdenv.hostPlatform.isDarwin
         then withDefaultMaintainers darwinGcc
@@ -1796,6 +1896,14 @@
           runCommand
           ;
       }
+    )
+    // lib.optionalAttrs (anySharedCache && ordinaryToolchainPackages != null) (
+      builtins.listToAttrs (
+        builtins.map (name: {
+          inherit name;
+          value = ordinaryToolchainPackages.${name};
+        }) (builtins.filter isToolchainName (builtins.attrNames ordinaryToolchainPackages))
+      )
     );
 in
   self

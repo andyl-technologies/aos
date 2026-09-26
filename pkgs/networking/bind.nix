@@ -44,25 +44,27 @@ in
 
     # dnstap generates C sources with protoc-c on the build machine.
     buildDeps = [gnumake perl pkg-config cmocka tzdata buildPackages.protobuf-c];
-    runtimeDeps = [
-      libcap
-      libidn2
-      libmaxminddb
-      libtool
-      libxml2
-      openssl
-      liburcu
-      libuv
-      nghttp2
-      jemalloc
-      krb5
-      fstrm
-      protobuf-c
-      lmdb
-      json-c
-      zlib
-      readline
-    ];
+    # Linux capabilities have no Darwin equivalent in BIND's privilege code.
+    runtimeDeps =
+      lib.optional (!stdenv.hostPlatform.isDarwin) libcap
+      ++ [
+        libidn2
+        libmaxminddb
+        libtool
+        libxml2
+        openssl
+        liburcu
+        libuv
+        nghttp2
+        jemalloc
+        krb5
+        fstrm
+        protobuf-c
+        lmdb
+        json-c
+        zlib
+        readline
+      ];
     propagatedDeps = [];
 
     phases = [
@@ -96,6 +98,11 @@ in
             done
             export LDFLAGS
           ''
+          + lib.optionalString stdenv.hostPlatform.isDarwin ''
+            # Darwin jemalloc exports its extension API with je_ names. BIND
+            # calls the same five functions by their unprefixed names.
+            export CPPFLAGS="''${CPPFLAGS:+$CPPFLAGS }-Dmallocx=je_mallocx -Drallocx=je_rallocx -Dsallocx=je_sallocx -Dsdallocx=je_sdallocx -Dmallctl=je_mallctl"
+          ''
           + ''
             ./configure \
               $configureFlags \
@@ -120,6 +127,12 @@ in
               --with-libidn2=${libidn2} \
               --with-cmocka=detect \
               --with-jemalloc=detect
+          ''
+          + lib.optionalString stdenv.hostPlatform.isDarwin ''
+            # BIND adds -flat_namespace to every Darwin link. Its uninstalled
+            # shared libraries have final install names, which ld64.lld cannot
+            # resolve transitively under that mode during the build.
+            find . -name Makefile -type f -exec sed -i 's/-Wl,-flat_namespace//g' {} +
           '';
       }
       {
@@ -128,7 +141,8 @@ in
       }
       {
         name = "check";
-        script = ''
+        # Darwin unit binaries require a native executor for later qualification.
+        script = lib.optionalString (!stdenv.hostPlatform.isDarwin) ''
           # BIND defaults each test binary to one loop worker per detected CPU.
           # Large builders can then expose an upstream netmgr teardown race in
           # qpdb_test, while two workers still exercise its concurrent paths.

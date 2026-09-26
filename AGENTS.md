@@ -142,6 +142,43 @@ work of implementing packages and potentially large dependency chains in Nix
 correctly. Stubbing is acceptable only for truly complex bootstrapping problems
 (e.g. Go from-scratch bootstrap) and must be explicitly marked as TODO.
 
+## The `aos-dev` development entry point
+
+Use the in-repository Bash CLI for build targets, checks, formatting, cache
+maintenance, and release preparation. Run `bash ./aos-dev help` for commands,
+flags, and completion; the entry point has no host-specific shebang.
+
+```sh
+bash ./aos-dev list packages crucible
+bash ./aos-dev build package crucible --no-out-link
+bash ./aos-dev build image server:qcow2
+bash ./aos-dev all checks
+bash ./aos-dev cache init
+bash ./aos-dev cache rust status
+```
+
+Development builds default to shared Go and Bazel caches, a persistent Cargo
+target directory, and Rust incremental compilation. Leading `--no-go-cache`,
+`--no-bazel-cache`, `--no-rust-target-cache`, and `--no-rust-incremental` flags
+control them independently. Cache paths inside the sandbox are configured by
+`AOS_DEV_GO_CACHE_DIR`, `AOS_DEV_BAZEL_CACHE_DIR`, and
+`AOS_DEV_RUST_TARGET_DIR`; `AOS_DEV_CACHE_DIR` selects their host storage root.
+The CLI passes each enabled path to the matching language builder. Generic
+packages and toolchains keep their ordinary derivation identities.
+
+Run `cache init` once per machine; it sets up directories and ACLs without
+building a compiler or starting a host service. The host cache path must be
+traversable by Nix build users, and the Nix daemon must allow the requested
+sandbox mounts. `cache doctor` checks local setup without building packages;
+`cache verify-mount` runs an optional sandbox probe with source-built bootstrap
+tools, avoiding the current compiler and dev shell. Use `cache <go|bazel|rust>
+help` for inspection and cleanup commands.
+
+Use `--release` or `--no-cache` before a command for release and qualification
+builds. This selects ordinary derivations and requests no shared cache mounts.
+A daemon-wide static mount remains visible to release sandboxes, so use a
+separate builder when qualification requires a cache-free sandbox.
+
 ## The `aos` CLI tool
 
 The `aos` CLI is a Rust tool (`crates/`) for working with this repo. Run it via

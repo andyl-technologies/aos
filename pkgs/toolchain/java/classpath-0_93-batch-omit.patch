@@ -1,0 +1,12 @@
+--- a/lib/gen-classlist.sh.in
++++ b/lib/gen-classlist.sh.in
+@@ -78,5 +78,4 @@
+-# FIXME: could be more efficient by constructing a series of greps.
+-for filexp in `cat tmp.omit`; do
+-   grep -v ${filexp} < ${top_builddir}/lib/classes.1 > ${top_builddir}/lib/classes.tmp
+-   mv ${top_builddir}/lib/classes.tmp ${top_builddir}/lib/classes.1
+-done
++# Both standard.omit and vm.omit contain one expression per line. Filtering
++# them together avoids rereading the full class list for every VM class.
++grep -v -f tmp.omit < ${top_builddir}/lib/classes.1 > ${top_builddir}/lib/classes.tmp
++mv ${top_builddir}/lib/classes.tmp ${top_builddir}/lib/classes.1

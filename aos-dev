@@ -1,0 +1,20 @@
+# shellcheck shell=bash
+# Run with `bash ./aos-dev`; the repository cannot assume a host Bash path.
+set -euo pipefail
+
+aos_dev_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+
+# shellcheck source=dev/lib/common.bash
+source "$aos_dev_root/dev/lib/common.bash"
+# shellcheck source=dev/lib/targets.bash
+source "$aos_dev_root/dev/lib/targets.bash"
+# shellcheck source=dev/lib/cache.bash
+source "$aos_dev_root/dev/lib/cache.bash"
+# shellcheck source=dev/lib/maintenance.bash
+source "$aos_dev_root/dev/lib/maintenance.bash"
+# shellcheck source=dev/lib/cache-report.bash
+source "$aos_dev_root/dev/lib/cache-report.bash"
+# shellcheck source=dev/lib/commands.bash
+source "$aos_dev_root/dev/lib/commands.bash"
+
+aos_dev_main "$@"
