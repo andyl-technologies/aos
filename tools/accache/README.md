@@ -107,8 +107,9 @@ the compiler and record a bypass reason. Non-UTF-8 arguments also run unchanged.
 
 Covered output families include ordinary C/C++ objects, depfiles, split debug
 files, coverage notes, preprocessed source, assembly, PCH, explicit Clang
-modules, serialized Clang diagnostics, GCC SARIF reports with default dump
-naming, numbered GCC tree/RTL/IPA/language dumps, and nonincremental Rust
+modules, serialized Clang diagnostics, GCC SARIF and plain HTML diagnostic
+reports with default or explicit file names, numbered GCC tree, RTL, IPA, and
+language dumps (including joined `-d` debug dumps), and nonincremental Rust
 rlib/staticlib, metadata, dep-info, and unpacked split debug `.dwo` files.
 Rust extern/native dependencies and proc macro consumers are covered by the
 input contract above.
@@ -122,10 +123,13 @@ named metadata files. In a shared target directory, a directory snapshot cannot
 safely attribute those files to one action when compilers run concurrently.
 Pinned sccache accepts this flag but its warm hit drops those files. Accache
 preserves them by running rustc for each invocation. `-Csave-temps=no` remains
-cacheable. GCC dumps and SARIF reports with custom dump naming bypass because
-their side-file paths are not yet tracked. GCC's newer
-`-fdiagnostics-add-output` and `-fdiagnostics-set-output` flags also bypass
-until all of their possible file sinks are tracked.
+cacheable. GCC dumps and SARIF reports using separate `-dumpbase` or `-dumpdir`
+options bypass, as they do in the pinned sccache frontend. The joined
+`-dumpbase=foo` spelling instead acts as `-d` debug letters; its dumps are
+tracked. GCC 16's documented
+`-fdiagnostics-add-output` and `-fdiagnostics-set-output` SARIF sinks are cached
+with their report files. Parameterized text and plain HTML sinks are cached;
+HTML diagram modes and unknown sink specifications bypass.
 Specialized GCC dump families outside tree, RTL, IPA, language, and statistics
 still bypass when they select implicit filenames. Explicitly named GCC dumps
 and optimization reports are cached with their requested output files.

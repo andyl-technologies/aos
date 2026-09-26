@@ -5,6 +5,7 @@ use crate::model::{DynamicOutputs, Manifest};
 use accache_frontend::compiler::{Language, c::CCompilerKind, clang, gcc};
 use anyhow::{Result, ensure};
 use std::{
+    collections::BTreeSet,
     ffi::OsString,
     path::{Path, PathBuf},
 };
@@ -53,15 +54,34 @@ pub(super) fn configure(
     // The pinned frontend omits their files, so discover those destinations
     // before allowing an action to be stored.
     if !clang {
-        ensure!(
-            !expanded.iter().any(|arg| {
-                arg.starts_with("-fdiagnostics-add-output")
-                    || arg.starts_with("-fdiagnostics-set-output")
-            }),
-            "additional GCC diagnostic outputs need explicit tracking"
-        );
+        let mut default_reports = BTreeSet::new();
+        if expanded
+            .iter()
+            .any(|arg| arg == "-fdiagnostics-format=sarif-file")
+        {
+            default_reports.insert(".sarif");
+        }
+        let mut explicit_reports = Vec::new();
         let mut implicit_dump = false;
         for arg in &expanded {
+            if is_gcc_debug_dump_arg(arg) {
+                implicit_dump = true;
+            }
+            if arg.starts_with("-fdiagnostics-add-output")
+                || arg.starts_with("-fdiagnostics-set-output")
+            {
+                let specification = arg
+                    .split_once('=')
+                    .map(|(_, specification)| specification)
+                    .ok_or_else(|| anyhow::anyhow!("GCC diagnostic output has no specification"))?;
+                match diagnostic_sink(specification)? {
+                    DiagnosticSink::Text => {}
+                    DiagnosticSink::DefaultFile(suffix) => {
+                        default_reports.insert(suffix);
+                    }
+                    DiagnosticSink::File(path) => explicit_reports.push(path),
+                }
+            }
             if arg.starts_with("-fopt-info") || arg.starts_with("-fdump-") {
                 if let Some((_, destination)) = arg.split_once('=') {
                     if !matches!(destination, "stdout" | "stderr" | "-") {
@@ -80,12 +100,7 @@ pub(super) fn configure(
                 }
             }
         }
-        let sarif_file = expanded
-            .iter()
-            .rev()
-            .find_map(|arg| arg.strip_prefix("-fdiagnostics-format="))
-            == Some("sarif-file");
-        if sarif_file || implicit_dump {
+        if !default_reports.is_empty() || implicit_dump {
             // Custom dump naming has separate precedence rules. Pass those
             // invocations through until their destinations can be derived.
             ensure!(
@@ -97,9 +112,9 @@ pub(super) fn configure(
                 .get("obj")
                 .ok_or_else(|| anyhow::anyhow!("GCC side output has no object output"))?;
             let dump_base = default_dump_base(&parsed.input, &object.path)?;
-            if sarif_file {
+            for suffix in default_reports {
                 let mut filename = dump_base.clone();
-                filename.push(".sarif");
+                filename.push(suffix);
                 invocation.output(&object.path.with_file_name(filename), false)?;
             }
             if implicit_dump {
@@ -121,6 +136,9 @@ pub(super) fn configure(
                     suffix: String::new(),
                 });
             }
+        }
+        for path in explicit_reports {
+            invocation.output(&path, false)?;
         }
     }
     for (index, arg) in expanded.iter().enumerate() {
@@ -196,7 +214,17 @@ pub(super) fn configure(
             index += 1;
             continue;
         }
-        if !clang && arg == "-fdiagnostics-format=sarif-file" {
+        if !clang && is_gcc_debug_dump_arg(arg) {
+            // These flags can write pass-numbered dumps during compilation.
+            // The dependency probe must not create them in the caller's tree.
+            index += 1;
+            continue;
+        }
+        if !clang
+            && (arg == "-fdiagnostics-format=sarif-file"
+                || arg.starts_with("-fdiagnostics-add-output")
+                || arg.starts_with("-fdiagnostics-set-output"))
+        {
             // The discovery compile must not create a caller-visible report.
             index += 1;
             continue;
@@ -302,12 +330,77 @@ fn default_dump_base(input: &Path, object: &Path) -> Result<OsString> {
     Ok(base)
 }
 
+enum DiagnosticSink {
+    Text,
+    DefaultFile(&'static str),
+    File(PathBuf),
+}
+
+fn diagnostic_sink(specification: &str) -> Result<DiagnosticSink> {
+    let (scheme, parameters) = specification.split_once(':').unwrap_or((specification, ""));
+    let suffix = match scheme {
+        "text" => None,
+        "sarif" => Some(".sarif"),
+        "experimental-html" => Some(".html"),
+        _ => anyhow::bail!("unknown GCC diagnostic output sink"),
+    };
+    let mut file = None;
+    if !parameters.is_empty() {
+        for parameter in parameters.split(',') {
+            let (key, value) = parameter
+                .split_once('=')
+                .ok_or_else(|| anyhow::anyhow!("invalid GCC diagnostic output parameter"))?;
+            if key == "file" && suffix.is_some() {
+                ensure!(!value.is_empty(), "GCC diagnostic output filename is empty");
+                file = Some(PathBuf::from(value));
+                continue;
+            }
+            let supported = match scheme {
+                "text" => matches!(
+                    key,
+                    "color" | "show-nesting" | "show-nesting-locations" | "show-nesting-levels"
+                ),
+                "sarif" => matches!(key, "serialization" | "version" | "state-graphs"),
+                "experimental-html" => matches!(
+                    key,
+                    "css"
+                        | "javascript"
+                        | "show-state-diagrams"
+                        | "show-graph-dot-src"
+                        | "show-graph-sarif"
+                ),
+                _ => false,
+            } || key == "cfgs";
+            ensure!(supported, "unknown GCC diagnostic output parameter");
+            ensure!(
+                !(scheme == "experimental-html"
+                    && matches!(key, "show-state-diagrams" | "cfgs")
+                    && value == "yes"),
+                "GCC HTML diagrams may write additional side files"
+            );
+        }
+    }
+    Ok(match (suffix, file) {
+        (_, Some(path)) => DiagnosticSink::File(path),
+        (Some(suffix), None) => DiagnosticSink::DefaultFile(suffix),
+        (None, None) => DiagnosticSink::Text,
+    })
+}
+
 fn uses_custom_dump_naming(args: &[String]) -> bool {
     args.iter().any(|arg| {
-        ["-dumpbase", "--dumpbase", "-dumpdir", "--dumpdir"]
-            .iter()
-            .any(|name| arg == name || arg.starts_with(&format!("{name}=")))
+        matches!(
+            arg.as_str(),
+            "-dumpbase" | "--dumpbase" | "-dumpdir" | "--dumpdir"
+        ) || arg.starts_with("--dumpbase=")
+            || arg.starts_with("--dumpdir=")
     })
+}
+
+fn is_gcc_debug_dump_arg(arg: &str) -> bool {
+    // GCC treats -dumpbase=foo as joined -d debug letters. Only the separate
+    // -dumpbase foo form changes the dump basename.
+    arg.starts_with("-d") && arg.len() > 2 && !matches!(arg, "-dumpbase" | "-dumpdir")
 }
 
 fn configure_assembly_scan(
