@@ -2702,6 +2702,27 @@ fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
     )
     .expect("publish retained closure");
 
+    let transfer_only = ContentEnvelope::new(
+        "crucible.test.gc-write-back-transfer",
+        1,
+        BTreeSet::new(),
+        b"active transfer root".to_vec(),
+    )
+    .expect("transfer envelope");
+    let transfer_id = transfer_only.content_id(ObjectKind::ExactManifest);
+    staging_leaf
+        .put_if_absent(
+            transfer_id,
+            &BlobHandle::from_bytes(transfer_only.canonical_bytes()),
+        )
+        .expect("store active transfer root");
+    let transfers = TestCampaignTransferRoots::default();
+    transfers.replace(vec![CampaignTransferRetentionRoot::new(
+        transfer_id,
+        transfer_only.canonical_bytes().len() as u64,
+    )]);
+    let hot = MemoryHotCheckpointFallbackRetentionStore::new();
+
     let orphan = ContentEnvelope::new(
         "crucible.test.gc-write-back-exact-orphan",
         1,
@@ -2721,12 +2742,12 @@ fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
         CampaignGcRawPhysicalStore::new("staging", &staging_leaf).expect("staging physical");
     let graph_id = hash("crucible.test.gc.write-back-exact-store-graph.v1", 0x51);
     let mut ledger = MemoryAssignmentLedger::default();
-    let prepared = plan_single_host_campaign_gc(
+    let prepared = plan_single_host_campaign_gc_with_physical_and_hot_checkpoints(
         &repository,
         refs.as_ref(),
         &mut ledger,
         Some(graph.as_ref()),
-        None,
+        CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
         graph_id,
         &[destination_physical, staging_physical],
     )
@@ -2736,6 +2757,7 @@ fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
     assert!(roots.contains(&pending_child_id));
     assert!(roots.contains(&pending_parent_id));
     assert!(roots.contains(&retained_parent_id));
+    assert!(roots.contains(&transfer_id));
     assert!(roots.contains(&final_root.content_id()));
     assert!(
         roots
@@ -2751,17 +2773,54 @@ fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
         BTreeSet::from([orphan_id])
     );
 
-    let (mut journal, _) =
+    let (mut stale_journal, _) =
         DirectoryCampaignGcJournal::create(temp.path().join("gc-journal"), &prepared)
             .expect("create exact write-back GC journal");
+    refs.compare_exchange(
+        &RefName::new("retained/write-back-second").expect("second retained ref name"),
+        None,
+        retained_child_id,
+    )
+    .expect("publish second ref after planning");
+    assert!(matches!(
+        apply_single_host_campaign_gc(
+            &mut stale_journal,
+            CampaignGcApplySources::new_with_retention_sources(
+                &repository,
+                refs.as_ref(),
+                &mut ledger,
+                Some(graph.as_ref()),
+                CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers).into_sources(),
+            ),
+            graph_id,
+            &[destination_physical, staging_physical],
+        ),
+        Err(CampaignGcApplyError::RefBasisChanged)
+    ));
+    assert_eq!(stale_journal.phase(), CampaignGcJournalPhase::Planned);
+    assert!(staging_leaf.contains(orphan_id).expect("orphan retained after stale plan"));
+
+    let fresh = plan_single_host_campaign_gc_with_physical_and_hot_checkpoints(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+        graph_id,
+        &[destination_physical, staging_physical],
+    )
+    .expect("replan after second ref publication");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("fresh-gc-journal"), &fresh)
+            .expect("create fresh write-back GC journal");
     let applied = apply_single_host_campaign_gc(
         &mut journal,
-        CampaignGcApplySources::new(
+        CampaignGcApplySources::new_with_retention_sources(
             &repository,
             refs.as_ref(),
             &mut ledger,
             Some(graph.as_ref()),
-            None,
+            CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers).into_sources(),
         ),
         graph_id,
         &[destination_physical, staging_physical],
@@ -2774,6 +2833,13 @@ fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
             .contains(retained_child_id)
             .expect("ref child retained")
     );
+    assert_eq!(
+        refs.read_ref(&RefName::new("retained/write-back-second").expect("second ref"))
+            .expect("read second ref"),
+        Some(retained_child_id)
+    );
+    assert!(staging_leaf.contains(pending_parent_id).expect("pending parent retained"));
+    assert!(staging_leaf.contains(transfer_id).expect("transfer root retained"));
 }
 
 #[test]

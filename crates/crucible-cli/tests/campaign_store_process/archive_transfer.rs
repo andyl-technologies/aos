@@ -82,7 +82,26 @@ fn run_public_offline_archive_transfer(
             .arg(&policy),
         "create archive source campaign",
     )?;
-    let snapshot = json_string(&campaign_status(source)?, "snapshot")?;
+    let source_snapshot = json_string(&campaign_status(source)?, "snapshot")?;
+    let mut derived_snapshots = Vec::new();
+    let mut parent = (CAMPAIGN.to_string(), source_snapshot.clone());
+    for derived in DERIVED_CAMPAIGNS {
+        run_json(
+            connected_campaign(source).args([
+                "derive",
+                parent.0.as_str(),
+                "--snapshot",
+                parent.1.as_str(),
+                derived,
+            ]),
+            "derive archive source campaign",
+        )?;
+        let snapshot = json_string(&campaign_status_named(source, derived)?, "snapshot")?;
+        parent = (derived.to_string(), snapshot.clone());
+        derived_snapshots.push(snapshot);
+    }
+    assert_ne!(derived_snapshots[0], derived_snapshots[1]);
+    let snapshot = &derived_snapshots[0];
     service.stop()?;
 
     let trace_bytes = b"sensitive offline archive trace";
@@ -108,7 +127,12 @@ fn run_public_offline_archive_transfer(
         .arg(&source.peer_policy)
         .arg("--source-store")
         .arg(&source.store)
-        .args(["--source-campaign", CAMPAIGN, "--snapshot", &snapshot])
+        .args([
+            "--source-campaign",
+            DERIVED_CAMPAIGNS[0],
+            "--snapshot",
+            snapshot.as_str(),
+        ])
         .args(["--mode", "metadata"])
         .arg("--destination-state")
         .arg(&state_alias)
@@ -140,7 +164,12 @@ fn run_public_offline_archive_transfer(
         .arg(&source.peer_policy)
         .arg("--source-store")
         .arg(&source.store)
-        .args(["--source-campaign", CAMPAIGN, "--snapshot", &snapshot])
+        .args([
+            "--source-campaign",
+            DERIVED_CAMPAIGNS[0],
+            "--snapshot",
+            snapshot.as_str(),
+        ])
         .args(["--mode", "mirror", "--retain", &trace])
         .arg("--destination-state")
         .arg(&destination.state)
@@ -196,6 +225,15 @@ fn run_public_offline_archive_transfer(
             .as_array()
             .is_some_and(|classes| classes.iter().any(|class| class == "trace"))
     );
+
+    let mut restarted = source.start_service(None)?;
+    for (derived, snapshot) in DERIVED_CAMPAIGNS.into_iter().zip(&derived_snapshots) {
+        let retained = campaign_status_named(source, derived)?;
+        assert_eq!(retained["snapshot"], snapshot.as_str());
+    }
+    restarted.stop()?;
+
+    println!("archive_transfer_derived_refs_retained=2");
 
     Ok(())
 }

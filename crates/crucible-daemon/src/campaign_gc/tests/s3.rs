@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::io::Cursor;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible_campaign::CampaignRepository;
@@ -25,6 +25,9 @@ const BUCKET: &str = "campaign-gc-integration";
 const PREFIX: &str = "tests/s3-gc";
 const MAXIMUM_OBJECT_BYTES: u64 = 8 * 1024 * 1024;
 const MULTIPART_PART_BYTES: u64 = 5 * 1024 * 1024;
+const S3_AVAILABLE: u8 = 0;
+const S3_UNAVAILABLE: u8 = 1;
+const S3_CREDENTIALS_EXPIRED: u8 = 2;
 type S3Location = (String, String);
 type MemoryObjectMap = BTreeMap<S3Location, Arc<[u8]>>;
 type MemoryVersionedStateMap = BTreeMap<S3Location, (Arc<[u8]>, u64)>;
@@ -43,6 +46,7 @@ struct MemoryS3Service {
     state: Mutex<MemoryVersionedStateMap>,
     next_upload: AtomicU64,
     next_version: AtomicU64,
+    fault: AtomicU8,
 }
 
 impl MemoryS3Service {
@@ -54,6 +58,20 @@ impl MemoryS3Service {
             state: Mutex::new(BTreeMap::new()),
             next_upload: AtomicU64::new(1),
             next_version: AtomicU64::new(1),
+            fault: AtomicU8::new(S3_AVAILABLE),
+        }
+    }
+
+    fn set_fault(&self, fault: u8) {
+        self.fault.store(fault, Ordering::SeqCst);
+    }
+
+    fn require_available(&self) -> Result<(), StoreError> {
+        match self.fault.load(Ordering::SeqCst) {
+            S3_AVAILABLE => Ok(()),
+            S3_UNAVAILABLE => Err(StoreError::Unavailable),
+            S3_CREDENTIALS_EXPIRED => Err(StoreError::Unauthorized),
+            _ => Err(StoreError::Incompatible),
         }
     }
 
@@ -75,6 +93,7 @@ impl MemoryS3Service {
         bucket: &str,
         key: &str,
     ) -> Result<Option<StoreS3VersionedObjectMetadata>, StoreError> {
+        self.require_available()?;
         if let Some((bytes, version)) = self
             .state
             .lock()
@@ -104,6 +123,7 @@ impl StoreS3Client for MemoryS3Service {
     }
 
     fn head_object(&self, bucket: &str, key: &str) -> Result<Option<u64>, StoreError> {
+        self.require_available()?;
         Ok(self
             .objects
             .lock()
@@ -113,6 +133,7 @@ impl StoreS3Client for MemoryS3Service {
     }
 
     fn get_object(&self, bucket: &str, key: &str) -> Result<StoreS3ObjectDownload, StoreError> {
+        self.require_available()?;
         let bytes = self
             .objects
             .lock()
@@ -253,6 +274,7 @@ impl StoreS3StrongCasClient for MemoryS3Service {
         key: &str,
         maximum_bytes: u16,
     ) -> Result<Option<StoreS3VersionedObject>, StoreError> {
+        self.require_available()?;
         self.state
             .lock()
             .expect("state lock")
@@ -312,6 +334,7 @@ impl StoreS3StrongCasClient for MemoryS3Service {
         bucket: &str,
         prefix: &str,
     ) -> Result<Box<dyn StoreS3ObjectScan + '_>, StoreError> {
+        self.require_available()?;
         Ok(Box::new(MemoryS3Scan {
             service: self,
             bucket: bucket.to_string(),
@@ -337,6 +360,7 @@ impl StoreS3BlobAdminClient for MemoryS3Service {
         key: &str,
         expected: &StoreS3ObjectVersion,
     ) -> Result<StoreS3ConditionalDeleteOutcome, StoreError> {
+        self.require_available()?;
         let mut objects = self.objects.lock().expect("object lock");
         let location = (bucket.to_string(), key.to_string());
         let Some(body) = objects.get(&location) else {
@@ -360,6 +384,7 @@ struct MemoryS3Scan<'a> {
 
 impl StoreS3ObjectScan for MemoryS3Scan<'_> {
     fn next_page(&mut self, maximum_items: u16) -> Result<StoreS3ObjectListPage, StoreError> {
+        self.service.require_available()?;
         if self.finished {
             return Err(StoreError::Incompatible);
         }
@@ -397,6 +422,7 @@ impl StoreS3ObjectScan for MemoryS3Scan<'_> {
         key: &str,
         maximum_bytes: u16,
     ) -> Result<Option<StoreS3VersionedObject>, StoreError> {
+        self.service.require_available()?;
         self.service
             .get_small_versioned_object(&self.bucket, key, maximum_bytes)
     }
@@ -596,4 +622,202 @@ fn s3_publication_after_planning_invalidates_apply_without_deletion() {
     assert!(graph.contains(orphan).expect("planned orphan retained"));
     assert!(graph.contains(late).expect("late publication retained"));
     assert_eq!(journal.phase(), CampaignGcJournalPhase::Planned);
+}
+
+#[test]
+fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
+    let temp = tempfile::TempDir::new().expect("temporary S3 recovery root");
+    let service = Arc::new(MemoryS3Service::new());
+    let (graph, admin) = build_graph(service.clone());
+    let graph = Arc::new(graph);
+    let refs = Arc::new(DirectoryRefBackend::new(temp.path().join("refs")));
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let mut ledger = DirectoryAssignmentLedger::open(temp.path().join("ledger"))
+        .expect("open S3 recovery ledger");
+
+    let mut retained = Vec::new();
+    for name in ["east", "west"] {
+        let envelope = ContentEnvelope::new(
+            "crucible.test.gc-s3-derived-ref",
+            1,
+            BTreeSet::new(),
+            name.as_bytes().to_vec(),
+        )
+        .expect("retained envelope");
+        let bytes = envelope.canonical_bytes();
+        let id = envelope.content_id(ObjectKind::RamExtent);
+        graph
+            .put_if_absent(id, &BlobHandle::from_bytes(bytes.clone()))
+            .expect("store retained object");
+        refs.compare_exchange(
+            &RefName::new(format!("retained/s3-{name}")).expect("retained ref"),
+            None,
+            id,
+        )
+        .expect("publish retained ref");
+        retained.push((name, id, bytes));
+    }
+
+    let transfer = ContentEnvelope::new(
+        "crucible.test.gc-s3-transfer",
+        1,
+        BTreeSet::new(),
+        b"active transfer".to_vec(),
+    )
+    .expect("transfer envelope");
+    let transfer_bytes = transfer.canonical_bytes();
+    let transfer_id = transfer.content_id(ObjectKind::Trace);
+    graph
+        .put_if_absent(transfer_id, &BlobHandle::from_bytes(transfer_bytes.clone()))
+        .expect("store transfer root");
+    let transfers = TestCampaignTransferRoots::default();
+    transfers.replace(vec![CampaignTransferRetentionRoot::new(
+        transfer_id,
+        transfer_bytes.len() as u64,
+    )]);
+    let hot = MemoryHotCheckpointFallbackRetentionStore::new();
+
+    let orphan_bytes = b"unreachable S3 recovery object";
+    let orphan_id = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
+    graph
+        .put_if_absent(orphan_id, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("store recovery orphan");
+
+    for fault in [S3_UNAVAILABLE, S3_CREDENTIALS_EXPIRED] {
+        service.set_fault(fault);
+        match fault {
+            S3_UNAVAILABLE => assert!(matches!(
+                graph.contains(retained[0].1),
+                Err(StoreError::Unavailable)
+            )),
+            S3_CREDENTIALS_EXPIRED => assert!(matches!(
+                graph.contains(retained[0].1),
+                Err(StoreError::Unauthorized)
+            )),
+            _ => unreachable!("the fault matrix has only two declared cases"),
+        }
+        assert!(
+            super::super::plan_single_host_campaign_gc_with_hot_checkpoints(
+                &repository,
+                refs.as_ref(),
+                &mut ledger,
+                None,
+                CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+                &admin,
+            )
+            .is_err(),
+            "GC planning accepted S3 fault {fault}"
+        );
+    }
+    service.set_fault(S3_AVAILABLE);
+
+    let (corrupt_location, original) = {
+        let mut objects = service.objects.lock().expect("S3 object lock");
+        let (location, stored) = objects
+            .iter_mut()
+            .find(|(_location, bytes)| bytes.as_ref() == retained[0].2.as_slice())
+            .expect("east retained S3 payload");
+        let original = stored.clone();
+        let mut corrupt = retained[0].2.clone();
+        corrupt[0] ^= 0xff;
+        *stored = Arc::from(corrupt);
+        (location.clone(), original)
+    };
+    assert!(matches!(
+        graph
+            .read(retained[0].1, None)
+            .and_then(|handle| handle.read_all(1024 * 1024)),
+        Err(StoreError::Corrupt { .. })
+    ));
+    assert!(
+        super::super::plan_single_host_campaign_gc_with_hot_checkpoints(
+            &repository,
+            refs.as_ref(),
+            &mut ledger,
+            None,
+            CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+            &admin,
+        )
+        .is_err(),
+        "GC planning accepted corrupted retained S3 bytes"
+    );
+    {
+        let mut objects = service.objects.lock().expect("S3 object lock");
+        let stored = objects
+            .get_mut(&corrupt_location)
+            .expect("corrupted east S3 payload");
+        *stored = original;
+    }
+
+    let prepared = super::super::plan_single_host_campaign_gc_with_hot_checkpoints(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+        &admin,
+    )
+    .expect("plan healthy S3 recovery GC");
+    assert!(prepared.roots().iter().any(|id| id == transfer_id));
+    assert_eq!(prepared.candidates().len(), 1);
+    assert_eq!(prepared.candidates().iter().next().expect("orphan").id(), orphan_id);
+
+    let (mut interrupted, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("interrupted"), &prepared)
+            .expect("create interrupted S3 recovery journal");
+    service.set_fault(S3_UNAVAILABLE);
+    assert!(
+        super::super::apply_single_host_campaign_gc_with_hot_checkpoints(
+            &mut interrupted,
+            &repository,
+            refs.as_ref(),
+            &mut ledger,
+            None,
+            CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+            &admin,
+        )
+        .is_err(),
+        "GC apply accepted S3 outage"
+    );
+    service.set_fault(S3_AVAILABLE);
+    assert!(graph.contains(orphan_id).expect("orphan survived outage"));
+
+    let recovered = super::super::plan_single_host_campaign_gc_with_hot_checkpoints(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+        &admin,
+    )
+    .expect("replan after S3 recovery");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("recovered"), &recovered)
+            .expect("create recovered S3 GC journal");
+    let report = super::super::apply_single_host_campaign_gc_with_hot_checkpoints(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+        &admin,
+    )
+    .expect("apply S3 recovery GC");
+    assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
+    assert!(!graph.contains(orphan_id).expect("orphan reclaimed"));
+    assert!(graph.contains(transfer_id).expect("transfer root retained"));
+    for (name, id, bytes) in retained {
+        assert_eq!(
+            refs.read_ref(&RefName::new(format!("retained/s3-{name}")).expect("retained ref"))
+                .expect("read retained ref"),
+            Some(id)
+        );
+        assert_eq!(
+            graph.read(id, None).expect("read retained S3 object")
+                .read_all(1024 * 1024)
+                .expect("authenticate retained S3 object"),
+            bytes
+        );
+    }
 }

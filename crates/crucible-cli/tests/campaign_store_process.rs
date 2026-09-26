@@ -42,6 +42,7 @@ use serde_json::Value;
 use tempfile::{NamedTempFile, TempDir};
 
 const CAMPAIGN: &str = "worked-network";
+const DERIVED_CAMPAIGNS: [&str; 2] = ["worked-network-east", "worked-network-west"];
 const PRINCIPAL: &str = "operator";
 const START_COMMAND: &str = "4242424242424242424242424242424242424242424242424242424242424242";
 const PAUSE_COMMAND: &str = "4343434343434343434343434343434343434343434343434343434343434343";
@@ -421,6 +422,26 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
     )?;
     let live_head = campaign_status(&fixture.base)?;
     let live_snapshot = json_string(&live_head, "snapshot")?;
+    let mut derived_snapshots = Vec::new();
+    let mut parent = (CAMPAIGN.to_string(), live_snapshot.clone());
+    for derived in DERIVED_CAMPAIGNS {
+        run_json(
+            connected_campaign(&fixture.base).args([
+                "derive",
+                parent.0.as_str(),
+                "--snapshot",
+                parent.1.as_str(),
+                derived,
+            ]),
+            "derive campaign through composed store",
+        )?;
+        let status = campaign_status_named(&fixture.base, derived)?;
+        let snapshot = json_string(&status, "snapshot")?;
+        assert_ne!(snapshot, live_snapshot);
+        parent = (derived.to_string(), snapshot.clone());
+        derived_snapshots.push((derived, snapshot));
+    }
+    assert_ne!(derived_snapshots[0].1, derived_snapshots[1].1);
 
     let store_status = run_json(
         command(&["--format", "jsonl", "store", "status"]).arg(&fixture.base.store),
@@ -541,6 +562,20 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
     let mut restarted = fixture.base.start_service(None)?;
     let reopened_head = campaign_status(&fixture.base)?;
     assert_eq!(reopened_head["snapshot"], live_snapshot);
+    for (derived, snapshot) in &derived_snapshots {
+        let reopened = campaign_status_named(&fixture.base, derived)?;
+        assert_eq!(reopened["snapshot"], snapshot.as_str());
+        let inspected = run_json(
+            connected_campaign(&fixture.base).args([
+                "snapshot",
+                *derived,
+                "--snapshot",
+                snapshot.as_str(),
+            ]),
+            "authenticate derived campaign after composed-store GC and restart",
+        )?;
+        assert_eq!(inspected["snapshot"]["id"], snapshot.as_str());
+    }
     let reopened_snapshot = run_json(
         connected_campaign(&fixture.base).args([
             "snapshot",
@@ -565,6 +600,8 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
     )?;
     assert_eq!(reauthenticated["authenticated"], true);
     restarted.stop()?;
+
+    println!("composed_store_derived_refs_after_gc_restart=2");
 
     Ok(())
 }
@@ -1270,8 +1307,12 @@ fn connected_campaign(fixture: &FlightFixture) -> Command {
 }
 
 fn campaign_status(fixture: &FlightFixture) -> Result<Value, Box<dyn Error>> {
+    campaign_status_named(fixture, CAMPAIGN)
+}
+
+fn campaign_status_named(fixture: &FlightFixture, name: &str) -> Result<Value, Box<dyn Error>> {
     run_json(
-        connected_campaign(fixture).args(["status", CAMPAIGN]),
+        connected_campaign(fixture).args(["status", name]),
         "read campaign head",
     )
 }

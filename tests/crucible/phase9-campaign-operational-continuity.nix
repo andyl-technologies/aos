@@ -79,6 +79,12 @@ in
           require_result_line \
             ${campaignStoreComposition}/result \
             interrupted_gc_journal=true
+          require_result_line \
+            ${campaignStoreComposition}/result \
+            active_publication_transfer_write_back_gc=true
+          require_result_line \
+            ${campaignStoreComposition}/result \
+            s3_faults_preserve_multiple_refs_and_transfer_gc=true
 
           require_result_line ${campaignColdContinuity}/result PASS
           require_result_line \
@@ -160,7 +166,7 @@ in
               -p crucible-cli \
               --test campaign_store_process \
               "$selector" \
-              -- --exact --test-threads=1 > "$output_file" 2>&1
+              -- --exact --test-threads=1 --nocapture > "$output_file" 2>&1
             cat "$output_file"
             grep -Fq \
               'test result: ok. 1 passed; 0 failed; 0 ignored;' \
@@ -174,12 +180,21 @@ in
           run_exact_process_test \
             public_composed_store_flight_evicts_cache_and_flushes_write_back \
             composed-store-maintenance
+          grep -Fq \
+            'composed_store_derived_refs_after_gc_restart=2' \
+            "$out/evidence/composed-store-maintenance.output"
           run_exact_process_test \
             archive_transfer::public_offline_archive_transfer_reports_and_authenticates_sensitive_closure \
             directory-archive-transfer
+          grep -Fq \
+            'archive_transfer_derived_refs_retained=2' \
+            "$out/evidence/directory-archive-transfer.output"
           run_exact_process_test \
             archive_transfer::public_archive_transfer_is_backend_neutral_across_compressed_stores \
             compressed-archive-transfer
+          grep -Fq \
+            'archive_transfer_derived_refs_retained=2' \
+            "$out/evidence/compressed-archive-transfer.output"
 
           cp ${campaignStoreComposition}/result \
             "$out/evidence/campaign-store-composition.result"
@@ -214,7 +229,11 @@ in
           offline_maintenance_transfer=true
           fast_midpoint_debug=true
           public_composed_store_process=true
+          composed_store_derived_refs_after_gc_restart=2
           public_archive_transfer_process=true
+          archive_transfer_derived_refs_retained=2
+          active_publication_transfer_write_back_gc=true
+          s3_faults_preserve_multiple_refs_and_transfer_gc=true
           public_finding_midpoint_debug=true
           authenticated_replay_violation_boundary=true
           authenticated_replay_selection_sequence=fast,q7
