@@ -507,10 +507,19 @@ impl CampaignRepository {
         let Some(transition_content) = optional_child(&loaded.envelope, "transition") else {
             return Ok(None);
         };
-        let fact = self.read_fact(transition_content)?;
-        Ok(self
-            .mutation_result_key(&fact)?
-            .map(|key| (key, content_id)))
+        let (fact, validated_planner_step) =
+            self.read_fact_with_planner_step(transition_content)?;
+        // The fact read already authenticated the exact planner step and its
+        // request. The result key needs only that validated step's invocation.
+        let key = if let Some((step, _)) = validated_planner_step {
+            Some(mutation_result_content_key(
+                "planner",
+                step.invocation().content_id(),
+            ))
+        } else {
+            self.mutation_result_key(&fact)?
+        };
+        Ok(key.map(|key| (key, content_id)))
     }
 
     pub(super) fn coordination_with_parent_result(
