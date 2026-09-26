@@ -2681,6 +2681,109 @@ def check_clang_llvm_report_passthrough(root, env, accache, sccache, clang, hits
     return results
 
 
+def check_rust_shell_argfiles(root, env, accache, sccache, rustc, hits):
+    """Cache quoted Rust argfiles and invalidate after an option edit."""
+    results = []
+    rust_env = env | {"RUSTC_BOOTSTRAP": "1"}
+    for fixture, unstable in [
+        ("rust-shell-argfile-joined", ["-Zshell-argfiles"]),
+        ("rust-shell-argfile-separated", ["-Z", "shell-argfiles"]),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "target files").mkdir()
+        (work / "source.rs").write_text(
+            "pub fn answer(x: u32) -> u32 { if x > 100 { x * 3 } else { x + 2 } }\n")
+        response = work / "args.rsp"
+        library = work / "target files/libexample.rlib"
+        depfile = work / "target files/example.d"
+        args = [rustc, *unstable, "@shell:args.rsp"]
+
+        def compile_library(wrapper):
+            library.unlink(missing_ok=True)
+            depfile.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=rust_env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            return (completed.stdout, completed.stderr,
+                    library.read_bytes(), depfile.read_bytes())
+
+        first_library = None
+        for revision, optimization in enumerate([0, 2]):
+            response.write_text(
+                '--crate-name example --crate-type rlib --emit link,dep-info '
+                f'--out-dir "target files" -Copt-level={optimization} source.rs\n')
+            direct = compile_library([])
+            if first_library is None:
+                first_library = direct[2]
+            else:
+                assert direct[2] != first_library, (fixture, "argfile edit had no effect")
+
+            oracle_cold = compile_library([sccache])
+            before_hits = hits()
+            oracle_warm = compile_library([sccache])
+            oracle_hit = hits() > before_hits
+            assert oracle_cold[2:] == oracle_warm[2:], (fixture, revision)
+            if not oracle_hit:
+                assert oracle_cold[2:] == direct[2:], (fixture, revision)
+
+            assert compile_library([accache]) == direct, (fixture, revision, "cold")
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+            assert cold["outcome"] == "miss", (fixture, revision, cold)
+            if revision:
+                assert any("args.rsp" in item for item in cold["changes"]), cold
+            assert compile_library([accache]) == direct, (fixture, revision, "warm")
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+            assert warm["outcome"] == "hit", (fixture, revision, warm)
+
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": oracle_hit,
+                            "oracle_stale_artifact": oracle_cold[2] != direct[2],
+                            "accache": "hit",
+                            "artifacts": ["target files/libexample.rlib",
+                                          "target files/example.d"]})
+
+        print("PASS oracle", fixture, "shell argfile invalidation", flush=True)
+    return results
+
+
+def check_rust_shell_literal_at_passthrough(root, env, accache, sccache, rustc):
+    """Keep an @-prefixed source from a shell argfile literal."""
+    work = root / "rust-shell-literal-at"
+    work.mkdir()
+    (work / "target").mkdir()
+    (work / "@source.rs").write_text("pub fn answer() -> u32 { 42 }\n")
+    (work / "args.rsp").write_text(
+        "--crate-name example --crate-type rlib --emit link,dep-info "
+        "--out-dir target '@source.rs'\n")
+    library = work / "target/libexample.rlib"
+    depfile = work / "target/example.d"
+    rust_env = env | {"RUSTC_BOOTSTRAP": "1"}
+    args = [rustc, "-Zshell-argfiles", "@shell:args.rsp"]
+
+    def compile_library(wrapper):
+        library.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=rust_env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        return (completed.stdout, completed.stderr,
+                library.read_bytes(), depfile.read_bytes())
+
+    direct = compile_library([])
+    assert compile_library([sccache])[2:] == direct[2:]
+    for _ in range(2):
+        assert compile_library([accache]) == direct
+        event = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+        assert (event["outcome"] == "bypass"
+                and "literal @ argument" in event["reason"]), event
+
+    print("PASS oracle rust-shell-literal-at passthrough", flush=True)
+    return {"fixture": "rust-shell-literal-at", "revision": 0,
+            "accache": "bypass", "artifacts": ["target/libexample.rlib",
+                                                "target/example.d"]}
+
+
 def check_rust_llvm_file_inputs(root, env, accache, sccache, rustc, hits):
     """Track LLVM section and function-attribute files omitted from dep-info."""
     results = []
@@ -3491,6 +3594,10 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                               sccache, rustc, hits))
         results.extend(check_rust_llvm_plugin(root, env, accache,
                                               sccache, rustc, clang, hits))
+        results.extend(check_rust_shell_argfiles(root, env, accache,
+                                                 sccache, rustc, hits))
+        results.append(check_rust_shell_literal_at_passthrough(
+            root, env, accache, sccache, rustc))
         results.extend(check_rust_llvm_file_inputs(root, env, accache,
                                                    sccache, rustc, hits))
         results.append(check_rust_llvm_report_passthrough(root, env, accache,
