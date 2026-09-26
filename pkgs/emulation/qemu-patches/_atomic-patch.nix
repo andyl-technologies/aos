@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "d8d9a9208d84fd7db8a24dd1688ef2db66528675d7752cfadc19a696fdf151c9";
+  sha256 = "c2d3ffdd41eac526dea73a49a668b54e4e79807eb8154653c7a35dd930757fa0";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -22,13 +22,12 @@
     "CPU budgeting, idle advance, fingerprints, fault events and results."
     "Project an authenticated 4 GHz x86 TSC and retain calendar clock epochs."
     ""
-    "Reject malformed or unsupported deterministic-sim clock state before guest"
-    "continuation. Retain ordinary-QEMU migration compatibility where required"
-    "and keep the GPL/Apache process boundary. This checkpoint does not claim"
-    "that the remaining all-TCG device-adapter inventory is complete."
+    "Reject malformed clock state and active PPC PMU migration before guest"
+    "continuation. Preserve inactive and instruction-only PMU migration,"
+    "ordinary-QEMU compatibility, and the GPL/Apache process boundary."
   ];
-  commit = "c63338d971de54da213f0f1688ef2034d89fd79c";
-  tree = "e7697042a7ab21a76eca1e283a10820887a62777";
+  commit = "a87f0a0731041031af2e8227a2addeca0fbe9e92";
+  tree = "28a82a4678c0ffd6c6ff584c9e018b0eb17f1e89";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -37,7 +36,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "6db9539ed26911afdae75caaa0c2ba6f4ced08ff241e9fbf7b082a41c866ad08";
+  bundleSha256 = "a9d9c9b769b4bf2610c621b9dc66616916b32e8606123e0e098c6b1fdbfd53a2";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
