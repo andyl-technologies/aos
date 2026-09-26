@@ -116,6 +116,7 @@ in
   mkDerivation {
     pname = "bazel-velocity";
     inherit version;
+    passthru.sourceTargets = ["org/apache/velocity/velocity/${version}/velocity-${version}.jar"];
     src = sourceFor "velocity";
 
     buildDeps = [
