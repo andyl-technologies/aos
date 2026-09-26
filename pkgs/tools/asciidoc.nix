@@ -8,17 +8,91 @@
   libxslt,
   docbook-xml,
   docbook-xsl,
+  lib,
 }: let
   version = "10.2.1";
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
     pname = "asciidoc";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A small AsciiDoc document with a heading and paragraph.";
+        operation = "Render the document with the installed asciidoc command.";
+        expected = "The generated HTML contains the document heading and paragraph.";
+        files."sample.adoc" = "= AOS sample\n\nA qualified paragraph.\n";
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''                import pathlib, subprocess, sys
+                source = pathlib.Path(sys.argv[2])
+                output = source.with_suffix(".html")
+                subprocess.run([sys.argv[1], "-o", str(output), str(source)], check=True, capture_output=True)
+                html = output.read_text()
+                assert "AOS sample" in html and "A qualified paragraph." in html
+                print("asciidoc rendering passed")
+              ''
+              "@out@/bin/asciidoc"
+              "@work@/sample.adoc"
+            ];
+            exit_code = 0;
+            stdout.exact = "asciidoc rendering passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "An AsciiDoc source path that does not exist.";
+        operation = "Ask the installed command to render the missing source.";
+        expected = "The command rejects the missing input file.";
+        files = {};
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''                import subprocess, sys
+                result = subprocess.run([sys.argv[1], sys.argv[2]], capture_output=True)
+                if result.returncode == 0:
+                    raise SystemExit("asciidoc accepted a missing source")
+                print("asciidoc rejected missing source")
+              ''
+              "@out@/bin/asciidoc"
+              "@work@/missing.adoc"
+            ];
+            exit_code = 0;
+            observes_rejection = true;
+            stdout.exact = "asciidoc rejected missing source\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://files.pythonhosted.org/packages/1d/e7/315a82f2d256e9270977aa3c15e8fe281fd7c40b8e2a0b97e0cb61ca8fa0/asciidoc-${version}.tar.gz"];
