@@ -5,6 +5,7 @@
   runCommand,
   tcl,
   fetchurl,
+  fetchCargoVendor,
   callPackage,
   lib,
   stdenv,
@@ -34,6 +35,10 @@
   glibc-locales,
 } @ packageArgs: let
   version = "1.20260801.1";
+  src = fetchurl {
+    urls = ["https://github.com/cloudflare/workerd/archive/refs/tags/v${version}.tar.gz"];
+    hash = "0w6dy0k7bxr8ar54hw82makqbpp66nj1c6s5q2rfn0r6jx5zxiws";
+  };
   isArmCross = stdenv.isCross && stdenv.hostPlatform.system == "aarch64-linux";
   crossToolchain = callPackage ./_cross-toolchain.nix {};
   targetRustRepository = callPackage ./_rust-repository.nix {};
@@ -44,6 +49,19 @@
     if stdenv.isCross
     then buildPackages
     else packageArgs;
+  cargoVendorRaw = buildScope.fetchCargoVendor {
+    inherit src;
+    sourceRoot = "workerd-${version}/deps/rust";
+    name = "workerd-modern-cargo-vendor";
+    hash = "sha256-qCOe+muhvyVsxmsQeHPLNgXh6vhyY/XdA5iyz0/G3Zs=";
+  };
+  sourceOnlyCargoVendor = nativeCallPackage ../../build-support/_cargo-source-vendor.nix {};
+  cargoVendor = sourceOnlyCargoVendor {
+    name = "workerd-modern-cargo-source-only";
+    vendor = cargoVendorRaw;
+    # This gzip corruption fixture is not needed for a production runtime.
+    excludedFiles = ["source-registry-0/flate2-1.1.9/tests/corrupt-gz-file.bin"];
+  };
   inherit
     (buildScope)
     runCommand
@@ -156,10 +174,7 @@ in
     mkBazelPackage {
       pname = "workerd-modern-source";
       inherit version;
-      src = fetchurl {
-        urls = ["https://github.com/cloudflare/workerd/archive/refs/tags/v${version}.tar.gz"];
-        hash = "0w6dy0k7bxr8ar54hw82makqbpp66nj1c6s5q2rfn0r6jx5zxiws";
-      };
+      inherit src;
 
       tools = [
         tclBuildTool
@@ -257,6 +272,65 @@ in
           sed -i 's|^DEFAULT_STUB_SHEBANG = "#!/usr/bin/env python3"$|DEFAULT_STUB_SHEBANG = "#!${python3}/bin/python3"|' \
             "$TMPDIR/repo-overrides/rules_python+/python/private/py_runtime_info.bzl"
 
+          # The generator is an AOS-built store input. Bazel rejects even a
+          # file:// download when downloads are disabled for the offline build.
+          python3 - "$TMPDIR/repo-overrides/rules_rust+/crate_universe/extensions.bzl" <<'PY'
+          from pathlib import Path
+          import sys
+
+          extension = Path(sys.argv[1])
+          source = extension.read_text()
+          download = "    module_ctx.download(**download_kwargs)\n    return output"
+          local = (
+              "    if generator_url.startswith(\"file://\"):\n"
+              "        return module_ctx.path(generator_url[len(\"file://\"):])\n"
+              "    module_ctx.download(**download_kwargs)\n"
+              "    return output"
+          )
+          if source.count(download) != 1:
+              raise SystemExit("Unexpected rules_rust generator download path")
+          extension.write_text(source.replace(download, local))
+          PY
+
+          # The module extension splices Cargo manifests before generating
+          # Bazel repositories. Feed its manifest the pinned source vendor.
+          sed 's|@vendor@|${cargoVendor}|g' \
+            ${cargoVendor}/.cargo/config.toml > "$TMPDIR/cargo-vendor-config.toml"
+          export CARGO_BAZEL_ISOLATED=false
+          export CARGO_HOME="$TMPDIR/cargo-home"
+          for index in index.crates.io-1949cf8c6b5b557f index.crates.io-6f17d22bba15001f; do
+            mkdir -p "$CARGO_HOME/registry/index/$index"
+            printf '%s\n' '{"dl":"https://static.crates.io/crates/{crate}/{crate}-{version}.crate"}' \
+              > "$CARGO_HOME/registry/index/$index/config.json"
+          done
+          python3 - \
+            "$TMPDIR/repo-overrides/rules_rust+/crate_universe/extensions.bzl" \
+            "$TMPDIR/repo-overrides/rules_rust+/crate_universe/private/common_utils.bzl" \
+            "$TMPDIR/cargo-vendor-config.toml" "$CARGO_HOME" <<'PY'
+          from pathlib import Path
+          import json
+          import sys
+
+          extension = Path(sys.argv[1])
+          source = extension.read_text()
+          config_argument = '            cargo_config = cfg.cargo_config,\n'
+          replacement = f'            cargo_config = {json.dumps(sys.argv[3])},\n'
+          if source.count(config_argument) != 1:
+              raise SystemExit("Unexpected rules_rust Cargo config input")
+          extension.write_text(source.replace(config_argument, replacement))
+
+          common = Path(sys.argv[2])
+          source = common.read_text()
+          rust_environment = '                "RUSTC": str(rustc_path),\n'
+          replacement = (
+              rust_environment
+              + '                "CARGO_NET_OFFLINE": "true",\n'
+              + f'                "CARGO_HOME": {json.dumps(sys.argv[4])},\n'
+          )
+          if source.count(rust_environment) != 1:
+              raise SystemExit("Unexpected rules_rust Cargo environment")
+          common.write_text(source.replace(rust_environment, replacement))
+          PY
 
         '';
       bazelBuildFlags =
