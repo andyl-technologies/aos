@@ -6,12 +6,18 @@
   nativeAdapterMatrix,
   systems,
   cellId,
+  rolloutImage ? null,
+  cancellation ? false,
 }: let
-  imageLifecycle = import ./system-image-rollback.nix {
-    inherit lib mkSystem pkgs systems;
-    extraFixtureModules = [observerModule];
-  };
-  image = imageLifecycle.abilityRolloutFixture;
+  image =
+    if rolloutImage == null
+    then
+      (import ./system-image-rollback.nix {
+        inherit lib mkSystem pkgs systems;
+        extraFixtureModules = [observerModule];
+      })
+      .abilityRolloutFixture
+    else rolloutImage;
   rollout = import ./_image-rollout-production.nix {
     inherit pkgs cellId nativeAdapterMatrix;
     guestTools = true;
@@ -31,26 +37,9 @@
     inherit lib pkgs;
   };
   observerController = observerFixture.controller;
-  foreignModule.systemd.services.aos-rollout-matrix-foreign = {
-    description = "Disposable foreign unit for rollout effect qualification";
-    wantedBy = ["multi-user.target"];
-    serviceConfig = {
-      Type = "simple";
-      ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
-    };
-  };
-  foreignHostModule = ''
-    systemd.services.aos-rollout-matrix-foreign = {
-      description = "Disposable foreign unit for rollout effect qualification";
-      wantedBy = [ "multi-user.target" ];
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
-      };
-    };
-  '';
-  observerModule = lib.mkMerge [observerFixture.module foreignModule];
-  observerHostModule = observerFixture.hostModule + foreignHostModule;
+  foreign = import ./_ability-rollout-foreign.nix {inherit pkgs;};
+  observerModule = lib.mkMerge [observerFixture.module foreign.module];
+  observerHostModule = observerFixture.hostModule + foreign.hostModule + rollout.qualificationSetupBody;
   setupBody = observerHostModule;
   extraClosures =
     rollout.extraClosures
@@ -71,7 +60,11 @@
       pkgs.systemd
     ];
 in {
-  name = "ability-native-effect-rollout-${builtins.substring 0 12 (builtins.hashString "sha256" cellId)}";
+  name = "ability-native-${
+    if cancellation
+    then "cancellation"
+    else "effect"
+  }-rollout-${builtins.substring 0 12 (builtins.hashString "sha256" cellId)}";
   timeout = 7200;
   bootTimeout = 600;
   testMemoryMiB = 4096;
@@ -97,6 +90,7 @@ in {
       SYSTEMCTL = "${pkgs.systemd}/bin/systemctl"
       SYSTEMD_RUN = "${pkgs.systemd}/bin/systemd-run"
       FIND = "${pkgs.findutils}/bin/find"
+      GREP = "${pkgs.grep}/bin/grep"
       IP = "${pkgs.iproute2}/sbin/ip"
       SS = "${pkgs.iproute2}/sbin/ss"
       NFT = "${pkgs.nftables}/sbin/nft"
@@ -122,6 +116,16 @@ in {
           ),
           EFFECT_EVIDENCE.__dict__,
       )
+      CANCELLATION_EVIDENCE = types.ModuleType("ability_cancellation_evidence")
+      CANCELLATION_EVIDENCE.__dict__["EFFECT_EVIDENCE"] = EFFECT_EVIDENCE
+      exec(
+          compile(
+              ${builtins.toJSON (builtins.readFile ./ability-cancellation-evidence.py)},
+              "ability-cancellation-evidence.py",
+              "exec",
+          ),
+          CANCELLATION_EVIDENCE.__dict__,
+      )
       EFFECT_ORACLES = types.ModuleType("ability_effect_boundary_oracles")
       EFFECT_ORACLES.__dict__.update(globals())
       exec(
@@ -135,6 +139,7 @@ in {
       EFFECT_FLIGHT = types.ModuleType("ability_effect_boundary_flight")
       EFFECT_FLIGHT.__dict__.update(globals())
       EFFECT_FLIGHT.__dict__["EFFECT_EVIDENCE"] = EFFECT_EVIDENCE
+      EFFECT_FLIGHT.__dict__["CANCELLATION_EVIDENCE"] = CANCELLATION_EVIDENCE
       exec(
           compile(
               ${builtins.toJSON (builtins.readFile ./ability-effect-boundary-flight.py)},
@@ -159,10 +164,18 @@ in {
       matrix_spec = json.loads(Path(MATRIX_SPEC_PATH).read_text())
       cohort_cells = json.loads(Path(COHORT_CELLS_PATH).read_text())
       assert cohort_cells == [${builtins.toJSON cellId}], cohort_cells
-      evidence_builder = EFFECT_EVIDENCE.EffectBoundaryEvidence(
+      evidence_builder = ${
+        if cancellation
+        then "CANCELLATION_EVIDENCE.CancellationEvidence"
+        else "EFFECT_EVIDENCE.EffectBoundaryEvidence"
+      }(
           matrix_spec, cohort_cells
       )
-      ROLLOUT_EFFECT.run_rollout_cell(cohort_cells[0], evidence_builder)
+      ${
+        if cancellation
+        then "ROLLOUT_EFFECT.run_rollout_cancellation_cell"
+        else "ROLLOUT_EFFECT.run_rollout_cell"
+      }(cohort_cells[0], evidence_builder)
       (
           NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS,
           NATIVE_ADAPTER_MATRIX_COHORT_EVIDENCE,
