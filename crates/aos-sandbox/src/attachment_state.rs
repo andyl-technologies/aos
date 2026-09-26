@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_sandbox_core::model::AttachmentIntent;
+use aos_sandbox_core::model::{AttachmentIntent, AttachmentPresentation};
 use aos_sandbox_core::{
     AttachmentId, ObjectDigest, OperationId, RawPairedClockSample, decode_attachment_intent_v1,
     decode_attachment_intent_v2, encode_attachment_intent_v1, encode_attachment_intent_v2,
@@ -797,6 +797,34 @@ pub(crate) fn recheck_current(
     Ok(())
 }
 
+/// Rechecks the exact protected v2 FUSE source for a future reserve request.
+///
+/// This validates Controller intent only. It supplies neither an authenticated
+/// Mount method nor independent Host namespace and physical slot evidence.
+pub(crate) fn validate_current_fuse_reserve_source(
+    journal: &Journal,
+    state: &DurableAttachmentDesiredStateV1,
+    now_seconds: i64,
+) -> Result<(), AttachmentDesiredStateError> {
+    journal.ensure_protected_authority()?;
+    recheck_current(journal, state)?;
+
+    let intent = state.intent();
+    let lease = intent.lease();
+    if state.record.version != RecordVersion::V2
+        || state.presence() != AttachmentDesiredPresenceV1::Present
+        || intent.presentation() != AttachmentPresentation::Fuse
+        || now_seconds < lease.issued_seconds()
+        || now_seconds >= lease.expires_seconds()
+    {
+        return Err(AttachmentDesiredStateError::Conflict);
+    }
+
+    crate::filesystem_view_state::validate_attachment_reference(journal, intent)?;
+    crate::attachment_slot_state::validate_attachment_reference(journal, intent)?;
+    recheck_current(journal, state)
+}
+
 pub(crate) fn validate_namespace(journal: &Journal) -> Result<(), AttachmentDesiredStateError> {
     History::load(journal).map(|_| ())
 }
@@ -833,7 +861,7 @@ pub(crate) fn destination_slot_usage(
     Ok((historical, present))
 }
 
-fn validate_target(
+pub(crate) fn validate_target(
     target: &CurrentNamespaceTarget,
     intent: &AttachmentIntent,
 ) -> Result<(), AttachmentDesiredStateError> {
@@ -1227,6 +1255,66 @@ mod tests {
                 .unwrap(),
             AttachmentDesiredCommitOutcomeV1::Replay
         );
+    }
+
+    #[test]
+    fn fuse_reserve_source_requires_current_v2_present_intent_and_live_lease() {
+        let (directory, mut journal) = journal();
+        let native = mutation(AttachmentDesiredPresenceV1::Present, intent(1, 2, 1), None);
+        commit_without_target(&mut journal, &native);
+        let native_state = get(&journal, native.attachment_id()).unwrap().unwrap();
+        assert!(matches!(
+            validate_current_fuse_reserve_source(&journal, &native_state, 15),
+            Err(AttachmentDesiredStateError::Conflict)
+        ));
+        let native_v2 = v2_mutation(intent(5, 6, 1), None);
+        commit_without_target(&mut journal, &native_v2);
+        let native_v2_state = get(&journal, native_v2.attachment_id()).unwrap().unwrap();
+        assert!(matches!(
+            validate_current_fuse_reserve_source(&journal, &native_v2_state, 15),
+            Err(AttachmentDesiredStateError::Conflict)
+        ));
+
+        let first = v2_mutation(fuse_intent(3, 4, 1), None);
+        commit_without_target(&mut journal, &first);
+        let first_state = get(&journal, first.attachment_id()).unwrap().unwrap();
+        validate_current_fuse_reserve_source(&journal, &first_state, 10).unwrap();
+        validate_current_fuse_reserve_source(&journal, &first_state, 19).unwrap();
+        for now in [9, 20] {
+            assert!(matches!(
+                validate_current_fuse_reserve_source(&journal, &first_state, now),
+                Err(AttachmentDesiredStateError::Conflict)
+            ));
+        }
+
+        journal.compact().unwrap();
+        drop(journal);
+        let mut journal = open_journal(&directory);
+        validate_current_fuse_reserve_source(&journal, &first_state, 15).unwrap();
+
+        let replacement = v2_mutation(fuse_intent(3, 4, 2), Some(first_state.record_digest()));
+        commit_without_target(&mut journal, &replacement);
+        assert!(matches!(
+            validate_current_fuse_reserve_source(&journal, &first_state, 15),
+            Err(AttachmentDesiredStateError::Conflict)
+        ));
+
+        let replacement_state = get(&journal, first.attachment_id()).unwrap().unwrap();
+        validate_current_fuse_reserve_source(&journal, &replacement_state, 15).unwrap();
+        let release = AttachmentDesiredMutationV1::new_v2(
+            AttachmentDesiredPresenceV1::Released,
+            fuse_intent(3, 4, 3),
+            OperationId::from_bytes([41; 16]),
+            ObjectDigest::from_bytes([12; 32]),
+            Some(replacement_state.record_digest()),
+        )
+        .unwrap();
+        commit_without_target(&mut journal, &release);
+        let released_state = get(&journal, first.attachment_id()).unwrap().unwrap();
+        assert!(matches!(
+            validate_current_fuse_reserve_source(&journal, &released_state, 15),
+            Err(AttachmentDesiredStateError::Conflict)
+        ));
     }
 
     #[test]
