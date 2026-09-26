@@ -1287,7 +1287,7 @@ mod tests {
         assert!(plain.contains("CONSUMED ABILITIES"));
         assert!(plain.contains("declared export\tserver\taos.test.echo\tABI 1"));
         assert!(plain.contains("service-runtime\trequired\tconsumed by implementation server"));
-        assert!(plain.contains("declared request or contribution schema"));
+        assert!(plain.contains("declared request schema"));
         assert!(plain.contains("declared operator-owned provider instance configuration schema"));
         assert!(plain.contains("\"max_length\": 64"));
         assert!(plain.contains("declared aggregate output"));
@@ -1297,7 +1297,7 @@ mod tests {
         assert!(plain.contains("\\u{1b}\\n</code><script>bad()</script>"));
 
         let html = loaded.render_html().unwrap();
-        assert!(html.contains("Declared request or contribution schema"));
+        assert!(html.contains("Declared request schema"));
         assert!(html.contains("Provided abilities"));
         assert!(html.contains("Consumed abilities"));
         assert!(html.contains("consumed by <code>implementation server</code>"));

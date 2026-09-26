@@ -480,7 +480,7 @@ mod tests {
         assert!(html.contains("<code>aos.test.service</code> ABI 1"));
         assert!(html.contains("internal-interface"));
         assert!(html.contains("Describes an unexported package-owned interface."));
-        assert!(html.contains("Request or contribution schema"));
+        assert!(html.contains("Request schema"));
         assert!(html.contains("operator-owned provider instance configuration schema"));
         assert!(html.contains("&quot;max_length&quot;: 64"));
         assert!(html.contains("Provided abilities"));

@@ -24,7 +24,7 @@
     if builtins.length matches == 1
     then builtins.head matches
     else throw "a network-policy request must have exactly one selected binding";
-  contributionKey = kind: requestName: request: "${kind}-${builtins.substring 0 48 (lib.abilities.identityKeyFor "aos.network.ruleset-contribution/v1" {
+  requestKey = kind: requestName: request: "${kind}-${builtins.substring 0 48 (lib.abilities.identityKeyFor "aos.network.ruleset-request/v1" {
     inherit requestName;
     inherit (request) consumer scope;
   })}";
@@ -32,8 +32,8 @@
     if kind == "ruleset"
     then request.parameters
     else if kind == "ingress"
-    then {ingress.${contributionKey kind requestName request} = request.parameters;}
-    else {forwarding.${contributionKey kind requestName request} = request.parameters;};
+    then {ingress.${requestKey kind requestName request} = request.parameters;}
+    else {forwarding.${requestKey kind requestName request} = request.parameters;};
   provideFor = interface: kind: context: let
     entries = builtins.map (requestName: let
       request = context.requests.${requestName};
