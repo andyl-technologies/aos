@@ -1,5 +1,6 @@
 ##! libsharpyuv — Sharp RGB-to-YUV conversion for image codecs.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -31,6 +32,113 @@ in
       role = "public-package";
     };
     pname = "libsharpyuv";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A four-by-four grayscale RGB gradient.";
+        operation = "Convert it to full-range YUV through the installed SharpYUV library.";
+        expected = "Luma preserves the gradient and chroma remains neutral.";
+        files."gradient.c" = ''
+          #include <sharpyuv/sharpyuv.h>
+          #include <sharpyuv/sharpyuv_csp.h>
+          #include <stdint.h>
+          #include <stdio.h>
+
+          int main(void) {
+            const SharpYuvConversionMatrix *matrix =
+              SharpYuvGetConversionMatrix(kSharpYuvMatrixRec601Full);
+            uint8_t rgb[4 * 4 * 3], y[4 * 4], u[2 * 2], v[2 * 2];
+            for (int pixel = 0; pixel < 16; pixel++) {
+              uint8_t shade = (uint8_t)(pixel * 16);
+              rgb[pixel * 3] = shade;
+              rgb[pixel * 3 + 1] = shade;
+              rgb[pixel * 3 + 2] = shade;
+            }
+
+            if (!SharpYuvConvert(rgb, rgb + 1, rgb + 2, 3, 4 * 3, 8,
+                                 y, 4, u, 2, v, 2, 8, 4, 4, matrix)) return 1;
+            for (int pixel = 0; pixel < 16; pixel++) {
+              if (y[pixel] != pixel * 16) return 2;
+            }
+            for (int pixel = 0; pixel < 4; pixel++) {
+              if (u[pixel] != 128 || v[pixel] != 128) return 3;
+            }
+
+            puts("libsharpyuv grayscale conversion passed");
+          }
+        '';
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@cc@"
+              "-std=c11"
+              "-I@out@/include/webp"
+              "gradient.c"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lsharpyuv"
+              "-o"
+              "gradient"
+            ];
+            exit_code = 0;
+            stdout.exact = "";
+          }
+          {
+            argv = ["./gradient"];
+            exit_code = 0;
+            stdout.exact = "libsharpyuv grayscale conversion passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "An RGB image with zero width.";
+        operation = "Attempt to convert it to YUV.";
+        expected = "SharpYUV rejects the invalid image dimensions.";
+        files."bad.c" = ''
+          #include <sharpyuv/sharpyuv.h>
+          #include <sharpyuv/sharpyuv_csp.h>
+          #include <stdint.h>
+          #include <stdio.h>
+
+          int main(void) {
+            const SharpYuvConversionMatrix *matrix =
+              SharpYuvGetConversionMatrix(kSharpYuvMatrixRec601Full);
+            uint8_t rgb[12] = {0}, y[4] = {0}, u[1] = {0}, v[1] = {0};
+            if (SharpYuvConvert(rgb, rgb + 1, rgb + 2, 3, 6, 8,
+                                y, 2, u, 1, v, 1, 8, 0, 2, matrix)) return 1;
+
+            puts("libsharpyuv rejected zero-width image");
+            return 7;
+          }
+        '';
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@cc@"
+              "-std=c11"
+              "-I@out@/include/webp"
+              "bad.c"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-lsharpyuv"
+              "-o"
+              "bad"
+            ];
+            exit_code = 0;
+            stdout.exact = "";
+          }
+          {
+            argv = ["./bad"];
+            exit_code = 7;
+            observes_rejection = true;
+            stdout.exact = "libsharpyuv rejected zero-width image\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+    };
     version = "0.4.2";
     src = fetchurl {
       urls = ["https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-${sourceVersion}.tar.gz"];
