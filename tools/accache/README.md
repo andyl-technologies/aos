@@ -84,6 +84,10 @@ to discover `.include` inputs that the C preprocessor cannot see. Cargo's
 `OUT_DIR` and `CARGO_MANIFEST_DIR` are also covered for proc macro consumers.
 Native library search directories and explicit library/module/profile inputs
 are tracked.
+GCC `-specs=` files can include other specs that change assembly without
+changing preprocessor output. Their containing directory and declared
+`read_roots` are hashed recursively; declare any additional mutable include
+directories in the manifest.
 The package author must declare every extension-readable mutable input and
 must not cache compiler extensions with undeclared side effects. This is an
 input contract, not an additional filesystem sandbox. Full tree hashing can
@@ -272,6 +276,9 @@ discovered after compilation within the declared output directory.
 Another oracle case changes a GNU assembler `.include` under a `.S` file:
 pinned sccache incorrectly replays the old object, while accache reports the
 changed include in its miss explanation and returns the new compiler output.
+A GCC specs case changes an included specs file that alters an assembler
+symbol while leaving preprocessor output unchanged. Accache fingerprints the
+include tree and rebuilds the object; pinned sccache replays its old object.
 Four more cases mutate a binary read by C inline assembly in GCC/Clang `.c`
 and `.i` compilations. Pinned sccache again replays stale objects; accache
 misses and names the changed binary input.
