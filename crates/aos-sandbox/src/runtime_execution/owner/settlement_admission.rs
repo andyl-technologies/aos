@@ -219,10 +219,6 @@ mod tests {
 
     use aos_sandbox_core::ExecutionId;
     #[cfg(target_os = "linux")]
-    use aos_sandbox_core::runtime_backend::RequiredBackendCapabilitiesV1;
-    #[cfg(target_os = "linux")]
-    use ed25519_dalek::SigningKey;
-    #[cfg(target_os = "linux")]
     use tempfile::TempDir;
 
     use super::*;
@@ -268,74 +264,8 @@ mod tests {
             .metadata()
             .expect("directory metadata")
             .uid();
-        let mut owner =
-            DormantRuntimeExecutionOwnerV1::open_protected_at_uid_for_test(directory.path(), uid)
-                .expect("four protected owner journals");
-        let runtime_currentness = RuntimeCurrentnessV1::new(
-            SandboxId::from_bytes([1; 16]),
-            IncarnationId::from_bytes([2; 16]),
-            NodeId::from_bytes([3; 16]),
-            AssignmentEpoch::new(4),
-            ObjectDigest::from_bytes([5; 32]),
-            DesiredGeneration::new(6),
-            NamespaceGeneration::new(7),
-        )
-        .expect("runtime currentness");
-        let plan = ResolvedRuntimePlanV1::new(
-            runtime_currentness,
-            RequiredBackendCapabilitiesV1::new(Vec::new()).expect("empty requirements"),
-            ObjectDigest::from_bytes([20; 32]),
-            ObjectDigest::from_bytes([21; 32]),
-            ObjectDigest::from_bytes([22; 32]),
-            ObjectDigest::from_bytes([23; 32]),
-        )
-        .expect("resolved plan");
-        let runtime = RuntimeHandleCommitmentV1::new(
-            runtime_currentness,
-            plan.plan_commitment(),
-            ObjectDigest::from_bytes([24; 32]),
-        )
-        .expect("runtime handle");
-        let probe = BackendProbeCurrentnessV1::new(
-            NodeId::from_bytes([3; 16]),
-            ObjectDigest::from_bytes([10; 32]),
-            Revision::new(11),
-            ObjectDigest::from_bytes([12; 32]),
-        )
-        .expect("backend probe");
-        let boot = read_kernel_admission_clock()
-            .expect("kernel boot")
-            .host_boot_id;
-        let provisioning = DormantRuntimeExecutionProvisioningV1::new(
-            SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes(),
-            ObjectDigest::from_bytes([13; 32]),
-            ObservationSequence::new(14),
-            runtime,
-            PayloadBootId::new([15; 16]).expect("payload boot"),
-            probe,
-            BackendCapabilitiesV1::new(Vec::new()).expect("empty capabilities"),
-            ObjectDigest::from_bytes([16; 32]),
-            ObjectDigest::from_bytes([17; 32]),
-            SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes(),
-            ObjectDigest::from_bytes([18; 32]),
-            ObjectDigest::from_bytes([19; 32]),
-            boot,
-            plan,
-        )
-        .expect("complete owner provisioning");
-        let records = encode_runtime_owner_peer_records(&provisioning).expect("peer records");
-        let transaction = runtime_owner_peer_transaction(&records).expect("peer transaction");
-        let mut authority = owner
-            .peer_journal
-            .claim_protected_authority(RecordNamespace::HostExecution)
-            .expect("peer writer");
-        assert!(authority.is_materialized_empty().expect("empty peer"));
-        authority
-            .commit(&transaction)
-            .expect("durable peer records");
-        drop(authority);
-
-        owner
+        DormantRuntimeExecutionOwnerV1::provisioned_protected_at_uid_for_test(directory.path(), uid)
+            .expect("normally provisioned four-journal owner")
     }
 
     #[cfg(target_os = "linux")]
@@ -379,6 +309,20 @@ mod tests {
             initial_cut
         );
         replayed.revalidate().expect("cold currentness");
+        drop(replayed);
+        drop(cold);
+
+        let mut exact_replay = provisioned_owner(&directory);
+        let replay_claim = exact_replay
+            .claim()
+            .expect("exact provisioner replay claim");
+        assert_eq!(
+            replay_claim
+                .protected_host_settlement_cut_v1()
+                .expect("exact replay Effect cut"),
+            initial_cut
+        );
+        replay_claim.revalidate().expect("exact replay currentness");
     }
 
     #[test]

@@ -344,6 +344,9 @@ fn retryable(message: &'static str) -> EffectFailure {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
     use aos_proto::aos::sandbox::local::v1::{
         HostExecutionOutputReservationStatusV1, HostExecutionOutputReservationV1,
     };
@@ -354,6 +357,30 @@ mod tests {
     use buffa::Message as _;
 
     use super::committed_digests_match_original;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn normally_provisioned_host_owner_is_available_to_method35_fixture() {
+        use aos_sandbox::runtime_execution::DormantRuntimeExecutionOwnerV1;
+
+        let directory = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = directory.path().metadata().unwrap().uid();
+        let mut owner = DormantRuntimeExecutionOwnerV1::provisioned_protected_at_uid_for_test(
+            directory.path(),
+            uid,
+        )
+        .unwrap();
+
+        // The owner is current, but no signed method-35 HostState effect or
+        // AOSEOR02 output reservation has been committed by this fixture.
+        let claim = owner.claim().unwrap();
+        assert_eq!(
+            claim.currentness().runtime().handle(),
+            ObjectDigest::from_bytes([24; 32])
+        );
+        claim.revalidate().unwrap();
+    }
 
     #[test]
     fn committed_receipt_requires_both_original_signed_digests() {

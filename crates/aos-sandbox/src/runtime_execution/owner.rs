@@ -135,6 +135,11 @@ use super::store::{
 
 pub(crate) mod host_currentness_fence;
 mod settlement_admission;
+#[cfg(all(
+    target_os = "linux",
+    any(test, all(feature = "test-fixtures", debug_assertions))
+))]
+mod test_fixture;
 
 pub use host_currentness_fence::HostEffectFenceRecoveryClaimV1;
 use host_currentness_fence::{load_host_currentness_fence_v1, validate_host_currentness_pair_v1};
