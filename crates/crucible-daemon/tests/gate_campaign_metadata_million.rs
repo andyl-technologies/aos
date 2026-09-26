@@ -316,9 +316,7 @@ fn run_corpus(
             genesis_content,
             request.opportunity(),
         )?;
-        parent = repository
-            .submit_operator_branch_request(CAMPAIGN, discovered.new_snapshot, &request)?
-            .new_snapshot;
+        repository.submit_operator_branch_request(CAMPAIGN, discovered.new_snapshot, &request)?;
         ancestry_depth += 2;
         setup_elapsed += measurement_elapsed_since(setup_started)?;
 

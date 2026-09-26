@@ -622,7 +622,7 @@ sets under the RFC 03 aggregate bounds, matches only canonical observations
 already credited to the requested branch point, and adds the configured
 positive millionth weight once per cluster occurrence. The compact event counts
 remain explainable by finding class; unconfigured classes do not affect reward.
-Canonical frontier engine version 8 with state schema 3 consumes these counts only through the
+Canonical frontier engine version 9 with state schema 4 consumes these counts only through the
 exact snapshot-bound `PlannerCandidateGuidanceV2` record. The coordinator
 recomputes the record and its saturating weighted reward before publication and
 again during restart/import validation; the planner never reads the finding
