@@ -1683,6 +1683,91 @@ def check_rust_extern_inputs(root, env, accache, sccache, rustc, hits):
     return results
 
 
+def check_rust_target_json(root, env, accache, sccache, rustc, hits):
+    """Hash a custom Rust target spec absent from rustc dep-info."""
+    rust_env = env | {"RUSTC_BOOTSTRAP": "1"}
+    version = subprocess.run([rustc, "-vV"], env=rust_env, check=True,
+                             capture_output=True, text=True)
+    host = next(line.removeprefix("host: ") for line in version.stdout.splitlines()
+                if line.startswith("host: "))
+    target = subprocess.run([rustc, "-Zunstable-options", "--print", "target-spec-json",
+                             "--target", host], env=rust_env, check=True, capture_output=True)
+    specification = json.loads(target.stdout)
+    original_cpu = specification["cpu"]
+    changed_cpu = "generic" if original_cpu != "generic" else "cortex-a72"
+
+    source = (
+        "#![allow(internal_features)]\n"
+        "#![feature(no_core, lang_items, rustc_attrs)]\n"
+        "#![no_core]\n"
+        '#[lang = "pointee_sized"] #[rustc_coinductive] pub trait PointeeSized {}\n'
+        '#[lang = "meta_sized"] #[rustc_coinductive] pub trait MetaSized: PointeeSized {}\n'
+        '#[lang = "sized"] #[rustc_coinductive] pub trait Sized: MetaSized {}\n'
+        "pub fn answer() -> u32 { 42 }\n"
+    )
+    results = []
+    for fixture, target_flags in [
+        ("rust-target-json", ["--target", "host-target.json"]),
+        ("rust-target-json-joined", ["--target=host-target.json"]),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "target").mkdir()
+        (work / "library.rs").write_text(source)
+        spec_file = work / "host-target.json"
+        library = work / "target/libexample.rlib"
+        depfile = work / "target/example.d"
+        args = [rustc, "-Zunstable-options", "--crate-name=example",
+                "--crate-type=rlib", "--emit=link,dep-info", "--out-dir=target",
+                "-Copt-level=3", *target_flags, "library.rs"]
+
+        def compile_library(wrapper):
+            library.unlink(missing_ok=True)
+            depfile.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=rust_env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            return (completed.stdout, completed.stderr,
+                    library.read_bytes(), depfile.read_bytes())
+
+        original_library = None
+        for revision, cpu in enumerate([original_cpu, changed_cpu]):
+            spec_file.write_text(json.dumps(specification | {"cpu": cpu}))
+            direct = compile_library([])
+            assert b"host-target.json" not in direct[3], (fixture, "dep-info listed target spec")
+            if original_library is None:
+                original_library = direct[2]
+            else:
+                assert direct[2] != original_library, (fixture, "CPU edit had no effect")
+
+            before_hits = hits()
+            oracle_cold = compile_library([sccache])
+            oracle_hit = hits() > before_hits
+            if oracle_cold != direct:
+                assert (revision == 1 and oracle_hit
+                        and oracle_cold[2] == original_library), (
+                    fixture, "unexpected sccache difference")
+            before_hits = hits()
+            assert compile_library([sccache]) == oracle_cold
+            assert hits() > before_hits, (fixture, "sccache did not warm-hit")
+
+            assert compile_library([accache]) == direct
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+            assert cold["outcome"] == "miss", (fixture, revision, cold)
+            if revision:
+                assert any("host-target.json" in item for item in cold["changes"]), cold
+            assert compile_library([accache]) == direct
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+            assert warm["outcome"] == "hit", (fixture, revision, warm)
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": True, "oracle_stale_artifact": oracle_cold != direct,
+                            "accache": "hit",
+                            "artifacts": ["target/libexample.rlib", "target/example.d"]})
+
+        print("PASS oracle", fixture, "target-spec invalidation", flush=True)
+    return results
+
+
 def check_rust_profile_use(root, env, accache, sccache, rustc, clang, hits):
     """Track rustc's profile input across cold and warm library actions."""
     work = root / "rust-profile-use"
@@ -2284,6 +2369,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                   gcc, rustc, hits))
         results.extend(check_rust_extern_inputs(root, env, accache,
                                                 sccache, rustc, hits))
+        results.extend(check_rust_target_json(root, env, accache,
+                                              sccache, rustc, hits))
         results.extend(check_rust_profile_use(root, env, accache, sccache,
                                               rustc, clang, hits))
         results.extend(check_rust_sample_profile_use(root, env, accache,
