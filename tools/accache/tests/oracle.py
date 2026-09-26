@@ -169,6 +169,13 @@ def fixtures(gcc, clang, rustc):
     yield Fixture("rust-failed", rustc,
                   ["--crate-type=rlib", "--emit=link,dep-info", "--out-dir=target", "library.rs"],
                   {"library.rs": 'compile_error!("intentional oracle failure");\n'}, cacheable=False, exit_code=1)
+    yield Fixture("rust-proc-macro-consumer", rustc,
+                  ["--crate-name=macro_user", "--crate-type=rlib", "--emit=link,dep-info",
+                   "--out-dir=target", "--extern", "numbers=libnumbers.so", "library.rs"],
+                  {"macro.rs": 'extern crate proc_macro; use proc_macro::TokenStream; #[proc_macro] pub fn number(_: TokenStream) -> TokenStream { "42".parse().unwrap() }\n',
+                   "library.rs": "extern crate numbers; pub const ANSWER: u32 = numbers::number!();\n"},
+                  precompile=["--crate-name=numbers", "--crate-type=proc-macro", "macro.rs",
+                              "-o", "libnumbers.so"])
     yield Fixture("rust-query", rustc, ["--version", "--verbose"], {}, cacheable=False)
 
 
