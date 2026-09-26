@@ -96,6 +96,30 @@ def run_suite(root):
     invoke(gcc, sarif_args, "hit")
     assert sarif.read_bytes() == report_bytes
 
+    mixed_args = ["-c", "source.c", "-o", "reports/mixed.o",
+                  "-fdump-tree-original", "-fdiagnostics-format=sarif-file"]
+    invoke(gcc, mixed_args)
+    mixed_report = work / "reports/mixed.c.sarif"
+    mixed_bytes = mixed_report.read_bytes()
+    dump_files = list((work / "reports").glob("mixed.c.*.original"))
+    assert len(dump_files) == 1, dump_files
+    dump_bytes = dump_files[0].read_bytes()
+    (work / "reports/mixed.o").unlink()
+    mixed_report.unlink()
+    dump_files[0].unlink()
+    invoke(gcc, mixed_args, "hit")
+    assert mixed_report.read_bytes() == mixed_bytes
+    assert dump_files[0].read_bytes() == dump_bytes
+
+    custom_dump_args = ["-c", "source.c", "-o", "custom-dump.o",
+                        "-fdump-tree-original", "-dumpbase", "custom"]
+    invoke(gcc, custom_dump_args, "bypass")
+    custom_dumps = list(work.glob("custom.*.original"))
+    assert len(custom_dumps) == 1, custom_dumps
+    custom_dumps[0].unlink()
+    invoke(gcc, custom_dump_args, "bypass")
+    assert custom_dumps[0].is_file(), custom_dumps
+
     for option in ["add", "set"]:
         report = work / f"{option}.sarif"
         diagnostic_args = ["-c", "source.c", "-o", f"{option}.o",

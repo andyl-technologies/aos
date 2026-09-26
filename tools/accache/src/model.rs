@@ -113,7 +113,7 @@ pub struct Identity {
 pub struct DynamicOutputs {
     /// Absolute output directory selected by the compiler invocation.
     pub directory: String,
-    /// Filename prefix derived from rustc's reported library filename.
+    /// Filename prefix derived from the compiler's output naming contract.
     pub prefix: String,
     /// Filename suffix produced by the selected compiler mode.
     pub suffix: String,

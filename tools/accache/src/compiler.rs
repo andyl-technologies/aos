@@ -178,10 +178,16 @@ impl Invocation {
     /// # Errors
     /// Returns an error if the compiler output directory cannot be inspected.
     pub fn new_dynamic_outputs(&self) -> Result<Vec<String>> {
+        let fixed_outputs: BTreeSet<_> = self
+            .outputs
+            .iter()
+            .filter_map(|output| fs::canonicalize(output).ok())
+            .collect();
         Ok(self
             .dynamic_snapshot()?
             .into_iter()
             .filter(|(path, stamp)| self.dynamic_before.get(path) != Some(stamp))
+            .filter(|(path, _)| !fixed_outputs.contains(Path::new(path)))
             .map(|(path, _)| path)
             .collect())
     }

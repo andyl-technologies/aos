@@ -74,7 +74,20 @@ def fixtures(gcc, clang, rustc):
                           {"value.h": "#define VALUE 73\n"})
             yield Fixture("gcc-tree-dump", compiler,
                           base + ["-fdump-tree-original"], c_sources,
-                          {"value.h": "#define VALUE 73\n"}, cacheable=False)
+                          {"value.h": "#define VALUE 73\n"})
+            yield Fixture("gcc-multiple-dumps", compiler,
+                          base + ["-fdump-tree-original", "-fdump-rtl-expand"], c_sources,
+                          {"value.h": "#define VALUE 73\n"})
+            yield Fixture("gcc-tree-all-dumps", compiler,
+                          base + ["-O2", "-fdump-tree-all"], c_sources,
+                          {"value.h": "#define VALUE 73\n"})
+            yield Fixture("gcc-statistics-dump", compiler,
+                          base + ["-O2", "-fdump-statistics-stats"], c_sources,
+                          {"value.h": "#define VALUE 73\n"})
+            for stream in ["stdout", "stderr"]:
+                yield Fixture(f"gcc-tree-dump-{stream}", compiler,
+                              base + [f"-fdump-tree-original={stream}"], c_sources,
+                              {"value.h": "#define VALUE 73\n"})
             yield Fixture("gcc-explicit-tree-dump", compiler,
                           base + ["-fdump-tree-original=report.txt"], c_sources,
                           {"value.h": "#define VALUE 73\n"})
@@ -773,9 +786,17 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                    if key != "objects/source.c.c.sarif"})
                     actual = (*actual[:3], {key: value for key, value in actual[3].items()
                                            if key != "source.c.sarif"})
-                if fixture.name == "gcc-tree-dump" and label == "sccache warm vs direct":
-                    dump_files = {path for path in expected[3] if path.endswith(".original")}
-                    assert len(dump_files) == 1, ("unexpected GCC dump files", expected[3])
+                if fixture.name in {"gcc-tree-dump", "gcc-multiple-dumps",
+                                    "gcc-tree-all-dumps", "gcc-statistics-dump"} and label == "sccache warm vs direct":
+                    dump_files = {path for path in expected[3]
+                                  if path.startswith("source.c.")}
+                    expected_count = {"gcc-tree-dump": 1, "gcc-multiple-dumps": 2,
+                                      "gcc-statistics-dump": 1}
+                    if fixture.name == "gcc-tree-all-dumps":
+                        assert len(dump_files) >= 100, ("unexpected GCC dump files", expected[3])
+                    else:
+                        assert len(dump_files) == expected_count[fixture.name], (
+                            "unexpected GCC dump files", expected[3])
                     expected = (*expected[:3], {key: value for key, value in expected[3].items()
                                                if key not in dump_files})
                     assert dump_files.isdisjoint(actual[3]), (
@@ -830,7 +851,9 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                             assert oracle_warm[3][path] == oracle_cold[3][path], (
                                 fixture.name, "sccache did not replay the cold artifact")
                 oracle_hit = hits() > before_hits
-                if fixture.name in {"gcc-tree-dump", "gcc-explicit-tree-dump",
+                if fixture.name in {"gcc-tree-dump", "gcc-multiple-dumps",
+                                    "gcc-tree-all-dumps", "gcc-statistics-dump",
+                                    "gcc-explicit-tree-dump",
                                     "gcc-opt-report", "gcc-sarif-report",
                                     "gcc-sarif-nested-output"}:
                     assert oracle_hit, (fixture.name, "sccache report omission was not a hit")
