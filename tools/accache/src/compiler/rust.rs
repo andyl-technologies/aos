@@ -23,6 +23,11 @@ pub(super) fn configure(
         &std::env::current_dir()?,
         &arguments,
     ))?;
+    if let Some(option) = invocation_specific_unstable_option(&expanded) {
+        // These diagnostic switches produce unlisted files or report live
+        // timings. Replaying an object alone would silently lose the report.
+        anyhow::bail!("Rust -Z{option} has invocation-specific output");
+    }
     let saves_temps = saves_temporary_outputs(&expanded);
     let output_directory = parsed.output_dir.canonicalize()?;
     invocation.rust_output_directory = Some(output_directory.to_string_lossy().into_owned());
@@ -188,6 +193,36 @@ fn saves_temporary_outputs(args: &[String]) -> bool {
         }
     }
     enabled
+}
+
+fn invocation_specific_unstable_option(args: &[String]) -> Option<&str> {
+    for (index, arg) in args.iter().enumerate() {
+        let option = if arg == "-Z" {
+            args.get(index + 1).map(String::as_str)
+        } else {
+            arg.strip_prefix("-Z")
+        };
+        let Some(option) = option else {
+            continue;
+        };
+        let name = option.split_once('=').map_or(option, |(name, _)| name);
+        if matches!(
+            name,
+            "self-profile"
+                | "time-passes"
+                | "time-llvm-passes"
+                | "llvm-time-trace"
+                | "dump-dep-graph"
+                | "dump-mir"
+                | "dump-mir-dataflow"
+                | "dump-mir-graphviz"
+                | "metrics-dir"
+                | "nll-facts"
+        ) {
+            return Some(name);
+        }
+    }
+    None
 }
 
 fn unpacked_split_debug(args: &[String]) -> bool {

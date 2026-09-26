@@ -513,6 +513,77 @@ def check_assembler_general_listing_passthrough(root, env, accache, sccache, gcc
     return results
 
 
+def check_rust_diagnostic_passthrough(root, env, accache, sccache, rustc, hits):
+    """Keep unstable Rust profiling, traces, dumps, and timings live."""
+    results = []
+    rust_env = env | {"RUSTC_BOOTSTRAP": "1"}
+    cases = [
+        ("self-profile", "-Zself-profile=profiles", "profiles/*.mm_profdata"),
+        ("time-passes", "-Ztime-passes", None),
+        ("llvm-time-trace", "-Zllvm-time-trace", "target/*.llvm_timings.json"),
+        ("dump-mir", "-Zdump-mir=SimplifyCfg", "mir_dump/*.mir"),
+        ("metrics-dir", "-Zmetrics-dir=metrics", "metrics/*.json"),
+        ("nll-facts", "-Znll-facts=yes", "nll-facts/*/*.facts"),
+    ]
+    for name, flag, side_pattern in cases:
+        work = root / f"rust-{name}"
+        work.mkdir()
+        (work / "target").mkdir()
+        (work / "profiles").mkdir()
+        (work / "metrics").mkdir()
+        (work / "library.rs").write_text("pub fn answer() -> u32 { 42 }\n")
+        args = [rustc, "--crate-name=example", "--crate-type=rlib", "--emit=link,dep-info",
+                "--out-dir=target", "library.rs", "-Cmetadata=oracle-" + name, flag]
+
+        def compile_library(wrapper):
+            for path in work.rglob("*"):
+                if path.is_file() and path.name != "library.rs":
+                    path.unlink()
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=rust_env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (name, wrapper, completed.stderr)
+            artifacts = {path: contents for path, contents in snapshot(work).items()
+                         if path != "library.rs"}
+            side_files = {path for path in artifacts
+                          if side_pattern and fnmatch.fnmatchcase(path, side_pattern)}
+            return completed, artifacts, side_files
+
+        direct = compile_library([])
+        assert {"target/libexample.rlib", "target/example.d"}.issubset(direct[1]), name
+        if side_pattern:
+            assert direct[2] and any(direct[1][path][0] for path in direct[2]), (name, direct[2])
+        else:
+            assert b"parse_crate" in direct[0].stderr, name
+
+        oracle_cold = compile_library([sccache])
+        assert oracle_cold[1]["target/libexample.rlib"] == direct[1]["target/libexample.rlib"], name
+        before_hits = hits()
+        oracle_warm = compile_library([sccache])
+        assert hits() > before_hits, (name, "pinned sccache did not hit")
+
+        for attempt in range(2):
+            actual = compile_library([accache])
+            assert (actual[1]["target/libexample.rlib"] == direct[1]["target/libexample.rlib"]
+                    and actual[1]["target/example.d"] == direct[1]["target/example.d"]), (
+                name, attempt, actual[1])
+            if side_pattern:
+                assert actual[2] and any(actual[1][path][0] for path in actual[2]), (
+                    name, attempt, actual[2])
+            else:
+                assert b"parse_crate" in actual[0].stderr, (name, attempt, actual[0].stderr)
+            event = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+            assert (event["outcome"] == "bypass"
+                    and f"Rust -Z{name} has invocation-specific output" in event["reason"]), event
+
+        results.append({"fixture": f"rust-{name}", "revision": 0, "oracle_hit": True,
+                        "accache": "bypass",
+                        "oracle_missing_artifacts": sorted(direct[2] - oracle_warm[2]),
+                        "artifacts": sorted(direct[1])})
+        print("PASS oracle rust", name, "passthrough", flush=True)
+
+    return results
+
+
 def check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits):
     """Keep GCC's separate dump naming flags in the pinned frontend's bypass path."""
     results = []
@@ -1406,6 +1477,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                           sccache, clang))
         results.extend(check_assembler_general_listing_passthrough(root, env,
                                                                    accache, sccache, gcc, hits))
+        results.extend(check_rust_diagnostic_passthrough(root, env,
+                                                         accache, sccache, rustc, hits))
         results.extend(check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits))
         results.extend(check_ada_specs(root, env, accache, sccache, gcc, hits))
         results.extend(check_gcc_timing_passthrough(root, env, accache,
