@@ -629,7 +629,7 @@ def check_rust_staged_compilation_passthrough(root, env, accache, sccache, rustc
     """Preserve rustc modes that replace or consume the normal library output."""
     results = []
     rust_env = env | {"RUSTC_BOOTSTRAP": "1"}
-    for name in ["no-link", "link-only", "parse-crate-root-only", "unpretty"]:
+    for name in ["no-analysis", "no-link", "link-only", "parse-crate-root-only", "unpretty"]:
         work = root / f"rust-{name}"
         work.mkdir()
         target = work / "target"
@@ -680,6 +680,8 @@ def check_rust_staged_compilation_passthrough(root, env, accache, sccache, rustc
         elif name == "unpretty":
             assert (set(direct[3]) == {"target/example.d"}
                     and b"Hir" in direct[1]), (direct[1][:100], direct[3])
+        elif name == "no-analysis":
+            assert set(direct[3]) == {"target/example.d"}, direct[3]
         else:
             assert not direct[3], direct[3]
 
@@ -708,6 +710,57 @@ def check_rust_staged_compilation_passthrough(root, env, accache, sccache, rustc
                         "accache": "bypass", "artifacts": sorted(direct[3])})
         print("PASS oracle rust", name, "passthrough", flush=True)
 
+    return results
+
+
+def check_rust_no_codegen(root, env, accache, sccache, rustc, hits):
+    """Cache metadata-only rlibs emitted by rustc's no-codegen mode."""
+    work = root / "rust-no-codegen"
+    work.mkdir()
+    (work / "target").mkdir()
+    source = work / "library.rs"
+    library = work / "target/libexample.rlib"
+    depfile = work / "target/example.d"
+    rust_env = env | {"RUSTC_BOOTSTRAP": "1"}
+    args = [rustc, "--crate-name=example", "--crate-type=rlib",
+            "--emit=link,dep-info", "--out-dir=target", "library.rs", "-Zno-codegen"]
+
+    def compile_library(wrapper):
+        library.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=rust_env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        return (completed.stdout, completed.stderr,
+                library.read_bytes(), depfile.read_bytes())
+
+    results = []
+    previous_library = None
+    for revision, answer in enumerate([42, 73]):
+        source.write_text(f"pub fn answer() -> u32 {{ {answer} }}\n")
+        direct = compile_library([])
+        if previous_library is not None:
+            assert direct[2] != previous_library, "source edit left metadata unchanged"
+        previous_library = direct[2]
+
+        before_hits = hits()
+        assert compile_library([sccache]) == direct
+        assert hits() == before_hits, "sccache ignored the changed source"
+        before_hits = hits()
+        assert compile_library([sccache]) == direct
+        assert hits() > before_hits, "sccache did not warm-hit"
+
+        assert compile_library([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+        assert cold["outcome"] == "miss", (revision, cold)
+        assert compile_library([accache]) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=rust_env))
+        assert warm["outcome"] == "hit", (revision, warm)
+        results.append({"fixture": "rust-no-codegen", "revision": revision,
+                        "oracle_hit": True, "accache": "hit",
+                        "artifacts": ["target/libexample.rlib", "target/example.d"]})
+
+    print("PASS oracle rust-no-codegen metadata invalidation", flush=True)
     return results
 
 
@@ -2395,6 +2448,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                          accache, sccache, rustc, hits))
         results.extend(check_rust_staged_compilation_passthrough(
             root, env, accache, sccache, rustc))
+        results.extend(check_rust_no_codegen(root, env, accache, sccache,
+                                             rustc, hits))
         results.extend(check_custom_dump_passthrough(root, env, accache, sccache, gcc, hits))
         results.extend(check_ada_specs(root, env, accache, sccache, gcc, hits))
         results.extend(check_c_timing_passthrough(root, env, accache,

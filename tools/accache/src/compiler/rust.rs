@@ -248,7 +248,11 @@ fn nonstandard_compilation_option(args: &[String]) -> Option<&str> {
         .find(|name| {
             matches!(
                 *name,
-                "no-link" | "link-only" | "parse-crate-root-only" | "unpretty"
+                "no-analysis"
+                    | "no-link"
+                    | "link-only"
+                    | "parse-crate-root-only"
+                    | "unpretty"
             )
         })
 }
