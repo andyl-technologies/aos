@@ -984,7 +984,7 @@ attempt and observation records remain deduplicated.
 The pure planner receives schema-v3 `PlannerRequest` messages for SMC work. Each
 message retains the derived generation identity, complete particle slot,
 authenticated parent configuration, selected opportunity, and domain by value.
-Canonical frontier implementation version 8 validates that basis and emits a
+Canonical frontier implementation version 9 validates that basis and emits a
 schema-v10 `BranchRequest` with `CandidateSource::StatisticalSmc` (candidate-source
 tag 6); the stage-zero finite flight uses the same current request schema with
 `CandidateSource::StatisticalFinite` (tag 5). Planner-request schema v3 and

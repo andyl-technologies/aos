@@ -36,7 +36,8 @@ use crate::supervision::ProcessDeadline;
 use crucible_campaign::{
     CampaignCodecError, CanonicalBeamPlanner, CanonicalFrontierPlanner, CanonicalPuctPlanner,
     MAX_PLANNER_COMPONENT_MESSAGE_BYTES, PlannerEngineOutput, PlannerExecutionSupervisor,
-    PlannerRequest, PlannerStepProposal, PurePlannerEngine, SupervisedPlannerExecution,
+    PlannerProposalDisposition, PlannerRequest, PlannerStepProposal, PurePlannerEngine,
+    SupervisedPlannerExecution,
 };
 
 mod owner;
@@ -250,18 +251,48 @@ impl CanonicalPlannerProcessSupervisor {
         &mut self,
         request: &PlannerRequest,
     ) -> Result<SupervisedPlannerExecution<CampaignCodecError>, CanonicalPlannerProcessError> {
-        let measured_fuel = u64::try_from(request.invocation().scan_page().positions().len())
+        let scan_fuel = u64::try_from(request.invocation().scan_page().positions().len())
             .ok()
             .and_then(|positions| positions.checked_add(1))
             .ok_or(CanonicalPlannerProcessError::InvalidRequest(
                 "canonical planner measured fuel overflow",
             ))?;
-        if measured_fuel > request.invocation().budget().fuel() {
+        if scan_fuel > request.invocation().budget().fuel() {
             return Err(CanonicalPlannerProcessError::InvalidRequest(
                 "canonical planner measured fuel exceeds request budget",
             ));
         }
         let output = self.execute_request(request)?;
+        // Meter the returned work by its decoded cardinality, independently of
+        // the worker's usage claim. A vector Issue spends one unit per output.
+        let output_count = match output.proposal().disposition() {
+            PlannerProposalDisposition::Issue {
+                branch_requests,
+                proposals,
+                ..
+            } => branch_requests
+                .len()
+                .checked_add(proposals.len())
+                .ok_or(CanonicalPlannerProcessError::InvalidRequest(
+                    "canonical planner output count overflow",
+                ))?
+                .max(1),
+            PlannerProposalDisposition::ContinueScan { .. }
+            | PlannerProposalDisposition::NoWork => 1,
+        };
+        let extra_fuel = u64::try_from(output_count - 1).map_err(|_| {
+            CanonicalPlannerProcessError::InvalidRequest("canonical planner output count overflow")
+        })?;
+        let measured_fuel = scan_fuel.checked_add(extra_fuel).ok_or(
+            CanonicalPlannerProcessError::InvalidRequest(
+                "canonical planner measured fuel overflow",
+            ),
+        )?;
+        if measured_fuel > request.invocation().budget().fuel() {
+            return Err(CanonicalPlannerProcessError::InvalidRequest(
+                "canonical planner measured fuel exceeds request budget",
+            ));
+        }
         Ok(SupervisedPlannerExecution::new(Ok(output), measured_fuel))
     }
 }

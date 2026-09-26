@@ -10,7 +10,7 @@
 //! Portable state carries exact statistical proposal evidence.
 //!
 //! ```text
-//! canonical-frontier-planner@3: v3 | input_view? | best? | budget_blocked
+//! canonical-frontier-planner@4: v4 | input_view? | best? | budget_blocked
 //! canonical-frontier-puct-planner@2: v2 | input_view? | policy? | best? | budget_blocked
 //! ```
 
@@ -26,13 +26,15 @@ use crate::{
 };
 
 const ENGINE_NAME: &str = "crucible-canonical-frontier";
-const ENGINE_IMPLEMENTATION_VERSION: u32 = 8;
+const ENGINE_IMPLEMENTATION_VERSION: u32 = 9;
 const ENGINE_PROTOCOL_VERSION: u32 = 1;
 const STATE_FORMAT: &str = "canonical-frontier-planner";
-const STATE_FORMAT_VERSION: u32 = 3;
-const STATE_SCHEMA_VERSION: u32 = 3;
+const STATE_FORMAT_VERSION: u32 = 4;
+const STATE_SCHEMA_VERSION: u32 = 4;
 const POLICY_ARTIFACT_ABI_VERSION: u32 = 1;
-const POLICY_DEPENDENCY_LOCK_BYTES: &[u8] = b"crucible-canonical-frontier-planner.v8";
+const POLICY_DEPENDENCY_LOCK_BYTES: &[u8] = b"crucible-canonical-frontier-planner.v9";
+const MAX_FINITE_ISSUE_PROPOSALS: usize = 16;
+const MAX_CARRIED_FINITE_VALUE_BYTES: usize = 64 * 1024;
 
 /// Complete deterministic repository basis for the built-in planner.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -254,7 +256,13 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
                     .ok_or(CampaignCodecError::LimitExceeded {
                         limit: "canonical-frontier-planner-eligible-count",
                     })?;
-            let candidate = CarriedCandidate::from_offer(position, &offer);
+            let candidate = CarriedCandidate::from_offer(
+                position,
+                &offer,
+                input.branch_request.as_ref(),
+                input.budget.as_ref(),
+                request.invocation().budget().proposals(),
+            )?;
             if best
                 .as_ref()
                 .is_none_or(|current| candidate.position < current.position)
@@ -263,17 +271,6 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
             }
         }
 
-        let fuel = u64::try_from(page.positions().len())
-            .ok()
-            .and_then(|positions| positions.checked_add(1))
-            .ok_or(CampaignCodecError::LimitExceeded {
-                limit: "canonical-frontier-planner-fuel",
-            })?;
-        if fuel > request.invocation().budget().fuel() {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "canonical-frontier-planner-fuel",
-            });
-        }
         let input_objects = page.input_objects();
         let input_bytes = page.input_bytes();
         let invocation = request.invocation_id()?;
@@ -296,16 +293,21 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
                 ),
                 None => match best {
                     Some(candidate) => {
-                        let proposal = candidate.to_proposal(request, invocation)?;
+                        let proposals = candidate.to_proposals(request, invocation)?;
                         let selected = candidate.position;
+                        let proposal_count = u64::try_from(proposals.len()).map_err(|_| {
+                            CampaignCodecError::LimitExceeded {
+                                limit: "canonical-frontier-planner-proposal-count",
+                            }
+                        })?;
                         (
                             Some(candidate),
                             0,
-                            1,
+                            proposal_count,
                             PlannerProposalDisposition::Issue {
                                 selected,
                                 branch_requests: Vec::new(),
-                                proposals: vec![proposal],
+                                proposals,
                             },
                         )
                     }
@@ -322,6 +324,17 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
                 },
             )
         };
+        let fuel = u64::try_from(page.positions().len())
+            .ok()
+            .and_then(|positions| positions.checked_add(proposal_count.max(1)))
+            .ok_or(CampaignCodecError::LimitExceeded {
+                limit: "canonical-frontier-planner-fuel",
+            })?;
+        if fuel > request.invocation().budget().fuel() {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "canonical-frontier-planner-fuel",
+            });
+        }
         let next_state = Self::encode_state(
             expected_engine_id,
             &CanonicalFrontierPlannerState {
@@ -543,25 +556,85 @@ struct CarriedCandidate {
     value: ChoiceValue,
     ordinal: u64,
     statistical_evidence: Option<StatisticalProposalEvidence>,
+    additional_finite_values: Vec<ChoiceValue>,
 }
 
 impl CarriedCandidate {
-    fn from_offer(position: PlanningScanPosition, offer: &Proposal) -> Self {
-        Self {
+    fn from_offer(
+        position: PlanningScanPosition,
+        offer: &Proposal,
+        branch_request: Option<&BranchRequest>,
+        budget: Option<&crate::PlannerCandidateBudget>,
+        proposal_limit: u32,
+    ) -> Result<Self, CampaignCodecError> {
+        let branch_request = branch_request.ok_or(CampaignCodecError::InvalidValue {
+            reason: "canonical frontier offer has no branch request",
+        })?;
+        let budget = budget.ok_or(CampaignCodecError::InvalidValue {
+            reason: "canonical frontier offer has no budget projection",
+        })?;
+        let mut additional_finite_values = Vec::new();
+
+        // Only explicit finite sources have history-independent consecutive
+        // values. A deduplicated first offer cannot prove later attempt costs.
+        if matches!(
+            branch_request.source(),
+            crate::CandidateSource::Finite(_) | crate::CandidateSource::ModeledFinite(_)
+        ) && budget.requires_new_attempt()
+        {
+            let remaining_request_proposals = branch_request
+                .budget()
+                .maximum_proposals()
+                .saturating_sub(offer.ordinal())
+                .saturating_add(1);
+            let limit = u128::from(proposal_limit)
+                .min(MAX_FINITE_ISSUE_PROPOSALS as u128)
+                .min(u128::from(remaining_request_proposals))
+                .min(budget.remaining_proposals())
+                .min(budget.remaining_attempts())
+                .min(u128::from(budget.remaining_request_attempts()));
+            let values = branch_request.source().finite_values().ok_or(
+                CampaignCodecError::InvalidValue {
+                    reason: "finite frontier source has no values",
+                },
+            )?;
+            let index = usize::try_from(offer.ordinal().saturating_sub(1)).map_err(|_| {
+                CampaignCodecError::LimitExceeded {
+                    limit: "canonical-frontier-planner-finite-ordinal",
+                }
+            })?;
+            let mut ordered = values.iter().skip(index).take(limit as usize);
+            if ordered.next() != Some(offer.value()) {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "canonical frontier finite offer disagrees with its source",
+                });
+            }
+            let mut carried_bytes = 0_usize;
+            for value in ordered {
+                carried_bytes = carried_bytes.saturating_add(codec::encode(value).len());
+                if carried_bytes > MAX_CARRIED_FINITE_VALUE_BYTES {
+                    break;
+                }
+                additional_finite_values.push(value.clone());
+            }
+        }
+
+        Ok(Self {
             position,
             domain: offer.domain(),
             value: offer.value().clone(),
             ordinal: offer.ordinal(),
             statistical_evidence: offer.statistical_evidence(),
-        }
+            additional_finite_values,
+        })
     }
 
-    fn to_proposal(
+    fn to_proposals(
         &self,
         request: &PlannerRequest,
         invocation: crate::PlannerInvocationId,
-    ) -> Result<Proposal, CampaignCodecError> {
-        match self.statistical_evidence {
+    ) -> Result<Vec<Proposal>, CampaignCodecError> {
+        let first = match self.statistical_evidence {
             Some(evidence) => Proposal::new_with_statistical_evidence(
                 self.position.branch_point(),
                 self.position.source(),
@@ -583,7 +656,32 @@ impl CarriedCandidate {
                 self.ordinal,
                 request.invocation().input_view(),
             ),
+        }?;
+        let mut proposals = Vec::with_capacity(self.additional_finite_values.len() + 1);
+        proposals.push(first);
+        for (index, value) in self.additional_finite_values.iter().enumerate() {
+            let ordinal = self
+                .ordinal
+                .checked_add(u64::try_from(index + 1).map_err(|_| {
+                    CampaignCodecError::LimitExceeded {
+                        limit: "canonical-frontier-planner-finite-ordinal",
+                    }
+                })?)
+                .ok_or(CampaignCodecError::LimitExceeded {
+                    limit: "canonical-frontier-planner-finite-ordinal",
+                })?;
+            proposals.push(Proposal::new(
+                self.position.branch_point(),
+                self.position.source(),
+                self.domain,
+                value.clone(),
+                request.invocation().policy(),
+                Some(invocation),
+                ordinal,
+                request.invocation().input_view(),
+            )?);
         }
+        Ok(proposals)
     }
 }
 
@@ -594,6 +692,7 @@ impl Canonical for CarriedCandidate {
         self.value.encode(encoder);
         self.ordinal.encode(encoder);
         self.statistical_evidence.encode(encoder);
+        self.additional_finite_values.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
@@ -603,10 +702,15 @@ impl Canonical for CarriedCandidate {
             value: ChoiceValue::decode(decoder)?,
             ordinal: u64::decode(decoder)?,
             statistical_evidence: Option::decode(decoder)?,
+            additional_finite_values: Vec::decode(decoder)?,
         };
-        if candidate.ordinal == 0 {
+        if candidate.ordinal == 0
+            || candidate.additional_finite_values.len() >= MAX_FINITE_ISSUE_PROPOSALS
+            || (candidate.statistical_evidence.is_some()
+                && !candidate.additional_finite_values.is_empty())
+        {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "canonical frontier planner candidate ordinal is zero",
+                reason: "canonical frontier planner candidate is invalid",
             });
         }
         Ok(candidate)

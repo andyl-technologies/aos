@@ -81,6 +81,12 @@ impl PlannerCandidateBudget {
         self.remaining_attempts
     }
 
+    /// Returns the request-local unique-attempt allowance remaining in this view.
+    #[must_use]
+    pub const fn remaining_request_attempts(&self) -> u64 {
+        self.remaining_request_attempts
+    }
+
     /// Returns whether this offer needs a new semantic execution attempt.
     #[must_use]
     pub const fn requires_new_attempt(&self) -> bool {

@@ -162,6 +162,8 @@ Fixtures include:
   already admitted by a generated source;
 - a maximum-sized finite request consumed with one proposal slot and one worker
   slot, proving request publication does not create a batch;
+- a 16-choice finite request consumed with 16 proposal slots in one atomic
+  Issue, proving ordered admissions, budget spending, and cold replay;
 - rejection of exhaustive `--all` above its finite-cardinality ceiling;
 - duplicate attempt and observation delivery;
 - daemon restart with all projection caches deleted;

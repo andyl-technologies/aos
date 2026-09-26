@@ -245,6 +245,7 @@ impl Canonical for SmcRequestBasis {
 pub(crate) struct PlannerCandidateInput {
     pub(crate) continuation: ContinuationProjection,
     pub(crate) offer: Option<Proposal>,
+    pub(crate) branch_request: Option<BranchRequest>,
     pub(crate) guidance: Option<crate::PlannerCandidateGuidance>,
     pub(crate) budget: Option<crate::PlannerCandidateBudget>,
     pub(crate) beam: Option<crate::PlannerBeamCandidate>,
@@ -815,7 +816,7 @@ impl CampaignPlanningBundle {
             let candidate_budget = budgets.remove(position);
             let beam_candidate = beam_candidates.remove(position);
             let search_candidate = search_candidates.remove(position);
-            if let Some(offer) = &offer {
+            let branch_request = if let Some(offer) = &offer {
                 let source = self.object(position.source().content_id())?.ok_or(
                     CampaignCodecError::InvalidValue {
                         reason: "planner candidate offer omits its branch request",
@@ -846,7 +847,10 @@ impl CampaignPlanningBundle {
                         });
                     }
                 }
-            }
+                Some(branch_request)
+            } else {
+                None
+            };
             if let Some(candidate) = &beam_candidate {
                 let source = self.object(position.source().content_id())?.ok_or(
                     CampaignCodecError::InvalidValue {
@@ -972,6 +976,7 @@ impl CampaignPlanningBundle {
                 PlannerCandidateInput {
                     continuation,
                     offer,
+                    branch_request,
                     guidance: candidate_guidance,
                     budget: candidate_budget,
                     beam: beam_candidate,
@@ -1446,7 +1451,7 @@ impl PlannerRequest {
         input_bundle: CampaignPlanningBundle,
     ) -> Result<Self, CampaignCodecError> {
         if (statistical_request_basis.is_some() && smc_request_basis.is_some())
-            || (smc_request_basis.is_some() && engine.implementation_version() < 8)
+            || (smc_request_basis.is_some() && engine.implementation_version() < 9)
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "planner request schema disagrees with statistical basis",
