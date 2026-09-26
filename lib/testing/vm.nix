@@ -519,6 +519,7 @@
     extraWritableMiB ? 0,
     vcpuCount ? 1,
     hostCpuPin ? false,
+    hostCpuPinIndex ? null,
   }: let
     rootfs = fcLib.mkFirecrackerRootfs {
       pname = name;
@@ -606,14 +607,25 @@
         if hostCpuPin
         then ''
           host_allowed=$(sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' /proc/self/status)
-          host_cpu=$(printf '%s\n' "$host_allowed" | cut -d , -f 1 | cut -d - -f 1)
+          ${
+            if hostCpuPinIndex == null
+            then ''host_cpu=$(printf '%s\n' "$host_allowed" | cut -d , -f 1 | cut -d - -f 1)''
+            else ''host_cpu=${builtins.toString hostCpuPinIndex}''
+          }
           test -n "$host_cpu"
+          ${pkgs.util-linux}/bin/taskset -c "$host_cpu" ${pkgs.coreutils}/bin/true
           host_model=$(sed -n 's/^model name[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
           test -n "$host_model"
+          host_family=$(sed -n 's/^cpu family[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
+          host_model_number=$(sed -n 's/^model[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
+          host_stepping=$(sed -n 's/^stepping[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
+          host_microcode=$(sed -n 's/^microcode[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
+          test -n "$host_family" && test -n "$host_model_number" && test -n "$host_stepping" && test -n "$host_microcode"
           host_boot_id=$(cat /proc/sys/kernel/random/boot_id)
           test -n "$host_boot_id"
-          printf 'host_name=%s\nhost_boot_id=%s\nhost_cpu_model=%s\nhost_allowed_cpus=%s\nhost_pinned_cpu=%s\n' \
-            "$(uname -n)" "$host_boot_id" "$host_model" "$host_allowed" "$host_cpu" \
+          printf 'host_name=%s\nhost_boot_id=%s\nhost_cpu_model=%s\nhost_cpu_family=%s\nhost_cpu_model_number=%s\nhost_cpu_stepping=%s\nhost_cpu_microcode=%s\nhost_kernel_release=%s\nhost_allowed_cpus=%s\nhost_pinned_cpu=%s\n' \
+            "$(uname -n)" "$host_boot_id" "$host_model" "$host_family" "$host_model_number" \
+            "$host_stepping" "$host_microcode" "$(uname -r)" "$host_allowed" "$host_cpu" \
             > "$TMPDIR/host-reference.env"
           FC_EXIT=0
           ${pkgs.util-linux}/bin/taskset -c "$host_cpu" \
@@ -705,6 +717,7 @@
     # Headless package tests default to one host CPU unless the fixture opts in.
     headlessVcpuCount ? 1,
     hostCpuPin ? false,
+    hostCpuPinIndex ? null,
     seedSELinuxDisabledConfig ? true,
   }:
     if rootfsDeps != null
@@ -719,6 +732,7 @@
             rootfsDeps
             extraWritableMiB
             hostCpuPin
+            hostCpuPinIndex
             ;
           memory =
             if memory != null
