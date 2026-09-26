@@ -91,7 +91,12 @@ pub fn classify(
     manifest: &Manifest,
 ) -> Result<Invocation> {
     let mut invocation = Invocation {
-        kind: format!("{kind}-sccache-8396f020-v1"),
+        // Rust's binary dependency probe replaces the old broad -L scan.
+        // Keep its action namespace separate from previously published keys.
+        kind: format!(
+            "{kind}-sccache-8396f020-v{}",
+            if kind == "rust" { 2 } else { 1 }
+        ),
         outputs: Vec::new(),
         optional_outputs: BTreeSet::new(),
         execution_args: None,
@@ -310,7 +315,14 @@ impl Invocation {
             if self.dependencies.exists() {
                 fs::remove_file(&self.dependencies)?;
             }
-            let output = command(compiler, scan, environment).output()?;
+            let mut probe = command(compiler, scan, environment);
+            if self.kind.starts_with("rust-") {
+                // The pinned AOS rustc exposes binary-dep-depinfo behind -Z.
+                // Only the probe needs this capability; the actual compile
+                // retains the caller's environment and stable-channel rules.
+                probe.env("RUSTC_BOOTSTRAP", "1");
+            }
+            let output = probe.output()?;
             ensure!(
                 output.status.success(),
                 "dependency discovery failed: {}",

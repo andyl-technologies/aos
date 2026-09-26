@@ -182,6 +182,13 @@ def run_suite(root):
     consumer = ["--crate-name", "consumer", "--crate-type", "rlib", "--edition=2024", "--emit=link,dep-info", "--out-dir", "target", "--extern", "example=target/libexample.rlib", "-L", "dependency=target", "consumer.rs"]
     invoke(rustc, consumer)
     invoke(rustc, consumer, "hit")
+    (work / "unrelated.rs").write_text("pub fn unrelated() -> u32 { 17 }\n")
+    subprocess.run([rustc, "--crate-name", "unrelated", "--crate-type", "rlib",
+                    "unrelated.rs", "--out-dir", "target"], cwd=work, env=env,
+                   check=True, capture_output=True)
+    unrelated = invoke(rustc, consumer, "hit")
+    assert not any("libunrelated.rlib" in path for path in unrelated["identity"]["inputs"])
+    assert any("libexample.rlib" in path for path in unrelated["identity"]["inputs"])
     (work / "library.rs").write_text('pub const TEXT: &str = "new";\n')
     invoke(rustc, rust_args)
     invoke(rustc, consumer)

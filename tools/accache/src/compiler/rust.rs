@@ -163,9 +163,10 @@ pub(super) fn configure(
         }
     }
 
-    invocation
-        .read_dirs
-        .extend(parsed.crate_link_paths.iter().cloned());
+    // The dep-info probe below names the crate artifacts rustc actually read,
+    // including transitive rlibs and sysroot metadata. Scanning every -L
+    // dependency directory would include unrelated crates that Cargo builds
+    // concurrently, making almost every application action unpublishable.
     let mut index = 0;
     while index < expanded.len() {
         let arg = &expanded[index];
@@ -176,8 +177,12 @@ pub(super) fn configure(
             arg.strip_prefix("-L")
         };
         if let Some(search) = search {
-            let path = search.split_once('=').map_or(search, |(_, path)| path);
-            invocation.read_dirs.insert(path.into());
+            let (kind, path) = search.split_once('=').unwrap_or(("all", search));
+            if matches!(kind, "native" | "all") {
+                // Native search directories may affect staticlib outputs even
+                // when a native archive is absent from rustc's dep-info.
+                invocation.read_dirs.insert(path.into());
+            }
         }
         index += 1;
     }
@@ -201,6 +206,7 @@ pub(super) fn configure(
         "--emit=dep-info={}",
         invocation.dependencies.display()
     ));
+    scan.push("-Zbinary-dep-depinfo=yes".into());
     invocation.scan_args = Some(scan);
     Ok(())
 }
