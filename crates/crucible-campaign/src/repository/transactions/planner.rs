@@ -383,7 +383,9 @@ impl CampaignRepository {
         let fact = CampaignFact::PlannerAdvanced(step_id);
         let transition_content = self.put_fact(&fact)?;
         let mut roots = current.snapshot.roots();
-        let issued = issue_projection.is_some();
+        let issue_growth_upper = issue_projection
+            .as_ref()
+            .map(|projected| projected.closure_growth_upper);
         if let Some(projected) = issue_projection {
             roots.exploration = projected.exploration;
             roots.accounting = projected.accounting;
@@ -397,11 +399,7 @@ impl CampaignRepository {
             crate::CampaignFactId::from_content_id(transition_content)?,
         )?;
         let next_content = self.put_snapshot(&next)?;
-        let closure_growth_upper = if issued {
-            MAX_PLANNER_ISSUE_SUCCESSOR_GROWTH
-        } else {
-            MAX_SIMPLE_SUCCESSOR_GROWTH
-        };
+        let closure_growth_upper = issue_growth_upper.unwrap_or(MAX_SIMPLE_SUCCESSOR_GROWTH);
         let checkpoint = self.prepare_local_successor_checkpoint(
             current_content,
             next_content,
