@@ -80,8 +80,24 @@
 in
   mkCargoPackage {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -93,10 +109,12 @@ in
         expected = "The exported function returns 42 when called through the generated library.";
         artifacts = [];
         files = {
-          "Cargo.toml" = manifest + ''
-            [features]
-            capi = []
-          '';
+          "Cargo.toml" =
+            manifest
+            + ''
+              [features]
+              capi = []
+            '';
           "src/lib.rs" = librarySource;
           "probe.py" = probeScript;
         };
