@@ -504,6 +504,87 @@ def check_clang_driver_dependency_file(root, env, accache, sccache, clang):
     return results
 
 
+def check_clang_cc1_dependency_file(root, env, accache, sccache, clang, hits):
+    """Cache the cc1 depfile that overrides the driver's requested path."""
+    results = []
+    for fixture, dependency_args in [
+        ("clang-cc1-dependency-file", ["-MD", "-MF", "source.d"]),
+        ("clang-cc1-dependency-file-md", ["-MD"]),
+        ("clang-cc1-dependency-file-mmd", ["-MMD"]),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "source.c").write_text(
+            '#include "value.h"\nint answer(void) { return VALUE; }\n')
+        args = [clang, "-c", "source.c", "-o", "source.o", *dependency_args,
+                "-Xclang", "-dependency-file", "-Xclang", "side.d",
+                "-frandom-seed=" + fixture]
+
+        def compile_object(wrapper):
+            for name in ["source.o", "source.d", "side.d"]:
+                (work / name).unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            artifacts = {name: value for name, value in snapshot(work).items()
+                         if name not in {"source.c", "value.h"}}
+            return completed, artifacts
+
+        for revision, value in enumerate([42, 73]):
+            (work / "value.h").write_text(f"#define VALUE {value}\n")
+            direct, expected = compile_object([])
+            assert direct.returncode == 0 and set(expected) == {"source.o", "side.d"}, (
+                fixture, revision, direct.stderr, expected)
+
+            oracle_errors = 0
+            oracle_hits = 0
+            oracle_missing = set()
+            for _ in range(2):
+                before_hits = hits()
+                oracle, oracle_artifacts = compile_object([sccache])
+                oracle_hits += hits() > before_hits
+                if oracle.returncode == 0:
+                    assert (oracle.stdout, oracle.stderr,
+                            oracle_artifacts.get("source.o")) == (
+                                direct.stdout, direct.stderr, expected["source.o"]), (
+                                    fixture, revision, oracle.stderr,
+                                    sorted(oracle_artifacts), sorted(expected))
+                    missing = set(expected) - set(oracle_artifacts)
+                    assert not (set(oracle_artifacts) - set(expected))
+                    assert missing <= {"side.d"}, (fixture, revision, missing)
+                    oracle_missing.update(missing)
+                else:
+                    assert (oracle.returncode == 254
+                            and b"failed to zip up compiler outputs" in oracle.stderr
+                            and b"source.d" in oracle.stderr), (
+                                fixture, revision, oracle.returncode, oracle.stderr)
+                    oracle_errors += 1
+            if "-MF" in dependency_args:
+                assert oracle_errors, (fixture, revision,
+                                       "sccache unexpectedly published the cc1 depfile")
+            else:
+                assert "side.d" in oracle_missing, (fixture, revision,
+                                                    "sccache retained the implicit cc1 depfile")
+
+            for attempt, outcome in enumerate(["miss", "hit"]):
+                actual, artifacts = compile_object([accache])
+                assert (actual.returncode, actual.stdout, actual.stderr, artifacts) == (
+                    direct.returncode, direct.stdout, direct.stderr, expected), (
+                        fixture, revision, attempt, actual.stderr, artifacts)
+                event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+                assert event["outcome"] == outcome, (fixture, revision, attempt, event)
+                if revision and attempt == 0:
+                    assert any("value.h" in item for item in event["changes"]), event
+
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": bool(oracle_hits),
+                            "oracle_errors": oracle_errors,
+                            "oracle_missing_artifacts": sorted(oracle_missing),
+                            "accache": "hit", "artifacts": sorted(expected)})
+
+        print("PASS oracle", fixture, "restoration", flush=True)
+    return results
+
+
 def check_assembler_general_listing_passthrough(root, env, accache, sccache, gcc, hits):
     """Keep assembler reports with embedded timestamps live on every call."""
     results = []
@@ -3047,6 +3128,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
 
         results.extend(check_clang_driver_dependency_file(root, env, accache,
                                                           sccache, clang))
+        results.extend(check_clang_cc1_dependency_file(root, env, accache,
+                                                       sccache, clang, hits))
         results.extend(check_assembler_general_listing_passthrough(root, env,
                                                                    accache, sccache, gcc, hits))
         results.extend(check_rust_diagnostic_passthrough(root, env,

@@ -164,6 +164,11 @@ The oracle also compares direct and wrapper output for GCC and Clang
 `-MJ`. These bypasses preserve the complete set of files each driver writes.
 Clang's driver-level `-dependency-file` option also bypasses: the driver ignores
 it while pinned sccache expects a file at that path and fails during publication.
+When `-dependency-file` is forwarded through `-Xclang`, cc1 instead writes its
+named depfile in place of the driver's `-MF` or default depfile. Accache tracks
+and restores that actual file and invalidates it after a header edit. Pinned
+sccache fails publication with an explicit `-MF`; with implicit `-MD` or `-MMD`
+it warm-hits but omits the cc1 depfile.
 Clang `-Wp` requests that mix a dependency output with other forwarded CPP
 options bypass because the driver does not consistently use the forwarded path.
 Rust `-Csave-temps=yes` stores files inside randomly named `rmeta*` and `rustc*`
