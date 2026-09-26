@@ -88,16 +88,29 @@ pub(super) fn configure(
     );
     if clang {
         let mut llvm_arguments = Vec::new();
-        for (index, arg) in expanded.iter().enumerate() {
-            let llvm_arg = if arg == "-mllvm" {
-                expanded.get(index + 1).map(String::as_str)
+        let mut index = 0;
+        while index < expanded.len() {
+            let argument = &expanded[index];
+            if let Some(("-mllvm", forwarded)) = clang_forwarded_arg(&expanded, index) {
+                // The driver forwards both cc1 arguments separately. Reading
+                // the intervening -Xclang as an LLVM value would bypass a
+                // cacheable action and miss any file the real option reads.
+                let (value, payload) = clang_forwarded_arg(&expanded, index + forwarded)
+                    .ok_or_else(|| anyhow::anyhow!("Clang forwarded -mllvm has no value"))?;
+                llvm_arguments.push(value);
+                index += forwarded + payload;
+            } else if argument == "-mllvm" {
+                let value = expanded
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("Clang -mllvm has no value"))?;
+                llvm_arguments.push(value.as_str());
+                index += 2;
             } else {
-                arg.strip_prefix("-mllvm=")
-            };
-            let Some(llvm_arg) = llvm_arg else {
-                continue;
-            };
-            llvm_arguments.push(llvm_arg);
+                if let Some(value) = argument.strip_prefix("-mllvm=") {
+                    llvm_arguments.push(value);
+                }
+                index += 1;
+            }
         }
         // LLVM values can follow a second -mllvm rather than an equals sign.
         let llvm_effects = llvm::file_effects(&llvm_arguments, "Clang", manifest)?;
@@ -443,8 +456,30 @@ pub(super) fn configure(
         }
     }
     let parsed_depfile = parsed.outputs.get("d").map(|output| output.path.as_path());
-    let (preprocessing, forwarded_depfile) =
+    let (preprocessing, forwarded_depfile, mixed_clang_depfile) =
         probe_preprocessor_args(&preprocessing, invocation, clang, parsed_depfile)?;
+    if mixed_clang_depfile {
+        // Clang uses the object-adjacent or driver -MF destination when a
+        // forwarded dependency request also carries CPP flags. The named
+        // -Wp destination is ignored in that form.
+        let object = parsed
+            .outputs
+            .get("obj")
+            .ok_or_else(|| anyhow::anyhow!("Clang mixed -Wp has no object output"))?;
+        let actual = gcc_driver_depfile(&expanded)
+            .unwrap_or_else(|| object.path.with_extension("d"));
+        let actual_name = super::output_name(&actual)?;
+        if let Some(path) = parsed_depfile {
+            let parsed_name = super::output_name(path)?;
+            if parsed_name != actual_name {
+                invocation.outputs.retain(|name| name != &parsed_name);
+                invocation.optional_outputs.remove(&parsed_name);
+            }
+        }
+        if !invocation.outputs.contains(&actual_name) {
+            invocation.output(&actual, false)?;
+        }
+    }
     if let (Some(forwarded), Some(path)) = (&forwarded_depfile, &gcc_depfile) {
         // A CPP-level dependency request takes precedence over the driver's
         // -MF even when the joined -MF appears later on the command line.
@@ -708,6 +743,15 @@ pub(super) fn configure(
     Ok(())
 }
 
+fn clang_forwarded_arg(arguments: &[String], index: usize) -> Option<(&str, usize)> {
+    let argument = arguments.get(index)?;
+    if argument == "-Xclang" {
+        arguments.get(index + 1).map(|value| (value.as_str(), 2))
+    } else {
+        argument.strip_prefix("-Xclang=").map(|value| (value, 1))
+    }
+}
+
 fn c_key_arguments(
     expanded: &[String],
     parsed: impl Iterator<Item = std::result::Result<Argument<gcc::ArgData>, ArgParseError>>,
@@ -856,9 +900,10 @@ fn probe_preprocessor_args(
     invocation: &mut Invocation,
     clang: bool,
     parsed_depfile: Option<&Path>,
-) -> Result<(Vec<String>, Option<PathBuf>)> {
+) -> Result<(Vec<String>, Option<PathBuf>, bool)> {
     let mut probe = Vec::new();
     let mut forwarded_depfile = None;
+    let mut mixed_clang_depfile = false;
     let mut index = 0;
 
     while index < arguments.len() {
@@ -866,7 +911,7 @@ fn probe_preprocessor_args(
         if let Some(payload) = argument.strip_prefix("-Wp,") {
             let mut fields = payload.split(',');
             let mut preserved = Vec::new();
-            let mut writes_depfile = false;
+            let mut requested_depfile = None;
             while let Some(field) = fields.next() {
                 match field {
                     "-MD" | "-MMD" => {
@@ -877,8 +922,7 @@ fn probe_preprocessor_args(
                             !filename.is_empty(),
                             "-Wp dependency output has no filename"
                         );
-                        forwarded_depfile = Some(filename);
-                        writes_depfile = true;
+                        requested_depfile = Some(filename);
                     }
                     "-M" | "-MM" | "-MF" | "-MG" => {
                         anyhow::bail!("untracked -Wp dependency output option")
@@ -886,10 +930,17 @@ fn probe_preprocessor_args(
                     _ => preserved.push(field),
                 }
             }
-            ensure!(
-                !clang || !writes_depfile || preserved.is_empty(),
-                "Clang mixed -Wp dependency output cannot be tracked"
-            );
+            if let Some(filename) = requested_depfile {
+                ensure!(
+                    forwarded_depfile.is_none() && !mixed_clang_depfile,
+                    "multiple forwarded dependency outputs cannot be tracked"
+                );
+                if clang && !preserved.is_empty() {
+                    mixed_clang_depfile = true;
+                } else {
+                    forwarded_depfile = Some(filename);
+                }
+            }
             if !preserved.is_empty() {
                 // Other forwarded CPP options still affect dependency
                 // discovery. Remove only the caller-visible depfile request.
@@ -941,7 +992,7 @@ fn probe_preprocessor_args(
         invocation.output(filename, false)?;
     }
 
-    Ok((probe, forwarded_depfile))
+    Ok((probe, forwarded_depfile, mixed_clang_depfile))
 }
 
 enum DiagnosticSink {
