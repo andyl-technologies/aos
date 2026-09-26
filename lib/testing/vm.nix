@@ -518,6 +518,7 @@
     memory ? 256,
     extraWritableMiB ? 0,
     vcpuCount ? 1,
+    hostCpuPin ? false,
   }: let
     rootfs = fcLib.mkFirecrackerRootfs {
       pname = name;
@@ -528,12 +529,18 @@
     # `out`, whose /boot ships only the compressed vmlinuz.
     kernelPath = builtins.toString kernel.vmlinux;
 
-    headlessBuildDeps = [
-      pkgs.coreutils
-      pkgs.grep
-      pkgs.sed
-      firecracker
-    ];
+    headlessBuildDeps =
+      [
+        pkgs.coreutils
+        pkgs.grep
+        pkgs.sed
+        firecracker
+      ]
+      ++ (
+        if hostCpuPin
+        then [pkgs.util-linux]
+        else []
+      );
 
     headlessFirecrackerScript = ''
       set -eu
@@ -595,8 +602,28 @@
             -e '/^[0-9][0-9][0-9][0-9]-[0-9].*\[anonymous-instance:/d' &
       SERIAL_MIRROR_PID=$!
 
-      FC_EXIT=0
-      firecracker --no-api --config-file "$CONFIG" > "$SERIAL_PIPE" 2>"$FC_LOG" || FC_EXIT=$?
+      ${
+        if hostCpuPin
+        then ''
+          host_allowed=$(sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' /proc/self/status)
+          host_cpu=$(printf '%s\n' "$host_allowed" | cut -d , -f 1 | cut -d - -f 1)
+          test -n "$host_cpu"
+          host_model=$(sed -n 's/^model name[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
+          test -n "$host_model"
+          host_boot_id=$(cat /proc/sys/kernel/random/boot_id)
+          test -n "$host_boot_id"
+          printf 'host_name=%s\nhost_boot_id=%s\nhost_cpu_model=%s\nhost_allowed_cpus=%s\nhost_pinned_cpu=%s\n' \
+            "$(uname -n)" "$host_boot_id" "$host_model" "$host_allowed" "$host_cpu" \
+            > "$TMPDIR/host-reference.env"
+          FC_EXIT=0
+          ${pkgs.util-linux}/bin/taskset -c "$host_cpu" \
+            firecracker --no-api --config-file "$CONFIG" > "$SERIAL_PIPE" 2>"$FC_LOG" || FC_EXIT=$?
+        ''
+        else ''
+          FC_EXIT=0
+          firecracker --no-api --config-file "$CONFIG" > "$SERIAL_PIPE" 2>"$FC_LOG" || FC_EXIT=$?
+        ''
+      }
       wait "$SERIAL_MIRROR_PID" 2>/dev/null || true
 
       echo "Firecracker exited with code: $FC_EXIT"
@@ -607,6 +634,11 @@
         mkdir -p $out
         cp "$SERIAL_LOG" $out/serial.log
         cp "$FC_LOG" $out/fc.log 2>/dev/null || true
+        ${
+        if hostCpuPin
+        then ''cp "$TMPDIR/host-reference.env" $out/host-reference.env''
+        else ""
+      }
         echo "PASS" > $out/result
       elif grep -q "TEST_RESULT:FAIL" "$SERIAL_LOG"; then
         echo ""
@@ -672,6 +704,7 @@
     extraWritableMiB ? 0,
     # Headless package tests default to one host CPU unless the fixture opts in.
     headlessVcpuCount ? 1,
+    hostCpuPin ? false,
     seedSELinuxDisabledConfig ? true,
   }:
     if rootfsDeps != null
@@ -685,6 +718,7 @@
             testScript
             rootfsDeps
             extraWritableMiB
+            hostCpuPin
             ;
           memory =
             if memory != null

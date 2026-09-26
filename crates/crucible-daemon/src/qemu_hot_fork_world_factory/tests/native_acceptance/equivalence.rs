@@ -25,6 +25,8 @@ struct ExactResume<'a> {
     boundary: &'a Configuration,
 }
 
+#[path = "equivalence/campaign_perf.rs"]
+mod campaign_perf;
 #[path = "equivalence/child.rs"]
 mod child;
 #[path = "equivalence/evidence.rs"]
@@ -32,6 +34,7 @@ mod evidence;
 #[path = "equivalence/siblings.rs"]
 mod siblings;
 
+use self::campaign_perf::measure_campaign_planner_queue_at_boundary;
 use self::child::{
     NativeHotChildStart, run_hot_child, start_descendant_hot_child, start_hot_child,
 };
@@ -913,6 +916,21 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
     const KNOWN_DIRTY_KIB: u64 = 1024 * 4;
     const DIRTY_OVERHEAD_KIB: u64 = 64 * 1024;
 
+    let process_status = fs::read_to_string("/proc/self/status").expect("read guest affinity");
+    let allowed_cpus = process_status
+        .lines()
+        .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))
+        .map(str::trim)
+        .expect("guest affinity is recorded");
+    assert_eq!(
+        allowed_cpus, "0",
+        "reference workload must use one pinned vCPU"
+    );
+    println!("\ncampaign_guest_cpu_affinity={allowed_cpus}");
+    println!("campaign_planner_supervisor=packaged-process");
+    println!("campaign_blob_backend=directory");
+    println!("campaign_short_branch_boundary=two-node-pending-selectable");
+
     let paths = NativeGatePaths::from_environment();
     let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
     let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
@@ -963,6 +981,8 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
     let mut exact_setup = 0_u64;
     let mut hot_steady = 0_u64;
     let mut exact_steady = 0_u64;
+    let mut campaign_planner_queue_samples = Vec::with_capacity(CORPUS_SIZE);
+    let mut hot_guest_continuation_samples = Vec::with_capacity(CORPUS_SIZE);
     for index in 0..CORPUS_SIZE {
         let source_lane = format!("performance-source-{index}");
         let hot_lane = format!("performance-hot-{index}");
@@ -981,6 +1001,10 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
         let boundary =
             drive_to_pending_boundary(&mut live_source, &source, EquivalenceTopology::MultiNode);
         assert_eq!(boundary, checkpoint_boundary);
+        let campaign_sample =
+            measure_campaign_planner_queue_at_boundary(&source, &input, &boundary, index);
+        campaign_planner_queue_samples.push(campaign_sample);
+        println!("corpus_{index}_campaign_planner_queue_ns={campaign_sample}");
         let world = live_source
             .prepare_hot_fork_source_world()
             .expect("prepare performance source");
@@ -997,6 +1021,10 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
         });
         let measurement = child.measurement();
         hot_setup = hot_setup.saturating_add(measurement.ready_nanoseconds);
+        println!(
+            "corpus_{index}_hot_setup_ns={}",
+            measurement.ready_nanoseconds
+        );
         assert_eq!(measurement.node_launch_count, 2);
         assert!(measurement.node_launch_sum_nanoseconds > measurement.node_launch_max_nanoseconds);
         assert!(
@@ -1008,6 +1036,8 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
         );
         let (hot, elapsed, after) = child.finish_measured();
         hot_steady = hot_steady.saturating_add(elapsed);
+        hot_guest_continuation_samples.push(elapsed);
+        println!("corpus_{index}_hot_guest_continuation_ns={elapsed}");
         let dirty_growth = after
             .private_dirty_kib
             .saturating_sub(measurement.private_dirty_kib);
@@ -1054,8 +1084,9 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
             pending,
             EquivalenceTopology::MultiNode,
         );
-        exact_setup = exact_setup
-            .saturating_add(operational_monotonic_nanoseconds().saturating_sub(exact_started));
+        let exact_setup_sample = operational_monotonic_nanoseconds().saturating_sub(exact_started);
+        exact_setup = exact_setup.saturating_add(exact_setup_sample);
+        println!("corpus_{index}_exact_setup_ns={exact_setup_sample}");
         let steady_started = operational_monotonic_nanoseconds();
         let exact_evidence = continue_from_pending(
             &mut exact,
@@ -1063,8 +1094,10 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
             exact_boundary.configuration.clone(),
             exact_boundary.pending.clone(),
         );
-        exact_steady = exact_steady
-            .saturating_add(operational_monotonic_nanoseconds().saturating_sub(steady_started));
+        let exact_steady_sample =
+            operational_monotonic_nanoseconds().saturating_sub(steady_started);
+        exact_steady = exact_steady.saturating_add(exact_steady_sample);
+        println!("corpus_{index}_exact_guest_continuation_ns={exact_steady_sample}");
         assert_continuation_equivalent("performance exact restore", &hot, &exact_evidence);
         QemuFreshAttemptLifecycleOwner::shutdown(&mut exact).expect("shutdown exact corpus member");
 
@@ -1116,6 +1149,27 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
         "hot setup must be at least 5x faster"
     );
     assert!(hot_steady.saturating_mul(100) <= exact_steady.saturating_mul(110));
+    assert_eq!(campaign_planner_queue_samples.len(), CORPUS_SIZE);
+    assert_eq!(hot_guest_continuation_samples.len(), CORPUS_SIZE);
+    let campaign_planner_queue_total = campaign_planner_queue_samples
+        .iter()
+        .try_fold(0_u64, |total, sample| total.checked_add(*sample))
+        .expect("campaign planner/queue sample total overflow");
+    let hot_guest_continuation_total = hot_guest_continuation_samples
+        .iter()
+        .try_fold(0_u64, |total, sample| total.checked_add(*sample))
+        .expect("guest continuation sample total overflow");
+    assert!(
+        campaign_planner_queue_total
+            .checked_mul(100)
+            .expect("campaign ratio numerator overflow")
+            < hot_guest_continuation_total
+                .checked_mul(5)
+                .expect("campaign ratio denominator overflow"),
+        "campaign planner and queue exceeded 5% of the identical hot guest continuation"
+    );
+    println!("campaign_planner_queue_total_ns={campaign_planner_queue_total}");
+    println!("hot_guest_continuation_total_ns={hot_guest_continuation_total}");
     println!("exact_restore_corpus_size={CORPUS_SIZE}");
     println!("setup_speedup_minimum=5x");
     println!("steady_execution_overhead_limit_percent=10");
