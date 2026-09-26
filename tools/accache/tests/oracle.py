@@ -1777,6 +1777,90 @@ def check_clang_profile_list(root, env, accache, sccache, clang, hits):
     return results
 
 
+def check_clang_profile_remapping(root, env, accache, sccache, clang, hits):
+    """Track C++ profile remappings even though Clang omits them from dep-info."""
+    source = (
+        "namespace NS { __attribute__((noinline)) int hot(int x) {\n"
+        "    if (x > 100) return x * 3;\n"
+        "    return x + 7;\n"
+        "} }\n"
+        "int main(int argc, char **) {\n"
+        "    int result = 0;\n"
+        "    for (int i = 0; i < 1000; ++i) result += NS::hot(argc + i);\n"
+        "    return result & 7;\n"
+        "}\n")
+    generator = root / "clang-profile-remap-generator"
+    generator.mkdir()
+    (generator / "old.cc").write_text(source.replace("NS", "old"))
+    subprocess.run([clang, "-O2", "-fprofile-instr-generate", "old.cc",
+                    "-o", "program"], cwd=generator, env=env,
+                   check=True, capture_output=True)
+    raw_profile = generator / "run.profraw"
+    subprocess.run([str(generator / "program")], cwd=generator,
+                   env=env | {"LLVM_PROFILE_FILE": str(raw_profile)},
+                   capture_output=True, timeout=120)
+    assert raw_profile.is_file(), "instrumented program produced no profile"
+    profile = generator / "profile.profdata"
+    profdata = str(Path(clang).with_name("llvm-profdata"))
+    subprocess.run([profdata, "merge", "-o", str(profile), str(raw_profile)],
+                   cwd=generator, env=env, check=True, capture_output=True)
+
+    work = root / "clang-profile-remapping"
+    work.mkdir()
+    (work / "new.cc").write_text(source.replace("NS", "newer"))
+    (work / "profile.profdata").write_bytes(profile.read_bytes())
+    remapping = work / "remap.txt"
+    object_file = work / "source.o"
+    depfile = work / "source.d"
+    args = [clang, "-O2", "-c", "new.cc",
+            "-fprofile-instr-use=profile.profdata",
+            "-fprofile-remapping-file=remap.txt",
+            "-MD", "-MF", "source.d", "-o", "source.o"]
+
+    def compile_object(wrapper):
+        object_file.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        return (completed.stdout, completed.stderr,
+                object_file.read_bytes(), depfile.read_bytes())
+
+    results = []
+    first_object = None
+    for revision, contents in enumerate(["# no remappings\n",
+                                         "name 3old 5newer\n"]):
+        remapping.write_text(contents)
+        direct = compile_object([])
+        assert b"remap.txt" not in direct[3], "remapping unexpectedly in dep-info"
+        if first_object is None:
+            first_object = direct[2]
+        else:
+            assert direct[2] != first_object, "remapping edit had no effect"
+
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() == before_hits, "sccache ignored the changed remapping"
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() > before_hits, "sccache did not warm-hit"
+
+        assert compile_object([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", (revision, cold)
+        if revision:
+            assert any("remap.txt" in item for item in cold["changes"]), cold
+        assert compile_object([accache]) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", (revision, warm)
+        results.append({"fixture": "clang-profile-remapping", "revision": revision,
+                        "oracle_hit": True, "accache": "hit",
+                        "artifacts": ["source.o", "source.d"]})
+
+    print("PASS oracle clang-profile-remapping invalidation", flush=True)
+    return results
+
+
 def check_clang_layout_seed(root, env, accache, sccache, clang, hits):
     """Track a layout seed file omitted from Clang's dependency output."""
     work = root / "clang-layout-seed"
@@ -3001,6 +3085,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                               sccache, clang, hits))
         results.extend(check_clang_profile_list(root, env, accache,
                                                 sccache, clang, hits))
+        results.extend(check_clang_profile_remapping(root, env, accache,
+                                                     sccache, clang, hits))
         results.extend(check_clang_layout_seed(root, env, accache,
                                                sccache, clang, hits))
         results.extend(check_clang_warning_mappings(root, env, accache,
