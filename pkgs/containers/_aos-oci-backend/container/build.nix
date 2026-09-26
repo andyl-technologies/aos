@@ -33,14 +33,17 @@
     ]
     + "\n"
   );
-  uniqueByPath = lib.uniqueBy (value:
-    builtins.unsafeDiscardStringContext (builtins.toString value));
+  uniqueByPath =
+    lib.uniqueBy (value:
+      builtins.unsafeDiscardStringContext (builtins.toString value));
 
   auditRoots = uniqueByPath (builtins.concatMap (layer: layer.roots) container.layers);
   packageRootPaths = map builtins.toString container.packageRoots;
-  retainedPackageProjections = builtins.filter (
-    projection: builtins.elem (builtins.toString projection.payload) packageRootPaths
-  ) packageProjections;
+  retainedPackageProjections =
+    builtins.filter (
+      projection: builtins.elem (builtins.toString projection.payload) packageRootPaths
+    )
+    packageProjections;
   # Audits and OCI assemblers execute on the coordinator. Target packages stay
   # as data dependencies through exportReferencesGraph and store-path inputs.
   runtimeAudit = runtimeClosureAudit {
