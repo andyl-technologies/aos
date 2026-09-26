@@ -191,7 +191,7 @@ const HOT_FORK_SCALING_SELECTORS: &[ExactSelector] = &[
     },
     ExactSelector {
         source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence/siblings.rs",
-        name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::siblings::production_managed_source_keeps_one_two_and_four_native_siblings_live",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::siblings::production_managed_source_keeps_bounded_native_siblings_live",
     },
     ExactSelector {
         source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs",
