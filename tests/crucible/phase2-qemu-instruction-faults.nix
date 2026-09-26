@@ -6,6 +6,7 @@
   attrPath ? "checks.crucible.phase2.qemuInstructionFaults",
   taskIds ? ["T-QEMU-0052"],
   campaignComposition ? null,
+  focusedResultEvidence ? false,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
@@ -13,7 +14,10 @@
   patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
-  liveCaseCount = 72;
+  liveCaseCount =
+    if focusedResultEvidence
+    then 2
+    else 72;
 
   failures =
     failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
@@ -354,92 +358,98 @@
             "logs/$architecture-$mode-$target.log"
         }
 
-        run_instruction x86_64 result result rax
-        run_instruction x86_64 result-compose result rax
-        x86_result_input="$(sed -n 's/^CRUCIBLE_MATCHED_INPUT_STATE=//p' \
-          logs/x86_64-result-result.log | head -n 1)"
-        x86_compose_input="$(sed -n 's/^CRUCIBLE_MATCHED_INPUT_STATE=//p' \
-          logs/x86_64-result-compose-result.log | head -n 1)"
-        test "''${#x86_result_input}" -eq 64
-        test "''${#x86_compose_input}" -eq 64
-        run_instruction x86_64 result-input result rax "$x86_result_input"
-        run_instruction x86_64 result-input-compose result rax "$x86_compose_input"
-        run_instruction x86_64 result-fault-retry result_fault_instruction rax
-        run_instruction x86_64 reject-overlap result rax
-        run_instruction x86_64 exclusive-selectors result rax
-        run_instruction x86_64 skip skip rax
-        run_instruction x86_64 replay replay rax
-        run_instruction x86_64 exception-before exception_probe rax
-        run_instruction x86_64 exception-after exception_probe rax
-        run_instruction x86_64 result-load load_instruction rdx
-        run_instruction x86_64 result-fp-simd fp_simd xmm0
-        run_instruction x86_64 skip-load load_instruction rdx
-        run_instruction x86_64 replay-load load_instruction rdx
-        run_instruction x86_64 skip-store store_instruction rax
-        run_instruction x86_64 skip-fp-simd fp_simd xmm0
-        run_instruction x86_64 replay-fp-simd fp_simd xmm0
-        run_instruction x86_64 skip-control control rax
-        run_instruction x86_64 skip-exception exception_instruction rax
-        run_instruction x86_64 replay-store store_instruction rax
-        run_instruction x86_64 replay-atomic atomic_instruction rax
-        run_instruction x86_64 replay-device device_instruction rax
-        run_instruction x86_64 input-mismatch skip rax
-        run_instruction x86_64 replay-self-modify self_modify_instruction rax
-        run_instruction x86_64 reject-atomic-skip atomic_instruction rax
-        run_instruction x86_64 reject-control-replay control rax
-        run_instruction x86_64 reject-destination result rax
-        run_instruction x86_64 reject-bytes result rax
-        run_instruction x86_64 reject-opcode-class result rax
-        run_instruction x86_64 reject-prefix fp_simd xmm0
-        run_instruction x86_64 reject-lock result rax
-        run_instruction x86_64 reject-x86-sse-prefix fp_simd xmm0
-        run_instruction x86_64 reject-x86-far-register control rax
+        ${lib.optionalString focusedResultEvidence ''
+          run_instruction x86_64 result result rax
+          run_instruction aarch64 result result x0
+        ''}
+        ${lib.optionalString (!focusedResultEvidence) ''
+          run_instruction x86_64 result result rax
+          run_instruction x86_64 result-compose result rax
+          x86_result_input="$(sed -n 's/^CRUCIBLE_MATCHED_INPUT_STATE=//p' \
+            logs/x86_64-result-result.log | head -n 1)"
+          x86_compose_input="$(sed -n 's/^CRUCIBLE_MATCHED_INPUT_STATE=//p' \
+            logs/x86_64-result-compose-result.log | head -n 1)"
+          test "''${#x86_result_input}" -eq 64
+          test "''${#x86_compose_input}" -eq 64
+          run_instruction x86_64 result-input result rax "$x86_result_input"
+          run_instruction x86_64 result-input-compose result rax "$x86_compose_input"
+          run_instruction x86_64 result-fault-retry result_fault_instruction rax
+          run_instruction x86_64 reject-overlap result rax
+          run_instruction x86_64 exclusive-selectors result rax
+          run_instruction x86_64 skip skip rax
+          run_instruction x86_64 replay replay rax
+          run_instruction x86_64 exception-before exception_probe rax
+          run_instruction x86_64 exception-after exception_probe rax
+          run_instruction x86_64 result-load load_instruction rdx
+          run_instruction x86_64 result-fp-simd fp_simd xmm0
+          run_instruction x86_64 skip-load load_instruction rdx
+          run_instruction x86_64 replay-load load_instruction rdx
+          run_instruction x86_64 skip-store store_instruction rax
+          run_instruction x86_64 skip-fp-simd fp_simd xmm0
+          run_instruction x86_64 replay-fp-simd fp_simd xmm0
+          run_instruction x86_64 skip-control control rax
+          run_instruction x86_64 skip-exception exception_instruction rax
+          run_instruction x86_64 replay-store store_instruction rax
+          run_instruction x86_64 replay-atomic atomic_instruction rax
+          run_instruction x86_64 replay-device device_instruction rax
+          run_instruction x86_64 input-mismatch skip rax
+          run_instruction x86_64 replay-self-modify self_modify_instruction rax
+          run_instruction x86_64 reject-atomic-skip atomic_instruction rax
+          run_instruction x86_64 reject-control-replay control rax
+          run_instruction x86_64 reject-destination result rax
+          run_instruction x86_64 reject-bytes result rax
+          run_instruction x86_64 reject-opcode-class result rax
+          run_instruction x86_64 reject-prefix fp_simd xmm0
+          run_instruction x86_64 reject-lock result rax
+          run_instruction x86_64 reject-x86-sse-prefix fp_simd xmm0
+          run_instruction x86_64 reject-x86-far-register control rax
 
-        run_instruction aarch64 result result x0
-        run_instruction aarch64 result-compose result x0
-        aarch64_result_input="$(sed -n 's/^CRUCIBLE_MATCHED_INPUT_STATE=//p' \
-          logs/aarch64-result-result.log | head -n 1)"
-        aarch64_compose_input="$(sed -n 's/^CRUCIBLE_MATCHED_INPUT_STATE=//p' \
-          logs/aarch64-result-compose-result.log | head -n 1)"
-        test "''${#aarch64_result_input}" -eq 64
-        test "''${#aarch64_compose_input}" -eq 64
-        run_instruction aarch64 result-input result x0 "$aarch64_result_input"
-        run_instruction aarch64 result-input-compose result x0 "$aarch64_compose_input"
-        run_instruction aarch64 result-fault-retry result_fault_instruction x9
-        run_instruction aarch64 reject-overlap result x0
-        run_instruction aarch64 exclusive-selectors result x0
-        run_instruction aarch64 skip skip x0
-        run_instruction aarch64 replay replay x0
-        run_instruction aarch64 exception-before exception_probe x0
-        run_instruction aarch64 exception-after exception_probe x0
-        run_instruction aarch64 result-load load_instruction x9
-        run_instruction aarch64 result-fp-simd fp_simd v0
-        run_instruction aarch64 skip-load load_instruction x9
-        run_instruction aarch64 replay-load load_instruction x9
-        run_instruction aarch64 skip-store store_instruction x0
-        run_instruction aarch64 skip-fp-simd fp_simd v0
-        run_instruction aarch64 replay-fp-simd fp_simd v0
-        run_instruction aarch64 skip-control control x0
-        run_instruction aarch64 skip-exception exception_instruction x0
-        run_instruction aarch64 replay-store store_instruction x0
-        run_instruction aarch64 replay-atomic atomic_instruction x0
-        run_instruction aarch64 input-mismatch skip x0
-        run_instruction aarch64 replay-self-modify self_modify_instruction x0
-        run_instruction aarch64 replay-exception replay_exception_instruction x0
-        run_instruction aarch64 reject-atomic-skip atomic_instruction x0
-        run_instruction aarch64 reject-control-replay control x0
-        run_instruction aarch64 reject-destination result x0
-        run_instruction aarch64 reject-bytes result x0
-        run_instruction aarch64 reject-opcode-class result x0
-        run_instruction aarch64 reject-a64-cmp-sp result sp
-        run_instruction aarch64 reject-a64-fp-compare-destination result v0
-        run_instruction aarch64 reject-a64-shift-imm6 result x0
-        run_instruction aarch64 reject-a64-vector-mode result v0
-        run_instruction aarch64 reject-a64-exception-encoding result x0
-        run_instruction aarch64 reject-a64-fp-type result v0
-        run_instruction aarch64 reject-a64-vector-size result v0
+          run_instruction aarch64 result result x0
+          run_instruction aarch64 result-compose result x0
+          aarch64_result_input="$(sed -n 's/^CRUCIBLE_MATCHED_INPUT_STATE=//p' \
+            logs/aarch64-result-result.log | head -n 1)"
+          aarch64_compose_input="$(sed -n 's/^CRUCIBLE_MATCHED_INPUT_STATE=//p' \
+            logs/aarch64-result-compose-result.log | head -n 1)"
+          test "''${#aarch64_result_input}" -eq 64
+          test "''${#aarch64_compose_input}" -eq 64
+          run_instruction aarch64 result-input result x0 "$aarch64_result_input"
+          run_instruction aarch64 result-input-compose result x0 "$aarch64_compose_input"
+          run_instruction aarch64 result-fault-retry result_fault_instruction x9
+          run_instruction aarch64 reject-overlap result x0
+          run_instruction aarch64 exclusive-selectors result x0
+          run_instruction aarch64 skip skip x0
+          run_instruction aarch64 replay replay x0
+          run_instruction aarch64 exception-before exception_probe x0
+          run_instruction aarch64 exception-after exception_probe x0
+          run_instruction aarch64 result-load load_instruction x9
+          run_instruction aarch64 result-fp-simd fp_simd v0
+          run_instruction aarch64 skip-load load_instruction x9
+          run_instruction aarch64 replay-load load_instruction x9
+          run_instruction aarch64 skip-store store_instruction x0
+          run_instruction aarch64 skip-fp-simd fp_simd v0
+          run_instruction aarch64 replay-fp-simd fp_simd v0
+          run_instruction aarch64 skip-control control x0
+          run_instruction aarch64 skip-exception exception_instruction x0
+          run_instruction aarch64 replay-store store_instruction x0
+          run_instruction aarch64 replay-atomic atomic_instruction x0
+          run_instruction aarch64 input-mismatch skip x0
+          run_instruction aarch64 replay-self-modify self_modify_instruction x0
+          run_instruction aarch64 replay-exception replay_exception_instruction x0
+          run_instruction aarch64 reject-atomic-skip atomic_instruction x0
+          run_instruction aarch64 reject-control-replay control x0
+          run_instruction aarch64 reject-destination result x0
+          run_instruction aarch64 reject-bytes result x0
+          run_instruction aarch64 reject-opcode-class result x0
+          run_instruction aarch64 reject-a64-cmp-sp result sp
+          run_instruction aarch64 reject-a64-fp-compare-destination result v0
+          run_instruction aarch64 reject-a64-shift-imm6 result x0
+          run_instruction aarch64 reject-a64-vector-mode result v0
+          run_instruction aarch64 reject-a64-exception-encoding result x0
+          run_instruction aarch64 reject-a64-fp-type result v0
+          run_instruction aarch64 reject-a64-vector-size result v0
 
-        run_instruction x86_64 event-saturation result rax
+          run_instruction x86_64 event-saturation result rax
+        ''}
 
         set +e
         timeout 5 ${qemuPackage}/bin/qemu-system-x86_64 \
@@ -493,33 +503,45 @@
         set -eu
         mkdir -p "$out"
         cp -R logs "$out/"
-        {
-          echo PASS
-          echo gate=gate:patch-microtests
-          echo atomic_patch=${atomicPatch.file}
-          echo attr_path=${attrPath}
-          echo task_ids=${taskList}
-          echo patched_fixture_exercised=true
-          echo stock_negative_control=true
-          echo patched_non_sim_inert=true
-          echo qemu_package=${qemuPackage}
-          echo qemu_package_version=${qemuPackage.version}
-          echo backend=actual-patched-and-stock-qemu
-          echo live_mutation_cases=${toString liveCaseCount}
-          echo live_x86_64_result_corruption=true
-          echo live_x86_64_skip=true
-          echo live_x86_64_replay=true
-          echo live_x86_64_exception_before_after=true
-          echo live_aarch64_result_corruption=true
-          echo live_aarch64_skip=true
-          echo live_aarch64_replay=true
-          echo live_aarch64_exception_before_after=true
-          echo atomic_skip_rejected=true
-          echo control_flow_replay_rejected=true
-          echo invalid_destination_rejected=true
-          echo evidence=instruction_bytes,opcode_class,pc,gpa,vcpu,rr_fingerprints,replay_ordinals,register_delta,exception_record
-          echo 'production_effect_row=cpu.instruction_transform|skip-replay-result-matrix|gate:patch-microtests|actual-patched-qemu|instruction-bytes+result+replay-ordinal'
-        } > "$out/result"
+        ${lib.optionalString focusedResultEvidence ''
+          {
+            echo PASS
+            echo gate=gate:patch-microtests
+            echo attr_path=${attrPath}
+            echo task_ids=${taskList}
+            echo focused_result_evidence_cases=2
+            echo qemu_package=${qemuPackage}
+          } > "$out/result"
+        ''}
+        ${lib.optionalString (!focusedResultEvidence) ''
+          {
+            echo PASS
+            echo gate=gate:patch-microtests
+            echo atomic_patch=${atomicPatch.file}
+            echo attr_path=${attrPath}
+            echo task_ids=${taskList}
+            echo patched_fixture_exercised=true
+            echo stock_negative_control=true
+            echo patched_non_sim_inert=true
+            echo qemu_package=${qemuPackage}
+            echo qemu_package_version=${qemuPackage.version}
+            echo backend=actual-patched-and-stock-qemu
+            echo live_mutation_cases=${toString liveCaseCount}
+            echo live_x86_64_result_corruption=true
+            echo live_x86_64_skip=true
+            echo live_x86_64_replay=true
+            echo live_x86_64_exception_before_after=true
+            echo live_aarch64_result_corruption=true
+            echo live_aarch64_skip=true
+            echo live_aarch64_replay=true
+            echo live_aarch64_exception_before_after=true
+            echo atomic_skip_rejected=true
+            echo control_flow_replay_rejected=true
+            echo invalid_destination_rejected=true
+            echo evidence=instruction_bytes,opcode_class,pc,gpa,vcpu,rr_fingerprints,replay_ordinals,register_delta,exception_record
+            echo 'production_effect_row=cpu.instruction_transform|skip-replay-result-matrix|gate:patch-microtests|actual-patched-qemu|instruction-bytes+result+replay-ordinal'
+          } > "$out/result"
+        ''}
       '';
     }
   ];
