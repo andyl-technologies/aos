@@ -184,6 +184,11 @@ fn release_acceptance_wires_the_fleet_gate_without_manual_compatibility() {
         "cruciblePackage,",
         "releaseManifest,",
         "releaseAcceptanceContract,",
+        "e2eScenario,",
+        "e2eQemuBinary,",
+        "e2ePlugin,",
+        "e2eKernel,",
+        "e2eRootImage,",
     ] {
         assert!(
             ACCEPTANCE_NIX.contains(required),
@@ -195,6 +200,10 @@ fn release_acceptance_wires_the_fleet_gate_without_manual_compatibility() {
         "local_profile_replay",
         "varied_core_counts",
         "e2e_evidence_manifest_sha256",
+        "verify_e2e_binding",
+        "crucible_package_identity",
+        "qemu_path",
+        "plugin_path",
     ] {
         assert!(
             ACCEPTANCE_RUNNER.contains(required),
@@ -208,6 +217,10 @@ fn release_acceptance_wires_the_fleet_gate_without_manual_compatibility() {
         "altered local replay result",
         "missing local e2e evidence",
         "missing local e2e result",
+        "--probe-e2e-binding",
+        "mismatched $key",
+        "another release QEMU",
+        "another release plugin",
     ] {
         assert!(
             CONTRACT_NIX.contains(required),
@@ -216,6 +229,12 @@ fn release_acceptance_wires_the_fleet_gate_without_manual_compatibility() {
     }
 
     assert!(DEFAULT_NIX.contains("e2eDeterminism = phase4.gates.e2eDeterminism.rawGate;"));
+    assert!(
+        DEFAULT_NIX.contains(
+            "campaignReleaseAcceptance = import ./phase9-campaign-release-acceptance.nix"
+        )
+    );
+    assert!(ROOT_DEFAULT_NIX.contains("crucible-campaign-release-acceptance = crucibleChecks.phase9.gates.campaignReleaseAcceptance;"));
     for removed in [
         "campaignReleaseEvidence",
         "e2eEvidence",

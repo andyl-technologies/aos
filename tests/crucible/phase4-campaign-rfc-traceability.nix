@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase4.campaignRfcTraceability",
   automatedTargets ? {},
+  deferredTargetNames ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -21,6 +22,7 @@ in
       buildDeps = [pkgs.coreutils pkgs.rust];
       ATTR_PATH = attrPath;
       AUTOMATED_TARGETS = builtins.concatStringsSep "," automatedTargetNames;
+      DEFERRED_AUTOMATED_TARGETS = builtins.concatStringsSep "," deferredTargetNames;
 
       phases = [
         {

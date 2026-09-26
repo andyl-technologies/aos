@@ -9,6 +9,11 @@
   cruciblePackage,
   releaseManifest,
   releaseAcceptanceContract,
+  e2eScenario,
+  e2eQemuBinary,
+  e2ePlugin,
+  e2eKernel,
+  e2eRootImage,
 }: let
   runner = ./_phase9-campaign-release-acceptance.sh;
 in
@@ -48,6 +53,11 @@ in
             ${cruciblePackage} \
             ${releaseManifest} \
             ${releaseAcceptanceContract} \
+            ${e2eScenario} \
+            ${e2eQemuBinary} \
+            ${e2ePlugin} \
+            ${e2eKernel} \
+            ${e2eRootImage} \
             "$out"
 
           mkdir -p "$out/contracts"

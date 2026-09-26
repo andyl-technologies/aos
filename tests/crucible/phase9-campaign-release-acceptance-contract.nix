@@ -176,6 +176,82 @@ in
               echo 'release acceptance accepted a missing local e2e result' >&2
               exit 1
             fi
+            mv "$test_root/result.missing" "$evidence/evidence/result"
+
+            binding_root="$test_root/binding"
+            package="$binding_root/crucible-0"
+            qemu="$binding_root/qemu/bin/qemu-system-x86_64"
+            plugin="$binding_root/plugin/lib/plugin.so"
+            scenario="$binding_root/scenario.toml"
+            kernel="$binding_root/vmlinuz"
+            root_image="$binding_root/root.ext4"
+            qemu_identity="$binding_root/qemu/share/aos/crucible/qemu-build-identity.env"
+            release_env="$package/share/aos/crucible/release-manifest.env"
+            mkdir -p "$binding_root/qemu/bin" "$binding_root/qemu/share/aos/crucible" \
+              "$binding_root/plugin/lib" "$package/share/aos/crucible"
+            for source in "$qemu" "$plugin" "$scenario" "$kernel" "$root_image" "$qemu_identity"; do
+              printf 'built input: %s\n' "$source" > "$source"
+            done
+            printf 'qemu_path=%s\nplugin_path=%s\n' "$qemu" "$plugin" > "$release_env"
+            sed -i 's|^crucible_package_identity=.*|crucible_package_identity=crucible-0|' \
+              "$evidence/evidence/manifest.env"
+            for binding in \
+              "scenario_sha256:$scenario" \
+              "qemu_binary_sha256:$qemu" \
+              "qemu_identity_sha256:$qemu_identity" \
+              "plugin_sha256:$plugin" \
+              "kernel_sha256:$kernel" \
+              "root_image_sha256:$root_image"
+            do
+              key="$(printf '%s' "$binding" | cut -d : -f 1)"
+              source="$(printf '%s' "$binding" | cut -d : -f 2-)"
+              digest="$(sha256sum "$source" | cut -d ' ' -f 1)"
+              sed -i "s|^$key=.*|$key=$digest|" "$evidence/evidence/manifest.env"
+            done
+            manifest_sha="$(sha256sum "$evidence/evidence/manifest.env" | cut -d ' ' -f 1)"
+            sed -i "s|^manifest_sha256=.*|manifest_sha256=$manifest_sha|" \
+              "$evidence/evidence/result"
+            probe_binding() {
+              ${pkgs.bash}/bin/bash ${runner} --probe-e2e-binding \
+                "$evidence" "$package" "$release_env" "$scenario" \
+                "$qemu" "$plugin" "$kernel" "$root_image"
+            }
+            probe_binding
+
+            cp "$evidence/evidence/manifest.env" "$test_root/manifest.bound"
+            cp "$evidence/evidence/result" "$test_root/result.bound"
+            for key in \
+              scenario_sha256 qemu_binary_sha256 qemu_identity_sha256 \
+              plugin_sha256 kernel_sha256 root_image_sha256 crucible_package_identity
+            do
+              mismatched=0000000000000000000000000000000000000000000000000000000000000000
+              if test "$key" = crucible_package_identity; then
+                mismatched=another-package
+              fi
+              sed "s|^$key=.*|$key=$mismatched|" "$test_root/manifest.bound" \
+                > "$evidence/evidence/manifest.env"
+              manifest_sha="$(sha256sum "$evidence/evidence/manifest.env" | cut -d ' ' -f 1)"
+              sed "s|^manifest_sha256=.*|manifest_sha256=$manifest_sha|" \
+                "$test_root/result.bound" > "$evidence/evidence/result"
+              if probe_binding; then
+                echo "release acceptance accepted a mismatched $key" >&2
+                exit 1
+              fi
+            done
+            cp "$test_root/manifest.bound" "$evidence/evidence/manifest.env"
+            cp "$test_root/result.bound" "$evidence/evidence/result"
+
+            sed -i 's|^qemu_path=.*|qemu_path=mismatched|' "$release_env"
+            if probe_binding; then
+              echo 'release acceptance accepted another release QEMU' >&2
+              exit 1
+            fi
+            printf 'qemu_path=%s\nplugin_path=%s\n' "$qemu" "$plugin" > "$release_env"
+            sed -i 's|^plugin_path=.*|plugin_path=mismatched|' "$release_env"
+            if probe_binding; then
+              echo 'release acceptance accepted another release plugin' >&2
+              exit 1
+            fi
           '';
         }
         {
@@ -189,12 +265,12 @@ in
             cat > "$out/result" <<RESULT
             CONTRACT_VALIDATED
             check=${attrPath}
-            gate=gate:campaign-release-acceptance
+            gate=gate:campaign-release-acceptance-contract
             tasks=${builtins.concatStringsSep "," taskIds}
             schema=aos.crucible.campaign-release-acceptance-contract.v2
             automated_evidence=required
             e2e_evidence=local-live-qemu-required
-            negative_controls=missing-evidence,missing-result,tampered-results,tampered-manifest-digest
+            negative_controls=missing-evidence,missing-result,tampered-results,tampered-manifest-digest,mismatched-built-inputs,mismatched-package,mismatched-release-components
             RESULT
           '';
         }
