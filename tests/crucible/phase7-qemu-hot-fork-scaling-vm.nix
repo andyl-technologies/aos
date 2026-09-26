@@ -74,6 +74,7 @@ in
     name = "crucible-qemu-hot-fork-scaling";
     memory = 6144;
     hostCpuPin = true;
+    hostCpuPinIndex = 0;
     rootfsDeps = [
       flight
       guest
