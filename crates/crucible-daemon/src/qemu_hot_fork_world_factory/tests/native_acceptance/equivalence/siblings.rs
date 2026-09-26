@@ -37,7 +37,7 @@ fn execution_input_for_scenario_with_qemu_build(
 
 #[test]
 #[ignore = "requires the packaged patched QEMU, cgroup v2, and project quotas"]
-fn production_managed_source_keeps_one_two_and_four_native_siblings_live() {
+fn production_managed_source_keeps_bounded_native_siblings_live() {
     let paths = NativeGatePaths::from_environment();
     let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
     let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
@@ -88,11 +88,12 @@ fn production_managed_source_keeps_one_two_and_four_native_siblings_live() {
         )
     };
 
-    // These are aggregate admission ceilings for the parent and four 512-MiB
-    // children. The managed pool still measures each actual source itself.
+    // The live matrix retains at most one 512-MiB source and sixteen COW
+    // children. Admission counts the retained source; each child's cgroup and
+    // the aggregate private-RSS assertions below bound the physical footprint.
     let ceilings = HotCheckpointResourceProfile::new(16 << 30, 8 << 30, 16, 16, 16_384, 64)
         .expect("native sibling ceilings");
-    let limits = HotCheckpointLimits::new(1, ceilings, 16, 1_000_000_000)
+    let limits = HotCheckpointLimits::new(1, ceilings, 64, 1_000_000_000)
         .expect("native sibling lease limits");
     let mut pool = ManagedQemuHotForkSourceWorldPool::open(
         limits,
@@ -116,10 +117,12 @@ fn production_managed_source_keeps_one_two_and_four_native_siblings_live() {
     let source_scheduler = basis.source().clone();
     let mut project_ids = BTreeSet::from_iter(13_000..13_064);
 
-    for sibling_count in [1_usize, 2, 4] {
+    let mut ready_samples = Vec::new();
+    for sibling_count in [1_usize, 2, 4, 8, 16] {
         let mut children = Vec::with_capacity(sibling_count);
         let mut lanes = Vec::with_capacity(sibling_count);
         let mut all_processes = BTreeSet::new();
+        ready_samples.clear();
 
         for index in 0..sibling_count {
             let lane = format!("simultaneous-{sibling_count}-{index}");
@@ -144,6 +147,7 @@ fn production_managed_source_keeps_one_two_and_four_native_siblings_live() {
                 crucible_qemu::QemuShutdownPolicy::fast_test(),
                 crucible_qemu::QemuAsyncDriverPolicy::fast_test(),
             );
+            let started = operational_monotonic_nanoseconds();
             let lifecycle = match factory
                 .try_start(&input, &context)
                 .expect("fork managed native sibling")
@@ -156,6 +160,7 @@ fn production_managed_source_keeps_one_two_and_four_native_siblings_live() {
             let materialization = lifecycle
                 .start_materialization()
                 .expect("materialize managed native sibling");
+            ready_samples.push(operational_monotonic_nanoseconds().saturating_sub(started));
             assert_eq!(
                 materialization.restored_configuration(),
                 Some(&source_scheduler)
@@ -235,10 +240,19 @@ fn production_managed_source_keeps_one_two_and_four_native_siblings_live() {
             "live leases forbid source retirement"
         );
         println!("simultaneous_{sibling_count}_child_private_rss_kib={aggregate_private_rss_kib}");
+        println!("simultaneous_{sibling_count}_live_processes={sibling_count}");
         println!(
             "simultaneous_{sibling_count}_world_private_rss_kib={aggregate_world_private_rss_kib}"
         );
         println!("simultaneous_{sibling_count}_child_allocated_bytes={aggregate_allocated_bytes}");
+        println!(
+            "simultaneous_{sibling_count}_child_ready_samples_ns={}",
+            ready_samples
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
 
         let mut first_boundary = None;
         for (_factory, lifecycle) in &mut children {
@@ -286,7 +300,7 @@ fn production_managed_source_keeps_one_two_and_four_native_siblings_live() {
             .private_dirty_kib
             .saturating_sub(source_memory.private_dirty_kib)
             <= SOURCE_PRIVATE_GROWTH_LIMIT_KIB,
-        "retained source grew more than 16 MiB after three sibling cohorts"
+        "retained source grew more than 16 MiB after five sibling cohorts"
     );
     assert_eq!(
         shared
@@ -299,14 +313,14 @@ fn production_managed_source_keeps_one_two_and_four_native_siblings_live() {
         .load_configuration_artifact(basis.source_artifact())
         .expect("canonical thin fallback remains available after source retirement");
     assert!(cgroup_processes(&paths.cgroup_root.join("simultaneous-source")).is_empty());
-    println!("simultaneous_sibling_counts=1,2,4");
+    println!("simultaneous_sibling_counts=1,2,4,8,16");
     println!("simultaneous_source_boundary=authenticated-canonical-genesis");
     println!(
         "simultaneous_source_private_rss_baseline_kib={}",
         source_memory.private_rss_kib
     );
     println!("simultaneous_source_private_growth_limit_kib={SOURCE_PRIVATE_GROWTH_LIMIT_KIB}");
-    println!("simultaneous_child_boundary_equivalence=1,2,4");
+    println!("simultaneous_child_boundary_equivalence=1,2,4,8,16");
     println!(
         "simultaneous_child_resource_isolation=cgroup,storage,run-state,project-id,ring,socket,overlay"
     );

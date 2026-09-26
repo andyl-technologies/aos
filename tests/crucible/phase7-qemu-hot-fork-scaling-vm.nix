@@ -142,8 +142,15 @@ in
         setup_lane "ram-$memory_mib-reference" 1073741824
       done
       setup_lane simultaneous-source 1073741824
-      for sibling in 1-0 2-0 2-1 4-0 4-1 4-2 4-3; do
-        setup_lane "simultaneous-$sibling" 1073741824
+      # The 6-GiB VM holds at most sixteen paused 512-MiB COW children. Each
+      # child has a measured 160-MiB private-RSS ceiling, and the source lane
+      # has a 1-GiB cgroup ceiling, leaving 2.5 GiB for the VM and host state.
+      for sibling_count in 1 2 4 8 16; do
+        sibling_index=0
+        while [ "$sibling_index" -lt "$sibling_count" ]; do
+          setup_lane "simultaneous-$sibling_count-$sibling_index" 1073741824
+          sibling_index=$((sibling_index + 1))
+        done
       done
       setup_lane production-stress-source 1073741824
       setup_lane production-stress-target 1073741824
@@ -412,15 +419,15 @@ in
 
       run_exact_lib_test \
         crucible-daemon \
-        qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::siblings::production_managed_source_keeps_one_two_and_four_native_siblings_live \
+        qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::siblings::production_managed_source_keeps_bounded_native_siblings_live \
         /tmp/simultaneous-siblings-result
       require_exact_test_marker \
-        simultaneous_sibling_counts=1,2,4 /tmp/simultaneous-siblings-result
+        simultaneous_sibling_counts=1,2,4,8,16 /tmp/simultaneous-siblings-result
       require_exact_test_marker \
         simultaneous_source_boundary=authenticated-canonical-genesis \
         /tmp/simultaneous-siblings-result
       require_exact_test_marker \
-        simultaneous_child_boundary_equivalence=1,2,4 \
+        simultaneous_child_boundary_equivalence=1,2,4,8,16 \
         /tmp/simultaneous-siblings-result
       require_exact_test_marker \
         simultaneous_child_resource_isolation=cgroup,storage,run-state,project-id,ring,socket,overlay \
@@ -431,7 +438,21 @@ in
       require_exact_test_marker \
         simultaneous_source_private_growth_limit_kib=16384 \
         /tmp/simultaneous-siblings-result
-      for sibling_count in 1 2 4; do
+      for sibling_count in 1 2 4 8 16; do
+        require_exact_test_marker \
+          "simultaneous_''${sibling_count}_live_processes=$sibling_count" \
+          /tmp/simultaneous-siblings-result
+        ${pkgs.gawk}/bin/awk -F= -v count="$sibling_count" '
+          $1 == "simultaneous_" count "_child_ready_samples_ns" {
+            found++;
+            samples = split($2, raw, ",");
+            if (samples != count) bad = 1;
+            for (index = 1; index <= samples; index++) {
+              if (raw[index] !~ /^[0-9]+$/ || raw[index] + 0 <= 0) bad = 1;
+            }
+          }
+          END { exit found == 1 && !bad ? 0 : 1 }
+        ' /tmp/simultaneous-siblings-result
         ${pkgs.gawk}/bin/awk -F= -v count="$sibling_count" '
           $1 == "simultaneous_" count "_child_private_rss_kib" {
             found++;
@@ -554,7 +575,8 @@ in
         'performance_owner=production-whole-world' \
         'guest_memory_profiles_mib=64,256,512' \
         'sequential_sibling_counts=1,2,4' \
-        'simultaneous_sibling_counts=1,2,4' \
+        'simultaneous_sibling_counts=1,2,4,8,16' \
+        'simultaneous_max_live_qemu_children=16' \
         'ram_first_quantum_cold_reference_profiles_mib=64,256,512' \
         'production_whole_world_lifecycles=10000' \
         'hot_checkpoint_pressure_admissions=10000' \

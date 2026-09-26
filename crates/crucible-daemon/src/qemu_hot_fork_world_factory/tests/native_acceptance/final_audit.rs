@@ -24,6 +24,8 @@ fn production_hot_fork_resource_roots_are_clean_after_packaged_flights() {
         store_objects, 2,
         "native forks changed the fixture's two-object content store"
     );
+    // Both packaged VM scripts create exactly one cgroup and one ext4 lane per
+    // named case; an extra cgroup here is a retained attempt hierarchy.
     assert_eq!(
         cgroup_count,
         lane_count + 1,
