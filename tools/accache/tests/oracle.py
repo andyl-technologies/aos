@@ -87,8 +87,13 @@ def fixtures(gcc, clang, rustc):
                           {"value.h": "#define VALUE 73\n"})
             yield Fixture("gcc-sarif-report", compiler,
                           base + ["-fdiagnostics-format=sarif-file"], c_sources,
-                          cacheable=False,
+                          {"value.h": "#define VALUE 73\n"},
                           nondeterministic_outputs={"source.c.sarif"})
+            yield Fixture("gcc-sarif-nested-output", compiler,
+                          ["-c", "source.c", "-o", "objects/source.c.o",
+                           "-fdiagnostics-format=sarif-file"],
+                          c_sources | {"objects/.keep": ""},
+                          nondeterministic_outputs={"objects/source.c.c.sarif"})
         else:
             yield Fixture("clang-serialized-diagnostics", compiler,
                           base + ["--serialize-diagnostics", "source.dia"], c_sources,
@@ -707,6 +712,7 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
             work.mkdir()
             (work / "target").mkdir()
             for name, contents in fixture.sources.items():
+                (work / name).parent.mkdir(parents=True, exist_ok=True)
                 (work / name).write_text(contents)
             if fixture.precompile:
                 subprocess.run([fixture.compiler, *fixture.precompile], cwd=work,
@@ -746,6 +752,7 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     "gcc-explicit-tree-dump": "report.txt",
                     "gcc-opt-report": "report.txt",
                     "gcc-sarif-report": "source.c.sarif",
+                    "gcc-sarif-nested-output": "objects/source.c.c.sarif",
                     "clang-serialized-diagnostics": "source.dia",
                 }
                 if (side_file := missing_oracle_side_files.get(fixture.name)) and label == "sccache warm vs direct":
@@ -756,6 +763,16 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                if key != side_file})
                     assert side_file not in actual[3], (
                         "oracle defect changed; remove this exception")
+                if fixture.name == "gcc-sarif-nested-output" and label.startswith("sccache "):
+                    # The pinned oracle's preprocessing probe writes a SARIF
+                    # report in the cwd rather than the requested object dir.
+                    assert "objects/source.c.c.sarif" not in actual[3]
+                    if label == "sccache cold vs direct":
+                        assert "source.c.sarif" in actual[3]
+                        expected = (*expected[:3], {key: value for key, value in expected[3].items()
+                                                   if key != "objects/source.c.c.sarif"})
+                    actual = (*actual[:3], {key: value for key, value in actual[3].items()
+                                           if key != "source.c.sarif"})
                 if fixture.name == "gcc-tree-dump" and label == "sccache warm vs direct":
                     dump_files = {path for path in expected[3] if path.endswith(".original")}
                     assert len(dump_files) == 1, ("unexpected GCC dump files", expected[3])
@@ -809,11 +826,13 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                 compare(baseline, oracle_warm, "sccache warm vs direct" if baseline is direct else "sccache warm vs cold")
                 if fixture.cacheable:
                     for path in fixture.nondeterministic_outputs:
-                        assert oracle_warm[3][path] == oracle_cold[3][path], (
-                            fixture.name, "sccache did not replay the cold PCH")
+                        if path in oracle_warm[3]:
+                            assert oracle_warm[3][path] == oracle_cold[3][path], (
+                                fixture.name, "sccache did not replay the cold artifact")
                 oracle_hit = hits() > before_hits
                 if fixture.name in {"gcc-tree-dump", "gcc-explicit-tree-dump",
-                                    "gcc-opt-report", "gcc-sarif-report"}:
+                                    "gcc-opt-report", "gcc-sarif-report",
+                                    "gcc-sarif-nested-output"}:
                     assert oracle_hit, (fixture.name, "sccache report omission was not a hit")
 
                 accache_cold = invoke([accache])

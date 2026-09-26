@@ -82,6 +82,30 @@ def run_suite(root):
         invoke(compiler, args)
         invoke(compiler, args, "hit")
 
+    # GCC 16 can add diagnostic file sinks that the pinned sccache argument
+    # table does not describe. Preserve those files through direct execution.
+    (work / "source.c").write_text("int diagnostic(void) { return 42; }\n")
+    (work / "reports").mkdir()
+    sarif = work / "reports/source.c.c.sarif"
+    sarif_args = ["-c", str(work / "source.c"), "-o", "reports/source.c.o",
+                  "-fdiagnostics-format=sarif-file"]
+    invoke(gcc, sarif_args)
+    report_bytes = sarif.read_bytes()
+    sarif.unlink()
+    (work / "reports/source.c.o").unlink()
+    invoke(gcc, sarif_args, "hit")
+    assert sarif.read_bytes() == report_bytes
+
+    for option in ["add", "set"]:
+        report = work / f"{option}.sarif"
+        diagnostic_args = ["-c", "source.c", "-o", f"{option}.o",
+                           f"-fdiagnostics-{option}-output=sarif:file={report}"]
+        invoke(gcc, diagnostic_args, "bypass")
+        assert report.is_file(), report
+        report.unlink()
+        invoke(gcc, diagnostic_args, "bypass")
+        assert report.is_file(), report
+
     (work / "library.rs").write_text('pub const VALUE: &str = env!("VALUE");\npub const TEXT: &str = include_str!("message.txt");\n')
     (work / "message.txt").write_text("one")
     (work / "target").mkdir()
