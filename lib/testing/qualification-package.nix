@@ -85,6 +85,7 @@
     export AOS_QUALIFICATION_CXX=${lib.escapeShellArg "${pkgs.cc}/bin/c++"}
     export AOS_QUALIFICATION_PERL=${lib.escapeShellArg "${pkgs.perl}/bin/perl"}
     export AOS_QUALIFICATION_PYTHON=${lib.escapeShellArg "${pkgs.python3}/bin/python3"}
+    export AOS_QUALIFICATION_RUSTC=${lib.escapeShellArg "${pkgs.rust}/bin/rustc"}
 
     umask 077
     mkdir -p \

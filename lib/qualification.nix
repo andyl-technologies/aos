@@ -99,7 +99,7 @@
     then let
       checked = requireAttrs context ["kind" "tool"] [] value;
     in
-      if builtins.elem checked.tool ["bash" "c-compiler" "cxx-compiler" "perl" "python"]
+      if builtins.elem checked.tool ["bash" "c-compiler" "cxx-compiler" "perl" "python" "rust-compiler"]
       then {inherit (checked) kind tool;}
       else fail "${context}.tool names an unsupported qualification harness"
     else fail "${context}.kind must select literal, artifact-root, artifact-path, work-path, or harness";
@@ -363,13 +363,14 @@ in rec {
     primary,
     badInput,
   }: let
-    tokenPattern = "(@out@/[A-Za-z0-9._+/-]*[A-Za-z0-9._+-]|@output:[A-Za-z0-9._+-]+@/[A-Za-z0-9._+/-]*[A-Za-z0-9._+-]|@work@/[A-Za-z0-9._+/-]*[A-Za-z0-9._+-]|@python@|@perl@|@bash@|@cc@|@cxx@|@out@)";
+    tokenPattern = "(@out@/[A-Za-z0-9._+/-]*[A-Za-z0-9._+-]|@output:[A-Za-z0-9._+-]+@/[A-Za-z0-9._+/-]*[A-Za-z0-9._+-]|@work@/[A-Za-z0-9._+/-]*[A-Za-z0-9._+-]|@python@|@rustc@|@perl@|@bash@|@cc@|@cxx@|@out@)";
     harnesses = {
       "@bash@" = "bash";
       "@cc@" = "c-compiler";
       "@cxx@" = "cxx-compiler";
       "@perl@" = "perl";
       "@python@" = "python";
+      "@rustc@" = "rust-compiler";
     };
     fragmentFor = value:
       if builtins.isList value

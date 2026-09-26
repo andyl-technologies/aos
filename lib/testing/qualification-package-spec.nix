@@ -9,6 +9,7 @@
     "cxx-compiler" = "@cxx@";
     perl = "@perl@";
     python = "@python@";
+    "rust-compiler" = "@rustc@";
   };
   renderFragment = fragment:
     if fragment.kind == "literal"
