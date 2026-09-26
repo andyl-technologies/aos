@@ -2932,6 +2932,40 @@ fn finite_vector_issue_charges_its_authenticated_closure_delta() {
         .closure_objects;
     let prior_objects = blobs.object_count().expect("prior object count");
 
+    let mut out_of_order = proposals.clone();
+    out_of_order.swap(0, 1);
+    let rejected = PlannerStepProposal::new(
+        invocation.id().expect("invocation id"),
+        step.next_state().clone(),
+        usage,
+        GuidanceEvidence::new(BTreeMap::new()).expect("guidance"),
+        PlannerProposalDisposition::Issue {
+            selected: PlanningScanPosition::new(
+                request.branch_point(),
+                request.id().expect("request id"),
+            ),
+            branch_requests: Vec::new(),
+            proposals: out_of_order,
+        },
+    )
+    .expect("out-of-order vector shape");
+    assert!(
+        repository
+            .accept_planner_step(campaign, requested.new_snapshot, &rejected, usage)
+            .is_err()
+    );
+    assert_eq!(
+        blobs.object_count().expect("rejected object count"),
+        prior_objects
+    );
+    assert_eq!(
+        repository
+            .head(campaign)
+            .expect("head after rejection")
+            .snapshot_id(),
+        requested.new_snapshot
+    );
+
     let accepted = repository
         .accept_planner_step(campaign, requested.new_snapshot, &step, usage)
         .expect("accept vector Issue");

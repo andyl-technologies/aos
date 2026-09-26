@@ -293,7 +293,21 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
                 ),
                 None => match best {
                     Some(candidate) => {
-                        let proposals = candidate.to_proposals(request, invocation)?;
+                        let position_count =
+                            u64::try_from(page.positions().len()).map_err(|_| {
+                                CampaignCodecError::LimitExceeded {
+                                    limit: "canonical-frontier-planner-fuel",
+                                }
+                            })?;
+                        let affordable = request
+                            .invocation()
+                            .budget()
+                            .fuel()
+                            .checked_sub(position_count)
+                            .unwrap_or_default()
+                            .min(u64::from(request.invocation().budget().proposals()))
+                            .min(MAX_FINITE_ISSUE_PROPOSALS as u64);
+                        let proposals = candidate.to_proposals(request, invocation, affordable)?;
                         let selected = candidate.position;
                         let proposal_count = u64::try_from(proposals.len()).map_err(|_| {
                             CampaignCodecError::LimitExceeded {
@@ -577,10 +591,8 @@ impl CarriedCandidate {
 
         // Only explicit finite sources have history-independent consecutive
         // values. A deduplicated first offer cannot prove later attempt costs.
-        if matches!(
-            branch_request.source(),
-            crate::CandidateSource::Finite(_) | crate::CandidateSource::ModeledFinite(_)
-        ) && budget.requires_new_attempt()
+        if matches!(branch_request.source(), crate::CandidateSource::Finite(_))
+            && budget.requires_new_attempt()
         {
             let remaining_request_proposals = branch_request
                 .budget()
@@ -633,7 +645,13 @@ impl CarriedCandidate {
         &self,
         request: &PlannerRequest,
         invocation: crate::PlannerInvocationId,
+        output_limit: u64,
     ) -> Result<Vec<Proposal>, CampaignCodecError> {
+        if output_limit == 0 {
+            return Err(CampaignCodecError::LimitExceeded {
+                limit: "canonical-frontier-planner-fuel",
+            });
+        }
         let first = match self.statistical_evidence {
             Some(evidence) => Proposal::new_with_statistical_evidence(
                 self.position.branch_point(),
@@ -657,9 +675,19 @@ impl CarriedCandidate {
                 request.invocation().input_view(),
             ),
         }?;
-        let mut proposals = Vec::with_capacity(self.additional_finite_values.len() + 1);
+        let remaining =
+            usize::try_from(output_limit - 1).map_err(|_| CampaignCodecError::LimitExceeded {
+                limit: "canonical-frontier-planner-proposal-count",
+            })?;
+        let mut proposals =
+            Vec::with_capacity(self.additional_finite_values.len().min(remaining) + 1);
         proposals.push(first);
-        for (index, value) in self.additional_finite_values.iter().enumerate() {
+        for (index, value) in self
+            .additional_finite_values
+            .iter()
+            .take(remaining)
+            .enumerate()
+        {
             let ordinal = self
                 .ordinal
                 .checked_add(u64::try_from(index + 1).map_err(|_| {

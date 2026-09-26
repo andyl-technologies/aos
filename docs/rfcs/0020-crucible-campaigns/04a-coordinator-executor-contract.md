@@ -1401,7 +1401,7 @@ issues only at EOF. Acceptance publishes guidance envelopes with offers only
 after complete zero-write preflight and recomputes/reruns the exact transition
 on restart and import. Any other guidance schema is rejected.
 
-Canonical engine version 8 and PUCT engine version 6 advertise
+Canonical engine version 9 and PUCT engine version 6 advertise
 `canonical-frontier-budget-v1`. Every Ready position has an exact offer and one
 `PlannerCandidateBudgetV1`, including positions that cannot currently afford
 issuance. Non-Ready positions have neither. This preserves request-local

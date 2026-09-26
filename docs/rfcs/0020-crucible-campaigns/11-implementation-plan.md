@@ -580,7 +580,7 @@ invocation output by available allowance, return a waitable budget-blocked
 outcome, and avoid reinvoking on an unchanged blocked head. A later grant
 permits a fresh invocation.
 
-Canonical engine version 8 and PUCT engine version 6 advertise the versioned
+Canonical engine version 9 and PUCT engine version 6 advertise the versioned
 `canonical-frontier-budget-v1` capability. Every Ready offer retains its exact
 owner-computed aggregate allowances and semantic new-attempt cost, including
 unaffordable offers. Both engines scan through EOF and choose only affordable
@@ -610,7 +610,7 @@ test. Strict affected-crate Clippy and the source-size guard pass. All six
 packaged campaign VM cases also pass with the budget-aware planner build;
 their execution scope remains the six flights described above.
 
-Canonical engine version 8 and PUCT engine version 6 consume
+Canonical engine version 9 and PUCT engine version 6 consume
 owner-authenticated request-local attempt allowances. They pass capped new
 attempts, settle a frontier blocked only by local caps, and retain eligibility
 for a convergent cause without charging another attempt. An aggregate grant
@@ -2425,12 +2425,14 @@ manual-bundle, trusted-signers, legacy evidence, or compatibility input path.
   bytes. This is not the §10.4 performance gate: it has no guest host-time
   denominator, pinned reference-host baseline, or one-million-admission budget.
   The million dormant-continuation fixture measures a different collection.
-  The canonical planner atomically issues and admits one proposal in one
-  immutable snapshot, whereas the manual `issue_proposal` and `admit_proposal`
-  APIs advance two snapshots. The canonical one-proposal, one-worker-slot
-  semantics must remain intact. One million canonical steps plus setup
-  transitions require 1,125,003 ancestry snapshots. The bounded 1,250,001
-  ancestry ceiling covers that corpus while the independent closure-object
+  The canonical frontier planner may atomically issue and admit 16 ordered
+  explicit finite proposals in one immutable snapshot, whereas the manual
+  `issue_proposal` and `admit_proposal` APIs advance two snapshots per proposal.
+  A one-proposal budget still issues one proposal, and each executor worker
+  slot still reserves one admitted attempt at a time. One million admissions
+  in 62,500 finite Issues plus setup transitions require 187,503 ancestry
+  snapshots. The bounded 1,250,001 ancestry ceiling covers that corpus while
+  the independent closure-object
   limit still bounds authenticated work; the million-run gate must establish
   measured closure and object-budget evidence. Each step also rewrites
   persistent Merkle nodes, and queue projection scans the mixed accounting

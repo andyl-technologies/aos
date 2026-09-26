@@ -66,7 +66,7 @@ in
           test "$(printf '%s\n' "$capacity" | grep -c '^campaign_million_capacity ')" -eq 1
           required=$(printf '%s\n' "$capacity" | sed -n 's/^.*required=\([0-9]*\) limit=.*$/\1/p')
           limit=$(printf '%s\n' "$capacity" | sed -n 's/^.*limit=\([0-9]*\)$/\1/p')
-          test "$required" -eq 1125003
+          test "$required" -eq 187503
           if [ "$limit" -lt "$required" ]; then
             cat > "$out/result" <<RESULT
           BLOCKED

@@ -833,7 +833,7 @@ set. The compact expansion cache retains neutral guidance fields. Separate
 exact-snapshot coverage-novelty and policy-weighted finding-reward folds
 described in RFC 03 are now implemented read-only. Exact owner-published
 objective evaluations add their signed scalar reward through the same bounded
-batch. Canonical frontier engine version 8 consumes the exact decomposed
+batch. Canonical frontier engine version 9 consumes the exact decomposed
 PUCT evidence only through the bounded request-batch contract in RFC 03; it
 cannot trust or read compact expansion-cache guidance fields. Loading an
 `ExpansionState` repeats the complete source-snapshot validation and owner
@@ -873,7 +873,7 @@ admission is rejected.
   wakeup MUST equal the exact nested credit-set count. The compact expansion
   cache MUST keep reward, novelty, and finding fields neutral. A separate PUCT
   projection MAY use only the bounded exact-snapshot coverage and weighted-
-  finding owners in RFC 03; canonical frontier engine version 8 consumes that
+  finding owners in RFC 03; canonical frontier engine version 9 consumes that
   projection through exact owner-built guidance records, including signed
   objective reward.
 

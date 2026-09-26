@@ -541,7 +541,7 @@ impl PlannerExecutionSupervisor<CanonicalFrontierPlanner> for DirectPlannerSuper
             _ => 1,
         };
         let measured_fuel =
-            request.invocation().scan_page().positions().len() as u64 + output_count;
+            u64::from(request.invocation().scan_page().input_objects()) + output_count;
         Ok(SupervisedPlannerExecution::new(result, measured_fuel))
     }
 }
@@ -615,58 +615,8 @@ fn planner_driver_with_proposal_limit(
     .require_tree_search_policy())
 }
 
-#[test]
-fn finite_frontier_issues_one_ordered_bounded_vector() -> Result<(), Box<dyn Error>> {
-    let fixture = GateFixture::new(
-        "finite-vector-issue",
-        CampaignMode::Strict,
-        tree_search_explorer()?,
-        &BTreeMap::new(),
-    )?;
-    let campaign = "finite-vector-issue";
-    let head = fixture.create_funded_running(campaign, &BTreeMap::new(), 16)?;
-    let domain = integer_domain(15)?;
-    let values = (0..16_u64)
-        .map(|value| ChoiceValue::Integer(IntegerValue::Unsigned(value)))
-        .collect::<BTreeSet<_>>();
-    let request = request_for_source(
-        &fixture,
-        &domain,
-        ChoiceValue::Integer(IntegerValue::Unsigned(0)),
-        CandidateSource::finite(values.clone())?,
-        BranchRequestCause::Operator(command_id(campaign, "request")),
-        campaign,
-        BranchBudget::new(16, 16)?,
-    )?;
-    let requested = discover_and_submit(&fixture, campaign, head.snapshot_id(), &request)?;
-    let mut driver = planner_driver_with_proposal_limit(&fixture, 16)?;
-
-    let CampaignPlannerStepOutcome::Advanced {
-        result,
-        disposition: PlannerDisposition::Issue {
-            issued_proposals, ..
-        },
-        ..
-    } = driver.step(campaign)?
-    else {
-        return Err("finite frontier did not issue its ordered vector".into());
-    };
-    assert_ne!(result.new_snapshot, requested.new_snapshot);
-    assert_eq!(issued_proposals.len(), 16);
-    for (index, proposal_id) in issued_proposals.into_iter().enumerate() {
-        let proposal = fixture.repository.load_proposal(proposal_id)?;
-        assert_eq!(proposal.ordinal(), index as u64 + 1);
-        assert_eq!(
-            proposal.value(),
-            values.iter().nth(index).ok_or("missing value")?
-        );
-    }
-    let claimable = fixture
-        .repository
-        .project_claimable_attempts(campaign, None, 32)?;
-    assert_eq!(claimable.attempts().len(), 16);
-    Ok(())
-}
+#[path = "gate_lazy_frontier/vector_issue.rs"]
+mod vector_issue;
 
 #[test]
 fn huge_integer_validation_and_polling_are_cardinality_independent() -> Result<(), Box<dyn Error>> {
@@ -825,7 +775,8 @@ fn discrete_all_and_maximum_finite_requests_remain_lazy_under_one_slot()
         discrete_requested.summary.validated_cardinality(),
         BranchAcceptanceCount::Exact(10)
     );
-    let mut discrete_driver = planner_driver(&discrete_fixture)?;
+    // A larger output budget does not vectorize a generated source.
+    let mut discrete_driver = planner_driver_with_proposal_limit(&discrete_fixture, 16)?;
     let CampaignPlannerStepOutcome::Advanced {
         disposition: PlannerDisposition::Issue {
             issued_proposals, ..
