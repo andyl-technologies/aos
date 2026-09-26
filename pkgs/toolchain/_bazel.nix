@@ -39,6 +39,7 @@
   bazelMavenBootstrap ? null,
   bazelJimfs ? null,
   bazelErrorProneDataflow ? null,
+  bazelErrorProneCheckApi ? null,
   bazelAvalonApi ? null,
   bazelMailApi ? null,
   bazelLog4j ? null,
@@ -1289,6 +1290,7 @@ in
       ++ lib.optional (bazelMavenBootstrap != null) bazelMavenBootstrap
       ++ lib.optional (bazelJimfs != null) bazelJimfs
       ++ lib.optional (bazelErrorProneDataflow != null) bazelErrorProneDataflow
+      ++ lib.optional (bazelErrorProneCheckApi != null) bazelErrorProneCheckApi
       ++ lib.optional (bazelAvalonApi != null) bazelAvalonApi
       ++ lib.optional (bazelMailApi != null) bazelMailApi
       ++ lib.optional (bazelLog4j != null) bazelLog4j
@@ -1380,6 +1382,10 @@ in
           ${lib.optionalString (bazelErrorProneDataflow != null) ''
             mkdir -p derived/maven
             cp -a ${bazelErrorProneDataflow}/maven/. derived/maven/
+          ''}
+          ${lib.optionalString (bazelErrorProneCheckApi != null) ''
+            mkdir -p derived/maven
+            cp -a ${bazelErrorProneCheckApi}/maven/. derived/maven/
           ''}
           ${lib.optionalString (bazelAvalonApi != null) ''
             mkdir -p derived/maven/logkit/logkit/1.0.1
