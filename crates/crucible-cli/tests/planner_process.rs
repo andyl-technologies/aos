@@ -4,6 +4,9 @@
 #![allow(clippy::expect_used)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crucible_campaign::{
@@ -23,9 +26,9 @@ use crucible_daemon::{
 fn packaged_worker_is_killable_supervised_and_parent_authenticated() {
     let request = canonical_request(0x61);
     let authority = PlannerAuthorityKey::from_bytes([0x71; 32]).expect("planner authority");
-    let config =
-        CanonicalPlannerProcessConfig::new(env!("CARGO_BIN_EXE_crucible"), Duration::from_secs(5))
-            .expect("process config");
+    let (_executable_directory, executable) = protected_packaged_executable();
+    let config = CanonicalPlannerProcessConfig::new(executable.clone(), Duration::from_secs(5))
+        .expect("process config");
     let (supervisor, _cancellation) = CanonicalPlannerProcessSupervisor::new(config);
     let mut service =
         AuthorizedPlannerService::new(CanonicalFrontierPlanner, supervisor, authority.clone());
@@ -37,6 +40,16 @@ fn packaged_worker_is_killable_supervised_and_parent_authenticated() {
     assert!(matches!(
         response.submission().proposal().disposition(),
         PlannerProposalDisposition::NoWork
+    ));
+
+    // A later launch must reject the same executable if it becomes writable.
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o520))
+        .expect("make packaged executable group-writable");
+    assert!(matches!(
+        service.plan(&request),
+        Err(AuthorizedPlannerServiceError::Supervisor(
+            CanonicalPlannerProcessError::InvalidConfiguration(_)
+        ))
     ));
 }
 
@@ -64,11 +77,9 @@ fn sticky_cancellation_rejects_evaluation_before_launch() {
 fn minimum_deadline_kills_and_reaps_the_packaged_worker() {
     let request = canonical_request(0x63);
     let authority = PlannerAuthorityKey::from_bytes([0x73; 32]).expect("planner authority");
-    let config = CanonicalPlannerProcessConfig::new(
-        env!("CARGO_BIN_EXE_crucible"),
-        Duration::from_millis(1),
-    )
-    .expect("process config");
+    let (_executable_directory, executable) = protected_packaged_executable();
+    let config = CanonicalPlannerProcessConfig::new(executable, Duration::from_millis(1))
+        .expect("process config");
     let (supervisor, _cancellation) = CanonicalPlannerProcessSupervisor::new(config);
     let mut service =
         AuthorizedPlannerService::new(CanonicalFrontierPlanner, supervisor, authority);
@@ -79,6 +90,17 @@ fn minimum_deadline_kills_and_reaps_the_packaged_worker() {
             CanonicalPlannerProcessError::TimedOut
         ))
     ));
+}
+
+fn protected_packaged_executable() -> (tempfile::TempDir, PathBuf) {
+    // Cargo's packaged build tree may be group-writable; the supervisor must
+    // still authenticate a protected executable before each worker launch.
+    let directory = tempfile::tempdir().expect("private executable directory");
+    let executable = directory.path().join("crucible");
+    fs::copy(env!("CARGO_BIN_EXE_crucible"), &executable).expect("copy packaged executable");
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o500))
+        .expect("protect packaged executable");
+    (directory, executable)
 }
 
 fn canonical_request(byte: u8) -> PlannerRequest {
