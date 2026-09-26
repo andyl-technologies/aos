@@ -216,7 +216,10 @@ in
         "rules_jvm_external++maven+com_google_api_grpc_proto_google_common_protos_2_41_0" = helperScope.bazelCommonProtos241.repository;
         "rules_jvm_external++maven+com_google_guava_listenablefuture_9999_0_empty_to_avoid_conflict_with_guava" = helperScope.bazelCommonProtos241.emptyListenableFuture;
       }
-      // {"grpc++grpc_repo_deps_ext+com_github_cncf_xds" = helperScope.bazelGrpcXdsSource;};
+      // {
+        "grpc++grpc_repo_deps_ext+com_github_cncf_xds" = helperScope.bazelGrpcXdsSource;
+        "grpc++grpc_repo_deps_ext+com_envoyproxy_protoc_gen_validate" = helperScope.bazelProtocGenValidateSource;
+      };
 
     buildDeps =
       [
