@@ -1139,7 +1139,7 @@ in {
       inventory_hashes = [
           (int(response), int(source))
           for line in boundary_log.splitlines()
-          if "operation=hash_oci_range" in line
+          if 'operation="hash_oci_range"' in line
           for response, source in re.findall(
               r"response_bytes=(\d+) source_bytes=(\d+)", line
           )
@@ -1149,7 +1149,7 @@ in {
       placement_copies = [
           (int(response), int(source))
           for line in boundary_log.splitlines()
-          if "operation=copy_object" in line
+          if 'operation="copy_object"' in line
           for response, source in re.findall(
               r"response_bytes=(\d+) source_bytes=(\d+)", line
           )

@@ -1201,12 +1201,15 @@ async fn main() -> Result<()> {
                         Arc::clone(&inventory_writers)
                             as Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>,
                     );
-                let oci_provider_inventory =
-                    aos_hub_core::oci_inventory_controller::OciProviderInventoryController::new(
+                if oci_gc_enabled {
+                    spawn_oci_provider_inventory(
                         Arc::clone(&inventory_db),
                         Arc::clone(&inventory_surfaces)
                             as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+                        "native-oci-inventory",
+                        "native-inventory",
                     );
+                }
                 let oci_gc_controller =
                     aos_hub_core::oci_gc_controller::OciGcDeletionController::new(
                         Arc::clone(&inventory_db),
@@ -1217,7 +1220,6 @@ async fn main() -> Result<()> {
                     );
                 tokio::spawn(async move {
                     let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
-                    let mut oci_inventory_continuation: Option<String> = None;
                     loop {
                         tick.tick().await;
                         if let Err(error) = aos_hub_core::oci::recover_expired_oci_work(
@@ -1250,23 +1252,6 @@ async fn main() -> Result<()> {
                             tracing::warn!(error = %format!("{error:#}"), "expired cache write recovery failed");
                         }
                         if oci_gc_enabled {
-                            let inventory_now = now_secs();
-                            match oci_provider_inventory
-                            .run_due_bounded(
-                                "native-oci-inventory",
-                                &format!("native-inventory-{}", inventory_now / 60),
-                                inventory_now,
-                                100,
-                                oci_inventory_continuation.as_deref(),
-                                aos_hub_core::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET,
-                            )
-                            .await
-                        {
-                            Ok(stats) => oci_inventory_continuation = stats.continuation,
-                            Err(error) => {
-                                tracing::warn!(error = %format!("{error:#}"), "OCI provider inventory pass failed");
-                            }
-                        }
                             if let Err(error) = oci_gc_controller
                                 .run_due("native-oci-gc", now_secs(), 100)
                                 .await
@@ -1333,14 +1318,16 @@ async fn main() -> Result<()> {
                     }
                 });
 
-                let oci_provider_inventory =
-                    aos_hub_core::oci_inventory_controller::OciProviderInventoryController::new(
+                if oci_gc_enabled {
+                    spawn_oci_provider_inventory(
                         Arc::clone(&inventory_db),
                         Arc::clone(&inventory_surfaces),
+                        "hybrid-oci-inventory",
+                        "hybrid-inventory",
                     );
+                }
                 tokio::spawn(async move {
                     let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
-                    let mut oci_inventory_continuation: Option<String> = None;
                     loop {
                         tick.tick().await;
                         if let Err(error) = aos_hub_core::cache_scan::reap_due_cache_tombstones(
@@ -1350,25 +1337,6 @@ async fn main() -> Result<()> {
                         .await
                         {
                             tracing::warn!(error = %format!("{error:#}"), "cache tombstone reap failed");
-                        }
-                        if oci_gc_enabled {
-                            let inventory_now = now_secs();
-                            match oci_provider_inventory
-                                .run_due_bounded(
-                                    "hybrid-oci-inventory",
-                                    &format!("hybrid-inventory-{}", inventory_now / 60),
-                                    inventory_now,
-                                    100,
-                                    oci_inventory_continuation.as_deref(),
-                                    aos_hub_core::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET,
-                                )
-                                .await
-                            {
-                                Ok(stats) => oci_inventory_continuation = stats.continuation,
-                                Err(error) => {
-                                    tracing::warn!(error = %format!("{error:#}"), "hybrid OCI provider inventory failed");
-                                }
-                            }
                         }
                         let caches = match inventory_db.list_binary_caches().await {
                             Ok(caches) => caches,
@@ -1902,6 +1870,52 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Drains bounded OCI inventory continuations without delaying each page batch for a minute.
+fn spawn_oci_provider_inventory(
+    db: Arc<Database>,
+    surfaces: Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+    collector_id: &'static str,
+    idempotency_prefix: &'static str,
+) {
+    tokio::spawn(async move {
+        let controller =
+            aos_hub_core::oci_inventory_controller::OciProviderInventoryController::new(
+                db, surfaces,
+            );
+        let mut continuation: Option<String> = None;
+
+        loop {
+            let now = now_secs();
+            let delay_seconds = match controller
+                .run_due_bounded(
+                    collector_id,
+                    &format!("{idempotency_prefix}-{}", now / 60),
+                    now,
+                    100,
+                    continuation.as_deref(),
+                    aos_hub_core::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET,
+                )
+                .await
+            {
+                Ok(stats) => {
+                    continuation = stats.continuation;
+                    if continuation.is_some() {
+                        1
+                    } else {
+                        60
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(error = %format!("{error:#}"), "OCI provider inventory pass failed");
+                    5
+                }
+            };
+
+            tokio::time::sleep(std::time::Duration::from_secs(delay_seconds)).await;
+        }
+    });
 }
 
 /// Runs one bounded invitation-credential retention pass.
