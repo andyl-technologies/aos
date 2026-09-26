@@ -76,7 +76,6 @@ pub use physical_quota::{
     StoreGraphPhysicalQuotaBinders, StorePhysicalQuotaBinder, StorePhysicalQuotaGuard,
     StorePhysicalQuotaPolicyId,
 };
-pub use sqlite::SqliteBlobBackend;
 pub use profile::{
     ObjectProfile, Reconstructibility, RetentionRole, SensitivityClass, StoreGraphObjectProfilers,
     StoreObjectProfilePolicyId, StoreObjectProfiler,
@@ -95,6 +94,7 @@ pub use s3_ref::{
     StoreS3RefCapability, StoreS3StrongCasClient, StoreS3VersionedObject,
     StoreS3VersionedObjectMetadata,
 };
+pub use sqlite::SqliteBlobBackend;
 pub use write_back::{
     WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackRetentionGeneration,
     WriteBackRetentionRoot, WriteBackRetentionSummary,
