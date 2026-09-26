@@ -179,7 +179,7 @@ aos_dev_main() {
   aos_dev_bazel_cache=true
   aos_dev_rust_target_cache=true
   aos_dev_rust_incremental=true
-  aos_dev_accache=false
+  aos_dev_accache=true
   while (( $# > 0 )); do
     case $1 in
       --release|--no-cache) aos_dev_mode=release; shift ;;
@@ -188,6 +188,7 @@ aos_dev_main() {
         aos_dev_bazel_cache=true
         aos_dev_rust_target_cache=true
         aos_dev_rust_incremental=true
+        aos_dev_accache=true
         shift
         ;;
       --accache) aos_dev_accache=true; shift ;;

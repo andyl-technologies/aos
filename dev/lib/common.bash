@@ -34,7 +34,7 @@ Development builds enable all four options by default:
   --[no-]bazel-cache        Share Bazel disk action artifacts
   --[no-]rust-target-cache  Persist Cargo's target directory
   --[no-]rust-incremental   Enable rustc incremental compilation
-  --[no-]accache           Opt in to local compiler action caching (default off)
+  --[no-]accache            Share compiler action artifacts (default on)
   --cache-dir PATH          Host cache root (or set AOS_DEV_CACHE_DIR)
   --release, --no-cache     Disable all shared caches and use ordinary builds
 The default host cache root is \${XDG_CACHE_HOME:-\$HOME/.cache}/aos-dev.
@@ -52,7 +52,7 @@ sandbox-paths mounts. 'cache doctor' checks local setup without building;
 source-built bootstrap Bash and coreutils, so ordinary compiler and dev-shell
 changes do not make the probe rebuild the current toolchain.
 
-Opt-in --accache wraps supported nonincremental mkCargoPackage actions.
+Accache defaults on for supported nonincremental mkCargoPackage actions.
 Incremental actions pass through unchanged; use --no-rust-incremental to cache
 application Rust actions as well as dependencies. AOS_DEV_ACCACHE_DIR and
 AOS_DEV_ACCACHE_STATE_DIR select separate sandbox data and metadata paths.
