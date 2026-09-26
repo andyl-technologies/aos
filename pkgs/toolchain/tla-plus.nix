@@ -47,7 +47,7 @@ in
     inherit version;
     src = tlaSource;
 
-    buildDeps = [buildJdk];
+    buildDeps = [buildJdk buildPackages.python3];
     runtimeDeps = [jdk bash];
 
     phases = [
@@ -57,6 +57,32 @@ in
           cp -R ${tlaSource}/tlatools/org.lamport.tlatools/src tla-src
           tar xf ${mailSource}
           tar xf ${activationSource}
+
+          # The upstream release bundle contains compiled third-party Java.
+          # Fail if a pinned source input starts carrying executable payloads.
+          python3 - tla-src mail-api-1.6.3 jaf-api-1.2.1 <<'PY'
+          from pathlib import Path
+          import sys
+
+          compiled_suffixes = {
+              ".class", ".jar", ".so", ".dylib", ".dll", ".a", ".o",
+              ".wasm", ".exe", ".bin", ".zip", ".tar", ".gz", ".xz",
+          }
+          compiled_signatures = tuple(bytes.fromhex(value) for value in (
+              "cafebabe", "7f454c46", "0061736d", "213c617263683e0a",
+              "feedface", "cefaedfe", "feedfacf", "cffaedfe",
+              "4d5a", "504b0304", "504b0506",
+          ))
+
+          for argument in sys.argv[1:]:
+              for path in Path(argument).rglob("*"):
+                  if not path.is_file():
+                      continue
+                  with path.open("rb") as source:
+                      header = source.read(8)
+                  if path.suffix.lower() in compiled_suffixes or header.startswith(compiled_signatures):
+                      raise SystemExit(f"Compiled payload in TLA+ source input: {path}")
+          PY
         '';
       }
       {
