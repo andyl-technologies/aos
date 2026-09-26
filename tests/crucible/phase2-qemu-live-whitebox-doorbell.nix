@@ -183,9 +183,11 @@
   flight = pkgs.mkDerivation {
     pname = "crucible-live-whitebox-doorbell-flight";
     version = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     src = crucibleSrc;
 
-    buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+    buildDeps = [pkgs.coreutils pkgs.pkg-config pkgs.rust pkgs.sed pkgs.sqlite];
+    runtimeDeps = [pkgs.sqlite];
 
     phases = [
       {
