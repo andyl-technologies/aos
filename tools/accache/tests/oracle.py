@@ -290,6 +290,66 @@ def check_assembler_include_invalidation(root, env, accache, sccache, gcc, hits)
             "oracle_stale_artifact": "source.o", "artifacts": ["source.o"]}
 
 
+def check_clang_profile_use(root, env, accache, sccache, clang, hits):
+    """Track the profile data consumed by a cacheable Clang action."""
+    work = root / "clang-profile-use"
+    work.mkdir()
+    (work / "source.c").write_text(
+        "int branch(int x) { if (x > 100) return x * 3; return x + 1; }\n"
+        "int main(int argc, char **argv) { return branch(argc); }\n")
+    subprocess.run([clang, "-O2", "-fprofile-instr-generate", "source.c", "-o", "program"],
+                   cwd=work, env=env, check=True, capture_output=True)
+    profdata = str(Path(clang).with_name("llvm-profdata"))
+    profiles = []
+    for name, arguments in [("low", []), ("high", ["x"] * 150)]:
+        raw = work / (name + ".profraw")
+        subprocess.run([str(work / "program"), *arguments], cwd=work,
+                       env=env | {"LLVM_PROFILE_FILE": str(raw)}, capture_output=True,
+                       timeout=120)
+        merged = work / (name + ".profdata")
+        subprocess.run([profdata, "merge", "-o", str(merged), str(raw)], cwd=work,
+                       env=env, check=True, capture_output=True)
+        profiles.append(merged.read_bytes())
+    assert profiles[0] != profiles[1], "profile runs produced identical input data"
+
+    object_file = work / "source.o"
+    profile_file = work / "profile.profdata"
+    args = [clang, "-O2", "-c", "source.c", "-fprofile-instr-use=profile.profdata",
+            "-o", "source.o"]
+
+    def compile_object(wrapper):
+        object_file.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        return completed.stdout, completed.stderr, object_file.read_bytes()
+
+    results = []
+    for revision, profile in enumerate(profiles):
+        profile_file.write_bytes(profile)
+        direct = compile_object([])
+        before_cold_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() == before_cold_hits, "sccache ignored the changed profile"
+        before_hits = hits()
+        assert compile_object([sccache]) == direct
+        assert hits() > before_hits, "sccache did not hit the profile action"
+
+        assert compile_object([accache]) == direct
+        cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert cold["outcome"] == "miss", cold
+        if revision:
+            assert any("profile.profdata" in item for item in cold["changes"]), cold
+        assert compile_object([accache]) == direct
+        warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert warm["outcome"] == "hit", warm
+        results.append({"fixture": "clang-profile-use", "revision": revision,
+                        "oracle_hit": True, "accache": "hit", "artifacts": ["source.o"]})
+
+    print("PASS oracle Clang profile input invalidation", flush=True)
+    return results
+
+
 def run_suite(root, accache, sccache, gcc, clang, rustc):
     root = Path(root)
     # Keep socket names short even under long Nix build-directory names.
@@ -450,6 +510,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
         results.append(check_saved_temporaries(root, env, accache, sccache, rustc, hits))
         results.append(check_assembler_include_invalidation(root, env, accache,
                                                             sccache, gcc, hits))
+        results.extend(check_clang_profile_use(root, env, accache, sccache,
+                                               clang, hits))
 
         report = json.dumps({"fixtures": results, "sccache_stats": stats()}, sort_keys=True)
         if destination := os.environ.get("ACCACHE_ORACLE_REPORT"):
