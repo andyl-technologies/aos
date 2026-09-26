@@ -96,6 +96,13 @@ const STAGE_CODEC: RootChallengeRecordCodec = RootChallengeRecordCodec::new(
     STAGE_TRANSACTION_DOMAIN,
     STAGE_KEY,
 );
+const SOURCE_FLIGHT_KEY: &[u8] = b"\0aos-policy-compiler-source-flight-v1\0";
+const SOURCE_FLIGHT_CODEC: RootChallengeRecordCodec = RootChallengeRecordCodec::new(
+    b"AOSSFC01",
+    b"aos.sandbox.policy-compiler.source-flight-record.v1\0",
+    b"aos.sandbox.policy-compiler.source-flight-transaction.v1\0",
+    SOURCE_FLIGHT_KEY,
+);
 const RECORD_BYTES: usize = 664;
 /// Bounds one closed AOSPCB02 record on the root controller socket.
 pub const CLOSED_POLICY_BINDING_BYTES_V2: usize = RECORD_BYTES;
@@ -951,6 +958,87 @@ impl ClosedPolicyRootSessionV2<'_> {
             || challenge != staged.challenge
             || record[32..64] != *self.identity.stage_cut(staged.base).as_bytes()
         {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        Ok(())
+    }
+
+    /// Durably spends a fresh Source signer challenge after Root is acquired last.
+    ///
+    /// The caller must still retain Controller, Source, protected Cache, and
+    /// physical Cache writers. This row is nonauthorizing until Controller
+    /// commits the matching Source row and Root joins the signer packet to
+    /// those retained owners. A failed exchange may leave the row spent.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale stage or proposal, changed Root identity, unavailable
+    /// entropy, reused current nonce, malformed prior row, or failed commit.
+    pub fn spend_staged_source_challenge_v1(
+        &mut self,
+        proposed: &[u8],
+        staged: StagedClosedPolicyRootBaseV2,
+        fresh_nonce: impl FnOnce() -> std::io::Result<[u8; 16]>,
+    ) -> Result<(SourceHoldReadbackChallengeV1, u64), PolicyCompilerJournalErrorV1> {
+        if self.postcommit.is_some() {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        self.validate_staged_closed_binding_base(staged)?;
+        let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
+        if !self.identity.matches(&binding)
+            || !new_root_cas_matches(
+                &binding,
+                staged.base.predecessor,
+                staged.base.next_generation,
+                current_root_binding_chain(&self.authority)?.2,
+            )
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let cut = staged_closed_policy_signer_challenge_v2(staged, proposed)?.cut();
+        let (prior_issue, prior_nonce) = SOURCE_FLIGHT_CODEC
+            .read_prior(self.authority.get(SOURCE_FLIGHT_KEY)?)
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let issue = prior_issue
+            .checked_add(1)
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let nonce =
+            fresh_nonce().map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if nonce == [0; 16] || nonce == prior_nonce || nonce == staged.challenge() {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let challenge = SourceHoldReadbackChallengeV1::new(nonce, cut)
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let record = SOURCE_FLIGHT_CODEC.encode(issue, nonce, cut);
+        self.authority
+            .commit(&SOURCE_FLIGHT_CODEC.transaction(record)?)?;
+        self.require_spent_source_challenge_v1(proposed, staged, challenge, issue)?;
+        Ok((challenge, issue))
+    }
+
+    /// Checks the current Root-spent Source challenge against its exact stage.
+    ///
+    /// This is an inert protected readback, including after a lost response.
+    /// It does not establish Source writer custody or authorize a Root CAS.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a superseded stage or challenge, changed proposal cut, zero
+    /// issue, or malformed protected challenge row.
+    pub fn require_spent_source_challenge_v1(
+        &self,
+        proposed: &[u8],
+        staged: StagedClosedPolicyRootBaseV2,
+        challenge: SourceHoldReadbackChallengeV1,
+        issue: u64,
+    ) -> Result<(), PolicyCompilerJournalErrorV1> {
+        self.validate_staged_closed_binding_base(staged)?;
+        let expected_cut = staged_closed_policy_signer_challenge_v2(staged, proposed)?.cut();
+        if issue == 0 || challenge.cut() != expected_cut {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let record = SOURCE_FLIGHT_CODEC.encode(issue, challenge.nonce(), challenge.cut());
+        if self.authority.get(SOURCE_FLIGHT_KEY)? != Some(record.as_slice()) {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
         Ok(())
@@ -2943,6 +3031,133 @@ mod tests {
             .expect("staged Root CAS advances chain");
         assert!(session.validate_staged_closed_binding_base(second).is_err());
         assert!(session.stage_closed_binding_base(|| Ok([9; 16])).is_err());
+    }
+
+    #[test]
+    fn root_last_source_challenge_is_durable_current_and_inert() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let binding = cas_fixture();
+        let proposed = binding.encode().expect("closed proposal");
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root stage authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        let staged = session
+            .stage_closed_binding_base(|| Ok([7; 16]))
+            .expect("durable stage");
+        drop(session);
+        drop(root);
+
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("Root-last challenge authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        assert!(
+            session
+                .spend_staged_source_challenge_v1(&proposed, staged, || Ok([7; 16]))
+                .is_err()
+        );
+        let (first, first_issue) = session
+            .spend_staged_source_challenge_v1(&proposed, staged, || Ok([8; 16]))
+            .expect("fresh Root-last challenge");
+        assert_eq!(first_issue, 1);
+        assert_eq!(first.nonce(), [8; 16]);
+        session
+            .require_spent_source_challenge_v1(&proposed, staged, first, first_issue)
+            .expect("exact current Root row");
+        assert!(
+            session
+                .spend_staged_source_challenge_v1(&proposed, staged, || Ok([8; 16]))
+                .is_err()
+        );
+        drop(session);
+        drop(root);
+
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("cold Root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        session
+            .require_spent_source_challenge_v1(&proposed, staged, first, first_issue)
+            .expect("cold exact Root row");
+        let (second, second_issue) = session
+            .spend_staged_source_challenge_v1(&proposed, staged, || Ok([9; 16]))
+            .expect("superseding Root challenge");
+        assert_eq!(second_issue, 2);
+        assert!(
+            session
+                .require_spent_source_challenge_v1(&proposed, staged, first, first_issue)
+                .is_err()
+        );
+        session
+            .require_spent_source_challenge_v1(&proposed, staged, second, second_issue)
+            .expect("current Root row");
+        assert!(
+            session
+                .require_spent_source_challenge_v1(&proposed, staged, second, first_issue)
+                .is_err()
+        );
+        assert_eq!(current_root_binding_chain(&session.authority).unwrap().2, 0);
+        drop(session);
+
+        let mut authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("offline mutation fixture authority");
+        let mut malformed = authority
+            .get(SOURCE_FLIGHT_KEY)
+            .unwrap()
+            .expect("current Root row")
+            .to_vec();
+        malformed[32] ^= 1;
+        let mutation = JournalTransaction::new(
+            [29; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                SOURCE_FLIGHT_KEY.to_vec(),
+                malformed,
+            )],
+        )
+        .expect("offline mutation");
+        authority.commit(&mutation).expect("offline malformed row");
+        drop(authority);
+        drop(root);
+
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("cold forged Root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        assert!(
+            session
+                .require_spent_source_challenge_v1(&proposed, staged, second, second_issue)
+                .is_err()
+        );
+        assert!(
+            session
+                .spend_staged_source_challenge_v1(&proposed, staged, || Ok([10; 16]))
+                .is_err()
+        );
     }
 
     #[test]

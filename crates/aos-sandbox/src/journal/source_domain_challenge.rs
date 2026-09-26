@@ -190,7 +190,7 @@ impl Journal {
     ///
     /// # Errors
     ///
-    /// Rejects a foreign or stale writer, released hold, repeated nonce,
+    /// Rejects a foreign or stale writer, released hold, the current row's nonce,
     /// substituted names, exhausted issue counter, or failed durability.
     pub(crate) fn record_source_domain_challenge_v1(
         &mut self,
@@ -408,8 +408,17 @@ mod tests {
             .expect("next challenge");
         assert_eq!(second.issue(), 2);
         assert_ne!(first.record_digest(), second.record_digest());
+        let third = writer
+            .record_source_domain_challenge_v1(hold, project, [9; 16], cut, names)
+            .expect("older nonce can recur only as a newly issued row");
+        assert_eq!(third.issue(), 3);
+        assert_ne!(first.record_digest(), third.record_digest());
+        assert_eq!(
+            replay_source_domain_challenge_v1(&writer).unwrap(),
+            Some(third)
+        );
 
-        let mut forged = second.encode();
+        let mut forged = third.encode();
         forged[24] ^= 1;
         let mutation = JournalTransaction::new(
             [21; 16],
