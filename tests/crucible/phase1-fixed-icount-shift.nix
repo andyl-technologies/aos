@@ -260,7 +260,7 @@ in
             sim_ticks_per_ns=1000
             sim_ticks_per_instruction=50
             auto_shift=forbidden
-            scenario_hash=icount_shift,sim_tick_scale
+            scenario_hash=qemu_icount_shift,sim_ticks_per_ns,sim_ticks_per_instruction
             per_node_tick_scale=fixed
             decision_register=D-2
             RESULT
