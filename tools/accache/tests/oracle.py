@@ -1475,6 +1475,75 @@ def check_gcc_compiler_path_precedence(root, env, accache, sccache, gcc, hits):
     return results
 
 
+def check_gcc_subprogram_wrapper(root, env, accache, sccache, gcc, hits):
+    """Preserve a GCC -wrapper program's effects on each invocation."""
+    fixture = "gcc-subprogram-wrapper"
+    work = root / fixture
+    work.mkdir()
+    (work / "source.S").write_text(".globl answer\nanswer:\n .long VALUE\n")
+    wrapper = work / "wrapper"
+    object_file = work / "source.o"
+    args = [gcc, "-wrapper", str(wrapper), "-c", "source.S", "-o", "source.o"]
+
+    def build_wrapper(value):
+        # The wrapper leaves preprocessing untouched and changes only the
+        # assembler's symbol value, which is absent from source depfiles.
+        (work / "wrapper.c").write_text(
+            "#include <stdlib.h>\n#include <string.h>\n#include <unistd.h>\n"
+            "int main(int argc, char **argv) {\n"
+            "  if (argc < 2) return 111;\n"
+            "  char *name = strrchr(argv[1], '/');\n"
+            "  name = name ? name + 1 : argv[1];\n"
+            "  if (strcmp(name, \"as\") != 0) {\n"
+            "    execv(argv[1], argv + 1);\n"
+            "    return 127;\n"
+            "  }\n"
+            "  char **next = calloc((size_t)argc + 3, sizeof(char *));\n"
+            "  if (!next) return 111;\n"
+            "  next[0] = argv[1];\n"
+            "  next[1] = \"--defsym\";\n"
+            f'  next[2] = "VALUE={value}";\n'
+            "  for (int i = 2; i < argc; ++i) next[i + 1] = argv[i];\n"
+            "  execv(next[0], next);\n"
+            "  return 127;\n"
+            "}\n")
+        completed = subprocess.run([gcc, "wrapper.c", "-o", str(wrapper)],
+                                   cwd=work, env=env, capture_output=True, timeout=120)
+        assert completed.returncode == 0, (fixture, completed.stderr)
+
+    def compile_object(command):
+        object_file.unlink(missing_ok=True)
+        completed = subprocess.run([*command, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (fixture, command, completed.stderr)
+        return completed.stdout, completed.stderr, object_file.read_bytes()
+
+    results = []
+    first_object = None
+    for revision, value in enumerate([1, 2]):
+        build_wrapper(value)
+        direct = compile_object([])
+        if first_object is None:
+            first_object = direct[2]
+        else:
+            assert direct[2] != first_object, (fixture, "wrapper edit had no effect")
+
+        for repeat in range(2):
+            before_hits = hits()
+            assert compile_object([sccache]) == direct, (fixture, revision, repeat, "oracle")
+            assert hits() == before_hits, (fixture, "oracle unexpectedly cached")
+            assert compile_object([accache]) == direct, (fixture, revision, repeat, "accache")
+            event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert (event["outcome"] == "bypass" and "-wrapper" in event["reason"]), event
+
+        results.append({"fixture": fixture, "revision": revision,
+                        "oracle_hit": False, "accache": "bypass",
+                        "artifacts": ["source.o"]})
+
+    print("PASS oracle", fixture, "wrapper passthrough", flush=True)
+    return results
+
+
 def check_gcc_profile_note_outputs(root, env, accache, sccache, gcc, hits):
     """Restore a GCC coverage note written to an explicit path."""
     results = []
@@ -4260,6 +4329,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                 root, env, accache, sccache, raw_gcc, hits,
                 fixture, option, directory, separated, compiler_path, exec_prefix))
         results.extend(check_gcc_compiler_path_precedence(
+            root, env, accache, sccache, raw_gcc, hits))
+        results.extend(check_gcc_subprogram_wrapper(
             root, env, accache, sccache, raw_gcc, hits))
         results.extend(check_gcc_compiler_prefix(
             root, env, accache, sccache, raw_gcc, hits,

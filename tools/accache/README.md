@@ -370,6 +370,9 @@ derived `libexec/gcc` tree or a target-specific `bin` directory. Accache asks
 GCC for its program search directories, fingerprints their entries, names the
 changed assembler in its miss explanation, and warm-hits the new object;
 pinned sccache replays the old one.
+GCC `-wrapper` can replace the program that runs each subcommand. An oracle
+rebuilds such a program at a fixed path and verifies that both frontends run
+GCC directly each time. Accache names `-wrapper` in its bypass explanation.
 Four more cases mutate a binary read by C inline assembly in GCC/Clang `.c`
 and `.i` compilations. Pinned sccache again replays stale objects; accache
 misses and names the changed binary input.

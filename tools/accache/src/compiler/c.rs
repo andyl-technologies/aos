@@ -26,6 +26,12 @@ pub(super) fn configure(
     let plusplus = compiler.ends_with("++");
     let arguments: Vec<_> = args.iter().map(OsString::from).collect();
     let cwd = std::env::current_dir()?;
+    let expanded = strings(gcc::ExpandIncludeFile::new(&cwd, &arguments))?;
+    if !clang && expanded.iter().any(|arg| arg == "-wrapper") {
+        // This program can change compiler and assembler behavior without
+        // changing their inputs, and may have undeclared file effects.
+        anyhow::bail!("GCC -wrapper runs an external subprogram wrapper");
+    }
     let parsed = parsed(if clang {
         gcc::parse_arguments(
             &arguments,
@@ -43,7 +49,6 @@ pub(super) fn configure(
             CCompilerKind::Gcc,
         )
     })?;
-    let expanded = strings(gcc::ExpandIncludeFile::new(&cwd, &arguments))?;
     ensure!(
         !expanded
             .iter()
