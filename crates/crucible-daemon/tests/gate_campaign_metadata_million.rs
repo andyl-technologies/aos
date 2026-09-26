@@ -67,14 +67,14 @@ fn measurement_elapsed_since(started: Timespec) -> Result<Duration, Box<dyn Erro
 
 const fn ancestry_for_admissions(admissions: usize) -> usize {
     // create + fund + resume, then discover + submit per finite request,
-    // then one canonical Issue successor for every admitted attempt.
-    1 + 2 + 2 * (admissions / REQUEST_SIZE) + admissions
+    // then one canonical ordered Issue successor per finite request.
+    1 + 2 + 3 * (admissions / REQUEST_SIZE)
 }
 
 #[test]
 fn million_admission_ancestry_capacity_probe() {
     assert_eq!(REQUIRED_ADMISSIONS % REQUEST_SIZE, 0);
-    assert_eq!(ancestry_for_admissions(REQUIRED_ADMISSIONS), 1_125_003);
+    assert_eq!(ancestry_for_admissions(REQUIRED_ADMISSIONS), 187_503);
     println!(
         "campaign_million_capacity required={REQUIRED_ANCESTRY} limit={MAX_CAMPAIGN_SNAPSHOT_ANCESTRY}"
     );
@@ -299,7 +299,7 @@ fn run_corpus(
         artifact,
         state,
         u32::try_from(REQUEST_SIZE)?,
-        PlanningBudget::new(1, 1, 64, 64 * 1024, 10_000)?,
+        PlanningBudget::new(1, REQUEST_SIZE as u32, 64, 64 * 1024, 10_000)?,
     )?
     .require_tree_search_policy();
 
@@ -322,28 +322,26 @@ fn run_corpus(
         ancestry_depth += 2;
         setup_elapsed += measurement_elapsed_since(setup_started)?;
 
-        for _ in 0..REQUEST_SIZE {
-            let step_started = clock_gettime(ClockId::Monotonic);
-            let outcome = planner.step(CAMPAIGN)?;
-            let CampaignPlannerStepOutcome::Advanced {
-                result,
-                disposition:
-                    PlannerDisposition::Issue {
-                        issued_proposals, ..
-                    },
-                ..
-            } = outcome
-            else {
-                return Err(format!(
-                    "canonical planner failed to admit one real attempt: {outcome:?}"
-                )
-                .into());
-            };
-            assert_eq!(issued_proposals.len(), 1);
-            parent = result.new_snapshot;
-            ancestry_depth += 1;
-            planner_elapsed += measurement_elapsed_since(step_started)?;
-        }
+        let step_started = clock_gettime(ClockId::Monotonic);
+        let outcome = planner.step(CAMPAIGN)?;
+        let CampaignPlannerStepOutcome::Advanced {
+            result,
+            disposition:
+                PlannerDisposition::Issue {
+                    issued_proposals, ..
+                },
+            ..
+        } = outcome
+        else {
+            return Err(format!(
+                "canonical planner failed to admit one finite request: {outcome:?}"
+            )
+            .into());
+        };
+        assert_eq!(issued_proposals.len(), REQUEST_SIZE);
+        parent = result.new_snapshot;
+        ancestry_depth += 1;
+        planner_elapsed += measurement_elapsed_since(step_started)?;
         if (request_index + 1) % 1_024 == 0 {
             println!(
                 "campaign_million_progress admissions={} requests={} setup_ns={} planner_ns={}",

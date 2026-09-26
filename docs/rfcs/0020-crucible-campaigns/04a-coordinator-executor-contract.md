@@ -1314,7 +1314,7 @@ included once.
 
 Planner-request schema v3 contains the owner-derived coordinate and parent basis
 for finite statistical draws plus the complete SMC generation, particle,
-parent, selected opportunity, and domain basis. Only canonical frontier implementation version 8
+parent, selected opportunity, and domain basis. Only canonical frontier implementation version 9
 may receive a nonempty SMC basis, and the pure planner validates it against the
 version-five policy before emitting a schema-v10 branch request.
 
@@ -1332,14 +1332,21 @@ request children before publishing the request. Rejection therefore remains
 zero-write, while accepted requests remain closure-complete and restart-
 auditable.
 
-The built-in `crucible-canonical-frontier` implementation version 8 is a closed
+The built-in `crucible-canonical-frontier` implementation version 9 is a closed
 pure engine for this capability. It considers only `Ready` offers, chooses the
 least `PlanningScanPosition`, and carries that small exact position/domain/
-value/ordinal tuple in `canonical-frontier-planner` state version 3 across
+value/ordinal tuple in `canonical-frontier-planner` state version 4 across
 pages. It returns `ContinueScan` before EOF, `Issue` at EOF when an offer
 exists, and `NoWork` at EOF otherwise. When issuing a carried offer, it
-reconstructs the proposal under the final invocation; the coordinator
-independently recomputes the same source ordinal and value. This establishes a
+reconstructs the proposal under the final invocation. For an explicit finite
+source, the state may also carry at most 15 subsequent sorted values from the
+same authenticated request; the final `Issue` emits at most 16 consecutive
+proposals in that order, bounded by invocation, aggregate, and request-local
+allowances. Generated and statistical sources still issue one proposal. The
+coordinator independently recomputes every source ordinal, value, attempt,
+admission, and budget effect before the single snapshot transition. A protected
+planner process evaluates each Issue; executor worker slots reserve one admitted
+attempt at a time. This establishes a
 complete executable planner/frontier loop without granting repository or
 Merkle authority to the engine. The first invocation requires the exact empty
 state, and local acceptance plus imported/restart validation rerun this built-in
