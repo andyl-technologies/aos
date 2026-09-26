@@ -174,6 +174,14 @@ def fixtures(gcc, clang, rustc):
                 yield Fixture("gcc-analyzer-" + suffix, compiler,
                               base + ["-fanalyzer", flag], diagnostic_sources,
                               {"value.h": "#define VALUE 73\n"})
+            infinite_loop_sources = {
+                "source.c": ('#include "value.h"\n'
+                             'void answer(void) { for (;;) { volatile int x = VALUE; (void)x; } }\n'),
+                "value.h": "#define VALUE 42\n",
+            }
+            yield Fixture("gcc-analyzer-infinite-loop", compiler,
+                          base + ["-fanalyzer", "-fdump-analyzer-infinite-loop"],
+                          infinite_loop_sources, {"value.h": "#define VALUE 73\n"})
             for suffix in ["debug", "earlydebug"]:
                 yield Fixture("gcc-" + suffix + "-dump", compiler,
                               base + ["-g", "-fdump-" + suffix], c_sources,
@@ -841,6 +849,41 @@ def check_gcc_timing_passthrough(root, env, accache, sccache, gcc, hits):
                         "artifacts": ["source.o"] + (["timings.txt"] if timing.exists() else [])})
         print("PASS oracle", name, flush=True)
     return results
+
+
+def check_gcc_analyzer_stderr_passthrough(root, env, accache, sccache, gcc, hits):
+    """Keep GCC analyzer traces live because they include process addresses."""
+    work = root / "gcc-analyzer-stderr"
+    work.mkdir()
+    (work / "source.c").write_text("int answer(int *p) { return *p; }\n")
+    args = [gcc, "-c", "source.c", "-o", "source.o", "-fanalyzer",
+            "-fdump-analyzer-stderr"]
+
+    def compile_object(wrapper):
+        (work / "source.o").unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr[-400:])
+        assert b"entering:" in completed.stderr, (wrapper, completed.stderr[-400:])
+        return completed.stderr, (work / "source.o").read_bytes()
+
+    direct = compile_object([])
+    oracle_cold = compile_object([sccache])
+    before_hits = hits()
+    oracle_warm = compile_object([sccache])
+    assert hits() > before_hits, "sccache did not cache the analyzer trace"
+    assert oracle_cold[1] == oracle_warm[1] == direct[1]
+
+    for _ in range(2):
+        actual = compile_object([accache])
+        assert actual[1] == direct[1]
+        event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert (event["outcome"] == "bypass"
+                and "invocation-specific addresses" in event["reason"]), event
+
+    print("PASS oracle GCC analyzer stderr passthrough", flush=True)
+    return {"fixture": "gcc-analyzer-stderr", "revision": 0,
+            "oracle_hit": True, "accache": "bypass", "artifacts": ["source.o"]}
 
 
 def check_saved_temporaries(root, env, accache, sccache, rustc, hits):
@@ -1774,6 +1817,7 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                     "gcc-analyzer-exploded-nodes-3",
                                     "gcc-analyzer-exploded-paths",
                                     "gcc-analyzer-feasibility",
+                                    "gcc-analyzer-infinite-loop",
                                     "gcc-analyzer-state-purge", "gcc-analyzer-supergraph",
                                     "gcc-analyzer-json", "gcc-debug-dump",
                                     "gcc-earlydebug-dump"} and label == "sccache warm vs direct":
@@ -1786,6 +1830,7 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                       "gcc-analyzer-exploded-nodes-2": 1,
                                       "gcc-analyzer-exploded-paths": 1,
                                       "gcc-analyzer-feasibility": 3,
+                                      "gcc-analyzer-infinite-loop": 1,
                                       "gcc-analyzer-state-purge": 1,
                                       "gcc-analyzer-json": 1,
                                       "gcc-debug-dump": 1,
@@ -1884,6 +1929,7 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                     "gcc-analyzer-exploded-nodes-3",
                                     "gcc-analyzer-exploded-paths",
                                     "gcc-analyzer-feasibility",
+                                    "gcc-analyzer-infinite-loop",
                                     "gcc-analyzer-state-purge", "gcc-analyzer-supergraph",
                                     "gcc-analyzer-json", "gcc-debug-dump",
                                     "gcc-earlydebug-dump",
@@ -1952,6 +1998,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
         results.extend(check_ada_specs(root, env, accache, sccache, gcc, hits))
         results.extend(check_gcc_timing_passthrough(root, env, accache,
                                                    sccache, gcc, hits))
+        results.append(check_gcc_analyzer_stderr_passthrough(root, env,
+                                                             accache, sccache, gcc, hits))
         results.append(check_saved_temporaries(root, env, accache, sccache, rustc, hits))
         results.append(check_assembler_include_invalidation(root, env, accache,
                                                             sccache, gcc, hits))
