@@ -1,10 +1,26 @@
 ##! X11 protocol headers, specifications, and key-symbol definitions.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
 }: let
   version = "2025.1";
+  probeSource = ''
+    #include <X11/Xproto.h>
+    #include <X11/keysym.h>
+
+    _Static_assert(X_CreateWindow == 1, "X11 request number changed");
+    _Static_assert(XK_A == 0x0041, "X11 key symbol changed");
+
+    int main(void) {
+    #ifdef INVALID_REQUEST
+        return X_AOSUnsupportedRequest;
+    #else
+        return 0;
+    #endif
+    }
+  '';
 in
   mkDerivation {
     platformSupport = {
@@ -30,6 +46,41 @@ in
       role = "public-package";
     };
     pname = "xorgproto";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "The installed X11 protocol request and key-symbol headers.";
+        operation = "Compile and run assertions against published protocol constants.";
+        expected = "The headers provide the canonical request and key-symbol values.";
+        files."probe.c" = probeSource;
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@cc@" "-I@out@/include" "@work@/probe.c" "-o" "@work@/probe"];
+            exit_code = 0;
+          }
+          {
+            argv = ["@work@/probe"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "A request identifier absent from the installed X11 protocol headers.";
+        operation = "Compile a consumer that asks for the unknown request identifier.";
+        expected = "The headers reject the unsupported request identifier.";
+        files."probe.c" = probeSource;
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@cc@" "-DINVALID_REQUEST" "-I@out@/include" "@work@/probe.c" "-o" "@work@/probe"];
+            exit_code = 1;
+            observes_rejection = true;
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://www.x.org/releases/individual/proto/xorgproto-${version}.tar.xz"];
