@@ -13,8 +13,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -26,8 +42,20 @@ in
     };
 
     buildDeps = [buildPackages.gnumake buildPackages.pkg-config buildPackages.gobject-introspection buildPackages.dbus buildPackages.flex buildPackages.bison];
-    runtimeDeps = [glib graphviz] ++ (if stdenv.hostPlatform.isLinux then [util-linux] else []);
-    propagatedDeps = [glib] ++ (if stdenv.hostPlatform.isLinux then [util-linux] else []);
+    runtimeDeps =
+      [glib graphviz]
+      ++ (
+        if stdenv.hostPlatform.isLinux
+        then [util-linux]
+        else []
+      );
+    propagatedDeps =
+      [glib]
+      ++ (
+        if stdenv.hostPlatform.isLinux
+        then [util-linux]
+        else []
+      );
 
     phases =
       [
