@@ -9,24 +9,25 @@ use crucible_shmem::{
     GuestIntrospectionRingDirection, KIND_9P, KIND_BLK, KIND_NET, KIND_VM, MAX_NODES,
     NODE_SLOT_KIND_OFFSET, NODE_SLOT_SIZE, NODE_SLOT_STATUS_OFFSET,
     REGION_HEADER_ABI_VERSION_OFFSET, REGION_HEADER_ENTRY_STRIDE_OFFSET,
-    REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, REGION_HEADER_ICOUNT_SHIFT_OFFSET,
-    REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
-    REGION_HEADER_QUEUE_CAPACITY_OFFSET, REGION_HEADER_REGION_SIZE_OFFSET,
-    REGION_HEADER_RING_COUNT_OFFSET, REGION_HEADER_RING_DATA_OFF_OFFSET,
-    REGION_HEADER_RING_HDR_OFF_OFFSET, REGION_HEADER_SIZE, REGION_MAGIC,
+    REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, REGION_HEADER_MAGIC_OFFSET,
+    REGION_HEADER_NODE_COUNT_OFFSET, REGION_HEADER_QUEUE_CAPACITY_OFFSET,
+    REGION_HEADER_REGION_SIZE_OFFSET, REGION_HEADER_RING_COUNT_OFFSET,
+    REGION_HEADER_RING_DATA_OFF_OFFSET, REGION_HEADER_RING_HDR_OFF_OFFSET, REGION_HEADER_SIZE,
+    REGION_HEADER_TICKS_PER_NS_OFFSET, REGION_MAGIC, RING_HEADER_PRODUCER_STATE_OFFSET,
     RING_HEADER_READ_IDX_OFFSET, RING_HEADER_SIZE, RING_HEADER_WRITE_IDX_OFFSET, RegionAllocation,
     RegionConfig, RegionHeader, RegionHeaderSnapshot, RegionLayout, RegionSetupValidationError,
-    SLOT_9P_IO, SLOT_BLK_IO, SLOT_NET_ROUTER, STATUS_DONE, STATUS_IDLE, ValidatedSetupRegion,
-    WhiteboxMarkerEntry, validate_setup_region_header,
+    SLOT_9P_IO, SLOT_BLK_IO, SLOT_NET_ROUTER, STATUS_DONE, STATUS_IDLE, SpscRingError,
+    ValidatedSetupRegion, WhiteboxMarkerEntry, validate_setup_region_header,
 };
 
 #[cfg(unix)]
 use crucible_shmem::{
     DequeuedFaultCommand, DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
     FAULT_COMMAND_FLAG_NONE, FAULT_COMMAND_SEMANTIC_VERSION, FaultBoundaryPhase,
-    FaultCommandHeaderV1, FaultCommandKind, FaultResultHeaderV1, FaultResultStatus,
-    MappedSetupRegion, MappedSetupRegionAccessError, SetupRegionMapError, dequeue_fault_command,
-    dequeue_fault_result, enqueue_fault_command, enqueue_fault_result, mmap_setup_region,
+    FaultCommandHeaderV1, FaultCommandKind, FaultResultHeaderV2, FaultResultStatus,
+    HotForkRingImage, HotForkRingImageError, MappedSetupRegion, MappedSetupRegionAccessError,
+    SetupRegionMapError, dequeue_fault_command, dequeue_fault_result, enqueue_fault_command,
+    enqueue_fault_result, mmap_setup_region,
 };
 #[cfg(unix)]
 use std::io::Write;
@@ -71,13 +72,13 @@ fn setup_region_header_validation_rejects_invalid_abi_marker() {
     assert_eq!(
         validate_setup_region_header(
             RegionHeaderSnapshot {
-                abi_version: ABI_VERSION - 1,
+                abi_version: u32::MAX,
                 ..snapshot
             },
             layout.region_size,
         ),
         Err(RegionSetupValidationError::AbiVersionMismatch {
-            actual: ABI_VERSION - 1,
+            actual: u32::MAX,
             expected: ABI_VERSION,
         })
     );
@@ -92,6 +93,26 @@ fn setup_region_header_validation_rejects_invalid_abi_marker() {
         Err(RegionSetupValidationError::AbiVersionMismatch {
             actual: ABI_VERSION + 1,
             expected: ABI_VERSION,
+        })
+    );
+}
+
+#[test]
+fn setup_region_header_validation_rejects_wrong_clock_scale() {
+    let (layout, snapshot) = valid_snapshot();
+    let wrong_scale = snapshot.ticks_per_ns - 1;
+
+    assert_eq!(
+        validate_setup_region_header(
+            RegionHeaderSnapshot {
+                ticks_per_ns: wrong_scale,
+                ..snapshot
+            },
+            layout.region_size,
+        ),
+        Err(RegionSetupValidationError::TicksPerNsMismatch {
+            actual: wrong_scale,
+            expected: snapshot.ticks_per_ns,
         })
     );
 }
@@ -138,7 +159,7 @@ fn setup_region_header_validation_rejects_invalid_geometry() {
 
 #[test]
 fn setup_region_bytes_materialize_a_valid_initial_memfd_image() {
-    let allocation = match RegionAllocation::new_model(RegionConfig::new(2, 4, 3)) {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(2, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };
@@ -187,7 +208,7 @@ fn setup_region_bytes_materialize_a_valid_initial_memfd_image() {
 
 #[test]
 fn setup_region_bytes_include_ring_indices_and_frame_entries() {
-    let mut allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+    let mut allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };
@@ -304,7 +325,7 @@ fn mmap_setup_region_rejects_short_backing_before_mapping() {
 #[test]
 #[cfg(unix)]
 fn mmap_setup_region_exposes_node_slot_and_distinct_directed_rings() {
-    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };
@@ -342,8 +363,240 @@ fn mmap_setup_region_exposes_node_slot_and_distinct_directed_rings() {
 
 #[test]
 #[cfg(unix)]
+fn mapped_hot_fork_barrier_holds_and_releases_every_ring_endpoint() {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
+        Ok(allocation) => allocation,
+        Err(error) => panic!("valid region allocation should build: {error}"),
+    };
+    let mut mapped = mapped_region_from_allocation(&allocation);
+    let frame = FrameEntry::new(11, 0, 1, b"packet")
+        .unwrap_or_else(|error| panic!("valid frame should build: {error}"));
+    {
+        let view = mapped
+            .node_directed_ring_pair_mut(0, SLOT_NET_ROUTER as u32, 0, 0, SLOT_NET_ROUTER as u32)
+            .unwrap_or_else(|error| panic!("mapped node/ring view should bind: {error}"));
+        view.second
+            .header
+            .enqueue(view.second.entries, &frame)
+            .unwrap_or_else(|error| panic!("open mapped ring should enqueue: {error}"));
+    }
+
+    let held = mapped
+        .hold_hot_fork_ring_io()
+        .unwrap_or_else(|error| panic!("complete mapped ring geometry should hold: {error}"));
+    assert!(held.ring_count() > 0);
+    assert_eq!(held.held_rings(), held.ring_count());
+    assert_eq!(held.producers_in_flight(), 0);
+    assert_eq!(held.consumers_in_flight(), 0);
+    assert!(held.quiescent());
+    assert_eq!(mapped.hot_fork_ring_io_snapshot(), Ok(held));
+
+    {
+        let view = mapped
+            .node_directed_ring_pair_mut(0, SLOT_NET_ROUTER as u32, 0, 0, SLOT_NET_ROUTER as u32)
+            .unwrap_or_else(|error| panic!("mapped node/ring view should bind: {error}"));
+        assert_eq!(
+            view.second.header.enqueue(view.second.entries, &frame),
+            Err(SpscRingError::ProducerBarrierHeld)
+        );
+        assert_eq!(
+            view.second.header.dequeue(view.second.entries),
+            Err(SpscRingError::ConsumerBarrierHeld)
+        );
+    }
+
+    let released = mapped
+        .release_hot_fork_ring_io()
+        .unwrap_or_else(|error| panic!("complete mapped ring geometry should release: {error}"));
+    assert_eq!(released.ring_count(), held.ring_count());
+    assert_eq!(released.held_rings(), 0);
+    assert_eq!(released.producers_in_flight(), 0);
+    assert_eq!(released.consumers_in_flight(), 0);
+    assert!(!released.quiescent());
+
+    let view = mapped
+        .node_directed_ring_pair_mut(0, SLOT_NET_ROUTER as u32, 0, 0, SLOT_NET_ROUTER as u32)
+        .unwrap_or_else(|error| panic!("mapped node/ring view should rebind: {error}"));
+    assert_eq!(
+        view.second.header.dequeue(view.second.entries),
+        Ok(Some(frame))
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn hot_fork_ring_image_round_trips_queued_bytes_into_a_held_private_mapping() {
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))
+        .unwrap_or_else(|error| panic!("valid region allocation should build: {error}"));
+    let mut source = mapped_region_from_allocation(&allocation);
+    let mut destination = mapped_region_from_allocation(&allocation);
+    let frame = FrameEntry::new(23, 0, 7, b"retained ring bytes")
+        .unwrap_or_else(|error| panic!("valid frame should build: {error}"));
+    {
+        let view = source
+            .node_directed_ring_pair_mut(0, SLOT_NET_ROUTER as u32, 0, 0, SLOT_NET_ROUTER as u32)
+            .unwrap_or_else(|error| panic!("source ring should bind: {error}"));
+        view.second
+            .header
+            .enqueue(view.second.entries, &frame)
+            .unwrap_or_else(|error| panic!("source ring should enqueue: {error}"));
+    }
+    source
+        .hold_hot_fork_ring_io()
+        .unwrap_or_else(|error| panic!("source rings should hold: {error}"));
+    destination
+        .hold_hot_fork_ring_io()
+        .unwrap_or_else(|error| panic!("destination rings should hold: {error}"));
+
+    assert!(matches!(
+        source.capture_hot_fork_ring_image(1),
+        Err(HotForkRingImageError::ImageTooLarge { .. })
+    ));
+    let image = source
+        .capture_hot_fork_ring_image(usize::MAX)
+        .unwrap_or_else(|error| panic!("held source should capture: {error}"));
+    let canonical = image
+        .canonical_bytes()
+        .unwrap_or_else(|error| panic!("captured image should encode: {error}"));
+    assert_eq!(canonical.len(), image.canonical_len().unwrap_or(0));
+    let decoded = HotForkRingImage::from_canonical_bytes(&canonical, canonical.len())
+        .unwrap_or_else(|error| panic!("canonical image should decode: {error}"));
+    assert_eq!(
+        decoded
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("decoded image should re-encode: {error}")),
+        canonical
+    );
+    assert_eq!(decoded.digest(), image.digest());
+    assert_eq!(decoded.abi_version(), ABI_VERSION);
+    assert_eq!(decoded.region_size(), allocation.layout().region_size);
+
+    let mut unsupported_abi = canonical.clone();
+    unsupported_abi[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(matches!(
+        HotForkRingImage::from_canonical_bytes(&unsupported_abi, unsupported_abi.len()),
+        Err(HotForkRingImageError::InvalidCanonicalImage {
+            reason: "hot-fork-ring-image-abi"
+        })
+    ));
+
+    assert!(matches!(
+        HotForkRingImage::from_canonical_bytes(&canonical, canonical.len() - 1),
+        Err(HotForkRingImageError::ImageTooLarge { .. })
+    ));
+    let mut trailing = canonical.clone();
+    trailing.push(0);
+    assert!(matches!(
+        HotForkRingImage::from_canonical_bytes(&trailing, trailing.len()),
+        Err(HotForkRingImageError::InvalidCanonicalImage {
+            reason: "hot-fork-ring-image-trailing-bytes"
+        })
+    ));
+    assert!(matches!(
+        HotForkRingImage::from_canonical_bytes(&canonical[..canonical.len() - 1], canonical.len()),
+        Err(HotForkRingImageError::InvalidCanonicalImage {
+            reason: "hot-fork-ring-image-truncated"
+        })
+    ));
+
+    let mismatched_allocation = RegionAllocation::new_model(RegionConfig::new(1, 8))
+        .unwrap_or_else(|error| panic!("valid mismatched allocation should build: {error}"));
+    let mut mismatched = mapped_region_from_allocation(&mismatched_allocation);
+    assert_eq!(
+        mismatched.restore_hot_fork_ring_image(&decoded),
+        Err(HotForkRingImageError::LayoutMismatch)
+    );
+    let mismatched_view = mismatched
+        .node_directed_ring_pair_mut(0, SLOT_NET_ROUTER as u32, 0, 0, SLOT_NET_ROUTER as u32)
+        .unwrap_or_else(|error| panic!("mismatched ring should remain valid: {error}"));
+    assert_eq!(
+        mismatched_view
+            .second
+            .header
+            .dequeue(mismatched_view.second.entries),
+        Ok(None)
+    );
+
+    const FIRST_SEGMENT_BODY_OFFSET: usize = 8 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 8 + 8;
+    let mut open_header = canonical.clone();
+    let producer_state = FIRST_SEGMENT_BODY_OFFSET + RING_HEADER_PRODUCER_STATE_OFFSET;
+    open_header[producer_state..producer_state + 8].fill(0);
+    assert!(matches!(
+        HotForkRingImage::from_canonical_bytes(&open_header, open_header.len()),
+        Err(HotForkRingImageError::InvalidCanonicalImage {
+            reason: "hot-fork-ring-image-open-or-active-header"
+        })
+    ));
+
+    let mut impossible_cursor = canonical.clone();
+    let write_index = FIRST_SEGMENT_BODY_OFFSET + RING_HEADER_WRITE_IDX_OFFSET;
+    impossible_cursor[write_index..write_index + 8].copy_from_slice(&5_u64.to_le_bytes());
+    assert!(matches!(
+        HotForkRingImage::from_canonical_bytes(&impossible_cursor, impossible_cursor.len()),
+        Err(HotForkRingImageError::InvalidCanonicalImage {
+            reason: "hot-fork-ring-image-cursor-capacity"
+        })
+    ));
+
+    let mut tampered = canonical.clone();
+    let payload_index = tampered.len() / 2;
+    tampered[payload_index] ^= 1;
+    assert!(matches!(
+        HotForkRingImage::from_canonical_bytes(&tampered, tampered.len()),
+        Err(HotForkRingImageError::DigestMismatch)
+            | Err(HotForkRingImageError::InvalidCanonicalImage { .. })
+    ));
+
+    destination
+        .restore_hot_fork_ring_image(&decoded)
+        .unwrap_or_else(|error| panic!("held destination should restore: {error}"));
+    let destination_held = destination
+        .hot_fork_ring_io_snapshot()
+        .unwrap_or_else(|error| panic!("destination barrier should query: {error}"));
+    assert!(destination_held.quiescent());
+    destination
+        .release_hot_fork_ring_io()
+        .unwrap_or_else(|error| panic!("destination rings should release: {error}"));
+    let destination_view = destination
+        .node_directed_ring_pair_mut(0, SLOT_NET_ROUTER as u32, 0, 0, SLOT_NET_ROUTER as u32)
+        .unwrap_or_else(|error| panic!("destination ring should bind: {error}"));
+    assert_eq!(
+        destination_view
+            .second
+            .header
+            .dequeue(destination_view.second.entries),
+        Ok(Some(frame.clone()))
+    );
+
+    let source_view = source
+        .node_directed_ring_pair_mut(0, SLOT_NET_ROUTER as u32, 0, 0, SLOT_NET_ROUTER as u32)
+        .unwrap_or_else(|error| panic!("source ring should remain bound: {error}"));
+    assert_eq!(
+        source_view
+            .second
+            .header
+            .dequeue(source_view.second.entries),
+        Err(SpscRingError::ConsumerBarrierHeld)
+    );
+    source
+        .release_hot_fork_ring_io()
+        .unwrap_or_else(|error| panic!("source rings should release: {error}"));
+    let source_view = source
+        .node_directed_ring_pair_mut(0, SLOT_NET_ROUTER as u32, 0, 0, SLOT_NET_ROUTER as u32)
+        .unwrap_or_else(|error| panic!("source ring should rebind: {error}"));
+    assert_eq!(
+        source_view
+            .second
+            .header
+            .dequeue(source_view.second.entries),
+        Ok(Some(frame))
+    );
+}
+
+#[test]
+#[cfg(unix)]
 fn mmap_setup_region_rejects_duplicate_mutable_directed_ring_view() {
-    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };
@@ -361,7 +614,7 @@ fn mmap_setup_region_rejects_duplicate_mutable_directed_ring_view() {
 #[test]
 #[cfg(unix)]
 fn mmap_setup_region_round_trips_whitebox_marker_ring_entries() {
-    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };
@@ -390,8 +643,42 @@ fn mmap_setup_region_round_trips_whitebox_marker_ring_entries() {
 
 #[test]
 #[cfg(unix)]
+fn mmap_setup_region_round_trips_one_bounded_selectable_reply() {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
+        Ok(allocation) => allocation,
+        Err(error) => panic!("valid region allocation should build: {error}"),
+    };
+    let mut mapped = mapped_region_from_allocation(&allocation);
+    let reply = match WhiteboxMarkerEntry::new(1_207, 0, 0xff07, b"CRUCSRPL1") {
+        Ok(reply) => reply,
+        Err(error) => panic!("valid selectable reply entry should build: {error}"),
+    };
+
+    let ring = match mapped.selectable_reply_ring_mut(0) {
+        Ok(ring) => ring,
+        Err(error) => panic!("mapped selectable reply ring should bind: {error}"),
+    };
+    if let Err(error) = ring.header.enqueue_whitebox_marker(ring.entries, reply) {
+        panic!("mapped selectable reply ring should enqueue: {error}");
+    }
+    assert_eq!(
+        ring.header.enqueue_whitebox_marker(ring.entries, reply),
+        Err(SpscRingError::QueueFull { capacity: 1 })
+    );
+    let consumed = match ring.header.dequeue_whitebox_marker(ring.entries) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => panic!("mapped selectable reply ring should contain one entry"),
+        Err(error) => panic!("mapped selectable reply ring should dequeue: {error}"),
+    };
+
+    assert_eq!(consumed.validate(), Ok(reply));
+    assert_eq!(ring.header.dequeue_whitebox_marker(ring.entries), Ok(None));
+}
+
+#[test]
+#[cfg(unix)]
 fn mmap_setup_region_round_trips_fault_command_transport() {
-    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };
@@ -453,7 +740,7 @@ fn mmap_setup_region_round_trips_fault_command_transport() {
         Err(error) => panic!("mapped fault result transport should bind: {error}"),
     };
     let before = hash(b"before");
-    let result = FaultResultHeaderV1 {
+    let result = FaultResultHeaderV2 {
         abi_major: FAULT_COMMAND_ABI_MAJOR,
         abi_minor: FAULT_COMMAND_ABI_MINOR,
         command_kind: FaultCommandKind::MemoryMutation as u16,
@@ -462,6 +749,7 @@ fn mmap_setup_region_round_trips_fault_command_transport() {
         command_sequence: 1,
         observed_icount: 10,
         applied_icount: 10,
+        emitted_tick: 83,
         capability_version: 1,
         phase: FaultBoundaryPhase::NodeBoundary,
         before_hash: before,
@@ -505,7 +793,7 @@ fn mmap_setup_region_round_trips_fault_command_transport() {
 fn mmap_setup_region_keeps_guest_introspection_directions_distinct() {
     const CLOSE_RECORD: &[u8] =
         b"CRGI\x01\x00\x07\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
-    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };

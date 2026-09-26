@@ -5,11 +5,11 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    BackendInput, ExactLocalEvent, Icount, IoCompletion, NetworkLookahead, NodeCounter, NodeId,
+    BackendInput, ExactLocalEvent, IoCompletion, NetworkLookahead, NodeCounter, NodeId,
     QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerError, SchedulerHorizon, SchedulerHorizonLimit, SchedulerHorizonSource,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler, VirtualTime,
+    SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler, VirtualTime,
     horizon_from_network_lookahead, next_exact_local_event,
 };
 
@@ -22,35 +22,34 @@ fn next_exact_local_event_selects_earliest_timer_or_io() {
     let exact = next_exact_local_event(
         &node,
         ExactLocalEvent::TimerDeadline {
-            virtual_time: SimInstant { nanos: 30 },
+            virtual_time: SimInstant { ticks: 30 },
         },
         &events,
-        shift(0),
     )
     .expect("exact local event should reduce");
 
     assert_eq!(
         exact,
         ExactLocalEvent::IoCompletion {
-            virtual_time: SimInstant { nanos: 12 },
+            virtual_time: SimInstant { ticks: 12 },
             sub_node: disk,
         }
     );
 }
 
 #[test]
-fn next_exact_local_event_converts_io_delivery_icount_with_shift() {
+fn next_exact_local_event_preserves_non_instruction_aligned_io_tick() {
     let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let ninep = scheduler_node("node-a", SchedulingNodeKind::NineP);
-    let events = vec![io_event_at_virtual_time(14, 7, &node, &ninep, b"ninep")];
+    let events = vec![io_event_at_virtual_time(14, 14, &node, &ninep, b"ninep")];
 
-    let exact = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events, shift(1))
+    let exact = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events)
         .expect("exact local event should reduce");
 
     assert_eq!(
         exact,
         ExactLocalEvent::IoCompletion {
-            virtual_time: SimInstant { nanos: 14 },
+            virtual_time: SimInstant { ticks: 14 },
             sub_node: ninep,
         }
     );
@@ -62,11 +61,11 @@ fn next_exact_local_event_rejects_inconsistent_io_delivery_time() {
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
     let events = vec![io_event_at_virtual_time(9, 7, &node, &disk, b"stale-key")];
 
-    let error = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events, shift(1))
+    let error = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events)
         .expect_err("inconsistent I/O timing must fail loudly");
 
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
-    assert!(error.to_string().contains("does not match delivery icount"));
+    assert!(error.to_string().contains("does not match delivery tick"));
 }
 
 #[test]
@@ -80,7 +79,7 @@ fn next_exact_local_event_rejects_io_target_mismatch() {
     }
     let events = vec![event];
 
-    let error = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events, shift(0))
+    let error = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events)
         .expect_err("I/O target mismatch must fail loudly");
 
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
@@ -97,7 +96,7 @@ fn next_exact_local_event_ignores_network_input_and_other_nodes() {
         io_event(4, &peer, &peer_disk, b"other-io"),
     ];
 
-    let exact = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events, shift(0))
+    let exact = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events)
         .expect("exact local event should reduce");
 
     assert_eq!(exact, ExactLocalEvent::NoArmedTimer);
@@ -109,16 +108,15 @@ fn single_scheduler_uses_pending_io_completion_as_exact_local_horizon() {
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "exact-local-io-horizon",
-        shift(1),
         8,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![scenario_node(
             "node-a",
             0,
-            NetworkLookahead::Finite(SimDuration { nanos: 30 }),
+            NetworkLookahead::Finite(SimDuration { ticks: 30 }),
             ExactLocalEvent::NoArmedTimer,
         )],
-        vec![io_event_at_virtual_time(14, 7, &node, &disk, b"ready")],
+        vec![io_event_at_virtual_time(14, 14, &node, &disk, b"ready")],
     );
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should be valid");
     let request = QuantumRequest {
@@ -143,24 +141,23 @@ fn single_scheduler_uses_pending_io_completion_as_exact_local_horizon() {
 fn horizon_uses_io_completion_as_exact_local_source() {
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
     let horizon = horizon_from_network_lookahead(
-        SimInstant { nanos: 10 },
-        NetworkLookahead::Finite(SimDuration { nanos: 20 }),
+        SimInstant { ticks: 10 },
+        NetworkLookahead::Finite(SimDuration { ticks: 20 }),
         ExactLocalEvent::IoCompletion {
-            virtual_time: SimInstant { nanos: 14 },
+            virtual_time: SimInstant { ticks: 14 },
             sub_node: disk,
         },
-        shift(0),
     );
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizon {
+        SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
-                virtual_time: SimInstant { nanos: 14 },
-                ceiling: Icount { retired: 14 },
+                virtual_time: SimInstant { ticks: 14 },
+                ceiling: NodeCounter { ticks: 14 },
             },
             source: SchedulerHorizonSource::ExactLocalIoCompletion,
-        })
+        }
     );
 }
 
@@ -174,41 +171,37 @@ fn scheduler_node(name: &str, kind: SchedulingNodeKind) -> SchedulerNodeId {
 }
 
 fn io_event(
-    delivery_icount: u64,
+    delivery_tick: u64,
     consumer: &SchedulerNodeId,
     sub_node: &SchedulerNodeId,
     payload: &[u8],
 ) -> ScheduledEvent {
-    io_event_at_virtual_time(
-        delivery_icount,
-        delivery_icount,
-        consumer,
-        sub_node,
-        payload,
-    )
+    io_event_at_virtual_time(delivery_tick, delivery_tick, consumer, sub_node, payload)
 }
 
 fn io_event_at_virtual_time(
     virtual_time: u64,
-    delivery_icount: u64,
+    delivery_tick: u64,
     consumer: &SchedulerNodeId,
     sub_node: &SchedulerNodeId,
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: SimInstant {
+                    ticks: virtual_time,
+                },
+                node: consumer.clone(),
+                sequence: delivery_tick,
             },
-            consumer.clone(),
             sub_node.clone(),
-            delivery_icount,
         ),
         payload: ScheduledEventPayload::IoCompletion(IoCompletion {
             sub_node: sub_node.clone(),
             target: consumer.node.clone(),
-            delivery_icount: Icount {
-                retired: delivery_icount,
+            delivery_tick: crucible::SimInstant {
+                ticks: delivery_tick,
             },
             payload: payload.to_vec(),
         }),
@@ -222,13 +215,15 @@ fn backend_event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: SimInstant {
+                    ticks: virtual_time,
+                },
+                node: consumer.clone(),
+                sequence: virtual_time,
             },
-            consumer.clone(),
             producer.clone(),
-            virtual_time,
         ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),
@@ -250,8 +245,4 @@ fn scenario_node(
         network_lookahead,
         exact_local_event,
     }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }

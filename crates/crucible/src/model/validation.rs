@@ -15,7 +15,7 @@ pub(super) fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineErro
             });
         }
         match &node.ready_point {
-            ReadyPoint::NetworkIdle { window } if window.nanos == 0 => {
+            ReadyPoint::NetworkIdle { window } if window.ticks == 0 => {
                 return Err(EngineError::ReadyPointNetworkIdleWindowZero {
                     node: node.id.clone(),
                 });
@@ -38,13 +38,6 @@ pub(super) fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineErro
         if node.memory_mib < MIN_WORLD_MEMORY_MIB {
             return Err(EngineError::WorldNodeMemoryMibZero {
                 node: node.id.clone(),
-            });
-        }
-        if node.icount_shift > MAX_WORLD_ICOUNT_SHIFT {
-            return Err(EngineError::WorldNodeIcountShiftTooLarge {
-                node: node.id.clone(),
-                shift: node.icount_shift,
-                maximum: MAX_WORLD_ICOUNT_SHIFT,
             });
         }
         validate_world_node_workload(node)?;
@@ -387,12 +380,6 @@ pub(super) fn validate_world_node_defs(nodes: &[WorldNodeDef]) -> Result<(), Eng
                 owner: node.owner.clone(),
             });
         }
-        if node.core.shift_bits >= 64 {
-            return Err(EngineError::WorldIoNodeClockShiftTooLarge {
-                node: node.id.clone(),
-                shift: node.core.shift_bits,
-            });
-        }
         let device = node.device_id();
         if !device_ids.insert(device.clone()) {
             return Err(EngineError::DuplicateWorldDeviceId { device });
@@ -417,9 +404,9 @@ pub(super) fn validate_properties_for_world(
     world: &World,
     assertions: &[AssertionDef],
 ) -> Result<(), EngineError> {
-    let node_ids = world.nodes.iter().map(|node| &node.id).collect();
+    let node_ids = world.vm_nodes().iter().map(|node| &node.id).collect();
     let white_box_node_ids = world
-        .nodes
+        .vm_nodes()
         .iter()
         .filter(|node| node.white_box == WhiteBoxPolicy::Enabled)
         .map(|node| &node.id)

@@ -1,0 +1,683 @@
+//! Concrete single-host attachment for one canonical campaign runtime.
+//!
+//! This module composes the repository-owned coordinator with the packaged
+//! canonical planner process and one already-connected local executor stream.
+//! Attachment performs capability negotiation and exact lineage validation
+//! before publishing the deterministic planner basis or starting a thread.
+//! The caller remains responsible for authenticating the executor peer before
+//! handing over the connected stream.
+
+use std::cmp;
+use std::os::unix::net::UnixStream;
+use std::sync::Arc;
+
+use crucible_campaign::{
+    AttemptId, AttemptResourceLimits, AuthorizedPlannerService, AuthorizedPlannerServiceError,
+    CampaignCodecError, CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignName,
+    CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPlannerDriverError,
+    CampaignRepository, CampaignRepositoryError, CampaignSupervisor, CampaignSupervisorConfigError,
+    CampaignSupervisorError, CanonicalBeamPlanner, CanonicalFrontierPlanner, CanonicalPuctPlanner,
+    ExecutionRetentionIntent, ExecutorClient, ExecutorClientError, ExplorerPolicy,
+    MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
+    MAX_PLANNER_SCAN_PAGE_ITEMS, PlannerAuthorityKey, PlannerClient, PlannerClientError,
+    PlannerRequest, PlannerResponse, PlannerService, PlanningBudget, ScenarioArtifactId,
+};
+
+use crate::{
+    CampaignRuntime, CampaignRuntimeCompletion, CampaignRuntimeConfig, CampaignRuntimeDriver,
+    CampaignRuntimeJoinError, CampaignRuntimeReport, CampaignRuntimeStartError,
+    CampaignRuntimeStepDisposition, CanonicalPlannerProcessCancellation,
+    CanonicalPlannerProcessConfig, CanonicalPlannerProcessError, CanonicalPlannerProcessSupervisor,
+    ExecutorLoopbackEndpointConfig, LoopbackExecutorProtocolError, LoopbackExecutorService,
+    ObjectivePublishingCampaignDriver, ObjectivePublishingCampaignDriverError,
+};
+
+/// Maximum number of canonical campaign runtimes attached to one daemon.
+///
+/// Each attachment owns one supervisor thread and one checked executor
+/// connection. The fixed ceiling bounds startup work, threads, completion
+/// monitors, and shutdown joins independently of repository campaign count.
+pub const MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES: usize = 256;
+
+/// Default positions served to one packaged planner invocation.
+pub const DEFAULT_CANONICAL_PLANNER_SCAN_LIMIT: u32 = 1_024;
+
+/// Default accounting positions scanned by one executor-driver step.
+pub const DEFAULT_CANONICAL_EXECUTOR_SCAN_LIMIT: usize = 1_024;
+
+/// Default canonical planner input-byte allowance per invocation.
+pub const DEFAULT_CANONICAL_PLANNER_INPUT_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Exact startup contract for one canonical single-host campaign runtime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalCampaignRuntimeConfig {
+    campaign: CampaignName,
+    planner_process: CanonicalPlannerProcessConfig,
+    planner_scan_limit: u32,
+    planning_budget: PlanningBudget,
+    executor_resources: Option<AttemptResourceLimits>,
+    retention: ExecutionRetentionIntent,
+    executor_scan_limit: usize,
+    worker_slots: Option<u32>,
+    private_target_attempt: Option<AttemptId>,
+    runtime: CampaignRuntimeConfig,
+    executor_timeouts: crate::LoopbackExecutorTimeouts,
+}
+
+impl CanonicalCampaignRuntimeConfig {
+    /// Builds one explicit canonical runtime attachment contract.
+    ///
+    /// `None` executor resources select the executor's advertised per-attempt
+    /// ceiling. `None` worker slots select its advertised slot ceiling capped
+    /// by the coordinator's fixed 256-slot bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalCampaignRuntimeConfigError`] when either scan limit
+    /// or an explicit worker-slot count is outside its fixed protocol bound.
+    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        campaign: CampaignName,
+        planner_process: CanonicalPlannerProcessConfig,
+        planner_scan_limit: u32,
+        planning_budget: PlanningBudget,
+        executor_resources: Option<AttemptResourceLimits>,
+        retention: ExecutionRetentionIntent,
+        executor_scan_limit: usize,
+        worker_slots: Option<u32>,
+        runtime: CampaignRuntimeConfig,
+    ) -> Result<Self, CanonicalCampaignRuntimeConfigError> {
+        if planner_scan_limit == 0 || planner_scan_limit > MAX_PLANNER_SCAN_PAGE_ITEMS {
+            return Err(CanonicalCampaignRuntimeConfigError::InvalidPlannerScanLimit);
+        }
+        if executor_scan_limit == 0 || executor_scan_limit > MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS {
+            return Err(CanonicalCampaignRuntimeConfigError::InvalidExecutorScanLimit);
+        }
+        if worker_slots
+            .is_some_and(|slots| slots == 0 || slots > MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS)
+        {
+            return Err(CanonicalCampaignRuntimeConfigError::InvalidWorkerSlots);
+        }
+        Ok(Self {
+            campaign,
+            planner_process,
+            planner_scan_limit,
+            planning_budget,
+            executor_resources,
+            retention,
+            executor_scan_limit,
+            worker_slots,
+            private_target_attempt: None,
+            runtime,
+            executor_timeouts: crate::LoopbackExecutorTimeouts::default(),
+        })
+    }
+
+    /// Selects the finite read and write deadlines for executor exchanges.
+    ///
+    /// The same deadlines are retained across the one bounded reconnect. The
+    /// supplied value is already validated by [`crate::LoopbackExecutorTimeouts`].
+    #[must_use]
+    pub const fn with_executor_timeouts(
+        mut self,
+        executor_timeouts: crate::LoopbackExecutorTimeouts,
+    ) -> Self {
+        self.executor_timeouts = executor_timeouts;
+        self
+    }
+
+    /// Restricts an owner-private finding runtime to one admitted attempt.
+    #[must_use]
+    pub const fn for_private_finding_target(mut self, target: AttemptId) -> Self {
+        self.private_target_attempt = Some(target);
+        self
+    }
+
+    /// Builds the reviewed default attachment profile.
+    ///
+    /// The profile serves at most 1,024 positions and 16 MiB per planner call,
+    /// retains exact state on modeled failure, uses the executor's advertised
+    /// resource ceiling, and caps worker slots at 256.
+    ///
+    /// # Errors
+    ///
+    /// Returns a codec or configuration error if a fixed default unexpectedly
+    /// violates the canonical budget or attachment bounds.
+    pub fn canonical_defaults(
+        campaign: CampaignName,
+        planner_process: CanonicalPlannerProcessConfig,
+    ) -> Result<Self, CanonicalCampaignRuntimeConfigError> {
+        let planning_budget = PlanningBudget::new(
+            1,
+            1,
+            DEFAULT_CANONICAL_PLANNER_SCAN_LIMIT,
+            DEFAULT_CANONICAL_PLANNER_INPUT_BYTES,
+            u64::from(DEFAULT_CANONICAL_PLANNER_SCAN_LIMIT) + 1,
+        )
+        .map_err(CanonicalCampaignRuntimeConfigError::Codec)?;
+        Self::new(
+            campaign,
+            planner_process,
+            DEFAULT_CANONICAL_PLANNER_SCAN_LIMIT,
+            planning_budget,
+            None,
+            ExecutionRetentionIntent::RetainOnFailure,
+            DEFAULT_CANONICAL_EXECUTOR_SCAN_LIMIT,
+            None,
+            CampaignRuntimeConfig::default(),
+        )
+    }
+
+    /// Returns the exact campaign selected at process startup.
+    #[must_use]
+    pub const fn campaign(&self) -> &CampaignName {
+        &self.campaign
+    }
+
+    /// Returns the packaged planner process contract.
+    #[must_use]
+    pub const fn planner_process(&self) -> &CanonicalPlannerProcessConfig {
+        &self.planner_process
+    }
+
+    /// Returns the planner page bound.
+    #[must_use]
+    pub const fn planner_scan_limit(&self) -> u32 {
+        self.planner_scan_limit
+    }
+
+    /// Returns the complete planner invocation budget.
+    #[must_use]
+    pub const fn planning_budget(&self) -> PlanningBudget {
+        self.planning_budget
+    }
+
+    /// Returns the requested resources or `None` for advertised ceilings.
+    #[must_use]
+    pub const fn executor_resources(&self) -> Option<AttemptResourceLimits> {
+        self.executor_resources
+    }
+
+    /// Returns the exact execution-retention intent.
+    #[must_use]
+    pub const fn retention(&self) -> ExecutionRetentionIntent {
+        self.retention
+    }
+
+    /// Returns the executor accounting page bound.
+    #[must_use]
+    pub const fn executor_scan_limit(&self) -> usize {
+        self.executor_scan_limit
+    }
+
+    /// Returns explicit worker slots or `None` for advertised capacity.
+    #[must_use]
+    pub const fn worker_slots(&self) -> Option<u32> {
+        self.worker_slots
+    }
+
+    /// Returns the sole private finding attempt, when this is a targeted runtime.
+    #[must_use]
+    pub const fn private_target_attempt(&self) -> Option<AttemptId> {
+        self.private_target_attempt
+    }
+
+    /// Returns the long-lived runtime cadence.
+    #[must_use]
+    pub const fn runtime(&self) -> CampaignRuntimeConfig {
+        self.runtime
+    }
+
+    /// Returns the finite read and write deadlines for executor exchanges.
+    #[must_use]
+    pub const fn executor_timeouts(&self) -> crate::LoopbackExecutorTimeouts {
+        self.executor_timeouts
+    }
+}
+
+/// Invalid static canonical-runtime attachment configuration.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum CanonicalCampaignRuntimeConfigError {
+    /// The planner scan limit is outside `1..=10,000`.
+    #[error("canonical campaign planner scan limit is outside 1..=10,000")]
+    InvalidPlannerScanLimit,
+    /// The executor scan limit is outside `1..=10,000`.
+    #[error("canonical campaign executor scan limit is outside 1..=10,000")]
+    InvalidExecutorScanLimit,
+    /// The worker-slot count is zero or exceeds 256.
+    #[error("canonical campaign worker slots are outside 1..=256")]
+    InvalidWorkerSlots,
+    /// A fixed canonical budget could not be constructed.
+    #[error(transparent)]
+    Codec(CampaignCodecError),
+}
+
+type AuthorizedCanonicalFrontierPlanner =
+    AuthorizedPlannerService<CanonicalFrontierPlanner, CanonicalPlannerProcessSupervisor>;
+type AuthorizedCanonicalPuctPlanner =
+    AuthorizedPlannerService<CanonicalPuctPlanner, CanonicalPlannerProcessSupervisor>;
+type AuthorizedCanonicalBeamPlanner =
+    AuthorizedPlannerService<CanonicalBeamPlanner, CanonicalPlannerProcessSupervisor>;
+type CanonicalPlannerServiceError =
+    AuthorizedPlannerServiceError<CampaignCodecError, CanonicalPlannerProcessError>;
+
+enum CanonicalPlannerService {
+    Frontier(AuthorizedCanonicalFrontierPlanner),
+    Puct(AuthorizedCanonicalPuctPlanner),
+    Beam(AuthorizedCanonicalBeamPlanner),
+}
+
+impl PlannerService for CanonicalPlannerService {
+    type Error = CanonicalPlannerServiceError;
+
+    fn plan(&mut self, request: &PlannerRequest) -> Result<PlannerResponse, Self::Error> {
+        match (self, request.policy().explorer()) {
+            (Self::Frontier(service), ExplorerPolicy::Exhaustive { .. }) => service.plan(request),
+            (Self::Puct(service), ExplorerPolicy::TreeSearch { .. }) => service.plan(request),
+            (Self::Beam(service), ExplorerPolicy::Beam { .. }) => service.plan(request),
+            _ => Err(AuthorizedPlannerServiceError::InvalidOutput(
+                CampaignCodecError::InvalidValue {
+                    reason: "active campaign explorer policy changed after planner attachment",
+                },
+            )),
+        }
+    }
+}
+
+type CanonicalSupervisor = CampaignSupervisor<CanonicalPlannerService, LoopbackExecutorService>;
+type CanonicalSupervisorFailure =
+    CampaignSupervisorError<CanonicalPlannerServiceError, LoopbackExecutorProtocolError>;
+type CanonicalRuntimeDriverInner = ObjectivePublishingCampaignDriver<CanonicalSupervisor>;
+type CanonicalRuntimeDriverFailure =
+    ObjectivePublishingCampaignDriverError<CanonicalSupervisorFailure>;
+
+struct CanonicalRuntimeDriver {
+    inner: CanonicalRuntimeDriverInner,
+    planner_cancellation: CanonicalPlannerProcessCancellation,
+}
+
+impl CampaignRuntimeDriver for CanonicalRuntimeDriver {
+    type Error = CanonicalRuntimeDriverFailure;
+
+    fn step(&mut self) -> Result<CampaignRuntimeStepDisposition, Self::Error> {
+        match self.inner.step() {
+            Err(error)
+                if self.planner_cancellation.is_canceled()
+                    && is_canonical_planner_cancellation(&error) =>
+            {
+                Ok(CampaignRuntimeStepDisposition::Wait)
+            }
+            result => result,
+        }
+    }
+}
+
+fn is_canonical_planner_cancellation(error: &CanonicalRuntimeDriverFailure) -> bool {
+    matches!(
+        error,
+        ObjectivePublishingCampaignDriverError::Inner(CampaignSupervisorError::Planner(
+            CampaignPlannerDriverError::Planner(PlannerClientError::Service(
+                AuthorizedPlannerServiceError::Supervisor(CanonicalPlannerProcessError::Canceled)
+            ))
+        ))
+    )
+}
+
+/// Prepared coordinator that has not started its long-lived thread.
+#[must_use = "prepared campaign runtime must be started or explicitly dropped"]
+pub struct PreparedCanonicalCampaignRuntime {
+    repository_identity: Arc<CampaignRepository>,
+    campaign: CampaignName,
+    scenario: ScenarioArtifactId,
+    supervisor: CanonicalRuntimeDriverInner,
+    planner_cancellation: CanonicalPlannerProcessCancellation,
+    runtime: CampaignRuntimeConfig,
+}
+
+impl PreparedCanonicalCampaignRuntime {
+    pub(crate) fn uses_repository(&self, repository: &Arc<CampaignRepository>) -> bool {
+        Arc::ptr_eq(&self.repository_identity, repository)
+    }
+
+    /// Returns the exact campaign owned by this prepared runtime.
+    #[must_use]
+    pub const fn campaign(&self) -> &CampaignName {
+        &self.campaign
+    }
+
+    pub(crate) const fn scenario(&self) -> ScenarioArtifactId {
+        self.scenario
+    }
+
+    /// Starts the fixed campaign runtime thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalCampaignRuntimeError::RuntimeStart`] when the host
+    /// refuses to create the one fixed thread.
+    pub fn start(self) -> Result<AttachedCanonicalCampaignRuntime, CanonicalCampaignRuntimeError> {
+        let supervisor = CanonicalRuntimeDriver {
+            inner: self.supervisor,
+            planner_cancellation: self.planner_cancellation.clone(),
+        };
+        let runtime = CampaignRuntime::start(supervisor, self.runtime)
+            .map_err(CanonicalCampaignRuntimeError::RuntimeStart)?;
+        Ok(AttachedCanonicalCampaignRuntime {
+            campaign: self.campaign,
+            runtime,
+            planner_cancellation: self.planner_cancellation,
+        })
+    }
+}
+
+/// Long-lived canonical campaign runtime attached to one local executor.
+///
+/// Dropping this owner synchronously cancels and joins the runtime so a
+/// containing service cannot release repository ownership first.
+#[must_use = "attached campaign runtime must be shut down and joined"]
+pub struct AttachedCanonicalCampaignRuntime {
+    campaign: CampaignName,
+    runtime: CampaignRuntime<CanonicalRuntimeDriver>,
+    planner_cancellation: CanonicalPlannerProcessCancellation,
+}
+
+impl AttachedCanonicalCampaignRuntime {
+    /// Returns the exact campaign driven by this runtime.
+    #[must_use]
+    pub const fn campaign(&self) -> &CampaignName {
+        &self.campaign
+    }
+
+    /// Returns a capability-free terminal completion signal.
+    #[must_use]
+    pub fn completion_handle(&self) -> CampaignRuntimeCompletion {
+        self.runtime.completion_handle()
+    }
+
+    /// Requests sticky runtime and in-flight planner-process cancellation.
+    pub fn request_shutdown(&self) {
+        self.runtime.request_shutdown();
+        self.planner_cancellation.cancel();
+    }
+
+    /// Stops and joins the runtime, returning its bounded counters.
+    ///
+    /// # Errors
+    ///
+    /// Returns a terminal driver failure or thread panic from the attached
+    /// runtime. Planner cancellation is made sticky before joining.
+    pub fn shutdown_and_join(
+        mut self,
+    ) -> Result<CampaignRuntimeReport, CanonicalCampaignRuntimeError> {
+        self.runtime.request_shutdown();
+        self.planner_cancellation.cancel();
+        self.runtime
+            .shutdown_and_join_in_place()
+            .map_err(CanonicalCampaignRuntimeError::Runtime)
+    }
+}
+
+impl Drop for AttachedCanonicalCampaignRuntime {
+    fn drop(&mut self) {
+        self.runtime.request_shutdown();
+        self.planner_cancellation.cancel();
+        let _ = self.runtime.shutdown_and_join_in_place();
+    }
+}
+
+/// Prepares one exact built-in planner and checked local-executor composition.
+///
+/// The executor stream must already be connected and authenticated by the
+/// deployment owner. This function first obtains immutable executor facts,
+/// authenticates the selected campaign and exact lineage compatibility, and
+/// validates requested ceilings. Only then does it publish the fixed planner
+/// basis and construct the restart-rebuildable drivers.
+///
+/// # Errors
+///
+/// Returns [`CanonicalCampaignRuntimeError`] for transport, repository,
+/// compatibility, resource, driver, or supervisor composition failure.
+pub fn prepare_canonical_campaign_runtime(
+    repository: Arc<CampaignRepository>,
+    planner_authority: PlannerAuthorityKey,
+    executor_stream: UnixStream,
+    config: &CanonicalCampaignRuntimeConfig,
+) -> Result<PreparedCanonicalCampaignRuntime, CanonicalCampaignRuntimeError> {
+    let service =
+        LoopbackExecutorService::with_timeouts(executor_stream, config.executor_timeouts())
+            .map_err(CanonicalCampaignRuntimeError::ExecutorProtocol)?;
+    prepare_canonical_campaign_runtime_with_service(repository, planner_authority, service, config)
+}
+
+/// Prepares one canonical runtime with a reconnectable executor endpoint.
+///
+/// The endpoint is authenticated for the initial connection and retained for
+/// one bounded transport retry. Capability negotiation latches the exact
+/// daemon epoch and immutable capability digest before the runtime can start.
+///
+/// # Errors
+///
+/// Returns [`CanonicalCampaignRuntimeError`] for endpoint, transport,
+/// repository, compatibility, resource, driver, or supervisor failure.
+pub fn prepare_canonical_campaign_runtime_endpoint(
+    repository: Arc<CampaignRepository>,
+    planner_authority: PlannerAuthorityKey,
+    endpoint: ExecutorLoopbackEndpointConfig,
+    config: &CanonicalCampaignRuntimeConfig,
+) -> Result<PreparedCanonicalCampaignRuntime, CanonicalCampaignRuntimeError> {
+    let service =
+        LoopbackExecutorService::connect_with_timeouts(endpoint, config.executor_timeouts())
+            .map_err(CanonicalCampaignRuntimeError::ExecutorProtocol)?;
+    prepare_canonical_campaign_runtime_with_service(repository, planner_authority, service, config)
+}
+
+fn prepare_canonical_campaign_runtime_with_service(
+    repository: Arc<CampaignRepository>,
+    planner_authority: PlannerAuthorityKey,
+    service: LoopbackExecutorService,
+    config: &CanonicalCampaignRuntimeConfig,
+) -> Result<PreparedCanonicalCampaignRuntime, CanonicalCampaignRuntimeError> {
+    let mut executor = ExecutorClient::new(service);
+    let description = executor
+        .describe_executor()
+        .map_err(CanonicalCampaignRuntimeError::ExecutorDescription)?;
+
+    let (head, policy) = repository
+        .head_with_policy(config.campaign().as_str())
+        .map_err(CanonicalCampaignRuntimeError::Repository)?;
+    let lineage = repository
+        .load_lineage(head.snapshot().lineage())
+        .map_err(CanonicalCampaignRuntimeError::Repository)?;
+    let capabilities = description.capabilities();
+    if !capabilities.compatibility().admits(&lineage) {
+        return Err(CanonicalCampaignRuntimeError::ExecutorIncompatible);
+    }
+
+    let resources = config
+        .executor_resources()
+        .unwrap_or_else(|| capabilities.resource_ceiling());
+    if !resources_fit(resources, capabilities.resource_ceiling()) {
+        return Err(CanonicalCampaignRuntimeError::ExecutorResourcesExceedCeiling);
+    }
+    let worker_slots = config.worker_slots().unwrap_or_else(|| {
+        cmp::min(
+            capabilities.maximum_slots(),
+            MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
+        )
+    });
+    if worker_slots == 0 || worker_slots > capabilities.maximum_slots() {
+        return Err(CanonicalCampaignRuntimeError::ExecutorSlotsExceedCeiling);
+    }
+
+    let (engine, artifact, initial_state, planner_service, planner_cancellation) =
+        match policy.explorer() {
+            ExplorerPolicy::TreeSearch { .. } => {
+                let basis = repository
+                    .publish_canonical_puct_planner_basis()
+                    .map_err(CanonicalCampaignRuntimeError::Repository)?;
+                let (engine, artifact, initial_state) = basis.into_parts();
+                let (supervisor, cancellation) =
+                    CanonicalPlannerProcessSupervisor::new(config.planner_process().clone());
+                let service = AuthorizedPlannerService::new(
+                    CanonicalPuctPlanner,
+                    supervisor,
+                    planner_authority.clone(),
+                );
+
+                (
+                    engine,
+                    artifact,
+                    initial_state,
+                    CanonicalPlannerService::Puct(service),
+                    cancellation,
+                )
+            }
+            ExplorerPolicy::Exhaustive { .. } => {
+                let basis = repository
+                    .publish_canonical_frontier_planner_basis()
+                    .map_err(CanonicalCampaignRuntimeError::Repository)?;
+                let (engine, artifact, initial_state) = basis.into_parts();
+                let (supervisor, cancellation) =
+                    CanonicalPlannerProcessSupervisor::new(config.planner_process().clone());
+                let service = AuthorizedPlannerService::new(
+                    CanonicalFrontierPlanner,
+                    supervisor,
+                    planner_authority.clone(),
+                );
+
+                (
+                    engine,
+                    artifact,
+                    initial_state,
+                    CanonicalPlannerService::Frontier(service),
+                    cancellation,
+                )
+            }
+            ExplorerPolicy::Beam { .. } => {
+                let basis = repository
+                    .publish_canonical_beam_planner_basis()
+                    .map_err(CanonicalCampaignRuntimeError::Repository)?;
+                let (engine, artifact, initial_state) = basis.into_parts();
+                let (supervisor, cancellation) =
+                    CanonicalPlannerProcessSupervisor::new(config.planner_process().clone());
+                let service = AuthorizedPlannerService::new(
+                    CanonicalBeamPlanner,
+                    supervisor,
+                    planner_authority.clone(),
+                );
+
+                (
+                    engine,
+                    artifact,
+                    initial_state,
+                    CanonicalPlannerService::Beam(service),
+                    cancellation,
+                )
+            }
+        };
+    let planner = CampaignPlannerDriver::new(
+        Arc::clone(&repository),
+        PlannerClient::new(planner_service, planner_authority),
+        engine,
+        artifact,
+        initial_state,
+        config.planner_scan_limit(),
+        config.planning_budget(),
+    )
+    .map_err(CanonicalCampaignRuntimeError::PlannerDriver)?;
+    let planner = match policy.explorer() {
+        ExplorerPolicy::TreeSearch { .. } => planner.require_tree_search_policy(),
+        ExplorerPolicy::Exhaustive { .. } => planner.require_exhaustive_policy(),
+        ExplorerPolicy::Beam { .. } => planner.require_beam_policy(),
+    };
+    let executor = CampaignExecutorDriver::new(
+        Arc::clone(&repository),
+        executor,
+        description.daemon_epoch(),
+        usize::try_from(worker_slots)
+            .map_err(|_| CanonicalCampaignRuntimeError::ExecutorSlotsExceedCeiling)?,
+        resources,
+        config.retention(),
+        config.executor_scan_limit(),
+    )
+    .map_err(CanonicalCampaignRuntimeError::ExecutorDriver)?;
+    let supervisor = CampaignSupervisor::new(
+        Arc::clone(&repository),
+        config.campaign().clone(),
+        planner,
+        executor,
+        worker_slots,
+    )
+    .map_err(CanonicalCampaignRuntimeError::Supervisor)?;
+    let supervisor = match config.private_target_attempt() {
+        Some(target) => supervisor.for_private_target_attempt(target),
+        None => supervisor,
+    };
+    let supervisor = ObjectivePublishingCampaignDriver::new(
+        Arc::clone(&repository),
+        config.campaign().as_str().to_owned(),
+        supervisor,
+    );
+    let supervisor = if config.private_target_attempt().is_some() {
+        supervisor.without_background_evaluations()
+    } else {
+        supervisor
+    };
+    Ok(PreparedCanonicalCampaignRuntime {
+        repository_identity: Arc::clone(&repository),
+        campaign: config.campaign().clone(),
+        scenario: lineage.scenario_content(),
+        supervisor,
+        planner_cancellation,
+        runtime: config.runtime(),
+    })
+}
+
+fn resources_fit(requested: AttemptResourceLimits, ceiling: AttemptResourceLimits) -> bool {
+    requested.maximum_vcpus() <= ceiling.maximum_vcpus()
+        && requested.maximum_resident_bytes() <= ceiling.maximum_resident_bytes()
+        && requested.maximum_disk_bytes() <= ceiling.maximum_disk_bytes()
+        && requested.maximum_execution_quanta() <= ceiling.maximum_execution_quanta()
+}
+
+/// Failure while preparing, starting, or joining one canonical runtime.
+#[derive(Debug, thiserror::Error)]
+pub enum CanonicalCampaignRuntimeError {
+    /// The checked executor transport could not be constructed.
+    #[error("canonical campaign executor transport is invalid")]
+    ExecutorProtocol(#[source] LoopbackExecutorProtocolError),
+    /// Immutable executor capability negotiation failed.
+    #[error("canonical campaign executor description failed")]
+    ExecutorDescription(#[source] ExecutorClientError<LoopbackExecutorProtocolError>),
+    /// The selected campaign or its immutable basis could not be authenticated.
+    #[error("canonical campaign repository validation failed")]
+    Repository(#[source] CampaignRepositoryError),
+    /// The executor compatibility profile does not admit the campaign lineage.
+    #[error("canonical campaign executor is incompatible with the campaign lineage")]
+    ExecutorIncompatible,
+    /// Requested per-attempt resources exceed the executor's immutable ceiling.
+    #[error("canonical campaign execution resources exceed the executor ceiling")]
+    ExecutorResourcesExceedCeiling,
+    /// Requested worker slots exceed the executor's immutable slot ceiling.
+    #[error("canonical campaign worker slots exceed the executor ceiling")]
+    ExecutorSlotsExceedCeiling,
+    /// The canonical planner driver could not be configured.
+    #[error("canonical campaign planner driver configuration failed")]
+    PlannerDriver(#[source] CampaignPlannerDriverConfigError),
+    /// The checked executor driver could not be configured.
+    #[error("canonical campaign executor driver configuration failed")]
+    ExecutorDriver(#[source] CampaignExecutorDriverConfigError),
+    /// The two drivers could not be composed under one supervisor.
+    #[error("canonical campaign supervisor configuration failed")]
+    Supervisor(#[source] CampaignSupervisorConfigError),
+    /// The fixed runtime thread could not be started.
+    #[error("canonical campaign runtime could not start")]
+    RuntimeStart(#[source] CampaignRuntimeStartError),
+    /// The runtime stopped because its driver failed or its thread panicked.
+    #[error("canonical campaign runtime stopped unexpectedly")]
+    Runtime(#[source] CampaignRuntimeJoinError<CanonicalRuntimeDriverFailure>),
+}
+
+#[cfg(test)]
+mod tests;

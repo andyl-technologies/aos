@@ -38,7 +38,7 @@ pub struct PerfBenchReport {
     pub per_tb_atomics: u64,
     /// `boot_amortization`: cold boots per M-scenario campaign.
     pub cold_boots_per_campaign: u64,
-    /// `restore_latency`: loadvm/replay to-runnable latency (recorded units).
+    /// `restore_latency`: descriptor-restore/replay to-runnable latency (recorded units).
     pub restore_latency_units: u64,
     /// `fuzz_throughput`: scenarios per core per hour.
     pub fuzz_throughput: u64,

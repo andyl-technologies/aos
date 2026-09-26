@@ -730,9 +730,9 @@ impl WorldFaultTopology {
             let mut contact_ids = BTreeSet::new();
             for contact in &plan.contacts {
                 require(contact_ids.insert(&contact.id), "duplicate contact ID")?;
-                require(contact.start_nanos < contact.end_nanos, "contact interval")?;
-                require(contact.start_nanos >= previous_end, "contact ordering")?;
-                previous_end = contact.end_nanos;
+                require(contact.start_ticks < contact.end_ticks, "contact interval")?;
+                require(contact.start_ticks >= previous_end, "contact ordering")?;
+                previous_end = contact.end_ticks;
             }
         }
         let mut mobile_nodes = BTreeSet::new();
@@ -1145,9 +1145,9 @@ impl WorldFaultTopology {
         &self,
         source: &str,
         destination: &str,
-        virtual_nanos: u64,
+        virtual_ticks: u64,
     ) -> Result<Vec<WorldNetworkRouteFaultTarget>, WorldFaultTopologyError> {
-        self.network_route_fault_targets_with_path(source, destination, virtual_nanos, None)
+        self.network_route_fault_targets_with_path(source, destination, virtual_ticks, None)
     }
 
     /// Resolves a directed World link through one explicitly selected path.
@@ -1165,7 +1165,7 @@ impl WorldFaultTopology {
         &self,
         source: &str,
         destination: &str,
-        virtual_nanos: u64,
+        virtual_ticks: u64,
         path_version: Option<&FaultObjectId>,
     ) -> Result<Vec<WorldNetworkRouteFaultTarget>, WorldFaultTopologyError> {
         if self.network_interfaces.is_empty() && self.network_segments.is_empty() {
@@ -1304,7 +1304,7 @@ impl WorldFaultTopology {
                 continue;
             }
             for contact in &plan.contacts {
-                if contact.start_nanos <= virtual_nanos && virtual_nanos < contact.end_nanos {
+                if contact.start_ticks <= virtual_ticks && virtual_ticks < contact.end_ticks {
                     route.push(WorldNetworkRouteFaultTarget {
                         target: ResolvedFaultTarget::NetworkContact {
                             plan: fault_object_id_from_signal(&plan.id)?,

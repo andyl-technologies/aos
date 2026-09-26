@@ -28,7 +28,7 @@ fn opportunity_identity_changes_for_every_identity_field() {
             FaultOperation::NetworkTraverse,
             phase,
             FaultCoordinate {
-                virtual_nanos: 42,
+                virtual_ticks: 42,
                 retired_instructions: None,
             },
             sequence,
@@ -176,7 +176,7 @@ fn opportunity_rejects_cross_adapter_operation() {
         FaultOperation::StorageRead,
         FaultPhase::Resolve,
         FaultCoordinate {
-            virtual_nanos: 0,
+            virtual_ticks: 0,
             retired_instructions: Some(0),
         },
         0,

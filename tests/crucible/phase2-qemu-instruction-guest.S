@@ -274,7 +274,7 @@ instruction_exception_count:
     .long 0
 .global instruction_natural_exception_count
 instruction_natural_exception_count:
-    .long 1
+    .long 0
 .global instruction_result_fault_count
 instruction_result_fault_count:
     .long 2

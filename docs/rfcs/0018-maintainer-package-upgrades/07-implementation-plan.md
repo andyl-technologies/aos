@@ -290,7 +290,7 @@ capability, while ordinary status/inspection remains local.
 ## PR 12: Complex expansion and RFC-0017 identity handoff
 
 Expand typed support for shared sources, lifecycle/default aliases, larger
-artifact graphs/patch stacks, compiler cohorts, curated component vectors, and
+artifact graphs/atomic-patch identities, compiler cohorts, curated component vectors, and
 human-led exceptional campaigns. Add the resolved unit/family/stream/component/
 source identity subset to RFC-0017 release inventory without maintainer mutation
 or agent state.

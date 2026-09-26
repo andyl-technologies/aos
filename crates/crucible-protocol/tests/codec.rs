@@ -20,10 +20,10 @@ use crucible_protocol::{
 fn plugin_messages_round_trip_through_big_endian_frames() {
     assert_plugin_roundtrip(
         PluginMsg::Hello {
-            proto_version: 2,
-            abi_version: 1,
+            proto_version: 3,
+            abi_version: 25,
         },
-        &[0, 0, 0, 9, 0xF0, 0, 0, 0, 2, 0, 0, 0, 1],
+        &[0, 0, 0, 9, 0xF0, 0, 0, 0, 3, 0, 0, 0, 25],
     );
     assert_plugin_roundtrip(PluginMsg::SetupAck { status: 0 }, &[0, 0, 0, 2, 0x02, 0]);
 }
@@ -32,13 +32,13 @@ fn plugin_messages_round_trip_through_big_endian_frames() {
 fn host_messages_round_trip_through_big_endian_frames() {
     assert_host_roundtrip(
         HostMsg::HelloAck {
-            proto_version: 2,
-            abi_version: 1,
+            proto_version: 3,
+            abi_version: 25,
             slot_index: 7,
             node_count: 32,
         },
         &[
-            0, 0, 0, 17, 0xF1, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 32,
+            0, 0, 0, 17, 0xF1, 0, 0, 0, 3, 0, 0, 0, 25, 0, 0, 0, 7, 0, 0, 0, 32,
         ],
     );
     assert_host_roundtrip(
@@ -94,7 +94,7 @@ fn decoder_reports_typed_frame_shape_errors() {
 #[test]
 fn decoder_reports_direction_and_payload_shape_errors() {
     assert_eq!(
-        control_decode_host_msg(&[0, 0, 0, 9, TAG_HELLO, 0, 0, 0, 2, 0, 0, 0, 1]),
+        control_decode_host_msg(&[0, 0, 0, 9, TAG_HELLO, 0, 0, 0, 2, 0, 0, 0, 25]),
         Err(FrameDecodeError::UnexpectedDirection {
             tag: ControlTag::Hello,
             expected: ControlDirection::HostToPlugin,

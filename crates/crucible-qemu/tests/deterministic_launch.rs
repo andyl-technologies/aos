@@ -6,14 +6,14 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use crucible::{ContentHash, NodeId, ScenarioDef, SchedulerNodeId, SchedulingNodeKind};
+use crucible::{ContentHash, NodeId, ScenarioDef};
 use crucible_qemu::{
     DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
-    IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
-    NodeIcountShift, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
-    QemuLaunchCommandError, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig, validate_pre_spawn_qemu_launch_args,
-    validate_x86_whitebox_hmp_mtree,
+    LaunchProfileCandidate, LaunchProfileError, QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+    QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME, QemuLaunchArtifact, QemuLaunchCommand,
+    QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
+    QemuLaunchPluginSwitch, QemuLaunchResourceError, QemuPreSpawnLaunchValidationError,
+    QemuVmLaunchConfig, validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
 };
 
 #[path = "deterministic_launch/fingerprint_options.rs"]
@@ -96,6 +96,50 @@ fn default_launch_command() -> QemuLaunchCommand {
         .unwrap_or_else(|error| panic!("default QEMU launch command failed: {error}"))
 }
 
+#[test]
+fn launch_command_exposes_and_validates_its_static_resource_baseline() {
+    let profile = deterministic(
+        LaunchProfileCandidate::default()
+            .with_memory_mib(768)
+            .with_smp_vcpus(4),
+    );
+    let command = profile
+        .qemu_launch_command(
+            default_vm_config(),
+            default_qemu_binary(),
+            default_plugin_config(),
+            &default_fault_node(),
+        )
+        .unwrap_or_else(|error| panic!("resource-profile launch should build: {error}"));
+    let requirements = command.resource_requirements();
+    let mebibyte = 1024_u64 * 1024;
+
+    assert_eq!(requirements.virtual_cpus(), 4);
+    assert_eq!(requirements.guest_memory_bytes(), 768 * mebibyte);
+    assert_eq!(requirements.minimum_writable_bytes(), 1280 * mebibyte);
+    assert!(requirements.has_root_overlay());
+    assert!(
+        requirements
+            .validate_ceiling(4, 768 * mebibyte, 1280 * mebibyte)
+            .is_ok()
+    );
+    assert!(matches!(
+        requirements.validate_ceiling(3, u64::MAX, u64::MAX),
+        Err(QemuLaunchResourceError::VirtualCpus {
+            required: 4,
+            admitted: 3
+        })
+    ));
+    assert!(matches!(
+        requirements.validate_ceiling(4, 767 * mebibyte, u64::MAX),
+        Err(QemuLaunchResourceError::ResidentBytes { .. })
+    ));
+    assert!(matches!(
+        requirements.validate_ceiling(4, u64::MAX, 1279 * mebibyte),
+        Err(QemuLaunchResourceError::WritableBytes { .. })
+    ));
+}
+
 fn deterministic(candidate: LaunchProfileCandidate) -> DeterministicLaunchProfile {
     match candidate.try_into_deterministic() {
         Ok(profile) => profile,
@@ -105,11 +149,11 @@ fn deterministic(candidate: LaunchProfileCandidate) -> DeterministicLaunchProfil
 
 fn scenario_material_for_nodes(
     profile: &DeterministicLaunchProfile,
-    node_shifts: &[NodeIcountShift],
+    node_ids: &[NodeId],
 ) -> String {
     profile
-        .scenario_hash_material_for_nodes(node_shifts)
-        .unwrap_or_else(|error| panic!("node shift material should be valid: {error}"))
+        .scenario_hash_material_for_nodes(node_ids)
+        .unwrap_or_else(|error| panic!("node scale material should be valid: {error}"))
 }
 
 #[test]
@@ -148,10 +192,13 @@ fn default_launch_profile_pins_contract_a_arguments() {
         args.windows(2)
             .any(|window| window == ["-object", "rng-builtin,id=crucible-rng0"])
     );
-    assert!(
-        args.windows(2)
-            .any(|window| window == ["-device", "virtio-rng-pci,rng=crucible-rng0"])
-    );
+    assert!(args.windows(2).any(|window| {
+        window
+            == [
+                "-device",
+                "virtio-rng-pci,rng=crucible-rng0,bus=pcie.0,addr=0x1",
+            ]
+    }));
     let append = args
         .windows(2)
         .find_map(|window| (window[0] == "-append").then_some(window[1].as_str()))
@@ -168,10 +215,122 @@ fn pre_spawn_launch_validation_accepts_canonical_arguments() {
         .unwrap_or_else(|error| panic!("canonical launch args should validate: {error}"));
 
     assert_eq!(validation.accelerator(), "sim,thread=single");
-    assert_eq!(validation.icount_shift(), 0);
     assert_eq!(validation.rr_switch_quantum(), 4096);
     assert_eq!(validation.smp_vcpus(), 1);
     assert_eq!(validation.cpu_model(), "qemu64,-rdrand,-rdseed");
+}
+
+#[test]
+fn pre_spawn_launch_validation_accepts_only_the_fixed_trace_pair() {
+    let mut accepted = default_profile().canonical_qemu_args();
+    accepted.extend([
+        "-D".to_owned(),
+        QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME.to_owned(),
+        "-trace".to_owned(),
+        "enable=crucible_sim_rr_control_boundary".to_owned(),
+    ]);
+    assert!(validate_pre_spawn_qemu_launch_args(&accepted).is_ok());
+
+    let mut runtime = default_profile().canonical_qemu_args();
+    runtime.extend([
+        "-D".to_owned(),
+        QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME.to_owned(),
+        "-trace".to_owned(),
+        "enable=crucible_sim_determinism_*".to_owned(),
+    ]);
+    assert!(validate_pre_spawn_qemu_launch_args(&runtime).is_ok());
+    let mut too_many_runtime_cpus = runtime.clone();
+    let smp = too_many_runtime_cpus
+        .iter()
+        .position(|argument| argument == "-smp")
+        .expect("canonical launch must carry -smp");
+    too_many_runtime_cpus[smp + 1] = String::from("65");
+    assert!(matches!(
+        validate_pre_spawn_qemu_launch_args(&too_many_runtime_cpus),
+        Err(QemuPreSpawnLaunchValidationError::RuntimeDeterminismTraceCpuCount { actual: 65 })
+    ));
+
+    for extra in [
+        vec!["-D", QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME],
+        vec!["-trace", "enable=crucible_sim_rr_control_boundary"],
+        vec![
+            "-D",
+            "/tmp/trace",
+            "-trace",
+            "enable=crucible_sim_rr_control_boundary",
+        ],
+        vec![
+            "-D",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            "-trace",
+            "enable=*",
+        ],
+        vec![
+            "-D",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            "-trace",
+            "enable=crucible_sim_rr_control_boundary,file=trace",
+        ],
+        vec![
+            "--D",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            "--trace",
+            "enable=crucible_sim_rr_control_boundary",
+        ],
+        vec![
+            "-D",
+            QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+            "-trace",
+            "enable=crucible_sim_rr_control_boundary",
+        ],
+        vec![
+            "-D",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            "-trace",
+            "enable=crucible_sim_determinism_*",
+        ],
+        vec![
+            "-D",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            "--trace",
+            "enable=crucible_sim_rr_control_boundary",
+        ],
+        vec![
+            "--D",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            "-trace",
+            "enable=crucible_sim_rr_control_boundary",
+        ],
+        vec![
+            "-D=crucible-rr-control-boundary.trace",
+            "-trace=enable=crucible_sim_rr_control_boundary",
+        ],
+        vec![
+            "-trace",
+            "enable=crucible_sim_rr_control_boundary",
+            "-D",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+        ],
+        vec![
+            "-D",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            "-nodefaults",
+            "-trace",
+            "enable=crucible_sim_rr_control_boundary",
+        ],
+        vec![
+            "-D",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            "-D",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            "-trace",
+            "enable=crucible_sim_rr_control_boundary",
+        ],
+    ] {
+        let mut rejected = default_profile().canonical_qemu_args();
+        rejected.extend(extra.into_iter().map(str::to_owned));
+        assert!(validate_pre_spawn_qemu_launch_args(&rejected).is_err());
+    }
 }
 
 #[test]
@@ -185,18 +344,6 @@ fn multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed() {
 
     assert_eq!(profile.smp_vcpus(), 4);
     assert_eq!(profile.rr_switch_quantum(), 8192);
-    let scheduler_policy = profile
-        .scheduler_run_subdivision_policy(SchedulerNodeId {
-            node: NodeId {
-                name: String::from("vm-a"),
-            },
-            kind: SchedulingNodeKind::Vm,
-        })
-        .unwrap_or_else(|error| {
-            panic!("launch profile should derive scheduler RR policy: {error}")
-        });
-    assert_eq!(scheduler_policy.vcpu_count, 4);
-    assert_eq!(scheduler_policy.rr_switch_quantum, 8192);
     assert!(
         args.windows(2)
             .any(|window| window == ["-accel", "sim,thread=single"])
@@ -215,28 +362,17 @@ fn multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed() {
     assert_eq!(validation.rr_switch_quantum(), 8192);
     assert_eq!(validation.cpu_model(), "qemu64,-rdrand,-rdseed");
 
-    let mut alias_args = args.clone();
-    replace_option_value(
-        &mut alias_args,
-        "-icount",
-        "shift=0,sleep=off,align=off,crucible-rr-quantum-icount=8192",
-    );
-    let alias_validation = validate_pre_spawn_qemu_launch_args(&alias_args)
-        .unwrap_or_else(|error| panic!("RFC alias RR quantum args should validate: {error}"));
-    assert_eq!(alias_validation.smp_vcpus(), 4);
-    assert_eq!(alias_validation.rr_switch_quantum(), 8192);
-
     let material = profile.scenario_hash_material();
     assert!(material.contains("smp_vcpus=4"));
     assert!(material.contains("vcpu_topology=fixed-at-genesis"));
     assert!(material.contains("runtime_cpu_hotplug=forbidden"));
     assert!(material.contains("rr_switch_quantum=8192"));
-    assert!(material.contains("rr_switch_quantum_units=node-icount"));
+    assert!(material.contains("rr_switch_quantum_units=retired-instructions"));
     assert!(material.contains("rr_vcpu_rotation=ascending-vcpu-id"));
     assert!(material.contains("per_vcpu_cpu_model=uniform"));
-    assert!(material.contains("per_vcpu_tsc_source=node-icount"));
+    assert!(material.contains("per_vcpu_tsc_source=logical-picoseconds-div-250"));
     assert!(material.contains("per_vcpu_rng_source=scenario-seed-and-run-seed"));
-    assert!(material.contains("per_vcpu_rng_timing_axis=node-icount"));
+    assert!(material.contains("per_vcpu_rng_timing_axis=raw-retirement-rr-order"));
     assert!(material.contains("secondary_vcpu_bringup=rr-sim-tcg-icount-deterministic"));
 
     let different_vcpu_count = deterministic(
@@ -331,6 +467,19 @@ fn pre_spawn_launch_validation_rejects_bad_icount_and_mttcg() {
     assert_eq!(
         validate_pre_spawn_qemu_launch_args(&args),
         Err(QemuPreSpawnLaunchValidationError::IcountShiftAuto)
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(
+        &mut args,
+        "-icount",
+        "shift=1,sleep=off,align=off,rr_switch_quantum=4096",
+    );
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(QemuPreSpawnLaunchValidationError::IcountShiftInvalid {
+            value: String::from("1"),
+        })
     );
 
     let mut args = default_profile().canonical_qemu_args();
@@ -434,20 +583,6 @@ fn pre_spawn_launch_validation_rejects_bad_icount_and_mttcg() {
         &mut args,
         "-icount",
         "shift=0,sleep=off,align=off,rr_switch_quantum=4096,rr_switch_quantum=8192",
-    );
-    assert_eq!(
-        validate_pre_spawn_qemu_launch_args(&args),
-        Err(QemuPreSpawnLaunchValidationError::DuplicateSubOption {
-            option: "-icount",
-            key: "rr_switch_quantum",
-        })
-    );
-
-    let mut args = default_profile().canonical_qemu_args();
-    replace_option_value(
-        &mut args,
-        "-icount",
-        "shift=0,sleep=off,align=off,rr_switch_quantum=4096,crucible-rr-quantum-icount=4096",
     );
     assert_eq!(
         validate_pre_spawn_qemu_launch_args(&args),
@@ -752,40 +887,17 @@ fn launch_profile_enforces_guest_non_modification() {
             "diskless Contract-A profile must not expose writable device {forbidden_fragment}"
         );
     }
-
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_disk_image_mode(DiskImageMode::WritableBacking)
-            .try_into_deterministic(),
-        Err(LaunchProfileError::DiskImageMutatesBacking {
-            mode: DiskImageMode::WritableBacking,
-        })
-    );
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_guest_backing_state(GuestBackingStateMode::HostMutableGenesis)
-            .try_into_deterministic(),
-        Err(LaunchProfileError::GuestBackingStateNotByteIdentical {
-            mode: GuestBackingStateMode::HostMutableGenesis,
-        })
-    );
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_guest_core_content(GuestCoreContentMode::GuestInjectedContent)
-            .try_into_deterministic(),
-        Err(LaunchProfileError::GuestCoreContentRequired {
-            mode: GuestCoreContentMode::GuestInjectedContent,
-        })
-    );
 }
 
 #[test]
 fn launch_profile_admits_only_consistent_diskless_storage() {
-    let diskless = LaunchProfileCandidate::default()
-        .with_disk_image_mode(DiskImageMode::NoBlockDevice)
-        .with_guest_backing_state(GuestBackingStateMode::NoBlockDevice)
-        .try_into_deterministic()
-        .unwrap_or_else(|error| panic!("diskless deterministic profile should validate: {error}"));
+    let diskless = LaunchProfileCandidate {
+        disk_image_mode: DiskImageMode::NoBlockDevice,
+        guest_backing_state: GuestBackingStateMode::NoBlockDevice,
+        ..LaunchProfileCandidate::default()
+    }
+    .try_into_deterministic()
+    .unwrap_or_else(|error| panic!("diskless deterministic profile should validate: {error}"));
     assert_eq!(diskless.disk_image_mode(), DiskImageMode::NoBlockDevice);
     assert_eq!(
         diskless.guest_backing_state(),
@@ -798,18 +910,22 @@ fn launch_profile_admits_only_consistent_diskless_storage() {
     );
 
     assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_disk_image_mode(DiskImageMode::NoBlockDevice)
-            .try_into_deterministic(),
+        LaunchProfileCandidate {
+            disk_image_mode: DiskImageMode::NoBlockDevice,
+            ..LaunchProfileCandidate::default()
+        }
+        .try_into_deterministic(),
         Err(LaunchProfileError::StorageModeMismatch {
             disk: DiskImageMode::NoBlockDevice,
             backing: GuestBackingStateMode::ByteIdenticalGenesis,
         })
     );
     assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_guest_backing_state(GuestBackingStateMode::NoBlockDevice)
-            .try_into_deterministic(),
+        LaunchProfileCandidate {
+            guest_backing_state: GuestBackingStateMode::NoBlockDevice,
+            ..LaunchProfileCandidate::default()
+        }
+        .try_into_deterministic(),
         Err(LaunchProfileError::StorageModeMismatch {
             disk: DiskImageMode::CopyOnWriteOverlay,
             backing: GuestBackingStateMode::NoBlockDevice,
@@ -832,22 +948,12 @@ fn launch_profile_rejects_host_entropy_and_host_timing() {
         Err(LaunchProfileError::CpuEntropyFeatureEnabled { feature: "rdrand" })
     );
     assert!(matches!(
-        LaunchProfileCandidate::default()
-            .with_accelerator("sim,thread=multi")
-            .try_into_deterministic(),
+        LaunchProfileCandidate {
+            accelerator: "sim,thread=multi".to_owned(),
+            ..LaunchProfileCandidate::default()
+        }
+        .try_into_deterministic(),
         Err(LaunchProfileError::AcceleratorNotSingleThreadSim { .. })
-    ));
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_icount_shift(IcountShiftSetting::Auto)
-            .try_into_deterministic(),
-        Err(LaunchProfileError::IcountShiftAuto)
-    );
-    assert!(matches!(
-        LaunchProfileCandidate::default()
-            .with_rtc_clock("host")
-            .try_into_deterministic(),
-        Err(LaunchProfileError::RtcClockNotVm { .. })
     ));
     assert_eq!(
         LaunchProfileCandidate {
@@ -867,6 +973,29 @@ fn launch_profile_rejects_host_entropy_and_host_timing() {
         Err(LaunchProfileError::RrSwitchQuantumTooLarge {
             quantum: i32::MAX as u64 + 1,
         })
+    );
+}
+
+#[test]
+fn aarch64_sim_launch_requires_pmu_disabled_before_spawn() {
+    for model in [
+        "cortex-a57",
+        "cortex-a57,pmu=on",
+        "cortex-a57,pmu=off,pmu=on",
+    ] {
+        assert_eq!(
+            LaunchProfileCandidate::default()
+                .with_cpu_model(model)
+                .try_into_deterministic(),
+            Err(LaunchProfileError::Aarch64PmuMustBeOff)
+        );
+    }
+
+    assert!(
+        LaunchProfileCandidate::default()
+            .with_cpu_model("cortex-a57,pmu=off")
+            .try_into_deterministic()
+            .is_ok()
     );
 }
 
@@ -910,41 +1039,31 @@ fn launch_profile_rejects_mutating_or_interactive_state() {
         Err(LaunchProfileError::SmpVcpuCountZero)
     );
     assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_machine_reset(MachineResetMode::HostProvided)
-            .try_into_deterministic(),
-        Err(LaunchProfileError::MachineResetNotDeterministic {
-            mode: MachineResetMode::HostProvided,
-        })
-    );
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_disk_image_mode(DiskImageMode::WritableBacking)
-            .try_into_deterministic(),
+        LaunchProfileCandidate {
+            disk_image_mode: DiskImageMode::WritableBacking,
+            ..LaunchProfileCandidate::default()
+        }
+        .try_into_deterministic(),
         Err(LaunchProfileError::DiskImageMutatesBacking {
             mode: DiskImageMode::WritableBacking,
         })
     );
     assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_guest_backing_state(GuestBackingStateMode::HostMutableGenesis)
-            .try_into_deterministic(),
+        LaunchProfileCandidate {
+            guest_backing_state: GuestBackingStateMode::HostMutableGenesis,
+            ..LaunchProfileCandidate::default()
+        }
+        .try_into_deterministic(),
         Err(LaunchProfileError::GuestBackingStateNotByteIdentical {
             mode: GuestBackingStateMode::HostMutableGenesis,
         })
     );
     assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_input_policy(InputPolicy::HostInteractive)
-            .try_into_deterministic(),
-        Err(LaunchProfileError::InteractiveInputEnabled {
-            policy: InputPolicy::HostInteractive,
-        })
-    );
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_guest_core_content(GuestCoreContentMode::GuestInjectedContent)
-            .try_into_deterministic(),
+        LaunchProfileCandidate {
+            guest_core_content: GuestCoreContentMode::GuestInjectedContent,
+            ..LaunchProfileCandidate::default()
+        }
+        .try_into_deterministic(),
         Err(LaunchProfileError::GuestCoreContentRequired {
             mode: GuestCoreContentMode::GuestInjectedContent,
         })
@@ -952,52 +1071,44 @@ fn launch_profile_rejects_mutating_or_interactive_state() {
 }
 
 #[test]
-fn launch_profile_rejects_per_node_icount_shift_mismatch() {
+fn launch_profile_pins_fixed_tick_scale_for_each_node() {
     let profile = default_profile();
 
-    assert_eq!(profile.icount_shift(), 0);
     assert_eq!(profile.smp_vcpus(), 1);
     assert_eq!(profile.rr_switch_quantum(), 4096);
     assert_eq!(
-        profile.validate_node_icount_shifts(&[
-            NodeIcountShift::new("vm-a", 0),
-            NodeIcountShift::new("vm-b", 0),
+        profile.validate_node_ids(&[
+            NodeId {
+                name: "vm-a".into()
+            },
+            NodeId {
+                name: "vm-b".into()
+            },
         ]),
         Ok(())
     );
     let material = scenario_material_for_nodes(
         &profile,
         &[
-            NodeIcountShift::new("vm-b", 0),
-            NodeIcountShift::new("vm-a", 0),
+            NodeId {
+                name: "vm-b".into(),
+            },
+            NodeId {
+                name: "vm-a".into(),
+            },
         ],
     );
     let vm_a_line = material
         .lines()
-        .position(|line| line == "node_icount_shift[vm-a]=0")
-        .unwrap_or_else(|| panic!("missing vm-a node shift line in {material}"));
+        .position(|line| line == "node_sim_ticks_per_ns[vm-a]=1000")
+        .unwrap_or_else(|| panic!("missing vm-a node scale line in {material}"));
     let vm_b_line = material
         .lines()
-        .position(|line| line == "node_icount_shift[vm-b]=0")
-        .unwrap_or_else(|| panic!("missing vm-b node shift line in {material}"));
+        .position(|line| line == "node_sim_ticks_per_ns[vm-b]=1000")
+        .unwrap_or_else(|| panic!("missing vm-b node scale line in {material}"));
     assert!(
         vm_a_line < vm_b_line,
-        "node shift material must be sorted by node id"
-    );
-    assert_eq!(
-        profile.scenario_hash_material_for_nodes(&[
-            NodeIcountShift::new("vm-a", 0),
-            NodeIcountShift::new("vm-b", 1),
-        ]),
-        Err(LaunchProfileError::IcountShiftMismatch {
-            node_id: String::from("vm-b"),
-            scenario_shift: 0,
-            node_shift: 1,
-        })
-    );
-    assert_eq!(
-        profile.scenario_hash_material_for_nodes(&[NodeIcountShift::new("vm-a", 63)]),
-        Err(LaunchProfileError::IcountShiftTooLarge { shift: 63 })
+        "node scale material must be sorted by node id"
     );
     assert_eq!(
         LaunchProfileCandidate::default()
@@ -1006,15 +1117,21 @@ fn launch_profile_rejects_per_node_icount_shift_mismatch() {
         Err(LaunchProfileError::RrSwitchQuantumZero)
     );
     assert_eq!(
-        profile.scenario_hash_material_for_nodes(&[NodeIcountShift::new("", 0)]),
+        profile.scenario_hash_material_for_nodes(&[NodeId {
+            name: String::new()
+        }]),
         Err(LaunchProfileError::InvalidFixedText { field: "node_id" })
     );
     assert_eq!(
         profile.scenario_hash_material_for_nodes(&[
-            NodeIcountShift::new("vm-a", 0),
-            NodeIcountShift::new("vm-a", 0),
+            NodeId {
+                name: "vm-a".into()
+            },
+            NodeId {
+                name: "vm-a".into()
+            },
         ]),
-        Err(LaunchProfileError::DuplicateNodeIcountShift {
+        Err(LaunchProfileError::DuplicateNodeId {
             node_id: String::from("vm-a"),
         })
     );
@@ -1025,7 +1142,7 @@ fn launch_hash_material_records_every_determinism_field() {
     let material = default_profile().scenario_hash_material();
 
     for expected in [
-        "crucible.launch.v1",
+        "crucible.launch.v3",
         "cpu_model=qemu64,-rdrand,-rdseed",
         "machine_type=pc-q35-9.2",
         "memory_mib=512",
@@ -1036,16 +1153,19 @@ fn launch_hash_material_records_every_determinism_field() {
         "accelerator_family=tcg-derived-sim",
         "simulation_mode=on",
         "stock_tcg_crucible_runtime=forbidden",
-        "icount_shift=0",
+        "qemu_icount_shift=0",
+        "sim_tick=picosecond",
+        "sim_ticks_per_ns=1000",
+        "sim_ticks_per_instruction=50",
         "rr_switch_quantum=4096",
-        "rr_switch_quantum_units=node-icount",
+        "rr_switch_quantum_units=retired-instructions",
         "rr_vcpu_rotation=ascending-vcpu-id",
-        "virtual_time_ns=icount<<shift",
+        "virtual_time_ns=floor(sim_tick/1000)",
         "per_vcpu_cpu_model=uniform",
-        "per_vcpu_tsc_source=node-icount",
+        "per_vcpu_tsc_source=logical-picoseconds-div-250",
         "rtc_epoch_utc=2026-01-01T00:00:00",
         "rtc_clock=vm",
-        "guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time",
+        "guest_time_sources=rtc,tsc,timer-devices:logical-picosecond-virtual-time-with-ns-projections",
         "guest_time_epoch=fixed-rtc-epoch",
         "time_control_owner=crucible-qemu-plugin",
         "time_control_acquire=registration-before-first-visible-instruction",
@@ -1070,7 +1190,7 @@ fn launch_hash_material_records_every_determinism_field() {
         "guest_entropy_rng_device=virtio-rng-pci,rng=crucible-rng0",
         "guest_entropy_host_sources=disabled",
         "per_vcpu_rng_source=scenario-seed-and-run-seed",
-        "per_vcpu_rng_timing_axis=node-icount",
+        "per_vcpu_rng_timing_axis=raw-retirement-rr-order",
         "secondary_vcpu_bringup=rr-sim-tcg-icount-deterministic",
         "kernel_cmdline=console=ttyS0 reboot=k panic=1 quiet",
     ] {
@@ -1086,10 +1206,6 @@ fn launch_hash_material_records_every_determinism_field() {
         "guest entropy seed must be 32 bytes of lowercase hex"
     );
 
-    let shifted = deterministic(
-        LaunchProfileCandidate::default().with_icount_shift(IcountShiftSetting::Fixed(1)),
-    )
-    .scenario_hash_material();
     let rr_quantum = deterministic(LaunchProfileCandidate::default().with_rr_switch_quantum(8192))
         .scenario_hash_material();
     let smp_vcpus =
@@ -1108,7 +1224,6 @@ fn launch_hash_material_records_every_determinism_field() {
     let run_seed = deterministic(LaunchProfileCandidate::default().with_run_seed(0x1234))
         .scenario_hash_material();
 
-    assert_ne!(material, shifted);
     assert_ne!(material, rr_quantum);
     assert_ne!(material, smp_vcpus);
     assert_ne!(material, machine);
@@ -1146,7 +1261,7 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
         window
             == [
                 "-device",
-                "virtio-blk-pci,drive=crucible-root0,id=crucible-root-device0",
+                "virtio-blk-pci,drive=crucible-root0,id=crucible-root-device0,bus=pcie.0,addr=0x2",
             ]
     }));
     assert!(
@@ -1160,7 +1275,7 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
 
     let material = command.command_line_hash_material();
     for expected in [
-        "crucible.qemu-launch-command.v1",
+        "crucible.qemu-launch-command.v3",
         "command_line_in_hash=executable-and-argv",
         "executable=/nix/store/11111111111111111111111111111111-aos-qemu/bin/qemu-system-x86_64",
         "argv[0]=-nodefaults",
@@ -1229,6 +1344,59 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
     ] {
         assert!(vm_material.contains(expected), "missing {expected}");
     }
+}
+
+#[test]
+fn plugin_setup_plan_enters_the_v3_launch_identity_for_every_catalog()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_protocol::selectable_catalog_plan::{
+        SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
+        SelectablePlanLimits, SelectablePlanPresence,
+    };
+
+    let empty_command = default_launch_command();
+    let empty_material = empty_command.command_line_hash_material();
+    let empty_setup_digest =
+        lowercase_hex(blake3::hash(&empty_command.plugin_setup_plan().encode()?).as_bytes());
+
+    assert!(empty_material.starts_with("crucible.qemu-launch-command.v3\n"));
+    assert!(empty_material.contains(&format!("plugin_setup_plan_v1={empty_setup_digest}")));
+    assert!(!empty_material.contains("app_random_branch_plan_v1="));
+
+    let declaration = SelectablePlanDeclaration::new(
+        "network.policy",
+        vec![1, 2],
+        vec![1],
+        vec!["recovery".to_owned()],
+        SelectablePlanPresence::Required,
+    )?;
+    let selectable = SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(1, 3, 3)?,
+        vec![declaration],
+        SelectablePlanContinuation::cold(),
+    )?;
+    let plugin = default_plugin_config()
+        .with_whitebox(QemuLaunchPluginSwitch::On)
+        .with_whitebox_setup(validated_whitebox_setup())
+        .with_selectable_catalog_plan(selectable.clone());
+    let command = default_profile().qemu_launch_command(
+        default_vm_config(),
+        default_qemu_binary(),
+        plugin,
+        &default_fault_node(),
+    )?;
+    let material = command.command_line_hash_material();
+    let setup_digest =
+        lowercase_hex(blake3::hash(&command.plugin_setup_plan().encode()?).as_bytes());
+
+    assert!(material.starts_with("crucible.qemu-launch-command.v3\n"));
+    assert!(material.contains(&format!("plugin_setup_plan_v1={setup_digest}")));
+    assert!(!material.contains("app_random_branch_plan_v1="));
+    assert_eq!(
+        command.plugin_setup_plan().selectable_catalog_plan(),
+        &selectable
+    );
+    Ok(())
 }
 
 #[test]
@@ -1508,17 +1676,6 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
             path: String::from("/nix/store/../tmp/kernel"),
         })
     );
-    assert_eq!(
-        profile.qemu_launch_command(
-            default_vm_config().with_root_overlay_file_name("../root.qcow2"),
-            default_qemu_binary(),
-            default_plugin_config(),
-            &default_fault_node(),
-        ),
-        Err(QemuLaunchCommandError::InvalidOverlayFileName {
-            file_name: String::from("../root.qcow2"),
-        })
-    );
 }
 
 fn qemu_args<const N: usize>(parts: [&str; N]) -> Vec<String> {
@@ -1571,17 +1728,11 @@ fn guest_entropy_seed_is_scenario_seed_derived() {
 }
 
 #[test]
-fn virtual_time_uses_checked_icount_shift_mapping() {
-    let profile = deterministic(
-        LaunchProfileCandidate::default().with_icount_shift(IcountShiftSetting::Fixed(4)),
-    );
+fn virtual_time_floors_only_at_the_guest_nanosecond_boundary() {
+    let profile = default_profile();
 
-    assert_eq!(profile.virtual_ns_from_icount(3), Ok(48));
-    assert_eq!(
-        profile.virtual_ns_from_icount(u64::MAX),
-        Err(LaunchProfileError::VirtualTimeOverflow {
-            icount: u64::MAX,
-            shift: 4,
-        })
-    );
+    assert_eq!(profile.virtual_ns_from_tick(999), 0);
+    assert_eq!(profile.virtual_ns_from_tick(1_000), 1);
+    assert_eq!(profile.virtual_ns_from_tick(1_001), 1);
+    assert_eq!(profile.virtual_ns_from_tick(u64::MAX), u64::MAX / 1_000);
 }

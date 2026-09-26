@@ -12,7 +12,7 @@ use super::*;
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 fn transaction_fixture() -> (fs::File, QemuLive9pIoServicer) {
-    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))
         .unwrap_or_else(|error| panic!("allocate test region: {error}"));
     let layout = allocation.layout();
     let bytes = allocation
@@ -35,7 +35,7 @@ fn transaction_fixture() -> (fs::File, QemuLive9pIoServicer) {
         .unwrap_or_else(|error| panic!("size test region: {error}"));
     file.write_all(&bytes)
         .unwrap_or_else(|error| panic!("write test region: {error}"));
-    let servicer = QemuLive9pIoServicer::from_shmem_fd(file.as_fd(), layout.region_size, 0, 0)
+    let servicer = QemuLive9pIoServicer::from_shmem_fd(file.as_fd(), layout.region_size, 0)
         .unwrap_or_else(|error| panic!("map test servicer: {error}"));
     (file, servicer)
 }
@@ -101,14 +101,6 @@ fn authorized_due_reply_remains_retryable_after_backpressure() {
 #[test]
 fn empty_poll_cannot_advance_past_later_request_completion() {
     let (_file, mut servicer) = transaction_fixture();
-
-    let idle = servicer
-        .service(10_000)
-        .unwrap_or_else(|error| panic!("service empty request ring: {error}"));
-    assert_eq!(idle.processed, 0);
-    assert_eq!(idle.delivered, 0);
-    assert_eq!(servicer.device.core().current_icount(), 0);
-
     let version = b"9P2000.L";
     let mut payload = Vec::new();
     let size = 7 + 4 + 2 + version.len();
@@ -118,6 +110,17 @@ fn empty_poll_cannot_advance_past_later_request_completion() {
     payload.extend_from_slice(&4096_u32.to_le_bytes());
     payload.extend_from_slice(&(version.len() as u16).to_le_bytes());
     payload.extend_from_slice(version);
+    let latency_nanos = NinepLatency::default().latency_for(&payload);
+    assert_eq!(latency_nanos, 821);
+    let guest_ceiling_ticks = 9_000 + latency_nanos * crucible_shmem::TICKS_PER_NS;
+
+    let idle = servicer
+        .service(guest_ceiling_ticks)
+        .unwrap_or_else(|error| panic!("service empty request ring: {error}"));
+    assert_eq!(idle.processed, 0);
+    assert_eq!(idle.delivered, 0);
+    assert_eq!(servicer.device.core().current_icount(), 0);
+
     let frame = FrameEntry::new(9_000, 0, 7, &payload)
         .unwrap_or_else(|error| panic!("construct request frame: {error}"));
     {
@@ -131,12 +134,16 @@ fn empty_poll_cannot_advance_past_later_request_completion() {
     }
 
     let serviced = servicer
-        .service(10_000)
+        .service(guest_ceiling_ticks)
         .unwrap_or_else(|error| panic!("service delayed request publication: {error}"));
     assert_eq!(serviced.processed, 1);
     assert_eq!(serviced.delivered, 1);
     assert_eq!(serviced.first_request_icount, Some(9_000));
-    assert_eq!(servicer.device.core().current_icount(), 10_000);
+    assert_eq!(
+        serviced.computed_completion_icount,
+        Some(guest_ceiling_ticks)
+    );
+    assert_eq!(servicer.device.core().current_icount(), guest_ceiling_ticks);
 }
 
 /// The fixed 9p tree is a pure constant: two independent constructions are

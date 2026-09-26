@@ -5,9 +5,10 @@ use super::*;
 mod network_branch;
 mod quantum_loop;
 pub(super) use network_branch::{
-    LiveNetworkBranchChoice, is_live_network_branch_choice_name, live_network_branch_choices,
-    live_network_branch_draws,
+    LiveNetworkBranchChoice, LiveNetworkSelectable, live_network_alternative_id,
+    live_network_branch_choices, live_network_branch_draws,
 };
+pub use quantum_loop::LiveNetworkPreselection;
 impl SchedulerSendAuthorizer for SingleScheduler {
     fn authorize_cross_node_send(
         &self,
@@ -22,9 +23,9 @@ impl ConcurrentQuantumLoop for SingleScheduler {
     fn drive_concurrent_quantum(
         &mut self,
         request: QuantumRequest,
-        max_host_workers: usize,
+        _max_host_workers: usize,
     ) -> Result<SchedulerConcurrentQuantumOutcome, SchedulerError> {
-        self.drive_concurrent_authoritative_quantum(request, max_host_workers)
+        self.drive_concurrent_authoritative_quantum(request)
     }
 }
 
@@ -83,6 +84,7 @@ pub fn check_scheduler_liveness(
             configuration: scheduler.configuration().clone(),
             control: Vec::new(),
         };
+        let previous_frontier = scheduler.frontier();
         let outcome = scheduler.drive_quantum(request)?;
 
         match &scheduler.last_advance {
@@ -103,6 +105,7 @@ pub fn check_scheduler_liveness(
                 yielded_between_quanta &= advance.yielded_before_advance;
                 advanced_nodes.push(advance.node.clone());
             }
+            None if scheduler.frontier() > previous_frontier => {}
             None => {
                 if scheduler.last_topology_recompute {
                     continue;
@@ -214,7 +217,7 @@ pub(super) struct AdvanceCandidate {
     pub(super) target_time: SimInstant,
     pub(super) quiescent_horizon: Option<SimInstant>,
     pub(super) conservative_dependency: Option<UnresolvedCrossNodeDependency>,
-    pub(super) allow_ceil_past_target: bool,
+    pub(super) icount_rounding: SchedulerIcountRounding,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -224,7 +227,7 @@ pub(super) enum EffectiveHorizonProjection {
         target_time: SimInstant,
         quiescent_horizon: Option<SimInstant>,
         conservative_dependency: Option<UnresolvedCrossNodeDependency>,
-        allow_ceil_past_target: bool,
+        icount_rounding: SchedulerIcountRounding,
     },
 }
 
@@ -233,29 +236,64 @@ pub(super) struct AdvanceWindow {
     pub(super) target_time: SimInstant,
     pub(super) quiescent_horizon: Option<SimInstant>,
     pub(super) conservative_dependency: Option<UnresolvedCrossNodeDependency>,
-    pub(super) allow_ceil_past_target: bool,
+    pub(super) icount_rounding: SchedulerIcountRounding,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SchedulerIcountRounding {
+    ConservativeFloor,
+    ExactCeil,
+}
+
+impl SchedulerIcountRounding {
+    pub(super) const fn restricted_with(self, other: Self) -> Self {
+        if matches!((self, other), (Self::ExactCeil, Self::ExactCeil)) {
+            Self::ExactCeil
+        } else {
+            Self::ConservativeFloor
+        }
+    }
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::ConservativeFloor => "conservative_floor",
+            Self::ExactCeil => "exact_ceil",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SchedulerIcountProjection {
+    pub(super) source_counter: NodeCounter,
+    pub(super) source_time: SimInstant,
+    pub(super) target_counter: NodeCounter,
+    pub(super) target_time: SimInstant,
+    pub(super) projected_target_time: SimInstant,
+    pub(super) time_mapping: NodeTimeMapping,
+    pub(super) ticks_per_counter_tick: u64,
+    pub(super) rounding: SchedulerIcountRounding,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct IdleWakeTarget {
     pub(super) wake_time: SimInstant,
-    pub(super) allow_ceil_past_target: bool,
+    pub(super) icount_rounding: SchedulerIcountRounding,
 }
 
 pub(super) fn merge_idle_wake_target(
     target: &mut Option<IdleWakeTarget>,
     wake_time: SimInstant,
-    allow_ceil_past_target: bool,
+    icount_rounding: SchedulerIcountRounding,
 ) {
     match target {
         Some(current) if current.wake_time < wake_time => {}
         Some(current) if current.wake_time == wake_time => {
-            current.allow_ceil_past_target &= allow_ceil_past_target;
+            current.icount_rounding = current.icount_rounding.restricted_with(icount_rounding);
         }
         _ => {
             *target = Some(IdleWakeTarget {
                 wake_time,
-                allow_ceil_past_target,
+                icount_rounding,
             });
         }
     }
@@ -294,8 +332,8 @@ pub(super) struct PlannedPreemptionApplication {
     pub(super) node: SchedulerNodeId,
     pub(super) decision: PreemptionDecision,
     pub(super) virtual_time: SimInstant,
-    pub(super) deadline_icount: Icount,
-    pub(super) horizon_icount: Icount,
+    pub(super) deadline_tick: SimInstant,
+    pub(super) horizon_tick: SimInstant,
     pub(super) ceiling: SchedulerRunCeilingPublication,
 }
 
@@ -311,13 +349,12 @@ pub(super) fn preemption_event_times(
 pub(super) fn concurrent_completion_order_key(
     plan: &AdvancePlan,
     preemptions: &[PlannedPreemptionApplication],
-    _shift: Shift,
 ) -> Result<VirtualTime, SchedulerError> {
     let mut key = plan.projected_target_time;
     for preemption in preemptions {
         key = min_instant(key, preemption.virtual_time);
     }
-    Ok(VirtualTime { ticks: key.nanos })
+    Ok(VirtualTime { ticks: key.ticks })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -376,23 +413,43 @@ impl Drop for SchedulerCriticalSection<'_> {
 
 pub(super) fn frontier_for(
     nodes: &[RuntimeSchedulerNode],
-    shift: Shift,
+    previous_frontier: Option<VirtualTime>,
 ) -> Result<VirtualTime, SchedulerError> {
     let mut frontier = None;
+    let mut initial_inactive = None;
     for node in nodes {
+        let inactive = matches!(
+            node.activity,
+            SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+        );
+        if inactive && previous_frontier.is_some() {
+            continue;
+        }
         let virtual_time = if node.id.kind == SchedulingNodeKind::Vm {
-            node.time_mapping.logical_time(node.counter, shift)?
+            node.time_mapping.logical_time(node.counter)?
         } else {
-            node.counter.to_virtual(shift)?
+            node.counter.to_virtual()
         };
-        frontier = Some(match frontier {
+        let minimum = if inactive {
+            &mut initial_inactive
+        } else {
+            &mut frontier
+        };
+        *minimum = Some(match *minimum {
             Some(current) => min_instant(current, virtual_time),
             None => virtual_time,
         });
     }
 
     Ok(VirtualTime {
-        ticks: frontier.unwrap_or(SimInstant::EPOCH).nanos,
+        // Once a world has a committed frontier, an all-inactive transition
+        // retains it. At construction only, preserve the supplied inactive
+        // clocks' initial minimum when no live participant defines an epoch.
+        ticks: frontier
+            .map(|at| at.ticks)
+            .or(previous_frontier.map(|at| at.ticks))
+            .or(initial_inactive.map(|at| at.ticks))
+            .unwrap_or(0),
     })
 }
 
@@ -400,19 +457,37 @@ pub(super) fn min_instant(left: SimInstant, right: SimInstant) -> SimInstant {
     if left <= right { left } else { right }
 }
 
+/// Stable disposition of an attempt-scoped operational failure.
+///
+/// The scheduler carries this classification without interpreting daemon or
+/// QEMU error types so an outer execution supervisor can distinguish a
+/// transient availability failure, accepted cancellation, and a stable
+/// terminal failure without parsing diagnostic text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchedulerOperationalFailureClass {
+    /// The same operation may succeed after transient availability recovers.
+    Retryable,
+    /// Attempt cancellation won at an operational boundary.
+    Canceled,
+    /// The attempt cannot safely continue or be retried unchanged.
+    Terminal,
+}
+
 /// An error produced by the scheduler boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SchedulerError {
-    /// The scheduler behavior has not landed yet.
-    NotImplemented {
-        /// The deferred operation.
-        operation: &'static str,
-    },
     /// A backend operation failed while driven by the scheduler.
     Backend(BackendError),
     /// A component attempted to bypass the scheduler boundary.
     BoundaryViolation {
         /// Deterministic diagnostic text.
+        message: String,
+    },
+    /// Attempt-scoped resource enforcement stopped scheduler progress.
+    OperationalBoundary {
+        /// Stable supervisor disposition, independent of diagnostic wording.
+        class: SchedulerOperationalFailureClass,
+        /// Deterministic operational diagnostic text.
         message: String,
     },
     /// A scheduler-owned representation could not reserve its admitted storage.
@@ -448,11 +523,9 @@ pub enum SchedulerError {
 impl fmt::Display for SchedulerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotImplemented { operation } => {
-                write!(f, "scheduler operation {operation} is not implemented yet")
-            }
             Self::Backend(error) => write!(f, "backend failed under scheduler control: {error}"),
             Self::BoundaryViolation { message } => f.write_str(message),
+            Self::OperationalBoundary { message, .. } => f.write_str(message),
             Self::ResourceLimit {
                 field,
                 current,

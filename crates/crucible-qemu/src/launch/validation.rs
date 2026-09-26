@@ -4,14 +4,17 @@ use thiserror::Error;
 
 use super::{
     DEFAULT_ACCEL, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, InputPolicy,
-    MAX_ICOUNT_SHIFT, MAX_RR_SWITCH_QUANTUM, MachineResetMode, QEMU_CONSOLE_CHARDEV_ID,
+    MAX_RR_SWITCH_QUANTUM, MachineResetMode, QEMU_CONSOLE_CHARDEV_ID,
     QEMU_CONSOLE_SOCKET_FILE_NAME, QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
-    QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME, entropy::GUEST_ENTROPY_RNG_ID,
+    QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME, QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+    QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION, QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+    QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION, QEMU_RUNTIME_LIVENESS_TRACE_SELECTION,
+    entropy::GUEST_ENTROPY_RNG_ID,
 };
 
 mod values;
 
-use values::{comma_value, unique_comma_value_any, unique_option_value};
+use values::{comma_value, unique_option_value};
 pub(super) use values::{option_values, unique_comma_value, validate_fixed_text};
 
 /// A deterministic launch-profile validation error.
@@ -23,6 +26,9 @@ pub enum LaunchProfileError {
     /// The CPU model inherited host CPU features.
     #[error("CPU model must be fixed and must not be `host`")]
     CpuModelUsesHost,
+    /// An AArch64 CPU enables PMU instruction-retirement timing.
+    #[error("AArch64 sim CPU model must explicitly set pmu=off")]
+    Aarch64PmuMustBeOff,
     /// The CPU model enabled hardware entropy instructions.
     #[error("CPU model enables host entropy feature `{feature}`")]
     CpuEntropyFeatureEnabled {
@@ -38,17 +44,8 @@ pub enum LaunchProfileError {
     /// The launch requested zero vCPUs.
     #[error("launch profile requires at least one vCPU")]
     SmpVcpuCountZero,
-    /// The launch requested adaptive host-speed icount.
-    #[error("icount shift must be fixed; `shift=auto` is forbidden")]
-    IcountShiftAuto,
-    /// The fixed icount shift was too large for checked virtual-time math.
-    #[error("icount shift {shift} exceeds maximum {MAX_ICOUNT_SHIFT}")]
-    IcountShiftTooLarge {
-        /// The rejected shift.
-        shift: u8,
-    },
     /// The round-robin vCPU switch quantum was zero.
-    #[error("RR switch quantum must be a non-zero node-icount value")]
+    #[error("RR switch quantum must be a non-zero retired-instruction count")]
     RrSwitchQuantumZero,
     /// The round-robin vCPU switch quantum exceeded the patched QEMU limit.
     #[error("RR switch quantum {quantum} exceeds maximum {MAX_RR_SWITCH_QUANTUM}")]
@@ -56,21 +53,9 @@ pub enum LaunchProfileError {
         /// Rejected round-robin switch quantum.
         quantum: u64,
     },
-    /// A node requested a fixed icount shift different from the scenario shift.
-    #[error(
-        "node `{node_id}` icount shift {node_shift} differs from scenario shift {scenario_shift}"
-    )]
-    IcountShiftMismatch {
-        /// The node whose launch declaration mismatched the scenario.
-        node_id: String,
-        /// The scenario-wide fixed shift.
-        scenario_shift: u8,
-        /// The node-local fixed shift.
-        node_shift: u8,
-    },
-    /// A node had more than one icount shift declaration in scenario content.
-    #[error("node `{node_id}` has duplicate icount shift declarations")]
-    DuplicateNodeIcountShift {
+    /// A node had more than one launch identity declaration.
+    #[error("node `{node_id}` has duplicate launch identity declarations")]
+    DuplicateNodeId {
         /// The node declared more than once.
         node_id: String,
     },
@@ -135,14 +120,6 @@ pub enum LaunchProfileError {
         /// The rejected input policy.
         policy: InputPolicy,
     },
-    /// Virtual-time conversion overflowed.
-    #[error("virtual time overflow for icount {icount} with shift {shift}")]
-    VirtualTimeOverflow {
-        /// The input instruction count.
-        icount: u64,
-        /// The fixed shift.
-        shift: u8,
-    },
 }
 
 /// A validated pre-spawn QEMU launch-argument summary.
@@ -154,7 +131,6 @@ pub enum LaunchProfileError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuPreSpawnLaunchValidation {
     accelerator: String,
-    icount_shift: u8,
     rr_switch_quantum: u64,
     smp_vcpus: u16,
     cpu_model: String,
@@ -165,12 +141,6 @@ impl QemuPreSpawnLaunchValidation {
     #[must_use]
     pub fn accelerator(&self) -> &str {
         &self.accelerator
-    }
-
-    /// Returns the accepted fixed icount shift.
-    #[must_use]
-    pub const fn icount_shift(&self) -> u8 {
-        self.icount_shift
     }
 
     /// Returns the accepted pinned RR switch quantum.
@@ -213,6 +183,23 @@ pub enum QemuPreSpawnLaunchValidationError {
         /// Option missing a value.
         option: &'static str,
     },
+    /// The fixed diagnostic trace options were not supplied together.
+    #[error("QEMU diagnostics require both fixed `-D` and `-trace` options")]
+    IncompleteDiagnosticTrace,
+    /// A diagnostic trace option differed from one fixed contract.
+    #[error("QEMU diagnostic `{option}` value `{value}` is invalid")]
+    InvalidDiagnosticTrace {
+        /// Rejected option name.
+        option: &'static str,
+        /// Rejected option value.
+        value: String,
+    },
+    /// Runtime trace CPU masks cannot represent the configured vCPU count.
+    #[error("QEMU runtime-determinism trace supports at most 64 vCPUs, got {actual}")]
+    RuntimeDeterminismTraceCpuCount {
+        /// Rejected vCPU count.
+        actual: u16,
+    },
     /// KVM or another hardware-acceleration shortcut was selected.
     #[error("QEMU launch must not enable KVM or hardware acceleration via `{argument}`")]
     KvmOrHardwareAcceleration {
@@ -243,8 +230,8 @@ pub enum QemuPreSpawnLaunchValidationError {
     /// The icount argument selected adaptive host-speed shift mode.
     #[error("QEMU `-icount shift=auto` is forbidden")]
     IcountShiftAuto,
-    /// The icount shift could not be parsed or was out of range.
-    #[error("QEMU `-icount` shift `{value}` is invalid")]
+    /// The icount shift could not be parsed or was not zero.
+    #[error("QEMU `-icount` shift `{value}` is invalid; Crucible requires shift=0")]
     IcountShiftInvalid {
         /// Invalid shift value.
         value: String,
@@ -339,6 +326,7 @@ pub fn validate_pre_spawn_qemu_launch_args(
     args: &[String],
 ) -> Result<QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError> {
     super::control_channels::validate_optional_pre_spawn_qmp_control_endpoint(args)?;
+    validate_optional_diagnostic_trace(args)?;
     reject_kvm_and_host_sources(args)?;
     let accelerator = unique_option_value(args, "-accel")?.to_owned();
     validate_pre_spawn_accelerator(&accelerator)?;
@@ -348,22 +336,103 @@ pub fn validate_pre_spawn_qemu_launch_args(
     }
 
     let icount = unique_option_value(args, "-icount")?;
-    let icount_shift = validate_pre_spawn_icount_shift(icount)?;
+    validate_pre_spawn_icount_shift(icount)?;
     validate_required_icount_value(icount, "sleep", "off")?;
     validate_required_icount_value(icount, "align", "off")?;
     let rr_switch_quantum = validate_pre_spawn_rr_switch_quantum(icount)?;
 
     let smp_vcpus = validate_pre_spawn_smp(unique_option_value(args, "-smp")?)?;
+    if smp_vcpus > 64
+        && args.windows(4).any(|window| {
+            window
+                == [
+                    "-D",
+                    QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+                    "-trace",
+                    QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION,
+                ]
+        })
+    {
+        return Err(
+            QemuPreSpawnLaunchValidationError::RuntimeDeterminismTraceCpuCount {
+                actual: smp_vcpus,
+            },
+        );
+    }
     let cpu_model = unique_option_value(args, "-cpu")?.to_owned();
     validate_pre_spawn_cpu(&cpu_model)?;
 
     Ok(QemuPreSpawnLaunchValidation {
         accelerator,
-        icount_shift,
         rr_switch_quantum,
         smp_vcpus,
         cpu_model,
     })
+}
+
+pub(in crate::launch) fn validate_optional_diagnostic_trace(
+    args: &[String],
+) -> Result<(), QemuPreSpawnLaunchValidationError> {
+    for (option, alias, attached, attached_alias) in [
+        ("-D", "--D", "-D=", "--D="),
+        ("-trace", "--trace", "-trace=", "--trace="),
+    ] {
+        if let Some(argument) = args.iter().find(|argument| {
+            argument.as_str() == alias
+                || argument.starts_with(attached)
+                || argument.starts_with(attached_alias)
+        }) {
+            return Err(QemuPreSpawnLaunchValidationError::InvalidDiagnosticTrace {
+                option,
+                value: argument.to_owned(),
+            });
+        }
+    }
+    let log_files = option_values(args, "-D")?;
+    let trace_selections = option_values(args, "-trace")?;
+    if log_files.len() > 1 {
+        return Err(QemuPreSpawnLaunchValidationError::DuplicateOption { option: "-D" });
+    }
+    if trace_selections.len() > 1 {
+        return Err(QemuPreSpawnLaunchValidationError::DuplicateOption { option: "-trace" });
+    }
+    if log_files.is_empty() && trace_selections.is_empty() {
+        return Ok(());
+    }
+    let (Some(log_file), Some(selection)) = (log_files.first(), trace_selections.first()) else {
+        return Err(QemuPreSpawnLaunchValidationError::IncompleteDiagnosticTrace);
+    };
+    let control = (
+        QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+        QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION,
+    );
+    let runtime = (
+        QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+        QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION,
+    );
+    let liveness = (
+        QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+        QEMU_RUNTIME_LIVENESS_TRACE_SELECTION,
+    );
+    if ![control, runtime, liveness].contains(&(*log_file, *selection)) {
+        return Err(QemuPreSpawnLaunchValidationError::InvalidDiagnosticTrace {
+            option: "-D/-trace",
+            value: format!("{log_file} {selection}"),
+        });
+    }
+    let canonical_block = ["-D", *log_file, "-trace", *selection];
+    if !args.windows(canonical_block.len()).any(|window| {
+        window
+            .iter()
+            .map(String::as_str)
+            .eq(canonical_block.iter().copied())
+    }) {
+        return Err(QemuPreSpawnLaunchValidationError::InvalidDiagnosticTrace {
+            option: "-D/-trace",
+            value: "options must form one adjacent ordered block".to_owned(),
+        });
+    }
+    Ok(())
 }
 
 pub(super) fn canonical_cpu_model(cpu_model: &str) -> Result<String, LaunchProfileError> {
@@ -376,6 +445,13 @@ pub(super) fn canonical_cpu_model(cpu_model: &str) -> Result<String, LaunchProfi
     let aarch64_model =
         base.starts_with("cortex-") || base.starts_with("neoverse-") || base == "a64fx";
     if aarch64_model {
+        let pmu_properties = lower
+            .split(',')
+            .filter(|part| part.trim().starts_with("pmu="))
+            .collect::<Vec<_>>();
+        if pmu_properties.len() != 1 || pmu_properties[0].trim() != "pmu=off" {
+            return Err(LaunchProfileError::Aarch64PmuMustBeOff);
+        }
         return Ok(cpu_model.to_owned());
     }
     reject_enabled_entropy_feature(&lower, "rdrand")?;
@@ -469,7 +545,7 @@ fn validate_machine_acceleration(machine: &str) -> Result<(), QemuPreSpawnLaunch
     Ok(())
 }
 
-fn validate_pre_spawn_icount_shift(icount: &str) -> Result<u8, QemuPreSpawnLaunchValidationError> {
+fn validate_pre_spawn_icount_shift(icount: &str) -> Result<(), QemuPreSpawnLaunchValidationError> {
     let Some(shift) = unique_comma_value(icount, "-icount", "shift")? else {
         return Err(QemuPreSpawnLaunchValidationError::IcountShiftMissing);
     };
@@ -482,12 +558,12 @@ fn validate_pre_spawn_icount_shift(icount: &str) -> Result<u8, QemuPreSpawnLaunc
             value: shift.to_owned(),
         });
     };
-    if shift > MAX_ICOUNT_SHIFT {
+    if shift != 0 {
         return Err(QemuPreSpawnLaunchValidationError::IcountShiftInvalid {
             value: shift.to_string(),
         });
     }
-    Ok(shift)
+    Ok(())
 }
 
 fn validate_required_icount_value(
@@ -509,13 +585,7 @@ fn validate_required_icount_value(
 fn validate_pre_spawn_rr_switch_quantum(
     icount: &str,
 ) -> Result<u64, QemuPreSpawnLaunchValidationError> {
-    let Some(value) = unique_comma_value_any(
-        icount,
-        "-icount",
-        &["rr_switch_quantum", "crucible-rr-quantum-icount"],
-        "rr_switch_quantum",
-    )?
-    else {
+    let Some(value) = unique_comma_value(icount, "-icount", "rr_switch_quantum")? else {
         return Err(QemuPreSpawnLaunchValidationError::RrSwitchQuantumUnpinned);
     };
     let Ok(quantum) = value.parse::<u64>() else {
@@ -866,4 +936,51 @@ fn validate_pre_spawn_rtc(rtc: &str) -> Result<(), QemuPreSpawnLaunchValidationE
         Some(_) => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qmp_monitor_trace_is_one_fixed_whitelisted_pair() {
+        let accepted = [
+            "-D",
+            QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+            "-trace",
+            QEMU_RUNTIME_LIVENESS_TRACE_SELECTION,
+        ]
+        .map(str::to_owned);
+        assert_eq!(validate_optional_diagnostic_trace(&accepted), Ok(()));
+
+        for rejected in [
+            [
+                "-D",
+                "other.trace",
+                "-trace",
+                QEMU_RUNTIME_LIVENESS_TRACE_SELECTION,
+            ],
+            [
+                "-D",
+                QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+                "-trace",
+                "enable=crucible_sim_main_loop_*",
+            ],
+            [
+                "-D",
+                QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+                "-trace",
+                "enable=crucible_sim_*",
+            ],
+        ] {
+            let rejected = rejected.map(str::to_owned);
+            assert!(matches!(
+                validate_optional_diagnostic_trace(&rejected),
+                Err(QemuPreSpawnLaunchValidationError::InvalidDiagnosticTrace {
+                    option: "-D/-trace",
+                    ..
+                })
+            ));
+        }
+    }
 }

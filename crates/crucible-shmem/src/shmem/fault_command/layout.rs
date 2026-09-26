@@ -3,7 +3,7 @@
 /// Fault command ABI major version.
 pub const FAULT_COMMAND_ABI_MAJOR: u16 = 1;
 /// Fault command ABI minor version.
-pub const FAULT_COMMAND_ABI_MINOR: u16 = 2;
+pub const FAULT_COMMAND_ABI_MINOR: u16 = 3;
 /// Exact semantic version implemented by every initial command kind.
 pub const FAULT_COMMAND_SEMANTIC_VERSION: u32 = 1;
 /// Default maximum encoded command or result payload bytes.
@@ -66,7 +66,7 @@ pub const FAULT_COMMAND_PAYLOAD_LENGTH_OFFSET: usize = 208;
 /// Final command reserved field offset.
 pub const FAULT_COMMAND_RESERVED1_OFFSET: usize = 212;
 /// Encoded result header byte length.
-pub const FAULT_RESULT_HEADER_V1_BYTES: usize = 188;
+pub const FAULT_RESULT_HEADER_V2_BYTES: usize = 196;
 /// Result ABI-major field offset.
 pub const FAULT_RESULT_ABI_MAJOR_OFFSET: usize = 0;
 /// Result ABI-minor field offset.
@@ -83,26 +83,28 @@ pub const FAULT_RESULT_SEQUENCE_OFFSET: usize = 12;
 pub const FAULT_RESULT_OBSERVED_ICOUNT_OFFSET: usize = 20;
 /// Result applied-icount field offset.
 pub const FAULT_RESULT_APPLIED_ICOUNT_OFFSET: usize = 28;
+/// Result exact QEMU emission-tick field offset.
+pub const FAULT_RESULT_EMITTED_TICK_OFFSET: usize = 36;
 /// Result capability-version field offset.
-pub const FAULT_RESULT_CAPABILITY_VERSION_OFFSET: usize = 36;
+pub const FAULT_RESULT_CAPABILITY_VERSION_OFFSET: usize = 44;
 /// Result safe-boundary phase field offset.
-pub const FAULT_RESULT_PHASE_OFFSET: usize = 40;
+pub const FAULT_RESULT_PHASE_OFFSET: usize = 48;
 /// First result reserved field offset.
-pub const FAULT_RESULT_RESERVED0_OFFSET: usize = 42;
+pub const FAULT_RESULT_RESERVED0_OFFSET: usize = 50;
 /// Result before-state hash field offset.
-pub const FAULT_RESULT_BEFORE_HASH_OFFSET: usize = 44;
+pub const FAULT_RESULT_BEFORE_HASH_OFFSET: usize = 52;
 /// Result after-state hash field offset.
-pub const FAULT_RESULT_AFTER_HASH_OFFSET: usize = 76;
+pub const FAULT_RESULT_AFTER_HASH_OFFSET: usize = 84;
 /// Result evidence hash field offset.
-pub const FAULT_RESULT_EVIDENCE_HASH_OFFSET: usize = 108;
+pub const FAULT_RESULT_EVIDENCE_HASH_OFFSET: usize = 116;
 /// Result payload hash field offset.
-pub const FAULT_RESULT_PAYLOAD_HASH_OFFSET: usize = 140;
+pub const FAULT_RESULT_PAYLOAD_HASH_OFFSET: usize = 148;
 /// Result payload-offset field offset.
-pub const FAULT_RESULT_PAYLOAD_OFFSET_OFFSET: usize = 172;
+pub const FAULT_RESULT_PAYLOAD_OFFSET_OFFSET: usize = 180;
 /// Result payload-length field offset.
-pub const FAULT_RESULT_PAYLOAD_LENGTH_OFFSET: usize = 180;
+pub const FAULT_RESULT_PAYLOAD_LENGTH_OFFSET: usize = 188;
 /// Final result reserved field offset.
-pub const FAULT_RESULT_RESERVED1_OFFSET: usize = 184;
+pub const FAULT_RESULT_RESERVED1_OFFSET: usize = 192;
 /// Encoded capability row byte length.
 pub const FAULT_CAPABILITY_ROW_V1_BYTES: usize = 60;
 /// Capability command-kind field offset.
@@ -125,7 +127,7 @@ pub const FAULT_CAPABILITY_HASH_OFFSET: usize = 28;
 /// Exact shared-memory size of one command transport slot.
 pub const FAULT_COMMAND_SLOT_V1_BYTES: usize = 256;
 /// Exact shared-memory size of one result transport slot.
-pub const FAULT_RESULT_SLOT_V1_BYTES: usize = 256;
+pub const FAULT_RESULT_SLOT_V2_BYTES: usize = 256;
 /// Exact shared-memory size of one payload-arena cursor header.
 pub const FAULT_PAYLOAD_ARENA_HEADER_BYTES: usize = 128;
 /// Command-slot reservation-start field offset.
@@ -142,15 +144,15 @@ pub const FAULT_COMMAND_SLOT_HEADER_OFFSET: usize =
     core::mem::offset_of!(FaultCommandSlotV1, header);
 /// Result-slot reservation-start field offset.
 pub const FAULT_RESULT_SLOT_RESERVATION_START_OFFSET: usize =
-    core::mem::offset_of!(FaultResultSlotV1, reservation_start);
+    core::mem::offset_of!(FaultResultSlotV2, reservation_start);
 /// Result-slot payload-start field offset.
 pub const FAULT_RESULT_SLOT_PAYLOAD_START_OFFSET: usize =
-    core::mem::offset_of!(FaultResultSlotV1, payload_start);
+    core::mem::offset_of!(FaultResultSlotV2, payload_start);
 /// Result-slot reservation-end field offset.
 pub const FAULT_RESULT_SLOT_RESERVATION_END_OFFSET: usize =
-    core::mem::offset_of!(FaultResultSlotV1, reservation_end);
+    core::mem::offset_of!(FaultResultSlotV2, reservation_end);
 /// Result-slot encoded-header field offset.
-pub const FAULT_RESULT_SLOT_HEADER_OFFSET: usize = core::mem::offset_of!(FaultResultSlotV1, header);
+pub const FAULT_RESULT_SLOT_HEADER_OFFSET: usize = core::mem::offset_of!(FaultResultSlotV2, header);
 /// Payload-arena consumer-cursor field offset.
 pub const FAULT_PAYLOAD_ARENA_READ_CURSOR_OFFSET: usize =
     core::mem::offset_of!(FaultPayloadArenaHeader, read_cursor);
@@ -204,15 +206,15 @@ impl Default for FaultCommandSlotV1 {
 /// One result-ring slot with transport-owned payload reservation metadata.
 #[derive(Clone, Copy)]
 #[repr(C, align(64))]
-pub struct FaultResultSlotV1 {
+pub struct FaultResultSlotV2 {
     pub(super) reservation_start: u64,
     pub(super) payload_start: u64,
     pub(super) reservation_end: u64,
-    pub(super) header: [u8; FAULT_RESULT_HEADER_V1_BYTES],
-    pub(super) _reserved: [u8; 44],
+    pub(super) header: [u8; FAULT_RESULT_HEADER_V2_BYTES],
+    pub(super) _reserved: [u8; 36],
 }
 
-impl FaultResultSlotV1 {
+impl FaultResultSlotV2 {
     /// Builds a zeroed, unpublished result slot.
     #[must_use]
     pub const fn new() -> Self {
@@ -220,8 +222,8 @@ impl FaultResultSlotV1 {
             reservation_start: 0,
             payload_start: 0,
             reservation_end: 0,
-            header: [0; FAULT_RESULT_HEADER_V1_BYTES],
-            _reserved: [0; 44],
+            header: [0; FAULT_RESULT_HEADER_V2_BYTES],
+            _reserved: [0; 36],
         }
     }
 
@@ -230,11 +232,11 @@ impl FaultResultSlotV1 {
         bytes[0..8].copy_from_slice(&self.reservation_start.to_le_bytes());
         bytes[8..16].copy_from_slice(&self.payload_start.to_le_bytes());
         bytes[16..24].copy_from_slice(&self.reservation_end.to_le_bytes());
-        bytes[24..24 + FAULT_RESULT_HEADER_V1_BYTES].copy_from_slice(&self.header);
+        bytes[24..24 + FAULT_RESULT_HEADER_V2_BYTES].copy_from_slice(&self.header);
     }
 }
 
-impl Default for FaultResultSlotV1 {
+impl Default for FaultResultSlotV2 {
     fn default() -> Self {
         Self::new()
     }
@@ -316,8 +318,8 @@ impl Default for FaultPayloadArenaHeader {
 
 const _: () = assert!(core::mem::size_of::<FaultCommandSlotV1>() == FAULT_COMMAND_SLOT_V1_BYTES);
 const _: () = assert!(core::mem::align_of::<FaultCommandSlotV1>() == 64);
-const _: () = assert!(core::mem::size_of::<FaultResultSlotV1>() == FAULT_RESULT_SLOT_V1_BYTES);
-const _: () = assert!(core::mem::align_of::<FaultResultSlotV1>() == 64);
+const _: () = assert!(core::mem::size_of::<FaultResultSlotV2>() == FAULT_RESULT_SLOT_V2_BYTES);
+const _: () = assert!(core::mem::align_of::<FaultResultSlotV2>() == 64);
 const _: () =
     assert!(core::mem::size_of::<FaultPayloadArenaHeader>() == FAULT_PAYLOAD_ARENA_HEADER_BYTES);
 const _: () = assert!(core::mem::align_of::<FaultPayloadArenaHeader>() == 128);

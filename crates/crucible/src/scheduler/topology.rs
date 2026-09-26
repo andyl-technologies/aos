@@ -96,7 +96,7 @@ impl UnresolvedCrossNodeDependency {
             producer: producer.clone(),
             consumer: consumer.clone(),
             virtual_time: SimInstant {
-                nanos: event.key.virtual_time().ticks,
+                ticks: event.key.virtual_time().ticks,
             },
             sequence: event.key.sequence(),
         })
@@ -160,7 +160,7 @@ pub fn authorize_conservative_advance(
         return Err(SchedulerError::BoundaryViolation {
             message: format!(
                 "conservative PDES rejected rollback for {}:{:?}: current={} requested={}",
-                node.node.name, node.kind, current_time.nanos, requested_target.nanos
+                node.node.name, node.kind, current_time.ticks, requested_target.ticks
             ),
         });
     }
@@ -173,7 +173,7 @@ pub fn authorize_conservative_advance(
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
                     "conservative PDES rejected advance for {}:{:?}: unresolved cross-node dependency is due at {}",
-                    node.node.name, node.kind, dependency.virtual_time.nanos
+                    node.node.name, node.kind, dependency.virtual_time.ticks
                 ),
             });
         }
@@ -409,35 +409,21 @@ pub fn lookahead_for_node(
 }
 
 /// Shared virtual-timeline projection used by scheduler ordering.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SharedTimeline {
-    pub(super) shift: Shift,
-}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SharedTimeline;
 
 impl SharedTimeline {
-    /// Builds a shared timeline using one fixed scenario shift.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TimeConversionError::InvalidShift`] when `shift` cannot name a
-    /// `u64` power-of-two scale.
-    pub fn new(shift: Shift) -> Result<Self, TimeConversionError> {
-        NodeCounter::default().to_virtual(shift)?;
-        Ok(Self { shift })
-    }
-
-    /// Returns the fixed scenario shift used by every node projection.
+    /// Builds the fixed exact-tick timeline.
     #[must_use]
-    pub fn shift(&self) -> Shift {
-        self.shift
+    pub const fn new() -> Self {
+        Self
     }
 
     /// Projects a VM icount or deterministic I/O counter onto the shared axis.
     ///
     /// # Errors
     ///
-    /// Returns [`TimeConversionError`] when the counter cannot be converted to a
-    /// virtual-time point under this timeline's fixed shift.
+    /// This exact-tick projection is currently infallible.
     pub fn project_counter(
         &self,
         node: SchedulerNodeId,
@@ -446,7 +432,7 @@ impl SharedTimeline {
         Ok(NodeTimelineProjection {
             node,
             counter,
-            virtual_time: counter.to_virtual(self.shift)?,
+            virtual_time: counter.to_virtual(),
         })
     }
 
@@ -454,8 +440,7 @@ impl SharedTimeline {
     ///
     /// # Errors
     ///
-    /// Returns [`TimeConversionError`] when the counter cannot be converted to a
-    /// virtual-time point under this timeline's fixed shift.
+    /// This exact-tick projection is currently infallible.
     pub fn timeline_key(
         &self,
         node: SchedulerNodeId,
@@ -466,21 +451,19 @@ impl SharedTimeline {
         Ok(projection.timeline_key(sequence))
     }
 
-    /// Converts a finite scheduler horizon to a node max-advance icount.
+    /// Projects a finite scheduler horizon to a node-local exact-tick ceiling.
     ///
-    /// This is the SCHED-34/TIME-4 boundary: horizon arithmetic stays in
-    /// virtual time, and the timeline's fixed shift maps that horizon to the
-    /// first icount boundary at or after it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TimeConversionError::InvalidShift`] when the fixed shift cannot
-    /// name a `u64` power-of-two scale.
-    pub fn max_advance_icount_for_horizon(
-        &self,
-        horizon: SimInstant,
-    ) -> Result<Icount, TimeConversionError> {
-        horizon.to_icount_ceil(self.shift)
+    /// The scheduler and node-local counters share the same fixed tick scale.
+    /// The resulting counter is not a retired-instruction witness.
+    #[must_use]
+    pub fn max_advance_counter_for_horizon(&self, horizon: SimInstant) -> NodeCounter {
+        NodeCounter::from_tick(horizon)
+    }
+
+    /// Projects a conservative upper bound to its greatest safe node counter.
+    #[must_use]
+    pub fn max_advance_counter_for_conservative_horizon(&self, horizon: SimInstant) -> NodeCounter {
+        NodeCounter::from_tick(horizon)
     }
 }
 
@@ -551,31 +534,11 @@ impl ScheduledEventKey {
         Self { timeline, producer }
     }
 
-    /// Builds a scheduled-event key from legacy event-ordering parts.
-    #[must_use]
-    pub fn from_parts(
-        virtual_time: VirtualTime,
-        consumer: SchedulerNodeId,
-        producer: SchedulerNodeId,
-        sequence: u64,
-    ) -> Self {
-        Self {
-            timeline: SharedTimelineKey {
-                virtual_time: SimInstant {
-                    nanos: virtual_time.ticks,
-                },
-                node: consumer,
-                sequence,
-            },
-            producer,
-        }
-    }
-
     /// Returns the shared virtual time at which the event is due.
     #[must_use]
     pub fn virtual_time(&self) -> VirtualTime {
         VirtualTime {
-            ticks: self.timeline.virtual_time.nanos,
+            ticks: self.timeline.virtual_time.ticks,
         }
     }
 
@@ -637,11 +600,15 @@ pub fn next_scheduled_event_key(
             ),
         })?;
     sequences.set_next_sequence(producer.clone(), consumer.clone(), next);
-    Ok(ScheduledEventKey::from_parts(
-        virtual_time,
-        consumer,
+    Ok(ScheduledEventKey::new(
+        SharedTimelineKey {
+            virtual_time: SimInstant {
+                ticks: virtual_time.ticks,
+            },
+            node: consumer,
+            sequence,
+        },
         producer,
-        sequence,
     ))
 }
 
@@ -750,8 +717,8 @@ pub struct IoCompletion {
     pub sub_node: SchedulerNodeId,
     /// The target node that observes the completion.
     pub target: NodeId,
-    /// The target instruction count where the completion becomes visible.
-    pub delivery_icount: Icount,
+    /// The exact logical tick where the completion becomes visible.
+    pub delivery_tick: SimInstant,
     /// The deterministic completion payload.
     pub payload: Vec<u8>,
 }
@@ -778,6 +745,11 @@ pub enum ExactLocalEvent {
         /// The exact global virtual-time boundary requested by the runtime.
         virtual_time: SimInstant,
     },
+    /// The event graph requires an exact predicate-transition boundary.
+    TriggerEvaluation {
+        /// The exact global virtual-time transition requested by the graph.
+        virtual_time: SimInstant,
+    },
 }
 
 impl ExactLocalEvent {
@@ -788,7 +760,8 @@ impl ExactLocalEvent {
             Self::NoArmedTimer => None,
             Self::TimerDeadline { virtual_time }
             | Self::IoCompletion { virtual_time, .. }
-            | Self::SignalFaultEvaluation { virtual_time } => Some(*virtual_time),
+            | Self::SignalFaultEvaluation { virtual_time }
+            | Self::TriggerEvaluation { virtual_time } => Some(*virtual_time),
         }
     }
 }
@@ -798,13 +771,19 @@ impl ExactLocalEvent {
 /// `Some(deadline_ns)` is an absolute virtual-clock timestamp from the backend's
 /// exact deadline capability. `None` means the backend reported no armed
 /// virtual-clock timer.
-#[must_use]
-pub fn exact_local_event_from_timer_deadline_ns(deadline_ns: Option<u64>) -> ExactLocalEvent {
+///
+/// # Errors
+///
+/// Returns [`TimeConversionError::NanosecondOverflow`] if the QEMU timestamp
+/// cannot be represented as an exact simulation tick.
+pub fn exact_local_event_from_timer_deadline_ns(
+    deadline_ns: Option<u64>,
+) -> Result<ExactLocalEvent, TimeConversionError> {
     match deadline_ns {
-        Some(nanos) => ExactLocalEvent::TimerDeadline {
-            virtual_time: SimInstant { nanos },
-        },
-        None => ExactLocalEvent::NoArmedTimer,
+        Some(nanos) => Ok(ExactLocalEvent::TimerDeadline {
+            virtual_time: SimInstant::from_nanoseconds(nanos)?,
+        }),
+        None => Ok(ExactLocalEvent::NoArmedTimer),
     }
 }
 
@@ -816,10 +795,9 @@ pub fn exact_local_event_from_timer_deadline_ns(deadline_ns: Option<u64>) -> Exa
 /// converted under `shift`.
 pub fn exact_local_event_from_io_completion(
     completion: &IoCompletion,
-    shift: Shift,
 ) -> Result<ExactLocalEvent, SchedulerError> {
     Ok(ExactLocalEvent::IoCompletion {
-        virtual_time: completion.delivery_icount.to_virtual(shift)?,
+        virtual_time: completion.delivery_tick,
         sub_node: completion.sub_node.clone(),
     })
 }
@@ -838,7 +816,6 @@ pub fn exact_local_event_from_io_completion(
 pub fn exact_local_event_from_scheduled_event(
     node: &SchedulerNodeId,
     event: &ScheduledEvent,
-    shift: Shift,
 ) -> Result<Option<ExactLocalEvent>, SchedulerError> {
     if event.key.consumer() != node {
         return Ok(None);
@@ -854,7 +831,7 @@ pub fn exact_local_event_from_scheduled_event(
                     ),
                 });
             }
-            let exact = exact_local_event_from_io_completion(completion, shift)?;
+            let exact = exact_local_event_from_io_completion(completion)?;
             let expected_time =
                 exact
                     .virtual_time()
@@ -864,13 +841,13 @@ pub fn exact_local_event_from_scheduled_event(
                         ),
                     })?;
             let key_time = SimInstant {
-                nanos: event.key.virtual_time().ticks,
+                ticks: event.key.virtual_time().ticks,
             };
             if key_time != expected_time {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
-                        "I/O completion key time {} does not match delivery icount time {}",
-                        key_time.nanos, expected_time.nanos
+                        "I/O completion key time {} does not match delivery tick time {}",
+                        key_time.ticks, expected_time.ticks
                     ),
                 });
             }
@@ -888,10 +865,7 @@ pub fn exact_local_event_from_scheduled_event(
 /// icount cannot be converted under `shift`, or
 /// [`SchedulerError::BoundaryViolation`] when the event key and payload disagree
 /// about the consumer or exact delivery point.
-pub fn scheduled_event_delivery_time(
-    event: &ScheduledEvent,
-    shift: Shift,
-) -> Result<SimInstant, SchedulerError> {
+pub fn scheduled_event_delivery_time(event: &ScheduledEvent) -> Result<SimInstant, SchedulerError> {
     match &event.payload {
         ScheduledEventPayload::BackendInput(input) => {
             if input.node != event.key.consumer().node {
@@ -904,11 +878,11 @@ pub fn scheduled_event_delivery_time(
                 });
             }
             Ok(SimInstant {
-                nanos: event.key.virtual_time().ticks,
+                ticks: event.key.virtual_time().ticks,
             })
         }
         ScheduledEventPayload::IoCompletion(_) => {
-            let exact = exact_local_event_from_scheduled_event(event.key.consumer(), event, shift)?
+            let exact = exact_local_event_from_scheduled_event(event.key.consumer(), event)?
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: String::from(
                         "I/O completion did not produce a RESOLVE visibility time",
@@ -921,7 +895,7 @@ pub fn scheduled_event_delivery_time(
                 })
         }
         ScheduledEventPayload::Control(_) => Ok(SimInstant {
-            nanos: event.key.virtual_time().ticks,
+            ticks: event.key.virtual_time().ticks,
         }),
     }
 }
@@ -943,7 +917,6 @@ pub fn resolve_due_scheduled_events(
     pending_events: &mut Vec<ScheduledEvent>,
     consumer: &SchedulerNodeId,
     advanced_to: SimInstant,
-    shift: Shift,
 ) -> Result<Vec<ScheduledEvent>, SchedulerError> {
     let mut resolved = Vec::new();
     let mut pending = Vec::with_capacity(pending_events.len());
@@ -951,18 +924,18 @@ pub fn resolve_due_scheduled_events(
     for event in pending_events.iter() {
         if event.key.consumer() == consumer {
             let key_time = SimInstant {
-                nanos: event.key.virtual_time().ticks,
+                ticks: event.key.virtual_time().ticks,
             };
             if key_time <= advanced_to {
-                let delivery_time = scheduled_event_delivery_time(event, shift)?;
+                let delivery_time = scheduled_event_delivery_time(event)?;
                 if delivery_time < advanced_to {
                     return Err(SchedulerError::BoundaryViolation {
                         message: format!(
                             "late scheduled event for {}:{:?}: delivery={} advanced_to={} producer={}:{:?} sequence={}",
                             consumer.node.name,
                             consumer.kind,
-                            delivery_time.nanos,
-                            advanced_to.nanos,
+                            delivery_time.ticks,
+                            advanced_to.ticks,
                             event.key.producer().node.name,
                             event.key.producer().kind,
                             event.key.sequence(),
@@ -1002,7 +975,6 @@ pub fn next_exact_local_event(
     node: &SchedulerNodeId,
     timer_deadline: ExactLocalEvent,
     scheduled_events: &[ScheduledEvent],
-    shift: Shift,
 ) -> Result<ExactLocalEvent, SchedulerError> {
     let mut candidates = Vec::new();
     if !matches!(timer_deadline, ExactLocalEvent::NoArmedTimer) {
@@ -1010,7 +982,7 @@ pub fn next_exact_local_event(
     }
 
     for event in scheduled_events {
-        if let Some(candidate) = exact_local_event_from_scheduled_event(node, event, shift)? {
+        if let Some(candidate) = exact_local_event_from_scheduled_event(node, event)? {
             candidates.push(candidate);
         }
     }
@@ -1036,6 +1008,7 @@ pub(super) fn exact_local_event_rank(event: &ExactLocalEvent) -> u8 {
         ExactLocalEvent::TimerDeadline { .. } => 1,
         ExactLocalEvent::IoCompletion { .. } => 2,
         ExactLocalEvent::SignalFaultEvaluation { .. } => 3,
+        ExactLocalEvent::TriggerEvaluation { .. } => 4,
     }
 }
 
@@ -1043,7 +1016,8 @@ pub(super) fn exact_local_event_source_key(event: &ExactLocalEvent) -> &str {
     match event {
         ExactLocalEvent::NoArmedTimer
         | ExactLocalEvent::TimerDeadline { .. }
-        | ExactLocalEvent::SignalFaultEvaluation { .. } => "",
+        | ExactLocalEvent::SignalFaultEvaluation { .. }
+        | ExactLocalEvent::TriggerEvaluation { .. } => "",
         ExactLocalEvent::IoCompletion { sub_node, .. } => &sub_node.node.name,
     }
 }
@@ -1059,6 +1033,8 @@ pub enum SchedulerHorizonSource {
     ExactLocalIoCompletion,
     /// An exact signal-driven fault evaluation selected the horizon.
     SignalFaultEvaluation,
+    /// An exact event-graph predicate transition selected the horizon.
+    TriggerEvaluation,
 }
 
 /// The scheduler rendezvous frequency knob.
@@ -1085,7 +1061,7 @@ impl SchedulerRendezvous {
     /// Returns [`SchedulerError::BoundaryViolation`] when `interval` is zero,
     /// because a zero-width rendezvous cannot advance the shared timeline.
     pub fn every(interval: SimDuration) -> Result<Self, SchedulerError> {
-        if interval.nanos == 0 {
+        if interval.ticks == 0 {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("scheduler rendezvous interval must be nonzero"),
             });
@@ -1165,19 +1141,19 @@ pub fn rendezvous_cap_for(
     let Some(interval) = rendezvous.interval() else {
         return Ok(None);
     };
-    let tick = current_time.nanos / interval.nanos;
+    let tick = current_time.ticks / interval.ticks;
     let next_tick = tick
         .checked_add(1)
         .ok_or_else(|| SchedulerError::BoundaryViolation {
             message: String::from("scheduler rendezvous tick overflow"),
         })?;
-    let nanos =
+    let ticks =
         next_tick
-            .checked_mul(interval.nanos)
+            .checked_mul(interval.ticks)
             .ok_or_else(|| SchedulerError::BoundaryViolation {
                 message: String::from("scheduler rendezvous virtual-time overflow"),
             })?;
-    Ok(Some(SimInstant { nanos }))
+    Ok(Some(SimInstant { ticks }))
 }
 
 /// Computes plugin-internal RR slices for one node-level RUN ceiling.
@@ -1308,7 +1284,7 @@ pub(super) fn validate_vcpu_idle_snapshot(
     Ok(())
 }
 
-/// A scheduler horizon and its matching icount ceiling.
+/// A scheduler horizon and its matching exact-tick node ceiling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SchedulerHorizon {
     /// The selected horizon limit.
@@ -1318,25 +1294,17 @@ pub struct SchedulerHorizon {
 }
 
 impl SchedulerHorizon {
-    /// Builds a finite horizon and its matching icount ceiling.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError::TimeConversion`] when `virtual_time` cannot be
-    /// converted under `shift`.
-    pub fn finite(
-        virtual_time: SimInstant,
-        source: SchedulerHorizonSource,
-        shift: Shift,
-    ) -> Result<Self, SchedulerError> {
-        let timeline = SharedTimeline::new(shift)?;
-        Ok(Self {
+    /// Builds a finite horizon and its matching exact-tick node ceiling.
+    #[must_use]
+    pub fn finite(virtual_time: SimInstant, source: SchedulerHorizonSource) -> Self {
+        let timeline = SharedTimeline::new();
+        Self {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time,
-                ceiling: timeline.max_advance_icount_for_horizon(virtual_time)?,
+                ceiling: timeline.max_advance_counter_for_horizon(virtual_time),
             },
             source,
-        })
+        }
     }
 
     /// Builds an unbounded horizon selected by the network-lookahead term.
@@ -1357,9 +1325,9 @@ impl SchedulerHorizon {
         }
     }
 
-    /// Returns the finite icount ceiling, if one exists.
+    /// Returns the finite exact-tick node ceiling, if one exists.
     #[must_use]
-    pub fn ceiling(self) -> Option<Icount> {
+    pub fn ceiling(self) -> Option<NodeCounter> {
         match self.limit {
             SchedulerHorizonLimit::Finite { ceiling, .. } => Some(ceiling),
             SchedulerHorizonLimit::Infinite => None,
@@ -1374,8 +1342,8 @@ pub enum SchedulerHorizonLimit {
     Finite {
         /// The selected virtual-time horizon.
         virtual_time: SimInstant,
-        /// The icount ceiling computed with the fixed-shift `ceil` conversion.
-        ceiling: Icount,
+        /// The exact-tick node-local ceiling at the selected horizon.
+        ceiling: NodeCounter,
     },
     /// The network term is unbounded because no inbound live link exists.
     Infinite,
@@ -1383,25 +1351,21 @@ pub enum SchedulerHorizonLimit {
 
 /// Computes the network horizon limit from current virtual time and lookahead.
 ///
-/// # Errors
-///
-/// Returns [`SchedulerError::TimeConversion`] when the finite network horizon
-/// cannot be converted under `shift`.
+#[must_use]
 pub fn network_horizon_from_lookahead(
     current_time: SimInstant,
     network_lookahead: NetworkLookahead,
-    shift: Shift,
-) -> Result<SchedulerHorizonLimit, SchedulerError> {
+) -> SchedulerHorizonLimit {
     match network_lookahead {
         NetworkLookahead::Finite(duration) => {
             let virtual_time = current_time + duration;
-            let timeline = SharedTimeline::new(shift)?;
-            Ok(SchedulerHorizonLimit::Finite {
+            let timeline = SharedTimeline::new();
+            SchedulerHorizonLimit::Finite {
                 virtual_time,
-                ceiling: timeline.max_advance_icount_for_horizon(virtual_time)?,
-            })
+                ceiling: timeline.max_advance_counter_for_horizon(virtual_time),
+            }
         }
-        NetworkLookahead::Infinite => Ok(SchedulerHorizonLimit::Infinite),
+        NetworkLookahead::Infinite => SchedulerHorizonLimit::Infinite,
     }
 }
 
@@ -1410,30 +1374,22 @@ pub fn network_horizon_from_lookahead(
 /// The exact-local term is used as an absolute virtual-time point with no
 /// conservative slack. The network term is derived only from the conservative
 /// guest-to-guest [`NetworkLookahead`].
-///
-/// # Errors
-///
-/// Returns [`SchedulerError::TimeConversion`] when the selected finite horizon
-/// cannot be converted under `shift`.
+#[must_use]
 pub fn horizon_from_network_lookahead(
     current_time: SimInstant,
     network_lookahead: NetworkLookahead,
     exact_local_event: ExactLocalEvent,
-    shift: Shift,
-) -> Result<SchedulerHorizon, SchedulerError> {
-    let network_limit = network_horizon_from_lookahead(current_time, network_lookahead, shift)?;
+) -> SchedulerHorizon {
+    let network_limit = network_horizon_from_lookahead(current_time, network_lookahead);
     let exact_time = exact_local_event.virtual_time();
     match (exact_time, network_limit) {
-        (None, SchedulerHorizonLimit::Infinite) => Ok(SchedulerHorizon::infinite_network()),
-        (None, SchedulerHorizonLimit::Finite { virtual_time, .. }) => SchedulerHorizon::finite(
-            virtual_time,
-            SchedulerHorizonSource::NetworkLookahead,
-            shift,
-        ),
+        (None, SchedulerHorizonLimit::Infinite) => SchedulerHorizon::infinite_network(),
+        (None, SchedulerHorizonLimit::Finite { virtual_time, .. }) => {
+            SchedulerHorizon::finite(virtual_time, SchedulerHorizonSource::NetworkLookahead)
+        }
         (Some(virtual_time), SchedulerHorizonLimit::Infinite) => SchedulerHorizon::finite(
             virtual_time,
             exact_local_event_horizon_source(&exact_local_event),
-            shift,
         ),
         (
             Some(virtual_time),
@@ -1444,7 +1400,6 @@ pub fn horizon_from_network_lookahead(
         ) if virtual_time <= network_time => SchedulerHorizon::finite(
             virtual_time,
             exact_local_event_horizon_source(&exact_local_event),
-            shift,
         ),
         (
             Some(_),
@@ -1452,11 +1407,7 @@ pub fn horizon_from_network_lookahead(
                 virtual_time: network_time,
                 ..
             },
-        ) => SchedulerHorizon::finite(
-            network_time,
-            SchedulerHorizonSource::NetworkLookahead,
-            shift,
-        ),
+        ) => SchedulerHorizon::finite(network_time, SchedulerHorizonSource::NetworkLookahead),
     }
 }
 
@@ -1467,27 +1418,66 @@ pub(super) fn exact_local_event_horizon_source(event: &ExactLocalEvent) -> Sched
         ExactLocalEvent::SignalFaultEvaluation { .. } => {
             SchedulerHorizonSource::SignalFaultEvaluation
         }
+        ExactLocalEvent::TriggerEvaluation { .. } => SchedulerHorizonSource::TriggerEvaluation,
         ExactLocalEvent::NoArmedTimer => SchedulerHorizonSource::NetworkLookahead,
     }
 }
 
-pub(super) fn horizon_source_allows_ceiling_past_target(source: SchedulerHorizonSource) -> bool {
-    matches!(
-        source,
-        SchedulerHorizonSource::ExactLocalTimer | SchedulerHorizonSource::ExactLocalIoCompletion
-    )
+pub(super) fn horizon_source_icount_rounding(
+    source: SchedulerHorizonSource,
+) -> SchedulerIcountRounding {
+    match source {
+        SchedulerHorizonSource::ExactLocalTimer
+        | SchedulerHorizonSource::ExactLocalIoCompletion => SchedulerIcountRounding::ExactCeil,
+        SchedulerHorizonSource::NetworkLookahead
+        | SchedulerHorizonSource::SignalFaultEvaluation
+        | SchedulerHorizonSource::TriggerEvaluation => SchedulerIcountRounding::ConservativeFloor,
+    }
 }
 
 pub(super) fn scheduler_ceiling_overshoot_error(
     node: &SchedulerNodeId,
     boundary_label: &str,
     boundary_time: SimInstant,
-    projected_target: SimInstant,
+    projection: &SchedulerIcountProjection,
 ) -> SchedulerError {
     SchedulerError::BoundaryViolation {
         message: format!(
-            "conservative PDES rejected icount ceiling overshoot for {}:{:?}: {boundary_label}={} projected_target={}",
-            node.node.name, node.kind, boundary_time.nanos, projected_target.nanos
+            "conservative PDES rejected icount ceiling overshoot for {}:{:?}: {boundary_label}_ns={} projected_target_ticks={} source_counter_ticks={} source_logical_ticks={} target_counter_ticks={} requested_target_ticks={} anchor_counter_ticks={} anchor_logical_ticks={} ticks_per_counter_tick={} rounding={}",
+            node.node.name,
+            node.kind,
+            boundary_time.ticks,
+            projection.projected_target_time.ticks,
+            projection.source_counter.ticks,
+            projection.source_time.ticks,
+            projection.target_counter.ticks,
+            projection.target_time.ticks,
+            projection.time_mapping.anchor_counter.ticks,
+            projection.time_mapping.anchor_time.ticks,
+            projection.ticks_per_counter_tick,
+            projection.rounding.label(),
+        ),
+    }
+}
+
+pub(super) fn scheduler_unrepresentable_advance_error(
+    node: &SchedulerNodeId,
+    projection: &SchedulerIcountProjection,
+) -> SchedulerError {
+    SchedulerError::BoundaryViolation {
+        message: format!(
+            "conservative PDES cannot represent positive icount advance for {}:{:?}: target_at_ticks={} projected_target_ticks={} source_counter_ticks={} source_logical_ticks={} target_counter_ticks={} anchor_counter_ticks={} anchor_logical_ticks={} ticks_per_counter_tick={} rounding={}",
+            node.node.name,
+            node.kind,
+            projection.target_time.ticks,
+            projection.projected_target_time.ticks,
+            projection.source_counter.ticks,
+            projection.source_time.ticks,
+            projection.target_counter.ticks,
+            projection.time_mapping.anchor_counter.ticks,
+            projection.time_mapping.anchor_time.ticks,
+            projection.ticks_per_counter_tick,
+            projection.rounding.label(),
         ),
     }
 }
@@ -1496,22 +1486,16 @@ pub(super) fn scheduler_ceiling_overshoot_error(
 ///
 /// Exact local timer, I/O completion, and fault activation deadlines are
 /// consumed as local horizon candidates. A node with no exact local event uses
-/// the conservative network horizon. The selected virtual-time horizon is
-/// converted to the node's target icount with `SimInstant::to_icount_ceil`.
-///
-/// # Errors
-///
-/// Returns [`SchedulerError::TimeConversion`] when the selected horizon cannot
-/// be converted under `shift`.
+/// the conservative network horizon. The selected horizon remains in exact
+/// simulation ticks through node-local ceiling projection.
+#[must_use]
 pub fn horizon_from_exact_local_event(
     network_horizon: SimInstant,
     exact_local_event: ExactLocalEvent,
-    shift: Shift,
-) -> Result<SchedulerHorizon, SchedulerError> {
+) -> SchedulerHorizon {
     horizon_from_network_lookahead(
         SimInstant::EPOCH,
         NetworkLookahead::Finite(network_horizon.duration_since(SimInstant::EPOCH)),
         exact_local_event,
-        shift,
     )
 }

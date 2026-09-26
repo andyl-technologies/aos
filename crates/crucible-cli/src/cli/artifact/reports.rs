@@ -1,4 +1,4 @@
-//! Replay and failure artifact report types.
+//! Replay and reproduction artifact report types.
 
 use super::*;
 
@@ -17,6 +17,7 @@ pub(crate) struct ReplayArtifactReport {
 
 #[derive(Debug)]
 pub(crate) struct ReplayLiveQemuProof {
+    pub(crate) execution_owner: RunExecutionOwner,
     pub(crate) producer: String,
     pub(crate) terminal_status: String,
     pub(crate) terminal_outcome: String,
@@ -24,6 +25,8 @@ pub(crate) struct ReplayLiveQemuProof {
     pub(crate) event_stream_digest: String,
     pub(crate) fingerprint_stream_digest: String,
     pub(crate) controls: usize,
+    pub(crate) host_scheduler_preemption:
+        Option<crucible_api::BoundedSchedulerPreemptionEvidenceSnapshot>,
 }
 
 #[derive(Debug)]
@@ -102,8 +105,8 @@ pub(crate) struct ReplayBisectionReport {
 }
 
 #[derive(Debug)]
-pub(crate) struct FailureArtifactReport {
+pub(crate) struct ReproductionArtifactWriteReport {
     pub(crate) path: PathBuf,
     pub(crate) digest: String,
-    pub(crate) footer: FailureReproductionFooter,
+    pub(crate) footer: ReproductionFooter,
 }

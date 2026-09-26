@@ -89,7 +89,7 @@
         needle = "link_endpoint_a_len={}";
       }
       {
-        label = "validated recorded world compatibility path";
+        label = "validated recorded-world construction";
         needle = "pub fn from_recorded_parts(";
       }
     ]

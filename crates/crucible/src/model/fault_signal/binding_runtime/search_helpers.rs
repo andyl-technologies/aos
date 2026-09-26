@@ -29,39 +29,73 @@ pub(super) fn apply_search_policy(
     evaluation: &mut BindingEvaluation,
     resource_limits: FaultResourceLimits,
 ) -> Result<SearchResolution, BindingRuntimeError> {
-    let (candidates_digest, candidate_count, mut selected_index) = match binding.search() {
-        BindingSearchPolicy::Fixed
-        | BindingSearchPolicy::MutateTraceWindow { .. }
-        | BindingSearchPolicy::MutateMapping { .. } => return Ok(SearchResolution::default()),
-        BindingSearchPolicy::BranchOutcome { maximum_branches } => {
-            if state.search_choice_count >= maximum_branches.get() {
-                return Ok(SearchResolution::default());
+    let (candidates_digest, candidate_count, candidate_semantics, mut selected_index) =
+        match binding.search() {
+            BindingSearchPolicy::Fixed
+            | BindingSearchPolicy::MutateTraceWindow { .. }
+            | BindingSearchPolicy::MutateMapping { .. } => return Ok(SearchResolution::default()),
+            BindingSearchPolicy::BranchOutcome { maximum_branches } => {
+                if state.search_choice_count >= maximum_branches.get() {
+                    return Ok(SearchResolution::default());
+                }
+                (
+                    ContentHash::from_canonical_material(
+                        "crucible.search-candidates.v1",
+                        "outcome=false;outcome=true",
+                    ),
+                    2,
+                    BindingSearchCandidateSemantics::Outcome,
+                    Some(u32::from(*decision == MappingDecision::Apply)),
+                )
             }
-            (
-                ContentHash::from_canonical_material(
-                    "crucible.search-candidates.v1",
-                    "outcome=false;outcome=true",
-                ),
-                2,
-                Some(u32::from(*decision == MappingDecision::Apply)),
-            )
-        }
-        BindingSearchPolicy::BranchTransition { candidates } => (
-            object_candidates_digest(candidates),
-            u32::try_from(candidates.len()).map_err(|_| BindingRuntimeError::SearchChoice)?,
-            None,
-        ),
-        BindingSearchPolicy::BranchParameter { candidates, .. } => (
-            mapped_values_digest(candidates, resource_limits)?,
-            u32::try_from(candidates.len()).map_err(|_| BindingRuntimeError::SearchChoice)?,
-            values.first().and_then(|value| {
-                candidates
+            BindingSearchPolicy::BranchTransition { candidates } => {
+                let identities = candidates
                     .iter()
-                    .position(|candidate| candidate == value)
-                    .and_then(|index| u32::try_from(index).ok())
-            }),
-        ),
-    };
+                    .map(|candidate| {
+                        ContentHash::from_canonical_material(
+                            "crucible.search-transition-candidate.v1",
+                            candidate.as_str(),
+                        )
+                    })
+                    .collect();
+                (
+                    object_candidates_digest(candidates),
+                    u32::try_from(candidates.len())
+                        .map_err(|_| BindingRuntimeError::SearchChoice)?,
+                    BindingSearchCandidateSemantics::Transition(identities),
+                    None,
+                )
+            }
+            BindingSearchPolicy::BranchParameter {
+                parameter,
+                candidates,
+            } => (
+                mapped_values_digest(candidates, resource_limits)?,
+                u32::try_from(candidates.len()).map_err(|_| BindingRuntimeError::SearchChoice)?,
+                BindingSearchCandidateSemantics::Parameter {
+                    parameter: *parameter,
+                    candidates: candidates
+                        .iter()
+                        .map(|candidate| {
+                            ContentHash::from_canonical_material(
+                                "crucible.search-parameter-candidate.v1",
+                                &format!(
+                                    "parameter={};value={}",
+                                    parameter.as_str(),
+                                    candidate.material()
+                                ),
+                            )
+                        })
+                        .collect(),
+                },
+                values.first().and_then(|value| {
+                    candidates
+                        .iter()
+                        .position(|candidate| candidate == value)
+                        .and_then(|index| u32::try_from(index).ok())
+                }),
+            ),
+        };
     resource_limits
         .reserve(
             "search_candidates_per_choice",
@@ -83,6 +117,8 @@ pub(super) fn apply_search_policy(
         }
         if search_override.candidates_digest != candidates_digest
             || search_override.candidate_index >= candidate_count
+            || candidate_semantics.candidate(search_override.candidate_index)
+                != Some(search_override.candidate)
         {
             return Err(BindingRuntimeError::SearchChoice);
         }
@@ -128,6 +164,7 @@ pub(super) fn apply_search_policy(
         id,
         candidates_digest,
         candidate_count,
+        candidate_semantics,
         selected_index,
         overridden,
     });

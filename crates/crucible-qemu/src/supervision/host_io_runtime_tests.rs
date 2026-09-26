@@ -1,6 +1,74 @@
 //! Unit tests for the production host-I/O checkpoint boundary.
 
+use super::control::PendingControlBoundary;
 use super::*;
+
+#[cfg(target_os = "linux")]
+#[path = "host_io_runtime_tests/block_coordinator_tests.rs"]
+mod block_coordinator;
+
+#[test]
+fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{Read, Write};
+    use std::os::fd::AsFd;
+    use std::os::unix::net::UnixStream;
+
+    let allocation =
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
+    let layout = allocation.layout();
+    let bytes = allocation.setup_region_bytes()?;
+    let mut shmem = tempfile::tempfile()?;
+    shmem.set_len(layout.region_size)?;
+    shmem.write_all(&bytes)?;
+    let (mut wake_notifications, wake) = UnixStream::pair()?;
+    let plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+    let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+        shmem.as_fd(),
+        wake.as_fd(),
+        layout.region_size,
+        0,
+        Duration::from_millis(1),
+    )?;
+    drop(wake);
+
+    let host = std::thread::spawn(move || {
+        runtime.publish_current_execution_fingerprint(Duration::from_secs(1))
+    });
+    let mut wake_notification = [0_u8; std::mem::size_of::<u64>()];
+    wake_notifications.read_exact(&mut wake_notification)?;
+    assert_eq!(u64::from_ne_bytes(wake_notification), 1);
+    let request = plugin
+        .fingerprint_sample(0)?
+        .pending_capture_request_v1()
+        .ok_or("host did not publish an on-demand fingerprint request")?;
+    plugin.node_slot(0)?.publish_control_boundary(0, 0)?;
+    plugin.node_slot(0)?.acknowledge_control_boundary();
+
+    // Control publication runs under the BQL, while digest publication is
+    // intentionally detached. The host must retain the exact odd request while
+    // the worker computes the sample. Its periodic second doorbell proves it
+    // observed this intermediate ordering without returning an error.
+    wake_notifications.set_read_timeout(Some(Duration::from_secs(1)))?;
+    wake_notifications.read_exact(&mut wake_notification)?;
+    assert_eq!(u64::from_ne_bytes(wake_notification), 1);
+
+    plugin
+        .fingerprint_sample(0)?
+        .publish(&crucible_shmem::FingerprintSample::default())?;
+    assert!(
+        plugin
+            .fingerprint_sample(0)?
+            .acknowledge_capture_v1(request)
+    );
+    host.join()
+        .map_err(|_panic| "fingerprint host thread panicked")??;
+    assert_eq!(
+        plugin.fingerprint_sample(0)?.capture_request_generation(),
+        request.wrapping_add(1)
+    );
+    Ok(())
+}
 
 /// Builds the real mapped host runtime after exercising lossless event retry.
 pub(crate) fn staged_fault_event_runtime(
@@ -10,7 +78,7 @@ pub(crate) fn staged_fault_event_runtime(
     use std::os::fd::AsFd;
 
     let allocation =
-        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4, 0))?;
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
     let mut shmem = tempfile::tempfile()?;
@@ -96,6 +164,46 @@ fn bounded_poll_attempts_tolerates_a_zero_interval() {
     );
 }
 
+// crucible-lint: allow clippy-disallowed-method -- this test measures host wait liveness only; elapsed time never enters modeled state.
+#[allow(clippy::disallowed_methods)]
+#[test]
+fn advance_completion_poll_respects_elapsed_host_deadline() -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::io::Write;
+    use std::os::fd::AsFd;
+    use std::time::Instant;
+
+    let allocation =
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
+    let layout = allocation.layout();
+    let bytes = allocation.setup_region_bytes()?;
+    let mut shmem = tempfile::tempfile()?;
+    shmem.set_len(layout.region_size)?;
+    shmem.write_all(&bytes)?;
+    let plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+    let ceiling = authorize_advance_ceiling(0, 100, None)?;
+    let slot = plugin.node_slot(0)?;
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
+    slot.publish_reached_icount(0)?;
+
+    let wake = tempfile::tempfile()?;
+    let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+        shmem.as_fd(),
+        wake.as_fd(),
+        layout.region_size,
+        0,
+        Duration::from_nanos(1),
+    )?;
+    let timeout = Duration::from_millis(30);
+    let started = Instant::now();
+
+    let outcome = runtime.await_child(QemuAsyncWait::AdvanceCompletion, timeout)?;
+
+    assert_eq!(outcome, QemuAsyncWaitOutcome::TimedOut);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    Ok(())
+}
+
 #[test]
 fn preparation_result_is_admitted_before_exact_storage_allocation() {
     assert_eq!(fault_result::admit_fault_preparation_result(31, 31), Ok(()));
@@ -106,6 +214,81 @@ fn preparation_result_is_admitted_before_exact_storage_allocation() {
 }
 
 #[test]
+fn expired_fault_event_deadline_distinguishes_empty_and_pending_rings()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::os::fd::AsFd;
+
+    let allocation =
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
+    let layout = allocation.layout();
+    let bytes = allocation.setup_region_bytes()?;
+    let mut shmem = tempfile::tempfile()?;
+    shmem.set_len(layout.region_size)?;
+    shmem.write_all(&bytes)?;
+    let wake = tempfile::tempfile()?;
+    let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+        shmem.as_fd(),
+        wake.as_fd(),
+        layout.region_size,
+        0,
+        Duration::from_millis(1),
+    )?;
+
+    runtime.drain_fault_events_for_pump(
+        1,
+        &HostSupervisionDeadline::start(Duration::ZERO),
+        Duration::ZERO,
+        "test empty fault-event drain",
+    )?;
+
+    let mut producer = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+    let transport = producer.fault_event_transport_mut(0)?;
+    crucible_shmem::enqueue_fault_event(
+        transport.ring,
+        transport.slots,
+        transport.arena_header,
+        transport.arena,
+        transport.arena_region_offset,
+        crucible_shmem::FaultEventHeaderV1 {
+            command_kind: crucible_shmem::FaultCommandKind::MemoryAccessTransform,
+            outcome: crucible_shmem::FaultEventOutcomeV1::Applied,
+            event_sequence: 1,
+            rule_command_sequence: 1,
+            observed_icount: 300,
+            model_phase: 18,
+            target_kind: 4,
+            generation: 1,
+            binding_hash: [1; 32],
+            opportunity_hash: [2; 32],
+            action_hash: [3; 32],
+            target_hash: [4; 32],
+            before_hash: [5; 32],
+            after_hash: [6; 32],
+            evidence_hash: [0; 32],
+            payload_hash: [0; 32],
+            payload_offset: 0,
+            payload_length: 0,
+        },
+        b"x",
+    )?;
+    let rejected = runtime.drain_fault_events_for_pump(
+        1,
+        &HostSupervisionDeadline::start(Duration::ZERO),
+        Duration::ZERO,
+        "test pending fault-event drain",
+    );
+    let Err(error) = rejected else {
+        panic!("an expired deadline must reject a pending event");
+    };
+    let message = error.to_string();
+    assert!(message.contains(
+        "ring read index 0, write index 1, arena read cursor 0, write cursor 1, staged events 0"
+    ));
+    Ok(())
+}
+
+#[test]
 fn unacknowledged_device_wake_invalidates_an_idle_snapshot() {
     let idle = crate::QemuNodeIdleState {
         current_icount: crucible::Icount { retired: 40 },
@@ -113,14 +296,14 @@ fn unacknowledged_device_wake_invalidates_an_idle_snapshot() {
     };
 
     assert_eq!(
-        classify_after_host_wake(&idle, 100, false),
+        classify_after_host_wake(&idle, 100, crate::QemuQuantumStopCondition::Ceiling, false,),
         QuantumBoundary::Paused {
             at: 40,
             deadline: 200,
         }
     );
     assert_eq!(
-        classify_after_host_wake(&idle, 100, true),
+        classify_after_host_wake(&idle, 100, crate::QemuQuantumStopCondition::Ceiling, true,),
         QuantumBoundary::Pending
     );
 }
@@ -133,27 +316,39 @@ fn unacknowledged_device_wake_preserves_a_reached_boundary() {
     };
 
     assert_eq!(
-        classify_after_host_wake(&idle, 100, true),
+        classify_after_host_wake(&idle, 100, crate::QemuQuantumStopCondition::Ceiling, true,),
         QuantumBoundary::Reached { icount: 100 }
     );
 }
 
 #[test]
-fn unobserved_scheduler_input_invalidates_a_future_idle_boundary() {
+fn stale_scheduler_publication_cannot_complete_next_idle_advance() {
     let idle = crate::QemuNodeIdleState {
         current_icount: crucible::Icount { retired: 40 },
-        next_deadline: Some(crucible::Icount { retired: 200 }),
+        next_deadline: Some(crucible::Icount { retired: 80 }),
     };
 
     assert_eq!(
-        classify_after_scheduler_and_host_wake(&idle, 100, true, false),
+        classify_after_scheduler_and_host_wake(
+            &idle,
+            1_000_000,
+            crate::QemuQuantumStopCondition::NextAuthenticatedIdle,
+            true,
+            false,
+        ),
         QuantumBoundary::Pending,
     );
     assert_eq!(
-        classify_after_scheduler_and_host_wake(&idle, 100, false, false),
+        classify_after_scheduler_and_host_wake(
+            &idle,
+            1_000_000,
+            crate::QemuQuantumStopCondition::NextAuthenticatedIdle,
+            false,
+            false,
+        ),
         QuantumBoundary::Paused {
             at: 40,
-            deadline: 200,
+            deadline: 80,
         },
     );
 }
@@ -167,7 +362,7 @@ fn advance_requires_a_plugin_publication_after_a_device_wake() {
         &initial,
     ));
 
-    slot.publish_control_boundary(0, 0, 0)
+    slot.publish_control_boundary(0, 0)
         .unwrap_or_else(|error| panic!("control boundary should publish: {error}"));
     let published = slot.snapshot();
     assert!(!device_wake_publication_is_unobserved(
@@ -183,7 +378,7 @@ fn advance_rejects_checkpoint_idle_until_qemu_releases_it() {
     let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
     slot.arm_external_state_restore_ceiling(200)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    slot.publish_idle(40, 40, 0)
+    slot.publish_idle(40, 40)
         .unwrap_or_else(|error| panic!("checkpoint idle should publish: {error}"));
     let checkpoint_idle = slot.snapshot();
     let coordinate = checkpoint_idle_coordinate(&checkpoint_idle);
@@ -193,7 +388,7 @@ fn advance_rejects_checkpoint_idle_until_qemu_releases_it() {
         &checkpoint_idle,
     ));
 
-    slot.publish_idle(40, 200, 0)
+    slot.publish_idle(40, 200)
         .unwrap_or_else(|error| panic!("future idle should publish: {error}"));
     assert!(!checkpoint_idle_publication_is_unreleased(
         coordinate,
@@ -206,7 +401,7 @@ fn advance_accepts_future_idle_without_a_generation_fence() {
     let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
     slot.arm_external_state_restore_ceiling(200)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    slot.publish_idle(40, 200, 0)
+    slot.publish_idle(40, 200)
         .unwrap_or_else(|error| panic!("future idle should publish: {error}"));
     let future_idle = slot.snapshot();
 
@@ -224,7 +419,7 @@ fn checkpoint_pause_wakes_reached_boundary_but_not_device_idle_waiter() {
         .arm_external_state_restore_ceiling(200)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     running_slot
-        .publish_reached_icount(40, 0)
+        .publish_reached_icount(40)
         .unwrap_or_else(|error| panic!("test progress should publish: {error}"));
     let running = running_slot.snapshot();
     assert!(checkpoint_pause_requires_control_doorbell(&running, true));
@@ -234,14 +429,14 @@ fn checkpoint_pause_wakes_reached_boundary_but_not_device_idle_waiter() {
         .arm_external_state_restore_ceiling(200)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     idle_slot
-        .publish_idle(40, 200, 0)
+        .publish_idle(40, 200)
         .unwrap_or_else(|error| panic!("test idle should publish: {error}"));
     let idle = idle_slot.snapshot();
     assert!(!checkpoint_pause_requires_control_doorbell(&idle, true));
     assert!(checkpoint_pause_requires_control_doorbell(&idle, false));
 
     idle_slot
-        .publish_idle(40, 40, 0)
+        .publish_idle(40, 40)
         .unwrap_or_else(|error| panic!("test zero-length idle should publish: {error}"));
     let zero_length_idle = idle_slot.snapshot();
     assert!(checkpoint_pause_requires_control_doorbell(
@@ -253,23 +448,28 @@ fn checkpoint_pause_wakes_reached_boundary_but_not_device_idle_waiter() {
 #[test]
 fn advance_accepts_its_control_acknowledgement_and_later_serials() {
     let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
-    let request = slot
-        .request_control_boundary()
+    let generation = slot
+        .request_control_boundary(0, None)
         .unwrap_or_else(|error| panic!("control request should publish: {error}"));
-    slot.publish_control_boundary(0, 0, 0)
+    let request = PendingControlBoundary {
+        generation,
+        fault_command_frontier: 0,
+        fingerprint_capture_request: None,
+    };
+    slot.publish_control_boundary(0, 0)
         .unwrap_or_else(|error| panic!("control boundary should publish: {error}"));
     slot.acknowledge_control_boundary();
     let acknowledged_with_publication = slot.snapshot();
 
     let mut later_acknowledgement = acknowledged_with_publication;
-    later_acknowledgement.control_boundary_ack = request.wrapping_add(3);
+    later_acknowledgement.control_boundary_ack = generation.wrapping_add(3);
     assert!(control_boundary_request_is_acknowledged(
         request,
         &later_acknowledgement,
     ));
 
     let mut stale_acknowledgement = acknowledged_with_publication;
-    stale_acknowledgement.control_boundary_ack = request.wrapping_sub(1);
+    stale_acknowledgement.control_boundary_ack = generation.wrapping_sub(1);
     assert!(!control_boundary_request_is_acknowledged(
         request,
         &stale_acknowledgement,
@@ -279,19 +479,31 @@ fn advance_accepts_its_control_acknowledgement_and_later_serials() {
 #[test]
 fn control_acknowledgement_order_wraps_without_accepting_stale_serials() {
     let mut snapshot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM).snapshot();
+    let request = PendingControlBoundary {
+        generation: 0,
+        fault_command_frontier: 0,
+        fingerprint_capture_request: None,
+    };
     snapshot.control_boundary_ack = 1;
-    assert!(control_boundary_request_is_acknowledged(0, &snapshot));
+    assert!(control_boundary_request_is_acknowledged(request, &snapshot));
 
     snapshot.control_boundary_ack = u32::MAX;
-    assert!(!control_boundary_request_is_acknowledged(0, &snapshot));
+    assert!(!control_boundary_request_is_acknowledged(
+        request, &snapshot
+    ));
 }
 
 #[test]
 fn fault_result_publication_waits_for_the_full_control_pump() {
     let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
-    let request = slot
-        .request_control_boundary()
+    let generation = slot
+        .request_control_boundary(0, None)
         .unwrap_or_else(|error| panic!("control request should publish: {error}"));
+    let request = PendingControlBoundary {
+        generation,
+        fault_command_frontier: 0,
+        fingerprint_capture_request: None,
+    };
 
     // A result can become visible while the plugin is still translating the
     // paired QEMU occurrence event. The even request token remains unacknowledged
@@ -301,7 +513,7 @@ fn fault_result_publication_waits_for_the_full_control_pump() {
         &slot.snapshot(),
     ));
 
-    slot.publish_control_boundary(0, 0, 0)
+    slot.publish_control_boundary(0, 0)
         .unwrap_or_else(|error| panic!("control boundary should publish: {error}"));
     slot.acknowledge_control_boundary();
     assert!(control_boundary_request_is_acknowledged(
@@ -311,49 +523,94 @@ fn fault_result_publication_waits_for_the_full_control_pump() {
 }
 
 #[test]
+fn priming_handoff_waits_for_an_acknowledged_post_device_boundary()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{Read, Write};
+    use std::os::fd::AsFd;
+    use std::os::unix::net::UnixStream;
+
+    let allocation =
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
+    let layout = allocation.layout();
+    let bytes = allocation.setup_region_bytes()?;
+    let mut shmem = tempfile::tempfile()?;
+    shmem.set_len(layout.region_size)?;
+    shmem.write_all(&bytes)?;
+    let (mut wake_notifications, wake) = UnixStream::pair()?;
+    let plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+    plugin
+        .node_slot(0)?
+        .arm_external_state_restore_ceiling(40)?;
+    plugin.node_slot(0)?.publish_reached_icount(40)?;
+    let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+        shmem.as_fd(),
+        wake.as_fd(),
+        layout.region_size,
+        0,
+        Duration::from_millis(1),
+    )?;
+    drop(wake);
+
+    let host = std::thread::spawn(move || runtime.fence_priming_handoff(Duration::from_secs(1)));
+    let mut wake_notification = [0_u8; std::mem::size_of::<u64>()];
+    wake_notifications.read_exact(&mut wake_notification)?;
+    assert_eq!(u64::from_ne_bytes(wake_notification), 1);
+
+    let requested = plugin.node_slot(0)?.snapshot();
+    assert_eq!(requested.control_boundary_ack & 1, 0);
+    assert_eq!(requested.max_advance_icount, 40);
+    plugin.node_slot(0)?.publish_idle(40, 40)?;
+    plugin.node_slot(0)?.publish_control_boundary(40, 0)?;
+    plugin.node_slot(0)?.acknowledge_control_boundary();
+
+    host.join()
+        .map_err(|_panic| "priming handoff host thread panicked")??;
+    let settled = plugin.node_slot(0)?.snapshot();
+    assert_eq!(
+        settled.control_boundary_ack,
+        requested.control_boundary_ack + 1
+    );
+    assert_eq!(settled.max_advance_icount, settled.current_icount);
+    Ok(())
+}
+
+#[test]
 fn completed_clamp_accepts_preserved_future_idle_deadline() {
     let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
     slot.arm_external_state_restore_ceiling(200)
         .unwrap_or_else(|error| panic!("idle ceiling should publish: {error}"));
-    slot.publish_idle(40, 200, 0)
+    slot.publish_idle(40, 200)
         .unwrap_or_else(|error| panic!("idle state should publish: {error}"));
-    slot.publish_scheduler_ceiling(
+    slot.publish_scheduler_advance(
         authorize_advance_ceiling(40, 40, None)
             .unwrap_or_else(|error| panic!("clamp should authorize: {error}")),
+        crucible_shmem::AdvanceStopCondition::Ceiling,
     )
     .unwrap_or_else(|error| panic!("clamp should publish: {error}"));
     let snapshot = slot.snapshot();
 
     assert!(completed_quantum_clamp_is_settled(
-        true, 40, 200, false, &snapshot,
+        true, true, 40, 200, false, &snapshot,
     ));
     assert!(completed_quantum_clamp_is_settled(
-        true, 40, 40, false, &snapshot,
+        true, true, 40, 40, false, &snapshot,
     ));
 
-    slot.publish_idle(40, 180, 0)
+    slot.publish_idle(40, 180)
         .unwrap_or_else(|error| panic!("tightened idle state should publish: {error}"));
     assert!(completed_quantum_clamp_is_settled(
         true,
+        true,
         40,
         200,
         false,
         &slot.snapshot(),
     ));
 
-    slot.publish_idle(40, 201, 0)
+    slot.publish_idle(40, 201)
         .unwrap_or_else(|error| panic!("extended idle state should publish: {error}"));
     assert!(!completed_quantum_clamp_is_settled(
         true,
-        40,
-        200,
-        false,
-        &slot.snapshot(),
-    ));
-
-    slot.publish_idle(40, 40, 0)
-        .unwrap_or_else(|error| panic!("current idle state should publish: {error}"));
-    assert!(!completed_quantum_clamp_is_settled(
         true,
         40,
         200,
@@ -361,20 +618,60 @@ fn completed_clamp_accepts_preserved_future_idle_deadline() {
         &slot.snapshot(),
     ));
 
-    slot.publish_idle(40, 180, 0)
+    slot.publish_idle(40, 40)
+        .unwrap_or_else(|error| panic!("current idle state should publish: {error}"));
+    assert!(!completed_quantum_clamp_is_settled(
+        true,
+        true,
+        40,
+        200,
+        false,
+        &slot.snapshot(),
+    ));
+
+    slot.publish_idle(40, 180)
         .unwrap_or_else(|error| panic!("retained idle state should publish: {error}"));
     slot.mark_running();
     assert!(completed_quantum_clamp_is_settled(
         true,
+        true,
         40,
         200,
         false,
         &slot.snapshot(),
     ));
+    assert!(!completed_quantum_clamp_is_settled(
+        true,
+        false,
+        40,
+        200,
+        false,
+        &slot.snapshot(),
+    ));
+    assert!(!completed_quantum_clamp_is_settled(
+        true,
+        true,
+        40,
+        200,
+        true,
+        &slot.snapshot(),
+    ));
+
+    slot.mark_device_io_active();
+    assert!(!completed_quantum_clamp_is_settled(
+        true,
+        true,
+        40,
+        200,
+        false,
+        &slot.snapshot(),
+    ));
+    slot.clear_device_io_active();
 
     slot.arm_external_state_restore_ceiling(41)
         .unwrap_or_else(|error| panic!("extended ceiling should publish: {error}"));
     assert!(!completed_quantum_clamp_is_settled(
+        true,
         true,
         40,
         200,
@@ -389,18 +686,19 @@ fn completed_clamp_rejects_unacknowledged_or_active_boundary() {
     let snapshot = slot.snapshot();
 
     assert!(completed_quantum_clamp_is_settled(
-        true, 0, 0, false, &snapshot,
+        true, true, 0, 0, false, &snapshot,
     ));
     assert!(!completed_quantum_clamp_is_settled(
-        false, 0, 0, false, &snapshot,
+        false, false, 0, 0, false, &snapshot,
     ));
     assert!(!completed_quantum_clamp_is_settled(
-        true, 0, 0, true, &snapshot,
+        true, true, 0, 0, true, &snapshot,
     ));
 
-    slot.publish_idle(0, 10, 0)
+    slot.publish_idle(0, 10)
         .unwrap_or_else(|error| panic!("fresh idle deadline should publish: {error}"));
     assert!(completed_quantum_clamp_is_settled(
+        true,
         true,
         0,
         0,
@@ -414,32 +712,249 @@ fn completed_clamp_uses_current_coordinate_after_device_progress() {
     let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
     slot.arm_external_state_restore_ceiling(200)
         .unwrap_or_else(|error| panic!("idle ceiling should publish: {error}"));
-    slot.publish_idle(40, 200, 0)
+    slot.publish_idle(40, 200)
         .unwrap_or_else(|error| panic!("idle state should publish: {error}"));
-    slot.publish_scheduler_ceiling(
+    slot.publish_scheduler_advance(
         authorize_advance_ceiling(40, 40, None)
             .unwrap_or_else(|error| panic!("clamp should authorize: {error}")),
+        crucible_shmem::AdvanceStopCondition::Ceiling,
     )
     .unwrap_or_else(|error| panic!("clamp should publish: {error}"));
     slot.mark_running();
-    slot.publish_control_boundary(40, 40, 0)
+    slot.publish_control_boundary(40, 0)
         .unwrap_or_else(|error| panic!("post-device boundary should publish: {error}"));
+    slot.mark_running();
     let snapshot = slot.snapshot();
 
     assert!(completed_quantum_clamp_is_settled(
-        true, 40, 40, false, &snapshot,
+        true, true, 40, 40, false, &snapshot,
     ));
     assert!(!completed_quantum_clamp_is_settled(
-        true, 40, 200, false, &snapshot,
+        true, true, 40, 200, false, &snapshot,
     ));
 
-    slot.publish_idle(40, 180, 0)
+    slot.publish_idle(40, 180)
         .unwrap_or_else(|error| panic!("fresh post-device deadline should publish: {error}"));
     assert!(completed_quantum_clamp_is_settled(
+        true,
         true,
         40,
         40,
         false,
         &slot.snapshot(),
     ));
+}
+
+#[cfg(target_os = "linux")]
+struct TestNinepCoordinator;
+
+#[cfg(target_os = "linux")]
+impl QemuNinepFaultCoordinator for TestNinepCoordinator {
+    fn service_ninep_io(
+        &mut self,
+        servicer: &mut QemuLive9pIoServicer,
+        guest_icount: u64,
+    ) -> Result<crate::QemuLive9pIoServiceStep, QemuAsyncDriverRuntimeError> {
+        servicer.service(guest_icount).map_err(|source| {
+            QemuAsyncDriverRuntimeError::new("test 9p coordinator", source.to_string())
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn private_region_pair() -> Result<(std::fs::File, std::fs::File, u64), Box<dyn std::error::Error>>
+{
+    use std::io::Write;
+
+    let allocation =
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4))?;
+    let layout = allocation.layout();
+    let bytes = allocation.setup_region_bytes()?;
+    let mut source = tempfile::tempfile()?;
+    source.set_len(layout.region_size)?;
+    source.write_all(&bytes)?;
+    let mut child = tempfile::tempfile()?;
+    child.set_len(layout.region_size)?;
+    child.write_all(&bytes)?;
+    Ok((source, child, layout.region_size))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hot_fork_rejects_pending_on_demand_fingerprint_request() -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::os::fd::AsFd;
+
+    let (source_region, child_region, region_len) = private_region_pair()?;
+    let source_wake = tempfile::tempfile()?;
+    let child_wake = tempfile::tempfile()?;
+    let mut source = QemuLiveHostIoRuntime::from_shmem_fd(
+        source_region.as_fd(),
+        source_wake.as_fd(),
+        region_len,
+        0,
+    )?;
+    let request = source.region.fingerprint_sample(0)?.request_capture_v1();
+
+    let error = match source.clone_hot_fork_host_io_continuation(
+        ContentHash::from_bytes(b"pending-fingerprint-request"),
+        child_region.as_fd(),
+        child_wake.as_fd(),
+        region_len,
+        None,
+    ) {
+        Ok(_) => return Err("pending fingerprint request must reject hot fork".into()),
+        Err(error) => error,
+    };
+
+    assert_eq!(request & 1, 1);
+    assert!(
+        error
+            .to_string()
+            .contains("fingerprint capture request remains pending")
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hot_fork_clone_reconstructs_private_host_devices_without_aliasing_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::fd::AsFd;
+
+    let (source_region, child_region, region_len) = private_region_pair()?;
+    let source_wake = tempfile::tempfile()?;
+    let child_wake = tempfile::tempfile()?;
+    let block =
+        QemuLiveBlockIoServicer::from_shmem_fd(source_region.as_fd(), region_len, 0, 16 * 1024)?;
+    let ninep = QemuLive9pIoServicer::from_shmem_fd(source_region.as_fd(), region_len, 0)?;
+    let accelerator =
+        QemuLiveAcceleratorServicer::from_shmem_fd(source_region.as_fd(), region_len, 0)?;
+    let mut source = QemuLiveHostIoRuntime::from_shmem_fd(
+        source_region.as_fd(),
+        source_wake.as_fd(),
+        region_len,
+        0,
+    )?
+    .with_block_servicer(block, BlockIoDiagnostics::shared())?
+    .with_ninep_servicer(ninep, NinepIoDiagnostics::shared())
+    .with_accelerator_servicer(accelerator);
+    let binding = ContentHash::from_bytes(b"branch-private-host-io");
+    let before = source.checkpoint_host_io(binding)?;
+    let source_block = source
+        .shared_block_device()
+        .ok_or("source block device should be present")?;
+
+    let mut child = source.clone_hot_fork_host_io_continuation(
+        binding,
+        child_region.as_fd(),
+        child_wake.as_fd(),
+        region_len,
+        None,
+    )?;
+
+    assert_eq!(source.checkpoint_host_io(binding)?, before);
+    assert_eq!(child.checkpoint_host_io(binding)?, before);
+    let child_block = child
+        .shared_block_device()
+        .ok_or("child block device should be present")?;
+    assert!(!source_block.ptr_eq(&child_block));
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hot_fork_clone_does_not_fall_back_to_uncoordinated_ninep_service()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::fd::AsFd;
+
+    let (source_region, child_region, region_len) = private_region_pair()?;
+    let source_wake = tempfile::tempfile()?;
+    let child_wake = tempfile::tempfile()?;
+    let ninep = QemuLive9pIoServicer::from_shmem_fd(source_region.as_fd(), region_len, 0)?;
+    let mut source = QemuLiveHostIoRuntime::from_shmem_fd(
+        source_region.as_fd(),
+        source_wake.as_fd(),
+        region_len,
+        0,
+    )?
+    .with_ninep_servicer(ninep, NinepIoDiagnostics::shared());
+    source.install_ninep_fault_coordinator(Box::new(TestNinepCoordinator))?;
+    let mut child = source.clone_hot_fork_host_io_continuation(
+        ContentHash::from_bytes(b"ninep-coordinator-isolation"),
+        child_region.as_fd(),
+        child_wake.as_fd(),
+        region_len,
+        None,
+    )?;
+    let snapshot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM).snapshot();
+
+    let error = match child.service_ninep_io_for_test(&snapshot) {
+        Ok(serviced) => {
+            panic!("a hot-fork child must require a fresh 9p coordinator, serviced={serviced}")
+        }
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("requires a fresh signal coordinator"),
+        "unexpected missing-coordinator error: {error}"
+    );
+
+    child.install_ninep_fault_coordinator(Box::new(TestNinepCoordinator))?;
+    assert!(!child.service_ninep_io_for_test(&snapshot)?);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hot_fork_clone_requires_and_accepts_fresh_child_console()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::os::fd::AsFd;
+    use std::os::unix::net::UnixStream;
+
+    let (source_region, child_region, region_len) = private_region_pair()?;
+    let source_wake = tempfile::tempfile()?;
+    let child_wake = tempfile::tempfile()?;
+    let (mut source_writer, reader) = UnixStream::pair()?;
+    let console = crate::console_observation::QemuConsoleObservationReader::new(
+        reader,
+        crate::console_observation::QemuConsoleObservationSpool::new(),
+    )?;
+    let mut source = QemuLiveHostIoRuntime::from_shmem_fd(
+        source_region.as_fd(),
+        source_wake.as_fd(),
+        region_len,
+        0,
+    )?
+    .with_console_observation(console)?;
+
+    let missing = source.clone_hot_fork_host_io_continuation(
+        ContentHash::from_bytes(b"unsupported-console"),
+        child_region.as_fd(),
+        child_wake.as_fd(),
+        region_len,
+        None,
+    );
+    assert!(missing.is_err());
+
+    let (mut child_writer, child_reader) = UnixStream::pair()?;
+    let child_console = crate::QemuHotForkChildConsoleObservation::from_stream(child_reader)?;
+    let child_spool = child_console.spool();
+    let mut child = source.clone_hot_fork_host_io_continuation(
+        ContentHash::from_bytes(b"branch-private-console"),
+        child_region.as_fd(),
+        child_wake.as_fd(),
+        region_len,
+        Some(child_console),
+    )?;
+    source_writer.write_all(b"source-only")?;
+    child_writer.write_all(b"child-only")?;
+    let _completion =
+        child.await_child(QemuAsyncWait::AdvanceCompletion, Duration::from_millis(100));
+    assert_eq!(child_spool.take()?, b"child-only");
+    drop(child);
+    Ok(())
 }

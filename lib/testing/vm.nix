@@ -516,22 +516,32 @@
     testScript,
     rootfsDeps ? [],
     memory ? 256,
+    extraWritableMiB ? 0,
+    vcpuCount ? 1,
+    hostCpuPin ? false,
+    hostCpuPinIndex ? null,
   }: let
     rootfs = fcLib.mkFirecrackerRootfs {
       pname = name;
-      inherit testScript rootfsDeps;
+      inherit testScript rootfsDeps extraWritableMiB;
     };
     # Firecracker boots the uncompressed vmlinux ELF, which lives in the
     # kernel's separate `vmlinux` output (pkgs/kernel/linux.nix) — not in
     # `out`, whose /boot ships only the compressed vmlinuz.
     kernelPath = builtins.toString kernel.vmlinux;
 
-    headlessBuildDeps = [
-      pkgs.coreutils
-      pkgs.grep
-      pkgs.sed
-      firecracker
-    ];
+    headlessBuildDeps =
+      [
+        pkgs.coreutils
+        pkgs.grep
+        pkgs.sed
+        firecracker
+      ]
+      ++ (
+        if hostCpuPin
+        then [pkgs.util-linux]
+        else []
+      );
 
     headlessFirecrackerScript = ''
       set -eu
@@ -572,7 +582,7 @@
           }
         ],
         "machine-config": {
-          "vcpu_count": 1,
+          "vcpu_count": ${builtins.toString vcpuCount},
           "mem_size_mib": ${builtins.toString memory},
           "smt": false,
           "track_dirty_pages": false,
@@ -593,8 +603,39 @@
             -e '/^[0-9][0-9][0-9][0-9]-[0-9].*\[anonymous-instance:/d' &
       SERIAL_MIRROR_PID=$!
 
-      FC_EXIT=0
-      firecracker --no-api --config-file "$CONFIG" > "$SERIAL_PIPE" 2>"$FC_LOG" || FC_EXIT=$?
+      ${
+        if hostCpuPin
+        then ''
+          host_allowed=$(sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' /proc/self/status)
+          ${
+            if hostCpuPinIndex == null
+            then ''host_cpu=$(printf '%s\n' "$host_allowed" | cut -d , -f 1 | cut -d - -f 1)''
+            else ''host_cpu=${builtins.toString hostCpuPinIndex}''
+          }
+          test -n "$host_cpu"
+          ${pkgs.util-linux}/bin/taskset -c "$host_cpu" ${pkgs.coreutils}/bin/true
+          host_model=$(sed -n 's/^model name[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
+          test -n "$host_model"
+          host_family=$(sed -n 's/^cpu family[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
+          host_model_number=$(sed -n 's/^model[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
+          host_stepping=$(sed -n 's/^stepping[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
+          host_microcode=$(sed -n 's/^microcode[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
+          test -n "$host_family" && test -n "$host_model_number" && test -n "$host_stepping" && test -n "$host_microcode"
+          host_boot_id=$(cat /proc/sys/kernel/random/boot_id)
+          test -n "$host_boot_id"
+          printf 'host_name=%s\nhost_boot_id=%s\nhost_cpu_model=%s\nhost_cpu_family=%s\nhost_cpu_model_number=%s\nhost_cpu_stepping=%s\nhost_cpu_microcode=%s\nhost_kernel_release=%s\nhost_allowed_cpus=%s\nhost_pinned_cpu=%s\n' \
+            "$(uname -n)" "$host_boot_id" "$host_model" "$host_family" "$host_model_number" \
+            "$host_stepping" "$host_microcode" "$(uname -r)" "$host_allowed" "$host_cpu" \
+            > "$TMPDIR/host-reference.env"
+          FC_EXIT=0
+          ${pkgs.util-linux}/bin/taskset -c "$host_cpu" \
+            firecracker --no-api --config-file "$CONFIG" > "$SERIAL_PIPE" 2>"$FC_LOG" || FC_EXIT=$?
+        ''
+        else ''
+          FC_EXIT=0
+          firecracker --no-api --config-file "$CONFIG" > "$SERIAL_PIPE" 2>"$FC_LOG" || FC_EXIT=$?
+        ''
+      }
       wait "$SERIAL_MIRROR_PID" 2>/dev/null || true
 
       echo "Firecracker exited with code: $FC_EXIT"
@@ -605,6 +646,11 @@
         mkdir -p $out
         cp "$SERIAL_LOG" $out/serial.log
         cp "$FC_LOG" $out/fc.log 2>/dev/null || true
+        ${
+        if hostCpuPin
+        then ''cp "$TMPDIR/host-reference.env" $out/host-reference.env''
+        else ""
+      }
         echo "PASS" > $out/result
       elif grep -q "TEST_RESULT:FAIL" "$SERIAL_LOG"; then
         echo ""
@@ -667,21 +713,33 @@
     # through does not have to restate the number.
     timeout ? null,
     memory ? null,
+    extraWritableMiB ? 0,
+    # Headless package tests default to one host CPU unless the fixture opts in.
+    headlessVcpuCount ? 1,
+    hostCpuPin ? false,
+    hostCpuPinIndex ? null,
     seedSELinuxDisabledConfig ? true,
   }:
     if rootfsDeps != null
     then
-      mkHeadlessTest {
-        inherit
-          name
-          testScript
-          rootfsDeps
-          ;
-        memory =
-          if memory != null
-          then memory
-          else 256;
-      }
+      if headlessVcpuCount < 1 || headlessVcpuCount > 32
+      then throw "mkVMTest headlessVcpuCount must be in 1..32"
+      else
+        mkHeadlessTest {
+          inherit
+            name
+            testScript
+            rootfsDeps
+            extraWritableMiB
+            hostCpuPin
+            hostCpuPinIndex
+            ;
+          memory =
+            if memory != null
+            then memory
+            else 256;
+          vcpuCount = headlessVcpuCount;
+        }
     else if system != null
     then let
       systemDisk = mkTestDisk {inherit system seedSELinuxDisabledConfig;};

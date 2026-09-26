@@ -15,24 +15,22 @@ use std::ops::Deref;
 
 use crate::model::{
     AssertionDef, AssertionId, AssertionPhase, CodePoint, ContentHash, Decision, DeviceId,
-    EngineError, EventKey, EventLogOffset, FramePredicate, Icount, IoEventKind, LinkDef, LinkId,
-    MarkerId, MemPlace, MemoryCmp, NodeId, NodeLifecycle, Plan, Predicate, PreemptionKind,
+    EngineError, EventId, EventKey, EventLogOffset, FramePredicate, Icount, IoEventKind, LinkDef,
+    LinkId, MarkerId, MemPlace, MemoryCmp, NodeId, NodeLifecycle, Plan, Predicate, PreemptionKind,
     Properties, Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint, RegexProgram,
     ReproductionArtifact, ReproductionReplay, RngStreamId, Schedule, SchedulerNodeId,
-    SchedulingNodeKind, Shift, SimDuration, TimeConversionError, TimerId, VirtualTime,
-    WhiteBoxPolicy, World, WorldDeviceKind, WorldStaticTopology,
+    SchedulingNodeKind, SimDuration, TimeConversionError, TimerId, VirtualTime, WhiteBoxPolicy,
+    World, WorldDeviceKind, WorldStaticTopology,
 };
 use crate::scheduler::{
     AssertionRunVerdict, AssertionVerdictFailure, ControlOperationKind, EventAttributeValue,
-    EventLevel, EventLogCausalDivergencePoint, EventLogIcountStamp, ScheduledEvent,
+    EventLevel, EventLogCausalDivergencePoint, EventLogTickStamp, ScheduledEvent,
     ScheduledEventKey, ScheduledEventPayload, ScheduledEventResolveClass,
     SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
     SchedulerEventLogPayload, SchedulerQuiescence, TriggerActionApplication,
     compare_event_log_determinism, scheduled_event_resolve_class, scheduler_event_log_empty_prefix,
     scheduler_event_log_segment_bytes,
 };
-
-pub use crate::model::EventId;
 
 /// Shared predicate vocabulary used by both assertions and event triggers.
 ///
@@ -43,6 +41,7 @@ pub type Condition = Predicate;
 
 mod assertions;
 mod conditions;
+mod deadlines;
 mod evaluation;
 mod event_graph;
 mod evidence;

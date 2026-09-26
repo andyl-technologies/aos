@@ -19,16 +19,18 @@ use crucible_protocol::{
 use crate::model::{
     AssertionDef, AssertionId, AssertionPhase, Checkpoint, CheckpointKind, ChoiceTag, CodePoint,
     Configuration, ContentAddressedBlobRef, ContentHash, CoverageGuidedFuzzConfig,
-    CoverageGuidedFuzzIteration, CoverageGuidedFuzzRun, Decision, EngineError, EventId,
-    FamilySpace, FindingDiscoveryPath, FindingReproductionArtifact, GenesisCheckpoint,
-    GuestWorkloadBinary, GuestWorkloadParameterKey, GuestWorkloadScalarParameter, Icount,
-    IoEventKind, LinkLossProbability, MarkerId, MemoryDagStore, NodeCounter, NodeId, NodeLifecycle,
-    NodeTemplate, OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint,
-    RegexProgram, ReproductionArtifact, ScenarioDefForm, ScenarioFamily, Schedule, SchedulerNodeId,
-    SchedulingNodeKind, SchedulingPoint, Seed, Shift, SimDuration, SimInstant, TemporalGraph,
-    TemporalGraphFork, TemporalGraphRuntime, TemporalGraphSave, TemporalGraphStoreError, TimerId,
-    TopologyShape, TopologySizeRange, UnifiedGraphOperationEvidence, UnifiedGraphOperationReport,
-    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode, bake, try_step,
+    CoverageGuidedFuzzIteration, CoverageGuidedFuzzRun, CoverageGuidedFuzzingEvidence, Decision,
+    EngineError, EventId, FamilySpace, FindingDiscoveryPath, FindingReproductionArtifact,
+    GenesisCheckpoint, GuestWorkloadBinary, GuestWorkloadParameterKey,
+    GuestWorkloadScalarParameter, Icount, IoEventKind, LinkLossProbability, MarkerId,
+    MemoryDagStore, NodeCounter, NodeId, NodeLifecycle, NodeTemplate, OverrideDecision, Plan,
+    Predicate, Properties, Property, ReadyPoint, RegexProgram, ReproductionArtifact,
+    ScenarioDefForm, ScenarioFamily, Schedule, SchedulerNodeId, SchedulingNodeKind,
+    SchedulingPoint, Seed, SimDuration, SimInstant, TemporalGraph, TemporalGraphFork,
+    TemporalGraphResumeEvidence, TemporalGraphRuntime, TemporalGraphSave,
+    TemporalGraphSaveEvidence, TemporalGraphStoreError, TimerId, TopologyShape, TopologySizeRange,
+    UnifiedGraphOperationEvidence, UnifiedGraphOperationReport, VirtualTime, VmArchitecture,
+    WhiteBoxPolicy, World, WorldNode, bake, try_step,
 };
 use crate::scheduler::{
     EventLog, EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer, ExactLocalEvent,
@@ -393,7 +395,6 @@ pub fn happy_path_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusErro
                 },
                 white_box: WhiteBoxPolicy::Disabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-                icount_shift: 7,
                 kernel: Some(kernel),
                 root_image: Some(server_root),
                 initrd: None,
@@ -408,7 +409,6 @@ pub fn happy_path_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusErro
                 },
                 white_box: WhiteBoxPolicy::Disabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-                icount_shift: 7,
                 kernel: Some(kernel),
                 root_image: Some(client_root),
                 initrd: None,
@@ -417,8 +417,8 @@ pub fn happy_path_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusErro
         vec![crate::model::LinkDef::with_transport(
             node("client"),
             node("server"),
-            SimDuration { nanos: 5_000_000 },
-            SimDuration { nanos: 1_000_000 },
+            SimDuration { ticks: 5_000_000 },
+            SimDuration { ticks: 1_000_000 },
             LinkLossProbability::ZERO,
             None,
         )?],
@@ -638,36 +638,40 @@ pub fn run_fault_campaign_example(
         baked_genesis_for_scenario(discovered_iteration.scenario.form())?,
     )?;
 
-    let fuzz_report = graph.validate_unified_operation(
-        &UnifiedGraphOperationEvidence::CoverageGuidedFuzzing {
-            family: family.clone(),
-            run: fuzz_run.clone(),
-            feedback_fingerprints: coverage_fingerprints.clone(),
-            iteration: discovered_iteration.clone(),
-        },
-    )?;
+    let fuzz_report =
+        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::CoverageGuidedFuzzing(
+            Box::new(CoverageGuidedFuzzingEvidence {
+                family: family.clone(),
+                run: fuzz_run.clone(),
+                feedback_fingerprints: coverage_fingerprints.clone(),
+                iteration: discovered_iteration.clone(),
+            }),
+        ))?;
     let reproduction_report = graph.validate_unified_operation(
-        &UnifiedGraphOperationEvidence::ReproductionArtifact(finding.clone()),
+        &UnifiedGraphOperationEvidence::ReproductionArtifact(Box::new(finding.clone())),
     )?;
 
     let store = MemoryDagStore::new();
     let save = graph.save(&store, &pre_failure)?;
-    let save_report = graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Save {
-        configuration: pre_failure.clone(),
-        save: save.clone(),
-    })?;
+    let save_report = graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Save(
+        Box::new(TemporalGraphSaveEvidence {
+            configuration: pre_failure.clone(),
+            save: save.clone(),
+        }),
+    ))?;
     let resume = graph.resume_checkpoint(save.checkpoint)?;
-    let resume_report =
-        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Resume {
+    let resume_report = graph.validate_unified_operation(
+        &UnifiedGraphOperationEvidence::Resume(Box::new(TemporalGraphResumeEvidence {
             configuration: pre_failure.clone(),
             runtime: resume.clone(),
-        })?;
+        })),
+    )?;
     let fork = graph.fork(
         &pre_failure,
         vec![fault_campaign_alternate_decision(config)],
     )?;
-    let fork_report =
-        graph.validate_unified_operation(&UnifiedGraphOperationEvidence::Fork(fork.clone()))?;
+    let fork_report = graph
+        .validate_unified_operation(&UnifiedGraphOperationEvidence::Fork(Box::new(fork.clone())))?;
 
     Ok(FaultCampaignExampleReport {
         family_name: FAULT_CAMPAIGN_FAMILY_NAME.to_owned(),
@@ -833,7 +837,6 @@ fn partition_node(
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: 7,
         kernel: Some(kernel),
         root_image: Some(root_image),
         initrd: None,
@@ -855,7 +858,6 @@ fn crash_restart_node(
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: 7,
         kernel: Some(kernel),
         root_image: Some(root_image),
         initrd: None,
@@ -866,8 +868,8 @@ fn partition_link(from: &str, to: &str) -> Result<crate::model::LinkDef, EngineE
     crate::model::LinkDef::with_transport(
         node(from),
         node(to),
-        SimDuration { nanos: 5_000_000 },
-        SimDuration { nanos: 1_000_000 },
+        SimDuration { ticks: 5_000_000 },
+        SimDuration { ticks: 1_000_000 },
         LinkLossProbability::ZERO,
         None,
     )
@@ -919,7 +921,7 @@ fn crash_restart_plan(world: &World, properties: &Properties) -> Result<Plan, En
         .event("restart")
         .when(Predicate::after(
             SimDuration {
-                nanos: CRASH_RESTART_DELAY_TICKS,
+                ticks: CRASH_RESTART_DELAY_TICKS,
             },
             EventId::from_name("crash-after-commit"),
         ))
@@ -1013,7 +1015,7 @@ fn partition_recovery_plan(world: &World, properties: &Properties) -> Result<Pla
         .action(Action::arm_timer(
             heal_timer.clone(),
             SimDuration {
-                nanos: PARTITION_HEAL_DELAY_TICKS,
+                ticks: PARTITION_HEAL_DELAY_TICKS,
             },
         ))
         .event("heal")
@@ -1497,10 +1499,9 @@ fn run_example_scenario_material(
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             scenario_name,
-            Shift { bits: 0 },
             16,
             SimInstant {
-                nanos: scenario_run_time_limit(steps),
+                ticks: scenario_run_time_limit(steps),
             },
             scheduler_nodes,
             Vec::new(),
@@ -1930,7 +1931,9 @@ fn encode_observation(
         | ObservableEventPayload::MemorySample { .. }
         | ObservableEventPayload::AssertionProximity { .. }
         | ObservableEventPayload::AssertionEvaluated { .. }
-        | ObservableEventPayload::GuestMarker { .. } => Err(invalid_replay_schedule(
+        | ObservableEventPayload::GuestMarker { .. }
+        | ObservableEventPayload::GuestMeasurement { .. }
+        | ObservableEventPayload::GuestSemanticMarker { .. } => Err(invalid_replay_schedule(
             scenario_name,
             "unsupported observation kind in example replay script",
         )),

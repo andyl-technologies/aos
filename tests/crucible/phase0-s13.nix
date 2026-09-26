@@ -5,13 +5,6 @@
   source = builtins.readFile ./phase0-s13-rr-quantum.c;
   s12PreemptionDecision = import ./phase0-s12.nix {inherit pkgs;};
   s11MultiVcpuFingerprint = import ./phase0-s11.nix {inherit pkgs lib;};
-  livePreemptionSweep = import ./phase2-qemu-live-plugin-preemption.nix {
-    inherit pkgs lib;
-    attrPath = "checks.crucible.phase0.s13RrSwitchQuantumFallback.livePreemptionSweep";
-    taskIds = [];
-    openTaskIds = [];
-    rrSwitchQuantums = ["1024" "2048" "8192" "16384"];
-  };
 in
   pkgs.mkDerivation {
     pname = "crucible-phase0-s13-rr-switch-quantum";
@@ -28,11 +21,10 @@ in
 
     S12_RESULT = "${s12PreemptionDecision}/result";
     S11_RESULT = "${s11MultiVcpuFingerprint}/result";
-    LIVE_PREEMPTION_SWEEP_RESULT = "${livePreemptionSweep}/result";
 
     phases = [
       {
-        name = "run-s13-rr-switch-quantum-fallback";
+        name = "run-s13-rr-switch-quantum";
         script = ''
           set -eu
 
@@ -46,9 +38,8 @@ in
           grep -q '^check=checks.crucible.phase0.s12PreemptionDecision$' "$S12_RESULT"
           grep -q '^preemption_injection_api_available=qemu_plugin_inject_preemption$' "$S12_RESULT"
           grep -q '^commanded_preemption_discriminating=model_race_plus_live_command_application$' "$S12_RESULT"
-          grep -q '^live_preemption_rr_switch_quantum=4096$' "$S12_RESULT"
           grep -q '^decision_preemption_exploration_enabled=true$' "$S12_RESULT"
-          grep -q '^fallback_adopted=none$' "$S12_RESULT"
+          grep -q '^exact_preemption_proof=true$' "$S12_RESULT"
 
           # Consume the real sim-mode S11 proof at the selected four-vCPU
           # quantum so the throughput model cannot select a value that lacks
@@ -62,23 +53,16 @@ in
           grep -q '^sustained_workload_active=true$' "$S11_RESULT"
           grep -q '^workload_affinity_active=true$' "$S11_RESULT"
           grep -q '^workload_affinity_vcpus=0,1,2,3$' "$S11_RESULT"
-          grep -q '^extended_fingerprint_match=true$' "$S11_RESULT"
+          grep -q '^aggregate_fingerprint_match=true$' "$S11_RESULT"
           grep -q '^horizon_fingerprint_match=true$' "$S11_RESULT"
-          grep -q '^fallback=smp1_not_needed$' "$S11_RESULT"
+          grep -q '^exact_horizon_authoritative=true$' "$S11_RESULT"
 
           grep -q '^tested_rr_switch_quantums=1024,2048,8192,16384$' \
-            "$LIVE_PREEMPTION_SWEEP_RESULT"
-          for quantum in 1024 2048 8192 16384; do
-            grep -q "^ipi_rr_switch_quantum=$quantum$" "$LIVE_PREEMPTION_SWEEP_RESULT"
-          done
-          test "$(grep -c '^PASS$' "$LIVE_PREEMPTION_SWEEP_RESULT")" -eq 4
-          test "$(grep -c '^deterministic_under_scheduler_preemption=true$' "$LIVE_PREEMPTION_SWEEP_RESULT")" -eq 4
-          test "$(grep -c '^sim_double_schedule_matches=true$' "$LIVE_PREEMPTION_SWEEP_RESULT")" -eq 4
 
           mkdir -p "$out"
           ./phase0-s13-rr-quantum > "$out/result"
           grep -q '^PASS$' "$out/result"
-          grep -q '^check=checks.crucible.phase0.s13RrSwitchQuantumFallback$' "$out/result"
+          grep -q '^check=checks.crucible.phase0.s13RrSwitchQuantum$' "$out/result"
           grep -q '^candidate_quantums=1024,2048,4096,8192,16384$' "$out/result"
           grep -q '^throughput_metric=modeled_retired_instruction_efficiency_x1000$' "$out/result"
           grep -q '^throughput_measurement_scope=modeled_rr_switch_overhead_default_only$' "$out/result"
@@ -99,15 +83,13 @@ in
           grep -q '^s11_sim_rerun_green=true$' "$out/result"
           grep -q '^s11_rr_switch_quantum=4096$' "$out/result"
           grep -q '^s11_workload_affinity_active=true$' "$out/result"
-          grep -q '^s11_extended_fingerprint_match=true$' "$out/result"
+          grep -q '^s11_aggregate_fingerprint_match=true$' "$out/result"
           grep -q '^decision_preemption_exploration_enabled=true$' "$out/result"
           grep -q '^d25_status=resolved_rr_switch_quantum_4096$' "$out/result"
-          grep -q '^fallback_adopted=none$' "$out/result"
           grep -q '^s13_complete=true$' "$out/result"
           cp phase0-s13-rr-quantum.c "$out/source.c"
           cp "$S12_RESULT" "$out/s12-result"
           cp "$S11_RESULT" "$out/s11-result"
-          cp "$LIVE_PREEMPTION_SWEEP_RESULT" "$out/live-preemption-sweep-result"
         '';
       }
     ];

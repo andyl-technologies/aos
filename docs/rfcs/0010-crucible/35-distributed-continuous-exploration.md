@@ -279,7 +279,7 @@ manifest is a tiny ref that points at:
     coverage_map_root  : ContentHash   // root of the accumulated coverage map (§35.3.2)
     findings_root      : ContentHash   // root of the findings ledger (artifacts §35.3.3)
     genesis_pin        : ContentHash   // the baked genesis checkpoint pin (07 §3, PERF-11)
-    provenance         : ProvenanceTriple  // (crucible_ver, qemu_build+series, abi_vers) §35.5/§35.6
+    provenance         : ProvenanceTriple  // (crucible_ver, qemu_build+atomic_patch, abi_vers) §35.5/§35.6
   advanced by COMPARE-AND-SWAP on the head (§35.5); a lost CAS loses only
   bookkeeping — the nodes it would have named are independently re-discoverable.
 ```
@@ -651,7 +651,7 @@ off the hot path (advanced at run boundaries, not per node).
 ### 35.6.1 A campaign is keyed to the provenance triple
 
 A campaign is keyed to the **provenance triple** of [PKG-36]/[PKG-38]: the
-Crucible software version, the QEMU build identity + applied series hash, and the
+Crucible software version, the QEMU build identity + applied atomic-patch hash, and the
 three ABI versions (shmem, guest↔host channel, RPC). This triple is recorded in
 the manifest (§35.3.1) and in every reproduction artifact ([PKG-38], [HARN-28]).
 
@@ -676,7 +676,7 @@ provenance per entry).
 ```
 
 - **[DCE-26]** A campaign MUST be keyed to the **provenance triple** of [PKG-36]
-  (Crucible version, QEMU build identity + series hash, the three ABI versions),
+  (Crucible version, QEMU build identity + atomic-patch hash, the three ABI versions),
   recorded in the manifest (§35.3.1) and in every artifact ([PKG-38]). Seeding
   ([DCE-11]) MUST **refuse cross-provenance corpus reuse**: a corpus entry produced
   under one provenance triple MUST NOT be seeded into a campaign with a different
@@ -1077,7 +1077,7 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
 - [x] **T-DCE-8** Implement `gate:fleet-equivalence` (single-host exhaustive search
   vs fleet work-stealing search over the same (family, seed, budget) discover the
   same content-addressed finding-set with byte-identical artifacts; order may
-  differ), running against the SimDouble fleet under adversarial host conditions and
+  differ), running the work-stealing fleet under adversarial host conditions and
   a real-QEMU slice, with divergence-bisection localization. — satisfies [DCE-20],
   [DCE-21], [DCE-25], [DCE-33]; spec §35.4.4, §35.5.4; cross-ref 24 §3/§7.
   - Completed by `checks.crucible.phase7.gates.fleetEquivalence`: the Crucible
@@ -1088,9 +1088,9 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     seed, and budget, requires both runs to exhaust the same content-addressed
     graph, then compares order-insensitive content-addressed finding sets and
     byte-identical reproduction artifacts while preserving discovery order only as
-    diagnostics. The test also drives one `SimDouble` lane per logical fleet host
-    under the shared `canonical_host_adversary_matrix` fixture and requires
-    profile-independent host-schedule witnesses. Negative controls drop a fleet
+    diagnostics. The test also runs complete work-stealing searches as independent
+    logical tasks under the shared `canonical_host_adversary_matrix` fixture and
+    requires profile-independent fleet results. Negative controls drop a fleet
     finding and cap the budget before exhaustion, verifying divergence-bisection
     handoff through `SearchReplayOracleBisectionRequest`. The root TCG-only fleet
     wrapper consumes this gate result before advertising distributed continuous

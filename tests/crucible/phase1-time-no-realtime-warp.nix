@@ -2,15 +2,14 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeNoRealtimeWarp",
-  taskIds ? ["T-TIME-5"],
-  openTaskIds ? [],
+  taskIds ? [],
+  openTaskIds ? ["T-TIME-5"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
-  noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
-  icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
+  atomicPatchEvidence = import ./phase2-patch-microtests.nix {inherit pkgs lib;};
 
   qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
   qemuTest =
@@ -27,7 +26,7 @@
     failuresFor "crates/crucible-qemu/src/launch.rs" qemuLaunch [
       {
         label = "guest-visible time source policy material";
-        needle = "\"guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time\".to_owned(),";
+        needle = "\"guest_time_sources=rtc,tsc,timer-devices:logical-picosecond-virtual-time-with-ns-projections\".to_owned(),";
       }
       {
         label = "fixed guest time epoch material";
@@ -57,7 +56,7 @@
     ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" qemuTest [
       {
         label = "launch material guest time assertion";
-        needle = "guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time";
+        needle = "guest_time_sources=rtc,tsc,timer-devices:logical-picosecond-virtual-time-with-ns-projections";
       }
       {
         label = "launch material time-control assertion";
@@ -122,8 +121,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-5 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
+        label = "T-TIME-5 partial evidence boundary";
+        needle = "visible instruction and idle-warp suppression in a running guest";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -226,24 +225,21 @@ in
             require_leaf ${deterministicLaunch} \
               "gate=gate:layer0-determinism" \
               "rtc=base=2026-01-01T00:00:00,clock=vm" \
-              "virtual_time_ns=icount<<shift" \
-              "tsc_source=icount" \
-              "guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time" \
+              "virtual_time_ns=floor(sim_tick/1000)" \
+              "tsc_source=logical-picoseconds-div-250" \
+              "guest_time_sources=rtc,tsc,timer-devices:logical-picosecond-virtual-time-with-ns-projections" \
               "guest_time_epoch=fixed-rtc-epoch" \
               "time_control_owner=crucible-qemu-plugin" \
               "time_control_acquire=registration-before-first-visible-instruction" \
               "idle_warp_under_time_control=suppressed" \
               "icount_budget_deadline_source=QEMU_CLOCK_VIRTUAL" \
               "realtime_deadline_in_precise_budget=false"
-            require_leaf ${noWarpWithPlugin} \
-              "gate=gate:layer0-determinism" \
-              "time_control_predicate=qemu_plugin_has_time_control" \
-              "wall_clock_warp_under_time_control=false" \
-              "notify_preserved_under_time_control=true"
-            require_leaf ${icountNoRealtime} \
-              "gate=gate:layer0-determinism" \
-              "qemu_mode=ICOUNT_PRECISE" \
-              "realtime_deadline_in_precise_budget=false"
+            require_leaf ${atomicPatchEvidence} \
+              "gate=gate:patch-microtests" \
+              "atomic_patch=crucible-qemu-11.1.1.patch" \
+              "atomic_patch_runtime_is_shipped_qemu=true" \
+              "qemu_plugin_clock_deadline_export_present=true" \
+              "qemu_plugin_time_drain_exports_present=true"
           '';
         }
         {
@@ -257,9 +253,9 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             open_tasks=${builtins.concatStringsSep "," openTaskIds}
             status=partial
-            evidence_scope=launch-policy-and-callback-core-model
+            evidence_scope=launch-policy-callback-core-model-and-atomic-package
             gate=gate:layer0-determinism
-            guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time
+            guest_time_sources=rtc,tsc,timer-devices:logical-picosecond-virtual-time-with-ns-projections
             guest_time_epoch=fixed-rtc-epoch
             time_control_owner=crucible-qemu-plugin
             time_control_acquire=registration-before-first-visible-instruction
@@ -267,7 +263,9 @@ in
             idle_warp_under_time_control=suppressed
             icount_budget_deadline_source=QEMU_CLOCK_VIRTUAL
             realtime_deadline_in_precise_budget=false
-            leaf_checks=deterministicLaunch,noWarpWithPlugin,icountNoRealtime
+            atomic_patch_evidence=phase2PatchMicrotests
+            retired_partial_patch_fixtures=0
+            leaf_checks=deterministicLaunch,atomicPatchEvidence
             RESULT
           '';
         }

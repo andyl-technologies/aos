@@ -2,8 +2,8 @@
 
 use super::*;
 
-fn evidence(observation: FaultClockObservationV1) -> FaultClockEvidenceV1 {
-    FaultClockEvidenceV1 {
+fn evidence(observation: FaultClockObservationV2) -> FaultClockEvidenceV2 {
+    FaultClockEvidenceV2 {
         source_kind: 7,
         model_phase: 30,
         observed_icount: 42,
@@ -21,7 +21,7 @@ fn evidence(observation: FaultClockObservationV1) -> FaultClockEvidenceV1 {
 #[test]
 fn every_clock_evidence_kind_round_trips_canonically() {
     let observations = [
-        FaultClockObservationV1::Read {
+        FaultClockObservationV2::Read {
             raw_value: 11,
             transformed_value: 12,
             raw_architectural_value: 21,
@@ -31,7 +31,7 @@ fn every_clock_evidence_kind_round_trips_canonically() {
             anchor_raw: 9,
             anchor_value: 10,
             drift_ratio: [1001, 1000],
-            additive_nanos: -2,
+            additive_ps: -2,
             frozen_value: 0,
             read_error: false,
             read_opportunity: 13,
@@ -41,9 +41,9 @@ fn every_clock_evidence_kind_round_trips_canonically() {
             overdue_policy: 1,
             source_state: 1,
             freeze_release: 0,
-            synchronization_remaining_nanos: -3,
+            synchronization_remaining_ps: -3,
         },
-        FaultClockObservationV1::Read {
+        FaultClockObservationV2::Read {
             raw_value: 21,
             transformed_value: 21,
             raw_architectural_value: 21,
@@ -53,7 +53,7 @@ fn every_clock_evidence_kind_round_trips_canonically() {
             anchor_raw: 21,
             anchor_value: 21,
             drift_ratio: [1, 1],
-            additive_nanos: 0,
+            additive_ps: 0,
             frozen_value: 0,
             read_error: false,
             read_opportunity: 14,
@@ -63,30 +63,30 @@ fn every_clock_evidence_kind_round_trips_canonically() {
             overdue_policy: 1,
             source_state: 2,
             freeze_release: 0,
-            synchronization_remaining_nanos: 0,
+            synchronization_remaining_ps: 0,
         },
-        FaultClockObservationV1::Wander {
-            scheduler_nanos: 20,
-            raw_nanos: 21,
+        FaultClockObservationV2::Wander {
+            scheduler_ps: 20,
+            raw_ps: 21,
             offsets: [-2, 3],
             rates_ppb: [-4, 5],
-            next_nanos: [22, 23],
+            next_ps: [22, 23],
             sequences: [6, 7],
         },
-        FaultClockObservationV1::SourceTransition {
-            scheduler_nanos: 30,
-            raw_nanos: 31,
+        FaultClockObservationV2::SourceTransition {
+            scheduler_ps: 30,
+            raw_ps: 31,
             states: [1, 5],
             old_value: 32,
             new_anchor_value: 33,
             transition_generation: 2,
             old_fallback: [0; 32],
             new_fallback: [6; 32],
-            synchronization_remaining_nanos: [0, -4],
+            synchronization_remaining_ps: [0, -4],
             synchronization_ratio: [1001, 1000],
-            synchronization_threshold_nanos: 1,
+            synchronization_threshold_ps: 1,
         },
-        FaultClockObservationV1::TimerTransition {
+        FaultClockObservationV2::TimerTransition {
             role: 1,
             index: 3,
             action: 1,
@@ -99,17 +99,17 @@ fn every_clock_evidence_kind_round_trips_canonically() {
             timer_opportunity: 15,
             arm_sequence: 14,
         },
-        FaultClockObservationV1::Impulse {
+        FaultClockObservationV2::Impulse {
             transform_kind: 2,
-            raw_nanos: 40,
+            raw_ps: 40,
             old_value: 41,
             signed_value: 0,
             ratio: [1001, 1000],
             unsigned_value: 0,
             new_anchor: [43, 44],
             new_drift_ratio: [1001, 1000],
-            new_additive_nanos: -9,
-            old_additive_nanos: -9,
+            new_additive_ps: -9,
+            old_additive_ps: -9,
             new_frozen_value: 0,
             new_freeze_release: 0,
             new_monotonicity: 2,
@@ -119,14 +119,14 @@ fn every_clock_evidence_kind_round_trips_canonically() {
     ];
     for observation in observations {
         let mut value = evidence(observation);
-        if matches!(&value.observation, FaultClockObservationV1::Impulse { .. }) {
+        if matches!(&value.observation, FaultClockObservationV2::Impulse { .. }) {
             value.opportunity = 0;
         }
         let encoded = value
             .encode()
             .unwrap_or_else(|error| panic!("clock evidence should encode: {error}"));
         assert_eq!(
-            FaultClockEvidenceV1::decode(&encoded)
+            FaultClockEvidenceV2::decode(&encoded)
                 .unwrap_or_else(|error| panic!("clock evidence should decode: {error}")),
             value
         );
@@ -135,7 +135,7 @@ fn every_clock_evidence_kind_round_trips_canonically() {
 
 #[test]
 fn clock_evidence_rejects_noncanonical_and_unbound_records() {
-    let value = evidence(FaultClockObservationV1::TimerTransition {
+    let value = evidence(FaultClockObservationV2::TimerTransition {
         role: 1,
         index: 3,
         action: 1,
@@ -151,8 +151,13 @@ fn clock_evidence_rejects_noncanonical_and_unbound_records() {
     let mut encoded = value
         .encode()
         .unwrap_or_else(|error| panic!("clock evidence should encode: {error}"));
+    let mut prior_version = encoded.clone();
+    prior_version[..8].copy_from_slice(b"CRUCLKV1");
+    prior_version[8..10].copy_from_slice(&1_u16.to_le_bytes());
+    assert!(FaultClockEvidenceV2::decode(&prior_version).is_err());
+
     encoded[223] = 1;
-    assert!(FaultClockEvidenceV1::decode(&encoded).is_err());
+    assert!(FaultClockEvidenceV2::decode(&encoded).is_err());
 
     let mut missing_identity = value;
     missing_identity.source_id = [0; 32];

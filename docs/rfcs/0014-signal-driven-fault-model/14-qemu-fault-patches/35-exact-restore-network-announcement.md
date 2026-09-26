@@ -1,4 +1,4 @@
-# Patch 0084: suppress migration announcements on exact restore
+# Capability task 0084 — Suppress migration announcements on exact restore
 
 ## Capability
 
@@ -11,10 +11,10 @@ a fresh QEMU process.
 
 Ordinary QEMU migration has a different contract: the guest may have moved to
 a new physical network attachment, so upstream virtio-net behavior requests a
-guest announcement after load. This patch preserves that behavior outside an
+guest announcement after load. This capability preserves that behavior outside an
 active Crucible exact-load transaction.
 
-## Failure closed by this patch
+## Failure closed by this capability
 
 Upstream `virtio_net_post_load_device()` unconditionally resets and arms the
 guest-announcement timer when the guest negotiated `VIRTIO_NET_F_GUEST_ANNOUNCE`
@@ -71,7 +71,6 @@ contain migration-only multicast-listener reports.
 The same gate is a positive control for ordinary guest traffic: suppressing the
 announcement must not suppress frames that were pending in the authenticated
 transport state or frames the restored guest would naturally transmit. The
-aggregate patch-series and regeneration gates additionally require the
-isolated patch to apply at the recorded stack position, the DCO-signed branch
-commit and tree to match `_series.nix`, and the corresponding-source bundle to
+atomic-patch regeneration gate additionally requires the DCO-signed commit and
+tree to match the integration manifest and corresponding-source bundle to
 regenerate byte-for-byte. The implementation task is `T-QEMU-0084`.

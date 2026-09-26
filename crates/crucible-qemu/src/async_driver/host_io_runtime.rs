@@ -4,6 +4,51 @@ use super::*;
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Services the live 9p ring directly for coordinator-isolation tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the runtime is not the live
+    /// shared-memory implementation or its 9p coordinator rejects service.
+    #[cfg(test)]
+    fn service_ninep_io_for_test(
+        &mut self,
+        _snapshot: &crucible_shmem::NodeSlotSnapshot,
+    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "service 9p io for test",
+            "host-I/O runtime does not expose a live 9p servicer",
+        ))
+    }
+
+    /// Clones the complete host-I/O continuation onto one branch-private ring.
+    ///
+    /// The source runtime must remain unchanged. Implementations must clone
+    /// every host-owned device queue and mutable backing state, bind the clone
+    /// to `execution_binding`, and use only the supplied private shared-memory
+    /// and wake descriptors. A runtime that cannot prove complete branch
+    /// isolation must reject the operation before QEMU creates a child.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the runtime is not at a
+    /// quiescent boundary, contains an unsupported live host endpoint, or
+    /// cannot reconstruct every attached device onto the private mapping.
+    #[cfg(target_os = "linux")]
+    fn clone_hot_fork_host_io_continuation(
+        &mut self,
+        _execution_binding: crucible::model::ContentHash,
+        _shmem_fd: std::os::fd::BorrowedFd<'_>,
+        _wake_fd: std::os::fd::BorrowedFd<'_>,
+        _region_len: u64,
+        _console: Option<crate::QemuHotForkChildConsoleObservation>,
+    ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "clone hot-fork host-I/O continuation",
+            "this host-I/O runtime does not implement branch-private continuation cloning",
+        ))
+    }
+
     /// Sets the aggregate number of fault events this runtime may stage.
     ///
     /// Production runtimes apply the plan-authored remaining event-record
@@ -217,6 +262,12 @@ pub trait QemuHostIoRuntime: Send {
         None
     }
 
+    /// Returns accumulated live block-service diagnostics, when configured.
+    #[cfg(target_os = "linux")]
+    fn block_io_diagnostics(&self) -> Option<crate::BlockIoDiagnosticsSnapshot> {
+        None
+    }
+
     /// Restores block state captured before an uncommitted scheduler boundary.
     ///
     /// # Errors
@@ -331,6 +382,25 @@ pub trait QemuHostIoRuntime: Send {
         wait: QemuAsyncWait,
         timeout: Duration,
     ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError>;
+
+    /// Renews only the polling deadline of an already-published quantum.
+    ///
+    /// The runtime must retain the pending quantum and all one-shot wake and
+    /// publication fences. Other wait classes cannot be renewed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when renewal is unsupported or
+    /// the new finite slice cannot be represented.
+    fn renew_advance_completion_poll(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "renew advance completion poll",
+            "runtime does not support renewal",
+        ))
+    }
 
     /// Wakes QEMU and waits for one lossless fault-command result.
     ///

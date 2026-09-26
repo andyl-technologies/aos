@@ -8,6 +8,7 @@
   glib,
   pkg-config,
   qemu-crucible,
+  sqlite,
 }: let
   version = "0.1.0";
   src = import ../tools/crucible/_source.nix {inherit lib;};
@@ -19,12 +20,13 @@
   };
   cargoArtifactContract = {
     family = "crucible-gpl-qemu-plugin-release-and-test";
-    nativeInputs = map toString [glib glib.dev glib.tools pkg-config qemu-crucible];
+    nativeInputs = map toString [glib glib.dev glib.tools pkg-config qemu-crucible sqlite];
     licenseScope = "GPL-2.0-only";
   };
+  cargoEnv = {LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";};
   cargoArtifacts = mkCargoArtifacts {
     pname = "crucible-qemu-plugin-artifacts";
-    inherit version cargoDeps cargoArtifactContract;
+    inherit version cargoDeps cargoArtifactContract cargoEnv;
     src = mkCargoDummySource {
       srcRoot = ../../crates;
       name = "crucible-qemu-plugin-dummy-source";
@@ -35,15 +37,15 @@
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin"
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin"
     ];
-    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible];
-    runtimeDeps = [glib qemu-crucible];
+    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible sqlite];
+    runtimeDeps = [glib qemu-crucible sqlite];
   };
 in
   mkCargoPackage {
     pname = "crucible-qemu-plugin";
     inherit version src;
 
-    inherit cargoDeps cargoArtifacts cargoArtifactContract;
+    inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
 
@@ -53,18 +55,17 @@ in
     installLibs = false;
     doCheck = true;
 
-    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible];
-    runtimeDeps = [glib qemu-crucible];
+    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible sqlite];
+    runtimeDeps = [glib qemu-crucible sqlite];
 
     preBuild = ''
       export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 
       export CRUCIBLE_QEMU_BUILD_ID=${qemu-crucible.passthru.qemuBuildIdentity}
-      export CRUCIBLE_QEMU_PATCH_SERIES_HASH=${qemu-crucible.passthru.patchSeriesHash}
+      export CRUCIBLE_QEMU_ATOMIC_PATCH_HASH=${qemu-crucible.passthru.atomicPatchHash}
       export CRUCIBLE_SHMEM_HEADER_HASH=${qemu-crucible.passthru.shmemHeaderHash}
-      header="${qemu-crucible}/include/qemu-plugin.h"
+      header="${qemu-crucible}/include/qemu/qemu-plugin.h"
       test -f "$header"
-      grep -q 'qemu_plugin_crucible_rr_switch_quantum' "$header"
       grep -q 'qemu_plugin_read_vcpu_regs' "$header"
       grep -q 'qemu_plugin_rr_cursor' "$header"
       grep -q 'qemu_plugin_inject_preemption' "$header"
@@ -113,8 +114,6 @@ in
       #error "qemu-crucible generated shmem header ABI does not match the Rust plugin"
       #endif
 
-      uint64_t (*crucible_probe_rr_switch_quantum)(void) =
-          qemu_plugin_crucible_rr_switch_quantum;
       int (*crucible_probe_read_vcpu_regs)(unsigned int, uint8_t *, size_t,
                                            size_t *, uint64_t *) =
           qemu_plugin_read_vcpu_regs;
@@ -185,7 +184,7 @@ in
       qemu_package=qemu-crucible
       qemu_build_id=${qemu-crucible.passthru.qemuBuildIdentity}
       qemu_sim_capability_marker=${qemu-crucible}/share/aos/crucible/qemu-build-identity.env
-      qemu_plugin_header=${qemu-crucible}/include/qemu-plugin.h
+      qemu_plugin_header=${qemu-crucible}/include/qemu/qemu-plugin.h
       qemu_plugin_api_version=$qemu_plugin_api_version
       qemu_plugin_abi=qemu-plugin-api-v$qemu_plugin_api_version
       shmem_abi_version=$shmem_abi_version

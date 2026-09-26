@@ -104,11 +104,19 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
         Ok(calibration)
     }
 
+    fn virtual_timer_fire_witness(
+        &mut self,
+    ) -> Result<Option<crate::node::QemuVirtualTimerFireWitness>, QemuNodeChannelError> {
+        self.record(QemuQuantumOperation::ReadNodeReport);
+        Ok(self.node_snapshot().virtual_timer_witness)
+    }
+
     fn start_quantum(
         &mut self,
         horizon: ExecutionHorizon,
+        stop_condition: crate::QemuQuantumStopCondition,
     ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
-        let pending = QemuQuantumShmemHotPath::start_quantum(self, horizon)
+        let pending = QemuQuantumShmemHotPath::start_quantum(self, horizon, stop_condition)
             .map_err(QemuNodeChannelError::from)?;
         Ok(match pending.completion_fence {
             Some(fence) => QemuNodePendingQuantum::new_with_completion_fence(pending, fence),

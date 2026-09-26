@@ -14,6 +14,8 @@ SECTIONS
   .cross : { *(.cross) }
   . = 0x40302000;
   .readonly_data : { *(.readonly_data) }
+  . = 0x403f0000;
+  .stack (NOLOAD) : { *(.stack) }
   . = 0x40400000;
   .page_tables : { *(.page_tables) }
 }

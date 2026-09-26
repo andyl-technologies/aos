@@ -60,7 +60,7 @@ Pin seeds in CI and in any command transcript intended for reproduction:
 
 ## Terminal conditions and budgets
 
-`run`, `resume`, and `fork` accept these terminal conditions:
+`run` and `resume` accept these terminal conditions:
 
 - `quiescence` — stop when the scheduler becomes quiescent; this is the default.
 - `virtual-time` — stop at the required `--max-virtual-time` budget.
@@ -76,7 +76,7 @@ ticks  tick  ns  us  ms  s
 No suffix means ticks. Fractional durations are not accepted.
 
 `run` also accepts `--max-quanta <n>` as an independent scheduler-work bound;
-`resume` and `fork` do not currently expose that flag:
+`resume` does not currently expose that flag:
 
 ```sh
 ./result/bin/crucible \
@@ -99,10 +99,8 @@ exploration bounds.
 `run --save-on <fail|always|never>` controls terminal checkpoint
 materialization. The default is `never`. `fail` materializes only a non-passing
 outcome; `always` materializes every outcome. The resulting checkpoint reference
-is reported only after its replayable closure and lookup index are stored in the
-DAG store. The `run-store` output row records their content hashes and store
-path. Use the dedicated `save` command when you need an exported
-`.crucible-savepoint` handle at a chosen boundary.
+is owned by the active server session. Use the dedicated `save` command when
+you need an exported `.crucible-savepoint` handle at a chosen boundary.
 
 ## Output formats
 
@@ -166,8 +164,8 @@ savepoint-<label>-<digest>.crucible-savepoint
 ```
 
 Keep a savepoint handle with the DAG store that produced it. A self-contained
-failure artifact embeds its critical reproduction material, but a store-backed
-component or direct checkpoint hash still requires the corresponding store.
+failure artifact embeds its critical reproduction material. Bare checkpoint
+hashes are not accepted as portable resume or fork inputs.
 
 ## Exit codes
 

@@ -20,7 +20,7 @@ pub(super) struct CliIdentity {
     pub(super) engine_abi: String,
     pub(super) artifact_abi: String,
     pub(super) qemu_build_id: String,
-    pub(super) qemu_patch_series_hash: String,
+    pub(super) qemu_atomic_patch_hash: String,
     pub(super) shmem_abi_version: String,
     pub(super) guest_host_protocol_version: String,
     pub(super) rpc_abi_version: String,
@@ -114,12 +114,12 @@ pub(super) fn verify_replay_identity(
 ) -> Result<(), CliError> {
     if actual != expected {
         return Err(CliError::Identity(format!(
-            "reproduction build identity mismatch: expected engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` patch-series `{}` shmem `{}` guest-host `{}` RPC `{}+{}` plugin `{}`, got engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` patch-series `{}` shmem `{}` guest-host `{}` RPC `{}+{}` plugin `{}`",
+            "reproduction build identity mismatch: expected engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` atomic-patch `{}` shmem `{}` guest-host `{}` RPC `{}+{}` plugin `{}`, got engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` atomic-patch `{}` shmem `{}` guest-host `{}` RPC `{}+{}` plugin `{}`",
             expected.engine_version,
             expected.engine_abi,
             expected.artifact_abi,
             expected.qemu_build_id,
-            expected.qemu_patch_series_hash,
+            expected.qemu_atomic_patch_hash,
             expected.shmem_abi_version,
             expected.guest_host_protocol_version,
             expected.rpc_abi_version,
@@ -129,7 +129,7 @@ pub(super) fn verify_replay_identity(
             actual.engine_abi,
             actual.artifact_abi,
             actual.qemu_build_id,
-            actual.qemu_patch_series_hash,
+            actual.qemu_atomic_patch_hash,
             actual.shmem_abi_version,
             actual.guest_host_protocol_version,
             actual.rpc_abi_version,
@@ -158,30 +158,30 @@ pub(super) fn expected_replay_identity(cli: &Cli) -> Result<CliIdentity, CliErro
 pub(super) fn expected_replay_identity_for_backend(
     backend: Option<&ResolvedLocalBackend>,
 ) -> CliIdentity {
-    let (qemu_build_id, qemu_patch_series_hash, shmem_abi_version, plugin_abi) = match backend {
+    let (qemu_build_id, qemu_atomic_patch_hash, shmem_abi_version, plugin_abi) = match backend {
         Some(ResolvedLocalBackend::Qemu {
             qemu_build_id,
-            qemu_patch_series_hash,
+            qemu_atomic_patch_hash,
             plugin_abi,
             shmem_abi_version,
             ..
         }) => (
             qemu_build_id.clone(),
-            qemu_patch_series_hash.clone(),
+            qemu_atomic_patch_hash.clone(),
             shmem_abi_version.clone(),
             plugin_abi.clone(),
         ),
         #[cfg(any(test, feature = "test-double"))]
         Some(ResolvedLocalBackend::Double) | None => (
             content_address_bytes(b"mock-backend-source-v1"),
-            content_address_bytes(b"mock-qemu-patch-series-v1"),
+            content_address_bytes(b"mock-qemu-atomic-patch-v1"),
             crucible::SHMEM_ABI_VERSION.to_string(),
             String::from("simdouble-mock-plugin-abi"),
         ),
         #[cfg(not(any(test, feature = "test-double")))]
         None => (
             content_address_bytes(b"unresolved-backend-source-v1"),
-            content_address_bytes(b"unresolved-qemu-patch-series-v1"),
+            content_address_bytes(b"unresolved-qemu-atomic-patch-v1"),
             crucible::SHMEM_ABI_VERSION.to_string(),
             String::from("unresolved-plugin-abi"),
         ),
@@ -191,7 +191,7 @@ pub(super) fn expected_replay_identity_for_backend(
         engine_abi: String::from("crucible-harness-e2e-v2"),
         artifact_abi: REPRODUCTION_ARTIFACT_SCHEMA.to_string(),
         qemu_build_id,
-        qemu_patch_series_hash,
+        qemu_atomic_patch_hash,
         shmem_abi_version,
         guest_host_protocol_version: current_guest_host_protocol_version(),
         rpc_abi_version: current_rpc_abi_version(),
@@ -307,7 +307,7 @@ pub(super) fn decode_reproduction_artifact(
                     ));
                 }
                 validate_digest("identity.qemu_build_id", &fields[4])?;
-                validate_required_field("identity.qemu_patch_series_hash", &fields[5])?;
+                validate_required_field("identity.qemu_atomic_patch_hash", &fields[5])?;
                 validate_required_field("identity.shmem_abi_version", &fields[6])?;
                 validate_required_field("identity.guest_host_protocol_version", &fields[7])?;
                 validate_required_field("identity.rpc_abi_version", &fields[8])?;
@@ -322,7 +322,7 @@ pub(super) fn decode_reproduction_artifact(
                         engine_abi: fields[2].clone(),
                         artifact_abi: fields[3].clone(),
                         qemu_build_id: fields[4].clone(),
-                        qemu_patch_series_hash: fields[5].clone(),
+                        qemu_atomic_patch_hash: fields[5].clone(),
                         shmem_abi_version: fields[6].clone(),
                         guest_host_protocol_version: fields[7].clone(),
                         rpc_abi_version: fields[8].clone(),
@@ -561,7 +561,7 @@ pub(super) fn canonical_artifact_text(artifact: &CliReproductionArtifact) -> Str
             &artifact.identity.engine_abi,
             &artifact.identity.artifact_abi,
             &artifact.identity.qemu_build_id,
-            &artifact.identity.qemu_patch_series_hash,
+            &artifact.identity.qemu_atomic_patch_hash,
             &artifact.identity.shmem_abi_version,
             &artifact.identity.guest_host_protocol_version,
             &artifact.identity.rpc_abi_version,
@@ -691,7 +691,7 @@ pub(super) fn mock_failure_reproduction_artifact_bytes_for_backend(
             &identity.engine_abi,
             &identity.artifact_abi,
             &identity.qemu_build_id,
-            &identity.qemu_patch_series_hash,
+            &identity.qemu_atomic_patch_hash,
             &identity.shmem_abi_version,
             &identity.guest_host_protocol_version,
             &identity.rpc_abi_version,

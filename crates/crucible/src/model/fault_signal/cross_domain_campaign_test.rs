@@ -525,7 +525,7 @@ fn event_node(id: &SignalId, schema: &SignalId, payload: u8) -> SignalNode {
             events: vec![SignalPoint {
                 coordinate: SignalCoordinate::Event {
                     parent: Box::new(SignalCoordinate::VirtualTime {
-                        nanos: CAMPAIGN_COORDINATE,
+                        ticks: CAMPAIGN_COORDINATE,
                     }),
                     sequence: 0,
                 },

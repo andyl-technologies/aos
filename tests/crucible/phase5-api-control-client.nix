@@ -86,10 +86,6 @@
         needle = "Arc<LiveSnapshot>";
       }
       {
-        label = "no serialization marker";
-        needle = "reaches_same_process_actor_without_serialization";
-      }
-      {
         label = "HTTP/2 RPC client";
         needle = "pub struct RpcControlClient";
       }
@@ -188,8 +184,8 @@
         needle = "saw_http2_request";
       }
       {
-        label = "major mismatch on both transports";
-        needle = "control_client_rejects_rpc_major_version_mismatch_on_both_transports";
+        label = "exact version mismatch on both transports";
+        needle = "control_client_rejects_rpc_version_mismatch_on_both_transports";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

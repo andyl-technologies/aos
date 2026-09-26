@@ -62,7 +62,7 @@ instruction.
   │    (in-VM cdylib)        │     │  crucible-device (disk / 9p / net         │
   │  crucible-guest (opt.)   │     │    I/O sub-nodes)                         │
   └───────────┬─────────────┘     └──────────────────────────────────────────┘
-              │  -plugin, -icount shift=N, sealed entropy boundary
+              │  -plugin, -icount shift=0, sealed entropy boundary
               ▼
   ┌──────────────────────────────────────────────────────────────────────────┐
   │  QEMU TCG  (patched, from-source; patches inert unless sim mode, INV-7)    │
@@ -254,7 +254,7 @@ the orientation.
 ```
 
 The hard determinism work concentrates at **L0–L2**. L0 supplies the
-deterministic primitives; L2 (with the AOS QEMU patch series,
+deterministic primitives; L2 (with the AOS atomic QEMU patch,
 [`11-qemu-patches.md`](11-qemu-patches.md)) eliminates entropy inside one VM; L1
 makes cross-VM injection a pure function of instruction-count time. L3 stays
 deterministic by construction (`INV-9`), and L4 only ever issues control at
@@ -333,13 +333,13 @@ altitude the strategy is two contracts plus per-layer gates.
 A single VM MUST produce a bit-identical instruction stream and architectural
 state for fixed inputs `(image, kernel cmdline, seed, injected-input sequence)`.
 This is achieved host-side (`G-2`): run under QEMU TCG with a fixed
-`-icount shift=N` (never `auto`), suppress wall-clock warp, seal every entropy
+`-icount shift=0`, suppress wall-clock warp, seal every entropy
 source (`RDRAND`/`RDSEED`/`RDTSC`, firmware entropy, any device that samples the
 host), and drive virtual time from the instruction counter (`INV-4`). The AOS
-QEMU patch series ([`11-qemu-patches.md`](11-qemu-patches.md)) supplies the
+atomic QEMU patch ([`11-qemu-patches.md`](11-qemu-patches.md)) supplies the
 sealing; the plugin ([`12-qemu-plugin.md`](12-qemu-plugin.md)) owns time control.
-*Gate:* `gate:single-vm-fingerprint` (periodic icount + register/memory hash
-matches across runs).
+*Gate:* `gate:single-vm-fingerprint` (the authenticated on-demand icount +
+register/memory hash stream matches across runs).
 
 ### Contract B — injection determinism
 
@@ -469,9 +469,9 @@ reading order is in the [`README.md`](README.md).
 | Spatial graph (ScenarioDef = config #0) | [`06-spatial-graph.md`](06-spatial-graph.md) |
 | Temporal graph (checkpoint DAG, CoW, replay oracle) | [`07-temporal-graph.md`](07-temporal-graph.md) |
 | Cross-node scheduling (quantum, horizon, lookahead, total order) | [`08-scheduling.md`](08-scheduling.md) |
-| Virtual time / icount (shift mapping, fixed N) | [`09-virtual-time-icount.md`](09-virtual-time-icount.md) |
+| Virtual time (exact picosecond ticks, fixed 1,000 ticks/ns) | [`09-virtual-time-icount.md`](09-virtual-time-icount.md) |
 | QEMU integration (host side) | [`10-qemu-integration.md`](10-qemu-integration.md) |
-| QEMU patch series (sim mode, inertness) | [`11-qemu-patches.md`](11-qemu-patches.md) |
+| atomic QEMU patch (sim mode, inertness) | [`11-qemu-patches.md`](11-qemu-patches.md) |
 | QEMU plugin (in-VM cdylib, time control, callbacks) | [`12-qemu-plugin.md`](12-qemu-plugin.md) |
 | Shared-memory co-sim ABI | [`13-shmem-abi.md`](13-shmem-abi.md) |
 | IPC protocol | [`14-protocol.md`](14-protocol.md) |

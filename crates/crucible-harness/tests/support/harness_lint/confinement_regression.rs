@@ -1,10 +1,10 @@
 //! Regression fixtures for the nondeterminism confinement checks.
 //!
 //! These exercises assert that the parent confinement scan both rejects host
-//! nondeterminism reaching state/route boundaries and accepts the sanctioned
-//! paths (supervision diagnostics, the `SessionCommand::step` validated-command
-//! constructor), so it does not drift into over- or under-reporting as the
-//! boundary crates evolve.
+//! nondeterminism reaching state/route boundaries in the same source and
+//! accepts the sanctioned paths (supervision diagnostics, the
+//! `SessionCommand::step` validated-command constructor), so it does not drift
+//! into over- or under-reporting as the boundary crates evolve.
 
 use std::error::Error;
 use std::path::Path;
@@ -41,38 +41,52 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
         );
     }
 
+    let same_file_route_findings = package_source_confinement_findings(
+        "crucible-cli",
+        Path::new("crucible-cli"),
+        &source_pairs(&[(
+            "crucible-cli/src/main.rs",
+            r#"
+                use crucible_session::SessionDriver;
+                use crucible_api::ControlClient;
+
+                fn route(client: ControlClient, driver: SessionDriver<()>) {
+                    let stamp = std::time::SystemTime::now();
+                    submit(client, driver, stamp);
+                }
+            "#,
+        )]),
+    );
+    if !finding_contains(
+        &same_file_route_findings,
+        "host nondeterminism reaches API/session route",
+    ) {
+        failures.push(
+            "harness-lint confinement regression failed to reject same-file API/session ingress"
+                .to_string(),
+        );
+    }
+
     let split_findings = package_source_confinement_findings(
         "crucible-cli",
         Path::new("crucible-cli"),
         &source_pairs(&[
             (
-                "crucible-cli/src/main.rs",
-                r#"
-                    fn host_stamp() {
-                        let stamp = std::time::SystemTime::now();
-                        consume(stamp);
-                    }
-                "#,
+                "crucible-cli/src/host_boundary.rs",
+                "fn host_stamp() { consume(std::time::SystemTime::now()); }",
             ),
             (
                 "crucible-cli/src/session.rs",
-                r#"
-                    use crucible_session::SessionDriver;
-                    use crucible_api::ControlClient;
-
-                    fn route(client: ControlClient, driver: SessionDriver<()>) {
-                        submit(client, driver);
-                    }
-                "#,
+                "fn route(driver: crucible_session::SessionDriver<()>) { consume(driver); }",
             ),
         ]),
     );
-    if !finding_contains(
+    if finding_contains(
         &split_findings,
         "host nondeterminism reaches API/session route",
     ) {
         failures.push(
-            "harness-lint confinement regression failed to reject split-module State ingress"
+            "harness-lint confinement regression inferred cross-module data flow from unrelated identifiers"
                 .to_string(),
         );
     }
@@ -188,14 +202,17 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
 
     let direct_manifest: Value = r#"
         [package]
-        name = "crucible-daemon"
+        name = "crucible-debug-gateway"
 
         [dependencies]
         engine = { package = "crucible", path = "../crucible" }
     "#
     .parse()?;
-    let direct_findings =
-        boundary_manifest_findings("crucible-daemon", &direct_manifest, &toml::map::Map::new());
+    let direct_findings = boundary_manifest_findings(
+        "crucible-debug-gateway",
+        &direct_manifest,
+        &toml::map::Map::new(),
+    );
     if !finding_contains(&direct_findings, "may not route host nondeterminism") {
         failures.push(
             "harness-lint confinement regression failed to reject direct engine dependency"
@@ -203,9 +220,26 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
         );
     }
 
-    let workspace_manifest: Value = r#"
+    let daemon_manifest: Value = r#"
         [package]
         name = "crucible-daemon"
+
+        [dependencies]
+        engine = { package = "crucible", path = "../crucible" }
+    "#
+    .parse()?;
+    let daemon_findings =
+        boundary_manifest_findings("crucible-daemon", &daemon_manifest, &toml::map::Map::new());
+    if finding_contains(&daemon_findings, "may not route host nondeterminism") {
+        failures.push(
+            "harness-lint confinement regression rejected the RFC-0020 daemon engine driver"
+                .to_string(),
+        );
+    }
+
+    let workspace_manifest: Value = r#"
+        [package]
+        name = "crucible-debug-gateway"
 
         [dependencies]
         engine = { workspace = true }
@@ -220,7 +254,7 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
         )])),
     );
     let workspace_findings = boundary_manifest_findings(
-        "crucible-daemon",
+        "crucible-debug-gateway",
         &workspace_manifest,
         &workspace_dependencies,
     );

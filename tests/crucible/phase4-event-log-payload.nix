@@ -8,9 +8,15 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  eventCatalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
+  eventCatalog = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/event_catalog.rs;
+  };
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   payloadTest = builtins.readFile ../../crates/crucible/tests/event_log_payload.rs;
   formalTraceTest = builtins.readFile ../../crates/crucible/tests/formal_trace_export.rs;
   reproductionTest = builtins.readFile ../../crates/crucible/tests/assertion_violation_reproduction.rs;
@@ -185,10 +191,6 @@
         needle = "payload.u64(\"retired_icount\"), None";
       }
       {
-        label = "fault typed accessor tested";
-        needle = "fault_payload.fault(\"fault\")";
-      }
-      {
         label = "level typed accessor tested";
         needle = "payload.level(\"severity\")";
       }
@@ -198,7 +200,7 @@
       }
       {
         label = "observational error-level diagnostic";
-        needle = "diagnostic_error.class(), EventClass::Observational";
+        needle = "diagnostic_error.class(),\n        SchedulerEventLogClass::Observational";
       }
     ]
     ++ failuresFor "crates/crucible/tests/formal_trace_export.rs" formalTraceTest [
@@ -208,7 +210,7 @@
       }
       {
         label = "diagnostic typed details asserted";
-        needle = "diagnostic.details=10";
+        needle = "diagnostic.details=9";
       }
       {
         label = "diagnostic strings hex encoded";

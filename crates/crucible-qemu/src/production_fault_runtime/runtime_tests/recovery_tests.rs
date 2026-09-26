@@ -38,9 +38,13 @@ fn live_host_fault_event_drain_reaches_production_authentication() {
     runtime
         .update_qemu_action_ledger(std::slice::from_ref(&action), vec![(action.id(), commit)])
         .unwrap_or_else(|error| panic!("authenticated action should enter the ledger: {error}"));
+    let emission_coordinate = FaultCoordinate {
+        virtual_ticks: event.header.observed_icount,
+        retired_instructions: None,
+    };
 
     let intents = runtime
-        .preview_node_lifecycle_intents(action.coordinate, 0, &mut nodes)
+        .preview_node_lifecycle_intents(emission_coordinate, 0, &mut nodes)
         .unwrap_or_else(|error| panic!("event preview should authenticate: {error}"));
     assert_eq!(intents.len(), 1);
     assert_eq!(intents[0].action, action.id());
@@ -65,14 +69,14 @@ fn live_host_fault_event_drain_reaches_production_authentication() {
     );
 
     runtime
-        .drain_qemu_observations(&mut nodes, action.coordinate, 0)
+        .drain_qemu_observations(&mut nodes, emission_coordinate, 0)
         .unwrap_or_else(|error| panic!("production host drain should authenticate: {error}"));
 
     assert_eq!(runtime.pending_qemu_events.len(), 0);
     assert_eq!(runtime.pending_qemu_observations.len(), 1);
     assert_eq!(
         runtime.pending_qemu_observations[0].coordinate,
-        action.coordinate
+        emission_coordinate
     );
     assert_eq!(runtime.pending_node_lifecycle.len(), 1);
     assert_eq!(
@@ -113,7 +117,7 @@ fn production_checkpoints_referenced_storage_recovery_events() {
                 kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
                     events: vec![SignalPoint {
                         coordinate: SignalCoordinate::Event {
-                            parent: Box::new(SignalCoordinate::VirtualTime { nanos: 0 }),
+                            parent: Box::new(SignalCoordinate::VirtualTime { ticks: 0 }),
                             sequence: 0,
                         },
                         sequence: 0,
@@ -134,7 +138,7 @@ fn production_checkpoints_referenced_storage_recovery_events() {
                 kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
                     events: vec![SignalPoint {
                         coordinate: SignalCoordinate::Event {
-                            parent: Box::new(SignalCoordinate::VirtualTime { nanos: 5 }),
+                            parent: Box::new(SignalCoordinate::VirtualTime { ticks: 5 }),
                             sequence: 0,
                         },
                         sequence: 0,
@@ -221,19 +225,19 @@ fn production_checkpoints_referenced_storage_recovery_events() {
     let first = runtime
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
             &mut nodes,
         )
         .unwrap_or_else(|error| panic!("initial boundary should execute: {error}"));
-    assert_eq!(first.next_wakeup_nanos, Some(5));
+    assert_eq!(first.next_wakeup_ticks, Some(5));
     assert!(first.emitted_events.is_empty());
     let recovered = runtime
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 5,
+                virtual_ticks: 5,
                 retired_instructions: None,
             },
             0,
@@ -308,7 +312,7 @@ fn rejected_qemu_event_validation_retains_the_raw_event() {
     let result = runtime.drain_qemu_observations(
         &mut nodes,
         FaultCoordinate {
-            virtual_nanos: 1,
+            virtual_ticks: 1,
             retired_instructions: Some(1),
         },
         0,

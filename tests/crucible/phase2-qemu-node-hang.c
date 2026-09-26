@@ -20,7 +20,7 @@ static bool finished;
 static bool runnable_scope;
 static bool simultaneous_scope;
 static bool initial_time_advance_started;
-static uint64_t initial_virtual_time;
+static uint64_t initial_tick;
 static uint8_t *upsert_payload;
 static size_t upsert_payload_len;
 static uint8_t *remove_payload;
@@ -31,9 +31,7 @@ static uint8_t *secondary_remove_payload;
 static size_t secondary_remove_payload_len;
 static struct qemu_plugin_crucible_fault_command command;
 static uint64_t activation_deadline;
-static uint64_t activation_raw_icount;
 static uint64_t secondary_activation_deadline;
-static uint64_t secondary_activation_raw_icount;
 static uint64_t composition_observed_icount;
 
 static uint16_t get_u16(const uint8_t *bytes)
@@ -220,22 +218,22 @@ static void poll_event(uint8_t evidence[HANG_EVIDENCE_BUFFER_BYTES],
 
 static void validate_activation(uint32_t expected_scope,
                                 uint64_t expected_timeout,
-                                uint64_t *deadline,
-                                uint64_t *raw_icount)
+                                uint64_t *deadline)
 {
     struct qemu_plugin_crucible_fault_event event;
     uint8_t evidence[HANG_EVIDENCE_BUFFER_BYTES];
 
     poll_event(evidence, &event);
-    if (memcmp(evidence, "CRUCHNG1", 8) != 0 ||
+    if (memcmp(evidence, "CRUCHNG2", 8) != 0 ||
+        get_u16(evidence + 8) != 2 ||
         get_u16(evidence + 10) != 1 ||
         get_u32(evidence + 12) != expected_scope ||
+        event.observed_icount != get_u64(evidence + 32) ||
         get_u64(evidence + 40) - get_u64(evidence + 24) !=
-            expected_timeout) {
+            expected_timeout * CRUCIBLE_SHMEM_TICKS_PER_NS) {
         fail("hang activation evidence was malformed");
     }
     *deadline = get_u64(evidence + 40);
-    *raw_icount = get_u64(evidence + 56);
 }
 
 static void validate_watchdog(void)
@@ -244,13 +242,16 @@ static void validate_watchdog(void)
     uint8_t evidence[HANG_EVIDENCE_BUFFER_BYTES];
 
     poll_event(evidence, &event);
-    if (memcmp(evidence, "CRUCLIF1", 8) != 0 ||
+    /* Deferred reset may publish its event after the downtime target. */
+    if (memcmp(evidence, "CRUCLIF2", 8) != 0 ||
+        get_u16(evidence + 8) != 5 ||
         get_u16(evidence + 10) != 3 || get_u32(evidence + 12) != 1 ||
         get_u32(evidence + 16) != 3 || get_u32(evidence + 20) != 1 ||
         get_u64(evidence + 32) != activation_deadline ||
         get_u64(evidence + 40) != WATCHDOG_DOWNTIME_NANOS ||
-        event.observed_icount != activation_raw_icount +
-            (runnable_scope ? WATCHDOG_TIMEOUT_NANOS : 0)) {
+        event.observed_icount < get_u64(evidence + 96) ||
+        get_u64(evidence + 96) - get_u64(evidence + 32) !=
+            WATCHDOG_DOWNTIME_NANOS * CRUCIBLE_SHMEM_TICKS_PER_NS) {
         fail("watchdog reset was not applied at the exact hang deadline");
     }
 }
@@ -263,10 +264,14 @@ static void validate_recovery(uint32_t expected_scope,
     uint8_t evidence[HANG_EVIDENCE_BUFFER_BYTES];
 
     poll_event(evidence, &event);
-    if (memcmp(evidence, "CRUCHNG1", 8) != 0 ||
+    if (memcmp(evidence, "CRUCHNG2", 8) != 0 ||
+        get_u16(evidence + 8) != 2 ||
         get_u16(evidence + 10) != 2 ||
         get_u32(evidence + 12) != expected_scope ||
-        get_u64(evidence + 24) + expected_timeout != expected_deadline) {
+        event.observed_icount != get_u64(evidence + 32) ||
+        get_u64(evidence + 24) +
+            expected_timeout * CRUCIBLE_SHMEM_TICKS_PER_NS !=
+            expected_deadline) {
         fail("hang recovery evidence was malformed");
     }
 }
@@ -278,13 +283,15 @@ static void validate_composition(void)
 
     poll_event(evidence, &event);
     composition_observed_icount = event.observed_icount;
-    if (memcmp(evidence, "CRUCWDC1", 8) != 0 ||
+    if (memcmp(evidence, "CRUCWDC2", 8) != 0 ||
+        get_u16(evidence + 8) != 2 ||
         get_u16(evidence + 10) != 3 || get_u16(evidence + 12) != 5 ||
         get_u32(evidence + 16) != 2 || get_u32(evidence + 20) != 3 ||
         get_u32(evidence + 24) != 2 || get_u32(evidence + 28) != 2 ||
         get_u64(evidence + 32) != 12 || get_u64(evidence + 40) != 12 ||
         get_u64(evidence + 48) != secondary_activation_deadline ||
         get_u64(evidence + 56) != secondary_activation_deadline ||
+        event.observed_icount != get_u64(evidence + 56) ||
         evidence[64] != 0x42 || evidence[96] != 0x41) {
         fail("simultaneous watchdog composition evidence was malformed");
     }
@@ -306,10 +313,15 @@ static void validate_composed_lifecycle(void)
     device_policy = get_u32(evidence + 16);
     virtual_before = get_u64(evidence + 32);
     downtime = get_u64(evidence + 40);
-    if (memcmp(evidence, "CRUCLIF1", 8) != 0 || transition != 5 ||
+    /* The power-cycle event may follow the exact downtime target. */
+    if (memcmp(evidence, "CRUCLIF2", 8) != 0 ||
+        get_u16(evidence + 8) != 5 || transition != 5 ||
         volatile_policy != 2 || device_policy != 2 ||
         virtual_before != activation_deadline || downtime != 12 ||
-        event.observed_icount != composition_observed_icount) {
+        composition_observed_icount != virtual_before ||
+        get_u64(evidence + 96) - virtual_before !=
+            downtime * CRUCIBLE_SHMEM_TICKS_PER_NS ||
+        event.observed_icount < get_u64(evidence + 96)) {
         fprintf(stderr,
                 "composed lifecycle: magic=%.8s transition=%u volatile=%u "
                 "device=%u virtual=%" PRIu64 "/%" PRIu64 " downtime=%" PRIu64
@@ -377,24 +389,28 @@ static void completion_simultaneous(
     }
     if (result->status == CRUCIBLE_FAULT_STATUS_APPLIED &&
         result->command_sequence == 2) {
-        validate_activation(2, 64, &secondary_activation_deadline,
-                            &secondary_activation_raw_icount);
-        submit_prepare(3, result->observed_icount + 16, 0x41,
+        validate_activation(2, 64, &secondary_activation_deadline);
+        submit_prepare(3,
+                       result->observed_icount +
+                           16 * CRUCIBLE_SHMEM_TICKS_PER_NS,
+                       0x41,
                        secondary_upsert_payload,
                        secondary_upsert_payload_len);
         return;
     }
     if (result->status == CRUCIBLE_FAULT_STATUS_PREPARED &&
         result->command_sequence == 3) {
-        submit_commit(4, result->observed_icount + 16, result->before_hash,
+        submit_commit(4,
+                      result->observed_icount +
+                          16 * CRUCIBLE_SHMEM_TICKS_PER_NS,
+                      result->before_hash,
                       secondary_upsert_payload,
                       secondary_upsert_payload_len);
         return;
     }
     if (result->status == CRUCIBLE_FAULT_STATUS_APPLIED &&
         result->command_sequence == 4) {
-        validate_activation(1, 32, &activation_deadline,
-                            &activation_raw_icount);
+        validate_activation(1, 32, &activation_deadline);
         if (activation_deadline != secondary_activation_deadline) {
             fail("simultaneous watchdog deadlines diverged");
         }
@@ -469,8 +485,7 @@ static void completion(void *opaque)
                    result.observed_icount);
         validate_activation(runnable_scope ? 2 : 1,
                             WATCHDOG_TIMEOUT_NANOS,
-                            &activation_deadline,
-                            &activation_raw_icount);
+                            &activation_deadline);
         command.command_flags = CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY;
         command.command_sequence = 3;
         command.target_icount = result.observed_icount + 64;
@@ -549,8 +564,8 @@ static void submit_initial_command(void)
 static void time_advanced(int status, int64_t time, void *opaque)
 {
     (void)opaque;
-    if (status != 0 || time < 0 || (uint64_t)time != initial_virtual_time) {
-        fail("initial virtual-time bias failed");
+    if (status != 0 || time < 0 || (uint64_t)time != initial_tick) {
+        fail("initial tick advance failed");
     }
     submit_initial_command();
 }
@@ -563,8 +578,8 @@ static void vcpu_initialized(unsigned int vcpu_index, void *userdata)
         return;
     }
     initial_time_advance_started = true;
-    if (qemu_plugin_advance_time_ns(initial_virtual_time) != 0) {
-        fail("runnable hang could not queue virtual-time bias");
+    if (qemu_plugin_advance_time_ticks(initial_tick) != 0) {
+        fail("runnable hang could not queue tick advance");
     }
 }
 
@@ -593,15 +608,15 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
 
         if ((strcmp(argv[1], "scope=vcpu1") != 0 &&
              strcmp(argv[1], "scope=simultaneous") != 0) ||
-            !g_str_has_prefix(argv[2], "initial_virtual_time=")) {
+            !g_str_has_prefix(argv[2], "initial_tick=")) {
             fail("runnable hang plugin arguments are invalid");
         }
         runnable_scope = true;
         simultaneous_scope = strcmp(argv[1], "scope=simultaneous") == 0;
-        initial_virtual_time = g_ascii_strtoull(
-            argv[2] + strlen("initial_virtual_time="), &end, 10);
-        if (!end || *end != '\0' || initial_virtual_time == 0 ||
-            initial_virtual_time > INT64_MAX) {
+        initial_tick = g_ascii_strtoull(
+            argv[2] + strlen("initial_tick="), &end, 10);
+        if (!end || *end != '\0' || initial_tick == 0 ||
+            initial_tick > INT64_MAX) {
             fail("initial virtual time is invalid");
         }
     }

@@ -2,10 +2,10 @@
 //!
 //! A [`CrucibleShmemNetworkDevice`] attaches a stock virtio-net front-end to an
 //! otherwise unconnected emulated QEMU hub. The carried
-//! `0020-crucible-net-tx-callback` patch diverts guest TX frames to the loaded
-//! Crucible plugin before the hub sees them, and the plugin delivers scheduled
-//! RX frames through the direct, backpressure-reporting export provided by
-//! `0009-crucible-net-deterministic`.
+//! atomic Crucible integration patch diverts guest TX frames to the loaded
+//! plugin before the hub sees them. The same patch provides the direct,
+//! backpressure-reporting export through which the plugin delivers scheduled
+//! RX frames.
 //!
 //! The hub has no host network backend. It exists only to give the NIC the peer
 //! QEMU's queue API requires, so no host socket, TAP interface, helper, or user
@@ -67,13 +67,6 @@ impl CrucibleShmemNetworkDevice {
         self
     }
 
-    /// Returns the device attached to a different emulated hub.
-    #[must_use]
-    pub const fn with_hub_id(mut self, hub_id: u32) -> Self {
-        self.hub_id = hub_id;
-        self
-    }
-
     /// Returns the hostless hub-port netdev identifier.
     #[must_use]
     pub fn netdev_id(&self) -> &str {
@@ -105,8 +98,12 @@ impl CrucibleShmemNetworkDevice {
             format!("hubport,id={},hubid={}", self.netdev_id, self.hub_id),
             "-device".to_owned(),
             format!(
-                "virtio-net-pci,netdev={},id={},mac={}",
-                self.netdev_id, self.device_id, self.mac
+                "virtio-net-pci,netdev={},id={},mac={},bus={},addr={}",
+                self.netdev_id,
+                self.device_id,
+                self.mac,
+                super::QEMU_PCI_BUS,
+                super::QEMU_NETWORK_PCI_ADDRESS,
             ),
         ]);
     }
@@ -182,7 +179,7 @@ mod tests {
                 "-netdev",
                 "hubport,id=crucible-netdev0,hubid=0",
                 "-device",
-                "virtio-net-pci,netdev=crucible-netdev0,id=crucible-net-device0,mac=52:54:00:12:34:56",
+                "virtio-net-pci,netdev=crucible-netdev0,id=crucible-net-device0,mac=52:54:00:12:34:56,bus=pcie.0,addr=0x5",
             ]
         );
         assert!(
@@ -194,10 +191,10 @@ mod tests {
 
     #[test]
     fn attachment_identity_covers_every_field() {
-        let device = CrucibleShmemNetworkDevice::new()
+        let mut device = CrucibleShmemNetworkDevice::new()
             .with_ids("net-a", "nic-a")
-            .with_mac("52:54:00:aa:bb:cc")
-            .with_hub_id(7);
+            .with_mac("52:54:00:aa:bb:cc");
+        device.hub_id = 7;
         let mut lines = Vec::new();
         device.append_hash_material(&mut lines);
         assert_eq!(

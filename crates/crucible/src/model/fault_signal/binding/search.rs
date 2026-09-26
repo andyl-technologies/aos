@@ -28,9 +28,9 @@ pub enum BindingSearchPolicy {
     /// Mutates a bounded normalized-trace interval.
     MutateTraceWindow {
         /// First included virtual nanosecond.
-        start_nanos: u64,
+        start_ticks: u64,
         /// Exclusive end virtual nanosecond.
-        end_nanos: u64,
+        end_ticks: u64,
         /// Finite concrete mutation schedules considered by search.
         candidates: Vec<TraceWindowMaterialization>,
         /// Maximum changed samples.
@@ -123,13 +123,13 @@ impl BindingSearchPolicy {
                 validate_candidates(candidates)
             }
             Self::MutateTraceWindow {
-                start_nanos,
-                end_nanos,
+                start_ticks,
+                end_ticks,
                 candidates,
                 maximum_mutations,
             } => {
                 candidates.sort();
-                if *start_nanos >= *end_nanos
+                if *start_ticks >= *end_ticks
                     || maximum_mutations.get() > HARD_SEARCH_CHOICES_PER_STATE
                     || validate_candidates(candidates).is_err()
                     || candidates.iter().any(|candidate| {
@@ -156,8 +156,8 @@ impl BindingSearchPolicy {
                                     >= (pair[1].coordinate, pair[1].event_sequence)
                             })
                             || candidate.samples.iter().any(|sample| {
-                                sample.coordinate < *start_nanos
-                                    || sample.coordinate >= *end_nanos
+                                sample.coordinate < *start_ticks
+                                    || sample.coordinate >= *end_ticks
                                     || sample.value.value_type().as_ref()
                                         != trace_shape.map(|shape| &shape.value_type)
                             })

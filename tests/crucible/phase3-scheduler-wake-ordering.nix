@@ -58,11 +58,11 @@
       }
       {
         label = "combined publish API";
-        needle = "pub fn publish_scheduler_inputs_and_ceiling";
+        needle = "pub fn publish_scheduler_inputs_and_advance";
       }
       {
         label = "borrowed inbox publish API";
-        needle = "pub fn publish_scheduler_inbox_and_ceiling";
+        needle = "pub fn publish_scheduler_inbox_and_advance";
       }
       {
         label = "ceiling prevalidation before enqueue";
@@ -94,7 +94,7 @@
       }
       {
         label = "ceiling release store";
-        needle = ".store(ceiling.max_advance_icount, Ordering::Release);";
+        needle = ".store(max_advance_icount, Ordering::Release);";
       }
       {
         label = "prevalidated final publish";
@@ -124,7 +124,7 @@
       }
       {
         label = "adapter uses combined shmem API";
-        needle = "region.publish_scheduler_inputs_and_ceiling(dst_slot, pending_inputs, ceiling)";
+        needle = "region.publish_scheduler_inputs_and_advance(";
       }
       {
         label = "handoff error type";
@@ -184,7 +184,7 @@
       }
       {
         label = "QEMU production ordered handoff call";
-        needle = ".publish_scheduler_inbox_and_ceiling(";
+        needle = ".publish_scheduler_inbox_and_advance(";
       }
       {
         label = "QEMU routes VM slot to handoff";

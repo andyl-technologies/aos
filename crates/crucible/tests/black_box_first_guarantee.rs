@@ -11,7 +11,7 @@ use crucible::{
     LinkDef, LinkId, LogLevel, MarkerId, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent,
     Plan, Predicate, Properties, Property, ReadyPoint, RegexProgram,
     SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerLivenessScenario, Seed,
-    Shift, SimDuration, SimInstant, SingleScheduler, TimerId, TriggerActionState, VirtualTime,
+    SimDuration, SimInstant, SingleScheduler, TimerId, TriggerActionState, VirtualTime,
     VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
@@ -52,11 +52,7 @@ fn icount(retired: u64) -> Icount {
 }
 
 fn duration(nanos: u64) -> SimDuration {
-    SimDuration { nanos }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift { bits }
+    SimDuration { ticks: nanos }
 }
 
 fn ready_node(name: &str, white_box: WhiteBoxPolicy) -> WorldNode {
@@ -68,7 +64,6 @@ fn ready_node(name: &str, white_box: WhiteBoxPolicy) -> WorldNode {
         ready_point: ReadyPoint::FixedIcount { icount: icount(1) },
         white_box,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -94,9 +89,8 @@ fn world_with_policy(white_box: WhiteBoxPolicy) -> World {
 fn scenario(name: &str, world: &World) -> SchedulerLivenessScenario {
     SchedulerLivenessScenario::from_canonical_material(
         name,
-        shift(0),
         16,
-        SimInstant { nanos: 100 },
+        SimInstant { ticks: 100 },
         Vec::new(),
         Vec::new(),
     )

@@ -7,6 +7,7 @@
   buildPackages,
   grep,
   crucible-controller,
+  sqlite,
 }: let
   version = "0.1.0";
   cargoDepsHash = import ./crucible/_cargo-deps-hash.nix;
@@ -33,9 +34,9 @@ in
     cargoTestFlags = "-p crucible-cas";
     doCheck = true;
     buildDeps =
-      [buildPackages.grep]
+      [buildPackages.grep buildPackages.pkg-config sqlite]
       ++ lib.optionals isDarwinCross [buildPackages.crucible-fleet-store];
-    runtimeDeps = [];
+    runtimeDeps = [sqlite];
 
     postInstall = ''
       test -x "$out/bin/crucible-fleet-store"

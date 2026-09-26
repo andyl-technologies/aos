@@ -5,11 +5,6 @@ use super::*;
 /// An engine-spine error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EngineError {
-    /// The operation's signature is fixed but its behavior is not implemented.
-    NotImplemented {
-        /// The operation whose implementation is deferred.
-        operation: &'static str,
-    },
     /// A cached checkpoint is not a fat loadable snapshot.
     CheckpointNotLoadable {
         /// The checkpoint that cannot be loaded.
@@ -42,7 +37,7 @@ pub enum EngineError {
         /// Stable reason for the topology rejection.
         reason: &'static str,
     },
-    /// A fat checkpoint does not carry enough materialized state for `loadvm`.
+    /// A fat checkpoint does not carry enough materialized state for descriptor restore.
     CheckpointMaterializedStateIncomplete {
         /// The checkpoint whose materialized state is incomplete.
         checkpoint: ContentHash,
@@ -105,13 +100,6 @@ pub enum EngineError {
         /// The undeclared or non-VM owner.
         owner: NodeId,
     },
-    /// A world I/O node configures an invalid virtual-clock shift.
-    WorldIoNodeClockShiftTooLarge {
-        /// The invalid I/O node.
-        node: NodeId,
-        /// The invalid shift.
-        shift: u8,
-    },
     /// A link's one-way base latency is below the model floor.
     WorldLinkLatencyBelowFloor {
         /// The invalid link.
@@ -168,15 +156,6 @@ pub enum EngineError {
     WorldNodeMemoryMibZero {
         /// The invalid node.
         node: NodeId,
-    },
-    /// A world node has an unsupported fixed icount shift.
-    WorldNodeIcountShiftTooLarge {
-        /// The invalid node.
-        node: NodeId,
-        /// The configured shift value.
-        shift: u8,
-        /// The maximum legal shift value.
-        maximum: u8,
     },
     /// A world node selected an unsupported reserved workload value.
     WorldNodeUnsupportedWorkload {
@@ -572,9 +551,6 @@ pub enum EngineError {
 impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotImplemented { operation } => {
-                write!(f, "{operation} is not implemented yet")
-            }
             Self::CheckpointNotLoadable { kind, .. } => {
                 write!(
                     f,
@@ -620,9 +596,6 @@ impl fmt::Display for EngineError {
             Self::WorldIoNodeUnknownOwner { .. } => {
                 f.write_str("world I/O node references an undeclared or non-VM owner node")
             }
-            Self::WorldIoNodeClockShiftTooLarge { .. } => {
-                f.write_str("world I/O node clock shift must be less than 64")
-            }
             Self::WorldLinkLatencyBelowFloor { .. } => {
                 f.write_str("world link latency is below the minimum floor")
             }
@@ -649,9 +622,6 @@ impl fmt::Display for EngineError {
             }
             Self::WorldNodeMemoryMibZero { .. } => {
                 f.write_str("world node memory size must be at least one MiB")
-            }
-            Self::WorldNodeIcountShiftTooLarge { .. } => {
-                f.write_str("world node fixed icount shift is outside the legal range")
             }
             Self::WorldNodeUnsupportedWorkload { value, .. } => {
                 write!(f, "world node workload value {value} is unsupported")
@@ -1397,8 +1367,10 @@ pub(super) fn replayed_node_icounts(
 pub(super) fn decision_touched_nodes(decision: &Decision) -> Option<BTreeSet<NodeId>> {
     match decision {
         Decision::Preemption(preemption) => Some(BTreeSet::from([preemption.node.clone()])),
-        Decision::AppRandom(random) => Some(BTreeSet::from([random.node.clone()])),
-        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => None,
+        Decision::DeliveryOrder(_)
+        | Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::Selection(_) => None,
     }
 }
 
@@ -1422,13 +1394,10 @@ pub(super) fn decisions_are_independent(
 }
 
 pub(super) fn decisions_have_commuting_resources(left: &Decision, right: &Decision) -> bool {
-    match (left, right) {
+    matches!(
+        (left, right),
         (Decision::Preemption(_), Decision::Preemption(_))
-        | (Decision::Preemption(_), Decision::AppRandom(_))
-        | (Decision::AppRandom(_), Decision::Preemption(_)) => true,
-        (Decision::AppRandom(left), Decision::AppRandom(right)) => left.stream != right.stream,
-        _ => false,
-    }
+    )
 }
 
 pub(super) fn decision_reduction_order_key(decision: &Decision) -> ContentHash {
@@ -1466,16 +1435,96 @@ pub(super) fn partial_order_canonical_representative(
     let mut swapped = true;
     while swapped {
         swapped = false;
+        // A typed selection binds the next preemption; any later selection
+        // names its exact parent. A bare swap cannot break either relationship.
         for index in 1..decisions.len() {
             let left = &decisions[index - 1];
             let right = &decisions[index];
             if right.reduction_order_key() < left.reduction_order_key()
                 && right.is_independent_from(left, policy)
+                && !matches!(
+                    index.checked_sub(2).and_then(|prior| decisions.get(prior)),
+                    Some(Decision::Selection(_))
+                )
+                && !decisions[index + 1..]
+                    .iter()
+                    .any(|decision| matches!(decision, Decision::Selection(_)))
             {
                 decisions.swap(index - 1, index);
                 changed = true;
                 swapped = true;
             }
+        }
+        for index in 0..decisions.len().saturating_sub(3) {
+            if decisions[index + 4..]
+                .iter()
+                .any(|decision| matches!(decision, Decision::Selection(_)))
+            {
+                continue;
+            }
+            let [
+                Decision::Selection(first_selection),
+                first @ Decision::Preemption(_),
+                Decision::Selection(second_selection),
+                second @ Decision::Preemption(_),
+            ] = &decisions[index..index + 4]
+            else {
+                continue;
+            };
+            let (Some(first_config), Some(second_config)) = (
+                first_selection.preemption_config(),
+                second_selection.preemption_config(),
+            ) else {
+                continue;
+            };
+            if second.reduction_order_key() >= first.reduction_order_key()
+                || !second.is_independent_from(first, policy)
+            {
+                continue;
+            }
+
+            // Both original blocks must reproduce at their recorded prefixes.
+            // Their compact selections alone do not carry a producer domain.
+            let prefix = Configuration {
+                def: configuration.def.clone(),
+                schedule: schedule_from_decisions(decisions[..index].to_vec()),
+            };
+            let Some(original_first) = preemption_choice_at(&prefix, first_config, first) else {
+                continue;
+            };
+            if original_first.as_slice() != &decisions[index..index + 2] {
+                continue;
+            }
+            let Some(after_first) = append_decisions(&prefix, &original_first) else {
+                continue;
+            };
+            let Some(original_second) = preemption_choice_at(&after_first, second_config, second)
+            else {
+                continue;
+            };
+            if original_second.as_slice() != &decisions[index + 2..index + 4] {
+                continue;
+            }
+
+            // Reissue both selections against the new parents. Copying either
+            // original selection would retain the wrong opportunity/branch ID.
+            let Some(reordered_first) = preemption_choice_at(&prefix, second_config, second) else {
+                continue;
+            };
+            let Some(after_reordered_first) = append_decisions(&prefix, &reordered_first) else {
+                continue;
+            };
+            let Some(reordered_second) =
+                preemption_choice_at(&after_reordered_first, first_config, first)
+            else {
+                continue;
+            };
+            decisions.splice(
+                index..index + 4,
+                reordered_first.into_iter().chain(reordered_second),
+            );
+            changed = true;
+            swapped = true;
         }
     }
     changed.then(|| Configuration {
@@ -1484,71 +1533,185 @@ pub(super) fn partial_order_canonical_representative(
     })
 }
 
+fn append_decisions(parent: &Configuration, decisions: &[Decision]) -> Option<Configuration> {
+    decisions
+        .iter()
+        .cloned()
+        .try_fold(parent.clone(), |current, decision| {
+            try_step(&current, decision).ok()
+        })
+}
+
 pub(super) fn schedule_from_decisions(decisions: Vec<Decision>) -> Schedule {
     Schedule::from_decisions(decisions)
 }
 
 pub(super) fn minimization_candidates(
-    seed: Seed,
+    config: MinimizationConfig,
     artifact: ContentHash,
     schedule: &Schedule,
-) -> Vec<MinimizationCandidate> {
+    maximum_candidates: usize,
+) -> Result<Vec<MinimizationCandidate>, EngineError> {
+    if !config.validates_schedule(schedule) {
+        return Err(EngineError::UnifiedOperationEvidenceMismatch {
+            operation: "finding minimization",
+            reason: "automatic interesting window does not match the original schedule",
+        });
+    }
     let decisions = schedule.decisions();
+    let removable_start = config
+        .interesting_window()
+        .map_or(0, InterestingScheduleWindow::start);
     let mut candidates = Vec::new();
-    for kept_len in 0..decisions.len() {
-        collect_minimization_candidates_for_len(
-            seed,
+    {
+        let mut collector = MinimizationCandidateCollector {
+            seed: config.seed,
             artifact,
             decisions,
-            kept_len,
-            0,
-            &mut Vec::new(),
-            &mut candidates,
-        );
+            removable_start,
+            candidates: &mut candidates,
+            maximum_candidates,
+            remaining_work: maximum_candidates,
+            admitted_kept_indices: BTreeSet::new(),
+        };
+        collector.collect_campaign_branch_suffix_reductions();
+        for kept_len in 0..decisions.len().saturating_sub(removable_start) {
+            if collector.is_finished() {
+                break;
+            }
+            let mut kept_indices = (0..removable_start).collect::<Vec<_>>();
+            collector.collect_for_len(
+                removable_start + kept_len,
+                removable_start,
+                &mut kept_indices,
+            );
+        }
     }
-    candidates.sort_by_key(|candidate| {
-        (
-            candidate.schedule.len(),
-            candidate.order_key,
-            candidate.removed_indices.clone(),
-        )
+    candidates.sort_by(|left, right| {
+        left.schedule
+            .len()
+            .cmp(&right.schedule.len())
+            .then_with(|| left.order_key.cmp(&right.order_key))
+            .then_with(|| left.removed_indices.cmp(&right.removed_indices))
     });
-    candidates
+    Ok(candidates)
 }
 
-pub(super) fn collect_minimization_candidates_for_len(
+pub(super) fn minimization_candidate_limit(artifact: &ReproductionArtifact) -> usize {
+    // A candidate retains one kept schedule and the complementary removed
+    // decisions. Twice the complete artifact bytes plus fixed metadata is a
+    // conservative language-independent upper bound for that representation.
+    let per_candidate = artifact
+        .to_compact_binary()
+        .len()
+        .checked_mul(2)
+        .and_then(|bytes| {
+            artifact
+                .schedule()
+                .len()
+                .checked_mul(std::mem::size_of::<usize>())
+                .and_then(|index_bytes| bytes.checked_add(index_bytes))
+        })
+        .and_then(|bytes| bytes.checked_add(1_024))
+        .unwrap_or(usize::MAX);
+    MAX_MINIMIZATION_CANDIDATE_WORK_BYTES
+        .checked_div(per_candidate.max(1))
+        .unwrap_or(0)
+        .min(MAX_MINIMIZATION_CANDIDATES)
+}
+
+struct MinimizationCandidateCollector<'a> {
     seed: Seed,
     artifact: ContentHash,
-    decisions: &[Decision],
-    kept_len: usize,
-    start: usize,
-    kept_indices: &mut Vec<usize>,
-    candidates: &mut Vec<MinimizationCandidate>,
-) {
-    if kept_indices.len() == kept_len {
-        candidates.push(minimization_candidate_from_kept_indices(
-            seed,
-            artifact,
-            decisions,
-            kept_indices,
-        ));
-        return;
+    decisions: &'a [Decision],
+    removable_start: usize,
+    candidates: &'a mut Vec<MinimizationCandidate>,
+    maximum_candidates: usize,
+    remaining_work: usize,
+    admitted_kept_indices: BTreeSet<Vec<usize>>,
+}
+
+impl MinimizationCandidateCollector<'_> {
+    fn is_full(&self) -> bool {
+        self.candidates.len() >= self.maximum_candidates
     }
-    let remaining = kept_len - kept_indices.len();
-    let max_start = decisions.len().saturating_sub(remaining);
-    for index in start..=max_start {
-        kept_indices.push(index);
-        collect_minimization_candidates_for_len(
-            seed,
-            artifact,
-            decisions,
-            kept_len,
-            index + 1,
-            kept_indices,
-            candidates,
-        );
-        kept_indices.pop();
+
+    fn is_finished(&self) -> bool {
+        self.is_full() || self.remaining_work == 0
     }
+
+    fn collect_campaign_branch_suffix_reductions(&mut self) {
+        if !self.decisions[self.removable_start..]
+            .iter()
+            .any(is_campaign_branch_selection)
+        {
+            return;
+        }
+
+        // Always retain the empty candidate, then reserve the remaining bounded
+        // window for exact branch prefixes that can remove a trailing suffix.
+        self.admit_candidate((0..self.removable_start).collect());
+        for index in self.removable_start..self.decisions.len().saturating_sub(1) {
+            if self.is_finished() {
+                break;
+            }
+            if is_campaign_branch_selection(&self.decisions[index]) {
+                self.admit_candidate((0..=index).collect());
+            }
+        }
+    }
+
+    fn admit_candidate(&mut self, kept_indices: Vec<usize>) {
+        if !self.spend_work() || !self.admitted_kept_indices.insert(kept_indices.clone()) {
+            return;
+        }
+        self.candidates
+            .push(minimization_candidate_from_kept_indices(
+                self.seed,
+                self.artifact,
+                self.decisions,
+                &kept_indices,
+            ));
+    }
+
+    fn spend_work(&mut self) -> bool {
+        let Some(remaining) = self.remaining_work.checked_sub(1) else {
+            return false;
+        };
+        self.remaining_work = remaining;
+        true
+    }
+
+    fn collect_for_len(&mut self, kept_len: usize, start: usize, kept_indices: &mut Vec<usize>) {
+        if self.is_finished() {
+            return;
+        }
+        if kept_indices.len() == kept_len {
+            self.admit_candidate(kept_indices.clone());
+            return;
+        }
+        let remaining = kept_len - kept_indices.len();
+        let max_start = self.decisions.len().saturating_sub(remaining);
+        for index in start..=max_start {
+            if self.is_finished() {
+                break;
+            }
+            if is_campaign_branch_selection(&self.decisions[index]) && kept_indices.len() != index {
+                // A campaign branch selection authenticates the complete
+                // schedule prefix at its original index. Reject the branch as
+                // soon as that prefix can no longer be complete.
+                self.spend_work();
+                continue;
+            }
+            kept_indices.push(index);
+            self.collect_for_len(kept_len, index + 1, kept_indices);
+            kept_indices.pop();
+        }
+    }
+}
+
+fn is_campaign_branch_selection(decision: &Decision) -> bool {
+    matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
 }
 
 pub(super) fn minimization_candidate_from_kept_indices(
@@ -2002,7 +2165,7 @@ pub(super) fn push_symmetry_topology_edge_lines(
         scheduling_node_kind_label(edge.from.kind),
         labels.get(&edge.to.node)?,
         scheduling_node_kind_label(edge.to.kind),
-        edge.minimum_latency.nanos,
+        edge.minimum_latency.ticks,
     ));
     Some(())
 }
@@ -2024,7 +2187,7 @@ pub(super) fn push_symmetry_topology_change_lines(
         },
         change
             .activation_time
-            .map_or_else(|| String::from("none"), |at| at.nanos.to_string()),
+            .map_or_else(|| String::from("none"), |at| at.ticks.to_string()),
     ));
     match &change.effect {
         SchedulerTopologyChangeEffect::ReplaceEffectiveEdges(edges)
@@ -2119,5 +2282,8 @@ pub(super) fn push_symmetry_event_log_lines(event_log: EventLogOffset, lines: &m
 }
 
 mod reduction_helpers;
+
+#[cfg(test)]
+mod typed_preemption_por_tests;
 
 pub(in crate::model) use reduction_helpers::*;

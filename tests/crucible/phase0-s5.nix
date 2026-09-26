@@ -4,7 +4,103 @@
 }: let
   workloadSource = builtins.readFile ./phase0-s5-workload.c;
   pluginSource = builtins.readFile ./phase0-s5-virtual-memory-plugin.c;
+  qmpClientSource = builtins.readFile ./phase0-s5-qmp.py;
+  linuxResetSource = builtins.readFile ./phase0-s5-linux-reset.S;
+  linuxResetLinkerScript = builtins.readFile ./x86-direct-reset.ld;
   rrSwitchQuantum = 4096;
+  # QEMU's 4 GHz TSC advances once per 250 ps. Supply that known rate and
+  # skip delay calibration, while the test-only APIC patch supplies its known
+  # 1 GHz period. The default waits exhaust sim's 50 ps/instruction boot budget.
+  kernelCommandLine = "console=ttyS0 earlycon=uart8250,io,0x3f8,115200 reboot=k panic=1 rdinit=/init lpj=1 tsc_early_khz=4000000 nokaslr norandmaps random.trust_cpu=off";
+
+  # Keep the Linux MMU and mmap path while avoiding the deployment kernel's
+  # unrelated driver initialization under sim's fixed 50 ps/instruction clock.
+  s5Kernel = pkgs.mkDerivation {
+    pname = "crucible-phase0-s5-linux";
+    inherit (pkgs.linux) version src;
+
+    buildDeps = [
+      pkgs.bc
+      pkgs.bison
+      pkgs.elfutils
+      pkgs.flex
+      pkgs.gawk
+      pkgs.gnumake
+      pkgs.llvm
+      pkgs.openssl
+      pkgs.patch
+      pkgs.perl
+      pkgs.python3
+      pkgs.zlib
+    ];
+    hardeningDisable = ["all"];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf "$src"
+          cd linux-${pkgs.linux.version}
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          patch -p1 < ${../../pkgs/kernel/linux-gawk-array-argument.patch}
+          patch -p1 < ${./linux-tsc-known-frequency.patch}
+          patch -p1 < ${./phase0-s5-apic-known-period.patch}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          make ARCH=x86_64 LLVM=1 HOSTCC=cc HOSTCXX=c++ tinyconfig
+          cat > .s5.config <<'KCONFIG'
+          CONFIG_64BIT=y
+          CONFIG_X86_64=y
+          CONFIG_PRINTK=y
+          CONFIG_BINFMT_ELF=y
+          CONFIG_ADVISE_SYSCALLS=y
+          CONFIG_BLK_DEV_INITRD=y
+          CONFIG_RD_GZIP=y
+          CONFIG_MMU=y
+          CONFIG_TTY=y
+          CONFIG_SERIAL_8250=y
+          CONFIG_SERIAL_8250_CONSOLE=y
+          CONFIG_SMP=n
+          CONFIG_MODULES=n
+          CONFIG_DEBUG_INFO_NONE=y
+          CONFIG_DEBUG_INFO_BTF=n
+          KCONFIG
+          scripts/kconfig/merge_config.sh -m .config .s5.config
+          make ARCH=x86_64 LLVM=1 HOSTCC=cc HOSTCXX=c++ olddefconfig
+
+          grep -Fxq 'CONFIG_BINFMT_ELF=y' .config
+          grep -Fxq 'CONFIG_ADVISE_SYSCALLS=y' .config
+          grep -Fxq 'CONFIG_BLK_DEV_INITRD=y' .config
+          grep -Fxq 'CONFIG_PRINTK=y' .config
+          grep -Fxq 'CONFIG_SERIAL_8250_CONSOLE=y' .config
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          # Kbuild's host objtool needs the AOS libelf and zlib runtime paths.
+          export LD_LIBRARY_PATH="${pkgs.elfutils}/lib:${pkgs.openssl}/lib:${pkgs.zlib}/lib"
+          make -j"$NIX_BUILD_CORES" ARCH=x86_64 LLVM=1 HOSTCC=cc HOSTCXX=c++ bzImage
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/boot"
+          cp arch/x86/boot/bzImage "$out/boot/vmlinuz"
+          cp System.map "$out/boot/System.map"
+          cp .config "$out/boot/config"
+        '';
+      }
+    ];
+  };
 
   workload = pkgs.mkDerivation {
     pname = "crucible-phase0-s5-workload";
@@ -14,150 +110,146 @@
     workload = workloadSource;
     passAsFile = ["workload"];
 
+    buildDeps = [
+      pkgs.binutils
+      pkgs.gawk
+    ];
+
     phases = [
       {
         name = "build-workload";
         script = ''
           mkdir -p "$out/bin"
           cp "$workloadPath" phase0-s5-workload.c
-          cc -std=c11 -O2 -Wall -Wextra -Werror \
+          cc -std=c11 -O2 -Wall -Wextra -Werror -static -fno-PIE -no-pie \
             phase0-s5-workload.c \
             -o "$out/bin/s5-workload"
+
+          activation_vaddr=$(
+            nm -n "$out/bin/s5-workload" \
+              | gawk '$3 == "marker_observation_enable" { print "0x" $1 }'
+          )
+          [ -n "$activation_vaddr" ] || {
+            echo "FAIL: observation-enable marker symbol is missing" >&2
+            exit 1
+          }
+          [ "$(printf '%s\n' "$activation_vaddr" | wc -l)" -eq 1 ] || {
+            echo "FAIL: observation-enable marker symbol is not unique" >&2
+            exit 1
+          }
+          mkdir -p "$out/share/crucible-phase0-s5"
+          printf '%s\n' "$activation_vaddr" \
+            > "$out/share/crucible-phase0-s5/activation-vaddr"
         '';
       }
     ];
   };
 
-  poweroffHelper = pkgs.mkDerivation {
-    pname = "crucible-phase0-s5-poweroff";
+  linuxReset = pkgs.mkDerivation {
+    pname = "crucible-phase0-s5-linux-reset";
     version = "0";
     src = null;
 
+    reset = linuxResetSource;
+    linker = linuxResetLinkerScript;
+    passAsFile = ["reset" "linker"];
+    buildDeps = [pkgs.binutils];
+
     phases = [
       {
-        name = "build-poweroff-helper";
+        name = "build-linux-reset";
         script = ''
-          mkdir -p "$out/bin"
+          cp "$resetPath" reset.S
+          as --32 reset.S -o reset.o
+          ld -m elf_i386 -T "$linkerPath" reset.o -o reset.elf
+          objcopy -O binary --gap-fill 0 reset.elf reset.bin
+          [ "$(wc -c < reset.bin)" -eq 65536 ]
 
-          cat > poweroff.c <<'POWEROFF_C'
-          #include <stdio.h>
-          #include <sys/reboot.h>
-          #include <unistd.h>
-
-          #ifndef RB_POWER_OFF
-          #define RB_POWER_OFF 0x4321fedc
-          #endif
-
-          int main(void) {
-            sync();
-            if (reboot(RB_POWER_OFF) != 0) {
-              perror("poweroff");
-              return 1;
-            }
-            return 0;
-          }
-          POWEROFF_C
-
-          cc poweroff.c -o "$out/bin/s5-poweroff"
+          mkdir -p "$out"
+          cp reset.bin "$out/"
         '';
       }
     ];
   };
 
-  initramfs = let
-    initramfsDeps = [
-      pkgs.bash
-      pkgs.coreutils
-      workload
-      poweroffHelper
+  initramfs = pkgs.mkDerivation {
+    pname = "crucible-phase0-s5-initramfs";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.cpio pkgs.findutils pkgs.gzip];
+
+    phases = [
+      {
+        name = "build-initramfs";
+        script = ''
+          set -eu
+          mkdir -p root/dev "$out"
+          cp ${workload}/bin/s5-workload root/init
+          (
+            cd root
+            find . -print0 \
+              | LC_ALL=C sort -z \
+              | cpio --quiet -o -H newc -R +0:+0 --reproducible --null \
+              | gzip -9 -n > "$out/initrd.img"
+          )
+        '';
+      }
     ];
-    depPaths = builtins.concatStringsSep ":" (
-      builtins.concatMap (
-        dep: let
-          base = builtins.toString dep;
-        in [
-          "${base}/bin"
-          "${base}/sbin"
-        ]
-      )
-      initramfsDeps
-    );
-    graphPairs =
-      lib.concatLists
-      (lib.imap (i: dep: [
-          "closure-${builtins.toString i}"
-          dep
-        ])
-        initramfsDeps);
-  in
-    pkgs.mkDerivation {
-      pname = "crucible-phase0-s5-initramfs";
-      version = "0";
-      src = null;
+  };
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.cpio
-        pkgs.findutils
-        pkgs.grep
-        pkgs.pigz
-      ];
+  linuxImage = pkgs.mkDerivation {
+    pname = "crucible-phase0-s5-linux-image";
+    version = "0";
+    src = null;
 
-      exportReferencesGraph = graphPairs;
+    KERNEL = builtins.toString s5Kernel;
+    INITRAMFS = "${initramfs}/initrd.img";
+    KERNEL_CMDLINE = kernelCommandLine;
 
-      phases = [
-        {
-          name = "build-initramfs";
-          script = ''
-            set -eu
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.gawk
+    ];
 
-            grep -h '^/nix/store/' closure-* | sort -u > closure-paths
+    phases = [
+      {
+        name = "prepare-linux-image";
+        script = ''
+          set -eu
 
-            mkdir -p root/bin root/sbin root/nix/store root/tmp root/proc root/sys root/dev root/run
-            while IFS= read -r p; do
-              cp -a "$p" root"$p"
-            done < closure-paths
+          vmlinuz=$(find "$KERNEL"/boot -maxdepth 1 -type f -name 'vmlinuz*' | head -1)
+          [ -n "$vmlinuz" ]
+          setup_sectors=$(od -An -tu1 -j 497 -N 1 "$vmlinuz" | tr -d ' ')
+          [ -n "$setup_sectors" ] && [ "$setup_sectors" -gt 0 ]
+          setup_blocks=$((setup_sectors + 1))
 
-            ln -sfn ${pkgs.bash}/bin/bash root/bin/sh
-            ln -sfn ${pkgs.bash}/bin/bash root/bin/bash
-            ln -sfn ${poweroffHelper}/bin/s5-poweroff root/sbin/poweroff
+          mkdir -p "$out"
+          dd if="$vmlinuz" of="$out/setup.bin" bs=512 count="$setup_blocks" status=none
+          dd if="$vmlinuz" of="$out/kernel.bin" bs=512 skip="$setup_blocks" status=none
+          cp "$INITRAMFS" "$out/initrd.img"
+          printf '%s\0' "$KERNEL_CMDLINE" > "$out/cmdline.bin"
 
-            cat > root/init <<'INIT'
-            #!${pkgs.bash}/bin/bash
-            export PATH="/bin:/sbin:${depPaths}"
-            export HOME=/tmp
+          # Linux boot protocol fields for the fixed fixture addresses below.
+          printf '\260' | dd of="$out/setup.bin" bs=1 seek=$((0x210)) conv=notrunc status=none
+          printf '\201' | dd of="$out/setup.bin" bs=1 seek=$((0x211)) conv=notrunc status=none
+          printf '\000\000\000\010' | dd of="$out/setup.bin" bs=1 seek=$((0x218)) conv=notrunc status=none
+          initrd_size=$(wc -c < "$out/initrd.img")
+          gawk -v size="$initrd_size" 'BEGIN {
+            for (byte = 0; byte < 4; byte++) {
+              printf "%c", int(size / (256 ^ byte)) % 256
+            }
+          }' > initrd-size.bin
+          dd if=initrd-size.bin of="$out/setup.bin" bs=1 seek=$((0x21c)) conv=notrunc status=none
+          printf '\000\376' | dd of="$out/setup.bin" bs=1 seek=$((0x224)) conv=notrunc status=none
+          printf '\000\000\002\000' | dd of="$out/setup.bin" bs=1 seek=$((0x228)) conv=notrunc status=none
 
-            echo "CRUCIBLE_S5_READY"
-            test_result=0
-            s5-workload || test_result=1
-
-            if [ "$test_result" -eq 0 ]; then
-              echo 'TEST_RESULT:PASS'
-            else
-              echo 'TEST_RESULT:FAIL'
-            fi
-
-            sync
-            poweroff
-            INIT
-            chmod +x root/init
-
-            mkdir -p "$out"
-            (
-              cd root
-              find . -print0 \
-                | LC_ALL=C sort -z \
-                | cpio --quiet -o -H newc -R +0:+0 --reproducible --null \
-                | pigz -9 -n -p "''${NIX_BUILD_CORES:-1}" > "$out/initrd.img"
-            )
-          '';
-        }
-      ];
-
-      meta = {
-        description = "Crucible Phase 0 S5 diskless initramfs";
-      };
-    };
+          [ "$(od -An -tx4 -j $((0x202)) -N 4 "$out/setup.bin" | tr -d ' ')" = 53726448 ]
+          [ "$(wc -c < "$out/kernel.bin")" -gt 0 ]
+          [ "$initrd_size" -gt 0 ]
+        '';
+      }
+    ];
+  };
 in
   pkgs.mkDerivation {
     pname = "crucible-phase0-s5-virtual-memory";
@@ -165,7 +257,8 @@ in
     src = null;
 
     plugin = pluginSource;
-    passAsFile = ["plugin"];
+    qmpClient = qmpClientSource;
+    passAsFile = ["plugin" "qmpClient"];
 
     buildDeps = [
       pkgs.coreutils
@@ -176,12 +269,10 @@ in
       pkgs.grep
       pkgs.jq
       pkgs.pkg-config
+      pkgs.python3
       pkgs.qemu-crucible
-      pkgs.socat
     ];
 
-    INITRAMFS = "${initramfs}/initrd.img";
-    KERNEL = builtins.toString pkgs.linux;
     QEMU = "${pkgs.qemu-crucible}/bin/qemu-system-x86_64";
     RR_SWITCH_QUANTUM = builtins.toString rrSwitchQuantum;
 
@@ -190,6 +281,7 @@ in
         name = "build-s5-plugin";
         script = ''
           cp "$pluginPath" phase0-s5-virtual-memory-plugin.c
+          cp "$qmpClientPath" qmp-client.py
           cc -fPIC -shared -O2 -Wall -Wextra -Werror \
             $(pkg-config --cflags glib-2.0) \
             -I${pkgs.qemu-crucible}/include \
@@ -213,12 +305,18 @@ in
             socket="$1"
             request="$2"
             response="$3"
+            budget="''${4:-5}"
             response_err="$response.err"
 
-            {
-              printf '{"execute":"qmp_capabilities"}\r\n'
-              printf '%s\r\n' "$request"
-            } | socat -T 2 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
+            [ "$budget" -gt 0 ] || return 1
+            if [ "$budget" -gt 5 ]; then
+              budget=5
+            fi
+            if ! timeout "$budget" python3 qmp-client.py "$socket" "$request" \
+                 > "$response" 2> "$response_err"; then
+              cat "$response_err" >&2
+              return 1
+            fi
 
             if [ ! -s "$response" ]; then
               cat "$response_err" >&2
@@ -234,13 +332,12 @@ in
 
           wait_for_socket() {
             socket="$1"
-            waited=0
-            while [ "$waited" -lt 600 ]; do
+            deadline="$2"
+            while [ "$(date +%s)" -lt "$deadline" ]; do
               if [ -S "$socket" ]; then
                 return 0
               fi
               sleep 0.1
-              waited=$((waited + 1))
             done
             return 1
           }
@@ -248,22 +345,44 @@ in
           wait_for_pause() {
             label="$1"
             socket="$2"
-            waited=0
-            while [ "$waited" -lt 1200 ]; do
-              if qmp_cmd "$socket" '{"execute":"query-status"}' "$TMPDIR/qmp-status-$label.json"; then
-                status=$(jq -r -s '[.[] | select(has("return"))][-1].return.status // empty' "$TMPDIR/qmp-status-$label.json")
+            deadline="$3"
+            current_status="$TMPDIR/qmp-status-current-$label.json"
+            last_status="$TMPDIR/qmp-status-$label.json"
+            current_registers="$TMPDIR/qmp-registers-current-$label.json"
+            last_registers="$TMPDIR/qmp-registers-$label.json"
+            next_snapshot=0
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              remaining=$((deadline - $(date +%s)))
+              [ "$remaining" -gt 0 ] || break
+              kill -0 "$qemu_pid" 2>/dev/null || return 1
+              if qmp_cmd "$socket" '{"execute":"query-status"}' "$current_status" "$remaining"; then
+                cp "$current_status" "$last_status"
+                status=$(jq -r -s '[.[] | select(has("return"))][-1].return.status // empty' "$last_status")
                 case "$status" in
                   paused)
                     return 0
                     ;;
                   shutdown | internal-error | guest-panicked)
-                    cat "$TMPDIR/qmp-status-$label.json" >&2
+                    cat "$last_status" >&2
                     return 1
                     ;;
                 esac
               fi
-              sleep 0.25
-              waited=$((waited + 1))
+
+              # Keep a recent PC even if QMP becomes unavailable at deadline.
+              remaining=$((deadline - $(date +%s)))
+              elapsed=$((300 - remaining))
+              if [ "$remaining" -gt 0 ] && [ "$elapsed" -ge "$next_snapshot" ]; then
+                if qmp_cmd "$socket" \
+                  '{"execute":"human-monitor-command","arguments":{"command-line":"info registers"}}' \
+                  "$current_registers" "$remaining"; then
+                  cp "$current_registers" "$last_registers"
+                  pc=$(jq -r -s '[.[] | select(has("return"))][-1].return | capture("RIP=(?<pc>[0-9a-fA-F]+)").pc // empty' "$last_registers")
+                  echo "S5 $label guest PC after ''${elapsed}s: $pc"
+                fi
+                next_snapshot=$((elapsed + 30))
+              fi
+              sleep 1
             done
             return 1
           }
@@ -278,18 +397,84 @@ in
 
           trap cleanup_qemu EXIT
 
-          vmlinuz=$(ls "$KERNEL"/boot/vmlinuz-* | head -1)
-          if [ -z "$vmlinuz" ]; then
-            fail "no vmlinuz under $KERNEL/boot"
-          fi
+          report_trace_mismatch() {
+            label="$1"
+            jq -c '
+              select(.event == "doorbell")
+              | ([
+                  {kind: 1, name: "resident", len: 64},
+                  {kind: 2, name: "page_spanning", len: 96},
+                  {kind: 3, name: "paged_mmap", len: 128}
+                ][.marker_index - 1]) as $expected
+              | {
+                  marker_index,
+                  marker_icount,
+                  actual: {
+                    vcpu,
+                    kind,
+                    name,
+                    addr,
+                    len,
+                    register_read_ok,
+                    read_enabled,
+                    read_attempted,
+                    read_success,
+                    bytes_match,
+                    payload_hash,
+                    expected_hash
+                  },
+                  expected: $expected
+                }
+            ' "$TMPDIR/trace-$label.jsonl" >&2
+            jq -c '
+              select(.final == true and .pause_sample == true)
+              | {
+                  markers,
+                  activation_marker_callbacks,
+                  reset_completion_callbacks,
+                  activation_errors,
+                  measured_callbacks_active,
+                  dormant_tb_translations,
+                  read_enabled,
+                  read_attempts,
+                  read_successes,
+                  read_failures,
+                  bytes_mismatches,
+                  sample_register_failures,
+                  sample_capture_failures,
+                  register_read_failures,
+                  capture_status,
+                  digest_status,
+                  ram_bytes,
+                  ram_material_length,
+                  device_bytes,
+                  device_material_length,
+                  register_counts
+                }
+            ' "$TMPDIR/trace-$label.jsonl" >&2
+          }
+
+          report_pause_timeout() {
+            label="$1"
+
+            echo "--- S5 $label QMP status ---" >&2
+            cat "$TMPDIR/qmp-status-$label.json" >&2 || true
+            cat "$TMPDIR/qmp-registers-$label.json" >&2 || true
+
+            echo "--- S5 $label serial tail ---" >&2
+            tr -d '\r' < "$TMPDIR/serial-$label.log" | awk 'NF' | tail -n 80 >&2 || true
+            echo "--- S5 $label trace tail ---" >&2
+            tail -n 32 "$TMPDIR/trace-$label.jsonl" >&2 || true
+          }
 
           plugin="$PWD/phase0-s5-virtual-memory-plugin.so"
+          activation_vaddr=$(cat ${workload}/share/crucible-phase0-s5/activation-vaddr)
           seed="$TMPDIR/seed.bin"
           printf 'crucible-phase0-s5-seed-v1\n' > "$seed"
-
           run_qemu() {
             label="$1"
             read_mode="$2"
+            deadline=$(($(date +%s) + 300))
             qmp_socket="$TMPDIR/qmp-$label.sock"
             serial="$TMPDIR/serial-$label.log"
             trace="$TMPDIR/trace-$label.jsonl"
@@ -309,20 +494,29 @@ in
               -rtc base=2026-01-01T00:00:00,clock=vm \
               -seed 0x0010c001 \
               -fw_cfg name=opt/crucible/seed,file="$seed" \
-              -kernel "$vmlinuz" \
-              -initrd "$INITRAMFS" \
-              -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0" \
+              -bios ${linuxReset}/reset.bin \
+              -device loader,file=${linuxImage}/setup.bin,addr=0x10000,force-raw=on \
+              -device loader,file=${linuxImage}/kernel.bin,addr=0x100000,force-raw=on \
+              -device loader,file=${linuxImage}/cmdline.bin,addr=0x20000,force-raw=on \
+              -device loader,file=${linuxImage}/initrd.img,addr=0x8000000,force-raw=on \
               -chardev file,id=serial0,path="$serial" \
               -serial chardev:serial0 \
               -qmp "unix:$qmp_socket,server=on,wait=off" \
-              -plugin "$plugin",out="$trace",read="$read_mode",expected_markers=3,vcpus=1 \
+              -plugin "$plugin",out="$trace",read="$read_mode",expected_markers=3,vcpus=1,activate-vaddr="$activation_vaddr" \
               -no-shutdown \
               -no-reboot &
             qemu_pid="$!"
 
-            wait_for_socket "$qmp_socket" || fail "$label QMP socket did not appear"
-            wait_for_pause "$label" "$qmp_socket" || fail "$label did not pause after S5 markers"
-            qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" || true
+            wait_for_socket "$qmp_socket" "$deadline" || fail "$label QMP socket did not appear"
+            wait_for_pause "$label" "$qmp_socket" "$deadline" || {
+              cleanup_qemu
+              report_pause_timeout "$label"
+              fail "$label did not pause after S5 markers"
+            }
+            remaining=$((deadline - $(date +%s)))
+            [ "$remaining" -gt 0 ] || fail "$label exhausted its QMP deadline"
+            qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" "$remaining" ||
+              fail "$label could not quit QEMU after marker pause"
             wait "$qemu_pid" || fail "$label QEMU exited unsuccessfully"
             qemu_pid=""
           }
@@ -348,21 +542,34 @@ in
               and ($events[] | select(.kind == 2 and .name == "page_spanning" and .len == 96))
               and ($events[] | select(.kind == 3 and .name == "paged_mmap" and .len == 128))
               and all($finals[]; (
-                .markers == 3
-                and .read_enabled == true
+              .markers == 3
+              and .activation_marker_callbacks == 1
+              and .reset_completion_callbacks == 1
+              and .activation_errors == 0
+              and .measured_callbacks_active == true
+              and .dormant_tb_translations > 0
+              and .read_enabled == true
                 and .read_attempts == 3
                 and .read_successes == 3
                 and .read_failures == 0
                 and .bytes_mismatches == 0
                 and .sample_register_failures == 0
+                and .sample_capture_failures == 0
                 and .register_read_failures == 0
+                and .capture_status == 0
+                and .digest_status == 0
                 and .ram_bytes > 0
+                and .ram_material_length > .ram_bytes
+                and .device_bytes > 0
+                and .device_material_length > .device_bytes
                 and (.register_counts | type == "array")
                 and (.register_counts | length) == 1
                 and .register_counts[0] > 0
               ))
-            ' "$TMPDIR/trace-$label.jsonl" >/dev/null \
-              || fail "invalid S5 read trace for $label"
+            ' "$TMPDIR/trace-$label.jsonl" >/dev/null || {
+              report_trace_mismatch "$label"
+              fail "invalid S5 read trace for $label"
+            }
           }
 
           assert_control_trace() {
@@ -379,18 +586,31 @@ in
                 and .read_success == false
               ))
               and all($finals[]; (
-                .markers == 3
-                and .read_enabled == false
+              .markers == 3
+              and .activation_marker_callbacks == 1
+              and .reset_completion_callbacks == 1
+              and .activation_errors == 0
+              and .measured_callbacks_active == true
+              and .dormant_tb_translations > 0
+              and .read_enabled == false
                 and .read_attempts == 0
                 and .read_successes == 0
                 and .read_failures == 0
                 and .bytes_mismatches == 0
                 and .sample_register_failures == 0
+                and .sample_capture_failures == 0
                 and .register_read_failures == 0
+                and .capture_status == 0
+                and .digest_status == 0
                 and .ram_bytes > 0
+                and .ram_material_length > .ram_bytes
+                and .device_bytes > 0
+                and .device_material_length > .device_bytes
               ))
-            ' "$TMPDIR/trace-$label.jsonl" >/dev/null \
-              || fail "invalid S5 control trace for $label"
+            ' "$TMPDIR/trace-$label.jsonl" >/dev/null || {
+              report_trace_mismatch "$label"
+              fail "invalid S5 control trace for $label"
+            }
           }
 
           normalize_events() {
@@ -488,6 +708,8 @@ in
             echo marker_icounts="$marker_icounts"
             echo rr_switch_quantum="$RR_SWITCH_QUANTUM"
             echo marker_icounts_reproducible=true
+            echo observation_activation=guest_marker_then_plugin_reset
+            echo boot_instruction_callbacks=disabled
             echo read_bytes_match_expected=true
             echo read_hashes_reproducible=true
             echo side_effect_free_fingerprint_match=true

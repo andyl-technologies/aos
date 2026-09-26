@@ -8,12 +8,14 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  faultCapabilityLib = builtins.readFile ../../crates/crucible-qemu/src/fault_capability.rs;
-  launchLib =
-    builtins.readFile ../../crates/crucible-qemu/src/launch.rs
-    + builtins.readFile ../../crates/crucible-qemu/src/launch/error.rs
-    + builtins.readFile ../../crates/crucible-qemu/src/launch/helpers.rs
-    + builtins.readFile ../../crates/crucible-qemu/src/launch/plugin_config.rs;
+  faultCapabilityLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/fault_capability.rs;
+  };
+  launchLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/launch.rs;
+  };
   launchTest =
     builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
     + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs
@@ -101,7 +103,7 @@
       }
       {
         label = "production launch requires an exact manifest";
-        needle = "required_target.exact_manifest().is_none()";
+        needle = "required_target.exact_register_manifest().is_none()";
       }
       {
         label = "launch verifies World node identity";
@@ -177,7 +179,7 @@
       }
       {
         label = "virtio-blk device argv";
-        needle = "\"virtio-blk-pci,drive={ROOT_DRIVE_ID},id={ROOT_DEVICE_ID}\"";
+        needle = "virtio-blk-pci,drive={ROOT_DRIVE_ID},id={ROOT_DEVICE_ID},bus={QEMU_PCI_BUS},addr={QEMU_ROOT_PCI_ADDRESS}";
       }
       {
         label = "store-path validator";
@@ -237,7 +239,7 @@
       }
       {
         label = "plugin argument renderer";
-        needle = "pub fn qemu_plugin_argument(&self) -> String";
+        needle = "pub(super) fn qemu_plugin_argument(&self) -> String";
       }
       {
         label = "plugin argv appended";
@@ -253,7 +255,7 @@
       }
       {
         label = "command-line hash version";
-        needle = "\"crucible.qemu-launch-command.v1\".to_owned()";
+        needle = "\"crucible.qemu-launch-command.v3\".to_owned()";
       }
       {
         label = "argv hash material";
@@ -279,7 +281,7 @@
       }
       {
         label = "exact World register manifest binding";
-        needle = "target.exact_manifest = Some(manifest.clone());";
+        needle = "target.exact_register_manifest = Some(manifests.register.clone());";
       }
       {
         label = "World node identity binding";
@@ -321,11 +323,11 @@
       }
       {
         label = "default plugin argv assertion";
-        needle = "simfd=3,slot=0,fault_node_hash={fault_hash},shmemfd=4,wakefd=5,whitebox=off,coverage=off";
+        needle = "simfd=3,slot=0,fault_node_hash={fault_hash},process_generation=1";
       }
       {
         label = "fixed fd plugin argv assertion";
-        needle = "simfd=3,slot=2,fault_node_hash={fault_hash},shmemfd=4,wakefd=5,whitebox=on,coverage=on";
+        needle = "simfd=3,slot=2,fault_node_hash={fault_hash},process_generation=1";
       }
       {
         label = "kernel argv assertion";
@@ -346,10 +348,6 @@
       {
         label = "store traversal rejection assertion";
         needle = "/nix/store/../tmp/kernel";
-      }
-      {
-        label = "overlay path rejection assertion";
-        needle = "QemuLaunchCommandError::InvalidOverlayFileName";
       }
       {
         label = "final argv validator assertion";
@@ -445,7 +443,7 @@ in
             command_line_hash=executable-and-argv
             vm_launch_hash=world-derived-artifacts
             pre_spawn_validation=true
-            child_spawn_deferred_to=T-QEMU-3,T-QEMU-7
+            child_spawn_authority=attempt-process-contract-and-fixed-plugin-fds
             multi_vcpu_extension=checks.crucible.phase2.qemuMultiVcpuLaunch
             RESULT
           '';

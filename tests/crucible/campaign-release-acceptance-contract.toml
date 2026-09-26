@@ -1,0 +1,96 @@
+schema = "aos.crucible.campaign-release-acceptance-contract.v2"
+gate = "gate:campaign-release-acceptance"
+acceptance_state = "automated-evidence-required"
+implementation_tasks = ["T-CAM-9.1", "T-CAM-9.2", "T-CAM-9.3", "T-CAM-9.4", "T-CAM-9.5", "T-CAM-9.6", "T-CAM-9.7"]
+
+[executable_evidence]
+required_gates = [
+  "gate:campaign-gate-matrix",
+  "gate:campaign-operational-continuity",
+  "gate:campaign-replay",
+  "gate:hot-fork-scaling",
+  "gate:campaign-required-gates",
+  "gate:e2e-determinism",
+]
+required_claim_gates = [
+  "gate:campaign-model",
+  "gate:campaign-component-contract",
+  "gate:branch-point-model",
+  "gate:typed-choice",
+  "gate:typed-choice-product-checkpoint",
+  "gate:campaign-packaged-lifecycle",
+  "gate:campaign-replay",
+  "gate:lazy-frontier",
+  "gate:attempt-idempotence",
+  "gate:hot-fork-equivalence",
+  "gate:hot-fork-isolation",
+  "gate:hot-fork-scaling",
+  "gate:campaign-performance",
+  "gate:host-clone-cost",
+  "gate:world-fork-atomicity",
+  "gate:exact-closure-streaming",
+  "gate:campaign-store-equivalence",
+  "gate:campaign-store-composition",
+  "gate:campaign-cold-continuity",
+  "gate:campaign-statistics",
+  "gate:campaign-operational-continuity",
+  "gate:license-boundary",
+  "gate:abi-conformance",
+  "gate:control-responsiveness",
+  "gate:campaign-mutation-scaling",
+  "gate:campaign-rfc-traceability",
+  "gate:campaign-exact-maintenance-transfer",
+  "gate:campaign-policy-timeout-real-qemu",
+  "gate:campaign-finding-exact-read-only",
+  "gate:campaign-finding-signal-bundle",
+  "gate:campaign-finding-fork-write",
+  "gate:campaign-envoy-network-five-vm",
+  "gate:campaign-envoy-known-finding",
+  "gate:campaign-envoy-product-lifecycle",
+]
+
+[e2e_evidence]
+gate = "gate:e2e-determinism"
+schema = "crucible.e2e.native-gate-evidence.v1"
+live_packaged_qemu_required = true
+tcg_only = true
+local_profile_replay_required = true
+profile_matrix = ["quiet-single-core", "randomized-worker-two-core", "loaded-io-stall-four-core"]
+varied_core_counts = [1, 2, 4]
+randomized_worker_scheduling_required = true
+wall_clock_jitter_required = true
+host_io_stall_required = true
+byte_identical_results_required = true
+byte_identical_artifact_required = true
+
+[provenance]
+required = true
+fields = [
+  "release_manifest_sha256",
+  "release_manifest_env_sha256",
+  "release_manifest_json_sha256",
+  "release_acceptance_contract_sha256",
+  "e2e_evidence_result_sha256",
+  "e2e_evidence_manifest_sha256",
+]
+
+[binding]
+release_manifest_sha256_required = true
+release_manifest_env_sha256_required = true
+release_manifest_json_sha256_required = true
+release_acceptance_contract_sha256_required = true
+executable_gate_result_sha256_required = true
+e2e_evidence_result_sha256_required = true
+e2e_evidence_manifest_sha256_required = true
+missing_or_mismatched_result = "blocked"
+
+[output]
+schema = "aos.crucible.campaign-release-acceptance.v2"
+retains_e2e_evidence = true
+retains_executable_gate_results = true
+retains_release_manifest = true
+retains_release_manifest_env = true
+retains_release_manifest_json = true
+retains_release_acceptance_contract = true
+ordinary_source_package_dependency = false
+accepted_result = "pass"

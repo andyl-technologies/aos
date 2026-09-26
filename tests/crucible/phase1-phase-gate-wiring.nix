@@ -56,6 +56,11 @@
     }
     {
       phase = "phase1";
+      attr = "campaignModel";
+      gate = "gate:campaign-model";
+    }
+    {
+      phase = "phase1";
       attr = "replayOracle";
       gate = "gate:replay-oracle";
     }
@@ -73,6 +78,11 @@
       phase = "phase2";
       attr = "abiConformance";
       gate = "gate:abi-conformance";
+    }
+    {
+      phase = "phase2";
+      attr = "typedChoice";
+      gate = "gate:typed-choice";
     }
     {
       phase = "phase2";
@@ -118,6 +128,11 @@
       phase = "phase4";
       attr = "replayOracle";
       gate = "gate:replay-oracle";
+    }
+    {
+      phase = "phase4";
+      attr = "campaignStatistics";
+      gate = "gate:campaign-statistics";
     }
     {
       phase = "phase4";
@@ -171,6 +186,12 @@
       phase = "phase7";
       attr = "campaignContinuity";
       gate = "gate:campaign-continuity";
+    }
+    {
+      phase = "phase7";
+      attr = "productionRustPluginFlight";
+      attrPath = "checks.crucible.phase7.productionRustPluginFlight";
+      gate = "gate:production-rust-plugin-flight";
     }
     {
       phase = "phase7";

@@ -1,0 +1,628 @@
+# Measures production daemon adoption and the native QEMU fork/reap path under
+# cgroup and project-quota pressure. The VM retains every raw sample alongside
+# the structural CPERF-3 assertions.
+{
+  pkgs,
+  lib,
+  attrPath ? "checks.crucible.phase7.gates.hotForkScaling.rawGate",
+  taskIds ? [],
+}: let
+  source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  guest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
+  scenario = pkgs.writeTextFile {
+    name = "crucible-e2e-determinism-scenario";
+    destination = "/scenario.toml";
+    text = builtins.readFile ./fixtures/e2e-determinism.scenario.toml;
+  };
+  flight = pkgs.mkDerivation {
+    pname = "crucible-qemu-hot-fork-scaling-flight";
+    version = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+    src = source;
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.jq
+      pkgs.openssl
+      pkgs.pkg-config
+      pkgs.protobuf
+      pkgs.rust
+      pkgs.sed
+
+      pkgs.sqlite
+    ];
+    runtimeDeps = [pkgs.openssl pkgs.sqlite];
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          cp -R "$src" source
+          chmod -R u+w source
+          cd source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          set -eu
+          export CARGO_HOME="$TMPDIR/cargo"
+          mkdir -p "$CARGO_HOME" .cargo
+          sed "s|@vendor@|${cargoDeps}|g" \
+            "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
+          cargo test --frozen --offline --release --no-run \
+            --message-format=json-render-diagnostics \
+            --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
+            -p crucible-api -p crucible-qemu -p crucible-daemon --lib \
+            > "$TMPDIR/messages.jsonl"
+          daemon_test=$(jq -r \
+            'select(.reason == "compiler-artifact" and .target.name == "crucible_daemon" and .profile.test == true and .executable != null) | .executable' \
+            "$TMPDIR/messages.jsonl")
+          test -f "$daemon_test"
+          mkdir -p "$out/bin"
+          cp "$daemon_test" "$out/bin/crucible-daemon-scaling"
+          for package in crucible_api crucible_qemu; do
+            binary=$(jq -r --arg package "$package" \
+              'select(.reason == "compiler-artifact" and .target.name == $package and .profile.test == true and .executable != null) | .executable' \
+              "$TMPDIR/messages.jsonl")
+            test -f "$binary"
+            cp "$binary" "$out/bin/$package-clone-cost"
+          done
+        '';
+      }
+    ];
+  };
+  testing = import ../../lib/testing {inherit pkgs lib;};
+in
+  testing.mkVMTest {
+    name = "crucible-qemu-hot-fork-scaling";
+    memory = 6144;
+    hostCpuPin = true;
+    hostCpuPinIndex = 0;
+    rootfsDeps = [
+      flight
+      guest
+      scenario
+      pkgs.crucible
+      pkgs.qemu-crucible
+      pkgs.crucible-qemu-plugin
+      pkgs.linux
+      pkgs.e2fsprogs
+      pkgs.coreutils
+      pkgs.util-linux
+      pkgs.grep
+      pkgs.gawk
+    ];
+    testScript = ''
+      set -euo pipefail
+      cleanup_attempt_mount() {
+        ${pkgs.util-linux}/bin/umount /tmp/attempts > /dev/null 2>&1 || true
+      }
+      trap cleanup_attempt_mount EXIT HUP INT TERM
+
+      for option in CFS_BANDWIDTH QUOTA QFMT_V2 QUOTACTL; do
+        ${pkgs.grep}/bin/grep -Fxq "CONFIG_$option=y" ${pkgs.linux}/boot/config-*
+      done
+      mkdir -p /sys/fs/cgroup
+      ${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup
+      echo '+cpu +memory +pids' > /sys/fs/cgroup/cgroup.subtree_control
+      mkdir /sys/fs/cgroup/crucible
+      echo '+cpu +memory +pids' > /sys/fs/cgroup/crucible/cgroup.subtree_control
+
+      truncate -s 6G /tmp/attempts.img
+      ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project \
+        -E quotatype=prjquota /tmp/attempts.img
+      mkdir /tmp/attempts
+      ${pkgs.util-linux}/bin/mount -o loop,prjquota /tmp/attempts.img /tmp/attempts
+      mkdir -m 700 /tmp/attempts/run /tmp/run-state /tmp/artifacts
+      ${pkgs.crucible}/bin/crucible-e2e-determinism-scenario \
+        --populate-store /tmp/artifacts
+
+      setup_lane() {
+        lane="$1"
+        memory_max="$2"
+        mkdir "/sys/fs/cgroup/crucible/$lane"
+        echo '+cpu +memory +pids' \
+          > "/sys/fs/cgroup/crucible/$lane/cgroup.subtree_control"
+        echo "$memory_max" > "/sys/fs/cgroup/crucible/$lane/memory.max"
+        echo 64 > "/sys/fs/cgroup/crucible/$lane/pids.max"
+        mkdir -m 700 "/tmp/attempts/run/$lane"
+      }
+
+      # Production daemon ownership: the exact lifecycle factory performs the
+      # source freeze, child fork/adoption, measurement, shutdown, reconciliation,
+      # and source recovery while cgroup and quota owners remain live.
+      # Each lane owns three 256-MiB QEMU guests plus resident device state.
+      for lane in source target; do
+        setup_lane "$lane" 2147483648
+      done
+      setup_lane child-ready-source 1073741824
+      setup_lane child-ready-target 1073741824
+      for depth in 1 2 3; do
+        setup_lane "depth-$depth-source" 536870912
+        setup_lane "depth-$depth-target" 335544320
+      done
+      for memory_mib in 64 256 512; do
+        setup_lane "ram-$memory_mib-source" 1073741824
+        setup_lane "ram-$memory_mib-target" 1073741824
+        setup_lane "ram-$memory_mib-reference" 1073741824
+      done
+      setup_lane simultaneous-source 1073741824
+      # The 6-GiB VM holds at most sixteen paused 512-MiB COW children. Each
+      # child has a measured 160-MiB private-RSS ceiling, and the source lane
+      # has a 1-GiB cgroup ceiling, leaving 2.5 GiB for the VM and host state.
+      for sibling_count in 1 2 4 8 16; do
+        sibling_index=0
+        while [ "$sibling_index" -lt "$sibling_count" ]; do
+          setup_lane "simultaneous-$sibling_count-$sibling_index" 1073741824
+          sibling_index=$((sibling_index + 1))
+        done
+      done
+      setup_lane production-stress-source 1073741824
+      setup_lane production-stress-target 1073741824
+      setup_lane performance-checkpoint-source 1073741824
+      setup_lane performance-replay-genesis 1073741824
+      for index in 0 1 2; do
+        setup_lane "performance-source-$index" 1073741824
+        setup_lane "performance-hot-$index" 1073741824
+        setup_lane "performance-exact-$index" 1073741824
+        setup_lane "performance-replay-oracle-$index" 1073741824
+      done
+
+      mkdir -m 700 /tmp/checkpoints
+      for kernel in ${pkgs.linux}/boot/vmlinuz-*; do
+        export CRUCIBLE_ATOMIC_WORLD_KERNEL="$kernel"
+      done
+      export CRUCIBLE_ATOMIC_WORLD_QEMU=${pkgs.qemu-crucible}/bin/qemu-system-x86_64
+      export CRUCIBLE_ATOMIC_WORLD_PLUGIN=${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
+      export CRUCIBLE_ATOMIC_WORLD_ROOT=${guest}/root.ext4
+      export CRUCIBLE_ATOMIC_WORLD_SCENARIO=${scenario}/scenario.toml
+      export CRUCIBLE_ATOMIC_WORLD_ARTIFACTS=/tmp/artifacts
+      export CRUCIBLE_ATOMIC_WORLD_CGROUP=/sys/fs/cgroup/crucible
+      export CRUCIBLE_ATOMIC_WORLD_STORAGE=/tmp/attempts/run
+      export CRUCIBLE_ATOMIC_WORLD_RUN_STATE=/tmp/run-state
+      export CRUCIBLE_ATOMIC_WORLD_UID=65534
+      export CRUCIBLE_ATOMIC_WORLD_GID=65534
+      export CRUCIBLE_ATOMIC_WORLD_CHECKPOINTS=/tmp/checkpoints
+      export CRUCIBLE_CAMPAIGN_PERF_STORAGE_ROOT=/tmp/attempts/performance-campaign
+      mkdir -m 700 "$CRUCIBLE_CAMPAIGN_PERF_STORAGE_ROOT"
+      mkdir -m 700 /tmp/campaign-performance-worker
+      cp ${pkgs.crucible}/bin/crucible /tmp/campaign-performance-worker/crucible
+      chmod 0500 /tmp/campaign-performance-worker/crucible
+      export CRUCIBLE_CAMPAIGN_PERF_PLANNER_EXECUTABLE=/tmp/campaign-performance-worker/crucible
+
+      run_exact_lib_test() {
+        package="$1"
+        name="$2"
+        result="$3"
+        case "$package" in
+          crucible-daemon) binary=${flight}/bin/crucible-daemon-scaling ;;
+          *) echo "unknown library test package $package" >&2; return 1 ;;
+        esac
+
+        if listing=$("$binary" --ignored --exact "$name" --list 2>&1); then
+          :
+        else
+          status=$?
+          printf '%s\n' "$listing" >&2
+          return "$status"
+        fi
+        count=$(printf '%s\n' "$listing" \
+          | ${pkgs.grep}/bin/grep -Fxc "$name: test" || true)
+        if [ "$count" -ne 1 ]; then
+          printf '%s\n' "$listing" >&2
+          echo "expected exactly one $package library test named $name, found $count" >&2
+          return 1
+        fi
+
+        if ${pkgs.coreutils}/bin/timeout -k 30 1800 \
+          "$binary" --ignored --exact "$name" --nocapture 2>&1 \
+          | ${pkgs.coreutils}/bin/tee "$result"; then
+          :
+        else
+          return $?
+        fi
+        ${pkgs.grep}/bin/grep -Fq \
+          'test result: ok. 1 passed; 0 failed; 0 ignored;' "$result"
+      }
+
+      run_exact_normal_lib_test() {
+        package="$1"
+        name="$2"
+        result="$3"
+        case "$package" in
+          crucible-daemon) binary=${flight}/bin/crucible-daemon-scaling ;;
+          *) echo "unknown library test package $package" >&2; return 1 ;;
+        esac
+
+        if listing=$("$binary" --exact --list "$name" 2>&1); then
+          :
+        else
+          status=$?
+          printf '%s\n' "$listing" >&2
+          return "$status"
+        fi
+        count=$(printf '%s\n' "$listing" \
+          | ${pkgs.grep}/bin/grep -Fxc "$name: test" || true)
+        if [ "$count" -ne 1 ]; then
+          printf '%s\n' "$listing" >&2
+          echo "expected exactly one $package library test named $name, found $count" >&2
+          return 1
+        fi
+
+        if output=$(${pkgs.coreutils}/bin/timeout -k 30 1800 \
+          "$binary" --exact "$name" --nocapture 2>&1); then
+          :
+        else
+          status=$?
+          printf '%s\n' "$output" >&2
+          return "$status"
+        fi
+        printf '%s\n' "$output" > "$result"
+        printf '%s\n' "$output"
+        printf '%s\n' "$output" | ${pkgs.grep}/bin/grep -Fq \
+          'test result: ok. 1 passed; 0 failed; 0 ignored;'
+      }
+
+      run_host_clone_test() {
+        package="$1"
+        name="$2"
+        result="$3"
+        binary=${flight}/bin/"$package"-clone-cost
+        if listing=$("$binary" --exact "$name" --list 2>&1); then
+          :
+        else
+          status=$?
+          printf '%s\n' "$listing" >&2
+          return "$status"
+        fi
+        count=$(printf '%s\n' "$listing" \
+          | ${pkgs.grep}/bin/grep -Fxc "$name: test" || true)
+        if [ "$count" -ne 1 ]; then
+          printf '%s\n' "$listing" >&2
+          echo "expected exactly one $package library test named $name, found $count" >&2
+          return 1
+        fi
+
+        if ${pkgs.coreutils}/bin/timeout -k 30 120 \
+          "$binary" --exact "$name" --nocapture > "$result" 2>&1; then
+          :
+        else
+          status=$?
+          cat "$result" >&2
+          return "$status"
+        fi
+        if ! ${pkgs.grep}/bin/grep -Fq \
+          'test result: ok. 1 passed; 0 failed; 0 ignored;' "$result"; then
+          cat "$result" >&2
+          echo "expected one passing $package library test named $name" >&2
+          return 1
+        fi
+        cat "$result"
+      }
+
+      require_exact_test_marker() {
+        expected="$1"
+        result="$2"
+        if ${pkgs.gawk}/bin/awk -v expected="$expected" '
+          $0 == expected { found = 1 }
+          /^test [^[:space:]]+ \.\.\. / && $NF == expected { found = 1 }
+          END { exit !found }
+        ' "$result"; then
+          return 0
+        fi
+        cat "$result" >&2
+        echo "missing exact test marker $expected" >&2
+        return 1
+      }
+
+      # libtest joins the first captured line to its `test ...` prefix.
+      printf '%s\n' 'test fixture::clone ... host_continuation_siblings=64' \
+        > /tmp/test-marker-fixture
+      require_exact_test_marker host_continuation_siblings=64 /tmp/test-marker-fixture
+      if require_exact_test_marker host_continuation_siblings=6 /tmp/test-marker-fixture \
+        > /dev/null 2>&1; then
+        echo 'test marker parser accepted a partial value' >&2
+        exit 1
+      fi
+
+      run_host_clone_test \
+        crucible_api \
+        vm_lifecycle::hot_fork::tests::host_continuation_clone_cost_is_bounded_across_siblings \
+        /tmp/host-clone-cost-result
+      require_exact_test_marker host_continuation_siblings=64 /tmp/host-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq 'host_immutable_object_bytes=33554432' /tmp/host-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq 'host_shared_backing_copies=1' /tmp/host-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq 'host_clone_private_growth_limit_kib=65536' /tmp/host-clone-cost-result
+      run_host_clone_test \
+        crucible_qemu \
+        production_fault_runtime::checkpoint_codec::tests::fault_checkpoint_clone_cost_keeps_mutable_ledgers_private \
+        /tmp/fault-clone-cost-result
+      require_exact_test_marker fault_checkpoint_siblings=64 /tmp/fault-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq 'qemu_authentication_map_nodes=4096' /tmp/fault-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq 'qemu_authentication_map_copies=1' /tmp/fault-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq 'fault_clone_private_growth_limit_kib=32768' /tmp/fault-clone-cost-result
+      ${pkgs.grep}/bin/grep -Eq '^fault_clone_private_growth_kib=[0-9]+$' /tmp/fault-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq \
+        'child_private_ledgers=network-adapter,pending-qemu-events' /tmp/fault-clone-cost-result
+
+      run_exact_lib_test \
+        crucible-daemon \
+        qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically \
+        /tmp/daemon-scaling-result
+      ${pkgs.grep}/bin/grep -Fq 'child_ready_millis=' /tmp/daemon-scaling-result
+      ${pkgs.grep}/bin/grep -Fq 'child_private_dirty_kib=' /tmp/daemon-scaling-result
+      ${pkgs.grep}/bin/grep -Fq 'child_allocated_bytes=' /tmp/daemon-scaling-result
+      run_exact_lib_test \
+        crucible-daemon \
+        qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_vm_child_ready_p95_is_below_100_milliseconds \
+        /tmp/child-ready-p95-result
+      ${pkgs.grep}/bin/grep -Fxq \
+        'child_ready_reference=single-vm-64mib-1vcpu' /tmp/child-ready-p95-result
+      ${pkgs.grep}/bin/grep -Fxq 'child_ready_sample_count=20' /tmp/child-ready-p95-result
+      ${pkgs.grep}/bin/grep -Fxq \
+        'child_ready_p95_limit_ns=100000000' /tmp/child-ready-p95-result
+      ${pkgs.gawk}/bin/awk -F= '
+        $1 == "child_ready_samples_ns" {
+          sample_lines++;
+          count = split($2, raw, ",");
+          if (count != 20) bad = 1;
+          for (i = 1; i <= count; i++) {
+            if (raw[i] !~ /^[0-9]+$/) bad = 1;
+            samples[i] = raw[i] + 0;
+          }
+          if (count == 20) {
+            asort(samples);
+            # Nearest-rank p95 of 20 measurements is the 19th ordered value.
+            computed_p95 = samples[19];
+          }
+        }
+        $1 == "child_ready_p95_ns" {
+          p95_lines++;
+          if ($2 !~ /^[0-9]+$/) bad = 1;
+          reported_p95 = $2 + 0;
+        }
+        END {
+          if (sample_lines != 1 || p95_lines != 1 || bad ||
+              computed_p95 != reported_p95 || computed_p95 >= 100000000) exit 1;
+        }' /tmp/child-ready-p95-result
+      run_exact_lib_test \
+        crucible-daemon \
+        qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_semantic_template_depths \
+        /tmp/depth-scaling-result
+      ${pkgs.grep}/bin/grep -Fxq 'semantic_template_depth=3' /tmp/depth-scaling-result
+      ${pkgs.grep}/bin/grep -Fxq \
+        'descendant_template_generations=3' /tmp/depth-scaling-result
+      ${pkgs.gawk}/bin/awk -F= \
+        '$1 == "descendant_process_generations" {
+          count = split($2, generation, ",");
+          if (count == 3 && generation[2] == generation[1] + 1 &&
+              generation[3] == generation[2] + 1) found = 1;
+        }
+        END { exit found ? 0 : 1 }' /tmp/depth-scaling-result
+      for depth in 1 2 3; do
+        depth_private=$(${pkgs.gawk}/bin/awk -F= \
+          -v key="template_depth_''${depth}_private_rss_kib" \
+          '$1 == key {print $2}' /tmp/depth-scaling-result)
+        depth_disk=$(${pkgs.gawk}/bin/awk -F= \
+          -v key="template_depth_''${depth}_allocated_bytes" \
+          '$1 == key {print $2}' /tmp/depth-scaling-result)
+        depth_source_disk=$(${pkgs.gawk}/bin/awk -F= \
+          -v key="template_depth_''${depth}_source_allocated_bytes" \
+          '$1 == key {print $2}' /tmp/depth-scaling-result)
+        # CPERF-3 rejects a full private RAM or disk copy. The fixed additions
+        # cover the current QEMU allocator, page-table, and overlay metadata.
+        depth_disk_limit=$((depth_source_disk / 2 + 16777216))
+        [ "$depth_private" -le 98304 ]
+        [ "$depth_disk" -le "$depth_disk_limit" ]
+      done
+
+      run_exact_lib_test \
+        crucible-daemon \
+        qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_guest_memory_sizes \
+        /tmp/memory-scaling-result
+      ${pkgs.grep}/bin/grep -Fxq \
+        'guest_memory_profiles_mib=64,256,512' /tmp/memory-scaling-result
+      require_exact_test_marker \
+        sequential_sibling_counts=1,2,4 /tmp/memory-scaling-result
+      require_exact_test_marker \
+        ram_first_quantum_cold_reference_profiles_mib=64,256,512 \
+        /tmp/memory-scaling-result
+
+      run_exact_lib_test \
+        crucible-daemon \
+        qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::siblings::production_managed_source_keeps_bounded_native_siblings_live \
+        /tmp/simultaneous-siblings-result
+      require_exact_test_marker \
+        simultaneous_sibling_counts=1,2,4,8,16 /tmp/simultaneous-siblings-result
+      require_exact_test_marker \
+        simultaneous_source_boundary=authenticated-canonical-genesis \
+        /tmp/simultaneous-siblings-result
+      require_exact_test_marker \
+        simultaneous_child_boundary_equivalence=1,2,4,8,16 \
+        /tmp/simultaneous-siblings-result
+      require_exact_test_marker \
+        simultaneous_child_resource_isolation=cgroup,storage,run-state,project-id,ring,socket,overlay \
+        /tmp/simultaneous-siblings-result
+      require_exact_test_marker \
+        simultaneous_source_retirement=after-last-lease-release \
+        /tmp/simultaneous-siblings-result
+      require_exact_test_marker \
+        simultaneous_source_private_growth_limit_kib=16384 \
+        /tmp/simultaneous-siblings-result
+      for sibling_count in 1 2 4 8 16; do
+        require_exact_test_marker \
+          "simultaneous_''${sibling_count}_live_processes=$sibling_count" \
+          /tmp/simultaneous-siblings-result
+        ${pkgs.gawk}/bin/awk -F= -v count="$sibling_count" '
+          $1 == "simultaneous_" count "_child_ready_samples_ns" {
+            found++;
+            samples = split($2, raw, ",");
+            if (samples != count) bad = 1;
+            for (index = 1; index <= samples; index++) {
+              if (raw[index] !~ /^[0-9]+$/ || raw[index] + 0 <= 0) bad = 1;
+            }
+          }
+          END { exit found == 1 && !bad ? 0 : 1 }
+        ' /tmp/simultaneous-siblings-result
+        ${pkgs.gawk}/bin/awk -F= -v count="$sibling_count" '
+          $1 == "simultaneous_" count "_child_private_rss_kib" {
+            found++;
+            if ($2 !~ /^[0-9]+$/ || $2 > count * 163840) bad = 1;
+          }
+          END { exit found == 1 && !bad ? 0 : 1 }
+        ' /tmp/simultaneous-siblings-result
+        ${pkgs.gawk}/bin/awk -F= -v count="$sibling_count" '
+          $1 == "simultaneous_source_private_rss_baseline_kib" {
+            baseline_lines++;
+            if ($2 !~ /^[0-9]+$/) bad = 1;
+            baseline = $2 + 0;
+          }
+          $1 == "simultaneous_" count "_world_private_rss_kib" {
+            world_lines++;
+            if ($2 !~ /^[0-9]+$/) bad = 1;
+            world = $2 + 0;
+          }
+          END {
+            if (baseline_lines != 1 || world_lines != 1 || bad ||
+                world > baseline + 16384 + count * 163840) exit 1;
+          }
+        ' /tmp/simultaneous-siblings-result
+        ${pkgs.gawk}/bin/awk -F= -v count="$sibling_count" '
+          $1 == "simultaneous_" count "_child_allocated_bytes" {
+            found++;
+            if ($2 !~ /^[0-9]+$/) bad = 1;
+          }
+          END { exit found == 1 && !bad ? 0 : 1 }
+        ' /tmp/simultaneous-siblings-result
+      done
+
+      run_exact_lib_test \
+        crucible-daemon \
+        qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_whole_world_survives_ten_thousand_lifecycles_without_leaks \
+        /tmp/production-stress-result
+      ${pkgs.grep}/bin/grep -Fxq \
+        'production_whole_world_lifecycles=10000' /tmp/production-stress-result
+      ${pkgs.grep}/bin/grep -Fxq \
+        'qemu_child_pairing=exact_source_boundary' /tmp/production-stress-result
+      ${pkgs.grep}/bin/grep -Fxq 'source_threads_leaked=0' /tmp/production-stress-result
+      ${pkgs.grep}/bin/grep -Fxq 'source_descriptors_leaked=0' /tmp/production-stress-result
+      ${pkgs.grep}/bin/grep -Fxq 'stress_final_qemu_processes=0' /tmp/production-stress-result
+      for resource in source_disk target_disk run_state store; do
+        ${pkgs.gawk}/bin/awk -F= -v resource="$resource" '
+          $1 == "stress_" resource "_midpoint_bytes" {
+            midpoint_count++;
+            if ($2 !~ /^[0-9]+$/) bad = 1;
+            midpoint = $2 + 0;
+          }
+          $1 == "stress_" resource "_final_bytes" {
+            final_count++;
+            if ($2 !~ /^[0-9]+$/) bad = 1;
+            final = $2 + 0;
+          }
+          END { exit midpoint_count == 1 && final_count == 1 && !bad && final <= midpoint ? 0 : 1 }
+        ' /tmp/production-stress-result
+      done
+
+      run_exact_normal_lib_test \
+        crucible-daemon \
+        hot_checkpoint_manager::tests::ten_thousand_admissions_under_capacity_pressure_stay_bounded_and_secured \
+        /tmp/manager-pressure-result
+      require_exact_test_marker \
+        hot_checkpoint_pressure_admissions=10000 /tmp/manager-pressure-result
+      require_exact_test_marker \
+        hot_checkpoint_template_ceiling=4 /tmp/manager-pressure-result
+      require_exact_test_marker \
+        hot_checkpoint_retained_templates=4 /tmp/manager-pressure-result
+      require_exact_test_marker \
+        hot_checkpoint_capacity_demotions=9996 /tmp/manager-pressure-result
+      require_exact_test_marker \
+        hot_checkpoint_fallback_authentication=exact-checkpoint-id \
+        /tmp/manager-pressure-result
+
+      run_exact_lib_test \
+        crucible-daemon \
+        qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_meets_whole_world_performance_ratchets \
+        /tmp/performance-ratchet-result
+      for evidence in \
+        exact_restore_corpus_size=3 \
+        setup_speedup_minimum=5x \
+        steady_execution_overhead_limit_percent=10 \
+        campaign_planner_supervisor=packaged-process \
+        campaign_blob_backend=sqlite-store-graph \
+        campaign_short_branch_boundary=two-node-pending-selectable \
+        campaign_guest_cpu_affinity=0 \
+        known_dirty_guest_pages=1024 \
+        memory_metrics=VmPTE,VmData,AnonHugePages,numa_maps \
+        multi_node_launch_model=max-plus-bounded-orchestration; do
+        ${pkgs.grep}/bin/grep -Fxq "$evidence" /tmp/performance-ratchet-result
+      done
+      for index in 0 1 2; do
+        for metric in \
+          campaign_request_setup_ns \
+          campaign_planner_queue_ns \
+          campaign_storage_physical_bytes \
+          hot_guest_continuation_ns \
+          exact_guest_continuation_ns; do
+          ${pkgs.grep}/bin/grep -Eq \
+            "^corpus_''${index}_''${metric}=[1-9][0-9]*$" \
+            /tmp/performance-ratchet-result
+        done
+      done
+      ${pkgs.grep}/bin/grep -Eq '^campaign_planner_queue_total_ns=[1-9][0-9]*$' \
+        /tmp/performance-ratchet-result
+      ${pkgs.grep}/bin/grep -Eq '^hot_guest_continuation_total_ns=[1-9][0-9]*$' \
+        /tmp/performance-ratchet-result
+
+      run_exact_lib_test \
+        crucible-daemon \
+        qemu_hot_fork_world_factory::tests::native_acceptance::final_audit::production_hot_fork_resource_roots_are_clean_after_packaged_flights \
+        /tmp/final-resource-audit-result
+      for evidence in \
+        final_attempt_processes=0 \
+        final_qemu_processes=0 \
+        final_attempt_descriptors=0 \
+        final_attempt_process_memory_bytes=0 \
+        final_attempt_storage_entries=0; do
+        require_exact_test_marker "$evidence" /tmp/final-resource-audit-result
+      done
+      require_exact_test_marker \
+        final_store_verified_objects=2 /tmp/final-resource-audit-result
+
+      cat /tmp/host-clone-cost-result \
+        /tmp/fault-clone-cost-result \
+        /tmp/daemon-scaling-result \
+        /tmp/child-ready-p95-result \
+        /tmp/depth-scaling-result \
+        /tmp/memory-scaling-result \
+        /tmp/simultaneous-siblings-result \
+        /tmp/production-stress-result \
+        /tmp/manager-pressure-result \
+        /tmp/performance-ratchet-result \
+        /tmp/final-resource-audit-result > /tmp/hot-fork-scaling-measurements
+      printf '%s\n' \
+        PASS \
+        'gate=gate:hot-fork-scaling' \
+        'scope=production-native-qemu' \
+        'performance_owner=production-whole-world' \
+        'guest_memory_profiles_mib=64,256,512' \
+        'sequential_sibling_counts=1,2,4' \
+        'simultaneous_sibling_counts=1,2,4,8,16' \
+        'simultaneous_max_live_qemu_children=16' \
+        'ram_first_quantum_cold_reference_profiles_mib=64,256,512' \
+        'production_whole_world_lifecycles=10000' \
+        'hot_checkpoint_pressure_admissions=10000' \
+        'hot_checkpoint_template_ceiling=4' \
+        'hot_checkpoint_retained_templates=4' \
+        'semantic_template_depth=3' \
+        'standalone_stress_path=removed' \
+        'pressure=cgroup-memory,pids,project-quota' \
+        'descendant_template_generations=3' \
+        'final_resource_audit=process,descriptors,memory,attempt-storage,content-store' \
+        'check=${attrPath}' \
+        'tasks=${builtins.concatStringsSep "," taskIds}' \
+        >> /tmp/hot-fork-scaling-measurements
+      cat /tmp/hot-fork-scaling-measurements
+      ${pkgs.util-linux}/bin/umount /tmp/attempts
+      trap - EXIT HUP INT TERM
+    '';
+  }

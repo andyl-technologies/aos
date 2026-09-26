@@ -1,4 +1,4 @@
-# Patch 0082: deterministic instruction input-state selectors
+# Capability task 0082: deterministic instruction input-state selectors
 
 ## Capability
 
@@ -88,7 +88,7 @@ terminal record cannot prove saturation merely by self-reporting it.
 
 The same live test source previously treated the nonzero
 `architecture_default` exception-record discriminator as reserved zero bytes.
-Patch 0082 corrects that expectation to discriminator `1` followed by zeroed
+Capability task 0082 corrects that expectation to discriminator `1` followed by zeroed
 reserved bytes because the expanded acceptance matrix reaches this existing
 version-2 exception envelope before validating the new selector behavior.
 
@@ -96,7 +96,7 @@ The implementation modifies `include/qemu/crucible-fault.h`,
 `plugins/crucible-fault-register.c`,
 `plugins/crucible-fault-instruction.c`, and the GPL-side live test plugin
 `tests/tcg/plugins/crucible-instruction.c`. The bare-metal guest fixtures and
-Nix harness remain Apache-side test inputs. The patch adds no process-boundary
+Nix harness remain Apache-side test inputs. The atomic patch adds no process-boundary
 ABI and no new file, so the existing per-file licenses and
 corresponding-source inventory remain unchanged.
 
@@ -107,5 +107,5 @@ successfully reuses it in a fresh process for both single and composed x86-64
 and AArch64 result transforms. Its explicit mismatch case remains suppressed,
 the naturally faulting load proves install-before-fault retry semantics, the
 full 4,096-slot event queue is saturated using a minimum-size bare-metal guest,
-and stock QEMU remains unable to load the fault plugin. The patch microtest is
+and stock QEMU remains unable to load the fault plugin. The focused capability test is
 `checks.crucible.phase2.gates.patchMicrotests` and records `T-QEMU-0082`.

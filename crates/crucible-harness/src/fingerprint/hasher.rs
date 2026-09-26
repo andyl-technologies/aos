@@ -42,8 +42,8 @@ impl FingerprintHasher {
         self.write_u64(bytes.len() as u64);
 
         let (chunks, remainder) = bytes.as_chunks::<8>();
-        for word in chunks {
-            self.mix_word(u64::from_le_bytes(*word));
+        for chunk in chunks {
+            self.mix_word(u64::from_le_bytes(*chunk));
         }
 
         if !remainder.is_empty() {

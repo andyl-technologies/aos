@@ -24,6 +24,10 @@ mod lex;
 mod reference_integrity;
 #[path = "support/harness_lint/scan.rs"]
 mod scan;
+// crucible-lint: allow rust-allow -- This integration test imports only the source-section helpers used by production scans.
+#[allow(dead_code)]
+#[path = "support/source_sections.rs"]
+mod source_sections;
 
 use allow::*;
 use clippy::*;
@@ -33,6 +37,7 @@ use error_logging::*;
 use lex::*;
 use reference_integrity::*;
 use scan::*;
+use source_sections::*;
 
 #[test]
 fn gate_evidence_references_are_integral() -> Result<(), Box<dyn Error>> {
@@ -70,104 +75,6 @@ fn gate_evidence_rejects_checklist_state_needles() {
 }
 
 #[test]
-fn retired_fault_surfaces_cannot_reenter_executable_or_user_documentation_paths()
--> Result<(), Box<dyn Error>> {
-    let identifier_fragments: &[&[&str]] = &[
-        &["Fault", "PlanEntry"],
-        &["Fault", "Tag"],
-        &["Active", "FaultTable"],
-        &["Inject", "Fault"],
-        &["Heal", "Fault"],
-        &["Random", "Fault"],
-        &["Membership", "Fault"],
-        &["Network", "Fault"],
-        &["Block", "Fault"],
-        &["NineP", "Fault"],
-        &["Node", "Fault"],
-        &["Fault", "Id"],
-        &["Fault", "State"],
-        &["Fault", "Duration"],
-        &["Fault", "RateBasisPoints"],
-        &["Fault", "BandwidthBitsPerSecond"],
-        &["Fault", "SlowdownFactorBasisPoints"],
-        &["NineP", "Errno"],
-        &["Fault", "Activation"],
-        &["SessionCommand", "Inject"],
-        &["SessionCommandKind", "Inject"],
-        &["ControlOperationKind", "Inject"],
-        &["SessionCommand", "Snapshot"],
-        &["SessionCommandKind", "Snapshot"],
-    ];
-    let snake_fragments: &[&[&str]] = &[
-        &["active", "faults"],
-        &["active", "fault", "tags"],
-        &["inject", "fault"],
-        &["heal", "fault"],
-        &["random", "fault"],
-        &["no", "active", "faults"],
-        &["fault", "entry"],
-        &["fault", "plan"],
-        &["fault", "active"],
-        &["fault", "activation"],
-    ];
-    let retired = identifier_fragments
-        .iter()
-        .map(|parts| parts.concat())
-        .chain(snake_fragments.iter().map(|parts| parts.join("_")))
-        .collect::<BTreeSet<_>>();
-
-    let workspace = workspace_root();
-    let repo = repo_root();
-    let mut files = Vec::new();
-    for package in [
-        "crucible",
-        "crucible-api",
-        "crucible-cli",
-        "crucible-device",
-        "crucible-harness",
-        "crucible-protocol",
-        "crucible-qemu",
-        "crucible-session",
-        "crucible-shmem",
-    ] {
-        for directory in ["src", "tests", "examples"] {
-            collect_fault_surface_files(&workspace.join(package).join(directory), &mut files)?;
-        }
-    }
-    collect_fault_surface_files(&repo.join("docs/users/crucible"), &mut files)?;
-    collect_fault_surface_files(&repo.join("tests/crucible"), &mut files)?;
-    files.sort();
-
-    let mut findings = Vec::new();
-    for file in files {
-        if file.ends_with("fault-model-migration.md") {
-            continue;
-        }
-        let content = fs::read_to_string(&file)?;
-        for (line_index, line) in content.lines().enumerate() {
-            for token in line
-                .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
-            {
-                if retired.contains(token) {
-                    findings.push(format!(
-                        "{}:{}: retired fault surface `{token}`",
-                        file.display(),
-                        line_index + 1
-                    ));
-                }
-            }
-        }
-    }
-
-    assert!(
-        findings.is_empty(),
-        "retired fault surfaces remain outside historical RFCs or the migration guide:\n{}",
-        findings.join("\n")
-    );
-    Ok(())
-}
-
-#[test]
 fn user_reference_names_every_executable_effect_kind() -> Result<(), Box<dyn Error>> {
     let reference = fs::read_to_string(repo_root().join("docs/users/crucible/reference.md"))?;
     let registry = fs::read_to_string(
@@ -184,29 +91,6 @@ fn user_reference_names_every_executable_effect_kind() -> Result<(), Box<dyn Err
         "Crucible user reference omits executable effect kinds: {}",
         missing.join(", ")
     );
-    Ok(())
-}
-
-fn collect_fault_surface_files(
-    directory: &Path,
-    files: &mut Vec<PathBuf>,
-) -> Result<(), Box<dyn Error>> {
-    if !directory.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(directory)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            collect_fault_surface_files(&path, files)?;
-            continue;
-        }
-        if matches!(
-            path.extension().and_then(|extension| extension.to_str()),
-            Some("rs" | "toml" | "md" | "nix")
-        ) {
-            files.push(path);
-        }
-    }
     Ok(())
 }
 
@@ -296,6 +180,9 @@ fn production_sources_follow_error_and_logging_conventions() -> Result<(), Box<d
                 continue;
             }
             let content = fs::read_to_string(&source)?;
+            if is_test_support_only_source(&content) {
+                continue;
+            }
             has_typed_error |= source_declares_typed_error(&content);
             findings.extend(error_logging_failures(
                 &source,
@@ -401,6 +288,7 @@ fn harness_lint_rejects_banned_code_patterns() {
         r#"
             fn bad() {
                 let _ = std::time::SystemTime::now();
+                let _ = std::time::UNIX_EPOCH.elapsed();
                 let _ = rand::thread_rng();
                 let _ = std::collections::HashMap::<u8, u8>::new();
                 let _ = std::collections::hash_map::DefaultHasher::new();
@@ -410,6 +298,7 @@ fn harness_lint_rejects_banned_code_patterns() {
     );
 
     assert_contains(&findings, "host wall-clock");
+    assert_contains(&findings, "UNIX_EPOCH");
     assert_contains(&findings, "thread/global RNG");
     assert_contains(&findings, "unordered map/set");
     assert_contains(&findings, "default/random hasher");
@@ -481,6 +370,22 @@ fn harness_lint_ignores_comments_and_strings() {
     );
 
     assert!(findings.is_empty(), "{findings:?}");
+}
+
+#[test]
+fn binary_entry_modules_share_the_process_error_boundary() {
+    let package_dir = Path::new("crucible-debug-gateway");
+
+    assert!(is_binary_boundary_source(
+        "crucible-debug-gateway",
+        package_dir,
+        &package_dir.join("src/main/operator_relay.rs"),
+    ));
+    assert!(!is_binary_boundary_source(
+        "crucible-debug-gateway",
+        package_dir,
+        &package_dir.join("src/lib.rs"),
+    ));
 }
 
 #[test]

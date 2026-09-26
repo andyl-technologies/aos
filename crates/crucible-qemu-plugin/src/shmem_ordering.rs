@@ -9,8 +9,8 @@
 //! publish data to another process.
 
 use crucible_shmem::{
-    FrameEntry, FutexError, FutexWait, FutexWaitOutcome, NodeSlot, NodeSlotError,
-    RegionControlAction, RegionHeader, RingHeader, SpscRingError, WakeAction,
+    AdvanceStopCondition, FrameEntry, FutexError, FutexWait, FutexWaitOutcome, NodeSlot,
+    NodeSlotError, RegionControlAction, RegionHeader, RingHeader, SpscRingError, WakeAction,
 };
 #[cfg(unix)]
 use crucible_shmem::{
@@ -54,10 +54,16 @@ impl PluginShmemOrdering {
         mapped_region.validate_header()
     }
 
-    /// Loads the scheduler-published advance ceiling with acquire ordering.
-    #[must_use]
-    pub fn load_scheduler_ceiling(slot: &NodeSlot) -> u64 {
-        slot.load_node_ceiling()
+    /// Loads a ceiling paired with a stable, validated advance-stop condition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError::InvalidAdvanceStopCondition`] when the current
+    /// shared-memory byte is not a current-ABI encoding.
+    pub fn load_scheduler_advance(
+        slot: &NodeSlot,
+    ) -> Result<(u64, AdvanceStopCondition), NodeSlotError> {
+        slot.load_scheduler_advance()
     }
 
     /// Publishes the plugin's reached icount and derived virtual time.
@@ -72,9 +78,16 @@ impl PluginShmemOrdering {
     pub fn publish_reached_icount(
         slot: &NodeSlot,
         reached_icount: u64,
-        shift_bits: u8,
     ) -> Result<(), NodeSlotError> {
-        slot.publish_reached_icount(reached_icount, shift_bits)
+        slot.publish_reached_icount(reached_icount)
+    }
+
+    /// Publishes the validated native timer callback record before its logical wake.
+    pub fn publish_virtual_timer_witness(
+        slot: &NodeSlot,
+        witness: crucible_shmem::VirtualTimerFireWitness,
+    ) {
+        slot.publish_virtual_timer_witness(witness);
     }
 
     /// Publishes the plugin's idle state and prepares a futex wait decision.
@@ -90,24 +103,21 @@ impl PluginShmemOrdering {
         slot: &NodeSlot,
         reached_icount: u64,
         idle_wake_icount: u64,
-        shift_bits: u8,
     ) -> Result<FutexWait, NodeSlotError> {
-        slot.publish_idle(reached_icount, idle_wake_icount, shift_bits)
+        slot.publish_idle(reached_icount, idle_wake_icount)
     }
 
     /// Publishes that the plugin is quiesced at an exact coordinated-pause boundary.
     ///
     /// # Errors
     ///
-    /// Returns [`NodeSlotError`] when virtual-time conversion fails under
-    /// `shift_bits`.
+    /// Returns [`NodeSlotError`] when the exact tick cannot be published.
     pub fn publish_pause_quiesced(
         slot: &NodeSlot,
         reached_icount: u64,
         raw_icount: u64,
-        shift_bits: u8,
     ) -> Result<(), NodeSlotError> {
-        slot.publish_pause_quiesced(reached_icount, raw_icount, shift_bits)
+        slot.publish_pause_quiesced(reached_icount, raw_icount)
     }
 
     /// Returns whether the host requested a QEMU main-loop control boundary.
@@ -125,15 +135,13 @@ impl PluginShmemOrdering {
     ///
     /// # Errors
     ///
-    /// Returns [`NodeSlotError`] when virtual-time conversion fails under
-    /// `shift_bits`.
+    /// Returns [`NodeSlotError`] when the exact tick cannot be published.
     pub fn publish_control_boundary(
         slot: &NodeSlot,
         reached_icount: u64,
         raw_icount: u64,
-        shift_bits: u8,
     ) -> Result<(), NodeSlotError> {
-        slot.publish_control_boundary(reached_icount, raw_icount, shift_bits)
+        slot.publish_control_boundary(reached_icount, raw_icount)
     }
 
     /// Returns a pending host request to reconstruct plugin logical time.
@@ -155,9 +163,8 @@ impl PluginShmemOrdering {
         request: crucible_shmem::LogicalTimeRestoreRequest,
         reached_icount: u64,
         raw_icount: u64,
-        shift_bits: u8,
     ) -> Result<(), NodeSlotError> {
-        slot.acknowledge_logical_time_restore(request, reached_icount, raw_icount, shift_bits)
+        slot.acknowledge_logical_time_restore(request, reached_icount, raw_icount)
     }
 
     /// Recomputes the race-free futex wait decision with acquire loads.
@@ -203,8 +210,8 @@ impl PluginShmemOrdering {
     /// holds so it can idle-jump the guest directly to the completion instead of
     /// freezing to the scheduler ceiling.
     #[must_use]
-    pub fn device_completion_deadline_icount(slot: &NodeSlot) -> u64 {
-        slot.device_completion_deadline_icount()
+    pub fn device_completion_deadline_tick(slot: &NodeSlot) -> u64 {
+        slot.device_completion_deadline_tick()
     }
 
     /// Publishes that plugin-submitted device I/O is in flight.
@@ -296,7 +303,8 @@ impl PluginShmemOrdering {
 #[cfg(test)]
 mod tests {
     use crucible_shmem::{
-        FrameEntry, KIND_VM, NodeSlot, RegionConfig, RegionHeader, RegionLayout, RingHeader,
+        AdvanceStopCondition, FrameEntry, KIND_VM, NodeSlot, RegionConfig, RegionHeader,
+        RegionLayout, RingHeader,
     };
 
     use super::PluginShmemOrdering;
@@ -304,7 +312,7 @@ mod tests {
     #[test]
     fn shmem_ordering_facade_publishes_idle_state_and_observes_ceiling() {
         let slot = NodeSlot::new(KIND_VM);
-        let wait = match PluginShmemOrdering::publish_idle_wait(&slot, 0, 1, 0) {
+        let wait = match PluginShmemOrdering::publish_idle_wait(&slot, 0, 1) {
             Ok(wait) => wait,
             Err(error) => {
                 panic!("idle publish should use the safe slot ordering helper: {error}");
@@ -312,7 +320,10 @@ mod tests {
         };
 
         assert_eq!(wait, crucible_shmem::FutexWait::Wait { expected: 0 });
-        assert_eq!(PluginShmemOrdering::load_scheduler_ceiling(&slot), 0);
+        assert_eq!(
+            PluginShmemOrdering::load_scheduler_advance(&slot),
+            Ok((0, AdvanceStopCondition::Ceiling))
+        );
         let snapshot = slot.snapshot();
         assert_eq!(snapshot.current_icount, 0);
         assert_eq!(snapshot.idle_wake_icount, 1);
@@ -352,7 +363,7 @@ mod tests {
 
     #[test]
     fn shmem_ordering_facade_observes_shutdown_requested() {
-        let layout = match RegionLayout::for_config(RegionConfig::new(1, 2, 0)) {
+        let layout = match RegionLayout::for_config(RegionConfig::new(1, 2)) {
             Ok(layout) => layout,
             Err(error) => panic!("test region layout should be valid: {error}"),
         };

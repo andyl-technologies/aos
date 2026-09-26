@@ -174,115 +174,48 @@
   in
     result.out;
 
-  lowerAscii = value:
-    builtins.replaceStrings
-    [
-      "A"
-      "B"
-      "C"
-      "D"
-      "E"
-      "F"
-      "G"
-      "H"
-      "I"
-      "J"
-      "K"
-      "L"
-      "M"
-      "N"
-      "O"
-      "P"
-      "Q"
-      "R"
-      "S"
-      "T"
-      "U"
-      "V"
-      "W"
-      "X"
-      "Y"
-      "Z"
-    ]
-    [
-      "a"
-      "b"
-      "c"
-      "d"
-      "e"
-      "f"
-      "g"
-      "h"
-      "i"
-      "j"
-      "k"
-      "l"
-      "m"
-      "n"
-      "o"
-      "p"
-      "q"
-      "r"
-      "s"
-      "t"
-      "u"
-      "v"
-      "w"
-      "x"
-      "y"
-      "z"
-    ]
-    value;
-
   targets = [
     {
       gate = "gate:abi-conformance";
       package = "crucible-harness";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = true;
     }
     {
       gate = "gate:abi-conformance";
       package = "crucible-shmem";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = true;
     }
     {
       gate = "gate:layer1-injection";
       package = "crucible-shmem";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:abi-conformance";
       package = "crucible-protocol";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = true;
     }
     {
       gate = "gate:abi-conformance";
       package = "crucible-api";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = true;
     }
     {
       gate = "gate:layer1-injection";
       package = "crucible-device";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:replay-oracle";
       package = "crucible";
       testTarget = "gate_replay_oracle";
       requiredFeatures = ["test-double"];
-      placeholder = false;
     }
   ];
 
@@ -294,42 +227,6 @@
     "FifoOrder"
     "FullEmpty"
     "Wraparound"
-  ];
-
-  concurrentSourceContextMarkers = [
-    "spsc"
-    "ring"
-    "queue"
-    "lockfree"
-    "lock-free"
-    "atomic"
-  ];
-
-  atomicPrimitiveMarkers = [
-    "Atomic"
-    "core::sync::atomic"
-    "std::sync::atomic"
-    "compare_exchange"
-    "fetch_add"
-    "fetch_sub"
-    "fetch_or"
-    "fetch_and"
-    "fetch_xor"
-    "fetch_update"
-  ];
-
-  contextualAtomicMarkers = [
-    "Ordering::"
-    ".load("
-    ".store("
-    ".swap("
-  ];
-
-  unsafePrimitiveMarkers = [
-    "unsafe {"
-    "unsafe fn"
-    "unsafe impl"
-    "unsafe extern"
   ];
 
   abiMarkers = [
@@ -468,12 +365,30 @@
     then null
     else builtins.head matches;
 
+  rustSourcePaths = dir: let
+    entries =
+      if builtins.pathExists dir
+      then builtins.readDir dir
+      else {};
+  in
+    lib.concatMap (
+      name: let
+        path = dir + "/${name}";
+        kind = entries.${name};
+      in
+        if kind == "directory"
+        then rustSourcePaths path
+        else if kind == "regular" && lib.hasSuffix ".rs" name
+        then [path]
+        else []
+    ) (lib.sort builtins.lessThan (builtins.attrNames entries));
+
   sourceFor = target: let
     path = cratesDir + "/${target.package}/tests/${target.testTarget}.rs";
+    moduleDir = cratesDir + "/${target.package}/tests/${target.testTarget}";
+    paths = lib.optionals (builtins.pathExists path) [path] ++ rustSourcePaths moduleDir;
   in
-    if builtins.pathExists path
-    then builtins.readFile path
-    else "";
+    builtins.concatStringsSep "\n" (map builtins.readFile paths);
 
   targetStandardFailures = standard: target:
     lib.optionals (target.gate != standard.gate) [
@@ -486,69 +401,13 @@
   bodyMarkerFailures = standard: target: content: let
     code = scrubCommentsAndStrings content;
   in
-    lib.optionals (!target.placeholder) (
-      lib.concatMap (
-        marker:
-          lib.optionals (!(hasInfix marker code)) [
-            "${target.package}:${target.testTarget} must check ${marker} for ${standard.id}"
-          ]
-      )
-      standard.requiredMarkers
-    );
-
-  rustSources = dir: displayPrefix: let
-    entries =
-      if builtins.pathExists dir
-      then builtins.readDir dir
-      else {};
-  in
     lib.concatMap (
-      name: let
-        path = dir + "/${name}";
-        display = "${displayPrefix}/${name}";
-        kind = entries.${name};
-      in
-        if kind == "directory"
-        then rustSources path display
-        else if kind == "regular" && lib.hasSuffix ".rs" name
-        then [
-          {
-            inherit path display;
-            fileName = name;
-          }
+      marker:
+        lib.optionals (!(hasInfix marker code)) [
+          "${target.package}:${target.testTarget} must check ${marker} for ${standard.id}"
         ]
-        else []
-    ) (lib.sort builtins.lessThan (builtins.attrNames entries));
-
-  concurrentPrimitiveBeforeModelFailures = sourceLabel: fileName: content: placeholder: let
-    code = scrubCommentsAndStrings content;
-    lowerName = lowerAscii fileName;
-    lowerCode = lowerAscii code;
-    hasContext =
-      builtins.any (
-        marker: hasInfix marker lowerName || hasInfix marker lowerCode
-      )
-      concurrentSourceContextMarkers;
-    hasAtomic = builtins.any (marker: hasInfix marker code) atomicPrimitiveMarkers;
-    hasContextualAtomic = builtins.any (marker: hasInfix marker code) contextualAtomicMarkers;
-    hasUnsafe = builtins.any (marker: hasInfix marker code) unsafePrimitiveMarkers;
-  in
-    lib.optionals (placeholder && (hasAtomic || (hasContext && (hasContextualAtomic || hasUnsafe)))) [
-      "${sourceLabel}: concurrent shmem primitive cannot land before the exhaustive-ordering gate body"
-    ];
-
-  spscTarget = targetFor {
-    package = "crucible-shmem";
-    testTarget = "gate_layer1_injection";
-  };
-  spscPlaceholder =
-    if spscTarget == null
-    then false
-    else spscTarget.placeholder;
-  shmemConcurrentPrimitiveFailures = lib.concatMap (
-    source:
-      concurrentPrimitiveBeforeModelFailures "crates/crucible-shmem/src/${source.display}" source.fileName (builtins.readFile source.path) spscPlaceholder
-  ) (rustSources (cratesDir + "/crucible-shmem/src") "src");
+    )
+    standard.requiredMarkers;
 
   standardFailures =
     lib.concatMap (
@@ -586,14 +445,10 @@
     "SPSC_RING_MARKERS"
     "ABI_MARKERS"
     "HARNESS_ABI_MARKERS"
-    "CONCURRENT_SOURCE_CONTEXT_MARKERS"
-    "ATOMIC_PRIMITIVE_MARKERS"
-    "concurrent_primitive_before_model_failures"
     "PROTOCOL_CODEC_FUZZ_MARKERS"
     "DEVICE_INJECTION_MARKERS"
     "REPLAY_ORACLE_MARKERS"
     "advanced_standard_regression_failures"
-    "spsc_ring_unsafe_without_model_failures"
     "assert_spsc_ring_exhaustive_ordering_model("
     "assert_spsc_ring_exhaustive_trace_properties("
     "assert_frozen_golden_vectors("
@@ -617,7 +472,6 @@
       package = "crucible-shmem";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = false;
     };
     spscStandard = builtins.elemAt standards 1;
     replayStandard = builtins.elemAt standards 7;
@@ -633,16 +487,7 @@
         package = "crucible";
         testTarget = "gate_replay_oracle";
         requiredFeatures = [];
-        placeholder = true;
-      }
-      ++ concurrentPrimitiveBeforeModelFailures "crates/crucible-shmem/src/ring.rs" "ring.rs" ''
-        use core::sync::atomic::{AtomicUsize, Ordering};
-
-        fn publish(head: &AtomicUsize) {
-          head.store(1, Ordering::Release);
-        }
-      ''
-      true;
+      };
     hasFinding = needle: builtins.any (finding: hasInfix needle finding) findings;
   in
     lib.optionals (!(hasFinding "must check assert_spsc_ring_exhaustive_ordering_model(")) [
@@ -650,16 +495,12 @@
     ]
     ++ lib.optionals (!(hasFinding "features [test-double]")) [
       "advanced-test regression failed to reject missing replay-oracle feature"
-    ]
-    ++ lib.optionals (!(hasFinding "concurrent shmem primitive")) [
-      "advanced-test regression failed to reject atomics before SPSC model coverage"
     ];
 
   failures =
     standardFailures
     ++ abiOwnerFailures
     ++ boundaryAbiFailures
-    ++ shmemConcurrentPrimitiveFailures
     ++ rustHarnessFailures
     ++ regressionFailures;
 in

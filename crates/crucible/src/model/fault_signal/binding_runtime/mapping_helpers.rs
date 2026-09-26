@@ -39,17 +39,19 @@ pub(super) fn map_binding(
             };
             if desired == state.active {
                 state.pending_activation = None;
-                state.pending_since_nanos = None;
+                state.pending_since_ticks = None;
                 return Ok(MappingDecision::NoAction);
             }
             if state.pending_activation != Some(desired) {
                 state.pending_activation = Some(desired);
-                state.pending_since_nanos = Some(now);
+                state.pending_since_ticks = Some(now);
                 if *residence_nanos > 0 {
                     return Ok(MappingDecision::NoAction);
                 }
             }
-            if now.saturating_sub(state.pending_since_nanos.unwrap_or(now)) < *residence_nanos {
+            if u128::from(now.saturating_sub(state.pending_since_ticks.unwrap_or(now)))
+                < u128::from(*residence_nanos) * u128::from(SIM_TICKS_PER_NS)
+            {
                 Ok(MappingDecision::NoAction)
             } else {
                 Ok(MappingDecision::Persistent(desired))
@@ -256,10 +258,10 @@ pub(super) fn sample_identity_digest(
         return mapped_digest;
     }
     let mut material = format!(
-        "binding={};mapped={};virtual_nanos={};retired_instructions={:?};same_coordinate_sequence={};opportunity=",
+        "binding={};mapped={};virtual_ticks={};retired_instructions={:?};same_coordinate_sequence={};opportunity=",
         binding.id().as_str(),
         mapped_digest.to_hex(),
-        coordinate.virtual_nanos,
+        coordinate.virtual_ticks,
         coordinate.retired_instructions,
         same_coordinate_sequence,
     );
@@ -281,10 +283,10 @@ pub(super) fn search_decision_identity(
     ContentHash::from_canonical_material(
         "crucible.binding-search-decision.v1",
         &format!(
-            "binding={};sample={};virtual_nanos={};retired={};same_coordinate_sequence={same_coordinate_sequence};transition_sequence={transition_sequence}",
+            "binding={};sample={};virtual_ticks={};retired={};same_coordinate_sequence={same_coordinate_sequence};transition_sequence={transition_sequence}",
             binding.id().as_str(),
             sample.to_hex(),
-            coordinate.virtual_nanos,
+            coordinate.virtual_ticks,
             coordinate
                 .retired_instructions
                 .map_or_else(|| String::from("none"), |value| value.to_string()),

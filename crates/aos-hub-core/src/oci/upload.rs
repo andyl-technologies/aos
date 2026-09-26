@@ -539,7 +539,6 @@ impl RpcService {
                 "cancelled OCI upload left staging cleanup pending"
             );
         }
-
         let mut response = StatusCode::NO_CONTENT.into_response();
         add_distribution_version(&mut response);
         response

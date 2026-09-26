@@ -1,0 +1,1385 @@
+//! Prepared finding publication and reconciliation tests.
+
+use super::*;
+use crate::executor_supervisor::AllowAllAttemptAdmission;
+use crucible::{
+    EventLogTime, FailureClusterReportFailure, FailureTriageReplayEvidence, Icount, NodeId,
+    SchedulerEventLogEntry,
+};
+use crucible_campaign::{
+    CampaignRecordKind, FindingCandidateCore, FindingExactRetentionDisposition,
+    FindingExactRetentionIncomplete,
+};
+
+fn prepared_finding_triage_logs() -> (Vec<SchedulerEventLogEntry>, Vec<SchedulerEventLogEntry>) {
+    let node = NodeId {
+        name: String::from("prepared-finding-triage"),
+    };
+    let at = EventLogTime::from_virtual_time(VirtualTime { ticks: 9 })
+        .with_icount(node, Icount { retired: 37 });
+    let expected = SchedulerEventLogEntry::execution_budget_exhausted_with_time(
+        0,
+        at.clone(),
+        "execution-quanta",
+    );
+    let reproduced =
+        SchedulerEventLogEntry::execution_budget_exhausted_with_time(0, at, "virtual-time");
+    (vec![expected], vec![reproduced])
+}
+
+#[test]
+fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure() {
+    let scenario = crucible::happy_path_scenario()
+        .expect("happy-path scenario")
+        .scenario;
+    let schedule = Schedule::empty()
+        .appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+            at: VirtualTime { ticks: 1 },
+            order: Vec::new(),
+        }))
+        .appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+            at: VirtualTime { ticks: 2 },
+            order: Vec::new(),
+        }));
+    let scenario_record = encode_crucible_scenario_artifact(&scenario).expect("scenario record");
+    let genesis = encode_crucible_configuration_artifact(&scenario_record, &Schedule::empty())
+        .expect("genesis configuration");
+    let child = encode_crucible_configuration_artifact(&scenario_record, &schedule)
+        .expect("finding configuration");
+
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "prepared-finding-publication",
+            u64::MAX,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    repository
+        .publish_scenario_artifact(
+            scenario_record.scenario(),
+            scenario_record.payload_schema(),
+            scenario_record.payload().to_vec(),
+        )
+        .expect("publish scenario");
+    repository
+        .publish_configuration_artifact(
+            genesis.scenario(),
+            genesis.scenario_artifact(),
+            genesis.configuration(),
+            genesis.payload_schema(),
+            genesis.payload().to_vec(),
+        )
+        .expect("publish genesis");
+    let lineage = CampaignLineage::new(
+        scenario_record.scenario(),
+        scenario_record.id().expect("scenario ID"),
+        genesis.configuration(),
+        genesis.id().expect("genesis ID"),
+        "crucible-test",
+        "qemu-test",
+        BTreeMap::from([(String::from("control"), 1)]),
+        scenario_record.payload_schema(),
+        1,
+    )
+    .expect("campaign lineage");
+    let widening = ProgressiveWideningPolicy::new(
+        crucible_campaign::ExactRational::new(1, 1).expect("widening numerator"),
+        crucible_campaign::ExactRational::new(1, 2).expect("widening exponent"),
+        1,
+        100,
+        1,
+    )
+    .expect("widening policy");
+    let policy = CampaignPolicy::new(
+        CampaignPolicy::identity(
+            lineage.scenario(),
+            CampaignSeed::from_bytes([7; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::TreeSearch {
+                widening: Some(widening),
+                puct: PuctPolicy::new(1_000_000, 1, 0),
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness policy"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
+    )
+    .expect("campaign policy");
+    let created = repository
+        .create("prepared-finding", &lineage, &policy, &BTreeMap::new())
+        .expect("create campaign");
+    let resumed = repository
+        .apply_control(
+            "prepared-finding",
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "test",
+                    b"resume-prepared-finding",
+                )),
+                expected_snapshot: created.snapshot_id(),
+                action: CampaignControlAction::Resume,
+            },
+        )
+        .expect("resume campaign");
+    let funded = repository
+        .apply_control(
+            "prepared-finding",
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "test",
+                    b"fund-prepared-finding",
+                )),
+                expected_snapshot: resumed.new_snapshot,
+                action: CampaignControlAction::GrantBudget(
+                    BudgetGrant::new(0, 1).expect("attempt grant"),
+                ),
+            },
+        )
+        .expect("fund campaign");
+    let attempt = repository
+        .admit_initial_discovery_if_ready("prepared-finding")
+        .expect("admit initial discovery")
+        .expect("discovery attempt");
+    assert_ne!(funded.new_snapshot, created.snapshot_id());
+    let attempt_record = repository.load_attempt(attempt).expect("load attempt");
+
+    let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
+    let declaration = SelectableDeclaration::new(
+        "product.test.prepared-finding-choice",
+        ChoiceSource::Scheduler {
+            producer: String::from("prepared-finding-test"),
+        },
+        domain.clone(),
+        ChoiceValue::Boolean(false),
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("selectable declaration");
+    let opportunity = ChoiceOpportunity::new(
+        lineage.scenario(),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test", b"prepared-finding-scheduler"),
+            producer: CampaignHash::derive("test", b"prepared-finding-producer"),
+        },
+        "prepared-finding-choice",
+        None,
+    )
+    .expect("choice opportunity");
+    let discovery =
+        ChoiceDiscovery::new(declaration, domain, opportunity.clone()).expect("discovery");
+    let measurements = crate::crucible_measurement::empty_test_measurement_set();
+    let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
+    let coverage =
+        CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage projection");
+    let observation = Observation::new(
+        attempt,
+        Observation::outcome(
+            child.configuration(),
+            child.id().expect("child ID"),
+            attempt_record.path(),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements.id().expect("measurement ID"),
+            properties.id().expect("property ID"),
+            coverage.id().expect("coverage ID"),
+        ),
+        BTreeSet::from([opportunity.id().expect("opportunity ID")]),
+    )
+    .expect("observation");
+    let observation_candidate = ObservationCandidate::new(
+        child.clone(),
+        measurements,
+        properties.clone(),
+        coverage,
+        vec![discovery],
+        observation,
+    )
+    .expect("observation candidate");
+    let executor_store = CampaignExecutorStore::new(Arc::clone(&repository));
+    let observation = observation_candidate
+        .observation()
+        .id()
+        .expect("observation ID");
+
+    let provisional_fingerprint = ContentHash::from_bytes(b"published-finding-fingerprint");
+    let finding = FindingReproductionArtifact::capture(
+        FindingDiscoveryPath::StateSpaceSearch,
+        provisional_fingerprint,
+        &scenario,
+        &Configuration {
+            def: scenario.scenario_def(),
+            schedule: schedule.clone(),
+        },
+    )
+    .expect("capture finding reproduction");
+    let (expected, reproduced) = prepared_finding_triage_logs();
+    let triage_probe = FailureTriageReplayEvidence::new_paired_divergence(
+        finding,
+        expected,
+        reproduced,
+        ContentHash::from_bytes(b"prepared-finding-triage-coverage"),
+        Vec::new(),
+    )
+    .expect("derive prepared finding divergence");
+    let FailureClusterReportFailure::Divergence(divergence) = triage_probe.failure() else {
+        panic!("paired divergence evidence must contain a divergence");
+    };
+    let fingerprint = ContentHash {
+        bytes: crate::automatic_finding_runner::divergence_fingerprint_for_scenario(
+            scenario_record.scenario(),
+            divergence,
+        )
+        .as_bytes(),
+    };
+    let finding = FindingReproductionArtifact::capture(
+        FindingDiscoveryPath::StateSpaceSearch,
+        fingerprint,
+        &scenario,
+        &Configuration {
+            def: scenario.scenario_def(),
+            schedule,
+        },
+    )
+    .expect("capture signature-bound finding reproduction");
+    let property = properties.id().expect("causal property record");
+    let signature = FindingSignature::new(
+        FindingKind::Divergence,
+        CampaignHash::from_bytes(fingerprint.bytes),
+        None,
+        String::from("qemu.replay-divergence"),
+        Some(FindingTarget::Configuration(
+            child.id().expect("finding target"),
+        )),
+        BTreeSet::from([property.content_id()]),
+    )
+    .expect("finding signature");
+    let seed = crucible::Seed::from_u64(0xface);
+    let mut transcript = CrucibleFindingReplayTranscript::new();
+    for pass in [
+        FindingReplayPass::Minimization,
+        FindingReplayPass::Verification,
+    ] {
+        minimize_signature_preserving_finding(
+            &finding,
+            &signature,
+            seed,
+            pass,
+            &mut transcript,
+            |candidate| {
+                let candidate_scenario =
+                    encode_crucible_scenario_artifact(candidate.artifact.scenario_form())
+                        .expect("candidate scenario");
+                let candidate_configuration = encode_crucible_configuration_artifact(
+                    &candidate_scenario,
+                    candidate.artifact.schedule(),
+                )
+                .expect("candidate configuration");
+                let observed = if candidate.artifact.schedule() == finding.artifact.schedule() {
+                    signature.clone()
+                } else {
+                    FindingSignature::new(
+                        FindingKind::Divergence,
+                        CampaignHash::derive("test", b"reduced-candidate-divergence"),
+                        None,
+                        String::from("qemu.different-replay-divergence"),
+                        Some(FindingTarget::Configuration(
+                            candidate_configuration.id().expect("candidate target"),
+                        )),
+                        BTreeSet::from([property.content_id()]),
+                    )
+                    .expect("rejected candidate signature")
+                };
+                Ok(CrucibleFindingReplayEvidence::new(
+                    Some(observed),
+                    candidate_configuration,
+                    crate::crucible_measurement::empty_test_measurement_set(),
+                    properties.clone(),
+                    CoverageProjection::new(BTreeSet::new(), BTreeSet::new())
+                        .expect("replay coverage"),
+                    Vec::new(),
+                    Vec::new(),
+                )
+                .expect("replay evidence"))
+            },
+        )
+        .expect("finding replay pass");
+    }
+    let prepared = prepare_signature_preserving_minimized_finding_candidate(
+        signature.clone(),
+        observation,
+        &finding,
+        FindingExactPins::default(),
+        seed,
+        transcript,
+    )
+    .expect("prepare finding candidate");
+    assert!(
+        prepared
+            .minimized()
+            .minimization()
+            .expect("minimization evidence")
+            .attempts()
+            .iter()
+            .any(|attempt| !attempt.accepted()),
+        "the reduced empty schedule must be rejected by the concrete target"
+    );
+
+    let observation_publication =
+        empty_measurement_publication(scenario_record.scenario(), child.configuration());
+    let (observation_evidence, _, observation_measurements) = observation_publication.into_parts();
+    let observation_candidate_with_measurements =
+        observation_with_measurements(&observation_candidate, observation_measurements);
+    let observation_result = PreparedSemanticAttemptResult::new(
+        observation_candidate_with_measurements.clone(),
+        vec![observation_evidence],
+        None,
+    )
+    .expect("bind observation result");
+    let observation_bytes = observation_result
+        .canonical_bytes()
+        .expect("encode observation result");
+    let mut invalid_magic = observation_bytes.clone();
+    invalid_magic[0] ^= 1;
+    assert!(matches!(
+        PreparedSemanticAttemptResult::from_canonical_bytes(&invalid_magic),
+        Err(PreparedSemanticResultCodecError::Version)
+    ));
+    assert_eq!(
+        PreparedSemanticAttemptResult::from_canonical_bytes(&observation_bytes)
+            .expect("decode observation result"),
+        observation_result
+    );
+
+    let trace_bytes = crucible::model::ResolvedEffectTrace {
+        mode: crucible::model::FaultReplayMode::LockedEffect,
+        work_items: Vec::new(),
+        cursor: 0,
+    }
+    .canonical_bytes()
+    .expect("canonical resolved effect trace");
+    let trace_id = crucible_cas::content_store::ContentId::for_bytes(
+        crucible_cas::content_store::ObjectKind::Trace,
+        1,
+        &trace_bytes,
+    );
+    let trace_observation = observation_candidate_with_measurements
+        .observation()
+        .clone()
+        .with_resolved_effect_trace(trace_id)
+        .expect("trace child");
+    let trace_candidate = ObservationCandidate::new(
+        observation_candidate_with_measurements.child().clone(),
+        observation_candidate_with_measurements
+            .measurements()
+            .clone(),
+        observation_candidate_with_measurements.properties().clone(),
+        observation_candidate_with_measurements.coverage().clone(),
+        observation_candidate_with_measurements
+            .discovered_choices()
+            .to_vec(),
+        trace_observation,
+    )
+    .expect("trace observation candidate")
+    .with_resolved_effect_trace(trace_bytes.clone())
+    .expect("trace bytes");
+    let trace_result = PreparedSemanticAttemptResult::new(
+        trace_candidate,
+        observation_result.measurement_replay_evidence().to_vec(),
+        None,
+    )
+    .expect("trace result");
+    assert_eq!(
+        PreparedSemanticAttemptResult::from_canonical_bytes(
+            &trace_result
+                .canonical_bytes()
+                .expect("trace result encoding")
+        )
+        .expect("trace result decoding"),
+        trace_result
+    );
+
+    let mut terminal_fingerprints = scenario
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| FingerprintSample {
+            node: node.id.clone(),
+            at: VirtualTime { ticks: 23 },
+            fingerprint: ExecutionFingerprint {
+                hash: ContentHash::from_bytes(node.id.name.as_bytes()),
+            },
+        })
+        .collect::<Vec<_>>();
+    terminal_fingerprints.sort_by(|left, right| left.node.name.cmp(&right.node.name));
+    assert!(!terminal_fingerprints.is_empty());
+
+    let terminal_result = observation_result
+        .clone()
+        .with_terminal_fingerprints(terminal_fingerprints.clone())
+        .expect("attach terminal fingerprint set");
+    terminal_result
+        .verify_terminal_fingerprints(&scenario)
+        .expect("verify exact terminal world nodes");
+    let terminal_bytes = terminal_result
+        .canonical_bytes()
+        .expect("encode terminal observation result");
+    assert_eq!(
+        PreparedSemanticAttemptResult::from_canonical_bytes(&terminal_bytes)
+            .expect("decode terminal observation result"),
+        terminal_result
+    );
+    let mut truncated_terminal_bytes = terminal_bytes.clone();
+    truncated_terminal_bytes.pop();
+    assert!(matches!(
+        PreparedSemanticAttemptResult::from_canonical_bytes(&truncated_terminal_bytes),
+        Err(PreparedSemanticResultCodecError::Truncated)
+    ));
+
+    let first_terminal = terminal_fingerprints
+        .first()
+        .expect("non-empty terminal fingerprint set")
+        .clone();
+    assert!(matches!(
+        observation_result
+            .clone()
+            .with_terminal_fingerprints(vec![first_terminal.clone(), first_terminal]),
+        Err(PreparedSemanticResultCodecError::Inconsistent {
+            component: "terminal fingerprint node order"
+        })
+    ));
+    assert!(matches!(
+        observation_result
+            .clone()
+            .with_terminal_fingerprints(vec![FingerprintSample {
+                node: crucible::NodeId {
+                    name: String::from("foreign-node"),
+                },
+                at: VirtualTime { ticks: 23 },
+                fingerprint: ExecutionFingerprint {
+                    hash: ContentHash::from_bytes(b"foreign-terminal-fingerprint"),
+                },
+            }])
+            .expect("structurally valid foreign terminal set")
+            .verify_terminal_fingerprints(&scenario),
+        Err(PreparedSemanticResultCodecError::Inconsistent {
+            component: "terminal fingerprint world nodes"
+        })
+    ));
+
+    let retention_basis = repository
+        .attempt_retention_policy_basis_at(
+            repository
+                .head("prepared-finding")
+                .expect("prepared finding campaign head")
+                .snapshot_id(),
+            attempt,
+        )
+        .expect("prepared finding retention basis");
+    let exact_retention = FindingExactRetention::new(
+        retention_basis.snapshot(),
+        retention_basis.policy(),
+        retention_basis.admission(),
+        0,
+        FindingExactRetentionDisposition::Incomplete(
+            FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+        ),
+    )
+    .expect("prepared incomplete exact retention");
+    let incompatibility_result = prepare_automatic_signature_preserving_finding_with_outcomes(
+        terminal_result.clone(),
+        AutomaticFindingPreparation {
+            signature: signature.clone(),
+            finding: &finding,
+            exact_pins: FindingExactPins::default(),
+            exact_retention: PreparedFindingExactRetention {
+                retention: exact_retention,
+                evidence: None,
+            },
+            seed,
+        },
+        |candidate| {
+            let candidate_scenario =
+                encode_crucible_scenario_artifact(candidate.artifact.scenario_form())
+                    .expect("candidate scenario");
+            let candidate_configuration = encode_crucible_configuration_artifact(
+                &candidate_scenario,
+                candidate.artifact.schedule(),
+            )
+            .expect("candidate configuration");
+            if candidate.artifact.schedule().is_empty() {
+                return Ok(
+                    AutomaticFindingReplayOutcome::DeterministicallyIncompatible {
+                        configuration: candidate_configuration,
+                        reason: FindingReplayIncompatibility::PrefixDiverged,
+                    },
+                );
+            }
+            let publication = empty_measurement_publication(
+                candidate_scenario.scenario(),
+                candidate_configuration.configuration(),
+            );
+            let (evidence, _, measurements) = publication.into_parts();
+            let observed = if candidate.artifact.schedule() == finding.artifact.schedule() {
+                signature.clone()
+            } else {
+                FindingSignature::new(
+                    FindingKind::Divergence,
+                    CampaignHash::derive("test", b"incompatibility-reduced-candidate-divergence"),
+                    None,
+                    String::from("qemu.different-incompatibility-replay-divergence"),
+                    Some(FindingTarget::Configuration(
+                        candidate_configuration
+                            .id()
+                            .expect("incompatibility candidate target"),
+                    )),
+                    BTreeSet::from([property.content_id()]),
+                )
+                .expect("incompatibility candidate signature")
+            };
+            let replay = CrucibleFindingReplayEvidence::new(
+                Some(observed),
+                candidate_configuration,
+                measurements,
+                properties.clone(),
+                CoverageProjection::new(BTreeSet::new(), BTreeSet::new())
+                    .expect("candidate replay coverage"),
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("candidate replay evidence");
+
+            let (expected, reproduced) = prepared_finding_triage_logs();
+            let triage = FailureTriageReplayEvidence::new_paired_divergence(
+                candidate.clone(),
+                expected,
+                reproduced,
+                ContentHash::from_bytes(b"prepared-finding-triage-coverage"),
+                Vec::new(),
+            )
+            .expect("incompatibility triage replay evidence");
+            Ok(AutomaticFindingReplayOutcome::observed_with_triage(
+                replay,
+                vec![evidence],
+                triage,
+            ))
+        },
+    )
+    .expect("automatically prepare incompatibility finding candidate");
+    assert_eq!(
+        incompatibility_result.terminal_fingerprints(),
+        Some(terminal_fingerprints.as_slice()),
+        "finding attachment must preserve the completed terminal set"
+    );
+    let incompatibility_bytes = incompatibility_result
+        .canonical_bytes()
+        .expect("encode typed incompatibility result");
+    let decoded_incompatibility =
+        PreparedSemanticAttemptResult::from_canonical_bytes(&incompatibility_bytes)
+            .expect("decode typed incompatibility result");
+    assert_eq!(decoded_incompatibility, incompatibility_result);
+    decoded_incompatibility
+        .verify_measurement_publications(&scenario)
+        .expect("verify incompatibility replay measurement owners");
+    let reduced_leaf = decoded_incompatibility
+        .measurement_replay_evidence()
+        .iter()
+        .find(|evidence| evidence.configuration() != child.configuration())
+        .expect("incompatibility result retains an observed reduced-candidate leaf")
+        .clone();
+    assert!(
+        decoded_incompatibility
+            .finding()
+            .expect("incompatibility finding")
+            .minimization_replays
+            .iter()
+            .chain(
+                decoded_incompatibility
+                    .finding()
+                    .expect("incompatibility finding")
+                    .verification_replays
+                    .iter()
+            )
+            .any(|replay| replay.incompatibility().is_some())
+    );
+
+    let mut missing_reduced_leaf = decoded_incompatibility
+        .measurement_replay_evidence()
+        .to_vec();
+    missing_reduced_leaf.retain(|evidence| evidence != &reduced_leaf);
+    assert!(matches!(
+        PreparedSemanticAttemptResult::new(
+            observation_candidate_with_measurements.clone(),
+            missing_reduced_leaf,
+            decoded_incompatibility.finding().cloned(),
+        ),
+        Err(PreparedSemanticResultCodecError::Inconsistent {
+            component: "missing measurement replay evidence"
+        })
+    ));
+    let mut tampered_reduced_leaf = reduced_leaf
+        .canonical_bytes()
+        .expect("encode reduced-candidate leaf");
+    tampered_reduced_leaf.push(0);
+    assert!(
+        executor_store
+            .publish_executor_trace_leaf(
+                reduced_leaf.id().expect("reduced-candidate leaf ID"),
+                reduced_leaf.schema_version(),
+                &tampered_reduced_leaf,
+            )
+            .is_err()
+    );
+
+    let published_incompatibility =
+        crate::executor_worker::publish_prepared_semantic_attempt_result(
+            &executor_store,
+            crate::automatic_finding_runner::test_finding_exact_retention_source().as_ref(),
+            &decoded_incompatibility,
+        )
+        .expect("publish decoded incompatibility observation and finding closure");
+    assert_eq!(
+        published_incompatibility,
+        decoded_incompatibility
+            .observation()
+            .observation()
+            .id()
+            .expect("incompatibility observation ID")
+    );
+    let published_incompatibility_finding = decoded_incompatibility
+        .finding()
+        .expect("published incompatibility finding");
+    assert_eq!(
+        published_incompatibility_finding
+            .publish_for_executor(
+                &executor_store,
+                crate::automatic_finding_runner::test_finding_exact_retention_source().as_ref(),
+            )
+            .expect("idempotently publish incompatibility finding"),
+        published_incompatibility_finding
+            .id()
+            .expect("incompatibility finding ID")
+    );
+    let mut mismatched_incompatibility = incompatibility_result
+        .finding()
+        .expect("typed incompatibility finding")
+        .clone();
+    let reason = mismatched_incompatibility
+        .verification_replays
+        .iter_mut()
+        .find_map(|replay| match replay {
+            RecordedFindingReplay::DeterministicallyIncompatible { reason, .. } => Some(reason),
+            RecordedFindingReplay::Observed { .. } => None,
+        })
+        .expect("verification incompatibility");
+    *reason = FindingReplayIncompatibility::PrefixTerminated;
+    let mismatched_incompatibility = PreparedSemanticAttemptResult::new(
+        observation_candidate_with_measurements.clone(),
+        incompatibility_result
+            .measurement_replay_evidence()
+            .to_vec(),
+        Some(mismatched_incompatibility),
+    )
+    .expect("structurally retain mismatched incompatibility");
+    assert!(matches!(
+        mismatched_incompatibility.canonical_bytes(),
+        Err(PreparedSemanticResultCodecError::Artifact(
+            CrucibleArtifactError::SemanticIdentityMismatch {
+                artifact: "finding replay deterministic incompatibility passes"
+            }
+        ))
+    ));
+
+    let observed_finding_result = prepare_automatic_signature_preserving_finding_with_outcomes(
+        terminal_result,
+        AutomaticFindingPreparation {
+            signature: signature.clone(),
+            finding: &finding,
+            exact_pins: FindingExactPins::default(),
+            exact_retention: PreparedFindingExactRetention {
+                retention: exact_retention,
+                evidence: None,
+            },
+            seed,
+        },
+        |candidate| {
+            let candidate_scenario =
+                encode_crucible_scenario_artifact(candidate.artifact.scenario_form())
+                    .expect("candidate scenario");
+            let candidate_configuration = encode_crucible_configuration_artifact(
+                &candidate_scenario,
+                candidate.artifact.schedule(),
+            )
+            .expect("candidate configuration");
+            let observed = if candidate.artifact.schedule() == finding.artifact.schedule() {
+                signature.clone()
+            } else {
+                FindingSignature::new(
+                    FindingKind::Divergence,
+                    CampaignHash::derive("test", b"observed-reduced-candidate-divergence"),
+                    None,
+                    String::from("qemu.different-observed-replay-divergence"),
+                    Some(FindingTarget::Configuration(
+                        candidate_configuration
+                            .id()
+                            .expect("observed candidate target"),
+                    )),
+                    BTreeSet::from([property.content_id()]),
+                )
+                .expect("observed candidate signature")
+            };
+            let publication = empty_measurement_publication(
+                candidate_scenario.scenario(),
+                candidate_configuration.configuration(),
+            );
+            let (evidence, _, measurements) = publication.into_parts();
+            let replay = CrucibleFindingReplayEvidence::new(
+                Some(observed),
+                candidate_configuration,
+                measurements,
+                properties.clone(),
+                CoverageProjection::new(BTreeSet::new(), BTreeSet::new())
+                    .expect("candidate replay coverage"),
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("candidate replay evidence");
+            let (expected, reproduced) = prepared_finding_triage_logs();
+            let triage = FailureTriageReplayEvidence::new_paired_divergence(
+                candidate.clone(),
+                expected,
+                reproduced,
+                ContentHash::from_bytes(b"prepared-finding-triage-coverage"),
+                Vec::new(),
+            )
+            .expect("observed finding triage replay evidence");
+            Ok(AutomaticFindingReplayOutcome::observed_with_triage(
+                replay,
+                vec![evidence],
+                triage,
+            ))
+        },
+    )
+    .expect("automatically prepare observed finding candidate");
+    assert_eq!(
+        observed_finding_result.terminal_fingerprints(),
+        Some(terminal_fingerprints.as_slice()),
+        "finding attachment must preserve the completed terminal set"
+    );
+    let prepared_finding = observed_finding_result
+        .finding()
+        .expect("automatic prepared finding")
+        .clone();
+    let measurement_evidence = observed_finding_result
+        .measurement_replay_evidence()
+        .to_vec();
+    assert!(measurement_evidence.len() >= 2);
+    assert!(
+        measurement_evidence
+            .iter()
+            .any(|evidence| evidence.configuration() != child.configuration())
+    );
+    observed_finding_result
+        .verify_measurement_publications(&scenario)
+        .expect("verify every authenticated measurement owner");
+
+    let measurement_records = prepared_finding
+        .replay_records
+        .measurements
+        .iter()
+        .map(|measurement| {
+            (
+                measurement.id().expect("replay measurement ID"),
+                measurement,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let shared_evidence = measurement_evidence
+        .iter()
+        .map(|evidence| evidence.id().expect("shared evidence ID"))
+        .find(|evidence| {
+            prepared_finding.minimization_replays.iter().any(|replay| {
+                replay
+                    .observed_components()
+                    .and_then(|(measurement, _, _, _, _)| {
+                        measurement_records
+                            .get(&measurement)
+                            .map(|measurement| measurement.evaluation())
+                            .map(|evaluation| evaluation.evidence().contains(evidence))
+                    })
+                    .unwrap_or(false)
+            }) && prepared_finding.verification_replays.iter().any(|replay| {
+                replay
+                    .observed_components()
+                    .and_then(|(measurement, _, _, _, _)| {
+                        measurement_records
+                            .get(&measurement)
+                            .map(|measurement| measurement.evaluation())
+                            .map(|evaluation| evaluation.evidence().contains(evidence))
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .expect("one raw leaf shared by both replay passes");
+    let verification_replay = prepared_finding
+        .verification_replays
+        .iter()
+        .position(|replay| {
+            replay
+                .observed_components()
+                .and_then(|(measurement, _, _, _, _)| {
+                    measurement_records
+                        .get(&measurement)
+                        .map(|measurement| measurement.evaluation())
+                        .map(|evaluation| evaluation.evidence().contains(&shared_evidence))
+                })
+                .unwrap_or(false)
+        })
+        .expect("verification owner of shared raw leaf");
+    let (original_measurement_id, _, _, _, _) = prepared_finding.verification_replays
+        [verification_replay]
+        .observed_components()
+        .expect("shared replay is observed");
+    let original_measurement = measurement_records
+        .get(&original_measurement_id)
+        .copied()
+        .expect("shared replay measurement");
+    let retained = original_measurement.evaluation();
+    let mut tampered_payload = retained.payload().to_vec();
+    tampered_payload.push(b' ');
+    let tampered_measurement = MeasurementSet::from_evaluation(
+        retained.definitions(),
+        retained.payload_schema(),
+        retained.evaluation(),
+        tampered_payload,
+        retained.evidence().clone(),
+    )
+    .expect("structurally valid tampered replay measurement");
+    let tampered_measurement_id = tampered_measurement
+        .id()
+        .expect("tampered replay measurement ID");
+    let mut tampered_finding = prepared_finding.clone();
+    tampered_finding
+        .replay_records
+        .measurements
+        .push(tampered_measurement);
+    let RecordedFindingReplay::Observed { measurements, .. } =
+        &mut tampered_finding.verification_replays[verification_replay]
+    else {
+        panic!("shared replay is observed")
+    };
+    *measurements = tampered_measurement_id;
+    let tampered_result = PreparedSemanticAttemptResult::new(
+        observation_candidate_with_measurements.clone(),
+        measurement_evidence.clone(),
+        Some(tampered_finding),
+    )
+    .expect("retain structurally owned shared evidence");
+    assert!(matches!(
+        tampered_result.verify_measurement_publications(&scenario),
+        Err(PreparedSemanticResultCodecError::Measurement(_))
+    ));
+
+    let observed_finding_bytes = observed_finding_result
+        .canonical_bytes()
+        .expect("encode observed finding result");
+    assert_eq!(
+        PreparedSemanticAttemptResult::from_canonical_bytes(&observed_finding_bytes)
+            .expect("decode observed finding result"),
+        observed_finding_result
+    );
+
+    let mut unordered_evidence = measurement_evidence.clone();
+    unordered_evidence.reverse();
+    assert!(matches!(
+        PreparedSemanticAttemptResult::new(
+            observation_candidate_with_measurements.clone(),
+            unordered_evidence,
+            Some(prepared_finding.clone()),
+        ),
+        Err(PreparedSemanticResultCodecError::Inconsistent {
+            component: "measurement replay evidence order"
+        })
+    ));
+
+    let unused_publication = empty_measurement_publication(
+        scenario_record.scenario(),
+        ConfigurationId::from_hash(CampaignHash::derive(
+            "test",
+            b"unused-replay-measurement-configuration",
+        )),
+    );
+    let (unused_evidence, _, unused_measurements) = unused_publication.into_parts();
+    let mut evidence_with_extra = measurement_evidence
+        .iter()
+        .cloned()
+        .map(|evidence| (evidence.id().expect("retained evidence ID"), evidence))
+        .collect::<BTreeMap<_, _>>();
+    evidence_with_extra.insert(
+        unused_evidence.id().expect("unused evidence ID"),
+        unused_evidence.clone(),
+    );
+    assert!(matches!(
+        PreparedSemanticAttemptResult::new(
+            observation_candidate_with_measurements.clone(),
+            evidence_with_extra.values().cloned().collect(),
+            Some(prepared_finding.clone()),
+        ),
+        Err(PreparedSemanticResultCodecError::Inconsistent {
+            component: "unowned measurement replay evidence"
+        })
+    ));
+    let mut finding_with_unused_measurement = prepared_finding.clone();
+    finding_with_unused_measurement
+        .replay_records
+        .measurements
+        .push(unused_measurements);
+    assert!(matches!(
+        PreparedSemanticAttemptResult::new(
+            observation_candidate_with_measurements.clone(),
+            evidence_with_extra.into_values().collect(),
+            Some(finding_with_unused_measurement),
+        ),
+        Err(PreparedSemanticResultCodecError::Inconsistent {
+            component: "unreferenced finding replay measurement record"
+        })
+    ));
+
+    for (wrong_scenario, wrong_configuration, wrong_definitions) in [
+        (
+            ScenarioDefId::from_hash(CampaignHash::derive("test", b"wrong-scenario")),
+            child.configuration(),
+            None,
+        ),
+        (
+            scenario_record.scenario(),
+            ConfigurationId::from_hash(CampaignHash::derive("test", b"wrong-configuration")),
+            None,
+        ),
+        (
+            scenario_record.scenario(),
+            child.configuration(),
+            Some(CampaignHash::derive("test", b"wrong-definitions")),
+        ),
+    ] {
+        let wrong_publication = empty_measurement_publication(wrong_scenario, wrong_configuration);
+        let (wrong_evidence, _, _) = wrong_publication.into_parts();
+        let definitions = wrong_definitions.unwrap_or_else(|| {
+            observation_candidate_with_measurements
+                .measurements()
+                .evaluation()
+                .definitions()
+        });
+        let wrong_measurements = measurement_with_evidence(
+            observation_candidate_with_measurements.measurements(),
+            &wrong_evidence,
+            definitions,
+        );
+        let wrong_candidate = observation_with_measurements(
+            &observation_candidate_with_measurements,
+            wrong_measurements,
+        );
+        assert!(matches!(
+            PreparedSemanticAttemptResult::new(wrong_candidate, vec![wrong_evidence], None,),
+            Err(PreparedSemanticResultCodecError::Inconsistent {
+                component: "measurement replay evidence binding"
+            })
+        ));
+    }
+
+    let observation_candidate = decoded_incompatibility.observation().clone();
+    let observation = observation_candidate
+        .observation()
+        .id()
+        .expect("current observation ID");
+    let prepared = decoded_incompatibility
+        .finding()
+        .expect("current prepared finding")
+        .clone();
+    let current_measurement_evidence = decoded_incompatibility
+        .measurement_replay_evidence()
+        .to_vec();
+    let expected = prepared.id().expect("prepared candidate ID");
+    let expected_bundle = prepared.bundle().clone();
+    let durable_result = PreparedSemanticAttemptResult::new(
+        observation_candidate.clone(),
+        current_measurement_evidence.clone(),
+        Some(prepared.clone()),
+    )
+    .expect("bind prepared semantic result");
+    let durable_bytes = durable_result
+        .canonical_bytes()
+        .expect("encode prepared semantic result");
+    let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(&durable_bytes)
+        .expect("decode prepared semantic result");
+    assert_eq!(decoded, durable_result);
+    let mut trailing = durable_bytes.clone();
+    trailing.push(0);
+    assert!(matches!(
+        PreparedSemanticAttemptResult::from_canonical_bytes(&trailing),
+        Err(PreparedSemanticResultCodecError::TrailingBytes)
+    ));
+
+    let unrelated_observation = Observation::new(
+        attempt,
+        Observation::outcome(
+            genesis.configuration(),
+            genesis.id().expect("unrelated observation child"),
+            attempt_record.path(),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            observation_candidate
+                .measurements()
+                .id()
+                .expect("unrelated observation measurements"),
+            observation_candidate
+                .properties()
+                .id()
+                .expect("unrelated observation properties"),
+            observation_candidate
+                .coverage()
+                .id()
+                .expect("unrelated observation coverage"),
+        ),
+        BTreeSet::from([opportunity.id().expect("unrelated observation choice")]),
+    )
+    .expect("unrelated observation");
+    let unrelated_candidate = ObservationCandidate::new(
+        genesis.clone(),
+        observation_candidate.measurements().clone(),
+        observation_candidate.properties().clone(),
+        observation_candidate.coverage().clone(),
+        observation_candidate.discovered_choices().to_vec(),
+        unrelated_observation,
+    )
+    .expect("unrelated observation candidate");
+    let mut mismatched_finding = prepared.clone();
+    mismatched_finding.bundle = FindingCandidateBundle::new_with_exact_retention(
+        FindingCandidateCore::new(
+            unrelated_candidate
+                .observation()
+                .id()
+                .expect("unrelated observation ID"),
+            signature.clone(),
+            prepared.bundle().reproduction(),
+            prepared.bundle().minimized(),
+            prepared.bundle().signature_minimization().clone(),
+            prepared.bundle().exact_pins().clone(),
+        ),
+        None,
+        prepared.bundle().exact_retention(),
+    )
+    .expect("finding rebound to unrelated observation ID");
+    assert!(matches!(
+        PreparedSemanticAttemptResult::new(
+            unrelated_candidate,
+            current_measurement_evidence.clone(),
+            Some(mismatched_finding),
+        ),
+        Err(PreparedSemanticResultCodecError::Inconsistent {
+            component: "finding observation reproduction basis"
+        })
+    ));
+
+    let mut inconsistent_finding = prepared.clone();
+    let unrelated_schedule = finding
+        .artifact
+        .schedule()
+        .clone()
+        .appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+            at: VirtualTime { ticks: 2 },
+            order: Vec::new(),
+        }));
+    let unrelated_configuration =
+        encode_crucible_configuration_artifact(&scenario_record, &unrelated_schedule)
+            .expect("unrelated replay configuration")
+            .id()
+            .expect("unrelated replay configuration ID");
+    match &mut inconsistent_finding.minimization_replays[0] {
+        RecordedFindingReplay::Observed { configuration, .. }
+        | RecordedFindingReplay::DeterministicallyIncompatible { configuration, .. } => {
+            *configuration = unrelated_configuration;
+        }
+    }
+    assert!(matches!(
+        durable_result.canonical_bytes_with_limit(1),
+        Err(PreparedSemanticResultCodecError::LimitExceeded)
+    ));
+    assert!(matches!(
+        PreparedSemanticAttemptResult::new(
+            observation_candidate.clone(),
+            current_measurement_evidence.clone(),
+            Some(inconsistent_finding),
+        ),
+        Err(PreparedSemanticResultCodecError::Inconsistent {
+            component: "finding replay measurement configuration"
+        })
+    ));
+
+    let epoch = DaemonEpoch::from_bytes([0x57; 16]).expect("daemon epoch");
+    let request = SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x58; 16]).expect("assignment"),
+        epoch,
+        lineage.id().expect("lineage ID"),
+        attempt,
+        AttemptResourceLimits::new(1, 4096, 4096, 64).expect("attempt resources"),
+        ExecutionRetentionIntent::RetainOnFailure,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+    )
+    .expect("submit request");
+    let mut supervisor = LocalExecutorSupervisor::new(
+        MemoryAssignmentLedger::default(),
+        AllowAllAttemptAdmission,
+        epoch,
+        ExecutorCapacity::new(1, 1, 4096, 4096, 64).expect("executor capacity"),
+    );
+    let response = supervisor
+        .submit_attempt(&request)
+        .expect("admit finding attempt");
+    let SubmitAttemptDisposition::Accepted { execution } = response.disposition() else {
+        panic!("finding attempt should be accepted")
+    };
+    let queued = supervisor.next_queued().expect("queued finding attempt");
+    let checkpoint_directory = tempfile::tempdir().expect("checkpoint directory");
+    let checkpoints = ExactCheckpointStore::new(
+        Arc::new(DirectoryBlobBackend::new(
+            "prepared-finding-checkpoints",
+            checkpoint_directory.path(),
+        )),
+        1024 * 1024,
+    )
+    .expect("checkpoint store");
+    let semantic = PreparedSemanticAttemptResult::new(
+        observation_candidate,
+        current_measurement_evidence,
+        Some(prepared),
+    )
+    .expect("prepare paired semantic result");
+    let work = AttemptWorkResult::<()>::new(
+        queued,
+        Ok(AttemptExecutionProduct::prepared_semantic(semantic)),
+    );
+    let prepared = prepare_attempt_result(&executor_store, &checkpoints, work)
+        .expect("prepare paired worker result");
+    let PreparedAttemptWorkResult::Observation(prepared) = prepared else {
+        panic!("finding worker returned an exact checkpoint")
+    };
+    assert_eq!(prepared.observation(), observation);
+    assert_eq!(prepared.finding_candidate(), Some(expected));
+
+    let staged = stage_prepared_attempt_result(&mut supervisor, *prepared)
+        .expect("stage paired publication");
+    let AttemptResultStageOutcome::Publish(staged) = staged else {
+        panic!("current finding result should publish")
+    };
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    assert!(matches!(
+        supervisor
+            .ledger()
+            .load_attempt(key)
+            .expect("load staged finding pair"),
+        Some(AttemptRuntimeState::Publishing {
+            observation: retained_observation,
+            finding_candidate: Some(retained_candidate),
+            ..
+        }) if retained_observation == observation && retained_candidate == expected
+    ));
+    let wrong_candidate_content = ContentId::for_bytes(
+        ObjectKind::Finding,
+        CampaignRecordKind::FindingCandidateBundle.schema_version(),
+        b"wrong staged finding candidate",
+    );
+    let wrong_candidate = FindingCandidateBundleId::parse(&format!(
+        "crucible.campaign.finding-candidate-bundle@{wrong_candidate_content}"
+    ))
+    .expect("wrong finding candidate ID");
+    assert!(matches!(
+        supervisor.stage_and_reconcile_completion_with_finding_candidate(
+            staged.queued(),
+            observation,
+            Some(wrong_candidate),
+        ),
+        Err(LocalExecutorError::ConflictingCompletion)
+    ));
+
+    let exact_authenticator =
+        crate::exact_checkpoint_store::ExactFindingCheckpointAuthenticator::new(
+            &executor_store,
+            &checkpoints,
+        );
+    let published = publish_prepared_attempt_result(&executor_store, &exact_authenticator, staged)
+        .expect("publish paired finding result");
+    assert_eq!(published.finding_candidate(), Some(expected));
+    let reconciled = reconcile_published_attempt_result::<_, _, ()>(&mut supervisor, published)
+        .expect("reconcile paired finding result");
+    assert_eq!(
+        reconciled,
+        AttemptWorkerReconcileOutcome::Reconciled {
+            observation,
+            completion: CompletionOutcome::Completed,
+        }
+    );
+
+    let loaded = repository
+        .load_finding_candidate_bundle(expected)
+        .expect("load and authenticate finding closure");
+    assert_eq!(loaded, expected_bundle);
+    assert_eq!(loaded.observation(), observation);
+    assert_eq!(loaded.signature().target(), signature.target());
+    assert_eq!(
+        loaded.signature().causal_evidence(),
+        signature.causal_evidence()
+    );
+
+    let campaign = CampaignName::new("prepared-finding").expect("campaign name");
+    let observation_parent = repository
+        .head(campaign.as_str())
+        .expect("current finding campaign head")
+        .snapshot_id();
+    let observation_record = repository
+        .load_observation(observation)
+        .expect("load paired observation");
+    let incorporated_observation = repository
+        .publish_observation(campaign.as_str(), observation_parent, &observation_record)
+        .expect("incorporate paired observation");
+    let mut ledger = supervisor.into_ledger();
+    let handoff = incorporate_and_acknowledge_finding_candidate(
+        &repository,
+        &mut ledger,
+        &campaign,
+        incorporated_observation.new_snapshot,
+        key,
+        execution,
+        observation,
+        expected,
+    )
+    .expect("incorporate and acknowledge exact finding pair");
+    let crate::FindingCandidateRetentionOutcome::Released(acknowledgement) =
+        handoff.acknowledgement()
+    else {
+        panic!("exact finding pair should release its operational root")
+    };
+    assert_eq!(acknowledgement.bundle(), expected);
+    assert!(matches!(
+        ledger
+            .load_attempt(key)
+            .expect("load acknowledged finding pair"),
+        Some(AttemptRuntimeState::Completed {
+            observation: retained_observation,
+            finding_candidate: CompletedFindingCandidate::Acknowledged(retained_candidate),
+            ..
+        }) if retained_observation == observation && retained_candidate == expected
+    ));
+}
+
+#[test]
+fn finding_candidate_publication_waits_for_both_replay_passes() {
+    let scenario = crucible::happy_path_scenario()
+        .expect("happy-path scenario")
+        .scenario;
+    let schedule = Schedule::empty().appended(Decision::DeliveryOrder(DeliveryOrderDecision {
+        at: VirtualTime { ticks: 1 },
+        order: Vec::new(),
+    }));
+    let configuration = Configuration {
+        def: scenario.scenario_def(),
+        schedule,
+    };
+    let fingerprint = ContentHash::from_bytes(b"two-pass-finding-fingerprint");
+    let finding = FindingReproductionArtifact::capture(
+        FindingDiscoveryPath::StateSpaceSearch,
+        fingerprint,
+        &scenario,
+        &configuration,
+    )
+    .expect("capture finding reproduction");
+    let signature = FindingSignature::new(
+        FindingKind::Divergence,
+        CampaignHash::from_bytes(fingerprint.bytes),
+        None,
+        String::from("qemu.replay-divergence"),
+        None,
+        BTreeSet::new(),
+    )
+    .expect("stable finding signature");
+    let seed = crucible::Seed::from_u64(0x7777);
+    let mut probe = CrucibleFindingReplayTranscript::new();
+    let first = minimize_signature_preserving_finding(
+        &finding,
+        &signature,
+        seed,
+        FindingReplayPass::Minimization,
+        &mut probe,
+        |candidate| Ok(replay_evidence(candidate, signature.clone())),
+    )
+    .expect("first replay pass");
+    let (_, original_configuration, original) =
+        prepare_original_reproduction(&finding).expect("prepare original reproduction");
+    let observation_content = ContentId::for_bytes(
+        ObjectKind::Observation,
+        CampaignRecordKind::Observation.schema_version(),
+        b"two-pass-finding-observation",
+    );
+    let observation = ObservationId::parse(&format!(
+        "crucible.campaign.observation@{observation_content}"
+    ))
+    .expect("observation ID");
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "two-pass-finding-no-partial-write",
+            u64::MAX,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
+    let mut calls = 0;
+
+    let error = store
+        .publish_signature_preserving_minimized_finding_candidate(
+            signature.clone(),
+            observation,
+            &finding,
+            FindingExactPins::default(),
+            seed,
+            |candidate| {
+                if calls == first.attempts.len() + 1 {
+                    return Err(crucible::ReproductionArtifact::from_compact_binary(
+                        b"invalid replay artifact",
+                    )
+                    .expect_err("invalid replay artifact"));
+                }
+                calls += 1;
+                Ok(replay_evidence(candidate, signature.clone()))
+            },
+        )
+        .expect_err("second replay pass must fail");
+
+    assert!(matches!(
+        error,
+        CrucibleArtifactError::InvalidPayload {
+            artifact: "signature-preserving finding minimization",
+            ..
+        }
+    ));
+    assert_eq!(calls, first.attempts.len() + 1);
+    assert!(
+        repository
+            .load_configuration_artifact(
+                original_configuration
+                    .id()
+                    .expect("original configuration ID"),
+            )
+            .is_err()
+    );
+    assert!(
+        repository
+            .load_reproduction_artifact(original.id().expect("original reproduction ID"))
+            .is_err()
+    );
+}

@@ -43,10 +43,6 @@
         needle = "ordering_facts: &'log [ObservedOrderingFact]";
       }
       {
-        label = "read-only fault facts";
-        needle = "fault_facts: &'log [ObservedFaultFact]";
-      }
-      {
         label = "stable outcome sort";
         needle = "sort_host_assertion_outcomes";
       }

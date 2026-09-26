@@ -14,9 +14,9 @@ fn empty_checkpoint(
     let mut checkpoint = ProductionFaultRuntimeCheckpoint {
         runtime: None,
         host: HostFaultActionState::default(),
-        qemu_fingerprints: QemuNodeMap::new(),
-        qemu_fault_sequences: QemuNodeMap::new(),
-        qemu_fault_event_sequences: QemuNodeMap::new(),
+        qemu_fingerprints: std::sync::Arc::new(QemuNodeMap::new()),
+        qemu_fault_sequences: std::sync::Arc::new(QemuNodeMap::new()),
+        qemu_fault_event_sequences: std::sync::Arc::new(QemuNodeMap::new()),
         qemu_issued_actions: QemuActionMap::new(),
         qemu_action_commits: QemuActionMap::new(),
         qemu_active_rule_ids: QemuActionSet::new(),
@@ -52,7 +52,7 @@ fn empty_network(adapter_state: Vec<u8>) -> ProductionNetworkStateCheckpoint {
         SchedulerNetworkCheckpoint {
             links: Vec::new(),
             rng_positions: Vec::new(),
-            signal_fault_wakeup_nanos: None,
+            signal_fault_wakeup_ticks: None,
         },
         crucible::VirtualTime { ticks: 17 },
         Vec::new(),
@@ -184,16 +184,16 @@ fn complete_production_checkpoint_round_trips_canonically() {
     let node = NodeId {
         name: String::from("node-a"),
     };
-    checkpoint
-        .qemu_fingerprints
+    std::sync::Arc::get_mut(&mut checkpoint.qemu_fingerprints)
+        .unwrap_or_else(|| panic!("checkpoint fingerprint fixture should be uniquely owned"))
         .try_insert(node.clone(), ContentHash::from_bytes(b"fingerprint"))
         .unwrap_or_else(|error| panic!("fingerprint fixture should allocate: {error}"));
-    checkpoint
-        .qemu_fault_sequences
+    std::sync::Arc::get_mut(&mut checkpoint.qemu_fault_sequences)
+        .unwrap_or_else(|| panic!("checkpoint command sequence fixture should be uniquely owned"))
         .try_insert(node.clone(), 1)
         .unwrap_or_else(|error| panic!("command sequence fixture should allocate: {error}"));
-    checkpoint
-        .qemu_fault_event_sequences
+    std::sync::Arc::get_mut(&mut checkpoint.qemu_fault_event_sequences)
+        .unwrap_or_else(|| panic!("checkpoint event sequence fixture should be uniquely owned"))
         .try_insert(node, 1)
         .unwrap_or_else(|error| panic!("event sequence fixture should allocate: {error}"));
     checkpoint.identity = production_checkpoint_identity(
@@ -239,6 +239,214 @@ fn complete_production_checkpoint_round_trips_canonically() {
             .unwrap_or_else(|error| panic!("restored checkpoint should encode: {error}")),
         bytes
     );
+}
+
+#[test]
+fn sibling_fault_checkpoints_share_immutable_qemu_fingerprints_and_sequences() {
+    let plan = FaultSignalPlan::empty();
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let fingerprint = ContentHash::from_bytes(b"source qemu fingerprint");
+    let source = empty_checkpoint(&plan, None)
+        .with_unvalidated_test_node(&plan, node.clone(), fingerprint)
+        .unwrap_or_else(|error| panic!("source checkpoint should admit one node: {error}"));
+
+    let first = source
+        .try_clone()
+        .unwrap_or_else(|error| panic!("first sibling should clone: {error}"));
+    let second = source
+        .try_clone()
+        .unwrap_or_else(|error| panic!("second sibling should clone: {error}"));
+
+    assert!(std::sync::Arc::ptr_eq(
+        &first.qemu_fingerprints,
+        &second.qemu_fingerprints
+    ));
+    assert!(std::sync::Arc::ptr_eq(
+        &source.qemu_fingerprints,
+        &first.qemu_fingerprints
+    ));
+    assert!(std::sync::Arc::ptr_eq(
+        &first.qemu_fault_sequences,
+        &second.qemu_fault_sequences
+    ));
+    assert!(std::sync::Arc::ptr_eq(
+        &first.qemu_fault_event_sequences,
+        &second.qemu_fault_event_sequences
+    ));
+    assert_eq!(first.qemu_fingerprint(&node), Some(fingerprint));
+
+    drop(source);
+    assert_eq!(second.qemu_fingerprint(&node), Some(fingerprint));
+    assert_eq!(first.id(), second.id());
+    assert_eq!(
+        first
+            .to_canonical_bytes()
+            .unwrap_or_else(|error| panic!("first sibling should encode: {error}")),
+        second
+            .to_canonical_bytes()
+            .unwrap_or_else(|error| panic!("second sibling should encode: {error}"))
+    );
+}
+
+#[test]
+fn fault_checkpoint_clone_cost_keeps_mutable_ledgers_private() {
+    const SIBLINGS: usize = 64;
+    const AUTHENTICATED_NODES: usize = 4096;
+    const ADAPTER_BYTES: usize = 32 * 1024;
+    const MAX_PRIVATE_GROWTH_KIB: u64 = 32 * 1024;
+
+    let plan = FaultSignalPlan::empty();
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let mut source = empty_checkpoint(&plan, Some(empty_network(vec![7; ADAPTER_BYTES])))
+        .with_unvalidated_test_node(&plan, node.clone(), ContentHash::from_bytes(b"qemu"))
+        .unwrap_or_else(|error| panic!("source checkpoint should admit one node: {error}"));
+    source
+        .pending_qemu_events
+        .try_insert(node.clone(), vec![authenticated_qemu_event(vec![3; 4096])])
+        .unwrap_or_else(|error| panic!("source event ledger should admit one event: {error}"));
+
+    // A one-node pointer check cannot detect an accidental deep copy of the
+    // authenticated maps. Fill their supported node domain before cloning.
+    let fingerprints = std::sync::Arc::get_mut(&mut source.qemu_fingerprints)
+        .unwrap_or_else(|| panic!("source fingerprint map should be uniquely owned"));
+    let fault_sequences = std::sync::Arc::get_mut(&mut source.qemu_fault_sequences)
+        .unwrap_or_else(|| panic!("source fault sequence map should be uniquely owned"));
+    let event_sequences = std::sync::Arc::get_mut(&mut source.qemu_fault_event_sequences)
+        .unwrap_or_else(|| panic!("source event sequence map should be uniquely owned"));
+    for index in 1..AUTHENTICATED_NODES {
+        let node = NodeId {
+            name: format!("node-{index:04}"),
+        };
+        fingerprints
+            .try_insert(node.clone(), ContentHash::from_bytes(node.name.as_bytes()))
+            .unwrap_or_else(|error| panic!("fingerprint fixture should admit node: {error}"));
+        fault_sequences
+            .try_insert(node.clone(), 0)
+            .unwrap_or_else(|error| panic!("fault sequence fixture should admit node: {error}"));
+        event_sequences
+            .try_insert(node, 0)
+            .unwrap_or_else(|error| panic!("event sequence fixture should admit node: {error}"));
+    }
+    source.identity = production_checkpoint_identity(
+        plan.id(),
+        plan.resource_limits(),
+        source.runtime.as_ref(),
+        &source.host,
+        &source.qemu_fingerprints,
+        &source.qemu_fault_sequences,
+        &source.qemu_fault_event_sequences,
+        &source.qemu_issued_actions,
+        &source.qemu_action_commits,
+        &source.qemu_active_rule_ids,
+        source.network_state.as_ref(),
+        &source.emitted_events,
+        &source.pending_qemu_observations,
+        &source.pending_qemu_events,
+    )
+    .unwrap_or_else(|error| panic!("large source checkpoint should authenticate: {error}"));
+
+    let baseline_kib = fault_clone_private_dirty_kib();
+    let mut siblings = (0..SIBLINGS)
+        .map(|_| {
+            source
+                .try_clone()
+                .unwrap_or_else(|error| panic!("clone sibling fault checkpoint: {error}"))
+        })
+        .collect::<Vec<_>>();
+    let private_growth_kib = fault_clone_private_dirty_kib().saturating_sub(baseline_kib);
+    assert!(
+        private_growth_kib <= MAX_PRIVATE_GROWTH_KIB,
+        "{SIBLINGS} fault clones consumed {private_growth_kib} KiB private memory"
+    );
+
+    let source_network = source
+        .network_state
+        .as_ref()
+        .unwrap_or_else(|| panic!("source network ledger should exist"));
+    let source_events = source
+        .pending_qemu_events
+        .get(&node)
+        .unwrap_or_else(|| panic!("source event ledger should exist"));
+    for sibling in &siblings {
+        let sibling_network = sibling
+            .network_state
+            .as_ref()
+            .unwrap_or_else(|| panic!("sibling network ledger should exist"));
+        let sibling_events = sibling
+            .pending_qemu_events
+            .get(&node)
+            .unwrap_or_else(|| panic!("sibling event ledger should exist"));
+        assert!(std::sync::Arc::ptr_eq(
+            &source.qemu_fingerprints,
+            &sibling.qemu_fingerprints
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &source.qemu_fault_sequences,
+            &sibling.qemu_fault_sequences
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &source.qemu_fault_event_sequences,
+            &sibling.qemu_fault_event_sequences
+        ));
+        assert_ne!(
+            source_network.adapter_state.as_ptr(),
+            sibling_network.adapter_state.as_ptr()
+        );
+        assert_ne!(
+            source_events[0].payload.as_ptr(),
+            sibling_events[0].payload.as_ptr()
+        );
+    }
+    siblings[0]
+        .pending_qemu_events
+        .get_mut(&node)
+        .unwrap_or_else(|| panic!("first sibling event ledger should exist"))[0]
+        .payload[0] = 9;
+    siblings[0]
+        .network_state
+        .as_mut()
+        .unwrap_or_else(|| panic!("first sibling network ledger should exist"))
+        .adapter_state[0] = 9;
+    assert_eq!(source_events[0].payload[0], 3);
+    assert_eq!(
+        siblings[1]
+            .pending_qemu_events
+            .get(&node)
+            .unwrap_or_else(|| panic!("second sibling event ledger should exist"))[0]
+            .payload[0],
+        3
+    );
+    assert_eq!(source_network.adapter_state[0], 7);
+    assert_eq!(
+        siblings[1]
+            .network_state
+            .as_ref()
+            .unwrap_or_else(|| panic!("second sibling network ledger should exist"))
+            .adapter_state[0],
+        7
+    );
+
+    println!("fault_checkpoint_siblings={SIBLINGS}");
+    println!("qemu_authentication_map_nodes={AUTHENTICATED_NODES}");
+    println!("qemu_authentication_map_copies=1");
+    println!("fault_clone_private_growth_kib={private_growth_kib}");
+    println!("fault_clone_private_growth_limit_kib={MAX_PRIVATE_GROWTH_KIB}");
+    println!("child_private_ledgers=network-adapter,pending-qemu-events");
+}
+
+fn fault_clone_private_dirty_kib() -> u64 {
+    let rollup = std::fs::read_to_string("/proc/self/smaps_rollup")
+        .unwrap_or_else(|error| panic!("read fault clone memory rollup: {error}"));
+    rollup
+        .lines()
+        .find_map(|line| line.strip_prefix("Private_Dirty:"))
+        .and_then(|value| value.trim().strip_suffix(" kB"))
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or_else(|| panic!("fault clone memory rollup lacks Private_Dirty in KiB"))
 }
 
 #[test]
@@ -291,7 +499,7 @@ fn aggregate_identity_binds_network_adapter_bytes() {
 }
 
 #[test]
-fn aggregate_identity_preserves_legacy_hex_material_hash() {
+fn aggregate_identity_preserves_canonical_v10_hex_material_hash() {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
     let plan = FaultSignalPlan::empty();
@@ -309,7 +517,7 @@ fn aggregate_identity_preserves_legacy_hex_material_hash() {
     assert_eq!(
         checkpoint.identity,
         ContentHash::from_canonical_material(
-            "crucible.production-fault-runtime-checkpoint.v9",
+            "crucible.production-fault-runtime-checkpoint.v10",
             &encoded,
         )
     );
@@ -465,13 +673,13 @@ fn pending_network_output_resource_coordinates_cross_production_envelope() {
 }
 
 #[test]
-fn aggregate_codec_rejects_pre_policy_version() {
+fn aggregate_codec_rejects_the_prior_nanosecond_version() {
     let plan = FaultSignalPlan::empty();
-    let seed = ContentHash::from_bytes(b"old policy checkpoint seed");
+    let seed = ContentHash::from_bytes(b"unsupported checkpoint seed");
     let mut bytes = empty_checkpoint(&plan, None)
         .to_canonical_bytes()
         .unwrap_or_else(|error| panic!("checkpoint should encode: {error}"));
-    bytes[..MAGIC.len()].copy_from_slice(b"crucible.production-fault-runtime.v5\0");
+    bytes[..MAGIC.len()].copy_from_slice(b"crucible.production-fault-runtime.v6\0");
 
     assert!(matches!(
         ProductionFaultRuntimeCheckpoint::from_canonical_bytes(&bytes, &plan, seed),

@@ -405,19 +405,13 @@ fn descriptor_connect_methods(descriptor: &FileDescriptorSet) -> BuildResult<Vec
     let mut seen = BTreeSet::new();
     let mut message_fields = BTreeMap::new();
     for file in &descriptor.file {
-        let package = match file.package.as_deref() {
-            Some(package) => package,
-            None => "",
-        };
+        let package: &str = file.package.as_deref().unwrap_or_default();
         for message in &file.message_type {
             collect_message_fields(message, package, &mut message_fields)?;
         }
     }
     for file in &descriptor.file {
-        let package = match file.package.as_deref() {
-            Some(package) => package,
-            None => "",
-        };
+        let package: &str = file.package.as_deref().unwrap_or_default();
         if package != "aos.hub.v1" {
             continue;
         }

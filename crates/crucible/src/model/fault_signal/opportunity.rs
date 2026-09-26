@@ -754,9 +754,12 @@ impl FaultOperation {
 )]
 #[serde(deny_unknown_fields)]
 pub struct FaultCoordinate {
-    /// Global virtual time in nanoseconds.
-    pub virtual_nanos: u64,
-    /// Optional node-local retired-instruction coordinate.
+    /// Global virtual time in exact logical ticks.
+    pub virtual_ticks: u64,
+    /// Optional authentic node-local raw retired-instruction sample.
+    ///
+    /// Idle jumps may advance `virtual_ticks` without retiring instructions,
+    /// so this value must never be inferred from the logical tick coordinate.
     pub retired_instructions: Option<u64>,
 }
 
@@ -764,17 +767,18 @@ impl FaultCoordinate {
     /// Reports whether `observed` is an exact backend refinement of this coordinate.
     ///
     /// Global virtual time and any authored retired-instruction coordinate are
-    /// immutable. A virtual-time-only coordinate must acquire the concrete
-    /// node-local instruction coordinate at which a backend applied an action.
+    /// immutable. A node backend may add an authentic raw retirement sample,
+    /// but a virtual-time-only observation remains valid when no such sample
+    /// is available.
     #[must_use]
     pub const fn accepts_backend_refinement(self, observed: Self) -> bool {
-        self.virtual_nanos == observed.virtual_nanos
+        self.virtual_ticks == observed.virtual_ticks
             && match self.retired_instructions {
                 Some(expected) => match observed.retired_instructions {
                     Some(actual) => actual == expected,
                     None => false,
                 },
-                None => observed.retired_instructions.is_some(),
+                None => true,
             }
     }
 }
@@ -1109,7 +1113,7 @@ impl FaultOpportunity {
         target.append_canonical(&mut material);
         push_text(&mut material, operation.as_str());
         push_text(&mut material, phase.as_str());
-        push_u64(&mut material, coordinate.virtual_nanos);
+        push_u64(&mut material, coordinate.virtual_ticks);
         push_optional_u64(&mut material, coordinate.retired_instructions);
         push_u64(&mut material, sequence);
         match direction {
@@ -1117,7 +1121,7 @@ impl FaultOpportunity {
             None => material.push_str("no_direction;"),
         }
         payload.append_canonical(&mut material);
-        let id = ContentHash::from_canonical_material("crucible.fault-opportunity.v1", &material);
+        let id = ContentHash::from_canonical_material("crucible.fault-opportunity.v2", &material);
         Ok(Self {
             adapter,
             target,

@@ -10,7 +10,10 @@
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libRs = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   artifactTest = builtins.readFile ../../crates/crucible/tests/gate_reproduction_artifacts.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -35,11 +38,11 @@
       }
       {
         label = "ADV-28 every finding artifact";
-        needle = "Every interesting finding (a property violation, a divergence, or a\n  retained corpus entry) MUST emit a self-contained reproduction artifact";
+        needle = "Every interesting finding (a property violation, a divergence, a\n  concrete execution timeout, or a retained corpus entry) MUST emit a\n  self-contained reproduction artifact";
       }
       {
         label = "ADV-29 discovery paths";
-        needle = "regardless of how\n  the finding was reached (interactive forking, state-space search, or\n  coverage-guided fuzzing)";
+        needle = "regardless of how\n  the finding was reached (campaign branching, state-space search, or\n  coverage-guided fuzzing)";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
@@ -60,8 +63,8 @@
         needle = "pub fn load_from_store";
       }
       {
-        label = "interactive fork hook";
-        needle = "FindingDiscoveryPath::InteractiveFork";
+        label = "campaign branch hook";
+        needle = "FindingDiscoveryPath::CampaignFork";
       }
       {
         label = "search failure hook";
@@ -245,7 +248,7 @@ in
             tasks=${taskList}
             gate=gate:reproduction-artifacts
             artifact=self-contained-seed-scenario-schedule
-            paths=interactive-fork,state-space-search,coverage-guided-fuzzing,retained-corpus
+            paths=campaign-fork,state-space-search,coverage-guided-fuzzing,retained-corpus
             replay=store-independent
             RESULT
           '';

@@ -108,7 +108,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
     );
 
     let binary = first.to_compact_binary();
-    assert!(binary.starts_with(b"crucible.world.v4\0"));
+    assert!(binary.starts_with(b"crucible.world.v6\0"));
     assert_eq!(
         World::from_compact_binary(&binary).expect("heterogeneous world binary should parse"),
         first
@@ -122,7 +122,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
     )
     .expect("heterogeneous scenario should build");
     let form_binary = form.to_compact_binary();
-    assert!(form_binary.starts_with(b"crucible.scenario-def-form.v5\0"));
+    assert!(form_binary.starts_with(b"crucible.scenario-def-form.v9\0"));
     assert_eq!(
         ScenarioDefForm::from_compact_binary(&form_binary)
             .expect("heterogeneous scenario binary should parse"),
@@ -131,7 +131,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
 
     let artifact = ReproductionArtifact::from_recorded_parts(form, Schedule::empty());
     let artifact_binary = artifact.to_compact_binary();
-    assert!(artifact_binary.starts_with(b"crucible.reproduction-artifact.v5\0"));
+    assert!(artifact_binary.starts_with(b"crucible.reproduction-artifact.v9\0"));
     assert_eq!(
         ReproductionArtifact::from_compact_binary(&artifact_binary)
             .expect("heterogeneous reproduction artifact should parse"),
@@ -143,7 +143,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
     assert!(
         without_io
             .to_compact_binary()
-            .starts_with(b"crucible.world.v4\0")
+            .starts_with(b"crucible.world.v6\0")
     );
     let vm_only_toml = without_io.to_canonical_toml().expect("VM-only TOML");
     assert!(!vm_only_toml.contains("kind = \"block\""));
@@ -249,9 +249,6 @@ fn device_identity_is_sensitive_to_every_logical_io_field() {
     changed.owner = node_id("node-b");
     variants.push(changed);
     let mut changed = baseline.clone();
-    changed.core = WorldIoCoreConfig::new(1);
-    variants.push(changed);
-    let mut changed = baseline.clone();
     changed.kind = WorldIoNodeKind::Block {
         base_image: ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(b"different")),
         base_length: block_bytes().len() as u64,
@@ -334,26 +331,6 @@ fn heterogeneous_nodes_reject_duplicate_ids_bad_owners_and_bad_clock_geometry() 
         unknown_owner,
         Err(EngineError::WorldIoNodeUnknownOwner { node, owner })
             if node == node_id("disk-node") && owner == node_id("missing")
-    ));
-
-    let invalid_core = World::from_node_defs_and_links(
-        vec![
-            WorldNodeDef::Vm(ready_node("node-a")),
-            WorldNodeDef::Io(WorldIoNode::block(
-                node_id("disk-node"),
-                node_id("node-a"),
-                WorldIoCoreConfig::new(64),
-                block_artifact(),
-                block_bytes().len() as u64,
-                block_latency(),
-            )),
-        ],
-        Vec::new(),
-    );
-    assert!(matches!(
-        invalid_core,
-        Err(EngineError::WorldIoNodeClockShiftTooLarge { node, shift: 64 })
-            if node == node_id("disk-node")
     ));
 }
 
@@ -440,7 +417,7 @@ fn production_world_instantiation_rejects_malformed_ninep_artifact_bytes() {
             WorldNodeDef::Io(WorldIoNode::ninep(
                 node_id("share-node"),
                 node_id("node-a"),
-                WorldIoCoreConfig::new(0),
+                WorldIoCoreConfig::new(),
                 ContentAddressedBlobRef::from_hash(key),
                 WorldNinePLatency::new(80, 120, 1),
             )),
@@ -464,7 +441,7 @@ fn production_world_instantiation_rejects_malformed_ninep_artifact_bytes() {
 }
 
 #[test]
-fn v5_outer_envelopes_reject_retired_versions() {
+fn current_outer_envelopes_reject_retired_versions() {
     let world = world_with_io_nodes(vec![block_node()]);
     let form = ScenarioDefForm::from_components(
         &world,
@@ -477,24 +454,30 @@ fn v5_outer_envelopes_reject_retired_versions() {
 
     let world_v1_envelope = replace_magic(
         world.to_compact_binary(),
-        b"crucible.world.v4\0",
+        b"crucible.world.v6\0",
         b"crucible.world.v1\0",
     );
     assert!(World::from_compact_binary(&world_v1_envelope).is_err());
 
     let scenario_v4_envelope = replace_magic(
         form.to_compact_binary(),
-        b"crucible.scenario-def-form.v5\0",
+        b"crucible.scenario-def-form.v9\0",
         b"crucible.scenario-def-form.v4\0",
     );
     assert!(ScenarioDefForm::from_compact_binary(&scenario_v4_envelope).is_err());
 
     let artifact_v4_envelope = replace_magic(
         artifact.to_compact_binary(),
-        b"crucible.reproduction-artifact.v5\0",
+        b"crucible.reproduction-artifact.v9\0",
         b"crucible.reproduction-artifact.v4\0",
     );
     assert!(ReproductionArtifact::from_compact_binary(&artifact_v4_envelope).is_err());
+    let mislabeled_artifact_v5 = replace_magic(
+        artifact.to_compact_binary(),
+        b"crucible.reproduction-artifact.v9\0",
+        b"crucible.reproduction-artifact.v5\0",
+    );
+    assert!(ReproductionArtifact::from_compact_binary(&mislabeled_artifact_v5).is_err());
 
     let vm_only_world =
         World::from_nodes(vec![ready_node("node-a")]).expect("VM-only world should build");
@@ -510,21 +493,21 @@ fn v5_outer_envelopes_reject_retired_versions() {
 
     let world_v2_envelope = replace_magic(
         vm_only_world.to_compact_binary(),
-        b"crucible.world.v4\0",
+        b"crucible.world.v6\0",
         b"crucible.world.v2\0",
     );
     assert!(World::from_compact_binary(&world_v2_envelope).is_err());
 
     let scenario_v1_envelope = replace_magic(
         vm_only_form.to_compact_binary(),
-        b"crucible.scenario-def-form.v5\0",
+        b"crucible.scenario-def-form.v9\0",
         b"crucible.scenario-def-form.v1\0",
     );
     assert!(ScenarioDefForm::from_compact_binary(&scenario_v1_envelope).is_err());
 
     let artifact_v1_envelope = replace_magic(
         vm_only_artifact.to_compact_binary(),
-        b"crucible.reproduction-artifact.v5\0",
+        b"crucible.reproduction-artifact.v9\0",
         b"crucible.reproduction-artifact.v1\0",
     );
     assert!(ReproductionArtifact::from_compact_binary(&artifact_v1_envelope).is_err());
@@ -580,7 +563,7 @@ fn ninep_node() -> WorldIoNode {
 }
 
 fn io_core() -> WorldIoCoreConfig {
-    WorldIoCoreConfig::new(0)
+    WorldIoCoreConfig::new()
 }
 
 fn block_latency() -> WorldBlockLatency {
@@ -647,7 +630,6 @@ fn ready_node(name: &str) -> WorldNode {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,

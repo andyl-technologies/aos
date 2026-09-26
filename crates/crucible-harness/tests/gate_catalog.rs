@@ -70,6 +70,14 @@ fn canonical_gate_statuses_are_current() {
         Some(GateStatus::Implemented)
     ));
     assert!(matches!(
+        find_gate("gate:campaign-model").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
+        find_gate("gate:campaign-statistics").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
         find_gate("gate:replay-oracle").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
@@ -118,6 +126,10 @@ fn canonical_gate_statuses_are_current() {
         Some(GateStatus::Implemented)
     ));
     assert!(matches!(
+        find_gate("gate:production-rust-plugin-flight").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
         find_gate("gate:basic-block-coverage").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
@@ -141,6 +153,8 @@ fn canonical_gate_statuses_are_current() {
         ("gate:single-vm-fingerprint", GatePhase::Phase1),
         ("gate:layer1-injection", GatePhase::Phase2),
         ("gate:content-address", GatePhase::Phase1),
+        ("gate:campaign-model", GatePhase::Phase1),
+        ("gate:campaign-statistics", GatePhase::Phase4),
         ("gate:replay-oracle", GatePhase::Phase1),
         ("gate:divergence-bisect", GatePhase::Phase1),
         ("gate:scheduler-liveness", GatePhase::Phase3),
@@ -157,6 +171,7 @@ fn canonical_gate_statuses_are_current() {
         ("gate:perf-bench", GatePhase::Phase7),
         ("gate:fleet-equivalence", GatePhase::Phase7),
         ("gate:campaign-continuity", GatePhase::Phase7),
+        ("gate:production-rust-plugin-flight", GatePhase::Phase7),
         ("gate:signal-fault-system", GatePhase::Phase7),
     ]);
 

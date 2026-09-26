@@ -2,11 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginFailLoud",
-  taskIds ? ["T-PLUG-22"],
-  openTaskIds ? [],
-  liveNetworkIo ? import ./phase2-qemu-live-network-io.nix {inherit pkgs lib;},
-  liveBlockIo ? import ./phase2-qemu-live-block-io.nix {inherit pkgs lib;},
-  liveNinePIo ? import ./phase2-qemu-live-9p-io.nix {inherit pkgs lib;},
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-22"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -187,11 +184,11 @@
       }
       {
         label = "ABI missing-capability entrypoint test";
-        needle = "abi_install_entrypoint_fails_closed_without_exact_deadline_or_queued_advance_symbols";
+        needle = "abi_install_entrypoint_fails_closed_without_required_runtime_symbols";
       }
       {
         label = "ABI unsupported model test";
-        needle = "abi_qemu_install_path_validates_execution_model_before_success";
+        needle = "abi_execution_model_validation_accepts_supported_qemu_info";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/handshake.rs" pluginHandshake [
@@ -302,16 +299,8 @@
         needle = "CapabilityUnavailable";
       }
       {
-        label = "overshoot fallback rejected";
-        needle = "OvershootFallbackForbidden";
-      }
-      {
         label = "exact deadline capability test";
-        needle = "exact_deadline_fails_when_capability_is_missing";
-      }
-      {
-        label = "overshoot fallback test";
-        needle = "exact_deadline_rejects_overshoot_and_correct_fallback";
+        needle = "exact_deadline_reader_requires_qemu_clock_deadline_symbol";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
@@ -553,8 +542,8 @@ in
 
             target_dir="$TMPDIR/crucible-plugin-fail-loud-target"
             for filter in \
-              abi_install_entrypoint_fails_closed_without_exact_deadline_or_queued_advance_symbols \
-              abi_qemu_install_path_validates_execution_model_before_success \
+              abi_install_entrypoint_fails_closed_without_required_runtime_symbols \
+              abi_execution_model_validation_accepts_supported_qemu_info \
               plugin_handshake_preserves_protocol_failures \
               receive_setup_sends_nonzero_ack_when_descriptor_count_is_wrong \
               prepare_setup_sends_nonzero_ack_when_region_validation_fails \
@@ -562,8 +551,8 @@ in
               registration_order_fails_loud_when_exact_deadline_capability_missing \
               registration_order_fails_loud_when_queued_idle_advance_missing \
               registration_coverage_on_requires_basic_block_callback_capability \
-              exact_deadline_fails_when_capability_is_missing \
-              exact_deadline_rejects_overshoot_and_correct_fallback \
+              exact_deadline_reader_requires_qemu_clock_deadline_symbol \
+              exact_deadline_reader_reads_virtual_deadline_without_fallback \
               queued_idle_advance_requires_qemu_enqueue_symbol \
               queued_idle_advance_rejects_targets_outside_qemu_signed_range \
               inbound_frame_drain_rejects_late_head_without_consuming \
@@ -606,13 +595,6 @@ in
                 "$filter" \
                 -- --test-threads=1
             done
-            grep -Fxq PASS ${liveNetworkIo}/result
-            grep -Fxq 'gate=gate:live-network-io' ${liveNetworkIo}/result
-            grep -Fxq 'network_ring=SLOT_NET_ROUTER' ${liveNetworkIo}/result
-            grep -Fxq PASS ${liveBlockIo}/result
-            grep -Fxq 'plugin_loaded=rust-control-cdylib' ${liveBlockIo}/result
-            grep -Fxq PASS ${liveNinePIo}/result
-            grep -Fxq 'plugin_loaded=rust-control-cdylib' ${liveNinePIo}/result
           '';
         }
         {
@@ -625,14 +607,14 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=complete
+            status=partial
+            evidence_scope=source-and-unit
             broken_ipc=step-scoped-diagnostic
             missing_capability=distinct-errors
             abi_mismatch=unsupported-api-diagnostic
             full_ring=queuefull-preserved
             passed_delivery_icount=fail-loud-no-consume
             wall_clock_fallback=forbidden
-            live_callback_surfaces=network,block,9p
             RESULT
           '';
         }

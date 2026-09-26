@@ -59,7 +59,6 @@ fn opaque_non_linux_world() -> World {
         ready_point: ReadyPoint::FixedIcount { icount: icount(1) },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: Some(opaque_non_linux_image_ref()),
         initrd: None,
@@ -148,7 +147,10 @@ fn black_box_contract_catalog_has_no_guest_software_assumptions() {
 #[test]
 fn non_linux_opaque_image_uses_black_box_observation_without_guest_contract() {
     let world = opaque_non_linux_world();
-    let node = &world.vm_nodes()[0];
+    let node = world
+        .vm_nodes()
+        .first()
+        .expect("opaque non-Linux world should contain one VM node");
     assert_eq!(node.arch, VmArchitecture::Aarch64);
     assert_eq!(node.white_box, WhiteBoxPolicy::Disabled);
     assert_eq!(node.root_image, Some(opaque_non_linux_image_ref()));

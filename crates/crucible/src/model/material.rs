@@ -5,7 +5,7 @@ use super::*;
 pub(super) fn require_current_fault_schema(input: &str) -> Result<(), EngineError> {
     let value = toml::from_str::<toml::Value>(input).map_err(|source| {
         scenario_serialization_error(format!(
-            "parse TOML before fault-schema migration check: {source}"
+            "parse TOML before current fault-schema validation: {source}"
         ))
     })?;
     let root = value.as_table().ok_or_else(|| {
@@ -17,7 +17,7 @@ pub(super) fn require_current_fault_schema(input: &str) -> Result<(), EngineErro
         .unwrap_or(root);
     if plan.get("fault_model").and_then(toml::Value::as_str) != Some("signal_bindings_v2") {
         return Err(scenario_serialization_error(
-            "unsupported pre-signal fault schema; regenerate the plan with `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)",
+            "unsupported fault schema; use `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)",
         ));
     }
     Ok(())
@@ -456,7 +456,6 @@ pub(super) fn workload_pattern_node(name: &str, cmdline: String) -> WorldNode {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -478,12 +477,6 @@ pub(super) fn scenario_serialization_error(reason: impl Into<String>) -> EngineE
     EngineError::ScenarioSerialization {
         reason: reason.into(),
     }
-}
-
-pub(super) fn canonical_world_nodes(nodes: &[WorldNode]) -> Vec<WorldNode> {
-    let mut nodes = nodes.to_vec();
-    nodes.sort_by(|left, right| left.id.cmp(&right.id));
-    nodes
 }
 
 pub(super) fn canonical_world_node_defs(nodes: &[WorldNodeDef]) -> Vec<WorldNodeDef> {
@@ -519,9 +512,10 @@ pub(super) fn canonical_world_links(links: &[LinkDef]) -> Vec<LinkDef> {
 }
 
 pub(super) fn world_participants(world: &World) -> Vec<NodeId> {
-    canonical_world_nodes(&world.nodes)
-        .into_iter()
-        .map(|node| node.id)
+    world
+        .vm_nodes()
+        .iter()
+        .map(|node| node.id.clone())
         .collect()
 }
 
@@ -548,13 +542,13 @@ pub(super) fn world_scheduling_nodes(world: &World) -> Vec<SchedulerNodeId> {
 pub(super) fn world_rng_streams(world: &World) -> Vec<RngStreamId> {
     let mut streams = Vec::with_capacity(
         world
-            .nodes
+            .vm_nodes()
             .len()
             .saturating_add(world.links.len())
             .saturating_add(world.io_nodes().count()),
     );
-    for node in canonical_world_nodes(&world.nodes) {
-        streams.push(RngStreamId::for_node(node.id.name));
+    for node in world.vm_nodes() {
+        streams.push(RngStreamId::for_node(node.id.name.clone()));
     }
     for link in canonical_world_links(&world.links) {
         streams.push(RngStreamId::for_link(world_link_stream_name(&link)));
@@ -605,7 +599,7 @@ pub(super) fn world_link_stream_name(link: &LinkDef) -> String {
 
 pub(super) fn link_minimum_latency(link: &LinkDef) -> SimDuration {
     SimDuration {
-        nanos: link.latency().nanos.saturating_sub(link.jitter().nanos),
+        ticks: link.latency().ticks.saturating_sub(link.jitter().ticks),
     }
 }
 
@@ -690,25 +684,27 @@ pub(super) fn add_family_link_pair(pairs: &mut BTreeSet<(u32, u32)>, left: u32, 
 
 pub(super) fn baked_node_blobs(world: &World) -> BTreeMap<NodeId, NodeBlobRef> {
     let world_identity = canonical_world_identity(world);
-    canonical_world_nodes(&world.nodes)
-        .into_iter()
+    world
+        .vm_nodes()
+        .iter()
         .map(|node| {
             let blob = ContentHash::from_canonical_material(
                 "crucible.model.node-baked-blob.v1",
                 &format!(
                     "world_id={}\n{}",
                     content_hash_hex(world_identity),
-                    world_node_material(&node)
+                    world_node_material(node)
                 ),
             );
-            (node.id, NodeBlobRef::baked(blob))
+            (node.id.clone(), NodeBlobRef::baked(blob))
         })
         .collect()
 }
 
 pub(super) fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
-    canonical_world_nodes(&world.nodes)
-        .into_iter()
+    world
+        .vm_nodes()
+        .iter()
         .map(|node| {
             let icount = match node.ready_point {
                 ReadyPoint::FixedIcount { icount } => icount,
@@ -716,7 +712,7 @@ pub(super) fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
                 | ReadyPoint::ConsoleMarker { .. }
                 | ReadyPoint::AgentSignal => Icount::default(),
             };
-            (node.id, icount)
+            (node.id.clone(), icount)
         })
         .collect()
 }
@@ -738,7 +734,7 @@ pub(super) fn serialized_world_identity(world: &World) -> ContentHash {
 fn world_content_hash(world: &World, nodes: &[WorldNodeDef], links: &[LinkDef]) -> ContentHash {
     let base = world_material(nodes, links);
     ContentHash::from_canonical_material(
-        "crucible.model.world.v4",
+        "crucible.model.world.v6",
         &format!(
             "{base}\nfault-topology={}",
             world.fault_topology_id.to_hex()
@@ -768,11 +764,70 @@ pub(super) fn scenario_world_plan_properties_seed_app_random_cap_material(
     seed: Seed,
     app_random_draw_cap: u64,
 ) -> String {
+    scenario_world_plan_properties_measurements_seed_app_random_cap_material(
+        world,
+        plan,
+        properties,
+        &MeasurementDefinitions::empty(),
+        seed,
+        app_random_draw_cap,
+    )
+}
+
+pub(super) fn scenario_world_plan_properties_measurements_seed_app_random_cap_material(
+    world: &World,
+    plan: &Plan,
+    properties: &Properties,
+    measurements: &MeasurementDefinitions,
+    seed: Seed,
+    app_random_draw_cap: u64,
+) -> String {
+    scenario_world_plan_properties_measurements_selectables_seed_app_random_cap_material(
+        world,
+        plan,
+        properties,
+        measurements,
+        &ScenarioSelectables::empty(),
+        seed,
+        app_random_draw_cap,
+    )
+}
+
+pub(super) fn scenario_world_plan_properties_measurements_selectables_seed_app_random_cap_material(
+    world: &World,
+    plan: &Plan,
+    properties: &Properties,
+    measurements: &MeasurementDefinitions,
+    selectables: &ScenarioSelectables,
+    seed: Seed,
+    app_random_draw_cap: u64,
+) -> String {
+    let measurement_material = if measurements.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nmeasurements_ref={}",
+            content_hash_hex(measurements.content_hash())
+        )
+    };
+    let selectable_material = if selectables == &ScenarioSelectables::empty() {
+        String::new()
+    } else {
+        format!(
+            "\nselectables_ref={}",
+            content_hash_hex(ContentHash::from_canonical_material_bytes(
+                "crucible.model.scenario-selectables.v1",
+                &selectables.canonical_bytes(),
+            ))
+        )
+    };
     format!(
-        "world_ref={}\nplan_ref={}\nproperties_ref={}\n{}\n{}",
+        "world_ref={}\nplan_ref={}\nproperties_ref={}{}{}\n{}\n{}",
         content_hash_hex(canonical_world_identity(world)),
         content_hash_hex(plan.content_hash()),
         content_hash_hex(properties.content_hash()),
+        measurement_material,
+        selectable_material,
         seed_material(seed),
         app_random_draw_cap_material(app_random_draw_cap)
     )
@@ -782,15 +837,15 @@ pub(super) fn world_material(nodes: &[WorldNodeDef], links: &[LinkDef]) -> Strin
     if nodes.iter().all(|node| matches!(node, WorldNodeDef::Vm(_))) {
         let vm_nodes = world_vm_node_projection(nodes);
         format!(
-            "min_link_latency_ns={}\n{}\n{}",
-            MIN_LINK_LATENCY.nanos,
+            "min_link_latency_ticks={}\n{}\n{}",
+            MIN_LINK_LATENCY.ticks,
             world_nodes_material(&vm_nodes),
             world_links_material(links),
         )
     } else {
         format!(
-            "min_link_latency_ns={}\n{}\n{}",
-            MIN_LINK_LATENCY.nanos,
+            "min_link_latency_ticks={}\n{}\n{}",
+            MIN_LINK_LATENCY.ticks,
             world_node_defs_material(nodes),
             world_links_material(links),
         )
@@ -852,19 +907,18 @@ pub(super) fn world_io_node_material(node: &WorldIoNode) -> String {
         ),
     };
     format!(
-        "node_id_len={}\nnode_id={}\nowner_id_len={}\nowner_id={}\ncore.shift_bits={}\n{}",
+        "node_id_len={}\nnode_id={}\nowner_id_len={}\nowner_id={}\n{}",
         node.id.name.len(),
         node.id.name,
         node.owner.name.len(),
         node.owner.name,
-        node.core.shift_bits,
         kind,
     )
 }
 
 pub(super) fn world_node_material(node: &WorldNode) -> String {
     format!(
-        "node_id_len={}\nnode_id={}\narch={}\nmemory_mib={}\ncmdline_len={}\ncmdline={}\nsmp_vcpus={}\nicount_shift={}\nkernel_ref={}\nroot_image_ref={}\ninitrd_ref={}\n{}\nwhite_box={}",
+        "node_id_len={}\nnode_id={}\narch={}\nmemory_mib={}\ncmdline_len={}\ncmdline={}\nsmp_vcpus={}\nkernel_ref={}\nroot_image_ref={}\ninitrd_ref={}\n{}\nwhite_box={}",
         node.id.name.len(),
         node.id.name,
         node.arch.material(),
@@ -872,7 +926,6 @@ pub(super) fn world_node_material(node: &WorldNode) -> String {
         node.cmdline.len(),
         node.cmdline,
         node.smp_vcpus,
-        node.icount_shift,
         optional_blob_ref_material(node.kernel),
         optional_blob_ref_material(node.root_image),
         optional_blob_ref_material(node.initrd),
@@ -884,13 +937,13 @@ pub(super) fn world_node_material(node: &WorldNode) -> String {
 pub(super) fn world_link_material(link: &LinkDef) -> String {
     let (left, right) = link.endpoints();
     format!(
-        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}\nlink_latency_ns={}\nlink_jitter_ns={}\nlink_loss_millionths={}\nlink_bandwidth_bps={}",
+        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}\nlink_latency_ticks={}\nlink_jitter_ticks={}\nlink_loss_millionths={}\nlink_bandwidth_bps={}",
         left.name.len(),
         left.name,
         right.name.len(),
         right.name,
-        link.latency().nanos,
-        link.jitter().nanos,
+        link.latency().ticks,
+        link.jitter().ticks,
         link.loss().millionths(),
         link.bandwidth_bps()
             .map_or_else(|| String::from("none"), |bandwidth| bandwidth.to_string())
@@ -941,9 +994,9 @@ pub(super) fn action_material(action: &Action) -> String {
     match action {
         Action::ArmTimer { name, after } => {
             format!(
-                "action=arm-timer\n{}\nafter_nanos={}",
+                "action=arm-timer\n{}\nafter_ticks={}",
                 timer_id_material(name),
-                after.nanos
+                after.ticks
             )
         }
         Action::CancelTimer { name } => {
@@ -1076,8 +1129,8 @@ pub(super) fn predicate_material(predicate: &Predicate) -> String {
         }
         Predicate::After { duration, of } => {
             format!(
-                "predicate=after\nduration_nanos={}\n{}",
-                duration.nanos,
+                "predicate=after\nduration_ticks={}\n{}",
+                duration.ticks,
                 event_id_material(of)
             )
         }
@@ -1356,30 +1409,23 @@ mod policy_labels;
 pub(super) use policy_labels::*;
 
 #[cfg(test)]
-mod migration_tests {
+mod current_schema_tests {
     use super::*;
 
     #[test]
-    fn pre_signal_forms_return_one_actionable_migration_error() {
-        for input in [
-            "id = 'x'",
-            "id = 'x'\nfault_model = 'signal_bindings_v1'",
-            "id = 'x'\n[plan]\nid = 'p'",
-        ] {
-            let error = match require_current_fault_schema(input) {
-                Ok(()) => panic!("a pre-signal form must be rejected before typed lowering"),
-                Err(error) => error,
-            };
-            assert_eq!(
-                error.to_string(),
-                "scenario serialized form is invalid: unsupported pre-signal fault schema; regenerate the plan with `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)"
-            );
-        }
+    fn current_signal_driven_plan_fields_pass_validation() {
+        let input = "fault_model = 'signal_bindings_v2'\nsignal = []\nfault_binding = []";
+        assert_eq!(require_current_fault_schema(input), Ok(()));
     }
 
     #[test]
-    fn signal_driven_plan_fields_pass_the_migration_check() {
-        let input = "fault_model = 'signal_bindings_v2'\nsignal = []\nfault_binding = []";
-        assert_eq!(require_current_fault_schema(input), Ok(()));
+    fn noncurrent_fault_schema_is_rejected() {
+        let Err(error) = require_current_fault_schema("fault_model = 'not-current'") else {
+            panic!("a noncurrent fault schema must fail before typed lowering");
+        };
+        assert_eq!(
+            error.to_string(),
+            "scenario serialized form is invalid: unsupported fault schema; use `fault_model = \"signal_bindings_v2\"`, `[[signal]]`, and `[[fault_binding]]` (or their `[plan]`-qualified scenario forms)"
+        );
     }
 }

@@ -1,6 +1,7 @@
 //! Terminal conditions, quiescence, World-link runtime, and scheduler-owned state.
 
 use super::*;
+use crate::SelectionDecision;
 
 mod network_checkpoint;
 
@@ -128,6 +129,11 @@ impl SchedulerQuiescence {
 /// One scheduler-owned state component that prevents quiescence.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SchedulerQuiescenceBlocker {
+    /// A host-side evaluation remains scheduled even though no node can RUN.
+    PendingGlobalEvaluation {
+        /// Future logical time at which trigger or fault state must be evaluated.
+        at: SimInstant,
+    },
     /// A node is still runnable and may be selected by PICK.
     RunnableNode {
         /// The runnable scheduler graph node.
@@ -223,6 +229,14 @@ pub enum SchedulerWorldInstantiationError {
         #[source]
         source: crucible_device::DeviceError,
     },
+    /// Doubling the exact jitter window exceeded the tick coordinate.
+    #[error("World network link {link:?} ({direction:?}) jitter window overflows exact ticks")]
+    NetworkTimingOverflow {
+        /// Canonical logical-link identifier.
+        link: LinkId,
+        /// Directed orientation whose jitter window overflowed.
+        direction: NetworkLinkDirection,
+    },
     /// The canonical World contains more directed links than `u32` source ids.
     #[error("World has too many directed network links for physical source ids: {count}")]
     TooManyNetworkLinks {
@@ -264,7 +278,7 @@ pub struct SchedulerNetworkCheckpoint {
     /// Shared RNG positions in canonical link order.
     pub rng_positions: Vec<(LinkId, u64)>,
     /// Exact signal-driven wakeup armed at capture time.
-    pub signal_fault_wakeup_nanos: Option<u64>,
+    pub signal_fault_wakeup_ticks: Option<u64>,
 }
 
 /// One directed scheduler link and its complete device continuation.
@@ -406,6 +420,8 @@ pub struct SingleScheduler {
     pub(super) time_limit: SimInstant,
     /// Runtime-only common-time cap for an exact production branch boundary.
     pub(super) branch_frontier_cap: Option<SimInstant>,
+    /// Runtime-only common-time cap for the caller's current modeled stop.
+    pub(super) attempt_stop_frontier_cap: Option<SimInstant>,
     pub(super) rendezvous: SchedulerRendezvous,
     pub(super) effective_topology: SchedulerLookaheadGraph,
     pub(super) nodes: Vec<RuntimeSchedulerNode>,
@@ -457,6 +473,13 @@ pub struct SingleScheduler {
     /// This runtime-only term is folded into every live VM's horizon so the
     /// shared frontier reaches cadence and residence deadlines without polling.
     pub(super) signal_fault_wakeup: Option<SimInstant>,
+    /// Derived next event-graph time transition, independent of signal deadlines.
+    ///
+    /// Lifecycle owners recompute this from the durable graph, trigger state,
+    /// and armed timers after settlement and restore, before the next RUN.
+    pub(super) trigger_wakeup: Option<SimInstant>,
+    /// Next possible trigger activation, excluding certainly-false bookkeeping.
+    pub(super) trigger_activation: Option<SimInstant>,
     /// Test-only fault injection: when `true`,
     /// [`resolve_device_completions`](SingleScheduler::resolve_device_completions)
     /// stamps each I/O completion's key with the consumer's *frontier* icount
@@ -474,7 +497,12 @@ pub struct SingleScheduler {
     pub(super) decision_seed: Seed,
     pub(super) decision_rng_cursor: DecisionRngState,
     /// Explorer-selected live World-network outcomes awaiting exact emissions.
-    pub(super) branch_network_choices: Vec<OverrideDecision>,
+    pub(super) branch_network_choices: Vec<SelectionDecision>,
+    /// Authenticated app-random branch selections keyed by their exact parent.
+    ///
+    /// The parent includes the seeded raw RNG draw. A selection is removed only
+    /// after the live guest request and selected value validate successfully.
+    pub(super) app_random_branch_selections: BTreeMap<ContentHash, SelectionDecision>,
     /// Live World-network frontiers captured in execution order.
     pub(super) search_frontiers: Vec<SearchRuntimeFrontier>,
     pub(super) event_log: EventLog,

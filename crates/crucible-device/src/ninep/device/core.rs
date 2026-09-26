@@ -195,18 +195,19 @@ impl NinepDevice {
         )
     }
 
-    /// Advances the visible frontier from exact time and event evidence.
+    /// Advances the visible frontier from exact tick and event evidence.
+    /// Event map values use the same tick coordinate as `now_tick`.
     ///
     /// # Errors
     ///
     /// Returns [`DeviceError`] if checkpointed visibility state is inconsistent.
     pub fn advance_visibility(
         &mut self,
-        now_nanos: u64,
+        now_tick: u64,
         observed_events: &BTreeMap<[u8; 32], u64>,
     ) -> Result<(u64, u64), DeviceError> {
         self.visibility
-            .advance_visibility(self.session_epoch, now_nanos, observed_events)
+            .advance_visibility(self.session_epoch, now_tick, observed_events)
     }
 
     /// Returns the committed-versus-visible continuation.

@@ -84,6 +84,32 @@ impl LiveWhiteboxInstructionLocation {
             .checked_add(u64::from(self.index))
             .ok_or(LiveWhiteboxError::IcountObservation)
     }
+
+    pub(super) fn tb_end_icount(
+        self,
+        entry: LiveWhiteboxTbEntry,
+    ) -> Result<u64, LiveWhiteboxError> {
+        if entry.tb_insns != self.tb_insns {
+            return Err(LiveWhiteboxError::IcountObservation);
+        }
+        entry
+            .icount
+            .checked_add(u64::from(self.tb_insns))
+            .ok_or(LiveWhiteboxError::IcountObservation)
+    }
+
+    /// Confirms that QEMU's callback clock includes the full TB reservation.
+    pub(super) fn validate_observed_icount(
+        self,
+        entry: LiveWhiteboxTbEntry,
+        observed_icount: u64,
+    ) -> Result<(), LiveWhiteboxError> {
+        if self.tb_end_icount(entry)? == observed_icount {
+            Ok(())
+        } else {
+            Err(LiveWhiteboxError::IcountObservation)
+        }
+    }
 }
 
 /// Exact coordinate captured at the current translation block's entry.
@@ -140,6 +166,25 @@ mod tests {
         assert!(matches!(
             LiveWhiteboxInstructionLocation::tb_insns_from_userdata(std::ptr::null_mut()),
             Err(LiveWhiteboxError::InstructionLocationOverflow { .. })
+        ));
+    }
+
+    #[test]
+    fn multi_instruction_tb_separates_marker_and_observed_coordinates() {
+        let location = LiveWhiteboxInstructionLocation::new(4, 1).unwrap_or_else(|error| {
+            panic!("test instruction location should fit callback userdata: {error}")
+        });
+        let entry = LiveWhiteboxTbEntry {
+            tb_insns: 4,
+            icount: 100,
+        };
+
+        assert_eq!(location.current_icount(entry).unwrap(), 101);
+        assert_eq!(location.tb_end_icount(entry).unwrap(), 104);
+        assert!(location.validate_observed_icount(entry, 104).is_ok());
+        assert!(matches!(
+            location.validate_observed_icount(entry, 103),
+            Err(LiveWhiteboxError::IcountObservation)
         ));
     }
 }

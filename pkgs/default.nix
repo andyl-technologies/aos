@@ -1657,27 +1657,26 @@
       qemu-crucible = mkQemuPackage {
         pname = "qemu-crucible";
         enablePlugins = true;
-        applyCruciblePatches = true;
+        applyCruciblePatch = true;
+      };
+      # Rebuild the shipped patched identity and run QEMU's complete configured
+      # regression target without adding that cost to normal installation.
+      qemu-crucible-full-test-suite = callPackage ./emulation/qemu.nix {
+        pname = "qemu-crucible";
+        enablePlugins = true;
+        applyCruciblePatch = true;
+        testOnlyNonDistributable = true;
+        fullUpstreamTestSuiteOnly = true;
+        # The outer VM is deliberately the generic, unpatched package. The
+        # patched build under test must not provide its own filesystem or
+        # execution environment.
+        qemuTestRunner = self.qemu;
       };
       qemu-crucible-reference = mkQemuPackage {
         pname = "qemu-crucible-reference";
         enablePlugins = true;
-        applyCruciblePatches = false;
+        applyCruciblePatch = false;
       };
-      # Focused compatibility gates build an explicitly selected tracked patch
-      # prefix. Keeping construction here preserves the same hermetic package
-      # dependency injection as the published full-series QEMU package.
-      qemuCrucibleNonDistributableTestPrefix = {
-        pname,
-        series,
-        testOnlyPostPatch ? null,
-      }:
-        mkQemuPackage {
-          inherit pname series testOnlyPostPatch;
-          enablePlugins = true;
-          applyCruciblePatches = true;
-          testOnlyNonDistributable = true;
-        };
       crucibleQemuPluginFor = qemuPackage:
         callPackage ./emulation/crucible-qemu-plugin.nix {
           qemu-crucible = qemuPackage;
@@ -1685,6 +1684,7 @@
       crucible-controller = callPackage ./tools/crucible/crucible.nix {
         controllerOnly = true;
       };
+      sqliteStatic = callPackage ./db/sqlite.nix {enableStatic = true;};
 
       # Interpreter-free git for the system image (shares git.nix's source and
       # version). Used by apm/apr's runtimeTools and the server profile so the

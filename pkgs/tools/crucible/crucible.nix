@@ -21,6 +21,7 @@
   sed,
   util-linux,
   qemu-crucible-source,
+  sqlite,
   gdb,
   openssh,
   buildPackages,
@@ -56,8 +57,13 @@
   cargoDepsHash = import ./_cargo-deps-hash.nix;
   liveDebuggerMatrixScript = ./live-debugger-matrix.sh;
   src = import ./_source.nix {inherit lib;};
+  cargoDependencySource = mkCargoDummySource {
+    srcRoot = ../../../crates;
+    name = "crucible-apache-host-dummy-source";
+    cargoRoot = "crates";
+  };
   cargoDeps = fetchCargoVendor {
-    inherit src;
+    src = cargoDependencySource;
     name = "crucible-vendor-${version}";
     sourceRoot = "source/crates";
     hash = cargoDepsHash;
@@ -122,11 +128,12 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     PROTOC = "${buildProtobuf}/bin/protoc";
   };
   controllerArtifactContract = {
     family = "crucible-apache-host-release-and-test";
-    nativeInputs = map toString [buildRustDev buildPkgConfig openssl buildProtobuf];
+    nativeInputs = map toString [buildRustDev buildPkgConfig openssl sqlite buildProtobuf];
     licenseScope = "Apache-2.0";
   };
   controllerArtifacts = mkCargoArtifacts {
@@ -134,11 +141,7 @@
     inherit version cargoDeps;
     cargoEnv = controllerCargoEnv;
     cargoArtifactContract = controllerArtifactContract;
-    src = mkCargoDummySource {
-      srcRoot = ../../../crates;
-      name = "crucible-apache-host-dummy-source";
-      cargoRoot = "crates";
-    };
+    src = cargoDependencySource;
     cargoRoot = "crates";
     cargoBuildCommands = [
       "build --release --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags}"
@@ -146,19 +149,21 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags} --features crucible-cli/test-double"
     ];
     buildDeps =
-      [buildRustDev buildPkgConfig openssl buildProtobuf]
+      [buildRustDev buildPkgConfig openssl sqlite buildProtobuf]
       ++ lib.optionals stdenv.isCross [buildPackages.crucible-controller];
-    runtimeDeps = [openssl];
+    runtimeDeps = [openssl sqlite];
   };
   debugGatewayArtifactContract = {
     family = "crucible-gpl-debug-gateway-release-and-test";
-    nativeInputs = map toString [buildRustDev];
+    nativeInputs = map toString [buildRustDev buildPkgConfig sqlite];
     licenseScope = "GPL-2.0-only";
   };
+  debugGatewayCargoEnv = {LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";};
   debugGatewayArtifacts = mkCargoArtifacts {
     pname = "crucible-debug-gateway-artifacts";
     inherit version cargoDeps;
     cargoArtifactContract = debugGatewayArtifactContract;
+    cargoEnv = debugGatewayCargoEnv;
     src = mkCargoDummySource {
       srcRoot = ../../../crates;
       name = "crucible-debug-gateway-dummy-source";
@@ -169,7 +174,8 @@
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
     ];
-    buildDeps = [buildRustDev];
+    buildDeps = [buildRustDev buildPkgConfig sqlite];
+    runtimeDeps = [sqlite];
   };
   controller = mkCargoPackage {
     pname = "crucible-controller";
@@ -181,11 +187,18 @@
     cargoEnv = controllerCargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
+    # Keep runtime tests within a bounded share of the allocated build cores.
+    # Several controller suites run real subprocesses with production-sized
+    # deadlines and must retain scheduler time under large host allocations.
+    cargoNextestMaxTestThreads = 16;
     # Nextest lists hundreds of controller test binaries concurrently. The
     # sandbox's default 1,024-descriptor soft limit is below that bounded
     # inventory, so raise only the soft descriptor ceiling. This does not
-    # change Cargo, Nextest, Nix, or Ninja parallelism.
+    # change Cargo, Nix, or Ninja parallelism.
     cargoNextestOpenFilesLimit = 4096;
+    # Nix builders expose a pseudo-terminal. Disable interactive redraws and
+    # leave the failed test and its captured output at the end of the log.
+    nextestFlags = "--show-progress=none --color=never --status-level=fail --final-status-level=fail --failure-output=final";
     passthru = {
       cargoArtifacts = controllerArtifacts;
       cargoDeps = cargoDeps;
@@ -194,8 +207,8 @@
     cargoFlags = packageFlags;
     cargoTestFlags = "${packageFlags} --features crucible-cli/test-double";
     doCheck = true;
-    buildDeps = [buildRustDev buildPkgConfig openssl buildProtobuf];
-    runtimeDeps = [openssl];
+    buildDeps = [buildRustDev buildPkgConfig openssl sqlite buildProtobuf];
+    runtimeDeps = [openssl sqlite];
     # The controller is the Apache side of a process boundary. Fail the build
     # if any QEMU-side implementation, guest kernel, or fixture enters either
     # its direct references or its runtime closure.
@@ -206,6 +219,7 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
 
     # The source root includes root guidance, docs/, pkgs/tools/crucible/, and
     # tests/crucible/ so harness lints can read RFC-0010 and AOS check wiring,
@@ -277,8 +291,8 @@
       }
     '';
 
-    # The check phase enables the test-only backend and writes a feature-enabled
-    # binary to target/release. Rebuild the installed CLI without test features.
+    # The check phase enables the test-only backend. Rebuild the installed CLI
+    # without test features and record the example artifacts' exact paths.
     preInstall = ''
       cargo build \
         --release \
@@ -293,17 +307,44 @@
         --offline \
         -j$NIX_BUILD_CORES \
         -p crucible \
-        --example crucible-debugger-live-fixture
+        --example crucible-debugger-live-fixture \
+        --message-format=json-render-diagnostics \
+        > "$NIX_BUILD_TOP/crucible-debugger-example.jsonl"
+      jq -r '.message.rendered // empty' \
+        "$NIX_BUILD_TOP/crucible-debugger-example.jsonl" >&2
+      cargo build \
+        --release \
+        --frozen \
+        --offline \
+        -j$NIX_BUILD_CORES \
+        -p crucible-api \
+        --example crucible-e2e-determinism-scenario \
+        --message-format=json-render-diagnostics \
+        > "$NIX_BUILD_TOP/crucible-scenario-example.jsonl"
+      jq -r '.message.rendered // empty' \
+        "$NIX_BUILD_TOP/crucible-scenario-example.jsonl" >&2
     '';
 
     postInstall = ''
       test -x "$out/bin/crucible"
-      cp ${
-        if stdenv.isCross
-        then ''"target/$CARGO_BUILD_TARGET/release/examples/crucible-debugger-live-fixture"''
-        else "target/release/examples/crucible-debugger-live-fixture"
-      } \
-        "$out/bin/crucible-debugger-live-fixture"
+      install_example() {
+        name="$1"
+        messages="$2"
+        executable=$(jq -rs --arg name "$name" '
+          [.[] | select(.reason == "compiler-artifact" and
+            .target.name == $name and .target.kind == ["example"] and
+            .executable != null) | .executable] | unique |
+          if length == 1 then .[0]
+          else error("expected exactly one executable for " + $name)
+          end
+        ' "$messages")
+        test -x "$executable"
+        cp "$executable" "$out/bin/$name"
+      }
+      install_example crucible-debugger-live-fixture \
+        "$NIX_BUILD_TOP/crucible-debugger-example.jsonl"
+      install_example crucible-e2e-determinism-scenario \
+        "$NIX_BUILD_TOP/crucible-scenario-example.jsonl"
       ${
         if stdenv.isCross
         then ''
@@ -366,14 +407,15 @@
     inherit cargoDeps;
     cargoArtifacts = debugGatewayArtifacts;
     cargoArtifactContract = debugGatewayArtifactContract;
+    cargoEnv = debugGatewayCargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
 
     cargoFlags = "-p crucible-debug-gateway";
     cargoTestFlags = "-p crucible-debug-gateway";
     doCheck = true;
-    buildDeps = [buildRustDev];
-    runtimeDeps = [];
+    buildDeps = [buildRustDev buildPkgConfig sqlite];
+    runtimeDeps = [sqlite];
 
     postInstall = ''
       mkdir -p "$out/share/licenses/crucible-debug-gateway"
@@ -459,6 +501,8 @@
           ln -s ${openssh}/bin/ssh "$out/bin/ssh"
           ln -s ${controller}/bin/crucible-debugger-live-fixture \
             "$out/bin/crucible-debugger-live-fixture"
+          ln -s ${controller}/bin/crucible-e2e-determinism-scenario \
+            "$out/bin/crucible-e2e-determinism-scenario"
           cp ${liveDebuggerMatrixScript} "$out/share/aos/crucible/debugger-live-matrix.sh"
           cat > "$out/bin/crucible-debugger-live-matrix" <<EOF
           #!${bash}/bin/bash
@@ -466,9 +510,7 @@
             CRUCIBLE_NATIVE_GUEST_ARCHITECTURE CRUCIBLE_KERNEL CRUCIBLE_ROOT_IMAGE \
             CRUCIBLE_KERNEL_CMDLINE CRUCIBLE_KERNEL_X86_64 CRUCIBLE_ROOT_IMAGE_X86_64 \
             CRUCIBLE_KERNEL_CMDLINE_X86_64 CRUCIBLE_KERNEL_AARCH64 \
-            CRUCIBLE_ROOT_IMAGE_AARCH64 CRUCIBLE_KERNEL_CMDLINE_AARCH64 \
-            CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES
-          export CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES=1
+            CRUCIBLE_ROOT_IMAGE_AARCH64 CRUCIBLE_KERNEL_CMDLINE_AARCH64
           export CRUCIBLE_MATRIX_CRUCIBLE="$out/bin/crucible"
           export CRUCIBLE_MATRIX_GDB="$out/bin/gdb"
           export CRUCIBLE_MATRIX_SSH="$out/bin/ssh"

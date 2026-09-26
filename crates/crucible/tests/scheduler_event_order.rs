@@ -11,7 +11,7 @@ use crucible::{
     EventSequenceState, ExactLocalEvent, MaterializedState, NetworkLookahead, NodeCounter, NodeId,
     QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerError, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, SchedulerState, SchedulingNodeKind, Shift, SimInstant, SingleScheduler,
+    SchedulerScenarioNode, SchedulerState, SchedulingNodeKind, SimInstant, SingleScheduler,
     VirtualTime, next_scheduled_event_key, ordered_scheduled_events,
 };
 
@@ -180,9 +180,8 @@ fn single_scheduler_allocates_control_event_keys_from_saved_sequence_state() {
     };
     let mut scenario = SchedulerLivenessScenario::from_canonical_material(
         "event-sequence-state",
-        Shift::new(0).expect("zero shift should be valid"),
         2,
-        SimInstant { nanos: 10 },
+        SimInstant { ticks: 10 },
         vec![SchedulerScenarioNode {
             id: scheduler_node("vm-a"),
             counter: NodeCounter { ticks: 0 },
@@ -235,13 +234,18 @@ fn backend_event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    ticks: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             producer.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),

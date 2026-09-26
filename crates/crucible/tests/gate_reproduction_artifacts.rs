@@ -7,14 +7,13 @@
 use std::error::Error;
 
 use crucible::{
-    ChoiceTag, Configuration, ContentHash, CoverageGuidedCorpusConfig, CoverageGuidedFuzzConfig,
-    Decision, EngineError, EventLogCoverageFeedback, FamilySpace, FindingDiscoveryPath,
+    Configuration, ContentHash, CoverageGuidedCorpusConfig, CoverageGuidedFuzzConfig, Decision,
+    EngineError, EventLogCoverageFeedback, FamilySpace, FindingDiscoveryPath,
     FindingReproductionArtifact, FindingReproductionArtifactError, GenesisCheckpoint, Icount,
     MarkerId, MaterializationPolicy, MaterializationTrigger, MemoryDagStore, NodeTemplate,
-    ObservableEvent, OverrideDecision, Plan, Properties, ReadyPoint, ScenarioDefForm,
-    ScenarioFamily, SchedulingPoint, SearchBudget, SearchFailureOracle, SearchFrontierChoices,
-    SearchStrategy, Seed, SeedSpace, TemporalGraph, TopologyShape, TopologySizeRange,
-    WhiteBoxPolicy, World, WorldNode, bake, try_step,
+    ObservableEvent, Plan, Properties, ReadyPoint, ScenarioDefForm, ScenarioFamily, SearchBudget,
+    SearchFailureOracle, SearchFrontierChoices, SearchStrategy, Seed, SeedSpace, TemporalGraph,
+    TopologyShape, TopologySizeRange, WhiteBoxPolicy, World, WorldNode, bake, try_step,
 };
 
 #[test]
@@ -23,7 +22,7 @@ fn gate_findings_emit_same_artifact_for_interactive_and_search_paths() -> Result
     let world = single_node_world("finding-artifact")?;
     let scenario = scenario_form(&world)?;
     let root = Configuration::genesis(scenario.scenario_def());
-    let decision = override_decision("finding/path", "branch");
+    let decision = crucible::test_support::typed_search_decision_for_test("finding-path-branch")?;
     let branch = try_step(&root, decision.clone())?;
     let baked = bake_with_search_frontier_choices(&world, vec![decision.clone()])?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&root.def, baked)?;
@@ -51,7 +50,7 @@ fn gate_findings_emit_same_artifact_for_interactive_and_search_paths() -> Result
     assert_eq!(search_failure.configuration, branch.id());
     assert_eq!(
         interactive.discovery_path,
-        FindingDiscoveryPath::InteractiveFork
+        FindingDiscoveryPath::CampaignFork
     );
     assert_eq!(
         search.discovery_path,
@@ -73,7 +72,7 @@ fn gate_findings_emit_same_artifact_for_interactive_and_search_paths() -> Result
     let wrong_scenario = scenario_form(&single_node_world("wrong-scenario")?)?;
     assert!(matches!(
         FindingReproductionArtifact::capture(
-            FindingDiscoveryPath::InteractiveFork,
+            FindingDiscoveryPath::CampaignFork,
             fingerprint,
             &wrong_scenario,
             &branch,
@@ -172,7 +171,6 @@ fn single_node_world(label: &str) -> Result<World, EngineError> {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -191,7 +189,8 @@ fn bake_with_search_frontier_choices(
         },
     )?;
     let mut scheduler = state.scheduler.clone();
-    scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
+    scheduler.search_frontier =
+        SearchFrontierChoices::from_decision_sequences(decisions.into_iter().map(std::iter::once));
     baked.checkpoint.state = Some(
         crucible::MaterializedState::from_components_with_event_log_segments(
             state.vm_snapshots.clone(),
@@ -215,17 +214,6 @@ fn fuzz_family() -> Result<ScenarioFamily, EngineError> {
         space,
         NodeTemplate::fixed_icount(Icount { retired: 50 }),
     ))
-}
-
-fn override_decision(point: &str, choice: &str) -> Decision {
-    Decision::Override(OverrideDecision {
-        point: SchedulingPoint {
-            key: point.to_owned(),
-        },
-        choice: ChoiceTag {
-            name: choice.to_owned(),
-        },
-    })
 }
 
 fn finding_fingerprint(label: &str) -> ContentHash {

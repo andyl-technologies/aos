@@ -10,13 +10,29 @@ schema unless explicitly marked `specification-only`.
 Every scenario using this system declares:
 
 ```toml
-schema = "crucible.scenario.v5"
+schema = "crucible.scenario.v7"
 
 [plan]
 kind = "event_graph"
 fault_model = "signal_bindings_v2"
 seed = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 ```
+
+Version 7 contains the scenario-owned measurement-definition component from
+RFC-0020 §08.2-§08.3 and the scenario-owned selectable catalog and ceilings
+from RFC-0020 §02. Current readers and writers accept only version 7. Any other
+TOML document, compact scenario envelope, or reproduction artifact is rejected
+before it can enter the model.
+
+The canonical v7 `[scenario]` table additionally carries the nonzero bounded
+`selectable_declarations_per_node`, `selectable_declarations_per_world`,
+`selectable_requests_per_selectable`, and `selectable_requests_per_node`
+ceilings. Each `[[selectable]]` entry contains one `canonical_hex` field holding
+the lowercase hexadecimal strict `SelectableDeclaration` v1 bytes. This
+normalized representation preserves the complete typed declaration and stable
+campaign identity without introducing a second scenario-only choice grammar;
+authoring tools may render the friendlier RFC-0020 §02.6 projection before
+normalization.
 
 - All tables are closed. Unknown or duplicate keys, duplicate IDs, implicit
   numeric conversions, TOML floats, datetimes, and heterogeneous arrays fail.
@@ -288,10 +304,9 @@ semantic_version = 1
 state = "down"
 ```
 
-`signal = "id"` is accepted only as canonical input syntax for exactly one
-signal and serializes as `signals = ["id"]`. `sampling` is `at_boundary`,
-`at_opportunity`, `at_change`, an explicit positive `cadence_nanos`, or
-`at_event`. An `at_event` binding requires an `event_parent` table whose kind is
+`signals` is a nonempty list. `sampling` is `at_boundary`, `at_opportunity`,
+`at_change`, an explicit positive `cadence_nanos`, or `at_event`. An `at_event`
+binding requires an `event_parent` table whose kind is
 exactly `virtual_time`, `opportunity_operation`, `opportunity_state`, or
 `node_counter`; `node_counter` also requires a stable node signal ID. Event
 inputs and their declared parent projection are canonical identity, and an
@@ -531,7 +546,7 @@ in schema order and arrays in canonical or semantic order as appropriate.
 
 ## 9.10 Network adapter checkpoint encoding
 
-Network adapter checkpoint semantic version 7 encodes the evaluation
+Network adapter checkpoint semantic version 8 encodes the evaluation
 coordinate, per-coordinate and journal sequences, observation journal, token
 buckets, queues, burst state, state machines, connection tables, shared-medium
 ledgers, backpressure, custody queues, contact-service reservations, and all
@@ -542,11 +557,11 @@ sequence joins, broken reservation references, and every exceeded bound. No
 earlier checkpoint version is accepted through a compatibility or legacy
 decoding path.
 
-The enclosing production fault-runtime checkpoint is version 3 and binds the
+The enclosing production fault-runtime checkpoint is version 4 and binds the
 network adapter bytes to the scheduler network checkpoint, committed scheduler
 frontier, pending routed frames, live QEMU node snapshots, and the canonical
 network-state digest. The QEMU node-continuation checkpoint is independently
-version 3. For each node it captures both shared-memory network rings, the next
+version 7. For each node it captures both shared-memory network rings, the next
 router-to-plugin producer sequence, the next host-consumer sequence for the
 plugin-to-router ring, and the next plugin-producer sequence after all live
 outbound frames. Restore requires the live outbound frames to form the exact

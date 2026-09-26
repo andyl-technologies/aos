@@ -8,7 +8,7 @@ use crate::snapshot_codec::{
 /// Maximum canonical byte length of one persisted block-fault continuation.
 pub const MAX_BLOCK_FAULT_STATE_BYTES: u64 = 536_870_912;
 
-const BLOCK_FAULT_STATE_MAGIC: &[u8] = b"crucible.block-fault-state.v2\0";
+const BLOCK_FAULT_STATE_MAGIC: &[u8] = b"crucible.block-fault-state.v3\0";
 
 impl BlockFaultState {
     /// Encodes every storage-fault continuation field in its canonical envelope.

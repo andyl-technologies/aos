@@ -159,17 +159,13 @@
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
         label = "implemented shmem layer1 target";
-        needle = "package: \"crucible-shmem\",\n        test_target: \"gate_layer1_injection\",\n        required_features: &[],\n        placeholder: false,";
+        needle = "package: \"crucible-shmem\",\n        test_target: \"gate_layer1_injection\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "implemented shmem layer1 mapping target";
-        needle = "gate = \"gate:layer1-injection\";\n      package = \"crucible-shmem\";\n      testTarget = \"gate_layer1_injection\";\n      requiredFeatures = [];\n      placeholder = false;";
-      }
-      {
-        label = "updated placeholder count";
-        needle = "placeholder_targets=0";
+        needle = "gate = \"gate:layer1-injection\";\n      package = \"crucible-shmem\";\n      testTarget = \"gate_layer1_injection\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [

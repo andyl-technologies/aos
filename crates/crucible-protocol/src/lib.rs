@@ -5,19 +5,29 @@
 //! This dual-licensed L1 crate implements independently implementable framing,
 //! versioned codecs, and golden vectors over owned buffers, without QEMU headers,
 //! callbacks, native pointers, or private types. Its Unix descriptor handover
-//! attaches the shared-memory and wake descriptors to the setup frame.
+//! attaches the shared-memory, wake, and immutable version-matched plugin
+//! plan descriptors to the setup frame.
 //!
 //! Module map: the crate root owns the frame-format constants, closed tag
 //! registry, message bodies, pure codec, frame I/O helpers, handshake
 //! orchestration, setup descriptor passing, and control/data split contract.
+//! `app_random_branch_plan` owns the sealed branch-sequence body;
+//! `app_random_transport` owns the app-random observation transport;
+//! `choice` owns the portable scalar values and atomic guest group bytes
+//! carried by selectable registration and reply bodies;
 //! `doorbell_abi` owns the shared white-box doorbell instruction ABI;
 //! `doorbell_frame` owns the shared white-box doorbell marker frame ABI; `doorbell_marker`
-//! owns the marker-kind vocabulary and body codecs; `preemption` owns deterministic IPI arithmetic;
-//! `golden_vectors` owns the frozen ABI corpus; `codec_fuzz` owns its fuzz target and corpus.
+//! owns the marker-kind vocabulary and body codecs; `selectable` owns the
+//! guest choice register/request/reply ABI; `selectable_catalog_plan` owns the
+//! sealed catalog and continuation launch body; `selectable_transport` owns the
+//! deferred-request plugin-to-host record; `plugin_setup_plan` owns the
+//! composite setup descriptor body; `preemption` owns deterministic IPI
+//! arithmetic; `golden_vectors` owns the frozen ABI corpus; `codec_fuzz` owns
+//! its fuzz target and corpus.
 //!
 //! Unsafe boundary discipline: raw `sendmsg`/`recvmsg` and ancillary-buffer
 //! details stay private; public callers use safe setup descriptor handover wrappers.
-//! These validate the fixed two-fd order and descriptor count before exposing
+//! These validate the fixed three-fd order and descriptor count before exposing
 //! owned close-on-exec descriptors.
 //!
 //! Wire-format:
@@ -32,7 +42,9 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
+pub mod app_random_branch_plan;
 pub mod app_random_transport;
+mod choice;
 mod codec_fuzz;
 pub mod debug_gateway;
 mod doorbell_abi;
@@ -41,12 +53,21 @@ mod doorbell_marker;
 mod golden_vectors;
 pub mod guest_introspection;
 pub mod guest_introspection_doorbell;
+pub mod plugin_setup_plan;
 mod preemption;
+mod selectable;
+pub mod selectable_catalog_plan;
+pub mod selectable_transport;
 
 use std::io::{ErrorKind, Read, Write};
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
+pub use choice::{
+    AlternativeId, BooleanDomain, ChoiceCodecError, ChoiceDomain, ChoiceValue, DiscreteAlternative,
+    DiscreteDomain, ExactRational, GuestChoiceConstraint, GuestChoiceGroup, IntegerDomain,
+    IntegerRepresentation, IntegerValue,
+};
 pub use codec_fuzz::{
     CODEC_FUZZ_REGRESSION_CORPUS, ControlCodecFuzzCase, ControlCodecFuzzOutcome,
     run_control_codec_fuzz_target,
@@ -71,13 +92,20 @@ pub use doorbell_marker::{
     GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS, WHITEBOX_DOORBELL_ASSERTION_FLAVOR_COUNT,
     WHITEBOX_DOORBELL_KIND_ASSERTION, WHITEBOX_DOORBELL_KIND_COVERAGE,
     WHITEBOX_DOORBELL_KIND_EVENT, WHITEBOX_DOORBELL_KIND_LIFECYCLE,
-    WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST, WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT,
+    WHITEBOX_DOORBELL_KIND_MEASUREMENT_BEGIN, WHITEBOX_DOORBELL_KIND_MEASUREMENT_END,
+    WHITEBOX_DOORBELL_KIND_METRIC_SAMPLE, WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
+    WHITEBOX_DOORBELL_KIND_SEMANTIC_MARKER, WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT,
     WHITEBOX_DOORBELL_LIFECYCLE_SETUP_COMPLETE, WHITEBOX_DOORBELL_LIFECYCLE_TEST_DONE,
     WHITEBOX_DOORBELL_MARKER_KIND_COUNT, WHITEBOX_DOORBELL_RANDOM_REQUEST_MAX_WIDTH_BYTES,
-    WhiteboxAssertionMarkerBody, WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody,
-    WhiteboxDoorbellMarkerKind, WhiteboxEventMarkerBody, WhiteboxLifecycleMarkerEvent,
-    WhiteboxMarkerDetail, WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError,
-    WhiteboxMarkerPayloadEncodeError, WhiteboxMarkerPayloadGoldenVector, WhiteboxRandomRequestBody,
+    WHITEBOX_MARKER_BODY_MAX_BYTES, WHITEBOX_MEASUREMENT_IDENTIFIER_MAX_BYTES,
+    WHITEBOX_MEASUREMENT_VALUE_KIND_COUNT, WHITEBOX_MEASUREMENT_VECTOR_MAX_ELEMENTS,
+    WHITEBOX_SEMANTIC_MARKER_MAX_DETAILS, WhiteboxAssertionMarkerBody,
+    WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody, WhiteboxDoorbellMarkerKind,
+    WhiteboxEventMarkerBody, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerDetail,
+    WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError, WhiteboxMarkerPayloadEncodeError,
+    WhiteboxMarkerPayloadGoldenVector, WhiteboxMeasurementBoundaryBody, WhiteboxMeasurementValue,
+    WhiteboxMeasurementValueKind, WhiteboxMetricSampleBody, WhiteboxRandomRequestBody,
+    WhiteboxReducedRational, WhiteboxSemanticMarkerBody, WhiteboxSemanticMarkerDetail,
     decode_whitebox_marker_payload, encode_whitebox_marker_frame,
     encode_whitebox_marker_payload_body,
 };
@@ -86,6 +114,16 @@ pub use golden_vectors::{
     GOLDEN_VECTOR_PROTOCOL_VERSION, GOLDEN_VECTOR_REGENERATION_RULE,
 };
 pub use preemption::deterministic_ipi_delivery_icount;
+pub use selectable::{
+    SELECTABLE_DIGEST_BYTES, SELECTABLE_GOLDEN_VECTOR_REGENERATION_RULE,
+    SELECTABLE_IDENTIFIER_MAX_BYTES, SELECTABLE_MESSAGE_KIND_REGISTER,
+    SELECTABLE_MESSAGE_KIND_REPLY, SELECTABLE_MESSAGE_KIND_REQUEST, SELECTABLE_MESSAGE_MAX_BYTES,
+    SELECTABLE_PROTOCOL_VERSION, SELECTABLE_REGISTER_HEADER_BYTES,
+    SELECTABLE_SEMANTIC_TAG_MAX_COUNT, SELECTION_REPLY_HEADER_BYTES,
+    SELECTION_REQUEST_HEADER_BYTES, SelectableMessageKind, SelectableProtocolError,
+    SelectableRegister, SelectionReply, SelectionReplyStatus, SelectionRequest,
+    decode_selectable_message_kind, validate_selectable_identifier,
+};
 
 use thiserror::Error;
 
@@ -104,10 +142,8 @@ pub const MAX_PAYLOAD_SIZE: u32 = MAX_FRAME_SIZE - FRAME_TAG_SIZE as u32;
 pub const FRAME_LENGTH_INCLUDES_TAG: bool = true;
 /// Whether all multi-byte integers in frame payloads use big-endian order.
 pub const FRAME_INTEGERS_ARE_BIG_ENDIAN: bool = true;
-/// Lowest control-protocol version this crate can negotiate.
-pub const CONTROL_PROTOCOL_MIN_VERSION: u32 = 1;
-/// Highest control-protocol version this crate can negotiate.
-pub const CONTROL_PROTOCOL_VERSION: u32 = 1;
+/// Exact control-protocol version this crate accepts.
+pub const CONTROL_PROTOCOL_VERSION: u32 = include!("control_protocol_version.in");
 /// Byte length of plugin-to-host per-vCPU register digests.
 pub const PLUGIN_NVCPU_REGISTER_DIGEST_BYTES: usize = 32;
 
@@ -564,7 +600,7 @@ impl ControlTag {
 pub enum PluginMsg {
     /// Handshake offer sent before the plugin touches shared memory.
     Hello {
-        /// Highest control-protocol version the plugin can speak.
+        /// Exact control-protocol version the plugin requires.
         proto_version: u32,
         /// Shared-memory ABI version the plugin was built against.
         abi_version: u32,
@@ -579,9 +615,9 @@ pub enum PluginMsg {
 /// Host-to-plugin control messages.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HostMsg {
-    /// Handshake acknowledgement carrying the negotiated versions and slot.
+    /// Handshake acknowledgement carrying the exact accepted versions and slot.
     HelloAck {
-        /// Negotiated control-protocol version.
+        /// Exact accepted control-protocol version.
         proto_version: u32,
         /// Host shared-memory ABI version.
         abi_version: u32,
@@ -601,7 +637,7 @@ pub enum HostMsg {
 
 /// Number of file descriptors attached to a `Setup` frame.
 #[cfg(unix)]
-pub const SETUP_DESCRIPTOR_COUNT: usize = 2;
+pub const SETUP_DESCRIPTOR_COUNT: usize = 3;
 /// `SetupAck.status` value meaning the plugin is ready to run via shared memory.
 pub const SETUP_ACK_STATUS_READY: u8 = 0;
 /// Generic `SetupAck.status` value for setup failures without a narrower code.
@@ -615,6 +651,8 @@ pub struct SetupDescriptorFds {
     pub shmem_fd: RawFd,
     /// Wake descriptor, sent second in the `SCM_RIGHTS` list.
     pub wake_fd: RawFd,
+    /// Sealed v3 composite plugin-plan descriptor, sent third.
+    pub plugin_setup_plan_fd: RawFd,
 }
 
 /// Owned descriptors received from an inbound `Setup` frame.
@@ -625,6 +663,8 @@ pub struct ReceivedSetupDescriptors {
     pub shmem_fd: OwnedFd,
     /// Wake descriptor received second in the `SCM_RIGHTS` list.
     pub wake_fd: OwnedFd,
+    /// Sealed v3 composite plugin-plan descriptor received third.
+    pub plugin_setup_plan_fd: OwnedFd,
 }
 
 /// A decoded `Setup` frame plus its attached descriptors.
@@ -660,7 +700,7 @@ impl SchedulableNodeSetup {
 /// Host-side inputs used to accept the initial `Hello` handshake.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostHandshakeConfig {
-    /// Highest control-protocol version supported by the host.
+    /// Exact control-protocol version required by the host.
     pub proto_version: u32,
     /// Shared-memory ABI version used to build the region.
     pub abi_version: u32,
@@ -673,16 +713,16 @@ pub struct HostHandshakeConfig {
 /// Plugin-side inputs used to start the initial `Hello` handshake.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PluginHandshakeConfig {
-    /// Highest control-protocol version supported by the plugin.
+    /// Exact control-protocol version required by the plugin.
     pub proto_version: u32,
     /// Shared-memory ABI version compiled into the plugin.
     pub abi_version: u32,
 }
 
-/// A successful `Hello`/`HelloAck` negotiation.
+/// A successful exact-version `Hello`/`HelloAck` agreement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NegotiatedHandshake {
-    /// Single negotiated control-protocol version both peers must speak.
+    /// Exact control-protocol version both peers must speak.
     pub proto_version: u32,
     /// Shared-memory ABI version both peers agreed on exactly.
     pub abi_version: u32,
@@ -830,29 +870,13 @@ pub enum HandshakeError {
         /// Decoded host-to-plugin message.
         message: HostMsg,
     },
-    /// Host and plugin protocol-version ranges do not overlap.
-    #[error(
-        "no control-protocol version overlap: plugin max {plugin_max}, host range {host_min}..={host_max}"
-    )]
-    ProtocolVersionNoOverlap {
-        /// Highest control-protocol version offered by the plugin.
-        plugin_max: u32,
-        /// Lowest control-protocol version supported by the host.
-        host_min: u32,
-        /// Highest control-protocol version supported by the host.
-        host_max: u32,
-    },
-    /// The host replied with a protocol version the plugin cannot speak.
-    #[error(
-        "negotiated control-protocol version {negotiated} is outside plugin range {plugin_min}..={plugin_max}"
-    )]
-    NegotiatedProtocolOutOfRange {
-        /// Protocol version sent in `HelloAck`.
-        negotiated: u32,
-        /// Lowest control-protocol version supported by the plugin.
-        plugin_min: u32,
-        /// Highest control-protocol version offered by the plugin.
-        plugin_max: u32,
+    /// A peer or local configuration named a noncurrent protocol version.
+    #[error("control-protocol version {actual} does not match required version {required}")]
+    ProtocolVersionMismatch {
+        /// Rejected protocol version.
+        actual: u32,
+        /// Exact protocol version required by this build.
+        required: u32,
     },
     /// Host and plugin shmem ABI versions differ.
     #[error("shared-memory ABI mismatch: plugin {plugin_abi}, host {host_abi}")]
@@ -1165,6 +1189,23 @@ impl<S> ControlLifecycleStream<S> {
         let mut lifecycle = ControlLifecycle::new();
         lifecycle.observe(ControlLifecycleEvent::ConnectUnixStreamSocketPair)?;
         Ok(Self { stream, lifecycle })
+    }
+
+    /// Restores an authenticated replacement stream directly into RUN.
+    ///
+    /// A hot-fork child does not replay the template's setup handshake. Its
+    /// child reinitializer first authenticates and installs a fresh private
+    /// control endpoint, then uses this constructor so the only accepted frame
+    /// remains the terminal host `Quit`. Callers must not use this constructor
+    /// for an unvalidated or template-shared endpoint.
+    #[must_use]
+    pub fn restored_run_via_shared_memory(stream: S) -> Self {
+        Self {
+            stream,
+            lifecycle: ControlLifecycle {
+                state: ControlLifecycleState::RunningViaSharedMemory,
+            },
+        }
     }
 
     /// Returns the current lifecycle state.
@@ -1763,16 +1804,15 @@ where
 
 /// Runs the host side of the blocking `Hello`/`HelloAck` handshake.
 ///
-/// This reads one plugin `Hello`, negotiates
-/// `min(plugin.proto_version, config.proto_version)`, checks the shmem ABI
-/// version exactly, validates the assigned slot, writes `HelloAck`, and returns
-/// the negotiated values.
+/// This reads one plugin `Hello`, checks the protocol and shmem ABI versions
+/// exactly, validates the assigned slot, writes `HelloAck`, and returns the
+/// matched values.
 ///
 /// # Errors
 ///
 /// Returns [`HandshakeError`] when the frame cannot be read, decoded, or
 /// written; when the first plugin message is not `Hello`; when protocol
-/// versions do not overlap; when the shmem ABI version differs; or when
+/// the protocol version differs; when the shmem ABI version differs; or when
 /// `slot_index >= node_count`.
 pub fn host_accept_handshake<S>(
     stream: &mut S,
@@ -1799,15 +1839,14 @@ where
 /// Runs the plugin side of the blocking `Hello`/`HelloAck` handshake.
 ///
 /// This writes `Hello`, blocks for one host `HelloAck`, checks that the
-/// negotiated protocol version remains within the plugin-supported range,
-/// checks the shmem ABI version exactly, validates `slot_index < node_count`,
-/// and returns the negotiated values.
+/// protocol version matches exactly, checks the shmem ABI version exactly,
+/// validates `slot_index < node_count`, and returns the matched values.
 ///
 /// # Errors
 ///
 /// Returns [`HandshakeError`] when the frame cannot be written, read, or
-/// decoded; when the host reply is not `HelloAck`; when the negotiated protocol
-/// version is outside the plugin's range; when the shmem ABI version differs;
+/// decoded; when the host reply is not `HelloAck`; when the exact protocol
+/// version differs; when the shmem ABI version differs;
 /// or when `slot_index >= node_count`.
 pub fn plugin_start_handshake<S>(
     stream: &mut S,
@@ -1829,12 +1868,12 @@ where
     plugin_validate_handshake_ack(message, config)
 }
 
-/// Negotiates a host-side `Hello` message without performing I/O.
+/// Validates a host-side exact-version `Hello` message without performing I/O.
 ///
 /// # Errors
 ///
 /// Returns [`HandshakeError`] when `message` is not `Hello`, when the protocol
-/// versions do not overlap, when the shmem ABI version differs, or when the
+/// version differs, when the shmem ABI version differs, or when the
 /// host slot assignment is outside the declared node range.
 pub fn host_negotiate_handshake(
     message: PluginMsg,
@@ -1848,15 +1887,8 @@ pub fn host_negotiate_handshake(
         return Err(HandshakeError::UnexpectedPluginMessage { message });
     };
 
-    if plugin_proto_version < CONTROL_PROTOCOL_MIN_VERSION
-        || config.proto_version < CONTROL_PROTOCOL_MIN_VERSION
-    {
-        return Err(HandshakeError::ProtocolVersionNoOverlap {
-            plugin_max: plugin_proto_version,
-            host_min: CONTROL_PROTOCOL_MIN_VERSION,
-            host_max: config.proto_version,
-        });
-    }
+    require_current_control_protocol(config.proto_version)?;
+    require_current_control_protocol(plugin_proto_version)?;
 
     if plugin_abi_version != config.abi_version {
         return Err(HandshakeError::AbiMismatch {
@@ -1868,7 +1900,7 @@ pub fn host_negotiate_handshake(
     validate_slot_assignment(config.slot_index, config.node_count)?;
 
     Ok(NegotiatedHandshake {
-        proto_version: plugin_proto_version.min(config.proto_version),
+        proto_version: CONTROL_PROTOCOL_VERSION,
         abi_version: config.abi_version,
         slot_index: config.slot_index,
         node_count: config.node_count,
@@ -1880,7 +1912,7 @@ pub fn host_negotiate_handshake(
 /// # Errors
 ///
 /// Returns [`HandshakeError`] when `message` is not `HelloAck`, when the
-/// negotiated protocol version is outside the plugin-supported range, when the
+/// protocol version differs, when the
 /// shmem ABI version differs, or when `slot_index >= node_count`.
 pub fn plugin_validate_handshake_ack(
     message: HostMsg,
@@ -1896,13 +1928,8 @@ pub fn plugin_validate_handshake_ack(
         return Err(HandshakeError::UnexpectedHostMessage { message });
     };
 
-    if proto_version < CONTROL_PROTOCOL_MIN_VERSION || proto_version > config.proto_version {
-        return Err(HandshakeError::NegotiatedProtocolOutOfRange {
-            negotiated: proto_version,
-            plugin_min: CONTROL_PROTOCOL_MIN_VERSION,
-            plugin_max: config.proto_version,
-        });
-    }
+    require_current_control_protocol(config.proto_version)?;
+    require_current_control_protocol(proto_version)?;
 
     if abi_version != config.abi_version {
         return Err(HandshakeError::AbiMismatch {
@@ -1919,6 +1946,17 @@ pub fn plugin_validate_handshake_ack(
         slot_index,
         node_count,
     })
+}
+
+fn require_current_control_protocol(actual: u32) -> Result<(), HandshakeError> {
+    if actual == CONTROL_PROTOCOL_VERSION {
+        Ok(())
+    } else {
+        Err(HandshakeError::ProtocolVersionMismatch {
+            actual,
+            required: CONTROL_PROTOCOL_VERSION,
+        })
+    }
 }
 
 /// Sends a plugin setup-completion acknowledgement.
@@ -2060,7 +2098,8 @@ fn ensure_waiting_for_setup_ack(state: ControlLifecycleState) -> Result<(), Cont
 /// Sends a `Setup` frame and its fixed-order descriptors over a Unix socket.
 ///
 /// The descriptors are attached as `SCM_RIGHTS` ancillary data using
-/// `sendmsg`, in the RFC-defined order `[shmem_fd, wake_fd]`.
+/// `sendmsg`, in the RFC-defined order
+/// `[shmem_fd, wake_fd, plugin_setup_plan_fd]`.
 ///
 /// # Errors
 ///
@@ -2075,21 +2114,25 @@ pub fn send_setup_with_descriptors(
     descriptors: SetupDescriptorFds,
 ) -> Result<(), DescriptorHandoverError> {
     let frame = control_encode_host_msg(&HostMsg::Setup { region_len });
-    let fds = [descriptors.shmem_fd, descriptors.wake_fd];
+    let fds = [
+        descriptors.shmem_fd,
+        descriptors.wake_fd,
+        descriptors.plugin_setup_plan_fd,
+    ];
     send_frame_with_fds(socket_fd, &frame, &fds)
 }
 
 /// Receives a `Setup` frame and its fixed-order descriptors from a Unix socket.
 ///
-/// The frame must carry exactly two `SCM_RIGHTS` descriptors. The returned
+/// The frame must carry exactly three `SCM_RIGHTS` descriptors. The returned
 /// descriptors are owned, marked close-on-exec, and returned in the RFC-defined
-/// order: shmem first, wake second.
+/// order: shmem first, wake second, immutable current-version plugin plan third.
 ///
 /// # Errors
 ///
 /// Returns [`DescriptorHandoverError`] when the socket closes early, the
 /// ancillary data is truncated or malformed, the descriptor count is not
-/// exactly two, or the frame does not decode to [`HostMsg::Setup`].
+/// exactly three, or the frame does not decode to [`HostMsg::Setup`].
 #[cfg(unix)]
 pub fn recv_setup_with_descriptors(
     socket_fd: RawFd,
@@ -2468,21 +2511,26 @@ fn append_rights_fds(
 fn setup_descriptors_from_raw_fds(
     fds: Vec<RawFd>,
 ) -> Result<ReceivedSetupDescriptors, DescriptorHandoverError> {
-    let [shmem_fd, wake_fd] = match <[RawFd; SETUP_DESCRIPTOR_COUNT]>::try_from(fds) {
-        Ok(fds) => fds,
-        Err(fds) => {
-            let count = fds.len();
-            close_raw_fds(fds);
-            return Err(DescriptorHandoverError::WrongDescriptorCount { count });
-        }
-    };
+    let [shmem_fd, wake_fd, plugin_setup_plan_fd] =
+        match <[RawFd; SETUP_DESCRIPTOR_COUNT]>::try_from(fds) {
+            Ok(fds) => fds,
+            Err(fds) => {
+                let count = fds.len();
+                close_raw_fds(fds);
+                return Err(DescriptorHandoverError::WrongDescriptorCount { count });
+            }
+        };
 
     if let Err(error) = set_cloexec_on_raw_fd(shmem_fd) {
-        close_raw_fds(vec![shmem_fd, wake_fd]);
+        close_raw_fds(vec![shmem_fd, wake_fd, plugin_setup_plan_fd]);
         return Err(error);
     }
     if let Err(error) = set_cloexec_on_raw_fd(wake_fd) {
-        close_raw_fds(vec![shmem_fd, wake_fd]);
+        close_raw_fds(vec![shmem_fd, wake_fd, plugin_setup_plan_fd]);
+        return Err(error);
+    }
+    if let Err(error) = set_cloexec_on_raw_fd(plugin_setup_plan_fd) {
+        close_raw_fds(vec![shmem_fd, wake_fd, plugin_setup_plan_fd]);
         return Err(error);
     }
 
@@ -2491,6 +2539,7 @@ fn setup_descriptors_from_raw_fds(
         ReceivedSetupDescriptors {
             shmem_fd: OwnedFd::from_raw_fd(shmem_fd),
             wake_fd: OwnedFd::from_raw_fd(wake_fd),
+            plugin_setup_plan_fd: OwnedFd::from_raw_fd(plugin_setup_plan_fd),
         }
     };
     Ok(descriptors)

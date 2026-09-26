@@ -10,7 +10,10 @@
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libRs = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   minimizationTest = builtins.readFile ../../crates/crucible/tests/gate_minimization.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -64,8 +67,8 @@
         needle = "fn minimization_candidate_key";
       }
       {
-        label = "shortest-first candidate generator";
-        needle = "fn collect_minimization_candidates_for_len";
+        label = "deterministic minimization candidate generator";
+        needle = "pub(super) fn minimization_candidates(";
       }
       {
         label = "schedule constructor";

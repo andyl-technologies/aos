@@ -44,7 +44,7 @@ use crucible_session::{
 };
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -71,490 +71,16 @@ const RPC_STREAM_PENDING_FRAME_CAPACITY: usize = SESSION_EVENT_LOG_BROADCAST_CAP
 pub type ControlClientFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, ControlClientError>> + Send + 'a>>;
 
-type InProcessLifecycleCommandFuture =
-    Pin<Box<dyn Future<Output = Result<SendResponse, ControlClientError>> + Send + 'static>>;
-type InProcessLifecycleCommandSend =
-    Arc<dyn Fn(SendRequest) -> InProcessLifecycleCommandFuture + Send + Sync>;
+mod streams;
+use streams::RpcStreamingEventReceiver;
+pub use streams::{
+    ClientControlStream, ClientWatchStream, InProcessLifecycleControlStream, RpcControlStream,
+    RpcWatchStream,
+};
 
-/// Attached bidirectional `Control` stream returned by a [`ControlClient`].
-pub enum ClientControlStream {
-    /// Same-process stream over the session actor mailbox and event-log hub.
-    InProcess(crate::streaming::ControlStream),
-    /// Same-process stream whose commands return through the lifecycle registry.
-    InProcessLifecycle(InProcessLifecycleControlStream),
-    /// HTTP/2 RPC stream.
-    Rpc(RpcControlStream),
-}
+mod wire_model;
 
-impl ClientControlStream {
-    /// Returns the attach metadata emitted at stream start.
-    #[must_use]
-    pub fn attached(&self) -> &Attached {
-        match self {
-            Self::InProcess(stream) => stream.attached(),
-            Self::InProcessLifecycle(stream) => stream.attached(),
-            Self::Rpc(stream) => stream.attached(),
-        }
-    }
-
-    /// Receives the next API event frame from replay or live tail.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ControlClientError`] when the underlying transport fails, the
-    /// RPC event frame is malformed, or the in-process event-log stream lags.
-    pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
-        match self {
-            Self::InProcess(stream) => stream.recv_event().await.map_err(ControlClientError::from),
-            Self::InProcessLifecycle(stream) => {
-                stream.recv_event().await.map_err(ControlClientError::from)
-            }
-            Self::Rpc(stream) => stream.recv_event().await,
-        }
-    }
-
-    /// Receives the next live run-state update.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ControlClientError`] when the underlying transport fails or an
-    /// RPC state-update frame is malformed. Superseded state updates are
-    /// coalesced on both transports.
-    pub async fn recv_state_update(
-        &mut self,
-    ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
-        match self {
-            Self::InProcess(stream) => stream
-                .recv_state_update()
-                .await
-                .map_err(ControlClientError::from),
-            Self::InProcessLifecycle(stream) => stream
-                .recv_state_update()
-                .await
-                .map_err(ControlClientError::from),
-            Self::Rpc(stream) => stream.recv_state_update().await,
-        }
-    }
-
-    /// Dispatches one command envelope through this control stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ControlClientError`] when command dispatch is rejected by the
-    /// streaming layer or by the RPC transport.
-    pub async fn send_command(
-        &self,
-        command_id: u64,
-        command: SessionCommand,
-    ) -> Result<SendResponse, ControlClientError> {
-        match self {
-            Self::InProcess(stream) => stream
-                .send_command(command_id, command)
-                .await
-                .map_err(ControlClientError::from),
-            Self::InProcessLifecycle(stream) => stream.send_command(command_id, command).await,
-            Self::Rpc(stream) => stream.send_command(command_id, command).await,
-        }
-    }
-}
-
-/// Same-process lifecycle `Control` stream routed through its owning registry.
-///
-/// This wrapper preserves event and state receivers from the attached stream,
-/// while every command returns through the lifecycle registry. That registry
-/// owns actor joins, so a backend failure is reported as its typed actor error
-/// instead of being flattened into a closed-mailbox error.
-pub struct InProcessLifecycleControlStream {
-    stream: crate::streaming::ControlStream,
-    command_send: InProcessLifecycleCommandSend,
-}
-
-impl InProcessLifecycleControlStream {
-    pub(crate) fn new<C, Fut>(stream: crate::streaming::ControlStream, command_send: C) -> Self
-    where
-        C: Fn(SendRequest) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<SendResponse, ControlClientError>> + Send + 'static,
-    {
-        let command_send: InProcessLifecycleCommandSend = Arc::new(move |request| {
-            Box::pin(command_send(request))
-                as Pin<
-                    Box<
-                        dyn Future<Output = Result<SendResponse, ControlClientError>>
-                            + Send
-                            + 'static,
-                    >,
-                >
-        });
-        Self {
-            stream,
-            command_send,
-        }
-    }
-
-    fn attached(&self) -> &Attached {
-        self.stream.attached()
-    }
-
-    async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, StreamingApiError> {
-        self.stream.recv_event().await
-    }
-
-    async fn recv_state_update(
-        &mut self,
-    ) -> Result<Option<StreamingStateUpdateFrame>, StreamingApiError> {
-        self.stream.recv_state_update().await
-    }
-
-    async fn send_command(
-        &self,
-        command_id: u64,
-        command: SessionCommand,
-    ) -> Result<SendResponse, ControlClientError> {
-        let session = self.stream.attached().session;
-        (self.command_send)(SendRequest::new(session, command_id, command)).await
-    }
-}
-
-/// Attached read-only `Watch` stream returned by a [`ControlClient`].
-pub enum ClientWatchStream {
-    /// Same-process stream over the session event-log hub.
-    InProcess(crate::streaming::WatchStream),
-    /// HTTP/2 RPC stream.
-    Rpc(RpcWatchStream),
-}
-
-impl ClientWatchStream {
-    /// Returns the attach metadata emitted at stream start.
-    #[must_use]
-    pub fn attached(&self) -> &Attached {
-        match self {
-            Self::InProcess(stream) => stream.attached(),
-            Self::Rpc(stream) => stream.attached(),
-        }
-    }
-
-    /// Receives the next API event frame from replay or live tail.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ControlClientError`] when the underlying transport fails, the
-    /// RPC event frame is malformed, or the in-process event-log stream lags.
-    pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
-        match self {
-            Self::InProcess(stream) => stream.recv_event().await.map_err(ControlClientError::from),
-            Self::Rpc(stream) => stream.recv_event().await,
-        }
-    }
-
-    /// Receives the next live run-state update.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ControlClientError`] when the underlying transport fails or an
-    /// RPC state-update frame is malformed. Superseded state updates are
-    /// coalesced on both transports.
-    pub async fn recv_state_update(
-        &mut self,
-    ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
-        match self {
-            Self::InProcess(stream) => stream
-                .recv_state_update()
-                .await
-                .map_err(ControlClientError::from),
-            Self::Rpc(stream) => stream.recv_state_update().await,
-        }
-    }
-}
-
-/// Attached HTTP/2 RPC `Control` stream.
-pub struct RpcControlStream {
-    attached: Attached,
-    events: RpcStreamingEventReceiver,
-    client: RpcControlClient,
-}
-
-impl RpcControlStream {
-    /// Returns the attach metadata emitted at stream start.
-    #[must_use]
-    pub const fn attached(&self) -> &Attached {
-        &self.attached
-    }
-
-    /// Receives the next API event frame from replay or live tail.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ControlClientError`] when the HTTP/2 response stream fails or
-    /// the next event frame cannot be decoded.
-    pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
-        self.events.recv_event().await
-    }
-
-    /// Receives the next live run-state update.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ControlClientError`] when the HTTP/2 response stream fails or
-    /// the next state-update frame cannot be decoded.
-    pub async fn recv_state_update(
-        &mut self,
-    ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
-        self.events.recv_state_update().await
-    }
-
-    /// Dispatches one command envelope over the RPC control stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ControlClientError`] when the RPC command endpoint rejects the
-    /// request or the response cannot be decoded.
-    pub async fn send_command(
-        &self,
-        command_id: u64,
-        command: SessionCommand,
-    ) -> Result<SendResponse, ControlClientError> {
-        self.client
-            .control_send(SendRequest::new(self.attached.session, command_id, command))
-            .await
-    }
-}
-
-/// Attached HTTP/2 RPC `Watch` stream.
-pub struct RpcWatchStream {
-    attached: Attached,
-    events: RpcStreamingEventReceiver,
-}
-
-impl RpcWatchStream {
-    /// Returns the attach metadata emitted at stream start.
-    #[must_use]
-    pub const fn attached(&self) -> &Attached {
-        &self.attached
-    }
-
-    /// Receives the next API event frame from replay or live tail.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ControlClientError`] when the HTTP/2 response stream fails or
-    /// the next event frame cannot be decoded.
-    pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
-        self.events.recv_event().await
-    }
-
-    /// Receives the next live run-state update.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ControlClientError`] when the HTTP/2 response stream fails or
-    /// the next state-update frame cannot be decoded.
-    pub async fn recv_state_update(
-        &mut self,
-    ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
-        self.events.recv_state_update().await
-    }
-}
-
-struct RpcStreamingEventReceiver {
-    frames: mpsc::Receiver<Result<RpcStreamingFrame, ControlClientError>>,
-    pending_events: VecDeque<StreamingEventFrame>,
-    pending_state_updates: VecDeque<StreamingStateUpdateFrame>,
-    skipped_events: u64,
-    last_state_sequence: Option<u64>,
-}
-
-impl RpcStreamingEventReceiver {
-    async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
-        if self.skipped_events > 0 {
-            let skipped = std::mem::take(&mut self.skipped_events);
-            return Err(ControlClientError::from(
-                StreamingApiError::EventStreamLagged { skipped },
-            ));
-        }
-        if let Some(frame) = self.pending_events.pop_front() {
-            return Ok(Some(frame));
-        }
-
-        loop {
-            match self.frames.recv().await {
-                Some(Ok(RpcStreamingFrame::Event(frame))) => return Ok(Some(frame)),
-                Some(Ok(RpcStreamingFrame::StateUpdate(frame))) => {
-                    self.push_pending_state_update(frame);
-                }
-                Some(Err(error)) => return Err(error),
-                None => return Ok(None),
-            }
-        }
-    }
-
-    async fn recv_state_update(
-        &mut self,
-    ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
-        let mut latest = self.pending_state_updates.pop_back();
-        self.pending_state_updates.clear();
-        while latest.is_none() {
-            match self.frames.recv().await {
-                Some(Ok(RpcStreamingFrame::StateUpdate(frame))) => {
-                    if self.state_sequence_is_newer(frame.sequence) {
-                        latest = Some(frame);
-                    }
-                }
-                Some(Ok(RpcStreamingFrame::Event(frame))) => {
-                    self.push_pending_event(frame);
-                }
-                Some(Err(error)) => return Err(error),
-                None => return Ok(None),
-            }
-        }
-
-        loop {
-            match self.frames.try_recv() {
-                Ok(Ok(RpcStreamingFrame::StateUpdate(frame))) => {
-                    if latest
-                        .as_ref()
-                        .is_none_or(|current| frame.sequence > current.sequence)
-                        && self.state_sequence_is_newer(frame.sequence)
-                    {
-                        latest = Some(frame);
-                    }
-                }
-                Ok(Ok(RpcStreamingFrame::Event(frame))) => self.push_pending_event(frame),
-                Ok(Err(error)) => return Err(error),
-                Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
-                    break;
-                }
-            }
-        }
-
-        if let Some(frame) = &latest {
-            self.last_state_sequence = Some(frame.sequence);
-        }
-        Ok(latest)
-    }
-
-    fn push_pending_event(&mut self, frame: StreamingEventFrame) {
-        if self.pending_events.len() >= RPC_STREAM_PENDING_FRAME_CAPACITY {
-            let _dropped = self.pending_events.pop_front();
-            self.skipped_events = self.skipped_events.saturating_add(1);
-        }
-        self.pending_events.push_back(frame);
-    }
-
-    fn push_pending_state_update(&mut self, frame: StreamingStateUpdateFrame) {
-        if !self.state_sequence_is_newer(frame.sequence)
-            || self
-                .pending_state_updates
-                .back()
-                .is_some_and(|pending| pending.sequence >= frame.sequence)
-        {
-            return;
-        }
-        self.pending_state_updates.clear();
-        self.pending_state_updates.push_back(frame);
-    }
-
-    fn state_sequence_is_newer(&self, sequence: u64) -> bool {
-        self.last_state_sequence
-            .is_none_or(|delivered| sequence > delivered)
-    }
-}
-
-/// Transport used by one [`ControlClient`] implementation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ControlTransportKind {
-    /// Same-process client over a `crucible-session` actor mailbox.
-    InProcess,
-    /// Out-of-process client over the HTTP/2 RPC surface.
-    Http2Rpc,
-}
-
-/// Shared serialized message model used by every control client transport.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ControlWireModel {
-    /// RPC protocol version used to serialize typed API messages.
-    pub protocol_version: ProtocolVersion,
-    /// Open-set payload kinds advertised by the API.
-    pub payload_kinds: &'static [&'static str],
-}
-
-impl ControlWireModel {
-    /// Builds the current control API wire model.
-    #[must_use]
-    pub const fn current() -> Self {
-        Self {
-            protocol_version: RPC_PROTOCOL_VERSION,
-            payload_kinds: RPC_OPEN_SET_PAYLOAD_KINDS,
-        }
-    }
-
-    /// Encodes one typed [`HelloRequest`] using the shared canonical ABI encoder.
-    #[must_use]
-    pub fn encode_hello_request(self, request: &HelloRequest) -> Vec<u8> {
-        encode_rpc_hello_request(&request.client_name, request.version)
-    }
-
-    /// Encodes one typed [`HelloResponse`] using the shared canonical ABI encoder.
-    #[must_use]
-    pub fn encode_hello_response(self, response: &HelloResponse) -> Vec<u8> {
-        let _ = self;
-        encode_rpc_hello_response(
-            &response.server_name,
-            response.version,
-            response.payload_kinds,
-        )
-    }
-}
-
-/// Request sent by a client to discover protocol compatibility.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HelloRequest {
-    /// Client implementation name.
-    pub client_name: String,
-    /// Highest protocol version offered by the client.
-    pub version: ProtocolVersion,
-}
-
-impl HelloRequest {
-    /// Builds a typed `Hello` request.
-    #[must_use]
-    pub fn new(client_name: impl Into<String>, version: ProtocolVersion) -> Self {
-        Self {
-            client_name: client_name.into(),
-            version,
-        }
-    }
-}
-
-/// Discovery response returned by any [`ControlClient`] implementation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HelloResponse {
-    /// Server or transport implementation name.
-    pub server_name: String,
-    /// Negotiated protocol version.
-    pub version: ProtocolVersion,
-    /// Payload kinds understood by this endpoint.
-    pub payload_kinds: &'static [&'static str],
-    /// Transport that produced the response.
-    pub transport: ControlTransportKind,
-}
-
-impl HelloResponse {
-    /// Builds a typed `Hello` response.
-    #[must_use]
-    pub fn new(
-        server_name: impl Into<String>,
-        version: ProtocolVersion,
-        payload_kinds: &'static [&'static str],
-        transport: ControlTransportKind,
-    ) -> Self {
-        Self {
-            server_name: server_name.into(),
-            version,
-            payload_kinds,
-            transport,
-        }
-    }
-}
+pub use wire_model::{ControlTransportKind, ControlWireModel, HelloRequest, HelloResponse};
 
 /// Error returned by transport-agnostic control clients.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -649,7 +175,7 @@ pub trait ControlClient {
     /// # Errors
     ///
     /// Returns [`ControlClientError::RpcAbi`] when the client offers an
-    /// incompatible protocol major version.
+    /// a protocol version other than the sole version admitted by this build.
     fn hello(&self, request: HelloRequest) -> ControlClientFuture<'_, HelloResponse>;
 
     /// Lists scenarios known by the control plane.
@@ -895,12 +421,6 @@ impl InProcessControlClient {
     #[must_use]
     pub const fn event_log(&self) -> &ControlPlaneEventLog {
         &self.event_log
-    }
-
-    /// Returns whether this client reaches the actor without serialization.
-    #[must_use]
-    pub const fn reaches_same_process_actor_without_serialization(&self) -> bool {
-        true
     }
 }
 
@@ -1286,11 +806,11 @@ impl ControlClient for RpcControlClient {
                 .post_rpc_stream(CONTROL_ATTACH_RPC_PATH, encode_attach_request(&request))
                 .await?;
             let (attached, events) = decode_attached_stream_response(response).await?;
-            Ok(ClientControlStream::Rpc(RpcControlStream {
+            Ok(ClientControlStream::Rpc(RpcControlStream::new(
                 attached,
                 events,
-                client: self.clone(),
-            }))
+                self.clone(),
+            )))
         })
     }
 
@@ -1310,7 +830,9 @@ impl ControlClient for RpcControlClient {
                 .post_rpc_stream(WATCH_ATTACH_RPC_PATH, encode_attach_request(&request))
                 .await?;
             let (attached, events) = decode_attached_stream_response(response).await?;
-            Ok(ClientWatchStream::Rpc(RpcWatchStream { attached, events }))
+            Ok(ClientWatchStream::Rpc(RpcWatchStream::new(
+                attached, events,
+            )))
         })
     }
 
@@ -1338,16 +860,7 @@ async fn decode_attached_stream_response(
     tokio::spawn(async move {
         pump_rpc_stream_frames(stream, buffer, frame_sender).await;
     });
-    Ok((
-        attached,
-        RpcStreamingEventReceiver {
-            frames: frame_receiver,
-            pending_events: VecDeque::new(),
-            pending_state_updates: VecDeque::new(),
-            skipped_events: 0,
-            last_state_sequence: None,
-        },
-    ))
+    Ok((attached, RpcStreamingEventReceiver::new(frame_receiver)))
 }
 
 async fn pump_rpc_stream_frames(
@@ -1457,25 +970,21 @@ fn encode_create_session_request(request: &CreateSessionRequest) -> Vec<u8> {
             push_line(&mut output, "source", "scenario-ref");
             push_line(&mut output, "name", name);
         }
-        CreateSessionSource::Inline {
-            scenario,
-            scenario_form,
-        } => {
+        CreateSessionSource::Inline { scenario } => {
+            let scenario_def = scenario.scenario_def();
             push_line(&mut output, "source", "inline");
-            push_line(&mut output, "scenario-id", &scenario.id().to_hex());
-            push_line(&mut output, "scenario-seed", &scenario.seed().to_hex());
+            push_line(&mut output, "scenario-id", &scenario_def.id().to_hex());
+            push_line(&mut output, "scenario-seed", &scenario_def.seed().to_hex());
             push_line(
                 &mut output,
                 "app-random-draw-cap",
-                &scenario.app_random_draw_cap().to_string(),
+                &scenario_def.app_random_draw_cap().to_string(),
             );
-            if let Some(scenario_form) = scenario_form {
-                push_line(
-                    &mut output,
-                    "scenario-payload",
-                    &hex_encode(&scenario_form.to_compact_binary()),
-                );
-            }
+            push_line(
+                &mut output,
+                "scenario-payload",
+                &hex_encode(&scenario.to_compact_binary()),
+            );
         }
     }
     push_line(&mut output, "seed", &request.seed.to_hex());
@@ -1520,6 +1029,59 @@ fn encode_resume_session_request(request: &ResumeSessionRequest) -> Vec<u8> {
         &mut output,
         "checkpoint",
         &hex_encode(&request.checkpoint.to_compact_binary()),
+    );
+    if let Some(closure) = &request.replay_closure {
+        push_line(
+            &mut output,
+            "campaign-replay-closure-version",
+            &closure.schema_version().to_string(),
+        );
+        push_line(
+            &mut output,
+            "campaign-replay-closure-identity",
+            &closure.identity().to_hex(),
+        );
+        push_line(
+            &mut output,
+            "campaign-replay-closure-size",
+            &closure.payload_len().to_string(),
+        );
+        push_line(
+            &mut output,
+            "campaign-replay-closure-payload",
+            &hex_encode(closure.payload()),
+        );
+    }
+    let source = &request.observation_source;
+    push_line(
+        &mut output,
+        "campaign-observation-source-version",
+        &source.schema_version().to_string(),
+    );
+    push_line(
+        &mut output,
+        "campaign-observation-source-identity",
+        &source.identity().to_hex(),
+    );
+    push_line(
+        &mut output,
+        "campaign-observation-source-proof-size",
+        &source.proof().len().to_string(),
+    );
+    push_line(
+        &mut output,
+        "campaign-observation-source-proof",
+        &hex_encode(source.proof()),
+    );
+    push_line(
+        &mut output,
+        "campaign-observation-source-evidence-size",
+        &source.evidence().len().to_string(),
+    );
+    push_line(
+        &mut output,
+        "campaign-observation-source-evidence",
+        &hex_encode(source.evidence()),
     );
     output.into_bytes()
 }
@@ -1606,8 +1168,8 @@ fn encode_send_request(request: &SendRequest) -> Vec<u8> {
     {
         push_line(
             &mut output,
-            "step-duration-nanos",
-            &duration.nanos.to_string(),
+            "step-duration-ticks",
+            &duration.ticks.to_string(),
         );
     }
     output.into_bytes()
@@ -1820,9 +1382,49 @@ fn decode_error_response(body: &[u8]) -> Result<ControlClientError, ControlClien
         "scenario-not-found" => decode_scenario_not_found(status, lines),
         "lifecycle-session-not-found" => decode_lifecycle_session_not_found(status, lines),
         "streaming-session-not-found" => decode_streaming_session_not_found(status, lines),
+        "resume-replay-closure" => decode_resume_replay_closure_error(status, lines),
+        "resume-observation-source" => decode_resume_observation_source_error(status, lines),
         "resource-limit" => resource_limit::decode_lifecycle_resource_limit(status, lines),
         reason => decode_generic_rpc_status(status, reason, lines),
     }
+}
+
+fn decode_resume_observation_source_error<'a, I>(
+    status: RpcStatusCode,
+    mut lines: I,
+) -> Result<ControlClientError, ControlClientError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    require_rpc_error_status(
+        status,
+        RpcStatusCode::InvalidArgument,
+        "resume-observation-source",
+    )?;
+    let message = parse_hex_string_line(lines.next(), "message=")?;
+    reject_trailing(lines.next())?;
+    Ok(ControlClientError::Lifecycle {
+        source: LifecycleApiError::ResumeObservationSource { message },
+    })
+}
+
+fn decode_resume_replay_closure_error<'a, I>(
+    status: RpcStatusCode,
+    mut lines: I,
+) -> Result<ControlClientError, ControlClientError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    require_rpc_error_status(
+        status,
+        RpcStatusCode::InvalidArgument,
+        "resume-replay-closure",
+    )?;
+    let message = parse_hex_string_line(lines.next(), "message=")?;
+    reject_trailing(lines.next())?;
+    Ok(ControlClientError::Lifecycle {
+        source: LifecycleApiError::ResumeReplayClosure { message },
+    })
 }
 
 fn decode_lifecycle_epoch_mismatch<'a, I>(
@@ -2050,8 +1652,9 @@ fn decode_streaming_event_frame(body: &[u8]) -> Result<StreamingEventFrame, Cont
     let next_cursor = EventLogCursor::new(parse_u64_line(lines.next(), "next-cursor=")?);
     let sequence = parse_u64_line(lines.next(), "sequence=")?;
     let virtual_time_ticks = parse_u64_line(lines.next(), "virtual-time-ticks=")?;
-    let icount_retired = parse_u64_line(lines.next(), "icount-retired=")?;
-    let icount_node = parse_optional_hex_string_line(lines.next(), "icount-node=")?;
+    let stamp_tick = parse_u64_line(lines.next(), "stamp-tick=")?;
+    let stamp_retired = parse_optional_u64_line(lines.next(), "stamp-retired=")?;
+    let stamp_node = parse_optional_hex_string_line(lines.next(), "stamp-node=")?;
     let source = parse_event_source_line(lines.next())?;
     let level = parse_event_level_line(lines.next())?;
     let observational = parse_bool_line(lines.next(), "observational=")?;
@@ -2065,8 +1668,9 @@ fn decode_streaming_event_frame(body: &[u8]) -> Result<StreamingEventFrame, Cont
             sequence,
             at: OpenSetEventTime {
                 virtual_time_ticks,
-                icount_retired,
-                icount_node,
+                stamp_tick,
+                stamp_retired,
+                stamp_node,
             },
             source,
             level,
@@ -2120,6 +1724,20 @@ fn parse_u64_line(line: Option<&str>, prefix: &'static str) -> Result<u64, Contr
     let value = parse_prefixed_line(line, prefix)?;
     value
         .parse::<u64>()
+        .map_err(|error| rpc_decode(format!("invalid integer `{value}` for `{prefix}`: {error}")))
+}
+
+fn parse_optional_u64_line(
+    line: Option<&str>,
+    prefix: &'static str,
+) -> Result<Option<u64>, ControlClientError> {
+    let value = parse_prefixed_line(line, prefix)?;
+    if value == "none" {
+        return Ok(None);
+    }
+    value
+        .parse::<u64>()
+        .map(Some)
         .map_err(|error| rpc_decode(format!("invalid integer `{value}` for `{prefix}`: {error}")))
 }
 
@@ -2815,11 +2433,11 @@ fn parse_step_mode_field(value: &str, label: &'static str) -> Result<StepMode, C
         "assertion" => Ok(StepMode::Assertion),
         "timer" => Ok(StepMode::Timer),
         value => {
-            let Some(nanos) = value.strip_prefix("duration:") else {
+            let Some(ticks) = value.strip_prefix("duration-ticks:") else {
                 return Err(rpc_decode(format!("invalid {label} step mode `{value}`")));
             };
             Ok(StepMode::Duration(SimDuration {
-                nanos: nanos.parse::<u64>().map_err(|error| {
+                ticks: ticks.parse::<u64>().map_err(|error| {
                     rpc_decode(format!("invalid {label} step duration: {error}"))
                 })?,
             }))
@@ -2955,11 +2573,24 @@ fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, ControlClientError> {
     Ok(bytes)
 }
 
-#[cfg(test)]
-mod streaming_receiver_tests;
-
 mod debug;
-pub use debug::{DebugControllerAccess, DebugControllerAcquisition};
+pub use debug::{DebugControllerAccess, DebugControllerAcquisition, WritableDebugBranch};
 mod query_result;
 
 use query_result::*;
+
+#[cfg(test)]
+mod exact_tick_wire_tests {
+    use super::*;
+
+    #[test]
+    fn duration_pause_reason_requires_exact_tick_wire_name() -> Result<(), ControlClientError> {
+        assert_eq!(
+            parse_step_mode_field("duration-ticks:3", "pause reason")?,
+            StepMode::Duration(SimDuration { ticks: 3 })
+        );
+        assert!(parse_step_mode_field("duration:3", "pause reason").is_err());
+
+        Ok(())
+    }
+}

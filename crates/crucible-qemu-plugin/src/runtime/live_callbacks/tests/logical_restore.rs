@@ -15,15 +15,15 @@ fn post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging() {
         super::super::super::live_whitebox::install_app_random_restore_state_for_test(config);
     app_random.set_draws(7);
 
-    let layout = RegionLayout::for_config(RegionConfig::new(1, 2, 0))
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2))
         .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
     let header = RegionHeader::new(layout);
     let slot = NodeSlot::new(KIND_VM);
-    let priming = authorize_advance_ceiling(0, 100, None)
+    let priming = authorize_advance_ceiling(0, 5000, None)
         .unwrap_or_else(|error| panic!("priming ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(priming)
+    slot.publish_scheduler_advance(priming, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("priming ceiling should publish: {error}"));
-    slot.publish_reached_icount(100, 0)
+    slot.publish_reached_icount(5000)
         .unwrap_or_else(|error| panic!("priming boundary should publish: {error}"));
     let outbound_header = RingHeader::new();
     let inbound_header = RingHeader::new();
@@ -49,7 +49,7 @@ fn post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging() {
     };
     let rx_queue = QemuCanonicalNetworkRx::require(Some(test_reentrant_net_inject))
         .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
-    let state = test_live_state_with_teardown(88, 1, 0, 100, &header, &slot, mpsc::channel().0)
+    let state = test_live_state_with_teardown(88, 1, 100, &header, &slot, mpsc::channel().0)
         .and_then(|state| state.attach_network(0, outbound, inbound, rx_queue, 23))
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     let network = state
@@ -58,22 +58,28 @@ fn post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging() {
         .unwrap_or_else(|| panic!("test network state should be attached"));
     network.tx.restore_next_seq(29);
     assert_eq!(network.tx.next_seq(), 29);
-    let restored_ceiling = authorize_advance_ceiling(100, 500, None)
+    let restored_ceiling = authorize_advance_ceiling(5000, 25_000, None)
         .unwrap_or_else(|error| panic!("restore ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(restored_ceiling)
-        .unwrap_or_else(|error| panic!("restore ceiling should publish: {error}"));
+    slot.publish_scheduler_advance(
+        restored_ceiling,
+        crucible_shmem::AdvanceStopCondition::Ceiling,
+    )
+    .unwrap_or_else(|error| panic!("restore ceiling should publish: {error}"));
     let generation = slot
-        .arm_logical_time_restore(500)
+        .arm_logical_time_restore(25_000)
         .unwrap_or_else(|error| panic!("logical-time restore should arm: {error}"));
     header
         .request_pause([&slot])
         .unwrap_or_else(|error| panic!("restore pause should publish: {error}"));
+    let control_request = slot
+        .request_control_boundary(0, None)
+        .unwrap_or_else(|error| panic!("stopped restore control should arm: {error}"));
     TEST_REQUEST_VMSTOP_CALLS.set(0);
 
     assert_eq!(state.restore_logical_time_if_requested(40, false), Ok(()));
     let device_boundary = slot.snapshot();
     assert_ne!(device_boundary.logical_time_restore_ack, generation);
-    assert_eq!(state.logical_icount_offset.load(Ordering::Acquire), 460);
+    assert_eq!(state.logical_icount_offset.load(Ordering::Acquire), 23_000);
     assert_eq!(network.tx.next_seq(), 23);
     assert_eq!(app_random.draws(), 2);
 
@@ -83,14 +89,18 @@ fn post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging() {
     assert_eq!(network.tx.next_seq(), 31);
     assert_eq!(app_random.draws(), 3);
 
-    assert_eq!(state.publish_pause_if_requested(40), Ok(true));
+    assert_eq!(state.on_control_boundary(40), Ok(()));
 
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.logical_time_restore_request, generation);
     assert_eq!(snapshot.logical_time_restore_ack, generation);
-    assert_eq!(snapshot.current_icount, 500);
+    assert_eq!(
+        snapshot.control_boundary_ack,
+        control_request.wrapping_add(1)
+    );
+    assert_eq!(snapshot.current_icount, 25_000);
     assert_eq!(snapshot.logical_time_raw_icount, 40);
-    assert_eq!(state.logical_icount_offset.load(Ordering::Acquire), 460);
-    assert_eq!(state.logical_icount_for_raw(41), Ok(501));
+    assert_eq!(state.logical_icount_offset.load(Ordering::Acquire), 23_000);
+    assert_eq!(state.logical_icount_for_raw(41), Ok(25_050));
     assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
 }

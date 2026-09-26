@@ -137,7 +137,7 @@
   forbiddenRawShmemCalls = [
     ".control_action()"
     ".shutdown_requested()"
-    ".load_node_ceiling()"
+    ".load_scheduler_advance()"
     ".publish_reached_icount("
     ".publish_idle("
     ".prepare_futex_wait()"
@@ -153,7 +153,7 @@
     ".snapshot()"
     ".header_snapshot()"
     ".validate_header()"
-    ".publish_scheduler_ceiling("
+    ".publish_scheduler_advance("
     ".futex_wait_still_valid("
     ".peek_delivery_icount("
     ".dequeue("
@@ -304,7 +304,7 @@
       }
       {
         label = "ceiling acquire helper";
-        needle = "pub fn load_scheduler_ceiling";
+        needle = "pub fn load_scheduler_advance";
       }
       {
         label = "reached publish helper";
@@ -414,7 +414,7 @@
       }
       {
         label = "idle loop loads ceiling through facade";
-        needle = "PluginShmemOrdering::load_scheduler_ceiling";
+        needle = "PluginShmemOrdering::load_scheduler_advance";
       }
       {
         label = "idle loop publishes reached through facade";
@@ -520,7 +520,7 @@
       }
       {
         label = "node ceiling acquire load";
-        needle = "self.max_advance_icount.load(Ordering::Acquire)";
+        needle = "self.load_scheduler_advance()";
       }
       {
         label = "node current icount release publish";

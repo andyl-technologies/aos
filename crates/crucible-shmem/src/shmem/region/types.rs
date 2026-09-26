@@ -67,7 +67,7 @@ pub struct RegionAllocation {
     pub(super) fault_command_arena_headers: Vec<FaultPayloadArenaHeader>,
     pub(super) fault_command_arena_bytes: Vec<u8>,
     pub(super) fault_result_ring_headers: Vec<RingHeader>,
-    pub(super) fault_result_slots: Vec<FaultResultSlotV1>,
+    pub(super) fault_result_slots: Vec<FaultResultSlotV2>,
     pub(super) fault_result_arena_headers: Vec<FaultPayloadArenaHeader>,
     pub(super) fault_result_arena_bytes: Vec<u8>,
     pub(super) fault_event_ring_headers: Vec<RingHeader>,
@@ -78,6 +78,8 @@ pub struct RegionAllocation {
     pub(super) guest_introspection_entries: Vec<GuestIntrospectionEntry>,
     pub(super) accelerator_ring_headers: Vec<RingHeader>,
     pub(super) accelerator_entries: Vec<AcceleratorEntry>,
+    pub(super) selectable_reply_ring_headers: Vec<RingHeader>,
+    pub(super) selectable_reply_entries: Vec<WhiteboxMarkerEntry>,
     pub(super) rings: Vec<DirectedRing>,
     pub(super) layout: RegionLayout,
 }
@@ -109,6 +111,8 @@ impl Clone for RegionAllocation {
             guest_introspection_entries: self.guest_introspection_entries.clone(),
             accelerator_ring_headers: self.accelerator_ring_headers.clone(),
             accelerator_entries: self.accelerator_entries.clone(),
+            selectable_reply_ring_headers: self.selectable_reply_ring_headers.clone(),
+            selectable_reply_entries: self.selectable_reply_entries.clone(),
             rings: self.rings.clone(),
             layout: self.layout,
         }

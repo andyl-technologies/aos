@@ -3,9 +3,11 @@
 //! The QEMU plugin ABI executes this safe contract while holding raw QEMU handles.
 
 use std::collections::BTreeSet;
-use std::os::raw::{c_int, c_void};
+use std::os::raw::{c_int, c_uint, c_void};
 
 use thiserror::Error;
+
+use crucible_shmem::{FutexWait, NODE_SLOT_WAKE_SIGNAL_OFFSET, NodeSlot, TICKS_PER_NS};
 
 mod request;
 pub use request::{PluginTimeControlRequestError, QemuRequestTimeControlFn};
@@ -13,22 +15,17 @@ pub use request::{PluginTimeControlRequestError, QemuRequestTimeControlFn};
 /// QEMU plugin API symbol used to acquire virtual-time control.
 pub const QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL: &str = "qemu_plugin_request_time_control";
 /// Crucible-stable plugin API symbol used to enqueue idle time advances.
-pub const QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL: &str = "qemu_plugin_advance_time_ns";
+pub const QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL: &str = "qemu_plugin_advance_time_ticks";
 /// Crucible-stable plugin API symbol used to register queued-advance completion.
 pub const QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL: &str =
     "qemu_plugin_register_time_advance_cb";
-/// QEMU plugin API predicate used by the no-warp patch.
-pub const QEMU_PLUGIN_HAS_TIME_CONTROL_SYMBOL: &str = "qemu_plugin_has_time_control";
-/// Upstream QEMU plugin API symbol used by the time-control owner.
-pub const QEMU_PLUGIN_UPDATE_NS_SYMBOL: &str = "qemu_plugin_update_ns";
-/// Largest `-icount shift=N` value representable by a `u64` nanosecond scale.
-pub const MAX_PLUGIN_ICOUNT_SHIFT: u8 = 63;
-
+/// Crucible-stable one-shot idle futex-wait export.
+pub const QEMU_PLUGIN_CRUCIBLE_WAIT_IDLE_WAKE_SYMBOL: &str = "qemu_plugin_crucible_wait_idle_wake";
 /// QEMU's callback-safe queued virtual-time advance function.
 ///
 /// Zero means the request was queued. A negative errno-style value rejects the
 /// request before ownership transfers to QEMU.
-pub type QemuAdvanceTimeNsFn = extern "C" fn(i64) -> c_int;
+pub type QemuAdvanceTimeTicksFn = extern "C" fn(i64) -> c_int;
 
 /// Normal-main-loop completion callback for a queued virtual-time advance.
 pub type QemuTimeAdvanceCompletionCbFn = extern "C" fn(c_int, i64, *mut c_void);
@@ -39,6 +36,116 @@ pub type QemuTimeAdvanceCompletionCbFn = extern "C" fn(c_int, i64, *mut c_void);
 /// registration, including while another advance remains outstanding.
 pub type QemuRegisterTimeAdvanceCbFn =
     extern "C" fn(Option<QemuTimeAdvanceCompletionCbFn>, *mut c_void) -> c_int;
+
+/// QEMU's one-shot BQL-releasing idle futex wait.
+///
+/// QEMU declares the return type as
+/// enum qemu_plugin_crucible_idle_wait_status, whose ABI is a C int.
+pub(crate) type QemuCrucibleWaitIdleWakeFn = extern "C" fn(c_uint, *mut u32, u32) -> c_int;
+
+/// Result of QEMU's one-shot idle futex wait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QemuIdleWakeWaitStatus {
+    /// The raw futex syscall returned zero, including a possible spurious wake.
+    Woken,
+    /// The futex word changed before the kernel could park the callback.
+    ValueChanged,
+    /// A signal interrupted the futex wait.
+    Interrupted,
+    /// The pinned callback CPU changed while the BQL was released.
+    CpuChanged,
+    /// QEMU rejected an invalid futex address.
+    InvalidArgument,
+    /// QEMU rejected a call outside the exact simulated RR idle callback.
+    InvalidContext,
+    /// The same idle callback attempted a second exported wait.
+    AlreadyIssued,
+    /// The current QEMU host does not provide a raw futex wait.
+    Unsupported,
+    /// The raw futex syscall failed for another reason.
+    SyscallError,
+    /// QEMU discovered pending work during its final pre-wait check.
+    QemuWorkPending,
+    /// QEMU returned a status unknown to this plugin build.
+    Unknown(i32),
+}
+
+impl QemuIdleWakeWaitStatus {
+    fn from_qemu(status: c_int) -> Self {
+        match status {
+            0 => Self::Woken,
+            1 => Self::ValueChanged,
+            2 => Self::Interrupted,
+            3 => Self::CpuChanged,
+            4 => Self::InvalidArgument,
+            5 => Self::InvalidContext,
+            6 => Self::AlreadyIssued,
+            7 => Self::Unsupported,
+            8 => Self::SyscallError,
+            9 => Self::QemuWorkPending,
+            status => Self::Unknown(status),
+        }
+    }
+
+    pub(crate) const fn into_raw(self) -> i32 {
+        match self {
+            Self::Woken => 0,
+            Self::ValueChanged => 1,
+            Self::Interrupted => 2,
+            Self::CpuChanged => 3,
+            Self::InvalidArgument => 4,
+            Self::InvalidContext => 5,
+            Self::AlreadyIssued => 6,
+            Self::Unsupported => 7,
+            Self::SyscallError => 8,
+            Self::QemuWorkPending => 9,
+            Self::Unknown(status) => status,
+        }
+    }
+}
+
+/// Required handle for QEMU's one-shot idle wake wait.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct QemuIdleWakeWait {
+    wait_idle_wake: QemuCrucibleWaitIdleWakeFn,
+}
+
+impl QemuIdleWakeWait {
+    #[cfg(test)]
+    pub(crate) const fn test_stub(wait_idle_wake: QemuCrucibleWaitIdleWakeFn) -> Self {
+        Self { wait_idle_wake }
+    }
+
+    /// Wraps the required QEMU one-shot idle-wait export.
+    pub(crate) const fn from_required_pointer(wait_idle_wake: QemuCrucibleWaitIdleWakeFn) -> Self {
+        Self { wait_idle_wake }
+    }
+
+    /// Performs at most one QEMU-owned wait for a published idle request.
+    ///
+    /// A runnable request never crosses the FFI boundary. A wait request passes
+    /// the stable shared wake word and exact expected value to QEMU, which
+    /// releases the BQL only around one raw non-private FUTEX_WAIT.
+    #[must_use]
+    pub fn wait_once(
+        self,
+        vcpu_index: u32,
+        slot: &NodeSlot,
+        wait: FutexWait,
+    ) -> Option<QemuIdleWakeWaitStatus> {
+        let FutexWait::Wait { expected } = wait else {
+            return None;
+        };
+
+        let slot_address = std::ptr::from_ref(slot).cast_mut().cast::<u8>();
+        // SAFETY: NodeSlot has a stable repr(C) shared-memory layout, and the
+        // exported offset identifies its aligned AtomicU32 wake word. The setup
+        // mapping retains the slot for every registered callback.
+        let wake_signal = unsafe { slot_address.add(NODE_SLOT_WAKE_SIGNAL_OFFSET).cast::<u32>() };
+        let status = (self.wait_idle_wake)(vcpu_index, wake_signal, expected);
+        Some(QemuIdleWakeWaitStatus::from_qemu(status))
+    }
+}
 
 /// The canonical registration steps that protect virtual time before guest code runs.
 pub const CANONICAL_TIME_CONTROL_REGISTRATION_ORDER: [PluginRegistrationStep; 10] = [
@@ -147,14 +254,10 @@ impl SchedulerAuthorizedIdleJump {
         self.ceiling_icount
     }
 
-    /// Projects the authorized target into virtual nanoseconds.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PluginClockError`] when the target cannot be represented with
-    /// the fixed icount shift.
-    pub fn target_virtual_ns(self, icount_shift: u8) -> Result<u64, PluginClockError> {
-        project_virtual_ns(self.target_icount, icount_shift)
+    /// Returns the exact logical tick authorized for QEMU's idle advance.
+    #[must_use]
+    pub const fn target_tick(self) -> u64 {
+        self.target_icount
     }
 }
 
@@ -205,7 +308,7 @@ impl PluginClockAdvance {
 /// Required handle for enqueueing idle jumps through QEMU.
 #[derive(Clone, Copy, Debug)]
 pub struct QueuedIdleAdvance {
-    advance_time_ns: QemuAdvanceTimeNsFn,
+    advance_time_ticks: QemuAdvanceTimeTicksFn,
 }
 
 impl QueuedIdleAdvance {
@@ -214,51 +317,86 @@ impl QueuedIdleAdvance {
     /// # Errors
     ///
     /// Returns [`QueuedIdleAdvanceError::CapabilityUnavailable`] when the
-    /// `qemu_plugin_advance_time_ns` export was not resolved.
+    /// `qemu_plugin_advance_time_ticks` export was not resolved.
     pub fn require(
-        advance_time_ns: Option<QemuAdvanceTimeNsFn>,
+        advance_time_ticks: Option<QemuAdvanceTimeTicksFn>,
     ) -> Result<Self, QueuedIdleAdvanceError> {
-        let Some(advance_time_ns) = advance_time_ns else {
+        let Some(advance_time_ticks) = advance_time_ticks else {
             return Err(QueuedIdleAdvanceError::CapabilityUnavailable {
-                symbol: QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL,
+                symbol: QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL,
             });
         };
 
-        Ok(Self { advance_time_ns })
+        Ok(Self { advance_time_ticks })
     }
 
     /// Enqueues a QEMU virtual-time advance without claiming completion.
     ///
     /// # Errors
     ///
-    /// Returns [`QueuedIdleAdvanceError::VirtualTimeOutOfRange`] when the target
-    /// cannot be passed through QEMU's signed nanosecond ABI, or
+    /// Returns [`QueuedIdleAdvanceError::TickOutOfRange`] when the target
+    /// cannot be passed through QEMU's signed tick ABI, or
     /// [`QueuedIdleAdvanceError::EnqueueRejected`] when QEMU rejects the request.
-    pub fn enqueue(
+    pub fn enqueue(&self, target_tick: u64) -> Result<PendingIdleAdvance, QueuedIdleAdvanceError> {
+        let prepared = self.prepare(target_tick)?;
+        let pending = prepared.pending();
+
+        self.enqueue_prepared(prepared)?;
+        Ok(pending)
+    }
+
+    /// Validates an advance target before its completion identity is published.
+    pub(crate) fn prepare(
         &self,
-        target_virtual_ns: u64,
-    ) -> Result<PendingIdleAdvance, QueuedIdleAdvanceError> {
-        let qemu_target_ns = i64::try_from(target_virtual_ns).map_err(|_error| {
-            QueuedIdleAdvanceError::VirtualTimeOutOfRange { target_virtual_ns }
-        })?;
-        let status = (self.advance_time_ns)(qemu_target_ns);
+        target_tick: u64,
+    ) -> Result<PreparedIdleAdvance, QueuedIdleAdvanceError> {
+        let qemu_target_tick = i64::try_from(target_tick)
+            .map_err(|_error| QueuedIdleAdvanceError::TickOutOfRange { target_tick })?;
+
+        Ok(PreparedIdleAdvance {
+            target_tick,
+            qemu_target_tick,
+        })
+    }
+
+    /// Submits a target whose completion identity is already visible to callbacks.
+    pub(crate) fn enqueue_prepared(
+        &self,
+        prepared: PreparedIdleAdvance,
+    ) -> Result<(), QueuedIdleAdvanceError> {
+        let status = (self.advance_time_ticks)(prepared.qemu_target_tick);
         if status != 0 {
             return Err(QueuedIdleAdvanceError::EnqueueRejected {
-                target_virtual_ns,
+                target_tick: prepared.target_tick,
                 status,
             });
         }
-        Ok(PendingIdleAdvance {
-            target_virtual_ns,
+
+        Ok(())
+    }
+}
+
+/// A validated target that has not yet crossed the QEMU enqueue boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PreparedIdleAdvance {
+    target_tick: u64,
+    qemu_target_tick: i64,
+}
+
+impl PreparedIdleAdvance {
+    /// Returns the completion identity that callers must publish before enqueueing.
+    pub(crate) const fn pending(self) -> PendingIdleAdvance {
+        PendingIdleAdvance {
+            target_tick: self.target_tick,
             completion_pending: true,
-        })
+        }
     }
 }
 
 /// Evidence that QEMU accepted an advance whose completion is still pending.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PendingIdleAdvance {
-    target_virtual_ns: u64,
+    target_tick: u64,
     completion_pending: bool,
 }
 
@@ -266,16 +404,16 @@ pub struct PendingIdleAdvance {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimeAdvanceCompletion {
     status: c_int,
-    target_virtual_ns: i64,
+    target_tick: i64,
 }
 
 impl TimeAdvanceCompletion {
     /// Captures the exact status and target delivered by QEMU.
     #[must_use]
-    pub const fn from_qemu(status: c_int, target_virtual_ns: i64) -> Self {
+    pub const fn from_qemu(status: c_int, target_tick: i64) -> Self {
         Self {
             status,
-            target_virtual_ns,
+            target_tick,
         }
     }
 
@@ -287,16 +425,16 @@ impl TimeAdvanceCompletion {
 
     /// Returns the signed target echoed by QEMU.
     #[must_use]
-    pub const fn target_virtual_ns(self) -> i64 {
-        self.target_virtual_ns
+    pub const fn target_tick(self) -> i64 {
+        self.target_tick
     }
 }
 
 impl PendingIdleAdvance {
-    /// Returns the absolute QEMU virtual nanosecond target that was queued.
+    /// Returns the exact logical tick queued through QEMU.
     #[must_use]
-    pub const fn target_virtual_ns(self) -> u64 {
-        self.target_virtual_ns
+    pub const fn target_tick(self) -> u64 {
+        self.target_tick
     }
 
     /// Returns whether normal-main-loop completion is still required.
@@ -318,20 +456,20 @@ impl PendingIdleAdvance {
     ) -> Result<Self, QueuedIdleAdvanceError> {
         if completion.status != 0 {
             return Err(QueuedIdleAdvanceError::CompletionFailed {
-                target_virtual_ns: self.target_virtual_ns,
+                target_tick: self.target_tick,
                 status: completion.status,
             });
         }
-        let Ok(completed_target) = u64::try_from(completion.target_virtual_ns) else {
+        let Ok(completed_target) = u64::try_from(completion.target_tick) else {
             return Err(QueuedIdleAdvanceError::CompletionTargetMismatch {
-                expected_target_virtual_ns: self.target_virtual_ns,
-                completed_target_virtual_ns: completion.target_virtual_ns,
+                expected_target_tick: self.target_tick,
+                completed_target_tick: completion.target_tick,
             });
         };
-        if completed_target != self.target_virtual_ns {
+        if completed_target != self.target_tick {
             return Err(QueuedIdleAdvanceError::CompletionTargetMismatch {
-                expected_target_virtual_ns: self.target_virtual_ns,
-                completed_target_virtual_ns: completion.target_virtual_ns,
+                expected_target_tick: self.target_tick,
+                completed_target_tick: completion.target_tick,
             });
         }
         self.completion_pending = false;
@@ -347,7 +485,6 @@ impl PendingIdleAdvance {
 #[derive(Debug)]
 pub struct PluginVirtualClock {
     current_icount: u64,
-    icount_shift: u8,
     _ownership: PluginTimeControlOwnership,
 }
 
@@ -356,19 +493,15 @@ impl PluginVirtualClock {
     ///
     /// # Errors
     ///
-    /// Returns [`PluginClockError::IcountShiftTooLarge`] when `icount_shift`
-    /// cannot be represented as a `u64` nanosecond scale, or
-    /// [`PluginClockError::VirtualTimeOverflow`] when `initial_icount` cannot be
-    /// projected with that shift.
+    /// Returns [`PluginClockError::QemuTickOutOfRange`] when the initial tick
+    /// cannot pass through QEMU's signed icount ABI.
     pub fn new(
         initial_icount: u64,
-        icount_shift: u8,
         ownership: PluginTimeControlOwnership,
     ) -> Result<Self, PluginClockError> {
-        project_virtual_ns(initial_icount, icount_shift)?;
+        project_virtual_ns(initial_icount)?;
         Ok(Self {
             current_icount: initial_icount,
-            icount_shift,
             _ownership: ownership,
         })
     }
@@ -379,41 +512,29 @@ impl PluginVirtualClock {
         self.current_icount
     }
 
-    /// Returns the fixed `-icount shift=N` scale.
-    #[must_use]
-    pub const fn icount_shift(&self) -> u8 {
-        self.icount_shift
-    }
-
-    /// Returns the current virtual nanoseconds.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PluginClockError::VirtualTimeOverflow`] when the current icount
-    /// cannot be projected with this clock's fixed shift.
-    pub fn current_virtual_ns(&self) -> Result<u64, PluginClockError> {
-        project_virtual_ns(self.current_icount, self.icount_shift)
-    }
-
     /// Advances by retired guest instructions bounded by a scheduler ceiling.
     ///
     /// # Errors
     ///
     /// Returns [`PluginClockError`] when the icount addition overflows, when the
-    /// resulting icount would exceed `ceiling`, or when the virtual nanosecond
-    /// projection overflows.
+    /// resulting icount would exceed `ceiling` or QEMU's signed tick range.
     pub fn advance_guest_instructions(
         &mut self,
         retired_instructions: u64,
         ceiling: SchedulerCeiling,
     ) -> Result<PluginClockAdvance, PluginClockError> {
-        let target_icount = self
-            .current_icount
-            .checked_add(retired_instructions)
+        let delta_ticks = retired_instructions
+            .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
             .ok_or(PluginClockError::IcountOverflow {
                 current_icount: self.current_icount,
                 delta_icount: retired_instructions,
             })?;
+        let target_icount = self.current_icount.checked_add(delta_ticks).ok_or(
+            PluginClockError::IcountOverflow {
+                current_icount: self.current_icount,
+                delta_icount: retired_instructions,
+            },
+        )?;
         self.advance_to_icount(
             PluginClockAdvanceSource::GuestInstructions,
             target_icount,
@@ -426,19 +547,13 @@ impl PluginVirtualClock {
     /// # Errors
     ///
     /// Returns [`PluginClockError`] when `target_icount` moves backward, exceeds
-    /// `ceiling`, or cannot be projected to virtual nanoseconds with the fixed
-    /// icount shift.
+    /// `ceiling`, or exceeds QEMU's signed tick range.
     pub fn authorize_idle_jump(
         &self,
         target_icount: u64,
         ceiling: SchedulerCeiling,
     ) -> Result<SchedulerAuthorizedIdleJump, PluginClockError> {
-        validate_target(
-            self.current_icount,
-            target_icount,
-            ceiling,
-            self.icount_shift,
-        )?;
+        validate_target(self.current_icount, target_icount, ceiling)?;
         Ok(SchedulerAuthorizedIdleJump {
             from_icount: self.current_icount,
             target_icount,
@@ -477,14 +592,9 @@ impl PluginVirtualClock {
         target_icount: u64,
         ceiling: SchedulerCeiling,
     ) -> Result<PluginClockAdvance, PluginClockError> {
-        validate_target(
-            self.current_icount,
-            target_icount,
-            ceiling,
-            self.icount_shift,
-        )?;
+        validate_target(self.current_icount, target_icount, ceiling)?;
         let from_icount = self.current_icount;
-        let virtual_ns = project_virtual_ns(target_icount, self.icount_shift)?;
+        let virtual_ns = project_virtual_ns(target_icount)?;
         self.current_icount = target_icount;
         Ok(PluginClockAdvance {
             source,
@@ -643,20 +753,14 @@ pub enum TimeControlRegistrationError {
 /// An error produced while advancing the plugin-owned virtual clock.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PluginClockError {
-    /// The configured fixed icount shift cannot be represented.
-    #[error("plugin icount shift {shift} exceeds maximum {max}")]
-    IcountShiftTooLarge {
-        /// Rejected shift.
-        shift: u8,
-        /// Maximum supported shift.
-        max: u8,
-    },
-    /// Adding retired instructions to the current icount overflowed.
-    #[error("plugin icount overflow at current icount {current_icount} plus delta {delta_icount}")]
+    /// Scaling or adding retired instructions to the current exact tick overflowed.
+    #[error(
+        "plugin tick overflow at current tick {current_icount} plus {delta_icount} retired instructions"
+    )]
     IcountOverflow {
         /// Current aggregate node icount.
         current_icount: u64,
-        /// Requested icount delta.
+        /// Requested raw retired instruction delta.
         delta_icount: u64,
     },
     /// A requested advance would move the virtual clock backward.
@@ -677,13 +781,11 @@ pub enum PluginClockError {
         /// Scheduler-published ceiling.
         ceiling_icount: u64,
     },
-    /// The icount-to-nanosecond projection overflowed.
-    #[error("plugin virtual time overflows at icount {icount} with icount shift {icount_shift}")]
-    VirtualTimeOverflow {
-        /// Aggregate node icount being projected.
+    /// The logical tick exceeds QEMU's signed icount range.
+    #[error("plugin logical tick {icount} exceeds QEMU's signed icount range")]
+    QemuTickOutOfRange {
+        /// Rejected logical tick.
         icount: u64,
-        /// Fixed icount shift.
-        icount_shift: u8,
     },
     /// An idle-jump authorization no longer matches the current clock.
     #[error(
@@ -706,37 +808,37 @@ pub enum QueuedIdleAdvanceError {
         /// Missing QEMU plugin symbol.
         symbol: &'static str,
     },
-    /// The target virtual time cannot pass through QEMU's signed nanosecond ABI.
-    #[error("queued idle advance target {target_virtual_ns}ns exceeds QEMU int64 range")]
-    VirtualTimeOutOfRange {
-        /// Rejected absolute virtual-time target.
-        target_virtual_ns: u64,
+    /// The target tick cannot pass through QEMU's signed icount ABI.
+    #[error("queued idle advance target tick {target_tick} exceeds QEMU int64 range")]
+    TickOutOfRange {
+        /// Rejected absolute logical tick.
+        target_tick: u64,
     },
     /// QEMU rejected the request before accepting ownership.
-    #[error("QEMU rejected queued idle advance to {target_virtual_ns}ns with status {status}")]
+    #[error("QEMU rejected queued idle advance to tick {target_tick} with status {status}")]
     EnqueueRejected {
         /// Rejected absolute virtual-time target.
-        target_virtual_ns: u64,
+        target_tick: u64,
         /// Negative errno-style status returned by QEMU.
         status: c_int,
     },
     /// The accepted request later failed in QEMU's queued worker.
-    #[error("QEMU failed queued idle advance to {target_virtual_ns}ns with status {status}")]
+    #[error("QEMU failed queued idle advance to tick {target_tick} with status {status}")]
     CompletionFailed {
         /// Requested absolute virtual-time target.
-        target_virtual_ns: u64,
+        target_tick: u64,
         /// Negative errno-style completion status.
         status: c_int,
     },
     /// QEMU's completion did not identify the outstanding request.
     #[error(
-        "QEMU completed idle advance target {completed_target_virtual_ns}ns while {expected_target_virtual_ns}ns was pending"
+        "QEMU completed idle advance at tick {completed_target_tick} while tick {expected_target_tick} was pending"
     )]
     CompletionTargetMismatch {
         /// Outstanding request target.
-        expected_target_virtual_ns: u64,
+        expected_target_tick: u64,
         /// Target supplied by the completion callback.
-        completed_target_virtual_ns: i64,
+        completed_target_tick: i64,
     },
 }
 
@@ -744,7 +846,6 @@ fn validate_target(
     current_icount: u64,
     target_icount: u64,
     ceiling: SchedulerCeiling,
-    icount_shift: u8,
 ) -> Result<(), PluginClockError> {
     if target_icount < current_icount {
         return Err(PluginClockError::BackwardsAdvance {
@@ -758,23 +859,15 @@ fn validate_target(
             ceiling_icount: ceiling.icount(),
         });
     }
-    project_virtual_ns(target_icount, icount_shift)?;
+    project_virtual_ns(target_icount)?;
     Ok(())
 }
 
-fn project_virtual_ns(icount: u64, icount_shift: u8) -> Result<u64, PluginClockError> {
-    let scale =
-        1u64.checked_shl(u32::from(icount_shift))
-            .ok_or(PluginClockError::IcountShiftTooLarge {
-                shift: icount_shift,
-                max: MAX_PLUGIN_ICOUNT_SHIFT,
-            })?;
-    icount
-        .checked_mul(scale)
-        .ok_or(PluginClockError::VirtualTimeOverflow {
-            icount,
-            icount_shift,
-        })
+fn project_virtual_ns(icount: u64) -> Result<u64, PluginClockError> {
+    if icount > i64::MAX as u64 {
+        return Err(PluginClockError::QemuTickOutOfRange { icount });
+    }
+    Ok(icount / TICKS_PER_NS)
 }
 
 #[cfg(test)]
@@ -786,7 +879,7 @@ mod tests {
     use crucible_shmem::{KIND_VM, NodeSlot, authorize_advance_ceiling};
 
     thread_local! {
-        static LAST_DIRECT_ADVANCE_NS: Cell<i64> = const { Cell::new(-1) };
+        static LAST_DIRECT_ADVANCE_TICK: Cell<i64> = const { Cell::new(-1) };
     }
 
     #[test]
@@ -939,9 +1032,9 @@ mod tests {
 
     #[test]
     fn time_control_clock_advances_by_guest_instructions_up_to_ceiling() {
-        let mut clock = owned_clock(10, 2);
+        let mut clock = owned_clock(750);
 
-        let advance = match clock.advance_guest_instructions(5, SchedulerCeiling::new(15)) {
+        let advance = match clock.advance_guest_instructions(5, SchedulerCeiling::new(1_000)) {
             Ok(advance) => advance,
             Err(error) => panic!("guest retirement within ceiling should advance: {error}"),
         };
@@ -950,38 +1043,76 @@ mod tests {
             advance.source(),
             PluginClockAdvanceSource::GuestInstructions
         );
-        assert_eq!(advance.from_icount(), 10);
-        assert_eq!(advance.to_icount(), 15);
-        assert_eq!(advance.virtual_ns(), 60);
-        assert_eq!(clock.current_icount(), 15);
-        assert_eq!(clock.current_virtual_ns(), Ok(60));
+        assert_eq!(advance.from_icount(), 750);
+        assert_eq!(advance.to_icount(), 1_000);
+        assert_eq!(advance.virtual_ns(), 1);
+        assert_eq!(clock.current_icount(), 1_000);
+        assert_eq!(project_virtual_ns(clock.current_icount()), Ok(1));
     }
 
     #[test]
     fn time_control_clock_rejects_guest_instruction_advance_past_ceiling() {
-        let mut clock = owned_clock(10, 0);
+        let mut clock = owned_clock(10);
 
         assert_eq!(
-            clock.advance_guest_instructions(6, SchedulerCeiling::new(15)),
+            clock.advance_guest_instructions(1, SchedulerCeiling::new(59)),
             Err(PluginClockError::BeyondSchedulerCeiling {
-                target_icount: 16,
-                ceiling_icount: 15,
+                target_icount: 60,
+                ceiling_icount: 59,
             })
         );
         assert_eq!(clock.current_icount(), 10);
     }
 
     #[test]
+    fn virtual_nanoseconds_preserve_fractional_instruction_phase() {
+        let mut clock = owned_clock(975);
+        assert_eq!(project_virtual_ns(clock.current_icount()), Ok(0));
+
+        let first = clock
+            .advance_guest_instructions(1, SchedulerCeiling::new(1_075))
+            .expect("tick 1025 should be reachable");
+        assert_eq!(first.virtual_ns(), 1);
+
+        let second = clock
+            .advance_guest_instructions(1, SchedulerCeiling::new(1_075))
+            .expect("tick 1075 should be reachable");
+        assert_eq!(second.virtual_ns(), 1);
+        assert_eq!(clock.current_icount(), 1_075);
+    }
+
+    #[test]
+    fn idle_jump_keeps_phase_for_following_guest_instruction() {
+        let mut clock = owned_clock(970);
+        let authorization = clock
+            .authorize_idle_jump(995, SchedulerCeiling::new(1_045))
+            .expect("scheduler ceiling admits tick 995");
+        assert_eq!(authorization.target_tick(), 995);
+
+        let idle = clock
+            .advance_authorized_idle_jump(authorization)
+            .expect("idle advance preserves the exact target");
+        assert_eq!(idle.virtual_ns(), 0);
+        assert_eq!(clock.current_icount(), 995);
+
+        let guest = clock
+            .advance_guest_instructions(1, SchedulerCeiling::new(1_045))
+            .expect("guest retires from tick 995 to 1045");
+        assert_eq!(guest.virtual_ns(), 1);
+        assert_eq!(clock.current_icount(), 1_045);
+    }
+
+    #[test]
     fn time_control_clock_advances_by_scheduler_authorized_idle_jump() {
-        let mut clock = owned_clock(20, 1);
-        let authorization = match clock.authorize_idle_jump(32, SchedulerCeiling::new(40)) {
+        let mut clock = owned_clock(2_000);
+        let authorization = match clock.authorize_idle_jump(4_000, SchedulerCeiling::new(5_000)) {
             Ok(authorization) => authorization,
             Err(error) => panic!("idle jump inside ceiling should authorize: {error}"),
         };
 
-        assert_eq!(authorization.from_icount(), 20);
-        assert_eq!(authorization.target_icount(), 32);
-        assert_eq!(authorization.ceiling_icount(), 40);
+        assert_eq!(authorization.from_icount(), 2_000);
+        assert_eq!(authorization.target_icount(), 4_000);
+        assert_eq!(authorization.ceiling_icount(), 5_000);
 
         let advance = match clock.advance_authorized_idle_jump(authorization) {
             Ok(advance) => advance,
@@ -992,10 +1123,10 @@ mod tests {
             advance.source(),
             PluginClockAdvanceSource::SchedulerAuthorizedIdleJump
         );
-        assert_eq!(advance.from_icount(), 20);
-        assert_eq!(advance.to_icount(), 32);
-        assert_eq!(advance.virtual_ns(), 64);
-        assert_eq!(clock.current_icount(), 32);
+        assert_eq!(advance.from_icount(), 2_000);
+        assert_eq!(advance.to_icount(), 4_000);
+        assert_eq!(advance.virtual_ns(), 4);
+        assert_eq!(clock.current_icount(), 4_000);
     }
 
     #[test]
@@ -1007,14 +1138,14 @@ mod tests {
         assert_eq!(
             error,
             QueuedIdleAdvanceError::CapabilityUnavailable {
-                symbol: QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL,
+                symbol: QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL,
             }
         );
     }
 
     #[test]
     fn queued_idle_advance_reports_pending_completion() {
-        set_last_direct_advance_ns(-1);
+        set_last_direct_advance_tick(-1);
         let advance = match QueuedIdleAdvance::require(Some(test_direct_advance)) {
             Ok(advance) => advance,
             Err(error) => panic!("queued advance symbol should be accepted: {error}"),
@@ -1025,8 +1156,8 @@ mod tests {
             Err(error) => panic!("queued advance should accept signed target: {error}"),
         };
 
-        assert_eq!(last_direct_advance_ns(), 4096);
-        assert_eq!(pending.target_virtual_ns(), 4096);
+        assert_eq!(last_direct_advance_tick(), 4096);
+        assert_eq!(pending.target_tick(), 4096);
         assert!(pending.completion_pending());
         let completed = pending
             .validate_completion(TimeAdvanceCompletion::from_qemu(0, 4096))
@@ -1037,21 +1168,21 @@ mod tests {
     #[test]
     fn queued_idle_advance_rejects_failed_or_mismatched_completion() {
         let pending = PendingIdleAdvance {
-            target_virtual_ns: 4096,
+            target_tick: 4096,
             completion_pending: true,
         };
         assert_eq!(
             pending.validate_completion(TimeAdvanceCompletion::from_qemu(-34, 4096)),
             Err(QueuedIdleAdvanceError::CompletionFailed {
-                target_virtual_ns: 4096,
+                target_tick: 4096,
                 status: -34,
             })
         );
         assert_eq!(
             pending.validate_completion(TimeAdvanceCompletion::from_qemu(0, 4097)),
             Err(QueuedIdleAdvanceError::CompletionTargetMismatch {
-                expected_target_virtual_ns: 4096,
-                completed_target_virtual_ns: 4097,
+                expected_target_tick: 4096,
+                completed_target_tick: 4097,
             })
         );
     }
@@ -1066,7 +1197,7 @@ mod tests {
         assert_eq!(
             advance.enqueue(4096),
             Err(QueuedIdleAdvanceError::EnqueueRejected {
-                target_virtual_ns: 4096,
+                target_tick: 4096,
                 status: -16,
             })
         );
@@ -1074,7 +1205,7 @@ mod tests {
 
     #[test]
     fn queued_idle_advance_rejects_targets_outside_qemu_signed_range() {
-        set_last_direct_advance_ns(-1);
+        set_last_direct_advance_tick(-1);
         let advance = match QueuedIdleAdvance::require(Some(test_direct_advance)) {
             Ok(advance) => advance,
             Err(error) => panic!("queued advance symbol should be accepted: {error}"),
@@ -1082,21 +1213,21 @@ mod tests {
 
         assert_eq!(
             advance.enqueue(i64::MAX as u64 + 1),
-            Err(QueuedIdleAdvanceError::VirtualTimeOutOfRange {
-                target_virtual_ns: i64::MAX as u64 + 1,
+            Err(QueuedIdleAdvanceError::TickOutOfRange {
+                target_tick: i64::MAX as u64 + 1,
             })
         );
-        assert_eq!(last_direct_advance_ns(), -1);
+        assert_eq!(last_direct_advance_tick(), -1);
     }
 
     #[test]
     fn time_control_clock_rejects_stale_idle_jump_authorization() {
-        let mut clock = owned_clock(20, 0);
+        let mut clock = owned_clock(20);
         let authorization = match clock.authorize_idle_jump(25, SchedulerCeiling::new(30)) {
             Ok(authorization) => authorization,
             Err(error) => panic!("idle jump should authorize: {error}"),
         };
-        if let Err(error) = clock.advance_guest_instructions(1, SchedulerCeiling::new(30)) {
+        if let Err(error) = clock.advance_guest_instructions(1, SchedulerCeiling::new(70)) {
             panic!("guest instruction should advance before stale jump check: {error}");
         }
 
@@ -1104,14 +1235,14 @@ mod tests {
             clock.advance_authorized_idle_jump(authorization),
             Err(PluginClockError::StaleIdleJumpAuthorization {
                 authorized_from_icount: 20,
-                current_icount: 21,
+                current_icount: 70,
             })
         );
     }
 
     #[test]
-    fn time_control_clock_rejects_backward_jump_and_virtual_overflow() {
-        let clock = owned_clock(20, 0);
+    fn time_control_clock_rejects_backward_jump_and_signed_tick_overflow() {
+        let clock = owned_clock(20);
 
         assert_eq!(
             clock.authorize_idle_jump(19, SchedulerCeiling::new(30)),
@@ -1120,21 +1251,16 @@ mod tests {
                 target_icount: 19,
             })
         );
-        assert!(matches!(
-            PluginVirtualClock::new(1, MAX_PLUGIN_ICOUNT_SHIFT + 1, ownership()),
-            Err(PluginClockError::IcountShiftTooLarge { .. })
-        ));
         assert_eq!(
-            PluginVirtualClock::new(2, MAX_PLUGIN_ICOUNT_SHIFT, ownership()).err(),
-            Some(PluginClockError::VirtualTimeOverflow {
-                icount: 2,
-                icount_shift: MAX_PLUGIN_ICOUNT_SHIFT,
+            PluginVirtualClock::new(i64::MAX as u64 + 1, ownership()).err(),
+            Some(PluginClockError::QemuTickOutOfRange {
+                icount: i64::MAX as u64 + 1,
             })
         );
     }
 
-    fn owned_clock(initial_icount: u64, icount_shift: u8) -> PluginVirtualClock {
-        match PluginVirtualClock::new(initial_icount, icount_shift, ownership()) {
+    fn owned_clock(initial_icount: u64) -> PluginVirtualClock {
+        match PluginVirtualClock::new(initial_icount, ownership()) {
             Ok(clock) => clock,
             Err(error) => panic!("test clock should construct: {error}"),
         }
@@ -1169,7 +1295,7 @@ mod tests {
                     .unwrap_or_else(|| panic!("setup ack should precede boot barrier"));
                 let slot = NodeSlot::new(KIND_VM);
                 publish_boot_barrier_ceiling(&slot);
-                sequence.wait_boot_barrier(ack, &slot, 0).map(|_release| ())
+                sequence.wait_boot_barrier(ack, &slot).map(|_release| ())
             } else {
                 sequence.record_step(step)
             };
@@ -1187,31 +1313,31 @@ mod tests {
         1
     }
 
-    extern "C" fn time_control_test_direct_advance(_target_virtual_ns: i64) -> c_int {
+    extern "C" fn time_control_test_direct_advance(_target_tick: i64) -> c_int {
         0
     }
 
     fn publish_boot_barrier_ceiling(slot: &NodeSlot) {
         let ceiling = authorize_advance_ceiling(0, crate::BOOT_BARRIER_FIRST_GUEST_ICOUNT, None)
             .unwrap_or_else(|error| panic!("boot barrier ceiling should authorize: {error}"));
-        slot.publish_scheduler_ceiling(ceiling)
+        slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
             .unwrap_or_else(|error| panic!("boot barrier ceiling should publish: {error}"));
     }
 
-    extern "C" fn test_direct_advance(target_virtual_ns: i64) -> c_int {
-        set_last_direct_advance_ns(target_virtual_ns);
+    extern "C" fn test_direct_advance(target_tick: i64) -> c_int {
+        set_last_direct_advance_tick(target_tick);
         0
     }
 
-    extern "C" fn test_rejected_direct_advance(_target_virtual_ns: i64) -> c_int {
+    extern "C" fn test_rejected_direct_advance(_target_tick: i64) -> c_int {
         -16
     }
 
-    fn set_last_direct_advance_ns(value: i64) {
-        LAST_DIRECT_ADVANCE_NS.with(|cell| cell.set(value));
+    fn set_last_direct_advance_tick(value: i64) {
+        LAST_DIRECT_ADVANCE_TICK.with(|cell| cell.set(value));
     }
 
-    fn last_direct_advance_ns() -> i64 {
-        LAST_DIRECT_ADVANCE_NS.with(|cell| cell.get())
+    fn last_direct_advance_tick() -> i64 {
+        LAST_DIRECT_ADVANCE_TICK.with(|cell| cell.get())
     }
 }

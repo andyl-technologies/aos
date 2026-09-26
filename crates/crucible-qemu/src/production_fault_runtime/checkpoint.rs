@@ -141,9 +141,9 @@ impl ProductionFaultRuntime {
         Ok(ProductionFaultRuntimeCheckpoint {
             runtime,
             host,
-            qemu_fingerprints,
-            qemu_fault_sequences,
-            qemu_fault_event_sequences,
+            qemu_fingerprints: Arc::new(qemu_fingerprints),
+            qemu_fault_sequences: Arc::new(qemu_fault_sequences),
+            qemu_fault_event_sequences: Arc::new(qemu_fault_event_sequences),
             qemu_issued_actions: self.qemu_issued_actions.try_clone_with(
                 |identity| Ok(*identity),
                 |action| {

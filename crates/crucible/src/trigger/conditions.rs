@@ -1,6 +1,14 @@
-//! Observable events, condition leaves, log prefixes, state facts, and host oracles.
+//! Observable events, condition leaves, checked log prefixes, and state facts.
 
 use super::*;
+
+mod host_oracle;
+
+pub(crate) use host_oracle::SearchScheduleNamedPredicateHostOracle;
+#[cfg(any(debug_assertions, feature = "test-support"))]
+pub(crate) use host_oracle::unchecked_host_assertion_oracle_for_test;
+pub use host_oracle::*;
+
 /// One observable event visible to condition evaluation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ObservableEvent {
@@ -190,6 +198,48 @@ impl ObservableEvent {
         }
     }
 
+    /// Builds one typed white-box guest-measurement observation.
+    #[must_use]
+    pub fn guest_measurement(
+        retired_icount: Icount,
+        node: NodeId,
+        event: GuestMeasurementEvent,
+    ) -> Self {
+        Self {
+            at: VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            payload: ObservableEventPayload::GuestMeasurement {
+                retired_icount,
+                node,
+                event,
+            },
+        }
+    }
+
+    /// Builds one typed white-box guest semantic-marker observation.
+    #[must_use]
+    pub fn guest_semantic_marker(
+        retired_icount: Icount,
+        node: NodeId,
+        marker: impl Into<String>,
+        instance: impl Into<String>,
+        details: Vec<GuestSemanticMarkerDetail>,
+    ) -> Self {
+        Self {
+            at: VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            payload: ObservableEventPayload::GuestSemanticMarker {
+                retired_icount,
+                node,
+                marker: marker.into(),
+                instance: instance.into(),
+                details,
+            },
+        }
+    }
+
     /// Builds an optional white-box assertion-marker observation.
     #[must_use]
     pub fn guest_assertion_marker(
@@ -225,6 +275,8 @@ impl ObservableEvent {
             | ObservableEventPayload::IoCompletion { node, .. }
             | ObservableEventPayload::NodeState { node, .. }
             | ObservableEventPayload::GuestMarker { node, .. }
+            | ObservableEventPayload::GuestMeasurement { node, .. }
+            | ObservableEventPayload::GuestSemanticMarker { node, .. }
             | ObservableEventPayload::GuestAssertionMarker { node, .. } => Some(node),
             ObservableEventPayload::AssertionProximity { node, .. } => node.as_ref(),
             ObservableEventPayload::NetworkDelivered { .. }
@@ -239,9 +291,25 @@ impl ObservableEvent {
         self
     }
 
-    /// Moves a polled console observation forward to its unified scheduler boundary.
+    /// Stamps a polled guest observation at the boundary where it becomes visible.
+    ///
+    /// The payload retains its physical instruction count. The event time is the
+    /// condition-evaluation coordinate, so a pulse cannot fall behind a later
+    /// scheduler boundary while backend evidence is being committed. Resolved
+    /// I/O completions and scheduler-owned node states keep their exact event
+    /// coordinates; they do not originate from this backend poll.
     pub(crate) fn normalize_backend_poll_boundary(mut self, boundary: VirtualTime) -> Self {
-        if matches!(&self.payload, ObservableEventPayload::ConsoleOutput { .. }) {
+        if matches!(
+            &self.payload,
+            ObservableEventPayload::ConsoleOutput { .. }
+                | ObservableEventPayload::CoverageBlock { .. }
+                | ObservableEventPayload::CoverageMarker { .. }
+                | ObservableEventPayload::MemorySample { .. }
+                | ObservableEventPayload::GuestMarker { .. }
+                | ObservableEventPayload::GuestMeasurement { .. }
+                | ObservableEventPayload::GuestSemanticMarker { .. }
+                | ObservableEventPayload::GuestAssertionMarker { .. }
+        ) {
             self.at = self.at.max(boundary);
         }
         self
@@ -264,6 +332,75 @@ impl ObservableEvent {
     pub fn black_box_observation_contract(&self) -> Option<BlackBoxObservationContract> {
         self.payload.black_box_observation_contract()
     }
+}
+
+/// One canonical reduced rational retained from a guest metric message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct GuestMeasurementRational {
+    /// Whether the nonzero numerator is negative.
+    pub negative: bool,
+    /// Unsigned numerator magnitude.
+    pub numerator: u128,
+    /// Positive denominator.
+    pub denominator: u128,
+}
+
+/// One bounded typed value retained from the white-box guest protocol.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum GuestMeasurementValue {
+    /// Signed 64-bit integer.
+    Signed(i64),
+    /// Unsigned 64-bit integer.
+    Unsigned(u64),
+    /// Canonical reduced rational.
+    Rational(GuestMeasurementRational),
+    /// Boolean value.
+    Boolean(bool),
+    /// Canonical enumerated identifier.
+    Enumerated(String),
+    /// Bounded signed integer vector.
+    SignedVector(Vec<i64>),
+    /// Bounded unsigned integer vector.
+    UnsignedVector(Vec<u64>),
+}
+
+/// One white-box measurement protocol event.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum GuestMeasurementEvent {
+    /// A semantic measurement instance began.
+    Begin {
+        /// Scenario-declared measurement identity.
+        measurement: String,
+        /// Guest-supplied semantic instance key.
+        instance: String,
+    },
+    /// One typed metric sample was observed.
+    Sample {
+        /// Scenario-declared measurement identity.
+        measurement: String,
+        /// Guest-supplied semantic instance key.
+        instance: String,
+        /// Scenario-declared metric identity.
+        metric: String,
+        /// Exact typed sample value.
+        value: GuestMeasurementValue,
+    },
+    /// A semantic measurement instance ended.
+    End {
+        /// Scenario-declared measurement identity.
+        measurement: String,
+        /// Guest-supplied semantic instance key.
+        instance: String,
+    },
+}
+
+/// One canonical typed detail retained by a semantic marker.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct GuestSemanticMarkerDetail {
+    /// Canonical detail key.
+    pub key: String,
+    /// Exact typed detail value.
+    pub value: GuestMeasurementValue,
 }
 
 /// Typed observable event payloads used by condition leaves.
@@ -370,6 +507,28 @@ pub enum ObservableEventPayload {
         /// Stable marker identity carried by the doorbell payload.
         marker: MarkerId,
     },
+    /// A typed guest measurement-protocol message was observed.
+    GuestMeasurement {
+        /// Exact guest instruction count where the doorbell retired.
+        retired_icount: Icount,
+        /// Node that emitted the message.
+        node: NodeId,
+        /// Exact bounded measurement message.
+        event: GuestMeasurementEvent,
+    },
+    /// A typed semantic marker with an exact instance key was observed.
+    GuestSemanticMarker {
+        /// Exact guest instruction count where the doorbell retired.
+        retired_icount: Icount,
+        /// Node that emitted the marker.
+        node: NodeId,
+        /// Scenario-declared marker identity.
+        marker: String,
+        /// Guest-supplied semantic instance key.
+        instance: String,
+        /// Strictly ordered bounded typed details.
+        details: Vec<GuestSemanticMarkerDetail>,
+    },
     /// An optional white-box assertion marker was observed.
     GuestAssertionMarker {
         /// Exact guest instruction count where the doorbell retired.
@@ -419,6 +578,8 @@ impl ObservableEventPayload {
                 ..
             }
             | Self::GuestMarker { .. }
+            | Self::GuestMeasurement { .. }
+            | Self::GuestSemanticMarker { .. }
             | Self::GuestAssertionMarker { .. } => None,
         }
     }
@@ -521,7 +682,9 @@ impl GuestAssertionMarker {
 /// so the existing host assertion finalizer consumes the shared marker fields.
 /// Coverage payloads become named coverage-marker observations. Diagnostic
 /// event and lifecycle payloads become observational guest-marker identities, so
-/// they do not masquerade as black-box node lifecycle observations. The in-band
+/// they do not masquerade as black-box node lifecycle observations. Measurement
+/// and semantic-marker payloads retain their bounded typed fields in dedicated
+/// observational variants for scenario-aware campaign validation. The in-band
 /// random-request kind returns [`None`] because it is handled by the app-random
 /// decision path instead of the observational marker path.
 #[must_use]
@@ -559,7 +722,87 @@ pub fn observable_event_from_whitebox_marker_payload(
                 MarkerId::from_name(coverage.point.clone()),
             ))
         }
+        crucible_protocol::WhiteboxMarkerPayload::MeasurementBegin(boundary) => {
+            Some(ObservableEvent::guest_measurement(
+                retired_icount,
+                node,
+                GuestMeasurementEvent::Begin {
+                    measurement: boundary.measurement.clone(),
+                    instance: boundary.instance.clone(),
+                },
+            ))
+        }
+        crucible_protocol::WhiteboxMarkerPayload::MetricSample(sample) => {
+            Some(ObservableEvent::guest_measurement(
+                retired_icount,
+                node,
+                GuestMeasurementEvent::Sample {
+                    measurement: sample.measurement.clone(),
+                    instance: sample.instance.clone(),
+                    metric: sample.metric.clone(),
+                    value: guest_measurement_value_from_whitebox(&sample.value),
+                },
+            ))
+        }
+        crucible_protocol::WhiteboxMarkerPayload::MeasurementEnd(boundary) => {
+            Some(ObservableEvent::guest_measurement(
+                retired_icount,
+                node,
+                GuestMeasurementEvent::End {
+                    measurement: boundary.measurement.clone(),
+                    instance: boundary.instance.clone(),
+                },
+            ))
+        }
+        crucible_protocol::WhiteboxMarkerPayload::SemanticMarker(marker) => {
+            Some(ObservableEvent::guest_semantic_marker(
+                retired_icount,
+                node,
+                marker.marker.clone(),
+                marker.instance.clone(),
+                marker
+                    .details
+                    .iter()
+                    .map(|detail| GuestSemanticMarkerDetail {
+                        key: detail.key.clone(),
+                        value: guest_measurement_value_from_whitebox(&detail.value),
+                    })
+                    .collect(),
+            ))
+        }
         crucible_protocol::WhiteboxMarkerPayload::RandomRequest(_) => None,
+    }
+}
+
+fn guest_measurement_value_from_whitebox(
+    value: &crucible_protocol::WhiteboxMeasurementValue,
+) -> GuestMeasurementValue {
+    match value {
+        crucible_protocol::WhiteboxMeasurementValue::Signed(value) => {
+            GuestMeasurementValue::Signed(*value)
+        }
+        crucible_protocol::WhiteboxMeasurementValue::Unsigned(value) => {
+            GuestMeasurementValue::Unsigned(*value)
+        }
+        crucible_protocol::WhiteboxMeasurementValue::Rational(value) => {
+            GuestMeasurementValue::Rational(GuestMeasurementRational {
+                negative: value.negative,
+                numerator: value.numerator,
+                denominator: value.denominator,
+            })
+        }
+        crucible_protocol::WhiteboxMeasurementValue::Boolean(value) => {
+            GuestMeasurementValue::Boolean(*value)
+        }
+        crucible_protocol::WhiteboxMeasurementValue::Enumerated(value) => {
+            GuestMeasurementValue::Enumerated(value.clone())
+        }
+        crucible_protocol::WhiteboxMeasurementValue::SignedVector(value) => {
+            GuestMeasurementValue::SignedVector(value.clone())
+        }
+        crucible_protocol::WhiteboxMeasurementValue::UnsignedVector(value) => {
+            GuestMeasurementValue::UnsignedVector(value.clone())
+        }
     }
 }
 
@@ -761,9 +1004,9 @@ pub enum ConditionEvaluationError {
         /// Required black-box surface kind reconstructed from the payload.
         kind: BlackBoxObservationKind,
         /// Expected icount stamp for the payload at this event-log time.
-        expected: EventLogIcountStamp,
+        expected: EventLogTickStamp,
         /// Icount stamp recorded by the event-log entry.
-        actual: EventLogIcountStamp,
+        actual: EventLogTickStamp,
     },
 }
 
@@ -1217,481 +1460,7 @@ pub enum ObservedOrderingFact {
         sequence: u64,
         /// Virtual time of the event-log entry.
         at: VirtualTime,
-        /// Ordered legacy event keys recorded by the delivery decision.
+        /// Ordered event keys recorded by the delivery decision.
         order: Vec<EventKey>,
     },
-}
-
-/// Host-authored resolver for assertion leaves over materialized observed state.
-///
-/// Implementations do not grade runs directly. Wrap them in
-/// [`LintedHostAssertionOracle`] with a [`HostAssertionHarnessLint`] proof first,
-/// so custom host predicate source cannot bypass `gate:harness-lint`.
-pub trait HostAssertionPredicate {
-    /// Returns whether one host-side assertion leaf is true at `observed`.
-    fn leaf_is_true(&self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool;
-}
-
-impl<F> HostAssertionPredicate for F
-where
-    F: for<'log, 'leaf> Fn(ObservedState<'log>, ConditionLeaf<'leaf>) -> bool,
-{
-    fn leaf_is_true(&self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
-        self(observed, leaf)
-    }
-}
-
-/// Lint proof for host-authored assertion harness source.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct HostAssertionHarnessLint {
-    source_len: usize,
-}
-
-impl HostAssertionHarnessLint {
-    /// Returns the byte length of the linted harness source.
-    #[must_use]
-    pub const fn source_len(&self) -> usize {
-        self.source_len
-    }
-}
-
-/// Custom host assertion oracle paired with a successful harness-lint proof.
-#[derive(Clone, Debug)]
-pub struct LintedHostAssertionOracle<O> {
-    oracle: O,
-    lint: HostAssertionHarnessLint,
-}
-
-impl<O> LintedHostAssertionOracle<O> {
-    fn new(oracle: O, lint: HostAssertionHarnessLint) -> Self {
-        Self { oracle, lint }
-    }
-
-    /// Returns the wrapped oracle.
-    #[must_use]
-    pub fn oracle(&self) -> &O {
-        &self.oracle
-    }
-
-    /// Returns the wrapped oracle mutably.
-    #[must_use]
-    pub fn oracle_mut(&mut self) -> &mut O {
-        &mut self.oracle
-    }
-
-    /// Consumes this wrapper and returns the wrapped oracle.
-    #[must_use]
-    pub fn into_inner(self) -> O {
-        self.oracle
-    }
-
-    /// Returns the lint proof used to authorize this oracle.
-    #[must_use]
-    pub const fn lint(&self) -> &HostAssertionHarnessLint {
-        &self.lint
-    }
-}
-
-#[cfg(any(debug_assertions, feature = "test-support"))]
-pub(crate) fn unchecked_host_assertion_oracle_for_test<O>(oracle: O) -> LintedHostAssertionOracle<O>
-where
-    O: HostAssertionPredicate,
-{
-    LintedHostAssertionOracle::new(oracle, HostAssertionHarnessLint { source_len: 0 })
-}
-
-mod host_assertion_oracle_sealed {
-    pub trait Sealed {}
-}
-
-/// Assertion oracle accepted by the evaluator.
-///
-/// This trait is sealed so external host predicate code must flow through
-/// [`LintedHostAssertionOracle`] instead of implementing the evaluator-facing
-/// oracle directly.
-pub trait HostAssertionOracle: host_assertion_oracle_sealed::Sealed {
-    /// Returns whether one host-side assertion leaf is true at `observed`.
-    fn leaf_is_true(&mut self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool;
-}
-
-/// Default zero-guest-cooperation assertion oracle.
-///
-/// The oracle supplies no named host predicates. Properties that use only the
-/// built-in black-box observable vocabulary still evaluate through the checked
-/// event-log prefix.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct BlackBoxHostOracle;
-
-impl host_assertion_oracle_sealed::Sealed for BlackBoxHostOracle {}
-
-impl HostAssertionOracle for BlackBoxHostOracle {
-    fn leaf_is_true(&mut self, _observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
-        match leaf {
-            ConditionLeaf::Named { .. } | ConditionLeaf::GuestMarker { .. } => false,
-        }
-    }
-}
-
-/// Data-only key for a named predicate over search-reconstructed schedule facts.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SearchScheduleNamedPredicateKey {
-    name: String,
-    nodes: Vec<NodeId>,
-}
-
-impl SearchScheduleNamedPredicateKey {
-    /// Builds a canonical named-predicate key.
-    #[must_use]
-    pub fn new(name: impl Into<String>, nodes: Vec<NodeId>) -> Self {
-        Self {
-            name: name.into(),
-            nodes,
-        }
-    }
-
-    /// Returns the named predicate identity.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Returns the declared node references for the named predicate.
-    #[must_use]
-    pub fn nodes(&self) -> &[NodeId] {
-        &self.nodes
-    }
-}
-
-/// Deterministic truth table for search-time named predicate lowering.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SearchScheduleNamedPredicateTruths {
-    truths: BTreeMap<SearchScheduleNamedPredicateKey, bool>,
-}
-
-impl SearchScheduleNamedPredicateTruths {
-    /// Builds an empty truth table.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Adds one deterministic named-predicate truth entry.
-    #[must_use]
-    pub fn with_truth(mut self, key: SearchScheduleNamedPredicateKey, value: bool) -> Self {
-        self.insert_truth(key, value);
-        self
-    }
-
-    /// Inserts one deterministic named-predicate truth entry.
-    pub fn insert_truth(&mut self, key: SearchScheduleNamedPredicateKey, value: bool) {
-        self.truths.insert(key, value);
-    }
-
-    /// Returns the truth value for `key`, if the table declares one.
-    #[must_use]
-    pub fn truth_for(&self, key: &SearchScheduleNamedPredicateKey) -> Option<bool> {
-        self.truths.get(key).copied()
-    }
-
-    /// Returns whether the table has no declared named-predicate truths.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.truths.is_empty()
-    }
-}
-
-pub(crate) struct SearchScheduleNamedPredicateHostOracle<'truths> {
-    truths: &'truths SearchScheduleNamedPredicateTruths,
-    missing_truths: BTreeSet<SearchScheduleNamedPredicateKey>,
-}
-
-impl<'truths> SearchScheduleNamedPredicateHostOracle<'truths> {
-    pub(crate) const fn new(truths: &'truths SearchScheduleNamedPredicateTruths) -> Self {
-        Self {
-            truths,
-            missing_truths: BTreeSet::new(),
-        }
-    }
-
-    pub(crate) fn clear_missing_truths(&mut self) {
-        self.missing_truths.clear();
-    }
-
-    pub(crate) fn has_missing_truths(&self) -> bool {
-        !self.missing_truths.is_empty()
-    }
-}
-
-impl host_assertion_oracle_sealed::Sealed for SearchScheduleNamedPredicateHostOracle<'_> {}
-
-impl HostAssertionOracle for SearchScheduleNamedPredicateHostOracle<'_> {
-    fn leaf_is_true(&mut self, _observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
-        match leaf {
-            ConditionLeaf::Named { name, nodes } => {
-                let key = SearchScheduleNamedPredicateKey::new(name.to_owned(), nodes.to_vec());
-                match self.truths.truth_for(&key) {
-                    Some(value) => value,
-                    None => {
-                        self.missing_truths.insert(key);
-                        false
-                    }
-                }
-            }
-            ConditionLeaf::GuestMarker { .. } => false,
-        }
-    }
-}
-
-impl<O> host_assertion_oracle_sealed::Sealed for LintedHostAssertionOracle<O> where
-    O: HostAssertionPredicate
-{
-}
-
-impl<O> HostAssertionOracle for LintedHostAssertionOracle<O>
-where
-    O: HostAssertionPredicate,
-{
-    fn leaf_is_true(&mut self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
-        HostAssertionPredicate::leaf_is_true(&self.oracle, observed, leaf)
-    }
-}
-
-/// One banned host assertion harness pattern found by linting.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct HostAssertionHarnessLintViolation {
-    /// Source token or path fragment that matched.
-    pub pattern: String,
-    /// Determinism contract violated by the matched pattern.
-    pub reason: String,
-}
-
-/// Error returned when host assertion harness source fails determinism linting.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HostAssertionHarnessLintError {
-    violations: Vec<HostAssertionHarnessLintViolation>,
-}
-
-impl HostAssertionHarnessLintError {
-    /// Returns every banned host assertion source pattern that was found.
-    #[must_use]
-    pub fn violations(&self) -> &[HostAssertionHarnessLintViolation] {
-        &self.violations
-    }
-}
-
-impl fmt::Display for HostAssertionHarnessLintError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "host assertion harness source contains {} banned determinism pattern(s)",
-            self.violations.len()
-        )
-    }
-}
-
-impl Error for HostAssertionHarnessLintError {}
-
-/// Lints host-authored assertion predicate source for banned nondeterminism.
-///
-/// This helper is the assertion layer's `gate:harness-lint` hook. It catches
-/// host wall-clock reads, thread RNG, unordered-map/set use, filesystem/process
-/// access, and `unsafe` blocks in host predicate harness source before those
-/// predicates can grade a run.
-///
-/// # Errors
-///
-/// Returns [`HostAssertionHarnessLintError`] with every matched banned pattern.
-pub fn lint_host_assertion_harness_source(
-    source: &str,
-) -> Result<HostAssertionHarnessLint, HostAssertionHarnessLintError> {
-    const BANNED_PATTERNS: &[(&str, &str)] = &[
-        (
-            "HashMap",
-            "unordered map iteration can perturb outcome order",
-        ),
-        (
-            "HashSet",
-            "unordered set iteration can perturb outcome order",
-        ),
-        ("SystemTime", "host wall-clock reads are nondeterministic"),
-        ("Instant", "host wall-clock reads are nondeterministic"),
-        ("std::time", "host wall-clock reads are nondeterministic"),
-        ("chrono::", "host wall-clock reads are nondeterministic"),
-        (
-            "OffsetDateTime::now",
-            "host wall-clock reads are nondeterministic",
-        ),
-        ("getrandom", "direct host RNG access is nondeterministic"),
-        ("OsRng", "direct host RNG access is nondeterministic"),
-        ("thread_rng", "thread-local RNG is nondeterministic"),
-        ("rand::", "direct host RNG access is nondeterministic"),
-        ("rand::rng", "direct host RNG access is nondeterministic"),
-        ("rand::random", "direct host RNG access is nondeterministic"),
-        ("from_entropy", "host entropy seeding is nondeterministic"),
-        (
-            "DefaultHasher",
-            "randomized hash seeding can perturb outcome order",
-        ),
-        (
-            "RandomState",
-            "randomized hash seeding can perturb outcome order",
-        ),
-        (
-            "std::env",
-            "environment access is outside the recorded observed state",
-        ),
-        (
-            "env::",
-            "environment access is outside the recorded observed state",
-        ),
-        (
-            "std::thread",
-            "host thread access is outside the deterministic evaluator",
-        ),
-        (
-            "thread::",
-            "host thread access is outside the deterministic evaluator",
-        ),
-        (
-            "thread_local!",
-            "host thread-local state is outside the recorded observed state",
-        ),
-        (
-            "std::fs",
-            "filesystem access is outside the recorded observed state",
-        ),
-        (
-            "std::{fs",
-            "filesystem access is outside the recorded observed state",
-        ),
-        (
-            "fs::",
-            "filesystem access is outside the recorded observed state",
-        ),
-        (
-            "std::process",
-            "process access is outside the recorded observed state",
-        ),
-        (
-            "std::{process",
-            "process access is outside the recorded observed state",
-        ),
-        (
-            "process::Command",
-            "process access is outside the recorded observed state",
-        ),
-        (
-            "Command::new",
-            "process access is outside the recorded observed state",
-        ),
-        (
-            "std::net",
-            "network access is outside the recorded observed state",
-        ),
-        (
-            "TcpStream",
-            "network access is outside the recorded observed state",
-        ),
-        (
-            "UdpSocket",
-            "network access is outside the recorded observed state",
-        ),
-        ("std::io", "host I/O is outside the recorded observed state"),
-        ("stdin", "host I/O is outside the recorded observed state"),
-        ("stdout", "host I/O is outside the recorded observed state"),
-        ("stderr", "host I/O is outside the recorded observed state"),
-        (
-            "println!",
-            "host I/O is outside the recorded observed state",
-        ),
-        (
-            "eprintln!",
-            "host I/O is outside the recorded observed state",
-        ),
-        (
-            "OpenOptions",
-            "filesystem access is outside the recorded observed state",
-        ),
-        (
-            "File::",
-            "filesystem access is outside the recorded observed state",
-        ),
-        (
-            "tokio::select",
-            "host scheduling races are nondeterministic",
-        ),
-        ("tokio::spawn", "host task scheduling is nondeterministic"),
-        ("select!", "host scheduling races are nondeterministic"),
-        (
-            "Atomic",
-            "shared host state can make predicate output order-dependent",
-        ),
-        (
-            "Mutex",
-            "shared host state can make predicate output order-dependent",
-        ),
-        (
-            "RwLock",
-            "shared host state can make predicate output order-dependent",
-        ),
-        (
-            "OnceLock",
-            "shared host state can make predicate output order-dependent",
-        ),
-        (
-            "LazyLock",
-            "shared host state can make predicate output order-dependent",
-        ),
-        (
-            "OnceCell",
-            "shared host state can make predicate output order-dependent",
-        ),
-        (
-            "lazy_static",
-            "shared host state can make predicate output order-dependent",
-        ),
-        (
-            "Cell<",
-            "interior mutability can make predicate output order-dependent",
-        ),
-        (
-            "RefCell",
-            "interior mutability can make predicate output order-dependent",
-        ),
-        (
-            "UnsafeCell",
-            "interior mutability can make predicate output order-dependent",
-        ),
-        (
-            "borrow_mut",
-            "interior mutability can make predicate output order-dependent",
-        ),
-        (
-            "parking_lot",
-            "shared host state can make predicate output order-dependent",
-        ),
-        (
-            "crossbeam",
-            "shared host state can make predicate output order-dependent",
-        ),
-        (
-            "unsafe",
-            "unsafe host predicates bypass the read-only state contract",
-        ),
-    ];
-    let violations = BANNED_PATTERNS
-        .iter()
-        .filter(|(pattern, _reason)| source.contains(pattern))
-        .map(|(pattern, reason)| HostAssertionHarnessLintViolation {
-            pattern: (*pattern).to_owned(),
-            reason: (*reason).to_owned(),
-        })
-        .collect::<Vec<_>>();
-    if violations.is_empty() {
-        Ok(HostAssertionHarnessLint {
-            source_len: source.len(),
-        })
-    } else {
-        Err(HostAssertionHarnessLintError { violations })
-    }
 }

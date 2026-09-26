@@ -66,8 +66,8 @@ fn structure_aware_malformed_frames_never_panic() {
 #[test]
 fn structure_aware_directional_adversarial_frames_remain_typed_errors() {
     let host_frame = control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 1,
-        abi_version: 1,
+        proto_version: 3,
+        abi_version: 25,
         slot_index: 0,
         node_count: 1,
     });
@@ -76,8 +76,8 @@ fn structure_aware_directional_adversarial_frames_remain_typed_errors() {
     assert!(host_outcome.plugin.is_err());
 
     let plugin_frame = control_encode_plugin_msg(&PluginMsg::Hello {
-        proto_version: 1,
-        abi_version: 1,
+        proto_version: 3,
+        abi_version: 25,
     });
     let plugin_outcome = run_without_panic(&plugin_frame);
     assert!(plugin_outcome.plugin.is_ok());
@@ -164,8 +164,8 @@ fn generated_plugin_messages() -> Vec<PluginMsg> {
             abi_version: 0,
         },
         PluginMsg::Hello {
-            proto_version: 1,
-            abi_version: 1,
+            proto_version: 3,
+            abi_version: 25,
         },
         PluginMsg::Hello {
             proto_version: u32::MAX,
@@ -186,8 +186,8 @@ fn generated_host_messages() -> Vec<HostMsg> {
             node_count: 0,
         },
         HostMsg::HelloAck {
-            proto_version: 1,
-            abi_version: 1,
+            proto_version: 3,
+            abi_version: 25,
             slot_index: 7,
             node_count: 32,
         },

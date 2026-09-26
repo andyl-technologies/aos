@@ -224,7 +224,7 @@
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
         label = "implemented divergence-bisect target";
-        needle = "gate: \"gate:divergence-bisect\",\n        package: \"crucible-harness\",\n        test_target: \"gate_divergence_bisect\",\n        required_features: &[],\n        placeholder: false,";
+        needle = "gate: \"gate:divergence-bisect\",\n        package: \"crucible-harness\",\n        test_target: \"gate_divergence_bisect\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalog [
@@ -242,11 +242,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "implemented divergence-bisect mapping target";
-        needle = "gate = \"gate:divergence-bisect\";\n      package = \"crucible-harness\";\n      testTarget = \"gate_divergence_bisect\";\n      requiredFeatures = [];\n      placeholder = false;";
-      }
-      {
-        label = "updated placeholder count";
-        needle = "placeholder_targets=0";
+        needle = "gate = \"gate:divergence-bisect\";\n      package = \"crucible-harness\";\n      testTarget = \"gate_divergence_bisect\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

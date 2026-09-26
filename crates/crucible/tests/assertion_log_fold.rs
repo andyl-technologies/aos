@@ -6,12 +6,13 @@
 
 use crucible::{
     AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind, AssertionRunVerdict,
-    BlackBoxHostOracle, ConditionLeaf, EventClass, FramePredicate, GuestAssertionDetail,
-    GuestAssertionKind, GuestAssertionMarker, HostAssertionEvaluator, HostAssertionOracle,
-    HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionPredicate, Icount, NodeId,
-    ObservableEvent, ObservableEventPayload, ObservedState, OfflineAssertionChecker, Predicate,
-    Properties, Property, ReachabilityExpectation, ReachableDisposition, RecordedAssertionLog,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, VirtualTime, WhiteBoxPolicy, World,
+    BlackBoxHostOracle, ConditionLeaf, FramePredicate, GuestAssertionDetail, GuestAssertionKind,
+    GuestAssertionMarker, HostAssertionEvaluator, HostAssertionOracle, HostAssertionOutcome,
+    HostAssertionOutcomeKind, HostAssertionPredicate, Icount, NodeId, ObservableEvent,
+    ObservableEventPayload, ObservedState, OfflineAssertionChecker, Predicate, Properties,
+    Property, ReachabilityExpectation, ReachableDisposition, RecordedAssertionLog,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry, VirtualTime,
+    WhiteBoxPolicy, World,
 };
 
 fn assertion_id(name: &str) -> AssertionId {
@@ -260,7 +261,7 @@ fn online_and_offline_fold_read_assertion_evaluated_entries_from_one_event_log()
     );
     assert_eq!(event_log[0].event_payload().bool("condition"), Some(true));
     assert_eq!(event_log[0].event_payload().u64("details_len"), Some(1));
-    assert_eq!(event_log[0].class(), EventClass::Causal);
+    assert_eq!(event_log[0].class(), SchedulerEventLogClass::Causal);
     assert_eq!(offline, online);
     assert_eq!(offline.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(
@@ -312,7 +313,7 @@ fn online_and_offline_fold_read_assertion_state_changes_from_one_event_log() {
         event_log[0].event_payload().string("new_state"),
         Some("Satisfied")
     );
-    assert_eq!(event_log[0].class(), EventClass::Causal);
+    assert_eq!(event_log[0].class(), SchedulerEventLogClass::Causal);
     let online = online_report(&properties, &event_log);
     let offline = OfflineAssertionChecker::new()
         .check_run(&properties, &event_log)
@@ -355,7 +356,7 @@ fn online_and_offline_fold_read_white_box_markers_from_one_event_log() {
         event_log[0].event_payload().string("marker_kind"),
         Some("assert")
     );
-    assert_eq!(event_log[0].class(), EventClass::Observational);
+    assert_eq!(event_log[0].class(), SchedulerEventLogClass::Observational);
     assert_eq!(offline, online);
     assert_eq!(offline.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(

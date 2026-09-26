@@ -1,0 +1,371 @@
+//! Offline campaign archive transfer process flight.
+
+use super::*;
+
+#[test]
+fn public_offline_archive_transfer_reports_and_authenticates_sensitive_closure()
+-> Result<(), Box<dyn Error>> {
+    let source = FlightFixture::new()?;
+    let destination = FlightFixture::new()?;
+    let trace_backend = DirectoryBlobBackend::new("archive-source-trace", &source.objects);
+
+    run_public_offline_archive_transfer(&source, &destination, &trace_backend)
+}
+
+#[test]
+fn public_archive_transfer_is_backend_neutral_across_compressed_stores()
+-> Result<(), Box<dyn Error>> {
+    let source = compressed_archive_fixture()?;
+    let destination = compressed_archive_fixture()?;
+    let trace_backend = CompressedDirectoryBlobBackend::new(
+        "compressed-archive-source",
+        &source.objects,
+        MAXIMUM_LOGICAL_OBJECT_BYTES,
+    )?;
+
+    run_public_offline_archive_transfer(&source, &destination, &trace_backend)
+}
+
+#[test]
+fn public_worked_network_archive_survives_packed_repack_outage_and_corruption()
+-> Result<(), Box<dyn Error>> {
+    let source = packed_archive_fixture()?;
+    let destination = packed_archive_fixture()?;
+    let trace_backend = PackedBlobBackend::open("packed", &source.objects, 65_536)?;
+
+    run_public_offline_archive_transfer(&source, &destination, &trace_backend)?;
+    let mut service = source.start_service(None)?;
+    let source_heads = DERIVED_CAMPAIGNS
+        .iter()
+        .map(|name| {
+            Ok((
+                *name,
+                json_string(&campaign_status_named(&source, name)?, "snapshot")?,
+            ))
+        })
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+    service.stop()?;
+    let journal = source._temporary.path().join("packed-repack-journal");
+
+    let planned = run_json(
+        &mut packed_repack_command(&source, &journal, "plan"),
+        "plan product repack",
+    )?;
+    assert_eq!(planned["schema"], "crucible.cli.packed-repack.v1");
+    assert_eq!(planned["phase"], "planned");
+    let applied = run_json(
+        &mut packed_repack_command(&source, &journal, "apply"),
+        "apply product repack",
+    )?;
+    assert_eq!(applied["plan"], planned["plan"]);
+    assert_eq!(applied["phase"], "applied");
+
+    let packs = source.objects.join("packs");
+    let unavailable = source._temporary.path().join("packs-unavailable");
+    fs::rename(&packs, &unavailable)?;
+    let outage = command(&["--format", "jsonl", "store", "verify"])
+        .arg(&source.store)
+        .output()?;
+    assert!(
+        !outage.status.success(),
+        "missing packed data passed verification"
+    );
+    if packs.exists() {
+        fs::remove_dir(&packs)?;
+    }
+    fs::rename(&unavailable, &packs)?;
+
+    let index = source.objects.join(".packed-admin/index-v1");
+    let original = fs::read(&index)?;
+    let mut corrupt = original.clone();
+    corrupt[0] ^= 0xff;
+    fs::write(&index, corrupt)?;
+    let rejected = command(&["--format", "jsonl", "store", "verify"])
+        .arg(&source.store)
+        .output()?;
+    assert!(
+        !rejected.status.success(),
+        "corrupt packed index passed verification"
+    );
+    fs::write(&index, original)?;
+
+    let verified = source.verify_store()?;
+    assert!(json_u64(&verified, "placements")? > 0);
+    let mut restarted = source.start_service(None)?;
+    for (name, snapshot) in &source_heads {
+        assert_eq!(
+            campaign_status_named(&source, name)?["snapshot"],
+            snapshot.as_str()
+        );
+    }
+    restarted.stop()?;
+
+    let planned_gc = run_json(&mut source.gc_command("plan"), "plan packed product GC")?;
+    let applied_gc = run_json(&mut source.gc_command("apply"), "apply packed product GC")?;
+    assert_eq!(applied_gc["plan"], planned_gc["plan"]);
+    let mut reopened = source.start_service(None)?;
+    for (name, snapshot) in &source_heads {
+        assert_eq!(
+            campaign_status_named(&source, name)?["snapshot"],
+            snapshot.as_str()
+        );
+    }
+    reopened.stop()?;
+
+    Ok(())
+}
+
+fn packed_repack_command(fixture: &FlightFixture, journal: &Path, operation: &str) -> Command {
+    let mut command = command(&[
+        "--format",
+        "jsonl",
+        "store",
+        "transform",
+        "packed",
+        "--store",
+    ]);
+    command
+        .arg(&fixture.store)
+        .arg("--journal")
+        .arg(journal)
+        .arg(operation);
+    command
+}
+
+fn packed_archive_fixture() -> Result<FlightFixture, Box<dyn Error>> {
+    let fixture = FlightFixture::new()?;
+    let refs = fixture._temporary.path().join("refs");
+    fs::write(
+        &fixture.store,
+        format!(
+            r#"schema = "crucible.campaign-repository-store"
+version = 2
+root = "packed"
+admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
+ref_directory = {refs:?}
+
+[[nodes]]
+id = "packed"
+[nodes.spec]
+kind = "packed"
+root = {objects:?}
+target_pack_bytes = 65536
+"#,
+            objects = fixture.objects,
+        ),
+    )?;
+    fs::set_permissions(&fixture.store, fs::Permissions::from_mode(0o600))?;
+    Ok(fixture)
+}
+
+fn compressed_archive_fixture() -> Result<FlightFixture, Box<dyn Error>> {
+    let fixture = FlightFixture::new()?;
+    let refs = fixture._temporary.path().join("refs");
+    fs::write(
+        &fixture.store,
+        format!(
+            r#"schema = "crucible.campaign-repository-store"
+version = 2
+root = "compressed"
+admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
+ref_directory = {refs:?}
+
+[[nodes]]
+id = "compressed"
+[nodes.spec]
+kind = "compressed-directory"
+root = {objects:?}
+maximum_logical_object_bytes = {MAXIMUM_LOGICAL_OBJECT_BYTES}
+"#,
+            objects = fixture.objects,
+        ),
+    )?;
+    fs::set_permissions(&fixture.store, fs::Permissions::from_mode(0o600))?;
+
+    Ok(fixture)
+}
+
+fn run_public_offline_archive_transfer(
+    source: &FlightFixture,
+    destination: &FlightFixture,
+    trace_backend: &dyn ImmutableBlobBackend,
+) -> Result<(), Box<dyn Error>> {
+    let generated = run_json(
+        command(&[
+            "--format",
+            "jsonl",
+            "campaign",
+            "fixture",
+            "worked-network",
+            "--output",
+        ])
+        .arg(&source.fixture),
+        "generate archive source fixture",
+    )?;
+    let manifest = json_path(&generated, "manifest")?;
+    let lineage = json_path(&generated, "lineage")?;
+    let policy = json_path(&generated, "policy")?;
+    let mut service = source.start_service(Some(&manifest))?;
+    run_json(
+        connected_campaign(source)
+            .args(["create", CAMPAIGN, "--lineage"])
+            .arg(&lineage)
+            .arg("--policy")
+            .arg(&policy),
+        "create archive source campaign",
+    )?;
+    let source_snapshot = json_string(&campaign_status(source)?, "snapshot")?;
+    let mut derived_snapshots = Vec::new();
+    let mut parent = (CAMPAIGN.to_string(), source_snapshot.clone());
+    for derived in DERIVED_CAMPAIGNS {
+        run_json(
+            connected_campaign(source).args([
+                "derive",
+                parent.0.as_str(),
+                "--snapshot",
+                parent.1.as_str(),
+                derived,
+            ]),
+            "derive archive source campaign",
+        )?;
+        let snapshot = json_string(&campaign_status_named(source, derived)?, "snapshot")?;
+        parent = (derived.to_string(), snapshot.clone());
+        derived_snapshots.push(snapshot);
+    }
+    assert_ne!(derived_snapshots[0], derived_snapshots[1]);
+    let snapshot = &derived_snapshots[0];
+    service.stop()?;
+
+    let trace_bytes = b"sensitive offline archive trace";
+    let trace = ContentId::for_bytes(ObjectKind::Trace, 1, trace_bytes);
+    trace_backend.put_if_absent(trace, &BlobHandle::from_bytes(trace_bytes.to_vec()))?;
+    let trace = trace.encode();
+
+    // A symlink alias bypasses lexical source/destination comparison. The
+    // second owner acquisition must still fail immediately on the same lock.
+    let state_alias = source._temporary.path().join("state-alias");
+    symlink(&source.state, &state_alias)?;
+    let mut aliased = command(&[
+        "--format",
+        "jsonl",
+        "campaign",
+        "archive",
+        "transfer",
+        "--source-state",
+    ]);
+    aliased
+        .arg(&source.state)
+        .arg("--source-policy")
+        .arg(&source.peer_policy)
+        .arg("--source-store")
+        .arg(&source.store)
+        .args([
+            "--source-campaign",
+            DERIVED_CAMPAIGNS[0],
+            "--snapshot",
+            snapshot.as_str(),
+        ])
+        .args(["--mode", "metadata"])
+        .arg("--destination-state")
+        .arg(&state_alias)
+        .arg("--destination-policy")
+        .arg(&source.peer_policy)
+        .arg("--destination-store")
+        .arg(&source.store)
+        .args(["--archive", "aliased-owner"]);
+    let aliased = output_with_timeout(aliased, Duration::from_secs(5))?;
+    assert!(!aliased.status.success());
+    let aliased_error = String::from_utf8_lossy(&aliased.stderr);
+    assert!(
+        aliased_error.contains("repository is already in use")
+            || aliased_error.contains("state directory is invalid"),
+        "unexpected aliased-owner failure: {aliased_error}",
+    );
+
+    let mut transfer = command(&[
+        "--format",
+        "jsonl",
+        "campaign",
+        "archive",
+        "transfer",
+        "--source-state",
+    ]);
+    let output = transfer
+        .arg(&source.state)
+        .arg("--source-policy")
+        .arg(&source.peer_policy)
+        .arg("--source-store")
+        .arg(&source.store)
+        .args([
+            "--source-campaign",
+            DERIVED_CAMPAIGNS[0],
+            "--snapshot",
+            snapshot.as_str(),
+        ])
+        .args(["--mode", "mirror", "--retain", &trace])
+        .arg("--destination-state")
+        .arg(&destination.state)
+        .arg("--destination-policy")
+        .arg(&destination.peer_policy)
+        .arg("--destination-store")
+        .arg(&destination.store)
+        .args(["--archive", "offline-copy"])
+        .output()?;
+    require_success(&output, "transfer offline archive")?;
+    let preflight: Value = serde_json::from_slice(&output.stderr)?;
+    let completion: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(preflight["schema"], "crucible.cli.campaign-archive-plan.v1");
+    assert_eq!(preflight["phase"], "pre-transfer");
+    assert!(
+        preflight["sensitive_classes"]
+            .as_array()
+            .is_some_and(|classes| classes.iter().any(|class| class == "trace"))
+    );
+    let trace_class = preflight["classes"]
+        .as_array()
+        .and_then(|classes| classes.iter().find(|class| class["class"] == "trace"))
+        .ok_or("pre-transfer report omitted trace class")?;
+    assert_eq!(trace_class["logical_bytes"], trace_bytes.len());
+    assert!(trace_class["physical_bytes"].is_null());
+    assert_eq!(
+        completion["schema"],
+        "crucible.cli.campaign-archive-transfer.v1"
+    );
+    assert_eq!(completion["phase"], "complete");
+    assert_eq!(completion["authenticated"], true);
+
+    let inspected = run_json(
+        command(&[
+            "--format", "jsonl", "campaign", "archive", "inspect", "--state",
+        ])
+        .arg(&destination.state)
+        .arg("--policy")
+        .arg(&destination.peer_policy)
+        .arg("--store")
+        .arg(&destination.store)
+        .args(["--archive", "offline-copy"]),
+        "inspect offline archive",
+    )?;
+    assert_eq!(
+        inspected["schema"],
+        "crucible.cli.campaign-archive-inspection.v1"
+    );
+    assert_eq!(inspected["manifest"], completion["manifest"]);
+    assert_eq!(inspected["authenticated"], true);
+    assert!(
+        inspected["sensitive_classes"]
+            .as_array()
+            .is_some_and(|classes| classes.iter().any(|class| class == "trace"))
+    );
+
+    let mut restarted = source.start_service(None)?;
+    for (derived, snapshot) in DERIVED_CAMPAIGNS.into_iter().zip(&derived_snapshots) {
+        let retained = campaign_status_named(source, derived)?;
+        assert_eq!(retained["snapshot"], snapshot.as_str());
+    }
+    restarted.stop()?;
+
+    println!("archive_transfer_derived_refs_retained=2");
+
+    Ok(())
+}

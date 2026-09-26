@@ -33,11 +33,11 @@ in
         {
           name = "configure";
           script = ''
-          cmake -S . -B build -G Ninja $cmakeFlags \
-            -DCMAKE_C_COMPILER=${buildPackages.llvm}/bin/clang \
-            -DCMAKE_CXX_COMPILER=${buildPackages.llvm}/bin/clang++ \
-              -DCMAKE_INSTALL_PREFIX="$out" -DCMAKE_INSTALL_LIBDIR=lib \
-              -DCMAKE_BUILD_TYPE=Release -DENABLE_WERROR=OFF
+            cmake -S . -B build -G Ninja $cmakeFlags \
+              -DCMAKE_C_COMPILER=${buildPackages.llvm}/bin/clang \
+              -DCMAKE_CXX_COMPILER=${buildPackages.llvm}/bin/clang++ \
+                -DCMAKE_INSTALL_PREFIX="$out" -DCMAKE_INSTALL_LIBDIR=lib \
+                -DCMAKE_BUILD_TYPE=Release -DENABLE_WERROR=OFF
           '';
         }
         {

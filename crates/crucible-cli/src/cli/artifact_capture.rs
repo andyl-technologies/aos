@@ -1,4 +1,16 @@
 //! Failure and verification artifact capture from observed execution evidence.
+//!
+//! Lifecycle object closures use one versioned authenticated record stream:
+//!
+//! ```text
+//! magic = "CLAB\0\0\0\x01"
+//! count = u64le
+//! record = content_hash:[u8; 32] length:u64le bytes:[u8; length]
+//! ```
+//!
+//! Version 1 carries the union of signal objects and immutable World block/9p
+//! objects. Every record is authenticated against its declared BLAKE3 identity
+//! before replay exposes the closure to a production lifecycle.
 
 use super::*;
 
@@ -12,7 +24,7 @@ pub(crate) struct ReproductionScenarioPayload<'a> {
     pub(crate) bytes: &'a [u8],
 }
 
-/// Exact producer evidence required to replay one v3 artifact through QEMU.
+/// Exact producer evidence required to replay the current artifact through QEMU.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LiveQemuArtifactEvidence {
     /// Canonical execution recipe and terminal target.
@@ -23,6 +35,8 @@ pub(crate) struct LiveQemuArtifactEvidence {
     pub(crate) fingerprint_stream: Vec<u8>,
     /// Exact resolved-effect work items, including pass outcomes.
     pub(crate) resolved_effect_trace: Option<Vec<u8>>,
+    /// Authenticated choice records required by a campaign-owned replay.
+    pub(crate) campaign_replay_closure: Option<Vec<u8>>,
     /// Typed samples encoded into both the component and top-level artifact.
     pub(crate) fingerprint_samples: Vec<VerifyFingerprintSample>,
 }
@@ -49,22 +63,50 @@ pub(crate) struct LiveQemuArtifactRecipe<'a> {
     pub(crate) branch: LiveQemuReplayBranch,
 }
 
-/// Builds the required v3 live-QEMU components from one completed run.
+struct LiveQemuArtifactTerminalBoundary {
+    event_log_len: u64,
+    schedule: Vec<u8>,
+    savepoint: Option<Vec<u8>>,
+}
+
+/// Builds the required v4 live-QEMU components from one completed run.
 pub(crate) fn live_qemu_artifact_evidence_from_run(
     recipe: LiveQemuArtifactRecipe<'_>,
     scenario: &crucible::ScenarioDefForm,
     report: &RunWorkflowReport,
 ) -> Result<LiveQemuArtifactEvidence, CliError> {
-    if recipe.execution_mode == RunExecutionMode::Interactive {
-        return Err(artifact_error(
-            "live-QEMU reproduction artifacts do not yet support interactive control recipes",
-        ));
-    }
+    let campaign_replay_closure = match (
+        recipe.producer,
+        report.execution_owner,
+        report.campaign_replay_closure.as_ref(),
+    ) {
+        ("campaign-run" | "campaign-search", RunExecutionOwner::Campaign, Some(closure)) => {
+            Some(closure.clone())
+        }
+        ("campaign-run" | "campaign-search", _, _) => {
+            return Err(artifact_error(
+                "campaign-owned artifact capture requires campaign execution and its authenticated replay closure",
+            ));
+        }
+        (_, RunExecutionOwner::Session, None) => None,
+        (_, _, _) => {
+            return Err(artifact_error(
+                "session-owned artifact producers cannot carry a campaign replay closure",
+            ));
+        }
+    };
     let terminal = report.terminal_configuration.as_ref().ok_or_else(|| {
         artifact_error("live-QEMU artifact capture requires a terminal configuration")
     })?;
+    let initial = crucible::Configuration::genesis(scenario.scenario_def());
+    let terminal_boundary = match recipe.execution_mode {
+        RunExecutionMode::Interactive => interactive_artifact_terminal_boundary(report, terminal)?,
+        RunExecutionMode::ToCompletion => batch_artifact_terminal_boundary(report, terminal)?,
+    };
     let all_fingerprint_samples = run_fingerprint_samples(report);
-    let fingerprint_scope = if recipe.producer == "fork" {
+    let fingerprint_scope = if recipe.execution_mode == RunExecutionMode::Interactive
+        || !matches!(recipe.branch, LiveQemuReplayBranch::None)
+    {
         LiveQemuFingerprintScope::TerminalAllNodes
     } else {
         LiveQemuFingerprintScope::FullExecution
@@ -83,8 +125,7 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
     let branch_start = match &recipe.branch {
         LiveQemuReplayBranch::None => 0,
         LiveQemuReplayBranch::Resume { base_decisions, .. }
-        | LiveQemuReplayBranch::Reseed { base_decisions, .. }
-        | LiveQemuReplayBranch::PrefixOverrides { base_decisions, .. } => *base_decisions,
+        | LiveQemuReplayBranch::Reseed { base_decisions, .. } => *base_decisions,
     };
     network_choice_indices.retain(|index| *index >= branch_start);
     let controls = report
@@ -108,16 +149,24 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
     };
     let contract = LiveQemuReplayContract {
         producer: recipe.producer.to_string(),
+        execution_owner: report.execution_owner,
+        execution_mode: recipe.execution_mode,
+        initial_configuration: format_content_hash_ref(initial.id()),
+        initial_scenario: scenario.to_compact_binary(),
+        initial_schedule: initial.schedule.to_compact_binary(),
         terminal_condition: recipe.terminal_condition.label().to_string(),
         terminal_status: report.status.label().to_string(),
         terminal_outcome: terminal_outcome_label(report.outcome).to_string(),
         terminal_configuration: format_content_hash_ref(terminal.id()),
         final_frontier_ticks: report.final_frontier_ticks,
         final_quanta: report.final_quanta,
+        final_event_log_len: terminal_boundary.event_log_len,
+        final_schedule: terminal_boundary.schedule,
+        terminal_savepoint: terminal_boundary.savepoint,
         budget_timed_out: report.budget_timed_out,
         max_virtual_time_ticks: recipe.max_virtual_time_ticks,
         max_quanta: recipe.max_quanta,
-        run_ceiling_icount: Some(PRODUCTION_CLI_RUN_CEILING_ICOUNT),
+        run_ceiling_ticks: Some(PRODUCTION_CLI_RUN_CEILING_TICKS),
         lifecycle_quantum_budget: Some(PRODUCTION_CLI_QUANTUM_BUDGET),
         coverage: recipe.coverage,
         fingerprint_scope,
@@ -126,6 +175,7 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
         startup_controls: encode_plan_controls(recipe.startup_commands),
         initial_controls: encode_plan_controls(recipe.initial_control_commands),
         controls,
+        reproduction_commands: report.reproduction_commands.clone(),
     };
     let fingerprint_stream = verify_fingerprint_stream_bytes(&fingerprint_samples);
     Ok(LiveQemuArtifactEvidence {
@@ -134,18 +184,98 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
         fingerprint_stream,
         fingerprint_samples,
         resolved_effect_trace: report.resolved_effect_trace.clone(),
+        campaign_replay_closure,
     })
 }
 
-fn select_live_qemu_artifact_fingerprints(
-    nodes: &[crucible::WorldNode],
+fn interactive_artifact_terminal_boundary(
+    report: &RunWorkflowReport,
+    terminal: &crucible::Configuration,
+) -> Result<LiveQemuArtifactTerminalBoundary, CliError> {
+    if report.execution_owner != RunExecutionOwner::Session {
+        return Err(artifact_error(
+            "interactive live-QEMU artifact capture requires session execution ownership",
+        ));
+    }
+    let snapshot = report.final_snapshot.as_ref().ok_or_else(|| {
+        artifact_error(
+            "interactive live-QEMU artifact capture requires the authoritative retained final snapshot",
+        )
+    })?;
+    let snapshot_outcome = match &snapshot.state {
+        crucible_session::EngineState::Stopped { outcome } => Some(OutcomeKind::from(outcome)),
+        crucible_session::EngineState::Loaded
+        | crucible_session::EngineState::Running
+        | crucible_session::EngineState::Paused { .. } => None,
+    };
+    if snapshot.configuration != *terminal
+        || snapshot.frontier.ticks != report.final_frontier_ticks
+        || snapshot.quanta != report.final_quanta
+        || snapshot.event_log_len != report.streamed_event_frames.len()
+        || snapshot_outcome != report.outcome
+        || snapshot
+            .terminal_savepoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.id)
+            != report.terminal_savepoint
+    {
+        return Err(artifact_error(
+            "interactive live-QEMU final snapshot does not match the terminal run report",
+        ));
+    }
+
+    Ok(LiveQemuArtifactTerminalBoundary {
+        event_log_len: u64::try_from(snapshot.event_log_len)
+            .map_err(|_| artifact_error("final event-log length cannot be represented"))?,
+        schedule: snapshot.configuration.schedule.to_compact_binary(),
+        savepoint: snapshot
+            .terminal_savepoint
+            .as_ref()
+            .map(crucible::Checkpoint::to_compact_binary),
+    })
+}
+
+fn batch_artifact_terminal_boundary(
+    report: &RunWorkflowReport,
+    terminal: &crucible::Configuration,
+) -> Result<LiveQemuArtifactTerminalBoundary, CliError> {
+    if report.execution_owner != RunExecutionOwner::Campaign {
+        return Err(artifact_error(
+            "to-completion live-QEMU artifact capture requires campaign execution ownership",
+        ));
+    }
+    if report.final_snapshot.is_some() {
+        return Err(artifact_error(
+            "to-completion campaign artifact capture cannot consume a session final snapshot",
+        ));
+    }
+    if report.terminal_savepoint.is_some() {
+        return Err(artifact_error(
+            "to-completion campaign artifact capture requires its checkpoint through the campaign replay closure",
+        ));
+    }
+
+    Ok(LiveQemuArtifactTerminalBoundary {
+        event_log_len: u64::try_from(report.streamed_event_frames.len())
+            .map_err(|_| artifact_error("final event-log length cannot be represented"))?,
+        schedule: terminal.schedule.to_compact_binary(),
+        savepoint: None,
+    })
+}
+
+fn select_live_qemu_artifact_fingerprints<'a>(
+    nodes: impl IntoIterator<Item = &'a crucible::WorldNode>,
     mut samples: Vec<VerifyFingerprintSample>,
     scope: LiveQemuFingerprintScope,
 ) -> Result<Vec<VerifyFingerprintSample>, CliError> {
     if scope == LiveQemuFingerprintScope::FullExecution {
         return Ok(samples);
     }
-    let node_count = nodes.len();
+    let expected_nodes = nodes
+        .into_iter()
+        .map(|node| node.id.name.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let node_count = expected_nodes.len();
     if samples.len() < node_count {
         return Err(artifact_error(format!(
             "terminal fingerprint capture produced {} samples for {node_count} VM nodes",
@@ -153,10 +283,6 @@ fn select_live_qemu_artifact_fingerprints(
         )));
     }
     let mut terminal = samples.split_off(samples.len() - node_count);
-    let expected_nodes = nodes
-        .iter()
-        .map(|node| node.id.name.clone())
-        .collect::<std::collections::BTreeSet<_>>();
     let actual_nodes = terminal
         .iter()
         .map(|sample| sample.node.clone())
@@ -172,7 +298,7 @@ fn select_live_qemu_artifact_fingerprints(
     Ok(terminal)
 }
 
-/// Encodes the required live-QEMU evidence components for a v3 artifact.
+/// Encodes the required live-QEMU evidence components for a v4 artifact.
 pub(crate) fn live_qemu_artifact_payloads(
     evidence: &LiveQemuArtifactEvidence,
 ) -> Vec<ReproductionArtifactComponentPayload> {
@@ -204,6 +330,14 @@ pub(crate) fn live_qemu_artifact_payloads(
             bytes: trace.clone(),
         });
     }
+    if let Some(closure) = &evidence.campaign_replay_closure {
+        payloads.push(ReproductionArtifactComponentPayload {
+            kind: String::from("campaign_replay_closure"),
+            name: String::from("campaign-replay-closure.bin"),
+            media_type: String::from(CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE),
+            bytes: closure.clone(),
+        });
+    }
     payloads
 }
 
@@ -223,21 +357,56 @@ struct SignalMutationCaseProvenance<'a> {
     artifacts: Vec<String>,
 }
 
-/// Captures every reachable signal object and optional mutation recipe.
-pub(crate) fn signal_artifact_payloads(
+/// Captures every reachable lifecycle object and optional signal-mutation recipe.
+pub(crate) fn lifecycle_artifact_payloads(
+    world: &crucible::World,
     plan: &crucible::FaultSignalPlan,
     store: &dyn crucible::DagStore,
     mutation: Option<&crucible::MaterializedSearchPlan>,
 ) -> Result<Vec<ReproductionArtifactComponentPayload>, CliError> {
-    let objects = crucible_api::collect_signal_artifact_objects(plan, store)
+    let mut objects = crucible_api::collect_signal_artifact_objects(plan, store)
         .map_err(|error| artifact_error(format!("collect signal artifact closure: {error}")))?;
+    let limits = plan.resource_limits();
+    let mut retained_bytes = lifecycle_object_bytes(&objects)?;
+    for node in world.io_nodes() {
+        let identity = match &node.kind {
+            crucible::WorldIoNodeKind::Block { base_image, .. } => base_image.hash(),
+            crucible::WorldIoNodeKind::NineP { tree, .. } => tree.hash(),
+        };
+        if objects.contains_key(&identity) {
+            continue;
+        }
+        let object = store.get(&identity).map_err(|error| {
+            artifact_error(format!(
+                "collect world I/O artifact `{}` for `{}`: {error}",
+                identity.to_hex(),
+                node.id.name,
+            ))
+        })?;
+        if crucible::ContentHash::from_bytes(&object) != identity {
+            return Err(artifact_error(format!(
+                "world I/O artifact `{}` for `{}` failed authentication",
+                identity.to_hex(),
+                node.id.name,
+            )));
+        }
+        let requested_bytes = u64::try_from(object.len())
+            .map_err(|_| artifact_error("world I/O artifact size cannot be represented"))?;
+        limits
+            .reserve("fat_checkpoint_bytes", retained_bytes, requested_bytes)
+            .map_err(|error| artifact_error(error.to_string()))?;
+        retained_bytes = retained_bytes
+            .checked_add(requested_bytes)
+            .ok_or_else(|| artifact_error("lifecycle artifact byte accounting overflow"))?;
+        objects.insert(identity, object);
+    }
     let mut payloads = Vec::new();
     if !objects.is_empty() || !plan.programs().is_empty() {
         payloads.push(ReproductionArtifactComponentPayload {
-            kind: String::from("signal_artifact_bundle"),
-            name: String::from("signal-artifacts.bundle"),
-            media_type: String::from(SIGNAL_ARTIFACT_BUNDLE_MEDIA_TYPE),
-            bytes: encode_signal_artifact_bundle(&objects)?,
+            kind: String::from("lifecycle_artifact_bundle"),
+            name: String::from("lifecycle-artifacts.bundle"),
+            media_type: String::from(LIFECYCLE_ARTIFACT_BUNDLE_MEDIA_TYPE),
+            bytes: encode_lifecycle_artifact_bundle(&objects, limits.fat_checkpoint_bytes)?,
         });
     }
     if let Some(mutation) = mutation {
@@ -272,16 +441,48 @@ pub(crate) fn signal_artifact_payloads(
     Ok(payloads)
 }
 
-fn encode_signal_artifact_bundle(
+fn lifecycle_object_bytes(
     objects: &BTreeMap<crucible::ContentHash, Vec<u8>>,
+) -> Result<u64, CliError> {
+    objects.values().try_fold(0_u64, |total, object| {
+        let object_bytes = u64::try_from(object.len())
+            .map_err(|_| artifact_error("lifecycle artifact size cannot be represented"))?;
+        total
+            .checked_add(object_bytes)
+            .ok_or_else(|| artifact_error("lifecycle artifact byte accounting overflow"))
+    })
+}
+
+fn encode_lifecycle_artifact_bundle(
+    objects: &BTreeMap<crucible::ContentHash, Vec<u8>>,
+    maximum_payload_bytes: u64,
 ) -> Result<Vec<u8>, CliError> {
     let count = u64::try_from(objects.len())
-        .map_err(|_| artifact_error("signal artifact object count cannot be represented"))?;
-    let mut bytes = Vec::from(&b"CSAB\0\0\0\x01"[..]);
+        .map_err(|_| artifact_error("lifecycle artifact object count cannot be represented"))?;
+    let payload_bytes = lifecycle_object_bytes(objects)?;
+    if payload_bytes > maximum_payload_bytes {
+        return Err(artifact_error(format!(
+            "lifecycle artifact payload uses {payload_bytes} bytes, exceeding the {maximum_payload_bytes}-byte aggregate limit"
+        )));
+    }
+    let record_overhead = count
+        .checked_mul(40)
+        .ok_or_else(|| artifact_error("lifecycle artifact record byte accounting overflow"))?;
+    let encoded_bytes = 16_u64
+        .checked_add(record_overhead)
+        .and_then(|total| total.checked_add(payload_bytes))
+        .ok_or_else(|| artifact_error("lifecycle artifact bundle byte accounting overflow"))?;
+    let encoded_bytes = usize::try_from(encoded_bytes)
+        .map_err(|_| artifact_error("lifecycle artifact bundle size cannot be represented"))?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(encoded_bytes)
+        .map_err(|_| artifact_error("lifecycle artifact bundle allocation failed"))?;
+    bytes.extend_from_slice(b"CLAB\0\0\0\x01");
     bytes.extend_from_slice(&count.to_le_bytes());
     for (identity, object) in objects {
         let length = u64::try_from(object.len())
-            .map_err(|_| artifact_error("signal artifact object size cannot be represented"))?;
+            .map_err(|_| artifact_error("lifecycle artifact object size cannot be represented"))?;
         bytes.extend_from_slice(&identity.bytes);
         bytes.extend_from_slice(&length.to_le_bytes());
         bytes.extend_from_slice(object);
@@ -289,66 +490,99 @@ fn encode_signal_artifact_bundle(
     Ok(bytes)
 }
 
-/// Restores and authenticates an embedded signal-object closure.
-pub(crate) fn decode_signal_artifact_bundle(
+/// Restores and authenticates an embedded lifecycle-object closure.
+pub(crate) fn decode_lifecycle_artifact_bundle(
     bytes: &[u8],
+    maximum_payload_bytes: u64,
 ) -> Result<std::sync::Arc<crucible::MemoryDagStore>, CliError> {
     const HEADER_BYTES: usize = 16;
-    if bytes.len() < HEADER_BYTES || bytes.get(..8) != Some(&b"CSAB\0\0\0\x01"[..]) {
+    if bytes.len() < HEADER_BYTES || bytes.get(..8) != Some(&b"CLAB\0\0\0\x01"[..]) {
         return Err(artifact_error(
-            "signal artifact bundle has an invalid header",
+            "lifecycle artifact bundle has an invalid header",
         ));
     }
-    let count = u64::from_le_bytes(
-        bytes[8..16]
-            .try_into()
-            .map_err(|_| artifact_error("signal artifact bundle count is truncated"))?,
-    );
-    let count = usize::try_from(count)
-        .map_err(|_| artifact_error("signal artifact bundle count cannot be represented"))?;
+    decode_artifact_object_records(bytes, HEADER_BYTES, "lifecycle", maximum_payload_bytes)
+}
+
+fn decode_artifact_object_records(
+    bytes: &[u8],
+    header_bytes: usize,
+    bundle_kind: &str,
+    maximum_payload_bytes: u64,
+) -> Result<std::sync::Arc<crucible::MemoryDagStore>, CliError> {
+    let count = u64::from_le_bytes(bytes[8..16].try_into().map_err(|_| {
+        artifact_error(format!("{bundle_kind} artifact bundle count is truncated"))
+    })?);
+    let count = usize::try_from(count).map_err(|_| {
+        artifact_error(format!(
+            "{bundle_kind} artifact bundle count cannot be represented"
+        ))
+    })?;
     let store = std::sync::Arc::new(crucible::MemoryDagStore::new());
-    let mut cursor = HEADER_BYTES;
+    let mut cursor = header_bytes;
+    let mut retained_bytes = 0_u64;
     for _ in 0..count {
-        let identity_end = cursor
-            .checked_add(32)
-            .ok_or_else(|| artifact_error("signal artifact bundle offset overflow"))?;
-        let length_end = identity_end
-            .checked_add(8)
-            .ok_or_else(|| artifact_error("signal artifact bundle offset overflow"))?;
+        let identity_end = cursor.checked_add(32).ok_or_else(|| {
+            artifact_error(format!("{bundle_kind} artifact bundle offset overflow"))
+        })?;
+        let length_end = identity_end.checked_add(8).ok_or_else(|| {
+            artifact_error(format!("{bundle_kind} artifact bundle offset overflow"))
+        })?;
         if length_end > bytes.len() {
-            return Err(artifact_error("signal artifact bundle record is truncated"));
+            return Err(artifact_error(format!(
+                "{bundle_kind} artifact bundle record is truncated"
+            )));
         }
         let identity = crucible::ContentHash {
-            bytes: bytes[cursor..identity_end]
-                .try_into()
-                .map_err(|_| artifact_error("signal artifact identity is truncated"))?,
+            bytes: bytes[cursor..identity_end].try_into().map_err(|_| {
+                artifact_error(format!("{bundle_kind} artifact identity is truncated"))
+            })?,
         };
-        let length = u64::from_le_bytes(
-            bytes[identity_end..length_end]
-                .try_into()
-                .map_err(|_| artifact_error("signal artifact length is truncated"))?,
-        );
-        let length = usize::try_from(length)
-            .map_err(|_| artifact_error("signal artifact length cannot be represented"))?;
-        let object_end = length_end
-            .checked_add(length)
-            .ok_or_else(|| artifact_error("signal artifact bundle offset overflow"))?;
+        let length =
+            u64::from_le_bytes(bytes[identity_end..length_end].try_into().map_err(|_| {
+                artifact_error(format!("{bundle_kind} artifact length is truncated"))
+            })?);
+        let length = usize::try_from(length).map_err(|_| {
+            artifact_error(format!(
+                "{bundle_kind} artifact length cannot be represented"
+            ))
+        })?;
+        let object_end = length_end.checked_add(length).ok_or_else(|| {
+            artifact_error(format!("{bundle_kind} artifact bundle offset overflow"))
+        })?;
         let object = bytes
             .get(length_end..object_end)
-            .ok_or_else(|| artifact_error("signal artifact object is truncated"))?;
+            .ok_or_else(|| artifact_error(format!("{bundle_kind} artifact object is truncated")))?;
+        let requested_bytes = u64::try_from(object.len()).map_err(|_| {
+            artifact_error(format!(
+                "{bundle_kind} artifact object size cannot be represented"
+            ))
+        })?;
+        retained_bytes = retained_bytes.checked_add(requested_bytes).ok_or_else(|| {
+            artifact_error(format!("{bundle_kind} artifact byte accounting overflow"))
+        })?;
+        if retained_bytes > maximum_payload_bytes {
+            return Err(artifact_error(format!(
+                "{bundle_kind} artifact payload uses {retained_bytes} bytes, exceeding the {maximum_payload_bytes}-byte aggregate limit"
+            )));
+        }
         if crucible::ContentHash::from_bytes(object) != identity {
-            return Err(artifact_error(
-                "signal artifact object failed authentication",
-            ));
+            return Err(artifact_error(format!(
+                "{bundle_kind} artifact object failed authentication"
+            )));
         }
         let stored = store.put(object).map_err(CliError::Store)?;
         if stored != identity {
-            return Err(artifact_error("restored signal artifact identity changed"));
+            return Err(artifact_error(format!(
+                "restored {bundle_kind} artifact identity changed"
+            )));
         }
         cursor = object_end;
     }
     if cursor != bytes.len() {
-        return Err(artifact_error("signal artifact bundle has trailing bytes"));
+        return Err(artifact_error(format!(
+            "{bundle_kind} artifact bundle has trailing bytes"
+        )));
     }
     Ok(store)
 }
@@ -358,11 +592,11 @@ pub(crate) fn replay_choice_indices(schedule: &crucible::Schedule) -> Vec<u64> {
     let decisions = schedule.decisions();
     let mut network = Vec::new();
     for (index, decision) in decisions.iter().enumerate() {
-        if matches!(
-            decision,
-            crucible::Decision::Override(override_decision)
-                if override_decision.point.key.starts_with("live-world-network/")
-        ) {
+        if matches!(decision, crucible::Decision::Selection(selection)
+        if selection.selection().is_ok_and(|value| {
+            selection.is_campaign_branch()
+                && crucible::is_live_world_network_selection(&value)
+        })) {
             network.push(index as u64);
         }
     }
@@ -429,20 +663,22 @@ pub(crate) fn verify_reproduction_artifact_bytes_with_components(
     )
 }
 
-pub(crate) fn run_failure_reproduction_artifact_bytes(
+pub(crate) fn run_reproduction_artifact_bytes(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
+    producer: &str,
     run_plan: &RunInvocationPlan,
     report: &RunWorkflowReport,
     canonical_log: &[CanonicalLogEntry],
 ) -> Result<Vec<u8>, CliError> {
     let scenario = run_plan.scenario.scenario_form();
-    let terminal_configuration = report.terminal_configuration.as_ref().ok_or_else(|| {
-        artifact_error("failed-run artifact capture requires a terminal configuration")
-    })?;
+    let terminal_configuration = report
+        .terminal_configuration
+        .as_ref()
+        .ok_or_else(|| artifact_error("run artifact capture requires a terminal configuration"))?;
     if terminal_configuration.def.id() != scenario.id() {
         return Err(CliError::Identity(format!(
-            "failed-run terminal scenario {} did not match captured scenario {}",
+            "run terminal scenario {} did not match captured scenario {}",
             terminal_configuration.def.id().to_hex(),
             scenario.id().to_hex()
         )));
@@ -450,21 +686,17 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
     let model_artifact =
         crucible::ReproductionArtifact::capture(scenario, &terminal_configuration.schedule)
             .map_err(|error| {
-                artifact_error(format!(
-                    "failed-run model reproduction capture failed: {error}"
-                ))
+                artifact_error(format!("run model reproduction capture failed: {error}"))
             })?;
     let replay = model_artifact.replay().map_err(|error| {
-        artifact_error(format!(
-            "failed-run model reproduction replay failed: {error}"
-        ))
+        artifact_error(format!("run model reproduction replay failed: {error}"))
     })?;
     let mut model_payloads = model_reproduction_artifact_payloads(&model_artifact, replay.state);
     let mut fingerprint_samples = run_fingerprint_samples(report);
     if matches!(backend, Some(ResolvedLocalBackend::Qemu { .. })) {
         let live_evidence = live_qemu_artifact_evidence_from_run(
             LiveQemuArtifactRecipe {
-                producer: "run",
+                producer,
                 terminal_condition: run_plan.terminal_condition,
                 max_virtual_time_ticks: run_plan.max_virtual_time_ticks,
                 max_quanta: run_plan.max_quanta,
@@ -494,7 +726,7 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
     )
 }
 
-/// Encodes a live QEMU finding with the complete v3 replay evidence bundle.
+/// Encodes a live QEMU finding with the complete current replay evidence bundle.
 ///
 /// # Errors
 ///

@@ -5,6 +5,54 @@ use crucible_shmem::{
     FAULT_COMMAND_SEMANTIC_VERSION, dequeue_fault_result, enqueue_fault_command,
 };
 
+thread_local! {
+    static TEST_REGISTER_RESULT: std::cell::RefCell<Option<(QemuFaultResult, Vec<u8>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+extern "C" fn peek_register_result(
+    result: *mut QemuFaultResult,
+    payload_length: *mut usize,
+) -> libc::c_int {
+    TEST_REGISTER_RESULT.with(|pending| {
+        let pending = pending.borrow();
+        let Some((record, payload)) = pending.as_ref() else {
+            return 0;
+        };
+        // SAFETY: the bridge passes writable output objects to this synchronous test callback.
+        unsafe {
+            *result = *record;
+            *payload_length = payload.len();
+        }
+        1
+    })
+}
+
+extern "C" fn poll_register_result(
+    result: *mut QemuFaultResult,
+    payload: *mut u8,
+    payload_capacity: usize,
+    payload_length: *mut usize,
+) -> libc::c_int {
+    TEST_REGISTER_RESULT.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        let Some((record, bytes)) = pending.as_ref() else {
+            return 0;
+        };
+        if bytes.len() > payload_capacity {
+            return -libc::ENOSPC;
+        }
+        // SAFETY: the capacity check proves the bridge-provided output buffer is large enough.
+        unsafe {
+            *result = *record;
+            *payload_length = bytes.len();
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), payload, bytes.len());
+        }
+        pending.take();
+        1
+    })
+}
+
 #[path = "fault_command_test/event_backpressure.rs"]
 mod event_backpressure;
 use event_backpressure::{assert_event_ring_backpressure, assert_pump};
@@ -16,6 +64,7 @@ fn lifecycle_evidence_uses_the_scheduler_logical_coordinate() {
     raw[24..32].copy_from_slice(&12_u64.to_le_bytes());
     let event = QemuFaultEvent {
         observed_icount: 12,
+        observed_tick: 12,
         ..QemuFaultEvent::default()
     };
 
@@ -27,13 +76,14 @@ fn lifecycle_evidence_uses_the_scheduler_logical_coordinate() {
                 .try_into()
                 .unwrap_or_else(|_| panic!("translated coordinate should have eight bytes"))
         ),
-        52
+        640
     );
     assert_eq!(&translated[..24], &raw[..24]);
     assert_eq!(&translated[32..], &raw[32..]);
 
     let mismatched = QemuFaultEvent {
         observed_icount: 13,
+        observed_tick: 13,
         ..QemuFaultEvent::default()
     };
     assert_eq!(
@@ -133,7 +183,7 @@ fn complete_aarch64_hardware_manifest(
 }
 
 #[test]
-fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
+fn bridge_preserves_raw_result_counts_and_logical_event_ticks() {
     const COMMAND_ARENA_OFFSET: u64 = 4_096;
     const RESULT_ARENA_OFFSET: u64 = 8_192;
     const EVENT_ARENA_OFFSET: u64 = 12_288;
@@ -145,7 +195,7 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
     let mut command_arena = vec![0_u8; 512];
     let result_ring = RingHeader::new();
     let result_arena_header = FaultPayloadArenaHeader::new();
-    let mut result_slots = vec![FaultResultSlotV1::new(); 4];
+    let mut result_slots = vec![FaultResultSlotV2::new(); 4];
     let mut result_arena = vec![0_u8; 512];
     let event_ring = RingHeader::new();
     let event_arena_header = FaultPayloadArenaHeader::new();
@@ -229,8 +279,8 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
         semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
         command_sequence: sequence,
         target_node_hash: node_hash,
-        target_icount: 50,
-        authorization_ceiling_icount: 50,
+        target_icount: 640,
+        authorization_ceiling_icount: 640,
         binding_hash: *blake3::hash(b"binding").as_bytes(),
         opportunity_hash: [0; 32],
         expected_precondition_hash: [0; 32],
@@ -272,8 +322,8 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
         &results[0],
         Some(DequeuedFaultResult::Valid { header, payload })
             if header.status == FaultResultStatus::Applied
-                && header.observed_icount == 50
-                && header.applied_icount == 50
+                && header.observed_icount == 12
+                && header.applied_icount == 12
                 && header.evidence_hash == *blake3::hash(&capability_payload).as_bytes()
                 && payload == &capability_payload
     ));
@@ -285,7 +335,7 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
             result,
             Some(DequeuedFaultResult::Valid { header, payload })
                 if header.status == expected_status
-                    && header.observed_icount == 52
+                    && header.observed_icount == 12
                     && header.applied_icount == 0
                     && payload.is_empty()
         ));
@@ -303,6 +353,8 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
         target_node_hash,
         target_icount: 40,
         authorization_ceiling_icount: 40,
+        target_tick: 2_000,
+        authorization_ceiling_tick: 2_000,
         binding_hash: [0; 32],
         opportunity_hash: [0; 32],
         expected_precondition_hash: [0; 32],
@@ -315,7 +367,7 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
             &result_arena_header,
             &mut result_arena,
             RESULT_ARENA_OFFSET,
-            FaultResultHeaderV1 {
+            FaultResultHeaderV2 {
                 abi_major: FAULT_COMMAND_ABI_MAJOR,
                 abi_minor: FAULT_COMMAND_ABI_MINOR,
                 command_kind: FaultCommandKind::BoundaryProbe as u16,
@@ -324,6 +376,7 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
                 command_sequence,
                 observed_icount: 52,
                 applied_icount: 0,
+                emitted_tick: 52,
                 capability_version: 1,
                 phase: FaultBoundaryPhase::NodeBoundary,
                 before_hash: [0; 32],
@@ -411,7 +464,7 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
 fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
     use sha2::{Digest as _, Sha256};
 
-    const HEADER: usize = 160;
+    const HEADER: usize = 168;
     let before = [0_u8; 8];
     let mut after = before;
     after[0] = 1;
@@ -447,8 +500,8 @@ fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
         value: vec![0],
     };
     let mut raw = vec![0_u8; HEADER + before.len() + after.len() + 2];
-    raw[..8].copy_from_slice(b"CRUCQRW1");
-    raw[8..10].copy_from_slice(&1_u16.to_le_bytes());
+    raw[..8].copy_from_slice(b"CRUCQRW2");
+    raw[8..10].copy_from_slice(&2_u16.to_le_bytes());
     raw[10..12].copy_from_slice(&(FaultCapabilityScope::X86_64 as u16).to_le_bytes());
     raw[12..14].copy_from_slice(&12_u16.to_le_bytes());
     raw[20..24].copy_from_slice(&1_u32.to_le_bytes());
@@ -464,6 +517,7 @@ fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
     raw[88..120].fill(3);
     raw[120..152].fill(4);
     raw[152..156].copy_from_slice(&1_u32.to_le_bytes());
+    raw[160..168].copy_from_slice(&(256_u64 * crucible_shmem::TICKS_PER_INSTRUCTION).to_le_bytes());
     raw[HEADER..HEADER + before.len()].copy_from_slice(&before);
     raw[HEADER + before.len()..HEADER + before.len() + after.len()].copy_from_slice(&after);
     raw[HEADER + before.len() + after.len()] = 1;
@@ -477,6 +531,98 @@ fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
     };
 
     assert!(translate_register_evidence(&raw, observation(Some(12)), &expectation).is_ok());
+
+    // A time-only service advance may occur after the register mutation in the same pump.
+    // The private evidence authenticates the source tick; the shared result keeps emission.
+    let command_ring = RingHeader::new();
+    let command_arena_header = FaultPayloadArenaHeader::new();
+    let mut command_slots = vec![FaultCommandSlotV1::new(); 2];
+    let mut command_arena = vec![0_u8; 512];
+    let result_ring = RingHeader::new();
+    let result_arena_header = FaultPayloadArenaHeader::new();
+    let mut result_slots = vec![FaultResultSlotV2::new(); 2];
+    let mut result_arena = vec![0_u8; 1024];
+    let event_ring = RingHeader::new();
+    let event_arena_header = FaultPayloadArenaHeader::new();
+    let mut event_slots = vec![FaultEventSlotV1::new(); 2];
+    let mut event_arena = vec![0_u8; 512];
+    let mut bridge = test_support::initialized_bridge(
+        [9; 32],
+        &command_ring,
+        &mut command_slots,
+        &command_arena_header,
+        &mut command_arena,
+        4_096,
+        &result_ring,
+        &mut result_slots,
+        &result_arena_header,
+        &mut result_arena,
+        8_192,
+        &event_ring,
+        &mut event_slots,
+        &event_arena_header,
+        &mut event_arena,
+        12_288,
+    );
+    bridge.apis.peek = peek_register_result;
+    bridge.apis.poll = poll_register_result;
+    bridge.register_evidence_identity = Some(identity.clone());
+    bridge.register_commands.insert(
+        42,
+        RegisterCommandExpectation {
+            operation: NodeFaultOperationV1::Apply,
+            binding_hash: [4; 32],
+            mutation: Some(expectation.clone()),
+        },
+    );
+    let source_tick = 256 * crucible_shmem::TICKS_PER_INSTRUCTION;
+    let emission_tick = source_tick + 7;
+    TEST_REGISTER_RESULT.with(|pending| {
+        *pending.borrow_mut() = Some((
+            QemuFaultResult {
+                command_kind: FaultCommandKind::CpuRegisterTransform as u16,
+                status: FaultResultStatus::Applied as u16,
+                phase: FaultBoundaryPhase::NodeBoundary as u16,
+                semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+                capability_version: 1,
+                command_sequence: 42,
+                observed_icount: 256,
+                applied_icount: 256,
+                observed_tick: source_tick,
+                emitted_tick: emission_tick,
+                before_hash: expected_before,
+                after_hash: expected_after,
+                ..QemuFaultResult::default()
+            },
+            raw.clone(),
+        ));
+    });
+    assert!(
+        bridge
+            .pump(0, 256)
+            .unwrap_or_else(|error| panic!("pump result: {error}"))
+    );
+    let published = dequeue_fault_result(
+        &result_ring,
+        &result_slots,
+        &result_arena_header,
+        &result_arena,
+        8_192,
+    )
+    .unwrap_or_else(|error| panic!("dequeue result: {error}"));
+    let Some(DequeuedFaultResult::Valid { header, payload }) = published else {
+        panic!("translated register result must be published");
+    };
+    let evidence = FaultRegisterMutationEvidenceV1::decode(&payload)
+        .unwrap_or_else(|error| panic!("decode register evidence: {error}"));
+    assert_eq!(header.observed_icount, 256);
+    assert_eq!(header.applied_icount, 256);
+    assert_eq!(header.emitted_tick, emission_tick);
+    assert_eq!(evidence.observed_icount, source_tick);
+    assert_eq!(
+        u64::from_le_bytes(raw[160..168].try_into().unwrap()),
+        source_tick
+    );
 
     raw[120..152].fill(3);
     assert!(matches!(
@@ -594,6 +740,7 @@ fn instruction_evidence_fixture() -> (
         event_sequence: 1,
         rule_command_sequence: 2,
         observed_icount: 17,
+        observed_tick: 17,
         generation: 3,
         binding_hash: [12; 32],
         opportunity_hash: sha2::Sha256::digest(&raw).into(),
@@ -891,6 +1038,7 @@ fn exception_evidence_fixture() -> (
         event_sequence: 1,
         rule_command_sequence: 2,
         observed_icount: 17,
+        observed_tick: 17,
         generation: 4,
         binding_hash: [12; 32],
         opportunity_hash: sha2::Sha256::digest(&raw).into(),
@@ -1034,6 +1182,7 @@ fn hardware_exception_bridge_requires_manifest_identity_and_real_state_transitio
         event_sequence: 1,
         rule_command_sequence: 2,
         observed_icount: 17,
+        observed_tick: 17,
         generation: 4,
         binding_hash: [12; 32],
         opportunity_hash: sha2::Sha256::digest(&raw).into(),
@@ -1137,6 +1286,7 @@ fn hardware_ecc_bridge_requires_exact_ghes_record_transition() {
         event_sequence: 1,
         rule_command_sequence: 2,
         observed_icount: 17,
+        observed_tick: 17,
         generation: 4,
         binding_hash: [12; 32],
         opportunity_hash: sha2::Sha256::digest(&raw).into(),

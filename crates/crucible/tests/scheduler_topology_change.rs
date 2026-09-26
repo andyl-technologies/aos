@@ -6,11 +6,11 @@
 
 use crucible::{
     BackendInput, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop,
-    QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerActor,
-    SchedulerActorHandle, SchedulerError, SchedulerLivenessScenario, SchedulerLookaheadEdge,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulerTerminal,
-    SchedulerTopologyChange, SchedulerTopologyChangeTrigger, SchedulingNodeKind, Shift,
-    SimDuration, SimInstant, SingleScheduler, VirtualTime, check_scheduler_liveness,
+    QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
+    SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeId,
+    SchedulerScenarioNode, SchedulerTerminal, SchedulerTopologyChange,
+    SchedulerTopologyChangeTrigger, SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler,
+    VirtualTime, check_scheduler_liveness,
 };
 
 #[test]
@@ -41,7 +41,7 @@ fn topology_change_recomputes_lowered_lookahead_before_pick() {
     assert_eq!(outcome.frontier, VirtualTime { ticks: 5 });
     assert_eq!(
         scheduler.run_ceiling_publications()[0].target_time,
-        SimInstant { nanos: 5 }
+        SimInstant { ticks: 5 }
     );
     let application = only_topology_application(&scheduler);
     assert_eq!(application.topology_epoch, 1);
@@ -79,11 +79,13 @@ fn runtime_topology_change_queue_recomputes_before_next_pick() {
     .with_effective_topology_edges(vec![edge(&producer, &consumer, 20)]);
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
 
-    scheduler.queue_topology_change(SchedulerTopologyChange::new(
-        2,
-        SchedulerTopologyChangeTrigger::LatencyChange,
-        vec![edge(&producer, &consumer, 6)],
-    ));
+    scheduler
+        .schedule_topology_change(SchedulerTopologyChange::new(
+            2,
+            SchedulerTopologyChangeTrigger::LatencyChange,
+            vec![edge(&producer, &consumer, 6)],
+        ))
+        .expect("future topology change should enqueue");
     let outcome = drive_one_quantum(&mut scheduler);
 
     assert_eq!(outcome.advanced_node, Some(consumer));
@@ -100,9 +102,8 @@ fn netlink_latency_recompute_signal_queues_boundary_recompute() {
     let consumer = scheduler_node("consumer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "netlink-latency-recompute-signal",
-        shift(0),
         64,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![scenario_node(
             "consumer",
             0,
@@ -113,7 +114,7 @@ fn netlink_latency_recompute_signal_queues_boundary_recompute() {
     )
     .with_effective_topology_edges(vec![edge(&producer, &consumer, 20)]);
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
-    let mut link = crucible_device::NetLink::new(0, 99, 20, 1, crucible_device::LinkFaults::none())
+    let mut link = crucible_device::NetLink::new(99, 20, 1, crucible_device::LinkFaults::none())
         .expect("link should build");
 
     assert!(
@@ -124,7 +125,7 @@ fn netlink_latency_recompute_signal_queues_boundary_recompute() {
     );
 
     let mut faults = crucible_device::LinkFaults::none();
-    faults.added_latency_ns = 7;
+    faults.added_latency_ticks = 7;
     link.set_faults(faults);
     assert!(
         scheduler
@@ -176,9 +177,8 @@ fn netlink_recompute_validation_failure_keeps_signal_pending() {
     let consumer = scheduler_node("consumer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "netlink-recompute-retains-signal-on-error",
-        shift(0),
         64,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![scenario_node(
             "consumer",
             0,
@@ -189,10 +189,10 @@ fn netlink_recompute_validation_failure_keeps_signal_pending() {
     )
     .with_effective_topology_edges(Vec::new());
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
-    let mut link = crucible_device::NetLink::new(0, 99, 20, 1, crucible_device::LinkFaults::none())
+    let mut link = crucible_device::NetLink::new(99, 20, 1, crucible_device::LinkFaults::none())
         .expect("link should build");
     let mut faults = crucible_device::LinkFaults::none();
-    faults.added_latency_ns = 7;
+    faults.added_latency_ticks = 7;
     link.set_faults(faults);
 
     let error = scheduler
@@ -217,9 +217,8 @@ fn netlink_latency_update_does_not_restore_pending_partition_edge() {
     let endpoint = edge(&producer, &consumer, 20).endpoint();
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "netlink-latency-update-preserves-partition",
-        shift(0),
         64,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![scenario_node(
             "consumer",
             0,
@@ -231,10 +230,10 @@ fn netlink_latency_update_does_not_restore_pending_partition_edge() {
     .with_effective_topology_edges(vec![edge(&producer, &consumer, 20)])
     .with_topology_change(SchedulerTopologyChange::partition(1, vec![endpoint]));
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
-    let mut link = crucible_device::NetLink::new(0, 99, 20, 1, crucible_device::LinkFaults::none())
+    let mut link = crucible_device::NetLink::new(99, 20, 1, crucible_device::LinkFaults::none())
         .expect("link should build");
     let mut faults = crucible_device::LinkFaults::none();
-    faults.added_latency_ns = 7;
+    faults.added_latency_ticks = 7;
     link.set_faults(faults);
 
     assert!(
@@ -272,9 +271,8 @@ fn netlink_latency_after_partition_is_recoverable_by_heal_with_current_latency()
     let endpoint = edge(&producer, &consumer, 20).endpoint();
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "netlink-latency-after-partition-heals-current-latency",
-        shift(0),
         64,
-        SimInstant { nanos: 80 },
+        SimInstant { ticks: 80 },
         vec![scenario_node(
             "consumer",
             0,
@@ -286,10 +284,10 @@ fn netlink_latency_after_partition_is_recoverable_by_heal_with_current_latency()
     .with_effective_topology_edges(vec![edge(&producer, &consumer, 20)])
     .with_topology_change(SchedulerTopologyChange::partition(1, vec![endpoint]));
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
-    let mut link = crucible_device::NetLink::new(0, 99, 20, 1, crucible_device::LinkFaults::none())
+    let mut link = crucible_device::NetLink::new(99, 20, 1, crucible_device::LinkFaults::none())
         .expect("link should build");
     let mut faults = crucible_device::LinkFaults::none();
-    faults.added_latency_ns = 7;
+    faults.added_latency_ticks = 7;
     link.set_faults(faults);
 
     assert!(
@@ -314,7 +312,7 @@ fn netlink_latency_after_partition_is_recoverable_by_heal_with_current_latency()
     scheduler
         .schedule_topology_change(SchedulerTopologyChange::heal(
             3,
-            vec![edge(&producer, &consumer, link.effective_latency_ns())],
+            vec![edge(&producer, &consumer, link.effective_latency_ticks())],
         ))
         .expect("heal should queue");
 
@@ -352,9 +350,8 @@ fn multiple_netlink_latency_updates_preserve_unrelated_edges() {
     let consumer_b = scheduler_node("consumer-b");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "multiple-netlink-latency-updates-preserve-unrelated-edges",
-        shift(0),
         64,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![
             scenario_node(
                 "consumer-a",
@@ -376,17 +373,15 @@ fn multiple_netlink_latency_updates_preserve_unrelated_edges() {
         edge(&producer_b, &consumer_b, 30),
     ]);
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
-    let mut link_a =
-        crucible_device::NetLink::new(0, 99, 20, 1, crucible_device::LinkFaults::none())
-            .expect("link a should build");
-    let mut link_b =
-        crucible_device::NetLink::new(0, 99, 30, 1, crucible_device::LinkFaults::none())
-            .expect("link b should build");
+    let mut link_a = crucible_device::NetLink::new(99, 20, 1, crucible_device::LinkFaults::none())
+        .expect("link a should build");
+    let mut link_b = crucible_device::NetLink::new(99, 30, 1, crucible_device::LinkFaults::none())
+        .expect("link b should build");
     let mut faults_a = crucible_device::LinkFaults::none();
-    faults_a.added_latency_ns = 7;
+    faults_a.added_latency_ticks = 7;
     link_a.set_faults(faults_a);
     let mut faults_b = crucible_device::LinkFaults::none();
-    faults_b.added_latency_ns = 5;
+    faults_b.added_latency_ticks = 5;
     link_b.set_faults(faults_b);
 
     assert!(
@@ -433,39 +428,6 @@ fn multiple_netlink_latency_updates_preserve_unrelated_edges() {
         consumer_b_after_second.recomputed_lookahead,
         finite_lookahead(35)
     );
-}
-
-#[test]
-fn actor_topology_change_message_recomputes_before_next_pick() {
-    let producer = scheduler_node("producer");
-    let consumer = scheduler_node("consumer");
-    let scenario = base_scenario(
-        "topology-change-actor-queue",
-        vec![scenario_node(
-            "consumer",
-            0,
-            SchedulerNodeActivity::Runnable,
-            finite_lookahead(20),
-        )],
-        Vec::new(),
-    )
-    .with_effective_topology_edges(vec![edge(&producer, &consumer, 20)]);
-    let (handle, mut actor) = SchedulerActor::new(scenario).expect("scenario should build");
-
-    handle
-        .queue_topology_change(SchedulerTopologyChange::new(
-            4,
-            SchedulerTopologyChangeTrigger::LatencyChange,
-            vec![edge(&producer, &consumer, 7)],
-        ))
-        .expect("topology change message should enqueue");
-    actor
-        .run_once()
-        .expect("actor should accept topology change");
-    let outcome = actor_drive_one_quantum(&handle, &mut actor);
-
-    assert_eq!(outcome.advanced_node, Some(consumer));
-    assert_eq!(outcome.frontier, VirtualTime { ticks: 7 });
 }
 
 #[test]
@@ -584,11 +546,10 @@ fn network_bounded_nodes_climb_to_time_limit_without_freezing() {
     let b = scheduler_node("b");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "network-bounded-ring-climbs-to-time-limit",
-        shift(0),
         // Generous quantum budget so the *frontier* (40 vs the frozen 4), not the
         // budget, is what terminates the run — the budget never bites with the fix.
         1024,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![
             scenario_node("a", 0, SchedulerNodeActivity::Runnable, finite_lookahead(4)),
             scenario_node("b", 0, SchedulerNodeActivity::Runnable, finite_lookahead(4)),
@@ -659,7 +620,7 @@ fn topology_change_armed_in_the_past_is_rejected_at_enqueue() {
         SchedulerTopologyChangeTrigger::LatencyChange,
         vec![edge(&producer, &consumer, 5)],
     )
-    .with_activation_time(SimInstant { nanos: 5 });
+    .with_activation_time(SimInstant { ticks: 5 });
 
     match scheduler.schedule_topology_change(in_past) {
         Err(SchedulerError::TopologyActivationInPast { at, frontier }) => {
@@ -677,9 +638,8 @@ fn base_scenario(
 ) -> SchedulerLivenessScenario {
     SchedulerLivenessScenario::from_canonical_material(
         material,
-        shift(0),
         8,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         nodes,
         pending_events,
     )
@@ -692,29 +652,6 @@ fn drive_one_quantum(scheduler: &mut SingleScheduler) -> crucible::QuantumOutcom
             control: Vec::new(),
         })
         .expect("scheduler should drive one quantum")
-}
-
-fn actor_drive_one_quantum(
-    handle: &SchedulerActorHandle,
-    actor: &mut SchedulerActor,
-) -> crucible::QuantumOutcome {
-    let snapshot = handle.snapshot().expect("snapshot should enqueue");
-    actor.run_once().expect("actor should process snapshot");
-    let configuration = snapshot
-        .recv()
-        .expect("actor should reply with snapshot")
-        .configuration;
-    let reply = handle
-        .drive_quantum(QuantumRequest {
-            configuration,
-            control: Vec::new(),
-        })
-        .expect("drive quantum should enqueue");
-    actor.run_once().expect("actor should drive quantum");
-    reply
-        .recv()
-        .expect("actor should reply")
-        .expect("scheduler should drive quantum")
 }
 
 fn only_topology_application(
@@ -760,13 +697,18 @@ fn backend_event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    ticks: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             producer.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),
@@ -780,9 +722,5 @@ fn finite_lookahead(nanos: u64) -> NetworkLookahead {
 }
 
 fn duration(nanos: u64) -> SimDuration {
-    SimDuration { nanos }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
+    SimDuration { ticks: nanos }
 }

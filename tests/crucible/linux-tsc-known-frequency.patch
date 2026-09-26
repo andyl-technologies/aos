@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/arch/x86/kernel/tsc.c
++++ b/arch/x86/kernel/tsc.c
+@@ -47,7 +47,7 @@
+  * TSC can be unstable due to cpufreq or due to unsynced TSCs
+  */
+ static int __read_mostly tsc_unstable;
+-static unsigned int __initdata tsc_early_khz;
++static unsigned int tsc_early_khz;
+ 
+ static DEFINE_STATIC_KEY_FALSE_RO(__use_tsc);
+ 
+@@ -900,6 +900,10 @@
+ {
+ 	unsigned long flags, fast_calibrate = cpu_khz_from_cpuid();
+ 
++	/* The sim fixture supplies its fixed TSC rate via tsc_early_khz. */
++	if (tsc_early_khz)
++		return tsc_early_khz;
++
+ 	if (!fast_calibrate)
+ 		fast_calibrate = cpu_khz_from_msr();
+ 	if (!fast_calibrate) {

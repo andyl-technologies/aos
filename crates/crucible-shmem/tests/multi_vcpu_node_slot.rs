@@ -20,16 +20,16 @@ const GENERATED_HEADER: &str = include_str!("../include/crucible_shmem_abi.h");
 
 #[test]
 fn multi_vcpu_count_does_not_change_region_shape_or_abi_version() {
-    assert_eq!(ABI_VERSION, 17);
+    assert_eq!(ABI_VERSION, 29);
 
-    let region_layout = layout(RegionConfig::new(2, 8, 4));
+    let region_layout = layout(RegionConfig::new(2, 8));
     assert_eq!(region_layout.node_count, MAX_NODES as u32);
     assert_eq!(region_layout.vm_node_count, 2);
     assert_eq!(region_layout.ring_count, 2 * RESERVED_SLOTS as u32 * 2);
     assert_eq!(MAX_VM_NODES, MAX_NODES - RESERVED_SLOTS);
 
     for simulated_vcpu_count in [1_u32, 2, 4, 8] {
-        let same_node_shape = layout(RegionConfig::new(2, 8, 4));
+        let same_node_shape = layout(RegionConfig::new(2, 8));
         assert_eq!(
             same_node_shape, region_layout,
             "{simulated_vcpu_count} vCPUs must not allocate more shmem slots"
@@ -44,7 +44,9 @@ fn one_node_slot_carries_aggregate_multi_vcpu_clock_and_idle_deadline() {
         Ok(ceiling) => ceiling,
         Err(error) => panic!("aggregate ceiling should be valid: {error}"),
     };
-    if let Err(error) = slot.publish_scheduler_ceiling(ceiling) {
+    if let Err(error) =
+        slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+    {
         panic!("aggregate ceiling publish should succeed: {error}");
     }
 
@@ -53,13 +55,13 @@ fn one_node_slot_carries_aggregate_multi_vcpu_clock_and_idle_deadline() {
         Some(deadline) => *deadline,
         None => panic!("test deadline set is nonempty"),
     };
-    if let Err(error) = slot.publish_idle(128, aggregate_idle_wake_icount, 2) {
+    if let Err(error) = slot.publish_idle(128, aggregate_idle_wake_icount) {
         panic!("aggregate idle publish should succeed: {error}");
     }
 
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.current_icount, 128);
-    assert_eq!(snapshot.current_ns, 512);
+    assert_eq!(snapshot.current_ns, 0);
     assert_eq!(snapshot.max_advance_icount, 256);
     assert_eq!(snapshot.idle_wake_icount, 180);
     assert_eq!(snapshot.status, STATUS_IDLE);
@@ -115,13 +117,13 @@ fn generated_c_header_keeps_node_slot_node_scoped() {
         GENERATED_HEADER
             .contains("typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_node_slot")
     );
-    assert!(GENERATED_HEADER.contains("CRUCIBLE_SHMEM_NODE_SLOT_SIZE 128u"));
+    assert!(GENERATED_HEADER.contains("CRUCIBLE_SHMEM_NODE_SLOT_SIZE 256u"));
     assert!(GENERATED_HEADER.contains("CRUCIBLE_SHMEM_NODE_SLOT_CURRENT_ICOUNT_OFFSET 0u"));
     assert!(GENERATED_HEADER.contains("CRUCIBLE_SHMEM_NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET 16u"));
     assert!(GENERATED_HEADER.contains("CRUCIBLE_SHMEM_NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET 24u"));
     assert!(GENERATED_HEADER.contains("CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET 38u"));
     assert!(GENERATED_HEADER.contains("CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET 44u"));
-    assert_eq!(NODE_SLOT_SIZE, 128);
+    assert_eq!(NODE_SLOT_SIZE, 256);
     assert_eq!(NODE_SLOT_CURRENT_ICOUNT_OFFSET, 0);
     assert_eq!(NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET, 16);
     assert_eq!(NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, 24);

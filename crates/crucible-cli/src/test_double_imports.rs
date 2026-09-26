@@ -5,12 +5,9 @@ use crucible_session::engine::{
 };
 
 pub(super) use crucible_session::{
-    CheckpointRef, LiveSnapshot, LiveSnapshotView,
+    LiveSnapshot, LiveSnapshotView,
     engine::{SchedulerError as QErr, SearchFailureOracle},
-    validation::{
-        fork_session_from_validation_base, fork_session_from_validation_checkpoint,
-        resume_session_from_validation_dag,
-    },
+    validation::resume_session_from_validation_dag,
 };
 
 pub(super) type QOut = ImportedQuantumOutcome;

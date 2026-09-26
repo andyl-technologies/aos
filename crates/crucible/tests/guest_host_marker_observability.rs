@@ -6,16 +6,18 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    AdvanceOutcome, Backend, BackendInput, Decision, EventClass, EventLog, EventLogIcountStamp,
-    EventSource, ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, ObservableEventPayload,
-    RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
+    AdvanceOutcome, Backend, BackendInput, Decision, EventLog, EventLogTickStamp, EventSource,
+    ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, ObservableEventPayload, RngDecision,
+    RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
     SchedulerEventLogPayload, SimBackend, VirtualTime, compare_event_log_determinism,
     event_log_causal_projection, observable_event_from_whitebox_marker_payload,
 };
 use crucible_protocol::{
     WhiteboxAssertionMarkerBody, WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody,
     WhiteboxEventMarkerBody, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerDetail,
-    WhiteboxMarkerPayload, WhiteboxRandomRequestBody,
+    WhiteboxMarkerPayload, WhiteboxMeasurementBoundaryBody, WhiteboxMeasurementValue,
+    WhiteboxMetricSampleBody, WhiteboxRandomRequestBody, WhiteboxSemanticMarkerBody,
+    WhiteboxSemanticMarkerDetail,
 };
 
 #[test]
@@ -38,13 +40,16 @@ fn whitebox_marker_payloads_append_as_observational_icount_stamped_entries() {
     for (index, entry) in entries.iter().enumerate() {
         let expected_icount = icount(40 + index as u64);
 
-        assert_eq!(entry.class(), EventClass::Observational);
+        assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
         assert_eq!(entry.time().virtual_time, time(expected_icount.retired));
         assert_eq!(
-            entry.time().icount,
-            EventLogIcountStamp {
+            entry.time().stamp,
+            EventLogTickStamp {
                 node: Some(marker_node.clone()),
-                icount: expected_icount,
+                tick: crucible::SimInstant {
+                    ticks: expected_icount.retired
+                },
+                retired: Some(expected_icount),
             }
         );
         assert!(matches!(
@@ -58,6 +63,8 @@ fn whitebox_marker_payloads_append_as_observational_icount_stamped_entries() {
                 ObservableEventPayload::GuestMarker { .. }
                     | ObservableEventPayload::GuestAssertionMarker { .. }
                     | ObservableEventPayload::CoverageMarker { .. }
+                    | ObservableEventPayload::GuestMeasurement { .. }
+                    | ObservableEventPayload::GuestSemanticMarker { .. }
             )
         ));
     }
@@ -264,6 +271,10 @@ fn observational_marker_payloads() -> Vec<WhiteboxMarkerPayload> {
         lifecycle_payload(),
         event_payload("guest.note"),
         coverage_payload("hot-path"),
+        measurement_begin_payload(),
+        metric_sample_payload(),
+        measurement_end_payload(),
+        semantic_marker_payload(),
     ]
 }
 
@@ -293,6 +304,40 @@ fn event_payload(name: &str) -> WhiteboxMarkerPayload {
 fn coverage_payload(point: &str) -> WhiteboxMarkerPayload {
     WhiteboxMarkerPayload::Coverage(WhiteboxCoverageMarkerBody {
         point: point.to_owned(),
+    })
+}
+
+fn measurement_begin_payload() -> WhiteboxMarkerPayload {
+    WhiteboxMarkerPayload::MeasurementBegin(WhiteboxMeasurementBoundaryBody {
+        measurement: String::from("recovery"),
+        instance: String::from("epoch-7"),
+    })
+}
+
+fn metric_sample_payload() -> WhiteboxMarkerPayload {
+    WhiteboxMarkerPayload::MetricSample(WhiteboxMetricSampleBody {
+        measurement: String::from("recovery"),
+        instance: String::from("epoch-7"),
+        metric: String::from("healthy-peers"),
+        value: WhiteboxMeasurementValue::Unsigned(3),
+    })
+}
+
+fn measurement_end_payload() -> WhiteboxMarkerPayload {
+    WhiteboxMarkerPayload::MeasurementEnd(WhiteboxMeasurementBoundaryBody {
+        measurement: String::from("recovery"),
+        instance: String::from("epoch-7"),
+    })
+}
+
+fn semantic_marker_payload() -> WhiteboxMarkerPayload {
+    WhiteboxMarkerPayload::SemanticMarker(WhiteboxSemanticMarkerBody {
+        marker: String::from("routing-converged"),
+        instance: String::from("epoch-7"),
+        details: vec![WhiteboxSemanticMarkerDetail {
+            key: String::from("healthy"),
+            value: WhiteboxMeasurementValue::Boolean(true),
+        }],
     })
 }
 

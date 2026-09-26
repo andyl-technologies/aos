@@ -9,30 +9,30 @@
 use std::os::raw::{c_uint, c_void};
 use std::pin::Pin;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, TryLockError, mpsc};
 
 use crucible_shmem::{
-    DirectedRing, FingerprintSampleSlot, FrameEntry, FutexWaitOutcome, MappedDirectedRingMut,
+    AdvanceStopCondition, DirectedRing, FingerprintSampleSlot, FrameEntry, MappedDirectedRingMut,
     MappedSetupRegionAccessError, NodeSlot, NodeSlotError, PreemptionMailboxError,
-    RegionControlAction, RegionHeader, RingHeader, SLOT_NET_ROUTER, SchedulerPreemptionKind,
+    RegionControlAction, RegionHeader, RingHeader, SLOT_NET_ROUTER,
 };
 
 use crate::fault_command::{FaultCommandBridge, QemuFaultCommandApis};
-use crate::fingerprint_sampler::CapturedFingerprintSample;
+use crate::fingerprint_sampler::{CapturedFingerprintSample, PluginFingerprintSampling};
 use crate::{
-    ExactDeadlineError, ExactDeadlineReader, FingerprintSamplerError, IdleHotLoopError,
-    IdleParkRequest, InboundFrameError, InboundFrameRing, NetworkRxError, NetworkTxError,
-    NetworkTxRing, PendingIdleAdvance, PluginArgs, PluginFingerprintSampling, PluginInboundFrames,
-    PluginNetworkRx, PluginNetworkTx, PluginPreemptionDecision, PluginPreemptionInjector,
-    PluginRawStateDump, PluginShmemOrdering, PluginShutdownRequested, PreemptionError,
-    PreemptionWindow, QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_BLK_EVENT_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL, QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL, QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL,
-    QemuAdvanceTimeNsFn, QemuCanonicalNetworkRx, QemuClockDeadlineFn, QemuForceVcpuExitFn,
-    QemuIcountRawFn, QemuPluginExecutionModel, QemuPluginId, QemuPluginNetInjectFn,
+    ExactDeadlineError, ExactDeadlineReader, ExactDeadlineReport, IdleHotLoopError,
+    IdleParkRequest, IdleWakeCause, InboundFrameError, InboundFrameRing, NetworkRxError,
+    NetworkTxError, NetworkTxRing, PendingIdleAdvance, PluginArgs, PluginInboundFrames,
+    PluginNetworkRx, PluginNetworkTx, PluginPreemptionInjector, PluginShmemOrdering,
+    PluginShutdownRequested, PreemptionError, QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_EVENT_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_BLK_WAIT_CB_SYMBOL, QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL, QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL, QemuAdvanceTimeTicksFn, QemuCanonicalNetworkRx,
+    QemuClockDeadlineFn, QemuForceVcpuExitFn, QemuIcountRawFn, QemuIdleWakeWait,
+    QemuIdleWakeWaitStatus, QemuPluginExecutionModel, QemuPluginId, QemuPluginNetInjectFn,
     QemuPluginTargetArchitecture, QemuRegisterBlkCbFn, QemuRegisterBlkEventCbFn,
     QemuRegisterBlkWaitCbFn, QemuRegisterControlBoundaryCbFn, QemuRegisterNetTxCbFn,
     QemuRegisterNinePCbFn, QemuRegisterSimShmemDispatchCbFn, QemuRegisterTimeAdvanceCbFn,
@@ -42,22 +42,28 @@ use crate::{
 };
 
 use super::{
-    LiveRuntimeTeardownTrigger, OwnedCallbackRegistrar, OwnedCallbackRegistrationError,
-    OwnedCallbackRegistrationMask, OwnedCallbackRuntimeState,
+    LiveRuntimeTeardownRouter, LiveRuntimeTeardownTrigger, OwnedCallbackRegistrar,
+    OwnedCallbackRegistrationError, OwnedCallbackRegistrationMask, OwnedCallbackRuntimeState,
     callback_quiescence::{LiveCallbackInFlight, LiveCallbackQuiescence},
-    live_whitebox::{LiveWhiteboxApis, crucible_qemu_plugin_live_whitebox_vcpu_init_cb},
+    live_whitebox::{
+        LiveWhiteboxApis, crucible_qemu_plugin_live_whitebox_vcpu_init_cb,
+        deliver_selectable_reply_on_vcpu_resume, rebind_selectable_pending_boundary,
+    },
+    worker_quiescence::LiveWorkerQuiescence,
 };
 
 mod devices;
 mod error;
 mod fingerprint_worker;
 mod logical_restore;
+mod preemption;
 pub use devices::LiveDeviceCallbackError;
 use devices::LiveDeviceCallbackState;
 pub use error::LiveVcpuTimeCallbackError;
 use fingerprint_worker::LiveFingerprintDigestWorker;
+use logical_restore::raw_icount_publication_is_superseded;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 static LIVE_VCPU_TIME_STATE: AtomicPtr<LiveVcpuTimeCallbackState> =
     AtomicPtr::new(std::ptr::null_mut());
@@ -67,15 +73,18 @@ static LIVE_VCPU_TIME_STATE: AtomicPtr<LiveVcpuTimeCallbackState> =
 pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) icount_raw: QemuIcountRawFn,
     pub(crate) force_vcpu_exit: QemuForceVcpuExitFn,
+    pub(crate) idle_wake_wait: QemuIdleWakeWait,
     pub(crate) request_vmstop: crate::QemuRequestVmstopFn,
     pub(crate) inject_preemption: Option<crate::QemuInjectPreemptionFn>,
-    pub(crate) clock_deadline_ns: Option<QemuClockDeadlineFn>,
-    pub(crate) advance_time_ns: Option<QemuAdvanceTimeNsFn>,
+    pub(crate) clock_deadline_ps: Option<QemuClockDeadlineFn>,
+    pub(crate) advance_time_ticks: Option<QemuAdvanceTimeTicksFn>,
     pub(crate) register_vcpu_init: Option<QemuRegisterVcpuInitCbFn>,
     pub(crate) register_vcpu_idle_resume: Option<QemuRegisterVcpuIdleResumeCbFn>,
     pub(crate) register_control_boundary: Option<QemuRegisterControlBoundaryCbFn>,
     pub(crate) register_sim_shmem_dispatch: Option<QemuRegisterSimShmemDispatchCbFn>,
     pub(crate) register_time_advance_cb: Option<QemuRegisterTimeAdvanceCbFn>,
+    pub(crate) arm_virtual_timer_witness: Option<crate::QemuArmVirtualTimerWitnessFn>,
+    pub(crate) query_virtual_timer_witness: Option<crate::QemuQueryVirtualTimerWitnessFn>,
     pub(crate) register_net_tx: Option<QemuRegisterNetTxCbFn>,
     pub(crate) net_inject: Option<QemuPluginNetInjectFn>,
     pub(crate) register_block: Option<QemuRegisterBlkCbFn>,
@@ -85,6 +94,90 @@ pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) register_accelerator: Option<crate::QemuRegisterAcceleratorCbFn>,
     pub(crate) fault_commands: QemuFaultCommandApis,
     pub(crate) request_shutdown: crate::QemuRequestShutdownFn,
+}
+
+/// One exact handoff from a selectable doorbell to the sim-publication scope.
+///
+/// The guest doorbell runs in an instruction callback, where QEMU deliberately
+/// rejects native VMStop requests. It may force the current vCPU out of its TB,
+/// then this shared handoff lets the exact post-TCG callback admit the stop only
+/// after the pending request and current instruction count are published.
+pub(crate) struct SelectableVmstopHandoff {
+    pending: AtomicU8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeferredVmstopKind {
+    Selectable,
+    CampaignMarker,
+}
+
+impl SelectableVmstopHandoff {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending: AtomicU8::new(0),
+        }
+    }
+
+    /// Reserves the sole deferred stop and forces the current TB to finish.
+    pub(crate) fn defer(
+        &self,
+        force_vcpu_tb_exit: super::live_whitebox::QemuForceVcpuTbExitFn,
+    ) -> Result<bool, i32> {
+        self.defer_kind(DeferredVmstopKind::Selectable, force_vcpu_tb_exit)
+    }
+
+    pub(crate) fn defer_campaign_marker(
+        &self,
+        force_vcpu_tb_exit: super::live_whitebox::QemuForceVcpuTbExitFn,
+    ) -> Result<bool, i32> {
+        self.defer_kind(DeferredVmstopKind::CampaignMarker, force_vcpu_tb_exit)
+    }
+
+    fn defer_kind(
+        &self,
+        kind: DeferredVmstopKind,
+        force_vcpu_tb_exit: super::live_whitebox::QemuForceVcpuTbExitFn,
+    ) -> Result<bool, i32> {
+        let tag = match kind {
+            DeferredVmstopKind::Selectable => 1,
+            DeferredVmstopKind::CampaignMarker => 2,
+        };
+        if self
+            .pending
+            .compare_exchange(0, tag, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(false);
+        }
+        let status = force_vcpu_tb_exit();
+        if status != 0 {
+            self.pending.store(0, Ordering::Release);
+            return Err(status);
+        }
+        Ok(true)
+    }
+
+    fn claim(&self) -> Option<DeferredVmstopKind> {
+        match self.pending.swap(0, Ordering::AcqRel) {
+            1 => Some(DeferredVmstopKind::Selectable),
+            2 => Some(DeferredVmstopKind::CampaignMarker),
+            _ => None,
+        }
+    }
+
+    fn restore(&self, kind: DeferredVmstopKind) {
+        let tag = match kind {
+            DeferredVmstopKind::Selectable => 1,
+            DeferredVmstopKind::CampaignMarker => 2,
+        };
+        self.pending.store(tag, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire) != 0
+    }
 }
 
 /// Registrar for the joined live vCPU, time, network, block, and 9p callbacks.
@@ -114,13 +207,18 @@ impl LiveVcpuTimeCallbackRegistrar {
         &self,
         args: &PluginArgs,
     ) -> Result<RequiredLiveVcpuTimeCapabilities, LiveVcpuTimeCallbackError> {
-        let exact_deadline = ExactDeadlineReader::require(self.capabilities.clock_deadline_ns)
+        let exact_deadline = ExactDeadlineReader::require(self.capabilities.clock_deadline_ps)
             .map_err(|source| LiveVcpuTimeCallbackError::ExactDeadlineCapability { source })?;
         let preemption_injector =
             PluginPreemptionInjector::require(self.capabilities.inject_preemption)
                 .map_err(|source| LiveVcpuTimeCallbackError::Preemption { source })?;
-        let queued_idle_advance = QueuedIdleAdvance::require(self.capabilities.advance_time_ns)
+        let queued_idle_advance = QueuedIdleAdvance::require(self.capabilities.advance_time_ticks)
             .map_err(|source| LiveVcpuTimeCallbackError::QueuedIdleAdvance { source })?;
+        let virtual_timer_witness = crate::QemuVirtualTimerWitness::require(
+            self.capabilities.arm_virtual_timer_witness,
+            self.capabilities.query_virtual_timer_witness,
+        )
+        .map_err(|source| LiveVcpuTimeCallbackError::VirtualTimerWitness { source })?;
         let register_vcpu_init = self.capabilities.register_vcpu_init.ok_or(
             LiveVcpuTimeCallbackError::CapabilityUnavailable {
                 symbol: QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL,
@@ -190,10 +288,12 @@ impl LiveVcpuTimeCallbackRegistrar {
         Ok(RequiredLiveVcpuTimeCapabilities {
             icount_raw: self.capabilities.icount_raw,
             force_vcpu_exit: self.capabilities.force_vcpu_exit,
+            idle_wake_wait: self.capabilities.idle_wake_wait,
             request_vmstop: self.capabilities.request_vmstop,
             preemption_injector,
             exact_deadline,
             queued_idle_advance,
+            virtual_timer_witness,
             register_vcpu_init,
             register_vcpu_idle_resume,
             register_control_boundary,
@@ -237,15 +337,6 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
         } else {
             None
         };
-        let state_dump = args
-            .state_dump()
-            .map(|config| PluginRawStateDump::resolve(config, self.execution_model.smp_vcpus()))
-            .transpose()
-            .map_err(|source| {
-                live_callback_registration_error(LiveVcpuTimeCallbackError::RawStateDump {
-                    message: source.to_string(),
-                })
-            })?;
         let callback_state = state
             .as_mut()
             .prepare_live_vcpu_time_state(
@@ -259,14 +350,14 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 (capabilities.icount_raw)(),
                 capabilities.exact_deadline,
                 capabilities.queued_idle_advance,
+                capabilities.virtual_timer_witness,
+                capabilities.idle_wake_wait,
                 capabilities.network_rx,
                 args.network_tx_next_seq(),
                 args.storage_history_limits(),
                 args.process_generation(),
                 capabilities.fault_commands,
                 fingerprint,
-                args.fingerprint_oracle().is_on(),
-                state_dump,
             )
             .map_err(live_callback_registration_error)?;
         LIVE_VCPU_TIME_STATE
@@ -282,11 +373,6 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 )
             })?;
 
-        (capabilities.register_vcpu_init)(
-            self.plugin_id,
-            crucible_qemu_plugin_live_vcpu_init_cb,
-            callback_state.cast(),
-        );
         (capabilities.register_vcpu_idle_resume)(
             Some(crucible_qemu_plugin_live_vcpu_idle_cb),
             Some(crucible_qemu_plugin_live_vcpu_resume_cb),
@@ -299,6 +385,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
         (capabilities.register_sim_shmem_dispatch)(
             Some(crucible_qemu_plugin_live_publish_icount_cb),
             Some(crucible_qemu_plugin_live_max_advance_icount_cb),
+            Some(crucible_qemu_plugin_live_logical_ceiling_cb),
             callback_state.cast(),
         );
         let completion_status = (capabilities.register_time_advance_cb)(
@@ -351,6 +438,8 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
             callback_state.cast(),
         );
         let mut mask = OwnedCallbackRegistrationMask::base_required();
+        let mut vcpu_init_callback: crate::QemuVcpuSimpleCbFn =
+            crucible_qemu_plugin_live_vcpu_init_cb;
         if let Some(whitebox_apis) = capabilities.whitebox {
             let whitebox_state = state
                 .as_mut()
@@ -366,18 +455,21 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                         message: source.to_string(),
                     })
                 })?;
-            whitebox_state.register(self.plugin_id).map_err(|source| {
-                live_callback_registration_error(LiveVcpuTimeCallbackError::WhiteboxCallback {
-                    message: source.to_string(),
-                })
-            })?;
-            (capabilities.register_vcpu_init)(
-                self.plugin_id,
-                crucible_qemu_plugin_live_vcpu_and_whitebox_init_cb,
-                callback_state.cast(),
-            );
+            whitebox_state
+                .register(self.plugin_id, !args.coverage().is_on())
+                .map_err(|source| {
+                    live_callback_registration_error(LiveVcpuTimeCallbackError::WhiteboxCallback {
+                        message: source.to_string(),
+                    })
+                })?;
+            vcpu_init_callback = crucible_qemu_plugin_live_vcpu_and_whitebox_init_cb;
             mask = mask.with_whitebox();
         }
+        (capabilities.register_vcpu_init)(
+            self.plugin_id,
+            vcpu_init_callback,
+            callback_state.cast(),
+        );
         Ok(mask)
     }
 }
@@ -386,10 +478,12 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
 struct RequiredLiveVcpuTimeCapabilities {
     icount_raw: QemuIcountRawFn,
     force_vcpu_exit: QemuForceVcpuExitFn,
+    idle_wake_wait: QemuIdleWakeWait,
     request_vmstop: crate::QemuRequestVmstopFn,
     preemption_injector: PluginPreemptionInjector,
     exact_deadline: ExactDeadlineReader,
     queued_idle_advance: QueuedIdleAdvance,
+    virtual_timer_witness: crate::QemuVirtualTimerWitness,
     register_vcpu_init: QemuRegisterVcpuInitCbFn,
     register_vcpu_idle_resume: QemuRegisterVcpuIdleResumeCbFn,
     register_control_boundary: QemuRegisterControlBoundaryCbFn,
@@ -483,10 +577,8 @@ impl StableFingerprintSlotHandle {
 /// per-node [`FingerprintSampleSlot`].
 struct LiveFingerprintCallbackState {
     sampling: PluginFingerprintSampling,
+    slot: StableFingerprintSlotHandle,
     worker: LiveFingerprintDigestWorker,
-    last_capture_icount: AtomicU64,
-    capture_submitted: AtomicBool,
-    synchronous_oracle: bool,
 }
 
 /// Stable raw view of one directed ring retained by the mapping owner.
@@ -619,25 +711,30 @@ impl LiveNetworkCallbackState {
 /// rejects callback re-entry before a mutable ring or freeze-state borrow forms.
 pub(crate) struct LiveVcpuTimeCallbackState {
     quiescence: Arc<LiveCallbackQuiescence>,
-    teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+    teardown_router: Arc<LiveRuntimeTeardownRouter>,
     shared_shutdown_signaled: AtomicBool,
     icount_raw: QemuIcountRawFn,
+    sim_tick_observed: Option<crate::abi::QemuSimTickObservedFn>,
     force_vcpu_exit: QemuForceVcpuExitFn,
+    idle_wake_wait: QemuIdleWakeWait,
     request_vmstop: crate::QemuRequestVmstopFn,
+    selectable_vmstop: Arc<SelectableVmstopHandoff>,
     preemption_injector: PluginPreemptionInjector,
     vcpu_count: u32,
-    icount_shift: u8,
     header: StableRegionHeaderHandle,
     slot: StableNodeSlotHandle,
     exact_deadline: ExactDeadlineReader,
     queued_idle_advance: QueuedIdleAdvance,
+    virtual_timer_witness: crate::QemuVirtualTimerWitness,
     initialized_vcpus: Box<[AtomicBool]>,
     halted_vcpus: Mutex<VcpuHaltTracker>,
     all_halted_idle_handled: AtomicBool,
     last_raw_icount: AtomicU64,
-    logical_icount_offset: AtomicU64,
+    logical_icount_offset: Arc<AtomicU64>,
     preemption_enqueue_active: AtomicBool,
     fault_command_pump_active: AtomicBool,
+    control_boundary_dispatch_generation: AtomicU32,
+    control_boundary_defer_diagnostic_generation: AtomicU64,
     idle_advance_completion_active: AtomicBool,
     last_icount: AtomicU64,
     logical_restore_continuation_generation: AtomicU32,
@@ -646,31 +743,265 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     pending_idle_advance_active: AtomicBool,
     pending_idle_advance_raw_icount: AtomicU64,
     pending_idle_advance_target_icount: AtomicU64,
+    idle_advance_generation: AtomicU64,
     pending_idle_advance: Mutex<Option<LivePendingIdleAdvance>>,
     network: Option<LiveNetworkCallbackState>,
     devices: Option<Mutex<LiveDeviceCallbackState>>,
     fingerprint: Option<LiveFingerprintCallbackState>,
-    state_dump: Option<PluginRawStateDump>,
-    #[cfg(not(test))]
-    fault_commands: Mutex<FaultCommandBridge>,
-    #[cfg(test)]
-    fault_commands: Mutex<Option<FaultCommandBridge>>,
+    fault_commands: Mutex<Box<dyn LiveFaultCommandControl>>,
+}
+
+pub(super) trait LiveFaultCommandControl {
+    fn initialize(&mut self) -> Result<(), crate::fault_command::FaultCommandBridgeError>;
+
+    fn pump(
+        &mut self,
+        logical_icount_offset: u64,
+        raw_icount: u64,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError>;
+
+    fn pump_with_offset_reader(
+        &mut self,
+        raw_icount: u64,
+        offset_reader: &dyn Fn() -> Result<u64, crate::fault_command::FaultCommandBridgeError>,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        self.pump(offset_reader()?, raw_icount)
+    }
+
+    fn pump_through_frontier(
+        &mut self,
+        logical_icount_offset: u64,
+        raw_icount: u64,
+        frontier: u64,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError>;
+
+    fn pump_through_frontier_with_offset_reader(
+        &mut self,
+        raw_icount: u64,
+        frontier: u64,
+        offset_reader: &dyn Fn() -> Result<u64, crate::fault_command::FaultCommandBridgeError>,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        self.pump_through_frontier(offset_reader()?, raw_icount, frontier)
+    }
+
+    fn dispatch_node_boundary(
+        &mut self,
+        raw_icount: u64,
+    ) -> Result<(), crate::fault_command::FaultCommandBridgeError>;
+
+    fn drain_publications(
+        &mut self,
+        logical_icount_offset: u64,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError>;
+
+    fn command_frontier_is_settled(&self, frontier: u64) -> bool;
+}
+
+impl LiveFaultCommandControl for FaultCommandBridge {
+    fn initialize(&mut self) -> Result<(), crate::fault_command::FaultCommandBridgeError> {
+        FaultCommandBridge::initialize(self)
+    }
+
+    fn pump(
+        &mut self,
+        logical_icount_offset: u64,
+        raw_icount: u64,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        FaultCommandBridge::pump(self, logical_icount_offset, raw_icount)
+    }
+
+    fn pump_with_offset_reader(
+        &mut self,
+        raw_icount: u64,
+        offset_reader: &dyn Fn() -> Result<u64, crate::fault_command::FaultCommandBridgeError>,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        FaultCommandBridge::pump_with_offset_reader(self, raw_icount, offset_reader)
+    }
+
+    fn pump_through_frontier(
+        &mut self,
+        logical_icount_offset: u64,
+        raw_icount: u64,
+        frontier: u64,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        FaultCommandBridge::pump_through_frontier(self, logical_icount_offset, raw_icount, frontier)
+    }
+
+    fn pump_through_frontier_with_offset_reader(
+        &mut self,
+        raw_icount: u64,
+        frontier: u64,
+        offset_reader: &dyn Fn() -> Result<u64, crate::fault_command::FaultCommandBridgeError>,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        FaultCommandBridge::pump_through_frontier_with_offset_reader(
+            self,
+            raw_icount,
+            frontier,
+            offset_reader,
+        )
+    }
+
+    fn dispatch_node_boundary(
+        &mut self,
+        raw_icount: u64,
+    ) -> Result<(), crate::fault_command::FaultCommandBridgeError> {
+        FaultCommandBridge::dispatch_node_boundary(self, raw_icount)
+    }
+
+    fn drain_publications(
+        &mut self,
+        logical_icount_offset: u64,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        FaultCommandBridge::drain_publications(self, logical_icount_offset)
+    }
+
+    fn command_frontier_is_settled(&self, frontier: u64) -> bool {
+        FaultCommandBridge::command_frontier_is_settled(self, frontier)
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TestFaultCommandObservation {
+    pumped_frontier: Option<u64>,
+    boundary_dispatched: bool,
+    publications_drained: bool,
+}
+
+#[cfg(test)]
+pub(super) struct TestFaultCommandBridge {
+    observation: Arc<Mutex<TestFaultCommandObservation>>,
+    advance_tick_on_pump: Option<i64>,
+}
+
+#[cfg(test)]
+impl TestFaultCommandBridge {
+    fn empty() -> Self {
+        Self {
+            observation: Arc::new(Mutex::new(TestFaultCommandObservation::default())),
+            advance_tick_on_pump: None,
+        }
+    }
+
+    fn advancing_to(tick: i64) -> Self {
+        Self {
+            advance_tick_on_pump: Some(tick),
+            ..Self::empty()
+        }
+    }
+
+    fn observed() -> (Self, Arc<Mutex<TestFaultCommandObservation>>) {
+        let observation = Arc::new(Mutex::new(TestFaultCommandObservation::default()));
+        (
+            Self {
+                observation: Arc::clone(&observation),
+                advance_tick_on_pump: None,
+            },
+            observation,
+        )
+    }
+}
+
+#[cfg(test)]
+impl LiveFaultCommandControl for TestFaultCommandBridge {
+    fn initialize(&mut self) -> Result<(), crate::fault_command::FaultCommandBridgeError> {
+        Ok(())
+    }
+
+    fn pump(
+        &mut self,
+        _logical_icount_offset: u64,
+        _raw_icount: u64,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        Ok(true)
+    }
+
+    fn pump_with_offset_reader(
+        &mut self,
+        _raw_icount: u64,
+        offset_reader: &dyn Fn() -> Result<u64, crate::fault_command::FaultCommandBridgeError>,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        offset_reader()?;
+        if let Some(tick) = self.advance_tick_on_pump.take() {
+            tests::TEST_SIM_TICK.set(tick);
+        }
+        offset_reader()?;
+        Ok(true)
+    }
+
+    fn pump_through_frontier(
+        &mut self,
+        _logical_icount_offset: u64,
+        _raw_icount: u64,
+        frontier: u64,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        if frontier == 0 {
+            self.observation
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pumped_frontier = Some(frontier);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn dispatch_node_boundary(
+        &mut self,
+        _raw_icount: u64,
+    ) -> Result<(), crate::fault_command::FaultCommandBridgeError> {
+        let mut observation = self
+            .observation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        observation.boundary_dispatched = observation.pumped_frontier.is_some();
+        Ok(())
+    }
+
+    fn drain_publications(
+        &mut self,
+        _logical_icount_offset: u64,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        let mut observation = self
+            .observation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        observation.publications_drained = observation.boundary_dispatched;
+        Ok(observation.publications_drained)
+    }
+
+    fn command_frontier_is_settled(&self, frontier: u64) -> bool {
+        let observation = self
+            .observation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        observation.pumped_frontier == Some(frontier)
+            && observation.boundary_dispatched
+            && observation.publications_drained
+    }
 }
 
 #[derive(Debug)]
 struct LivePendingIdleAdvance {
+    generation: u64,
     raw_icount_at_request: u64,
     target_icount: u64,
     pending: PendingIdleAdvance,
+    timer_witness: Option<crate::ArmedVirtualTimerWitness>,
     buffered_tx_payloads: Vec<Vec<u8>>,
 }
 
-struct PreemptionEnqueueGuard<'a>(&'a AtomicBool);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IdleAdvanceArmOutcome {
+    Armed { generation: u64 },
+    Occupied,
+}
 
-impl Drop for PreemptionEnqueueGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IdleSchedulerWaitDisposition {
+    AdvanceTo(u64),
+    ReturnToQemu,
+    RescanInQemu,
 }
 
 /// Releases exclusive fault-command pump ownership on every return path.
@@ -692,34 +1023,64 @@ impl Drop for IdleAdvanceCompletionGuard<'_> {
 }
 
 impl LiveVcpuTimeCallbackState {
-    // crucible-lint: allow rust-allow -- construction binds the fixed QEMU identity, clock, mapping, and slot capabilities.
+    fn scheduler_advance(&self) -> Result<(u64, AdvanceStopCondition), LiveVcpuTimeCallbackError> {
+        PluginShmemOrdering::load_scheduler_advance(self.slot.get()).map_err(|source| {
+            LiveVcpuTimeCallbackError::IdleHotLoop {
+                source: IdleHotLoopError::AdvanceStopCondition { source },
+            }
+        })
+    }
+
+    /// Reads the host authorization horizon in exact logical ticks.
+    fn logical_ceiling(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
+        self.scheduler_advance()
+            .map(|(ceiling, _condition)| ceiling)
+    }
+
+    fn scheduler_idle_ceiling(
+        &self,
+        desired_wake_icount: u64,
+    ) -> Result<u64, LiveVcpuTimeCallbackError> {
+        let (ceiling_icount, stop_condition) = self.scheduler_advance()?;
+        if stop_condition != AdvanceStopCondition::Ceiling {
+            return Err(LiveVcpuTimeCallbackError::IdleHotLoop {
+                source: IdleHotLoopError::WakeNotAuthorized {
+                    desired_wake_icount,
+                    ceiling_icount,
+                },
+            });
+        }
+        Ok(ceiling_icount)
+    }
+
+    // crucible-lint: allow rust-allow -- construction binds the fixed QEMU clock, mapping, and slot capabilities.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the constructor binds one fixed QEMU identity, clock, mapping header, and node slot"
+        reason = "the constructor binds one fixed QEMU clock, mapping header, and node slot"
     )]
     pub(super) fn new(
         icount_raw: QemuIcountRawFn,
         force_vcpu_exit: QemuForceVcpuExitFn,
+        idle_wake_wait: QemuIdleWakeWait,
         request_vmstop: crate::QemuRequestVmstopFn,
         preemption_injector: PluginPreemptionInjector,
         vcpu_count: u32,
-        icount_shift: u8,
         initial_raw_icount: u64,
         exact_deadline: ExactDeadlineReader,
         queued_idle_advance: QueuedIdleAdvance,
-        #[cfg(not(test))] fault_commands: FaultCommandBridge,
-        #[cfg(test)] fault_commands: Option<FaultCommandBridge>,
+        virtual_timer_witness: crate::QemuVirtualTimerWitness,
+        fault_commands: Box<dyn LiveFaultCommandControl>,
         header: &RegionHeader,
         slot: &NodeSlot,
         quiescence: Arc<LiveCallbackQuiescence>,
-        teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+        teardown_router: Arc<LiveRuntimeTeardownRouter>,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
-        if 1_u64.checked_shl(u32::from(icount_shift)).is_none() {
-            return Err(LiveVcpuTimeCallbackError::IcountShiftOutOfRange {
-                icount_shift: u32::from(icount_shift),
-            });
-        }
         let snapshot = slot.snapshot();
+        AdvanceStopCondition::decode(snapshot.advance_stop_condition).map_err(|source| {
+            LiveVcpuTimeCallbackError::IdleHotLoop {
+                source: IdleHotLoopError::AdvanceStopCondition { source },
+            }
+        })?;
         if snapshot.current_icount > snapshot.max_advance_icount {
             return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
                 current_icount: snapshot.current_icount,
@@ -728,7 +1089,14 @@ impl LiveVcpuTimeCallbackState {
         }
         let logical_icount_offset = snapshot
             .current_icount
-            .checked_sub(initial_raw_icount)
+            .checked_sub(
+                initial_raw_icount
+                    .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+                    .ok_or(LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
+                        raw_icount: initial_raw_icount,
+                        logical_icount: snapshot.current_icount,
+                    })?,
+            )
             .ok_or(LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
                 raw_icount: initial_raw_icount,
                 logical_icount: snapshot.current_icount,
@@ -737,20 +1105,31 @@ impl LiveVcpuTimeCallbackState {
             .map(|_vcpu| AtomicBool::new(false))
             .collect::<Vec<_>>()
             .into_boxed_slice();
+        #[cfg(not(test))]
+        let sim_tick_observed = Some(crate::abi::resolve_qemu_sim_tick_observed_symbol().ok_or(
+            LiveVcpuTimeCallbackError::CapabilityUnavailable {
+                symbol: crate::abi::QEMU_PLUGIN_SIM_TICK_OBSERVED_SYMBOL,
+            },
+        )?);
+        #[cfg(test)]
+        let sim_tick_observed = None;
         Ok(Self {
             quiescence,
-            teardown_sender,
+            teardown_router,
             shared_shutdown_signaled: AtomicBool::new(false),
             icount_raw,
+            sim_tick_observed,
             force_vcpu_exit,
+            idle_wake_wait,
             request_vmstop,
+            selectable_vmstop: Arc::new(SelectableVmstopHandoff::new()),
             preemption_injector,
             vcpu_count,
-            icount_shift,
             header: StableRegionHeaderHandle::new(header),
             slot: StableNodeSlotHandle::new(slot),
             exact_deadline,
             queued_idle_advance,
+            virtual_timer_witness,
             initialized_vcpus,
             halted_vcpus: Mutex::new(
                 VcpuHaltTracker::new(vcpu_count)
@@ -758,20 +1137,22 @@ impl LiveVcpuTimeCallbackState {
             ),
             all_halted_idle_handled: AtomicBool::new(false),
             last_raw_icount: AtomicU64::new(initial_raw_icount),
-            logical_icount_offset: AtomicU64::new(logical_icount_offset),
+            logical_icount_offset: Arc::new(AtomicU64::new(logical_icount_offset)),
             preemption_enqueue_active: AtomicBool::new(false),
             fault_command_pump_active: AtomicBool::new(false),
+            control_boundary_dispatch_generation: AtomicU32::new(u32::MAX),
+            control_boundary_defer_diagnostic_generation: AtomicU64::new(u64::MAX),
             idle_advance_completion_active: AtomicBool::new(false),
             last_icount: AtomicU64::new(snapshot.current_icount),
             logical_restore_continuation_generation: AtomicU32::new(0),
             pending_idle_advance_active: AtomicBool::new(false),
             pending_idle_advance_raw_icount: AtomicU64::new(0),
             pending_idle_advance_target_icount: AtomicU64::new(0),
+            idle_advance_generation: AtomicU64::new(0),
             pending_idle_advance: Mutex::new(None),
             network: None,
             devices: None,
             fingerprint: None,
-            state_dump: None,
             fault_commands: Mutex::new(fault_commands),
         })
     }
@@ -802,9 +1183,9 @@ impl LiveVcpuTimeCallbackState {
         {
             return Ok(());
         }
-        self.teardown_sender
+        self.teardown_router
             .send(LiveRuntimeTeardownTrigger::SharedShutdown(proof))
-            .map_err(|_error| LiveVcpuTimeCallbackError::TeardownWorkerUnavailable)
+            .map_err(|()| LiveVcpuTimeCallbackError::TeardownWorkerUnavailable)
     }
 
     pub(super) fn attach_network(
@@ -827,46 +1208,54 @@ impl LiveVcpuTimeCallbackState {
 
     /// Binds the resolved fingerprint sampler and this VM's shared-memory slot.
     ///
-    /// Called only when the launch enabled `fingerprint=on`; afterwards each
-    /// host-visible quantum boundary captures a black-box fingerprint sample and
-    /// queues its detached preimages to a dedicated digest worker. This includes
-    /// exact scheduler ceilings and explicitly requested main-loop control
-    /// boundaries. `slot` is the per-node [`FingerprintSampleSlot`] retained by
+    /// Called only when the launch enabled `fingerprint=on`; afterwards an
+    /// explicit, quiesced main-loop control boundary captures a black-box
+    /// fingerprint sample and queues its detached preimages to a dedicated
+    /// digest worker. `slot` is the per-node [`FingerprintSampleSlot`] retained by
     /// the same setup mapping owner as the node slot and directed rings.
     pub(super) fn attach_fingerprint(
         mut self,
         sampling: PluginFingerprintSampling,
         slot: &FingerprintSampleSlot,
-        synchronous_oracle: bool,
+        worker_quiescence: Arc<LiveWorkerQuiescence>,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
-        let worker = LiveFingerprintDigestWorker::spawn(StableFingerprintSlotHandle::new(slot))?;
+        let slot = StableFingerprintSlotHandle::new(slot);
+        let worker = LiveFingerprintDigestWorker::spawn(slot, worker_quiescence)?;
         self.fingerprint = Some(LiveFingerprintCallbackState {
             sampling,
+            slot,
             worker,
-            last_capture_icount: AtomicU64::new(0),
-            capture_submitted: AtomicBool::new(false),
-            synchronous_oracle,
         });
         Ok(self)
     }
 
-    /// Binds the optional terminal raw-state exporter to this pinned callback state.
-    pub(super) fn attach_state_dump(mut self, state_dump: PluginRawStateDump) -> Self {
-        self.state_dump = Some(state_dump);
-        self
+    /// Replaces the vanished template fingerprint worker in a fork child.
+    ///
+    /// The caller holds callback and worker admission, and the template queue
+    /// was proven empty before `fork(2)`. The inherited `JoinHandle` cannot be
+    /// joined in the child, so it is deliberately abandoned after the fresh
+    /// worker owns the same exact-address slot.
+    pub(super) fn reinitialize_hot_fork_child_workers(
+        &mut self,
+        worker_quiescence: Arc<LiveWorkerQuiescence>,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let Some(fingerprint) = self.fingerprint.as_mut() else {
+            return Ok(());
+        };
+        let worker = LiveFingerprintDigestWorker::spawn(fingerprint.slot, worker_quiescence)?;
+        let inherited = std::mem::replace(&mut fingerprint.worker, worker);
+        std::mem::forget(inherited);
+        Ok(())
     }
 
-    /// Captures and queues a black-box fingerprint sample stamped at `icount`.
+    /// Captures and publishes a requested fingerprint at a control boundary.
     ///
-    /// A no-op unless the launch enabled `fingerprint=on`. Callers invoke it only
-    /// at a host-visible quantum boundary: either the exact host-set ceiling or
-    /// an explicitly requested main-loop control boundary. The dirty-tracked
-    /// immutable copy therefore runs once per completed host quantum rather than
-    /// on every intermediate progress publication. Ordinary quantum SHA-256 work
-    /// runs after this callback returns, allowing the guest to resume. A control
-    /// boundary instead waits for ordered digest publication before its
-    /// acknowledgement, so a same-icount resample cannot be confused with the
-    /// preceding quantum sample. The vCPU count is
+    /// A no-op unless the launch enabled `fingerprint=on`. The host first requests
+    /// a capture generation, then drives the main loop to the BQL-held control
+    /// boundary after device I/O quiesces. This call copies the sealed material
+    /// into the bounded worker queue and returns without hashing it. The worker
+    /// publishes the digest and acknowledges the capture request only after the
+    /// matching sample becomes visible. The vCPU count is
     /// `self.vcpu_count` — the install-time
     /// `smp_vcpus` QEMU reported to the plugin (`execution_model.smp_vcpus()`),
     /// bound into this callback state at construction — so the sample covers
@@ -880,50 +1269,50 @@ impl LiveVcpuTimeCallbackState {
     fn publish_fingerprint_sample(
         &self,
         icount: u64,
-        wait_for_publication: bool,
-        cross_vcpu_quiesced: bool,
         boundary: &'static str,
+        capture_request: u32,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         let Some(fingerprint) = self.fingerprint.as_ref() else {
             return Ok(());
         };
-        if !cross_vcpu_quiesced && self.try_halted_vcpus()?.all_halted() {
-            // All-halted publications can arrive through several vCPU-thread
-            // callbacks after the serialized RR owner has been released. QEMU
-            // deliberately rejects cross-vCPU register reads there. Defer the
-            // sample until the host requests a BQL-held control boundary.
-            return Ok(());
-        }
-        if fingerprint.capture_submitted.load(Ordering::Acquire)
-            && fingerprint.last_capture_icount.load(Ordering::Acquire) == icount
-        {
-            return Ok(());
+        if PluginShmemOrdering::device_io_active(self.slot.get()) {
+            return Err(LiveVcpuTimeCallbackError::FingerprintSample {
+                boundary,
+                message: String::from("device projection requested before device I/O quiesced"),
+            });
         }
         let captured = fingerprint
             .sampling
-            .capture(icount, self.vcpu_count, fingerprint.synchronous_oracle)
-            .map_err(|source| LiveVcpuTimeCallbackError::FingerprintSample { boundary, source })?;
-        if wait_for_publication {
-            fingerprint.worker.submit_and_wait(captured)?;
-        } else {
-            fingerprint.worker.submit(captured)?;
-        }
-        fingerprint
-            .last_capture_icount
-            .store(icount, Ordering::Release);
-        fingerprint.capture_submitted.store(true, Ordering::Release);
-        if let Some(state_dump) = self.state_dump.as_ref() {
-            state_dump.request_if_target(icount).map_err(|source| {
-                LiveVcpuTimeCallbackError::RawStateDump {
-                    message: source.to_string(),
-                }
+            .capture(icount, self.vcpu_count)
+            .map_err(|source| LiveVcpuTimeCallbackError::FingerprintSample {
+                boundary,
+                message: source.to_string(),
             })?;
-        }
-        Ok(())
+        fingerprint.worker.submit(captured, capture_request)
     }
 
     fn idle_advance_is_pending(&self) -> bool {
         self.pending_idle_advance_active.load(Ordering::Acquire)
+    }
+
+    /// Returns the raw dispatch clamp while a queued time jump is pending.
+    fn pending_idle_advance_clamp(
+        &self,
+        raw_icount: u64,
+    ) -> Result<Option<u64>, LiveVcpuTimeCallbackError> {
+        if !self.idle_advance_is_pending() {
+            return Ok(None);
+        }
+        let raw_icount_at_request = self.pending_idle_advance_raw_icount.load(Ordering::Acquire);
+        if raw_icount != raw_icount_at_request {
+            return Err(
+                LiveVcpuTimeCallbackError::GuestProgressWhileIdleAdvancePending {
+                    expected_raw_icount: raw_icount_at_request,
+                    observed_raw_icount: raw_icount,
+                },
+            );
+        }
+        Ok(Some(raw_icount_at_request))
     }
 
     fn on_vcpu_init(&self, vcpu_index: u32) -> Result<(), LiveVcpuTimeCallbackError> {
@@ -955,13 +1344,17 @@ impl LiveVcpuTimeCallbackState {
             return Ok(());
         }
         if self.idle_advance_is_pending() {
-            return Err(LiveVcpuTimeCallbackError::IdleAdvanceAlreadyPending);
+            // The accepted advance will wake every halted vCPU after its
+            // completion commits. Release this one-shot edge so that wake can
+            // recompute the next target without disturbing the winner.
+            self.all_halted_idle_handled.store(false, Ordering::Release);
+            return Ok(());
         }
         // The all-halted callback still runs on the last vCPU thread. With no
         // serialized RR owner, cross-vCPU register capture is intentionally
         // forbidden there; the host requests a BQL-held control boundary after
         // accepting the paused quantum and samples that exact coordinate.
-        self.publish_current_icount_for_boundary(raw_icount, true, false, "vcpu-idle")?;
+        self.publish_current_icount_for_boundary(raw_icount, true, "vcpu-idle")?;
         let current_icount = self.last_icount.load(Ordering::Acquire);
         let next_inbound_delivery_icount = if let Some(network) = self.network.as_ref() {
             let inbound = network.inbound.inbound();
@@ -976,10 +1369,14 @@ impl LiveVcpuTimeCallbackState {
             .exact_deadline
             .read_next_deadline()
             .map_err(|source| LiveVcpuTimeCallbackError::ExactDeadlineRead { source })?;
-        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
+        let timer_deadline_ps = match exact_deadline {
+            ExactDeadlineReport::Armed { deadline_ps } => Some(deadline_ps),
+            ExactDeadlineReport::NoArmedTimer => None,
+        };
+        let (ceiling_icount, _) = self.scheduler_advance()?;
         let device_io_holding_ticks = PluginShmemOrdering::device_io_active(self.slot.get());
-        let device_completion_deadline_icount = if device_io_holding_ticks {
-            Some(PluginShmemOrdering::device_completion_deadline_icount(
+        let device_completion_deadline_tick = if device_io_holding_ticks {
+            Some(PluginShmemOrdering::device_completion_deadline_tick(
                 self.slot.get(),
             ))
         } else {
@@ -987,85 +1384,75 @@ impl LiveVcpuTimeCallbackState {
         };
         let plan = compute_idle_wake_plan(
             current_icount,
-            self.icount_shift,
             exact_deadline,
             next_inbound_delivery_icount,
             SchedulerCeiling::new(ceiling_icount),
             device_io_holding_ticks,
-            device_completion_deadline_icount,
+            device_completion_deadline_tick,
         )
         .map_err(|source| LiveVcpuTimeCallbackError::IdleHotLoop { source })?;
         let futex_wait = PluginShmemOrdering::publish_idle_wait(
             self.slot.get(),
             current_icount,
             plan.desired_wake_icount(),
-            self.icount_shift,
         )
         .map_err(|source| LiveVcpuTimeCallbackError::PublishIdle { source })?;
-        let request = IdleParkRequest::from_published(plan, futex_wait, self.icount_shift);
-        match self.wait_for_scheduler_release_or_inbound(&request, raw_icount)? {
-            None => Ok(()),
-            Some(target_icount) => {
-                let scale = 1_u64.checked_shl(u32::from(self.icount_shift)).ok_or(
-                    LiveVcpuTimeCallbackError::IdleAdvanceTargetOverflow {
-                        target_icount,
-                        icount_shift: self.icount_shift,
-                    },
-                )?;
-                let target_virtual_ns = target_icount.checked_mul(scale).ok_or(
-                    LiveVcpuTimeCallbackError::IdleAdvanceTargetOverflow {
-                        target_icount,
-                        icount_shift: self.icount_shift,
-                    },
-                )?;
-                let Some(pending) = self.enqueue_idle_advance_or_defer(target_virtual_ns)? else {
+        let request = IdleParkRequest::from_published(plan, futex_wait);
+        match self.wait_for_scheduler_release_or_inbound(vcpu_index, &request, raw_icount)? {
+            IdleSchedulerWaitDisposition::ReturnToQemu
+            | IdleSchedulerWaitDisposition::RescanInQemu => Ok(()),
+            IdleSchedulerWaitDisposition::AdvanceTo(target_icount) => {
+                if !self.arm_and_enqueue_idle_advance_or_defer(
+                    raw_icount,
+                    target_icount,
+                    (plan.cause() == IdleWakeCause::TimerDeadline)
+                        .then_some(timer_deadline_ps)
+                        .flatten(),
+                )? {
                     // QEMU still owns the preceding advance barrier. Its
                     // completion kicks every halted vCPU, so release this
                     // one-shot edge and let that later all-halted callback
                     // recompute from the then-current ceiling and inbox.
                     self.all_halted_idle_handled.store(false, Ordering::Release);
                     return Ok(());
-                };
-                self.arm_idle_advance(raw_icount, target_icount, pending)
+                }
+                Ok(())
             }
         }
     }
 
     fn wait_for_scheduler_release_or_inbound(
         &self,
+        vcpu_index: u32,
         request: &IdleParkRequest,
         raw_icount: u64,
-    ) -> Result<Option<u64>, LiveVcpuTimeCallbackError> {
-        let mut wait = request.futex_wait();
+    ) -> Result<IdleSchedulerWaitDisposition, LiveVcpuTimeCallbackError> {
         loop {
             match PluginShmemOrdering::observe_control_action(self.header.get()) {
                 RegionControlAction::Shutdown => {
                     self.signal_shared_shutdown()?;
-                    return Ok(None);
+                    return Ok(IdleSchedulerWaitDisposition::ReturnToQemu);
                 }
                 RegionControlAction::Pause => {
                     if PluginShmemOrdering::control_boundary_is_requested(self.slot.get()) {
                         // The eventfd-driven two-pass callback owns the paired
                         // pause after device waiters have run.
-                        return Ok(None);
+                        return Ok(IdleSchedulerWaitDisposition::ReturnToQemu);
                     }
-                    if PluginShmemOrdering::device_io_active(self.slot.get()) {
-                        wait = PluginShmemOrdering::prepare_futex_wait(self.slot.get());
-                        continue;
+                    if !PluginShmemOrdering::device_io_active(self.slot.get()) {
+                        PluginShmemOrdering::publish_pause_quiesced(
+                            self.slot.get(),
+                            request.plan().current_icount(),
+                            raw_icount,
+                        )
+                        .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
+                        self.request_checkpoint_vmstop("vcpu-idle-wait")?;
+                        // Leave the callback without authorizing an idle advance.
+                        // This hands QEMU's execution path back to its main loop so
+                        // it can consume the queued asynchronous stop request and
+                        // remain QMP-responsive at the fenced coordinate.
+                        return Ok(IdleSchedulerWaitDisposition::ReturnToQemu);
                     }
-                    PluginShmemOrdering::publish_pause_quiesced(
-                        self.slot.get(),
-                        request.plan().current_icount(),
-                        raw_icount,
-                        self.icount_shift,
-                    )
-                    .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
-                    self.request_checkpoint_vmstop("vcpu-idle-wait")?;
-                    // Leave the callback without authorizing an idle advance.
-                    // This hands QEMU's execution path back to its main loop so
-                    // it can consume the queued asynchronous stop request and
-                    // remain QMP-responsive at the fenced coordinate.
-                    return Ok(None);
                 }
                 RegionControlAction::Continue => {}
             }
@@ -1073,52 +1460,71 @@ impl LiveVcpuTimeCallbackState {
                 // Return to QEMU's main loop without authorizing guest or idle
                 // time. The registered eventfd callback publishes and
                 // acknowledges the requested post-device boundary.
-                return Ok(None);
+                return Ok(IdleSchedulerWaitDisposition::ReturnToQemu);
             }
-            let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
-            if let Some(network) = self.network.as_ref() {
-                let inbound = network.inbound.inbound();
-                PluginInboundFrames::reject_already_passed_ring_heads(
-                    [inbound],
-                    request.plan().current_icount(),
-                )
-                .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
-                if let Some(delivery_icount) =
-                    PluginInboundFrames::peek_next_delivery_icount([inbound])
-                        .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?
-                    && delivery_icount <= ceiling_icount
-                {
-                    return Ok(Some(
-                        request.plan().desired_wake_icount().min(delivery_icount),
+            let (ceiling_icount, stop_condition) =
+                PluginShmemOrdering::load_scheduler_advance(self.slot.get()).map_err(|source| {
+                    LiveVcpuTimeCallbackError::IdleHotLoop {
+                        source: IdleHotLoopError::AdvanceStopCondition { source },
+                    }
+                })?;
+            if stop_condition == AdvanceStopCondition::Ceiling {
+                if let Some(network) = self.network.as_ref() {
+                    let inbound = network.inbound.inbound();
+                    PluginInboundFrames::reject_already_passed_ring_heads(
+                        [inbound],
+                        request.plan().current_icount(),
+                    )
+                    .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
+                    if let Some(delivery_icount) =
+                        PluginInboundFrames::peek_next_delivery_icount([inbound])
+                            .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?
+                        && delivery_icount <= ceiling_icount
+                    {
+                        return Ok(IdleSchedulerWaitDisposition::AdvanceTo(
+                            request.plan().desired_wake_icount().min(delivery_icount),
+                        ));
+                    }
+                }
+                if ceiling_icount >= request.plan().desired_wake_icount() {
+                    return Ok(IdleSchedulerWaitDisposition::AdvanceTo(
+                        request.plan().desired_wake_icount(),
                     ));
                 }
             }
-            if ceiling_icount >= request.plan().desired_wake_icount() {
-                return Ok(Some(request.plan().desired_wake_icount()));
-            }
 
-            match PluginShmemOrdering::wait_on_wake_signal(self.slot.get(), wait).map_err(
-                |source| LiveVcpuTimeCallbackError::IdleHotLoop {
-                    source: IdleHotLoopError::FutexWait { source },
-                },
-            )? {
-                FutexWaitOutcome::Noop => {
-                    return Err(LiveVcpuTimeCallbackError::IdleHotLoop {
-                        source: IdleHotLoopError::WakeStillBlocked {
-                            desired_wake_icount: request.plan().desired_wake_icount(),
-                            ceiling_icount: PluginShmemOrdering::load_scheduler_ceiling(
-                                self.slot.get(),
-                            ),
-                        },
-                    });
+            let Some(status) =
+                self.idle_wake_wait
+                    .wait_once(vcpu_index, self.slot.get(), request.futex_wait())
+            else {
+                // The published wait was already runnable, so QEMU kept the BQL.
+                // Rescan inside this callback without crossing the FFI boundary.
+                continue;
+            };
+
+            // QEMU released and reacquired the BQL around an admitted raw wait.
+            // Clear the edge before handling every status. No result may reuse
+            // this callback's authorization basis or enqueue work after return.
+            self.all_halted_idle_handled.store(false, Ordering::Release);
+            return match status {
+                QemuIdleWakeWaitStatus::Woken
+                | QemuIdleWakeWaitStatus::ValueChanged
+                | QemuIdleWakeWaitStatus::Interrupted
+                | QemuIdleWakeWaitStatus::CpuChanged
+                | QemuIdleWakeWaitStatus::QemuWorkPending => {
+                    Ok(IdleSchedulerWaitDisposition::RescanInQemu)
                 }
-                FutexWaitOutcome::Runnable
-                | FutexWaitOutcome::ValueChanged
-                | FutexWaitOutcome::Interrupted
-                | FutexWaitOutcome::Woken => {
-                    wait = PluginShmemOrdering::prepare_futex_wait(self.slot.get());
+                QemuIdleWakeWaitStatus::InvalidArgument
+                | QemuIdleWakeWaitStatus::InvalidContext
+                | QemuIdleWakeWaitStatus::AlreadyIssued
+                | QemuIdleWakeWaitStatus::Unsupported
+                | QemuIdleWakeWaitStatus::SyscallError
+                | QemuIdleWakeWaitStatus::Unknown(_) => {
+                    Err(LiveVcpuTimeCallbackError::IdleWakeWaitRejected {
+                        status: status.into_raw(),
+                    })
                 }
-            }
+            };
         }
     }
 
@@ -1128,18 +1534,29 @@ impl LiveVcpuTimeCallbackState {
         raw_icount: u64,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         self.require_initialized_vcpu(vcpu_index)?;
-        if self.publish_pause_for_boundary(raw_icount, true, false, false, "vcpu-resume")? {
+        if self.publish_pause_for_boundary(raw_icount, true, false, None, "vcpu-resume")? {
             return Ok(());
         }
-        if PluginShmemOrdering::control_boundary_is_requested(self.slot.get()) {
-            // A control request wakes the idle futex only to return execution
-            // to QEMU's main loop. It is not guest execution authorization and
-            // must not clear halt tracking or replace the published future idle
-            // deadline before the post-device control callback acknowledges it.
-            return Ok(());
-        }
+        let control_boundary_requested =
+            PluginShmemOrdering::control_boundary_is_requested(self.slot.get());
         if self.idle_advance_is_pending() {
+            if control_boundary_requested {
+                return Ok(());
+            }
             return Err(LiveVcpuTimeCallbackError::ResumeWhileIdleAdvancePending);
+        }
+        let current_icount = self.logical_icount_for_raw(raw_icount)?;
+        deliver_selectable_reply_on_vcpu_resume(vcpu_index, current_icount).map_err(|source| {
+            LiveVcpuTimeCallbackError::WhiteboxCallback {
+                message: source.to_string(),
+            }
+        })?;
+        if control_boundary_requested {
+            // The exact resume callback remains the sole authority for a
+            // host-selected guest-memory write. Settle that reply before the
+            // control boundary, but retain halt tracking and the published
+            // future idle deadline until the control callback acknowledges it.
+            return Ok(());
         }
         let was_halted = {
             let mut halted_vcpus = self.try_halted_vcpus()?;
@@ -1159,7 +1576,7 @@ impl LiveVcpuTimeCallbackState {
         // so cross-vCPU capture is no safer here than in the matching idle
         // callback. Publish progress now and let the host's BQL-held terminal
         // boundary own the fingerprint.
-        self.publish_current_icount_for_boundary(raw_icount, true, false, "vcpu-resume")?;
+        self.publish_current_icount_for_boundary(raw_icount, true, "vcpu-resume")?;
         PluginShmemOrdering::mark_running_after_wake(self.slot.get());
         Ok(())
     }
@@ -1170,41 +1587,75 @@ impl LiveVcpuTimeCallbackState {
         // a host acquire-load of the odd successor orders every boundary field.
         // Halt tracking and idle publication remain owned by the real
         // idle/resume callbacks.
-        let boundary_requested =
-            PluginShmemOrdering::control_boundary_is_requested(self.slot.get());
-        // Fault-result polling uses this same control wake. Apply every command
-        // first so a same-icount fingerprint captures the committed state, not
-        // the pre-mutation state that happened to share its coordinate. The
-        // pump's reentrancy guard keeps nested max-advance queries inert.
-        let fault_pump_drained = self.pump_fault_commands(raw_icount)?;
-        if boundary_requested && let Some(fingerprint) = self.fingerprint.as_ref() {
-            // A checkpoint control wake can revisit an icount already sampled
-            // by the preceding scheduler quantum. Replace that sample with the
-            // exact stopped-state capture before acknowledging the boundary.
-            fingerprint
-                .capture_submitted
-                .store(false, Ordering::Release);
+        let control_boundary = self.slot.get().snapshot();
+        if control_boundary.control_boundary_ack & 1 != 0 {
+            let _fault_pump_drained = self.pump_fault_commands(raw_icount)?;
+            return Ok(());
         }
-        let paused =
-            self.publish_pause_for_boundary(raw_icount, true, true, true, "control-boundary")?;
+
+        let control_request = control_boundary.control_boundary_ack;
+        let fault_command_frontier = control_boundary.control_boundary_fault_command_frontier;
+        let fingerprint_capture_request = match control_boundary.control_boundary_capture_request {
+            0 => None,
+            request => Some(request),
+        };
+        let observed_capture_request = self
+            .fingerprint
+            .as_ref()
+            .and_then(|fingerprint| fingerprint.slot.get().pending_capture_request_v1());
+        if observed_capture_request != fingerprint_capture_request {
+            return Err(
+                LiveVcpuTimeCallbackError::ControlBoundaryCaptureRequestMismatch {
+                    bound: fingerprint_capture_request,
+                    observed: observed_capture_request,
+                },
+            );
+        }
+
+        // The host binds this request to an immutable producer frontier. Submit
+        // exactly those commands, commit all mutations due at this coordinate,
+        // and publish every resulting record before observing machine state.
+        // Any backpressure or concurrent producer advance leaves the request
+        // outstanding without a capture, pause, or acknowledgement.
+        if !self.settle_fault_commands_at_control_boundary(
+            raw_icount,
+            control_request,
+            fault_command_frontier,
+        )? {
+            return Ok(());
+        }
+        let paused = self.publish_pause_for_boundary(
+            raw_icount,
+            true,
+            true,
+            fingerprint_capture_request,
+            "control-boundary",
+        )?;
         if !paused {
             let current_icount = self.logical_icount_for_raw(raw_icount)?;
-            if boundary_requested {
+            let (ceiling_icount, _) = self.scheduler_advance()?;
+            if current_icount > ceiling_icount {
+                return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
+                    current_icount,
+                    ceiling_icount,
+                });
+            }
+            if self.fingerprint.is_some()
+                && let Some(capture_request) = fingerprint_capture_request
+            {
                 // The main-loop callback holds the BQL after every vCPU has
                 // quiesced, making cross-vCPU register capture safe even when
                 // the serialized RR owner is intentionally absent at idle.
                 self.publish_fingerprint_sample(
                     current_icount,
-                    true,
-                    true,
                     "requested-control-boundary",
+                    capture_request,
                 )?;
             }
             PluginShmemOrdering::publish_control_boundary(
                 self.slot.get(),
                 current_icount,
                 raw_icount,
-                self.icount_shift,
             )
             .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
             self.last_raw_icount.store(raw_icount, Ordering::Release);
@@ -1218,34 +1669,24 @@ impl LiveVcpuTimeCallbackState {
             // the lifecycle control path.
             self.all_halted_idle_handled.store(false, Ordering::Release);
         }
-        // A control acknowledgement fences both result and occurrence-event
-        // publication. If the lossless event ring is full, leave the request
-        // outstanding so the host can drain it and wake this callback again.
-        if fault_pump_drained {
-            PluginShmemOrdering::acknowledge_control_boundary(self.slot.get());
-        }
+        PluginShmemOrdering::acknowledge_control_boundary(self.slot.get());
+        self.control_boundary_dispatch_generation
+            .store(u32::MAX, Ordering::Release);
         Ok(())
     }
 
     #[cfg(test)]
     fn publish_current_icount(&self, raw_icount: u64) -> Result<(), LiveVcpuTimeCallbackError> {
-        self.publish_current_icount_for_boundary(raw_icount, true, true, "progress-publication")
+        self.publish_current_icount_for_boundary(raw_icount, true, "progress-publication")
     }
 
     fn publish_current_icount_for_boundary(
         &self,
         raw_icount: u64,
         checkpoint_handoff: bool,
-        sample_exact_ceiling: bool,
         boundary: &'static str,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
-        if self.publish_pause_for_boundary(
-            raw_icount,
-            checkpoint_handoff,
-            false,
-            false,
-            boundary,
-        )? {
+        if self.publish_pause_for_boundary(raw_icount, checkpoint_handoff, false, None, boundary)? {
             return Ok(());
         }
         let raw_icount_at_entry = self.last_raw_icount.load(Ordering::Acquire);
@@ -1258,21 +1699,11 @@ impl LiveVcpuTimeCallbackState {
             // The older callback has no remaining state to commit.
             return Ok(());
         }
-        if self.pending_idle_advance_active.load(Ordering::Acquire) {
-            let raw_icount_at_request =
-                self.pending_idle_advance_raw_icount.load(Ordering::Acquire);
-            if raw_icount == raw_icount_at_request {
-                return Ok(());
-            }
-            return Err(
-                LiveVcpuTimeCallbackError::GuestProgressWhileIdleAdvancePending {
-                    expected_raw_icount: raw_icount_at_request,
-                    observed_raw_icount: raw_icount,
-                },
-            );
+        if self.pending_idle_advance_clamp(raw_icount)?.is_some() {
+            return Ok(());
         }
         let current_icount = self.logical_icount_for_raw(raw_icount)?;
-        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
+        let (ceiling_icount, _) = self.scheduler_advance()?;
         if current_icount > ceiling_icount {
             return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
                 current_icount,
@@ -1281,50 +1712,19 @@ impl LiveVcpuTimeCallbackState {
         }
         let passed_delivery_floor_icount = self.last_icount.load(Ordering::Acquire);
         self.inject_due_network_inbound(current_icount, passed_delivery_floor_icount)?;
-        // Sample the fingerprint only at the host-driven ceiling, and gate on
-        // exact equality (not `>=`): the plugin clamps advance at the max-advance
-        // ceiling, so a reached publish at a host-driven boundary lands on
-        // `current_icount == ceiling_icount` by construction (the same
-        // exact-ceiling-stop the install/quantum gates prove). Exact equality is
-        // therefore both correct and determinism-load-bearing — it makes the
-        // sampled boundary a function of the host's ceiling alone, independent of
-        // how many intermediate progress publishes the busy advance emitted, so
-        // the guest-RAM SHA-256 runs once per host-read boundary rather than on
-        // every publish.
-        if sample_exact_ceiling && current_icount == ceiling_icount {
-            self.publish_fingerprint_sample(current_icount, false, false, boundary)?;
-        }
-        PluginShmemOrdering::publish_reached_icount(
-            self.slot.get(),
-            current_icount,
-            self.icount_shift,
-        )
-        .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+        PluginShmemOrdering::publish_reached_icount(self.slot.get(), current_icount)
+            .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
         self.last_raw_icount.store(raw_icount, Ordering::Release);
         self.last_icount.store(current_icount, Ordering::Release);
         Ok(())
-    }
-
-    /// Publishes an exact pause acknowledgement without advancing guest time.
-    ///
-    /// Busy guests acknowledge from the max-advance callback, while halted
-    /// guests acknowledge from the idle futex loop. Calling this helper from
-    /// every progress/resume entry also closes races where a pause arrives
-    /// between those two steady states.
-    #[cfg(test)]
-    fn publish_pause_if_requested(
-        &self,
-        raw_icount: u64,
-    ) -> Result<bool, LiveVcpuTimeCallbackError> {
-        self.publish_pause_for_boundary(raw_icount, true, false, false, "progress-publication")
     }
 
     fn publish_pause_for_boundary(
         &self,
         raw_icount: u64,
         checkpoint_handoff: bool,
-        wait_for_fingerprint_publication: bool,
         control_boundary_dispatch: bool,
+        fingerprint_capture_request: Option<u32>,
         boundary: &'static str,
     ) -> Result<bool, LiveVcpuTimeCallbackError> {
         self.restore_logical_time_if_requested(raw_icount, true)?;
@@ -1356,26 +1756,22 @@ impl LiveVcpuTimeCallbackState {
                     });
                 }
                 let current_icount = self.logical_icount_for_raw(raw_icount)?;
-                let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
+                let (ceiling_icount, _) = self.scheduler_advance()?;
                 if current_icount > ceiling_icount {
                     return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
                         current_icount,
                         ceiling_icount,
                     });
                 }
-                if current_icount == ceiling_icount {
-                    self.publish_fingerprint_sample(
-                        current_icount,
-                        wait_for_fingerprint_publication,
-                        control_boundary_dispatch,
-                        boundary,
-                    )?;
+                if self.fingerprint.is_some()
+                    && let Some(capture_request) = fingerprint_capture_request
+                {
+                    self.publish_fingerprint_sample(current_icount, boundary, capture_request)?;
                 }
                 PluginShmemOrdering::publish_pause_quiesced(
                     self.slot.get(),
                     current_icount,
                     raw_icount,
-                    self.icount_shift,
                 )
                 .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
                 self.last_raw_icount.store(raw_icount, Ordering::Release);
@@ -1407,15 +1803,78 @@ impl LiveVcpuTimeCallbackState {
         }
     }
 
+    /// Publishes and admits a doorbell-deferred stop from this exact callback.
+    fn request_selectable_vmstop_if_pending(
+        &self,
+        raw_icount: u64,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let Some(kind) = self.selectable_vmstop.claim() else {
+            return Ok(());
+        };
+
+        let result = (|| {
+            let current_icount = self.logical_icount_for_raw(raw_icount)?;
+            let (ceiling_icount, _) = self.scheduler_advance()?;
+            if current_icount > ceiling_icount {
+                return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
+                    current_icount,
+                    ceiling_icount,
+                });
+            }
+            if kind == DeferredVmstopKind::Selectable {
+                rebind_selectable_pending_boundary(current_icount).map_err(|source| {
+                    LiveVcpuTimeCallbackError::WhiteboxCallback {
+                        message: source.to_string(),
+                    }
+                })?;
+            }
+            PluginShmemOrdering::publish_pause_quiesced(
+                self.slot.get(),
+                current_icount,
+                raw_icount,
+            )
+            .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
+            self.last_raw_icount.store(raw_icount, Ordering::Release);
+            self.last_icount.store(current_icount, Ordering::Release);
+            let boundary = match kind {
+                DeferredVmstopKind::Selectable => "selectable-sim-publication",
+                DeferredVmstopKind::CampaignMarker => "campaign-marker-sim-publication",
+            };
+            self.request_checkpoint_vmstop(boundary)
+        })();
+        if let Err(error) = result {
+            self.selectable_vmstop.restore(kind);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Shares the process-local handoff with the sibling white-box callback.
+    pub(crate) fn selectable_vmstop_handoff(&self) -> Arc<SelectableVmstopHandoff> {
+        Arc::clone(&self.selectable_vmstop)
+    }
+
+    /// Shares the restore-adjusted raw-to-logical icount calibration.
+    pub(crate) fn logical_icount_offset(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.logical_icount_offset)
+    }
+
     fn arm_idle_advance(
         &self,
         raw_icount_at_request: u64,
         target_icount: u64,
         pending: PendingIdleAdvance,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
-        let mut pending_slot = self.try_pending_idle_advance()?;
+        timer_deadline_ps: Option<u64>,
+    ) -> Result<IdleAdvanceArmOutcome, LiveVcpuTimeCallbackError> {
+        let mut pending_slot = match self.pending_idle_advance.try_lock() {
+            Ok(pending_slot) => pending_slot,
+            Err(TryLockError::WouldBlock) => return Ok(IdleAdvanceArmOutcome::Occupied),
+            Err(TryLockError::Poisoned(_error)) => {
+                return Err(LiveVcpuTimeCallbackError::CallbackStatePoisoned);
+            }
+        };
         if pending_slot.is_some() {
-            return Err(LiveVcpuTimeCallbackError::IdleAdvanceAlreadyPending);
+            return Ok(IdleAdvanceArmOutcome::Occupied);
         }
         let observed_raw_icount = self.last_raw_icount.load(Ordering::Acquire);
         if observed_raw_icount != raw_icount_at_request {
@@ -1431,28 +1890,17 @@ impl LiveVcpuTimeCallbackState {
                 target_icount,
             });
         }
-        let scale = 1_u64.checked_shl(u32::from(self.icount_shift)).ok_or(
-            LiveVcpuTimeCallbackError::IdleAdvanceTargetOverflow {
-                target_icount,
-                icount_shift: self.icount_shift,
-            },
-        )?;
-        let target_virtual_ns = target_icount.checked_mul(scale).ok_or(
-            LiveVcpuTimeCallbackError::IdleAdvanceTargetOverflow {
-                target_icount,
-                icount_shift: self.icount_shift,
-            },
-        )?;
-        if target_virtual_ns != pending.target_virtual_ns() {
+        let target_tick = target_icount;
+        if target_tick != pending.target_tick() {
             return Err(
                 LiveVcpuTimeCallbackError::IdleAdvancePendingTargetMismatch {
                     target_icount,
-                    expected_target_virtual_ns: target_virtual_ns,
-                    pending_target_virtual_ns: pending.target_virtual_ns(),
+                    expected_target_tick: target_tick,
+                    pending_target_tick: pending.target_tick(),
                 },
             );
         }
-        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
+        let ceiling_icount = self.scheduler_idle_ceiling(target_icount)?;
         if target_icount > ceiling_icount {
             return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
                 current_icount: target_icount,
@@ -1460,10 +1908,19 @@ impl LiveVcpuTimeCallbackState {
             });
         }
 
+        // Wrapping remains unique among live requests because this slot admits
+        // only one generation at a time.
+        let generation = self.idle_advance_generation.fetch_add(1, Ordering::Relaxed);
+        let timer_witness = timer_deadline_ps
+            .map(|deadline_ps| self.virtual_timer_witness.arm(deadline_ps, target_icount))
+            .transpose()
+            .map_err(|source| LiveVcpuTimeCallbackError::VirtualTimerWitness { source })?;
         *pending_slot = Some(LivePendingIdleAdvance {
+            generation,
             raw_icount_at_request,
             target_icount,
             pending,
+            timer_witness,
             buffered_tx_payloads: Vec::new(),
         });
         self.pending_idle_advance_raw_icount
@@ -1472,7 +1929,7 @@ impl LiveVcpuTimeCallbackState {
             .store(target_icount, Ordering::Relaxed);
         self.pending_idle_advance_active
             .store(true, Ordering::Release);
-        Ok(())
+        Ok(IdleAdvanceArmOutcome::Armed { generation })
     }
 
     fn complete_idle_advance(
@@ -1504,9 +1961,30 @@ impl LiveVcpuTimeCallbackState {
                     observed_raw_icount,
                 });
             }
+            if let Some(timer_witness) = pending.timer_witness {
+                let evidence = self
+                    .virtual_timer_witness
+                    .query_completed(
+                        timer_witness,
+                        pending.raw_icount_at_request,
+                        pending.pending.target_tick(),
+                    )
+                    .map_err(|source| LiveVcpuTimeCallbackError::VirtualTimerWitness { source })?;
+                PluginShmemOrdering::publish_virtual_timer_witness(
+                    self.slot.get(),
+                    evidence.into_shared(),
+                );
+            }
             let logical_icount_offset = pending
                 .target_icount
-                .checked_sub(observed_raw_icount)
+                .checked_sub(
+                    observed_raw_icount
+                        .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+                        .ok_or(LiveVcpuTimeCallbackError::IdleAdvanceOffsetUnderflow {
+                            raw_icount: observed_raw_icount,
+                            target_icount: pending.target_icount,
+                        })?,
+                )
                 .ok_or(LiveVcpuTimeCallbackError::IdleAdvanceOffsetUnderflow {
                     raw_icount: observed_raw_icount,
                     target_icount: pending.target_icount,
@@ -1520,7 +1998,7 @@ impl LiveVcpuTimeCallbackState {
             }
             (pending.target_icount, logical_icount_offset)
         };
-        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
+        let ceiling_icount = self.scheduler_idle_ceiling(target_icount)?;
         if target_icount > ceiling_icount {
             return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
                 current_icount: target_icount,
@@ -1567,6 +2045,16 @@ impl LiveVcpuTimeCallbackState {
 
         self.logical_icount_offset
             .store(logical_icount_offset, Ordering::Release);
+        if self.sim_tick_observed.is_some() {
+            let observed_icount =
+                self.logical_icount_for_raw(self.last_raw_icount.load(Ordering::Acquire))?;
+            if observed_icount != target_icount {
+                return Err(LiveVcpuTimeCallbackError::SimTickTargetMismatch {
+                    target_icount,
+                    observed_icount,
+                });
+            }
+        }
         self.last_icount.store(target_icount, Ordering::Release);
         *pending_slot = None;
         self.pending_idle_advance_active
@@ -1578,12 +2066,8 @@ impl LiveVcpuTimeCallbackState {
         // expose a due device response and wake its coroutine. Publishing first
         // would let that wake re-enter QEMU while this callback still considered
         // the queued idle advance pending.
-        PluginShmemOrdering::publish_reached_icount(
-            self.slot.get(),
-            target_icount,
-            self.icount_shift,
-        )
-        .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+        PluginShmemOrdering::publish_reached_icount(self.slot.get(), target_icount)
+            .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
         Ok(target_icount)
     }
 
@@ -1727,22 +2211,20 @@ impl LiveVcpuTimeCallbackState {
         }
 
         let current_icount = self.callback_current_icount_without_pause()?;
-        let device_deadline =
-            PluginShmemOrdering::device_completion_deadline_icount(self.slot.get());
+        let device_deadline = PluginShmemOrdering::device_completion_deadline_tick(self.slot.get());
         if device_deadline == 0 {
             // The host publishes the deterministic deadline before signalling
             // the wake fd. QEMU re-fires this callback after that wake, so this
             // wall-time race changes only how long the coroutine stays parked.
             return Ok(());
         }
-        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
+        let ceiling_icount = self.scheduler_idle_ceiling(device_deadline)?;
         let exact_deadline = self
             .exact_deadline
             .read_next_deadline()
             .map_err(|source| LiveVcpuTimeCallbackError::ExactDeadlineRead { source })?;
         let plan = compute_idle_wake_plan(
             current_icount,
-            self.icount_shift,
             exact_deadline,
             None,
             SchedulerCeiling::new(ceiling_icount),
@@ -1761,47 +2243,93 @@ impl LiveVcpuTimeCallbackState {
             // this same icount without exposing host timing to the guest.
             return Ok(());
         }
-        let scale = 1_u64.checked_shl(u32::from(self.icount_shift)).ok_or(
-            LiveVcpuTimeCallbackError::IdleAdvanceTargetOverflow {
-                target_icount,
-                icount_shift: self.icount_shift,
-            },
-        )?;
-        let target_virtual_ns = target_icount.checked_mul(scale).ok_or(
-            LiveVcpuTimeCallbackError::IdleAdvanceTargetOverflow {
-                target_icount,
-                icount_shift: self.icount_shift,
-            },
-        )?;
-        let Some(pending) = self.enqueue_idle_advance_or_defer(target_virtual_ns)? else {
-            return Ok(());
-        };
-        self.arm_idle_advance(
+        self.arm_and_enqueue_idle_advance_or_defer(
             self.last_raw_icount.load(Ordering::Acquire),
             target_icount,
-            pending,
-        )
+            None,
+        )?;
+        Ok(())
     }
 
-    /// Enqueues an idle advance or defers behind QEMU's outstanding barrier.
+    /// Publishes and enqueues an idle advance, or defers behind QEMU's barrier.
     ///
     /// QEMU notifies every idle and device waiter after releasing an accepted
     /// advance, so `-EBUSY` means this callback can park and recompute its target
     /// on that deterministic retry. Guest execution remains frozen by the
     /// outstanding barrier in the meantime.
-    fn enqueue_idle_advance_or_defer(
+    fn arm_and_enqueue_idle_advance_or_defer(
         &self,
-        target_virtual_ns: u64,
-    ) -> Result<Option<PendingIdleAdvance>, LiveVcpuTimeCallbackError> {
-        match self.queued_idle_advance.enqueue(target_virtual_ns) {
-            Ok(pending) => Ok(Some(pending)),
+        raw_icount_at_request: u64,
+        target_icount: u64,
+        timer_deadline_ps: Option<u64>,
+    ) -> Result<bool, LiveVcpuTimeCallbackError> {
+        let prepared = self
+            .queued_idle_advance
+            .prepare(target_icount)
+            .map_err(|source| LiveVcpuTimeCallbackError::QueuedIdleAdvance { source })?;
+        let pending = prepared.pending();
+
+        // The QEMU enqueue schedules completion on the normal main loop. Make
+        // its exact identity visible first because that loop can run as soon as
+        // the vCPU callback releases the BQL, before the enqueue call returns.
+        let generation = match self.arm_idle_advance(
+            raw_icount_at_request,
+            target_icount,
+            pending,
+            timer_deadline_ps,
+        )? {
+            IdleAdvanceArmOutcome::Armed { generation } => generation,
+            IdleAdvanceArmOutcome::Occupied => return Ok(false),
+        };
+        match self.queued_idle_advance.enqueue_prepared(prepared) {
+            Ok(()) => Ok(true),
             Err(QueuedIdleAdvanceError::EnqueueRejected { status, .. })
                 if status == -libc::EBUSY =>
             {
-                Ok(None)
+                self.rollback_idle_advance(
+                    generation,
+                    raw_icount_at_request,
+                    target_icount,
+                    pending,
+                )?;
+                Ok(false)
             }
-            Err(source) => Err(LiveVcpuTimeCallbackError::QueuedIdleAdvance { source }),
+            Err(source) => {
+                self.rollback_idle_advance(
+                    generation,
+                    raw_icount_at_request,
+                    target_icount,
+                    pending,
+                )?;
+                Err(LiveVcpuTimeCallbackError::QueuedIdleAdvance { source })
+            }
         }
+    }
+
+    /// Removes the exact prepublished identity after QEMU rejects its enqueue.
+    fn rollback_idle_advance(
+        &self,
+        generation: u64,
+        raw_icount_at_request: u64,
+        target_icount: u64,
+        pending: PendingIdleAdvance,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let mut pending_slot = self.try_pending_idle_advance()?;
+        let Some(armed) = pending_slot.as_ref() else {
+            return Err(LiveVcpuTimeCallbackError::IdleAdvanceCompletionWithoutPending);
+        };
+        if armed.generation != generation
+            || armed.raw_icount_at_request != raw_icount_at_request
+            || armed.target_icount != target_icount
+            || armed.pending != pending
+        {
+            return Err(LiveVcpuTimeCallbackError::IdleAdvanceAlreadyPending);
+        }
+
+        *pending_slot = None;
+        self.pending_idle_advance_active
+            .store(false, Ordering::Release);
+        Ok(())
     }
 
     fn callback_current_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
@@ -1855,19 +2383,15 @@ impl LiveVcpuTimeCallbackState {
             return self.logical_icount_for_raw(latest_raw_icount);
         }
         let current_icount = self.logical_icount_for_raw(raw_icount)?;
-        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
+        let (ceiling_icount, _) = self.scheduler_advance()?;
         if current_icount > ceiling_icount {
             return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
                 current_icount,
                 ceiling_icount,
             });
         }
-        PluginShmemOrdering::publish_reached_icount(
-            self.slot.get(),
-            current_icount,
-            self.icount_shift,
-        )
-        .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+        PluginShmemOrdering::publish_reached_icount(self.slot.get(), current_icount)
+            .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
         self.last_raw_icount.store(raw_icount, Ordering::Release);
         self.last_icount.store(current_icount, Ordering::Release);
         Ok(current_icount)
@@ -1879,14 +2403,9 @@ impl LiveVcpuTimeCallbackState {
         boundary: &'static str,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         if !PluginShmemOrdering::device_io_active(self.slot.get()) {
-            if let Some(fingerprint) = self.fingerprint.as_ref() {
-                fingerprint
-                    .capture_submitted
-                    .store(false, Ordering::Release);
-            }
             let raw_icount = (self.icount_raw)();
             let _pause_observed =
-                self.publish_pause_for_boundary(raw_icount, true, true, false, boundary)?;
+                self.publish_pause_for_boundary(raw_icount, true, false, None, boundary)?;
         }
         Ok(())
     }
@@ -1895,10 +2414,12 @@ impl LiveVcpuTimeCallbackState {
     /// main-loop timer boundary.
     ///
     /// QEMU runs timer-produced bottom halves before the queued idle-advance
-    /// completion callback. A device request dispatched in that slice belongs
-    /// to the already-reached advance target even though the plugin has not yet
-    /// committed the corresponding logical-icount offset.
+    /// completion callback. The authoritative QEMU tick already includes that
+    /// advance even though the plugin has not committed its local offset yet.
     fn device_callback_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
+        if self.sim_tick_observed.is_some() {
+            return self.logical_icount_for_raw((self.icount_raw)());
+        }
         if self.pending_idle_advance_active.load(Ordering::Acquire) {
             return Ok(self
                 .pending_idle_advance_target_icount
@@ -1908,10 +2429,51 @@ impl LiveVcpuTimeCallbackState {
     }
 
     fn logical_icount_for_raw(&self, raw_icount: u64) -> Result<u64, LiveVcpuTimeCallbackError> {
+        if let Some(observe_tick) = self.sim_tick_observed {
+            let observed_tick = observe_tick();
+            let logical_icount = u64::try_from(observed_tick).map_err(|_error| {
+                LiveVcpuTimeCallbackError::InvalidSimTickObservation { observed_tick }
+            })?;
+            let offset = raw_icount
+                .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+                .and_then(|raw_tick| logical_icount.checked_sub(raw_tick))
+                .ok_or(LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
+                    raw_icount,
+                    logical_icount,
+                })?;
+            self.logical_icount_offset.store(offset, Ordering::Release);
+            return Ok(logical_icount);
+        }
         let offset = self.logical_icount_offset.load(Ordering::Acquire);
         raw_icount
-            .checked_add(offset)
+            .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+            .and_then(|raw_tick| raw_tick.checked_add(offset))
             .ok_or(LiveVcpuTimeCallbackError::LogicalIcountOverflow { raw_icount, offset })
+    }
+
+    fn fault_offset_for_raw(
+        &self,
+        raw_icount: u64,
+    ) -> Result<u64, crate::fault_command::FaultCommandBridgeError> {
+        let Some(observe_tick) = self.sim_tick_observed else {
+            return Ok(self.logical_icount_offset.load(Ordering::Acquire));
+        };
+        let observed_tick = observe_tick();
+        let offset = u64::try_from(observed_tick)
+            .ok()
+            .and_then(|tick| {
+                raw_icount
+                    .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+                    .and_then(|raw_tick| tick.checked_sub(raw_tick))
+            })
+            .ok_or(
+                crate::fault_command::FaultCommandBridgeError::InvalidSimTickObservation {
+                    observed_tick,
+                    raw_icount,
+                },
+            )?;
+        self.logical_icount_offset.store(offset, Ordering::Release);
+        Ok(offset)
     }
 
     fn try_pending_idle_advance(
@@ -1941,99 +2503,6 @@ impl LiveVcpuTimeCallbackState {
         }
     }
 
-    /// Returns the scheduler ceiling expressed in raw retired-instruction units.
-    ///
-    /// QEMU's sim-loop budget clamp compares this value against
-    /// `qemu_plugin_icount_raw()` (raw retired instructions), whereas the
-    /// scheduler ceiling published in shared memory is a *logical* icount that
-    /// includes the accumulated idle-jump offset (`logical = raw + offset`). The
-    /// clamp only stops the guest at the authorized horizon when both operands
-    /// share a space, so the logical ceiling is translated back to raw by
-    /// subtracting the current offset. On the busy path the offset is zero and
-    /// this is the ceiling unchanged; after an idle jump advanced virtual time
-    /// without retiring instructions, the offset is positive and this stops the
-    /// guest from retiring instructions past its logical authorization.
-    /// Returns how far QEMU's sim loop may advance the guest, in raw icount.
-    ///
-    /// This is the callback the live TCG sim loop actually queries to bound a
-    /// running guest (registered via `register_sim_shmem_dispatch`); it is the
-    /// live advance seam, not [`compute_idle_wake_plan`], which the sim loop
-    /// never calls. The budget is the scheduler ceiling minus this node's
-    /// logical icount offset.
-    ///
-    /// When a device-I/O request is in flight, the budget freezes at the current
-    /// coordinate until the host publishes the deterministic completion
-    /// deadline, then advances at most to that deadline. This closes the
-    /// request-observation race: host wall time may delay publication, but the
-    /// guest cannot retire instructions between the request callback and the
-    /// publication that pins its completion. A past deadline likewise
-    /// saturates the budget to zero. The distinct case of a guest *halted* on
-    /// device I/O (where the sim loop stops querying this callback altogether)
-    /// is closed separately by the device-wait callback of the SCHED-8 delivery
-    /// patch.
-    fn max_advance_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
-        let raw_icount = (self.icount_raw)();
-        if self.publish_pause_for_boundary(raw_icount, true, false, false, "max-advance")? {
-            return Ok(raw_icount);
-        }
-        let _fault_pump_drained = self.pump_fault_commands(raw_icount)?;
-        let ceiling = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
-        let offset = self.logical_icount_offset.load(Ordering::Acquire);
-        let effective_ceiling = if PluginShmemOrdering::device_io_active(self.slot.get()) {
-            match PluginShmemOrdering::device_completion_deadline_icount(self.slot.get()) {
-                0 => ceiling.min(self.last_icount.load(Ordering::Acquire)),
-                deadline => ceiling.min(deadline),
-            }
-        } else {
-            ceiling
-        };
-        let raw_ceiling = effective_ceiling.saturating_sub(offset);
-        if self
-            .preemption_enqueue_active
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            // QEMU validates a newly enqueued command by querying this callback.
-            // That nested query must observe the scheduler ceiling without
-            // attempting to enqueue the same mailbox command recursively.
-            return Ok(raw_ceiling);
-        }
-        let _guard = PreemptionEnqueueGuard(&self.preemption_enqueue_active);
-        let Some(published) = self
-            .slot
-            .get()
-            .pending_preemption_command()
-            .map_err(|source| LiveVcpuTimeCallbackError::PreemptionMailbox { source })?
-        else {
-            return Ok(raw_ceiling);
-        };
-        let command = published.command;
-        let raw_at = logical_preemption_icount_to_raw("at", command.at_icount, offset)?;
-        let raw_deadline =
-            logical_preemption_icount_to_raw("deadline", command.deadline_icount, offset)?;
-        let raw_command_ceiling =
-            logical_preemption_icount_to_raw("ceiling", command.ceiling_icount, offset)?;
-        let window =
-            PreemptionWindow::new(raw_deadline, SchedulerCeiling::new(raw_command_ceiling))
-                .map_err(|source| LiveVcpuTimeCallbackError::Preemption { source })?;
-        let decision = match command.kind {
-            SchedulerPreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
-                PluginPreemptionDecision::vcpu_switch(raw_at, from_vcpu, to_vcpu)
-            }
-            SchedulerPreemptionKind::InterruptAt { target_vcpu, irq } => {
-                PluginPreemptionDecision::interrupt_at(raw_at, target_vcpu, irq)
-            }
-        };
-        self.preemption_injector
-            .enqueue_decision(decision, window, self.vcpu_count)
-            .map_err(|source| LiveVcpuTimeCallbackError::Preemption { source })?;
-        self.slot
-            .get()
-            .acknowledge_preemption_command(published.sequence)
-            .map_err(|source| LiveVcpuTimeCallbackError::PreemptionMailbox { source })?;
-        Ok(raw_ceiling.min(raw_at))
-    }
-
     fn pump_fault_commands(&self, raw_icount: u64) -> Result<bool, LiveVcpuTimeCallbackError> {
         if self
             .fault_command_pump_active
@@ -2047,7 +2516,6 @@ impl LiveVcpuTimeCallbackState {
             return Ok(true);
         }
         let _pump_active = FaultCommandPumpGuard(&self.fault_command_pump_active);
-        let logical_icount_offset = self.logical_icount_offset.load(Ordering::Acquire);
         let mut bridge = match self.fault_commands.try_lock() {
             Ok(bridge) => bridge,
             Err(TryLockError::WouldBlock) => {
@@ -2057,15 +2525,119 @@ impl LiveVcpuTimeCallbackState {
                 return Err(LiveVcpuTimeCallbackError::CallbackStatePoisoned);
             }
         };
-        #[cfg(not(test))]
         let bridge = &mut *bridge;
-        #[cfg(test)]
-        let Some(bridge) = bridge.as_mut() else {
-            return Ok(true);
+        let drained = bridge
+            .pump_with_offset_reader(raw_icount, &|| self.fault_offset_for_raw(raw_icount))
+            .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })?;
+        self.logical_icount_for_raw(raw_icount)?;
+        Ok(drained)
+    }
+
+    fn settle_fault_commands_at_control_boundary(
+        &self,
+        raw_icount: u64,
+        control_request: u32,
+        fault_command_frontier: u64,
+    ) -> Result<bool, LiveVcpuTimeCallbackError> {
+        if self
+            .fault_command_pump_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            self.emit_control_boundary_defer_diagnostic(
+                raw_icount,
+                control_request,
+                fault_command_frontier,
+                "pump-active",
+            );
+            return Ok(false);
+        }
+        let _pump_active = FaultCommandPumpGuard(&self.fault_command_pump_active);
+        let mut bridge = match self.fault_commands.try_lock() {
+            Ok(bridge) => bridge,
+            Err(TryLockError::WouldBlock) => {
+                return Err(LiveVcpuTimeCallbackError::FaultCommandStateBorrowed);
+            }
+            Err(TryLockError::Poisoned(_error)) => {
+                return Err(LiveVcpuTimeCallbackError::CallbackStatePoisoned);
+            }
         };
-        bridge
-            .pump(logical_icount_offset, raw_icount)
-            .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })
+        let bridge = &mut *bridge;
+
+        if !bridge
+            .pump_through_frontier_with_offset_reader(raw_icount, fault_command_frontier, &|| {
+                self.fault_offset_for_raw(raw_icount)
+            })
+            .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })?
+        {
+            self.emit_control_boundary_defer_diagnostic(
+                raw_icount,
+                control_request,
+                fault_command_frontier,
+                "pump-through-frontier-pending",
+            );
+            return Ok(false);
+        }
+        if self
+            .control_boundary_dispatch_generation
+            .load(Ordering::Acquire)
+            != control_request
+        {
+            bridge
+                .dispatch_node_boundary(raw_icount)
+                .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })?;
+            self.control_boundary_dispatch_generation
+                .store(control_request, Ordering::Release);
+        }
+        self.logical_icount_for_raw(raw_icount)?;
+        let refreshed_offset = self.logical_icount_offset.load(Ordering::Acquire);
+        if !bridge
+            .drain_publications(refreshed_offset)
+            .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })?
+        {
+            self.emit_control_boundary_defer_diagnostic(
+                raw_icount,
+                control_request,
+                fault_command_frontier,
+                "publication-backpressure",
+            );
+            return Ok(false);
+        }
+        let settled = bridge.command_frontier_is_settled(fault_command_frontier);
+        if !settled {
+            self.emit_control_boundary_defer_diagnostic(
+                raw_icount,
+                control_request,
+                fault_command_frontier,
+                "command-frontier-unsettled",
+            );
+        }
+        Ok(settled)
+    }
+
+    fn emit_control_boundary_defer_diagnostic(
+        &self,
+        raw_icount: u64,
+        control_request: u32,
+        fault_command_frontier: u64,
+        reason: &'static str,
+    ) {
+        if self
+            .control_boundary_defer_diagnostic_generation
+            .swap(u64::from(control_request), Ordering::AcqRel)
+            == u64::from(control_request)
+        {
+            return;
+        }
+        let token_after = self.slot.get().snapshot().control_boundary_ack;
+        // crucible-lint: allow direct-diagnostic -- this bounded callback record
+        // is the only channel that can identify an unacknowledged retry reason.
+        let _write_result = std::io::Write::write_fmt(
+            &mut std::io::stderr().lock(),
+            format_args!(
+                "CRUCIBLE-RR-CONTROL-DEFER-V1 reason={reason} raw_icount={raw_icount} token_before={control_request} token_after={token_after} fault_command_frontier={fault_command_frontier}\n"
+            ),
+        );
     }
 
     fn initialize_fault_commands(&self) -> Result<(), LiveVcpuTimeCallbackError> {
@@ -2078,12 +2650,7 @@ impl LiveVcpuTimeCallbackState {
                 return Err(LiveVcpuTimeCallbackError::CallbackStatePoisoned);
             }
         };
-        #[cfg(not(test))]
         let bridge = &mut *bridge;
-        #[cfg(test)]
-        let Some(bridge) = bridge.as_mut() else {
-            return Ok(());
-        };
         bridge
             .initialize()
             .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })
@@ -2111,20 +2678,6 @@ impl LiveVcpuTimeCallbackState {
             Err(LiveVcpuTimeCallbackError::VcpuNotInitialized { vcpu_index })
         }
     }
-}
-
-fn raw_icount_publication_is_superseded(
-    raw_icount_at_entry: u64,
-    raw_icount: u64,
-    latest_raw_icount: u64,
-) -> Result<bool, LiveVcpuTimeCallbackError> {
-    if raw_icount < raw_icount_at_entry {
-        return Err(LiveVcpuTimeCallbackError::IcountRegressed {
-            previous_icount: raw_icount_at_entry,
-            current_icount: raw_icount,
-        });
-    }
-    Ok(raw_icount < latest_raw_icount)
 }
 
 struct NetworkTxActiveGuard<'a>(&'a AtomicBool);
@@ -2161,7 +2714,7 @@ extern "C" fn crucible_qemu_plugin_live_vcpu_and_whitebox_init_cb(
     userdata: *mut c_void,
 ) {
     crucible_qemu_plugin_live_vcpu_init_cb(vcpu_index, userdata);
-    crucible_qemu_plugin_live_whitebox_vcpu_init_cb(vcpu_index, std::ptr::null_mut());
+    crucible_qemu_plugin_live_whitebox_vcpu_init_cb(vcpu_index, userdata);
 }
 
 pub(crate) extern "C" fn crucible_qemu_plugin_live_vcpu_idle_cb(
@@ -2200,9 +2753,10 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_publish_icount_cb(
     let Some(_in_flight) = state.callback_guard() else {
         return;
     };
-    if let Err(error) =
-        state.publish_current_icount_for_boundary(current_icount, true, true, "sim-publication")
-    {
+    let result = state
+        .publish_current_icount_for_boundary(current_icount, true, "sim-publication")
+        .and_then(|()| state.request_selectable_vmstop_if_pending(current_icount));
+    if let Err(error) = result {
         abort_live_callback(error);
     }
 }
@@ -2234,23 +2788,22 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_max_advance_icount_cb(
     }
 }
 
-fn logical_preemption_icount_to_raw(
-    field: &'static str,
-    logical_icount: u64,
-    logical_icount_offset: u64,
-) -> Result<u64, LiveVcpuTimeCallbackError> {
-    logical_icount.checked_sub(logical_icount_offset).ok_or(
-        LiveVcpuTimeCallbackError::PreemptionIcountBeforeRawOrigin {
-            field,
-            logical_icount,
-            logical_icount_offset,
-        },
-    )
+pub(crate) extern "C" fn crucible_qemu_plugin_live_logical_ceiling_cb(
+    userdata: *mut c_void,
+) -> u64 {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return 0;
+    };
+    match state.logical_ceiling() {
+        Ok(ceiling) => ceiling,
+        Err(error) => abort_live_callback(error),
+    }
 }
 
 pub(crate) extern "C" fn crucible_qemu_plugin_live_time_advance_completion_cb(
     status: std::os::raw::c_int,
-    target_virtual_ns: i64,
+    target_tick: i64,
     userdata: *mut c_void,
 ) {
     let state = callback_userdata_or_abort(userdata);
@@ -2258,7 +2811,7 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_time_advance_completion_cb(
         return;
     };
     if let Err(error) =
-        state.complete_idle_advance(TimeAdvanceCompletion::from_qemu(status, target_virtual_ns))
+        state.complete_idle_advance(TimeAdvanceCompletion::from_qemu(status, target_tick))
     {
         abort_live_callback(error);
     }
@@ -2335,4 +2888,4 @@ pub(super) fn clear_live_vcpu_time_state_for_test() {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

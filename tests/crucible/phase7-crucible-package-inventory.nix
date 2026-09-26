@@ -14,8 +14,8 @@
   guestNix = builtins.readFile ../../pkgs/tools/crucible-guest.nix;
   fleetStoreNix = builtins.readFile ../../pkgs/tools/crucible-fleet-store.nix;
   cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  expectedCargoDepsHash = "sha256-wdfH6cGtVp6EUr8KEZp9DGir7+WQ7AlCPWuT+tOhWBo=";
-  patchSeries = import ../../pkgs/emulation/qemu-patches/_series.nix;
+  expectedCargoDepsHash = "sha256-Rax7Te32Xr+wazk4vF63nEGuFDBKHxAJ+lCXkRo/bxw=";
+  atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   packageFiles = [
     {
       label = "pkgs/emulation/qemu.nix";
@@ -36,7 +36,7 @@
     {
       label = "pkgs/kernel/linux-crucible.nix";
       content = linuxCrucibleNix;
-      builder = "linuxWith";
+      builder = "linuxFixtureWith";
       pname = "pname = \"linux-crucible\";";
       needsBuildDeps = false;
       needsRuntimeDeps = false;
@@ -78,15 +78,15 @@
   requiredPackageAttrs = [
     {
       attr = "qemu";
-      expectedName = "qemu-${patchSeries.qemuVersion}";
+      expectedName = "qemu-${atomicPatch.qemuVersion}";
     }
     {
       attr = "qemu-crucible";
-      expectedName = "qemu-crucible-${patchSeries.qemuVersion}";
+      expectedName = "qemu-crucible-${atomicPatch.qemuVersion}";
     }
     {
       attr = "qemu-crucible-reference";
-      expectedName = "qemu-crucible-reference-${patchSeries.qemuVersion}";
+      expectedName = "qemu-crucible-reference-${atomicPatch.qemuVersion}";
     }
     {
       attr = "crucible-qemu-plugin";
@@ -172,22 +172,22 @@
     lib.optionals (pkgs.qemu.version != pkgs.qemu-crucible.version) [
       "pkgs.qemu and pkgs.qemu-crucible must share the same pinned QEMU version"
     ]
-    ++ lib.optionals (pkgs.qemu.passthru.series.qemuSourceHash != pkgs.qemu-crucible.passthru.series.qemuSourceHash) [
+    ++ lib.optionals (pkgs.qemu.passthru.atomicPatch.qemuSourceHash != pkgs.qemu-crucible.passthru.atomicPatch.qemuSourceHash) [
       "pkgs.qemu and pkgs.qemu-crucible must share the same pinned QEMU source hash"
     ]
-    ++ lib.optionals (!(hasInfix "qemu_crucible_patches_applied=false" pkgs.qemu.passthru.qemuBuildIdentityMaterial)) [
+    ++ lib.optionals (!(hasInfix "qemu_crucible_atomic_patch_applied=false" pkgs.qemu.passthru.qemuBuildIdentityMaterial)) [
       "pkgs.qemu: production QEMU must be unpatched"
     ]
     ++ lib.optionals (!(hasInfix "qemu_sim_capability=none" pkgs.qemu.passthru.qemuBuildIdentityMaterial)) [
       "pkgs.qemu: production QEMU must not advertise Crucible sim capability"
     ]
-    ++ lib.optionals (!(hasInfix "qemu_crucible_patches_applied=true" pkgs.qemu-crucible.passthru.qemuBuildIdentityMaterial)) [
-      "pkgs.qemu-crucible: patched QEMU must apply the Crucible patch series"
+    ++ lib.optionals (!(hasInfix "qemu_crucible_atomic_patch_applied=true" pkgs.qemu-crucible.passthru.qemuBuildIdentityMaterial)) [
+      "pkgs.qemu-crucible: patched QEMU must apply the Crucible atomic patch"
     ]
     ++ lib.optionals (!(hasInfix "qemu_sim_capability=qemu-crucible" pkgs.qemu-crucible.passthru.qemuBuildIdentityMaterial)) [
       "pkgs.qemu-crucible: patched QEMU must advertise Crucible sim capability"
     ]
-    ++ lib.optionals (!(hasInfix "qemu_crucible_patches_applied=false" pkgs.qemu-crucible-reference.passthru.qemuBuildIdentityMaterial)) [
+    ++ lib.optionals (!(hasInfix "qemu_crucible_atomic_patch_applied=false" pkgs.qemu-crucible-reference.passthru.qemuBuildIdentityMaterial)) [
       "pkgs.qemu-crucible-reference: reference QEMU must be unpatched"
     ]
     ++ lib.optionals (!(hasInfix "qemu_sim_capability=none" pkgs.qemu-crucible-reference.passthru.qemuBuildIdentityMaterial)) [
@@ -266,11 +266,11 @@
       }
       {
         label = "qemu-crucible explicit override";
-        needle = "qemu-crucible = callPackage ./emulation/qemu.nix";
+        needle = "qemu-crucible = mkQemuPackage {";
       }
       {
         label = "qemu-crucible reference override";
-        needle = "qemu-crucible-reference = callPackage ./emulation/qemu.nix";
+        needle = "qemu-crucible-reference = mkQemuPackage {";
       }
     ];
 
@@ -321,13 +321,13 @@ in
             emulation_packages=pkgs.qemu,pkgs.qemu-crucible,pkgs.qemu-crucible-reference,pkgs.crucible-qemu-plugin
             kernel_packages=pkgs.linux-crucible
             tool_packages=pkgs.crucible,pkgs.crucible-fixtures,pkgs.crucible-guest,pkgs.crucible-fleet-store
-            qemu_version=${patchSeries.qemuVersion}
-            qemu_source_hash=${patchSeries.qemuSourceHash}
-            production_qemu_patches_applied=false
+            qemu_version=${atomicPatch.qemuVersion}
+            qemu_source_hash=${atomicPatch.qemuSourceHash}
+            production_qemu_atomic_patch_applied=false
             production_qemu_sim_capability=none
-            patched_qemu_patches_applied=true
+            patched_qemu_atomic_patch_applied=true
             patched_qemu_sim_capability=qemu-crucible
-            reference_qemu_patches_applied=false
+            reference_qemu_atomic_patch_applied=false
             reference_qemu_sim_capability=none
             cargo_deps=fetchCargoVendor
             package_structure_checked=true

@@ -8,10 +8,10 @@ use std::collections::BTreeSet;
 
 use crucible::{
     AssertionId, BLACK_BOX_OBSERVATION_KIND_COUNT, BLACK_BOX_OBSERVATION_KINDS,
-    BlackBoxObservationKind, ConditionEvaluationError, EventClass, EventLog, EventLogIcountStamp,
+    BlackBoxObservationKind, ConditionEvaluationError, EventLog, EventLogTickStamp,
     GuestAssertionDetail, GuestAssertionKind, GuestAssertionMarker, Icount, IoEventKind, MarkerId,
     NodeId, NodeLifecycle, ObservableEvent, ResolvedMemPlace, SchedulerEvaluationBoundaryKind,
-    VirtualTime,
+    SchedulerEventLogClass, VirtualTime,
 };
 
 #[test]
@@ -36,7 +36,7 @@ fn black_box_surface_catalog_is_closed_and_complete() {
 }
 
 #[test]
-fn black_box_surface_events_are_icount_stamped_observational_entries() {
+fn black_box_surface_events_have_exact_ticks_and_optional_raw_retirement() {
     let expected_surface = BTreeSet::from([
         BlackBoxObservationKind::NetworkTraffic,
         BlackBoxObservationKind::DiskOrNinePIo,
@@ -110,16 +110,23 @@ fn black_box_surface_events_are_icount_stamped_observational_entries() {
     ];
 
     let mut entries = Vec::new();
-    for (sequence, (kind, event, expected_icount, expected_node, payload_kind)) in
+    for (sequence, (kind, event, expected_tick, expected_node, payload_kind)) in
         cases.into_iter().enumerate()
     {
         assert_eq!(event.black_box_observation_kind(), Some(kind));
 
         let entry =
             crucible::test_support::condition_observation_entry_for_test(sequence as u64, &event);
-        assert_eq!(entry.class(), EventClass::Observational);
-        assert_eq!(entry.time().icount.icount, icount(expected_icount));
-        assert_eq!(&entry.time().icount.node, &expected_node);
+        assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
+        let expected_retired = matches!(
+            kind,
+            BlackBoxObservationKind::ArchitecturalStateSample
+                | BlackBoxObservationKind::BasicBlockCoverage
+        )
+        .then(|| icount(expected_tick));
+        assert_eq!(entry.time().stamp.tick.ticks, expected_tick);
+        assert_eq!(entry.time().stamp.retired, expected_retired);
+        assert_eq!(&entry.time().stamp.node, &expected_node);
         assert_eq!(entry.event_payload().kind(), payload_kind);
         entries.push(entry);
     }
@@ -158,7 +165,7 @@ fn condition_prefix_enforces_black_box_surface_stamps() {
         0xfeed,
     );
     let entry = crucible::test_support::condition_observation_entry_for_test(0, &sample);
-    let corrupt = crucible::test_support::condition_entry_with_icount_stamp_for_test(
+    let corrupt = crucible::test_support::condition_entry_with_retirement_witness_for_test(
         entry,
         Some(node("db-0")),
         icount(12),
@@ -169,13 +176,15 @@ fn condition_prefix_enforces_black_box_surface_stamps() {
         Err(ConditionEvaluationError::InvalidBlackBoxObservationStamp {
             sequence: 0,
             kind: BlackBoxObservationKind::ArchitecturalStateSample,
-            expected: EventLogIcountStamp {
+            expected: EventLogTickStamp {
                 node: Some(node("db-0")),
-                icount: icount(13),
+                tick: crucible::SimInstant { ticks: 13 },
+                retired: Some(icount(13)),
             },
-            actual: EventLogIcountStamp {
+            actual: EventLogTickStamp {
                 node: Some(node("db-0")),
-                icount: icount(12),
+                tick: crucible::SimInstant { ticks: 13 },
+                retired: Some(icount(12)),
             },
         })
     );
@@ -263,7 +272,6 @@ fn hung_lifecycle_round_trips_through_property_serialization() {
         ready_point: crucible::ReadyPoint::FixedIcount { icount: icount(1) },
         white_box: crucible::WhiteBoxPolicy::Disabled,
         smp_vcpus: crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,

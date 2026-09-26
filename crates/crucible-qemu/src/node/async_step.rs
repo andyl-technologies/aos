@@ -3,10 +3,11 @@
 use super::*;
 
 pub(super) struct QemuNodeAsyncStepTarget<'a> {
-    pub(super) child: &'a mut QemuNodeChild,
+    pub(super) child: &'a mut QemuNodeProcessControl,
     pub(super) channels: &'a mut QemuNodeChannels,
     pub(super) lifecycle_state: &'a mut QemuNodeLifecycleState,
     pub(super) shutdown_policy: QemuShutdownPolicy,
+    pub(super) stop_condition: crate::QemuQuantumStopCondition,
 }
 
 impl QemuAsyncCrashEscalationTarget for QemuNodeAsyncStepTarget<'_> {
@@ -24,11 +25,21 @@ impl QemuAsyncCrashEscalationTarget for QemuNodeAsyncStepTarget<'_> {
 impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
     type PendingQuantum = QemuNodePendingQuantum;
 
+    fn child_exit_status(
+        &mut self,
+    ) -> Result<Option<std::process::ExitStatus>, QemuAsyncDriverTargetError> {
+        self.child
+            .try_wait_natural_exit()
+            .map_err(|error| QemuAsyncDriverTargetError::new("poll QEMU child", error.to_string()))
+    }
+
     fn start_quantum(
         &mut self,
         horizon: ExecutionHorizon,
     ) -> Result<Self::PendingQuantum, QemuNodeChannelError> {
-        self.channels.shmem_hot_path.start_quantum(horizon)
+        self.channels
+            .shmem_hot_path
+            .start_quantum(horizon, self.stop_condition)
     }
 
     fn advance_completion_fence(
@@ -47,28 +58,30 @@ impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
 }
 
 pub(super) fn shutdown_node_child(
-    child: &mut QemuNodeChild,
+    child: &mut QemuNodeProcessControl,
     channels: &mut QemuNodeChannels,
     lifecycle_state: &mut QemuNodeLifecycleState,
     shutdown_policy: QemuShutdownPolicy,
 ) -> Result<QemuShutdownReport, QemuNodeError> {
-    if child.reaped() {
-        *lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
-        return Ok(QemuShutdownReport {
+    let report = if child.reaped() {
+        QemuShutdownReport {
             attempts: Vec::new(),
             failures: Vec::new(),
             reaped: true,
             leaked: false,
-        });
-    }
-
-    let mut target = QemuNodeShutdownTarget {
-        child,
-        plugin_control: channels.plugin_control.as_mut(),
-        qmp_machine_control: channels.qmp_machine_control.as_mut(),
+        }
+    } else {
+        let mut target = QemuNodeShutdownTarget {
+            child,
+            plugin_control: channels.plugin_control.as_mut(),
+            qmp_machine_control: channels.qmp_machine_control.as_mut(),
+        };
+        shutdown_qemu_child(&mut target, shutdown_policy).map_err(QemuNodeError::from_shutdown)?
     };
-    let report =
-        shutdown_qemu_child(&mut target, shutdown_policy).map_err(QemuNodeError::from_shutdown)?;
+
+    channels
+        .qmp_machine_control
+        .retire_process_scoped_endpoints_after_reap();
     *lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
     Ok(report)
 }

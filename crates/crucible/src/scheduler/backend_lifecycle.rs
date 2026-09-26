@@ -3,6 +3,54 @@
 use super::*;
 
 impl SingleScheduler {
+    /// Adopts the exact suffix appended by one paused live-backend operation.
+    ///
+    /// The backend receives a clone of [`Self::event_log`] while it drains or
+    /// shuts down. This method then replays only entries at or after the
+    /// scheduler's current dense sequence through the authoritative append
+    /// path and requires the resulting offset to equal the backend's complete
+    /// offset. It therefore cannot splice a foreign prefix or silently omit a
+    /// backend-observed suffix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `backend_log` does
+    /// not extend the exact current prefix, does not retain the required
+    /// suffix, or the replayed entries produce another final offset.
+    pub fn adopt_live_backend_event_log_suffix(
+        &mut self,
+        backend_log: &EventLog,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        let before = self.event_log.offset();
+        if backend_log.offset().events < before.events
+            || backend_log.offset().bytes < before.bytes
+            || backend_log.condition_base_events > before.events
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "live backend event log does not retain the scheduler's current prefix",
+                ),
+            });
+        }
+        let suffix = backend_log
+            .condition_entries
+            .iter()
+            .filter(|entry| entry.sequence() >= before.events)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut staged = self.event_log.clone();
+        let appended = staged.append_entries(suffix)?;
+        if staged.offset() != backend_log.offset() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "live backend event-log suffix does not reproduce its final offset",
+                ),
+            });
+        }
+        self.event_log = staged;
+        Ok(appended)
+    }
+
     /// Validates one VM identity without changing scheduler state.
     ///
     /// # Errors
@@ -53,24 +101,26 @@ impl SingleScheduler {
     /// `Halted` models a powered-off VM that may later return to `Runnable`;
     /// `Done` models permanent failure. The node counter is preserved so a
     /// replacement QEMU process generation can resume the same logical timeline.
+    /// Reactivating an inactive node joins the current shared frontier without
+    /// retiring instructions; native timer deadlines retain their remaining
+    /// durations. Global deadlines and queued inputs retain their coordinates.
     ///
     /// # Errors
     ///
     /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name
-    /// exactly one VM scheduler node.
+    /// exactly one VM scheduler node or resuming a native timer would overflow.
+    /// Returns [`SchedulerError::TimeConversion`] if a node clock cannot be projected.
     pub fn set_vm_node_activity(
         &mut self,
         node: &NodeId,
         activity: SchedulerNodeActivity,
     ) -> Result<(), SchedulerError> {
         let index = self.vm_node_index(node)?;
-        self.nodes[index].activity = activity;
-        if matches!(
-            activity,
-            SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-        ) {
-            self.device_horizons.remove(node);
-        }
+        let delta = self.resume_time_delta(index, activity)?;
+        let frontier = self
+            .frontier_after_activity_change(|candidate| (candidate == node).then_some(activity))?;
+        self.commit_node_activity(index, activity, delta);
+        self.frontier = frontier;
         Ok(())
     }
 
@@ -82,25 +132,37 @@ impl SingleScheduler {
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError`] when any identity is absent or is not a VM.
+    /// Returns [`SchedulerError`] when any identity is absent, repeated, or not a VM,
+    /// a node clock cannot be projected, or resuming a native timer would overflow.
     /// The scheduler is unchanged on error.
     pub fn set_vm_node_activities(
         &mut self,
         activities: &[(NodeId, SchedulerNodeActivity)],
     ) -> Result<(), SchedulerError> {
-        for (node, _) in activities {
-            let _index = self.vm_node_index(node)?;
+        for (position, (node, activity)) in activities.iter().enumerate() {
+            if activities[..position]
+                .iter()
+                .any(|(earlier, _)| earlier == node)
+            {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!("activity batch repeats node `{}`", node.name),
+                });
+            }
+            let index = self.vm_node_index(node)?;
+            self.resume_time_delta(index, *activity)?;
         }
+        let frontier = self.frontier_after_activity_change(|node| {
+            activities
+                .iter()
+                .find(|(candidate, _)| candidate == node)
+                .map(|(_, activity)| *activity)
+        })?;
         for (node, activity) in activities {
             let index = self.vm_node_index(node)?;
-            self.nodes[index].activity = *activity;
-            if matches!(
-                activity,
-                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-            ) {
-                self.device_horizons.remove(node);
-            }
+            let delta = self.resume_time_delta(index, *activity)?;
+            self.commit_node_activity(index, *activity, delta);
         }
+        self.frontier = frontier;
         Ok(())
     }
 
@@ -108,25 +170,30 @@ impl SingleScheduler {
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError`] when any identity is absent or is not a VM.
+    /// Returns [`SchedulerError`] when any identity is absent, repeated, or not a VM,
+    /// a node clock cannot be projected, or resuming a native timer would overflow.
     pub fn set_vm_nodes_activity(
         &mut self,
         nodes: &[NodeId],
         activity: SchedulerNodeActivity,
     ) -> Result<(), SchedulerError> {
-        for node in nodes {
-            let _index = self.vm_node_index(node)?;
+        for (position, node) in nodes.iter().enumerate() {
+            if nodes[..position].contains(node) {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!("activity batch repeats node `{}`", node.name),
+                });
+            }
+            let index = self.vm_node_index(node)?;
+            self.resume_time_delta(index, activity)?;
         }
+        let frontier =
+            self.frontier_after_activity_change(|node| nodes.contains(node).then_some(activity))?;
         for node in nodes {
             let index = self.vm_node_index(node)?;
-            self.nodes[index].activity = activity;
-            if matches!(
-                activity,
-                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-            ) {
-                self.device_horizons.remove(node);
-            }
+            let delta = self.resume_time_delta(index, activity)?;
+            self.commit_node_activity(index, activity, delta);
         }
+        self.frontier = frontier;
         Ok(())
     }
 
@@ -150,7 +217,7 @@ impl SingleScheduler {
                 .iter()
                 .map(|(link, position)| (link.clone(), *position))
                 .collect(),
-            signal_fault_wakeup_nanos: self.signal_fault_wakeup.map(|wakeup| wakeup.nanos),
+            signal_fault_wakeup_ticks: self.signal_fault_wakeup.map(|wakeup| wakeup.ticks),
         }
     }
 
@@ -206,7 +273,7 @@ impl SingleScheduler {
             })?;
             restored.insert((link.link.clone(), link.direction), state);
         }
-        let wakeup = checkpoint.signal_fault_wakeup_nanos;
+        let wakeup = checkpoint.signal_fault_wakeup_ticks;
         if wakeup.is_some_and(|coordinate| coordinate <= staged.frontier.ticks) {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -231,7 +298,7 @@ impl SingleScheduler {
                 })?;
             *runtime_position = *position;
         }
-        staged.signal_fault_wakeup = wakeup.map(|nanos| SimInstant { nanos });
+        staged.signal_fault_wakeup = wakeup.map(|nanos| SimInstant { ticks: nanos });
         staged.refresh_device_horizons()?;
         *self = staged;
         Ok(())
@@ -257,7 +324,7 @@ impl SingleScheduler {
                 reason: String::from("World network links are already attached"),
             });
         }
-        self.world_network_links = instantiate_world_network_links(world, self.timeline.shift())?;
+        self.world_network_links = instantiate_world_network_links(world)?;
         self.world_network_rng_positions = self
             .world_network_links
             .keys()
@@ -343,8 +410,23 @@ impl SingleScheduler {
         let index = self.vm_node_index(node)?;
         let instant = self.node_current_time(&self.nodes[index])?;
         Ok(VirtualTime {
-            ticks: instant.nanos,
+            ticks: instant.ticks,
         })
+    }
+
+    /// Returns the scheduler-owned counter for one VM node.
+    ///
+    /// The counter survives backend retirement and retains its generation's
+    /// origin. It is not interchangeable with logical time or a live backend's
+    /// observed counter: the scheduler may have authorized a later ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` is not a VM
+    /// scheduler node.
+    pub fn scheduler_counter_for_node(&self, node: &NodeId) -> Result<NodeCounter, SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        Ok(self.nodes[index].counter)
     }
 
     /// Sets the scheduler-time boundary used to terminate replay.
@@ -367,7 +449,7 @@ impl SingleScheduler {
             });
         }
         self.time_limit = SimInstant {
-            nanos: time_limit.ticks,
+            ticks: time_limit.ticks,
         };
         Ok(())
     }
@@ -392,7 +474,7 @@ impl SingleScheduler {
             });
         }
         self.branch_frontier_cap = Some(SimInstant {
-            nanos: frontier.ticks,
+            ticks: frontier.ticks,
         });
         Ok(())
     }
@@ -400,6 +482,37 @@ impl SingleScheduler {
     /// Clears the runtime-only production branch frontier cap.
     pub fn clear_branch_frontier_cap(&mut self) {
         self.branch_frontier_cap = None;
+    }
+
+    /// Caps advancement at the exact stop frontier for the active attempt.
+    ///
+    /// This runtime-only cap composes with branch, rendezvous, topology, and
+    /// trigger horizons. It does not synthesize an event or become part of a
+    /// captured scheduler continuation. Passing `None` clears the prior
+    /// attempt's cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `frontier` precedes
+    /// the scheduler's committed frontier.
+    pub fn set_attempt_stop_frontier(
+        &mut self,
+        frontier: Option<VirtualTime>,
+    ) -> Result<(), SchedulerError> {
+        if let Some(frontier) = frontier
+            && frontier < self.frontier
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "attempt stop frontier {} precedes committed frontier {}",
+                    frontier.ticks, self.frontier.ticks
+                ),
+            });
+        }
+        self.attempt_stop_frontier_cap = frontier.map(|frontier| SimInstant {
+            ticks: frontier.ticks,
+        });
+        Ok(())
     }
 
     /// Re-anchors a restarted VM to its replacement backend's physical counter.

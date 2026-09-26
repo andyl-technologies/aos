@@ -26,22 +26,22 @@ fn checkpoint_fixture() -> (fs::File, u64, QemuLiveBlockIoServicer) {
 fn checkpoint_fixture_with_latency(
     latency: BlockLatency,
 ) -> (fs::File, u64, QemuLiveBlockIoServicer) {
-    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))
         .unwrap_or_else(|error| panic!("allocate test region: {error}"));
     let slot = allocation
         .node_slot(0)
         .unwrap_or_else(|| panic!("test region must contain slot zero"));
     let ceiling = authorize_advance_ceiling(0, 0, None)
         .unwrap_or_else(|error| panic!("authorize test boundary: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("publish test ceiling: {error}"));
-    slot.publish_reached_icount(0, 0)
+    slot.publish_reached_icount(0)
         .unwrap_or_else(|error| panic!("publish test boundary: {error}"));
     allocation
         .header()
         .request_pause([slot])
         .unwrap_or_else(|error| panic!("request test checkpoint pause: {error}"));
-    slot.publish_pause_quiesced(0, 0, 0)
+    slot.publish_pause_quiesced(0, 0)
         .unwrap_or_else(|error| panic!("publish test checkpoint pause: {error}"));
     let layout = allocation.layout();
     let bytes = allocation
@@ -67,7 +67,6 @@ fn checkpoint_fixture_with_latency(
     let servicer = QemuLiveBlockIoServicer::from_shmem_fd_with_base_and_latency(
         file.as_fd(),
         layout.region_size,
-        0,
         0,
         BaseImage::new(deterministic_base_image(4096)),
         latency,
@@ -133,35 +132,13 @@ fn latency_replacement_is_retained_in_exact_checkpoint_state() {
 }
 
 #[test]
-fn deterministic_diagnostics_ignore_host_poll_cadence() {
-    let first = BlockIoDiagnosticsSnapshot {
-        frames_processed: 1,
-        write_frames_processed: 1,
-        frames_delivered: 1,
-        service_calls: 17,
-        first_request_icount: Some(0),
-        first_completion_horizon: Some(1512),
-        last_current_icount: 12_000_000,
-        max_current_icount: 12_000_000,
-        last_device_io_active: false,
-        last_idle_wake_icount: 1,
-    };
-    let second = BlockIoDiagnosticsSnapshot {
-        service_calls: 29,
-        ..first
-    };
-
-    assert_ne!(first, second);
-    assert!(first.deterministic_observation_eq(&second));
-}
-
-#[test]
 fn terminal_slot_observation_replaces_pre_consumption_device_state() {
     let diagnostics = BlockIoDiagnostics::default();
     diagnostics.record(
         10,
         true,
         20,
+        2,
         &QemuLiveBlockIoServiceStep {
             processed: 1,
             write_frames_processed: 1,
@@ -172,7 +149,7 @@ fn terminal_slot_observation_replaces_pre_consumption_device_state() {
         },
     );
 
-    diagnostics.observe_slot(30, false, 30);
+    diagnostics.observe_slot(30, false, 30, 3);
 
     let snapshot = diagnostics.snapshot();
     assert_eq!(snapshot.service_calls, 1);
@@ -180,6 +157,8 @@ fn terminal_slot_observation_replaces_pre_consumption_device_state() {
     assert_eq!(snapshot.max_current_icount, 30);
     assert!(!snapshot.last_device_io_active);
     assert_eq!(snapshot.last_idle_wake_icount, 30);
+    assert_eq!(snapshot.last_control_boundary_ack, 3);
+    assert_eq!(snapshot.last_active_control_boundary_ack, Some(2));
 }
 
 #[cfg(unix)]
@@ -261,7 +240,7 @@ fn remote_write_publishes_destination_deadline_and_wake() {
 
     fn staged_persistence(
         source: &QemuSharedBlockDevice,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> ResolvedBlockRequestPersistenceDirective {
         let request = BlockRequest::write(31, 0, vec![0xa5; 512]);
         let mut device = source
@@ -274,20 +253,20 @@ fn remote_write_publishes_destination_deadline_and_wake() {
             .require_storage_execution_opportunities()
             .unwrap_or_else(|error| panic!("require source opportunities: {error}"));
         let mut admission = ResolvedBlockFaultDirective::fault_free(&request, 4096);
-        admission.execution_nanos = now_nanos;
-        admission.persistence_admitted_nanos = now_nanos;
+        admission.execution_ticks = now_ticks;
+        admission.persistence_admitted_ticks = now_ticks;
         device
             .install_storage_fault_directive(request.identity(), admission)
             .unwrap_or_else(|error| panic!("install admission: {error}"));
         device
-            .submit(now_nanos, &request)
+            .submit(now_ticks, &request)
             .unwrap_or_else(|error| panic!("submit source write: {error}"));
         let opportunity = device
-            .next_storage_execution_opportunity(now_nanos)
+            .next_storage_execution_opportunity(now_ticks)
             .unwrap_or_else(|| panic!("execution opportunity is present"));
         let mut execution = opportunity.admission.clone();
-        execution.execution_nanos = opportunity.ready_nanos;
-        execution.persistence_admitted_nanos = opportunity.ready_nanos;
+        execution.execution_ticks = opportunity.ready_ticks;
+        execution.persistence_admitted_ticks = opportunity.ready_ticks;
         device
             .install_storage_execution_directive(ResolvedBlockExecutionDirective {
                 opportunity,
@@ -295,10 +274,10 @@ fn remote_write_publishes_destination_deadline_and_wake() {
             })
             .unwrap_or_else(|error| panic!("install execution: {error}"));
         device
-            .advance_to(now_nanos)
+            .advance_to(now_ticks)
             .unwrap_or_else(|error| panic!("advance source: {error}"));
         let opportunity = device
-            .next_storage_request_persistence_opportunity(now_nanos)
+            .next_storage_request_persistence_opportunity(now_ticks)
             .unwrap_or_else(|| panic!("persistence opportunity is present"));
         let mut directive = opportunity.resolved.clone();
         directive.write_disposition =
@@ -337,8 +316,8 @@ fn remote_write_publishes_destination_deadline_and_wake() {
     destination
         .attach_notification_wake(Arc::clone(&wake))
         .unwrap_or_else(|error| panic!("attach destination wake: {error}"));
-    let now_nanos = 64;
-    let directive = staged_persistence(&source, now_nanos);
+    let now_ticks = 64;
+    let directive = staged_persistence(&source, now_ticks);
 
     let dependency = source
         .install_cross_device_misdirected_persistence(
@@ -361,8 +340,8 @@ fn remote_write_publishes_destination_deadline_and_wake() {
             .region
             .node_slot(0)
             .unwrap_or_else(|error| panic!("read destination slot: {error}"))
-            .device_completion_deadline_icount(),
-        now_nanos
+            .device_completion_deadline_tick(),
+        now_ticks
     );
     assert_eq!(
         wake.metadata()
@@ -381,7 +360,7 @@ fn remote_write_publishes_destination_deadline_and_wake() {
             .lock()
             .unwrap_or_else(|error| panic!("lock destination persistence: {error}"));
         let opportunity = destination_device
-            .next_storage_persistence_opportunity(now_nanos)
+            .next_storage_persistence_opportunity(now_ticks)
             .unwrap_or_else(|| panic!("destination persistence opportunity is present"));
         destination_device
             .install_storage_persistence_media_directive(ResolvedBlockPersistenceMediaDirective {
@@ -390,7 +369,7 @@ fn remote_write_publishes_destination_deadline_and_wake() {
             })
             .unwrap_or_else(|error| panic!("install destination persistence: {error}"));
         destination_device
-            .advance_to(now_nanos)
+            .advance_to(now_ticks)
             .unwrap_or_else(|error| panic!("advance destination persistence: {error}"));
     }
     assert!(
@@ -406,7 +385,7 @@ fn remote_write_publishes_destination_deadline_and_wake() {
 fn multi_device_write_commits_every_member_and_orders_dependencies() {
     fn staged_persistence(
         source: &QemuSharedBlockDevice,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> ResolvedBlockRequestPersistenceDirective {
         let request = BlockRequest::write(31, 0, vec![0xa5; 512]);
         let mut device = source
@@ -426,20 +405,20 @@ fn multi_device_write_commits_every_member_and_orders_dependencies() {
             .require_storage_execution_opportunities()
             .unwrap_or_else(|error| panic!("require source opportunities: {error}"));
         let mut admission = ResolvedBlockFaultDirective::fault_free(&request, 4096);
-        admission.execution_nanos = now_nanos;
-        admission.persistence_admitted_nanos = now_nanos;
+        admission.execution_ticks = now_ticks;
+        admission.persistence_admitted_ticks = now_ticks;
         device
             .install_storage_fault_directive(request.identity(), admission)
             .unwrap_or_else(|error| panic!("install admission: {error}"));
         device
-            .submit(now_nanos, &request)
+            .submit(now_ticks, &request)
             .unwrap_or_else(|error| panic!("submit source write: {error}"));
         let opportunity = device
-            .next_storage_execution_opportunity(now_nanos)
+            .next_storage_execution_opportunity(now_ticks)
             .unwrap_or_else(|| panic!("execution opportunity is present"));
         let mut execution = opportunity.admission.clone();
-        execution.execution_nanos = opportunity.ready_nanos;
-        execution.persistence_admitted_nanos = opportunity.ready_nanos;
+        execution.execution_ticks = opportunity.ready_ticks;
+        execution.persistence_admitted_ticks = opportunity.ready_ticks;
         device
             .install_storage_execution_directive(ResolvedBlockExecutionDirective {
                 opportunity,
@@ -447,10 +426,10 @@ fn multi_device_write_commits_every_member_and_orders_dependencies() {
             })
             .unwrap_or_else(|error| panic!("install execution: {error}"));
         device
-            .advance_to(now_nanos)
+            .advance_to(now_ticks)
             .unwrap_or_else(|error| panic!("advance source: {error}"));
         let opportunity = device
-            .next_storage_request_persistence_opportunity(now_nanos)
+            .next_storage_request_persistence_opportunity(now_ticks)
             .unwrap_or_else(|| panic!("persistence opportunity is present"));
         let mut directive = opportunity.resolved.clone();
         directive.write_disposition = BlockFaultWriteDisposition::Apply;
@@ -483,8 +462,8 @@ fn multi_device_write_commits_every_member_and_orders_dependencies() {
     second
         .attach_notification_wake(Arc::new(unlinked_wake_file()))
         .unwrap_or_else(|error| panic!("attach second wake: {error}"));
-    let now_nanos = 64;
-    let mut directive = staged_persistence(&source, now_nanos);
+    let now_ticks = 64;
+    let mut directive = staged_persistence(&source, now_ticks);
     directive.directive.write_disposition = BlockFaultWriteDisposition::Apply;
     let dependencies = source
         .install_multi_device_mutation(

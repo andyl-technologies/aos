@@ -214,7 +214,8 @@ retrying_load:
     .error "unknown TEST_MODE"
 .endif
 2:
-    wfe
+    // Keep crossing translation-block boundaries after publishing the result.
+    yield
     b 2b
 
 .align 11
@@ -238,7 +239,7 @@ exception_handler:
     mov w0, #0xe1
     strb w0, [x1]
 4:
-    wfe
+    yield
     b 4b
 .endif
 

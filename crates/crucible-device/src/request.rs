@@ -87,8 +87,8 @@ impl Response {
 /// One additional protocol-valid completion derived from a primary response.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AdditionalCompletion {
-    /// Delay after the primary completion in virtual nanoseconds.
-    pub gap_nanos: u64,
+    /// Delay after the primary completion in exact simulation ticks.
+    pub gap_ticks: u64,
     /// Exact duplicate or protocol-transformed response.
     pub response: Response,
 }
@@ -96,15 +96,14 @@ pub struct AdditionalCompletion {
 /// Complete deterministic COMPUTE result before delivery-time scheduling.
 ///
 /// A device returns the primary response together with adapter-owned timing and
-/// duplication decisions. [`crate::subnode::IoCore`] converts every nanosecond
-/// delay to the device clock exactly once and inserts all completions into its
-/// canonical delivery order.
+/// duplication decisions. [`crate::subnode::IoCore`] adds exact tick delays and
+/// inserts all completions into its canonical delivery order.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ComputedResponse {
     /// Primary response, or none when completion is intentionally retained.
     pub primary: Option<Response>,
     /// Additional delay applied after the device's immutable base latency.
-    pub additional_latency_nanos: u64,
+    pub additional_latency_ticks: u64,
     /// Ordered protocol-valid additional completions.
     pub additional: Vec<AdditionalCompletion>,
 }
@@ -115,7 +114,7 @@ impl ComputedResponse {
     pub fn primary(response: Response) -> Self {
         Self {
             primary: Some(response),
-            additional_latency_nanos: 0,
+            additional_latency_ticks: 0,
             additional: Vec::new(),
         }
     }
@@ -125,7 +124,7 @@ impl ComputedResponse {
     pub const fn retained() -> Self {
         Self {
             primary: None,
-            additional_latency_nanos: 0,
+            additional_latency_ticks: 0,
             additional: Vec::new(),
         }
     }

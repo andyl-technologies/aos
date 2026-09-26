@@ -128,7 +128,7 @@
       }
       {
         label = "Phase 7 waits for Phase 6";
-        needle = "dependencies = [phase6.gates.replayOracle.rawGate phase6.basicBlockCoverage.rawGate phase7.";
+        needle = "dependencies = [phase2.qemuCheckpointDeltaFlight phase6.gates.replayOracle.rawGate phase6.basicBlockCoverage.rawGate phase7.";
       }
       {
         label = "phase-gate-ordering check import";

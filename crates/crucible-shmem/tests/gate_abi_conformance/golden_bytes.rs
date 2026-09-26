@@ -5,9 +5,7 @@ use super::*;
 pub(super) fn live_golden_bytes() -> Vec<u8> {
     let layout = match RegionLayout::for_config(RegionConfig::new(
         GOLDEN_VM_NODE_COUNT,
-        GOLDEN_QUEUE_CAPACITY,
-        GOLDEN_ICOUNT_SHIFT,
-    )) {
+        GOLDEN_QUEUE_CAPACITY)) {
         Ok(layout) => layout,
         Err(error) => panic!("failed to compute golden shmem layout: {error}"),
     };
@@ -53,8 +51,8 @@ pub(super) fn live_golden_bytes() -> Vec<u8> {
     );
     write_u32(
         &mut bytes,
-        REGION_HEADER_ICOUNT_SHIFT_OFFSET,
-        layout.icount_shift,
+        REGION_HEADER_TICKS_PER_NS_OFFSET,
+        layout.ticks_per_ns,
     );
     write_u8(&mut bytes, REGION_HEADER_PAUSE_REQUESTED_OFFSET, 1);
     write_u8(&mut bytes, REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET, 0);
@@ -112,17 +110,17 @@ pub(super) fn live_golden_bytes() -> Vec<u8> {
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_AT_TICK_OFFSET,
         160,
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_DEADLINE_TICK_OFFSET,
         128,
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_CEILING_TICK_OFFSET,
         256,
     );
     write_u32(
@@ -170,6 +168,56 @@ pub(super) fn live_golden_bytes() -> Vec<u8> {
         GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
         13,
     );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET,
+        9,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
+        3,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET,
+        17,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET,
+        989,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET,
+        62,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET,
+        60,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET,
+        989,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET,
+        992,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET,
+        60,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET,
+        1,
+    );
 
     write_u64(
         &mut bytes,
@@ -180,6 +228,11 @@ pub(super) fn live_golden_bytes() -> Vec<u8> {
         &mut bytes,
         GOLDEN_RING_HEADER_BASE + RING_HEADER_WRITE_IDX_OFFSET,
         9,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_RING_HEADER_BASE + RING_HEADER_PRODUCER_STATE_OFFSET,
+        (1_u64 << 63) | 3,
     );
 
     write_u64(

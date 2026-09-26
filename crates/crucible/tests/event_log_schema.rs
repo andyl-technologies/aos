@@ -5,12 +5,14 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    EventClass, EventLevel, EventLog, EventSource, Icount, MarkerId, NodeId, ObservableEvent,
-    VirtualTime,
+    ControlOperation, ControlOperationKind, EventLevel, EventLog, EventSource, Icount, MarkerId,
+    NodeId, ObservableEvent, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    SchedulerEventLogClass, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind,
+    SharedTimelineKey, SimInstant, VirtualTime,
 };
 
 #[test]
-fn event_log_entries_carry_source_level_class_and_icount_stamp() {
+fn event_log_entries_carry_source_level_class_and_typed_time_stamp() {
     let node = NodeId {
         name: String::from("guest-a"),
     };
@@ -25,11 +27,12 @@ fn event_log_entries_carry_source_level_class_and_icount_stamp() {
     assert_eq!(entry.at(), VirtualTime { ticks: 99 });
     assert_eq!(entry.source(), &EventSource::Guest { node: node.clone() });
     assert_eq!(entry.level(), EventLevel::Info);
-    assert_eq!(entry.class(), EventClass::Observational);
+    assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
 
-    let stamp = &entry.time().icount;
+    let stamp = &entry.time().stamp;
     assert_eq!(stamp.node, Some(node));
-    assert_eq!(stamp.icount, Icount { retired: 99 });
+    assert_eq!(stamp.tick, SimInstant { ticks: 99 });
+    assert_eq!(stamp.retired, Some(Icount { retired: 99 }));
 
     let mut log = EventLog::new();
     let append = log
@@ -38,10 +41,46 @@ fn event_log_entries_carry_source_level_class_and_icount_stamp() {
     let segment = append.segment_text;
 
     assert!(segment.contains("entry.at_virtual_time_ticks=99"));
-    assert!(segment.contains("entry.at_icount_retired=99"));
-    assert!(segment.contains("entry.at_icount_node=some"));
-    assert!(segment.contains("entry.at_icount_node_name=guest-a"));
+    assert!(segment.contains("entry.at_tick=99"));
+    assert!(segment.contains("entry.at_raw_retired=99"));
+    assert!(segment.contains("entry.at_node=some"));
+    assert!(segment.contains("entry.at_node_name=guest-a"));
     assert!(segment.contains("entry.source=guest"));
     assert!(segment.contains("entry.level=info"));
     assert!(segment.contains("entry.class=observational"));
+}
+
+#[test]
+fn command_caused_entries_preserve_command_correlation_source() {
+    let command_id = 12;
+    let control_node = SchedulerNodeId {
+        node: NodeId {
+            name: String::from("control-plane"),
+        },
+        kind: SchedulingNodeKind::ControlPlane,
+    };
+    let event = ScheduledEvent {
+        key: ScheduledEventKey::new(
+            SharedTimelineKey {
+                virtual_time: SimInstant { ticks: 12 },
+                node: control_node.clone(),
+                sequence: command_id,
+            },
+            control_node,
+        ),
+        payload: ScheduledEventPayload::Control(ControlOperation {
+            sequence: command_id,
+            kind: ControlOperationKind::Query,
+        }),
+    };
+
+    let entry = crucible::test_support::condition_payload_entry_for_test(
+        0,
+        VirtualTime { ticks: 12 },
+        SchedulerEventLogPayload::ResolvedHappening(event),
+    );
+
+    assert_eq!(entry.source(), &EventSource::Command { command_id });
+    assert_eq!(entry.time().stamp.tick, SimInstant { ticks: 12 });
+    assert_eq!(entry.time().stamp.retired, None);
 }

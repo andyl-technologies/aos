@@ -1,186 +1,31 @@
 //! Scheduler unit tests separated from the production quantum-loop implementation.
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crate::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use super::*;
-use crate::model::{BindingSearchChoice, SearchChoiceId, SearchOverride};
+use crate::model::{
+    BindingSearchCandidateSemantics, BindingSearchChoice, SearchChoiceId, SearchOverride,
+};
 use crate::{
-    BackendEffect, BackendNetworkFaultContinuation, MockSimulationBackend, RngDecision, ScenarioDef,
+    BackendNetworkFaultContinuation, BackendSnapshot, IoEventKind, MockSimulationBackend,
+    RngDecision, ScenarioDef, StepObservation,
 };
 
+#[path = "tests/concurrent.rs"]
+mod concurrent;
+#[path = "tests/event_log_contracts.rs"]
+mod event_log_contracts;
 #[path = "tests/network_checkpoint.rs"]
 mod network_checkpoint;
 #[path = "tests/ordering.rs"]
 mod ordering;
 #[path = "tests/production_backend.rs"]
 mod production_backend;
-
-#[test]
-fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {
-    struct StubLoop;
-
-    impl QuantumLoop for StubLoop {
-        fn drive_quantum(
-            &mut self,
-            request: QuantumRequest,
-        ) -> Result<QuantumOutcome, SchedulerError> {
-            Ok(QuantumOutcome {
-                configuration: request.configuration,
-                frontier: VirtualTime { ticks: 0 },
-                advanced_node: None,
-                resolved_events: Vec::new(),
-                decisions: Vec::new(),
-                event_log_entries: Vec::new(),
-                event_log_segment_bytes: Vec::new(),
-                event_log_segment_text: String::new(),
-                event_log_segment_hash: None,
-                event_log_offset: EventLogOffset::default(),
-                scheduler_quiescence: None,
-            })
-        }
-    }
-
-    #[derive(Default)]
-    struct GdbBackend {
-        opened: Vec<(NodeId, String)>,
-    }
-
-    impl SimulationBackend for GdbBackend {
-        fn step_to(
-            &mut self,
-            _ceiling: VirtualTime,
-        ) -> Result<crate::StepObservation, BackendError> {
-            Err(BackendError::NotImplemented {
-                operation: "step_to",
-            })
-        }
-
-        fn apply(
-            &mut self,
-            _effect: &crate::BackendEffect,
-            _at: VirtualTime,
-        ) -> Result<(), BackendError> {
-            Err(BackendError::NotImplemented { operation: "apply" })
-        }
-
-        fn snapshot(&mut self) -> Result<crate::BackendSnapshot, BackendError> {
-            Err(BackendError::NotImplemented {
-                operation: "snapshot",
-            })
-        }
-
-        fn restore(&mut self, _snapshot: &crate::BackendSnapshot) -> Result<(), BackendError> {
-            Err(BackendError::NotImplemented {
-                operation: "restore",
-            })
-        }
-
-        fn now(&self) -> VirtualTime {
-            VirtualTime::default()
-        }
-
-        fn fingerprint(&mut self, _node: NodeId) -> Result<crate::FingerprintSample, BackendError> {
-            Err(BackendError::NotImplemented {
-                operation: "fingerprint",
-            })
-        }
-
-        fn open_gdbstub(
-            &mut self,
-            node: NodeId,
-            listen: GdbListen,
-        ) -> Result<GdbAttachInfo, BackendError> {
-            self.opened.push((node.clone(), listen.as_str().to_owned()));
-            GdbAttachInfo::new(node, "tcp:127.0.0.1:9001", listen)
-        }
-
-        fn shutdown(&mut self) -> Result<(), BackendError> {
-            Ok(())
-        }
-    }
-
-    let mut adapter = BackendQuantumLoop::new(StubLoop, GdbBackend::default());
-    let info = adapter
-        .open_gdbstub(
-            NodeId {
-                name: String::from("vm-a"),
-            },
-            GdbListen::new("127.0.0.1:9000")
-                .unwrap_or_else(|error| panic!("test listen should be stable: {error}")),
-        )
-        .unwrap_or_else(|error| panic!("backend adapter should route gdbstub attach: {error}"));
-
-    assert_eq!(info.qemu_endpoint, "tcp:127.0.0.1:9001");
-    assert_eq!(
-        adapter.backend().opened,
-        vec![(
-            NodeId {
-                name: String::from("vm-a"),
-            },
-            String::from("127.0.0.1:9000"),
-        )]
-    );
-}
-
-#[test]
-fn backend_quantum_loop_applies_resolved_preemption_before_run() {
-    struct PreemptionLoop {
-        decision: PreemptionDecision,
-    }
-
-    impl QuantumLoop for PreemptionLoop {
-        fn drive_quantum(
-            &mut self,
-            request: QuantumRequest,
-        ) -> Result<QuantumOutcome, SchedulerError> {
-            Ok(QuantumOutcome {
-                configuration: request.configuration,
-                frontier: VirtualTime { ticks: 10 },
-                advanced_node: Some(scheduler_node("vm-a", SchedulingNodeKind::Vm)),
-                resolved_events: Vec::new(),
-                decisions: vec![Decision::Preemption(self.decision.clone())],
-                event_log_entries: Vec::new(),
-                event_log_segment_bytes: Vec::new(),
-                event_log_segment_text: String::new(),
-                event_log_segment_hash: None,
-                event_log_offset: EventLogOffset::default(),
-                scheduler_quiescence: None,
-            })
-        }
-    }
-
-    let decision = PreemptionDecision {
-        node: NodeId {
-            name: String::from("vm-a"),
-        },
-        at: Icount { retired: 7 },
-        kind: PreemptionKind::VcpuSwitch {
-            from_vcpu: VcpuId { index: 0 },
-            to_vcpu: VcpuId { index: 1 },
-        },
-    };
-    let config = Configuration::genesis(ScenarioDef::from_canonical_material(
-        "crucible.test.scheduler.backend-preemption",
-        "scenario=backend-preemption",
-    ));
-    let mut adapter = BackendQuantumLoop::new(
-        PreemptionLoop {
-            decision: decision.clone(),
-        },
-        MockSimulationBackend::default(),
-    );
-
-    adapter
-        .drive_quantum(QuantumRequest {
-            configuration: config,
-            control: Vec::new(),
-        })
-        .unwrap_or_else(|error| panic!("preemption-backed quantum should run: {error}"));
-
-    assert_eq!(adapter.backend().now(), VirtualTime { ticks: 10 });
-    assert_eq!(
-        adapter.backend().state().applied_effects,
-        vec![BackendEffect::Preemption(decision)]
-    );
-}
 
 #[test]
 fn pending_network_boundary_release_settles_before_a_far_quantum() {
@@ -200,6 +45,7 @@ fn pending_network_boundary_release_settles_before_a_far_quantum() {
                 advanced_node: None,
                 resolved_events: Vec::new(),
                 decisions: Vec::new(),
+                discovered_choices: Vec::new(),
                 event_log_entries: Vec::new(),
                 event_log_segment_bytes: Vec::new(),
                 event_log_segment_text: String::new(),
@@ -297,6 +143,7 @@ fn equal_boundary_custody_releases_settle_in_priority_order() {
                 advanced_node: None,
                 resolved_events: Vec::new(),
                 decisions: Vec::new(),
+                discovered_choices: Vec::new(),
                 event_log_entries: Vec::new(),
                 event_log_segment_bytes: Vec::new(),
                 event_log_segment_text: String::new(),
@@ -464,106 +311,8 @@ fn failed_exact_boundary_network_append_poison_preserves_pending_frame() {
     assert!(
         error
             .to_string()
-            .contains("network settlement continuation is poisoned")
+            .contains("backend continuation is poisoned")
     );
-}
-
-#[test]
-fn event_log_append_rejects_class_catalog_mismatch() {
-    let mut entry = scheduler_event_log_entry(
-        0,
-        VirtualTime { ticks: 0 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("class-catalog-mismatch"),
-            value: 17,
-        })),
-    );
-    entry.class = SchedulerEventLogClass::Observational;
-
-    let error = EventLog::new()
-        .append_entries(vec![entry])
-        .expect_err("append must reject class/catalog mismatches");
-
-    assert!(matches!(
-        error,
-        SchedulerError::BoundaryViolation { message }
-            if message.contains("class observational does not match catalog class causal")
-                && message.contains("payload kind rng_draw")
-    ));
-}
-
-#[test]
-fn event_log_append_rejects_typed_kind_catalog_drift() {
-    let mut entry = scheduler_event_log_entry(
-        0,
-        VirtualTime { ticks: 0 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("typed-kind-catalog-drift"),
-            value: 23,
-        })),
-    );
-    entry.event_payload = EventPayload::new("diagnostic", entry.event_payload.attributes().clone());
-
-    let error = EventLog::new()
-        .append_entries(vec![entry])
-        .expect_err("append must reject typed payload kind/catalog drift");
-
-    assert!(matches!(
-        error,
-        SchedulerError::BoundaryViolation { message }
-            if message.contains("class causal does not match catalog class observational")
-                && message.contains("payload kind diagnostic")
-    ));
-}
-
-#[test]
-fn event_log_append_rejects_unknown_typed_kind() {
-    let mut entry = scheduler_event_log_entry(
-        0,
-        VirtualTime { ticks: 0 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("unknown-typed-kind"),
-            value: 31,
-        })),
-    );
-    entry.event_payload = EventPayload::new(
-        "unregistered_kind",
-        entry.event_payload.attributes().clone(),
-    );
-
-    let error = EventLog::new()
-        .append_entries(vec![entry])
-        .expect_err("append must reject unknown typed payload kinds");
-
-    assert!(matches!(
-        error,
-        SchedulerError::BoundaryViolation { message }
-            if message.contains("payload kind unregistered_kind is not in the event-kind catalog")
-    ));
-}
-
-#[test]
-fn event_log_segment_binary_round_trips_to_same_bytes() {
-    let previous_prefix = scheduler_event_log_empty_prefix();
-    let entry = scheduler_event_log_entry(
-        0,
-        VirtualTime { ticks: 9 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("segment-round-trip"),
-            value: 41,
-        })),
-    );
-    let entries = vec![entry];
-    let segment = scheduler_event_log_segment_material(previous_prefix, &entries);
-    let bytes = segment.encode();
-
-    let decoded = decode_scheduler_event_log_segment(&bytes)
-        .unwrap_or_else(|error| panic!("segment should decode: {error:?}"));
-
-    assert_eq!(decoded, segment);
-    assert_eq!(decoded.encode(), bytes);
-    assert_eq!(decoded.text_view(), segment.text_view());
-    assert!(decoded.text_view().contains("entry.payload.kind=rng_draw"));
 }
 
 #[test]
@@ -633,7 +382,7 @@ fn scheduled_events_resolve_by_key_not_arrival_order() {
 
 #[test]
 fn shared_timeline_projects_vm_and_io_counters_uniformly() {
-    let timeline = shared_timeline(2);
+    let timeline = SharedTimeline::new();
     let vm = scheduler_node("a", SchedulingNodeKind::Vm);
     let disk = scheduler_node("a", SchedulingNodeKind::Disk);
     let network = scheduler_node("link-a-b", SchedulingNodeKind::Network);
@@ -641,23 +390,23 @@ fn shared_timeline_projects_vm_and_io_counters_uniformly() {
     let vm_projection = project_counter(
         &timeline,
         vm.clone(),
-        NodeCounter::from_icount(Icount { retired: 7 }),
+        NodeCounter::from_tick(SimInstant { ticks: 7 }),
     );
     let disk_projection = project_counter(&timeline, disk.clone(), NodeCounter { ticks: 7 });
     let network_projection = project_counter(&timeline, network.clone(), NodeCounter { ticks: 11 });
 
     assert_eq!(vm_projection.node, vm);
     assert_eq!(vm_projection.counter, NodeCounter { ticks: 7 });
-    assert_eq!(vm_projection.virtual_time, SimInstant { nanos: 28 });
+    assert_eq!(vm_projection.virtual_time, SimInstant { ticks: 7 });
     assert_eq!(disk_projection.node, disk);
-    assert_eq!(disk_projection.virtual_time, SimInstant { nanos: 28 });
+    assert_eq!(disk_projection.virtual_time, SimInstant { ticks: 7 });
     assert_eq!(network_projection.node, network);
-    assert_eq!(network_projection.virtual_time, SimInstant { nanos: 44 });
+    assert_eq!(network_projection.virtual_time, SimInstant { ticks: 11 });
 }
 
 #[test]
 fn shared_timeline_keys_order_by_time_node_and_sequence() {
-    let timeline = shared_timeline(1);
+    let timeline = SharedTimeline::new();
     let vm_a = scheduler_node("a", SchedulingNodeKind::Vm);
     let vm_b = scheduler_node("b", SchedulingNodeKind::Vm);
     let disk_a = scheduler_node("a", SchedulingNodeKind::Disk);
@@ -675,7 +424,7 @@ fn shared_timeline_keys_order_by_time_node_and_sequence() {
             .iter()
             .map(|key| {
                 (
-                    key.virtual_time.nanos,
+                    key.virtual_time.ticks,
                     key.node.node.name.as_str(),
                     key.node.kind,
                     key.sequence,
@@ -683,17 +432,17 @@ fn shared_timeline_keys_order_by_time_node_and_sequence() {
             })
             .collect::<Vec<_>>(),
         vec![
-            (2, "a", SchedulingNodeKind::Vm, 1),
-            (2, "a", SchedulingNodeKind::Vm, 5),
-            (2, "a", SchedulingNodeKind::Disk, 2),
-            (4, "b", SchedulingNodeKind::Vm, 0),
+            (1, "a", SchedulingNodeKind::Vm, 1),
+            (1, "a", SchedulingNodeKind::Vm, 5),
+            (1, "a", SchedulingNodeKind::Disk, 2),
+            (2, "b", SchedulingNodeKind::Vm, 0),
         ]
     );
 }
 
 #[test]
 fn scheduled_event_keys_consume_shared_timeline_and_refine_by_producer() {
-    let timeline = shared_timeline(0);
+    let timeline = SharedTimeline::new();
     let vm_a = scheduler_node("a", SchedulingNodeKind::Vm);
     let disk_a = scheduler_node("a", SchedulingNodeKind::Disk);
     let network_a = scheduler_node("a", SchedulingNodeKind::Network);
@@ -730,13 +479,14 @@ fn quantum_outcome_carries_step_decisions() {
         stream: crate::RngStreamId::from_name("scheduler"),
         value: 7,
     });
-    let child = step(&config, decision.clone());
+    let child = accepted_step!(&config, decision.clone());
     let outcome = QuantumOutcome {
         configuration: child,
         frontier: VirtualTime { ticks: 1 },
         advanced_node: Some(scheduler_node("node-a", SchedulingNodeKind::Vm)),
         resolved_events: Vec::new(),
         decisions: vec![decision.clone()],
+        discovered_choices: Vec::new(),
         event_log_entries: Vec::new(),
         event_log_segment_bytes: Vec::new(),
         event_log_segment_text: String::new(),
@@ -749,122 +499,134 @@ fn quantum_outcome_carries_step_decisions() {
 }
 
 #[test]
+fn coverage_observation_identity_excludes_event_position() {
+    let observation = EventLogCoverageObservation::Named {
+        node: NodeId {
+            name: String::from("node-a"),
+        },
+        marker: MarkerId::from_name("covered"),
+    };
+    let repeated = observation.clone();
+    let distinct = EventLogCoverageObservation::Named {
+        node: NodeId {
+            name: String::from("node-a"),
+        },
+        marker: MarkerId::from_name("other"),
+    };
+
+    assert_eq!(observation.content_hash(), repeated.content_hash());
+    assert_ne!(observation.content_hash(), distinct.content_hash());
+}
+
+#[test]
 fn exact_local_deadline_selects_scheduler_horizon_and_ceiling() {
     let horizon = horizon_from_exact_local_event(
-        SimInstant { nanos: 100 },
+        SimInstant { ticks: 100 },
         ExactLocalEvent::TimerDeadline {
-            virtual_time: SimInstant { nanos: 41 },
+            virtual_time: SimInstant { ticks: 41 },
         },
-        shift(3),
     );
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizon {
+        SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
-                virtual_time: SimInstant { nanos: 41 },
-                ceiling: Icount { retired: 6 },
+                virtual_time: SimInstant { ticks: 41 },
+                ceiling: NodeCounter { ticks: 41 },
             },
             source: SchedulerHorizonSource::ExactLocalTimer,
-        })
+        }
     );
 }
 
 #[test]
 fn no_armed_timer_uses_network_horizon() {
-    let horizon = horizon_from_exact_local_event(
-        SimInstant { nanos: 64 },
-        ExactLocalEvent::NoArmedTimer,
-        shift(3),
-    );
+    let horizon =
+        horizon_from_exact_local_event(SimInstant { ticks: 64 }, ExactLocalEvent::NoArmedTimer);
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizon {
+        SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
-                virtual_time: SimInstant { nanos: 64 },
-                ceiling: Icount { retired: 8 },
+                virtual_time: SimInstant { ticks: 64 },
+                ceiling: NodeCounter { ticks: 64 },
             },
             source: SchedulerHorizonSource::NetworkLookahead,
-        })
+        }
     );
 }
 
 #[test]
 fn later_exact_deadline_does_not_extend_network_horizon() {
     let horizon = horizon_from_exact_local_event(
-        SimInstant { nanos: 50 },
+        SimInstant { ticks: 50 },
         ExactLocalEvent::TimerDeadline {
-            virtual_time: SimInstant { nanos: 90 },
+            virtual_time: SimInstant { ticks: 90 },
         },
-        shift(2),
     );
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizon {
+        SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
-                virtual_time: SimInstant { nanos: 50 },
-                ceiling: Icount { retired: 13 },
+                virtual_time: SimInstant { ticks: 50 },
+                ceiling: NodeCounter { ticks: 50 },
             },
             source: SchedulerHorizonSource::NetworkLookahead,
-        })
+        }
     );
 }
 
 #[test]
 fn finite_lookahead_is_added_to_current_virtual_time() {
     let horizon = horizon_from_network_lookahead(
-        SimInstant { nanos: 20 },
-        NetworkLookahead::Finite(SimDuration { nanos: 7 }),
+        SimInstant { ticks: 20 },
+        NetworkLookahead::Finite(SimDuration { ticks: 7 }),
         ExactLocalEvent::NoArmedTimer,
-        shift(0),
     );
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizon {
+        SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
-                virtual_time: SimInstant { nanos: 27 },
-                ceiling: Icount { retired: 27 },
+                virtual_time: SimInstant { ticks: 27 },
+                ceiling: NodeCounter { ticks: 27 },
             },
             source: SchedulerHorizonSource::NetworkLookahead,
-        })
+        }
     );
 }
 
 #[test]
 fn infinite_network_lookahead_without_local_event_is_unbounded() {
     let horizon = horizon_from_network_lookahead(
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         NetworkLookahead::Infinite,
         ExactLocalEvent::NoArmedTimer,
-        shift(0),
     );
 
-    assert_eq!(horizon, Ok(SchedulerHorizon::infinite_network()));
+    assert_eq!(horizon, SchedulerHorizon::infinite_network());
 }
 
 #[test]
 fn exact_local_event_bounds_infinite_network_lookahead() {
     let horizon = horizon_from_network_lookahead(
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         NetworkLookahead::Infinite,
         ExactLocalEvent::TimerDeadline {
-            virtual_time: SimInstant { nanos: 23 },
+            virtual_time: SimInstant { ticks: 23 },
         },
-        shift(0),
     );
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizon {
+        SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
-                virtual_time: SimInstant { nanos: 23 },
-                ceiling: Icount { retired: 23 },
+                virtual_time: SimInstant { ticks: 23 },
+                ceiling: NodeCounter { ticks: 23 },
             },
             source: SchedulerHorizonSource::ExactLocalTimer,
-        })
+        }
     );
 }
 
@@ -872,13 +634,13 @@ fn exact_local_event_bounds_infinite_network_lookahead() {
 fn exact_deadline_report_maps_to_scheduler_local_event() {
     assert_eq!(
         exact_local_event_from_timer_deadline_ns(Some(124_456)),
-        ExactLocalEvent::TimerDeadline {
-            virtual_time: SimInstant { nanos: 124_456 },
-        }
+        Ok(ExactLocalEvent::TimerDeadline {
+            virtual_time: SimInstant { ticks: 124_456_000 },
+        })
     );
     assert_eq!(
         exact_local_event_from_timer_deadline_ns(None),
-        ExactLocalEvent::NoArmedTimer
+        Ok(ExactLocalEvent::NoArmedTimer)
     );
 }
 
@@ -957,7 +719,7 @@ fn scheduler_quiescence_blocks_idle_nodes_with_exact_local_wakeups() {
             SchedulerNodeActivity::Idle,
             NetworkLookahead::Infinite,
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 23 },
+                virtual_time: SimInstant { ticks: 23 },
             },
         )],
         Vec::new(),
@@ -972,7 +734,7 @@ fn scheduler_quiescence_blocks_idle_nodes_with_exact_local_wakeups() {
         vec![SchedulerQuiescenceBlocker::PendingExactLocalEvent {
             node,
             event: ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 23 },
+                virtual_time: SimInstant { ticks: 23 },
             },
         }]
     );
@@ -982,16 +744,15 @@ fn scheduler_quiescence_blocks_idle_nodes_with_exact_local_wakeups() {
 fn scheduler_quiescence_fast_forwards_idle_exact_wakeup_without_deadlock() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "idle-exact-wakeup",
-        shift(0),
         8,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         vec![test_scenario_node(
             "node-a",
             0,
             SchedulerNodeActivity::Idle,
             NetworkLookahead::Infinite,
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 23 },
+                virtual_time: SimInstant { ticks: 23 },
             },
         )],
         Vec::new(),
@@ -1012,16 +773,15 @@ fn scheduler_quiescence_fast_forwards_idle_exact_wakeup_without_deadlock() {
 fn scheduler_quiescence_idle_exact_wakeup_after_time_limit_stops_at_limit() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "idle-exact-wakeup-after-limit",
-        shift(0),
         8,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         vec![test_scenario_node(
             "node-a",
             0,
             SchedulerNodeActivity::Idle,
             NetworkLookahead::Infinite,
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 100 },
+                virtual_time: SimInstant { ticks: 100 },
             },
         )],
         Vec::new(),
@@ -1044,9 +804,8 @@ fn scheduler_quiescence_fast_forwards_idle_pending_delivery_without_deadlock() {
     let producer = scheduler_node("node-b", SchedulingNodeKind::Vm);
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "idle-pending-delivery",
-        shift(0),
         8,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         vec![test_scenario_node(
             "node-a",
             0,
@@ -1108,7 +867,7 @@ fn scheduler_quiescence_blocks_future_io_events() {
             .contains(&SchedulerQuiescenceBlocker::PendingExactLocalEvent {
                 node: consumer,
                 event: ExactLocalEvent::IoCompletion {
-                    virtual_time: SimInstant { nanos: 5 },
+                    virtual_time: SimInstant { ticks: 5 },
                     sub_node: disk,
                 },
             })
@@ -1124,16 +883,16 @@ fn scheduler_quiescence_ignores_idle_nodes_when_peer_can_advance() {
                 "idle",
                 0,
                 SchedulerNodeActivity::Idle,
-                NetworkLookahead::Finite(SimDuration { nanos: 1 }),
+                NetworkLookahead::Finite(SimDuration { ticks: 1 }),
                 ExactLocalEvent::TimerDeadline {
-                    virtual_time: SimInstant { nanos: 100 },
+                    virtual_time: SimInstant { ticks: 100 },
                 },
             ),
             test_scenario_node(
                 "runner",
                 0,
                 SchedulerNodeActivity::Runnable,
-                NetworkLookahead::Finite(SimDuration { nanos: 4 }),
+                NetworkLookahead::Finite(SimDuration { ticks: 4 }),
                 ExactLocalEvent::NoArmedTimer,
             ),
         ],
@@ -1157,7 +916,7 @@ fn scheduler_quiescence_ignores_idle_nodes_when_peer_can_advance() {
             SchedulerQuiescenceBlocker::PendingExactLocalEvent {
                 node: scheduler_node("idle", SchedulingNodeKind::Vm),
                 event: ExactLocalEvent::TimerDeadline {
-                    virtual_time: SimInstant { nanos: 100 },
+                    virtual_time: SimInstant { ticks: 100 },
                 },
             },
             SchedulerQuiescenceBlocker::RunnableNode {
@@ -1176,15 +935,9 @@ fn scheduler_errors_render_all_variants_deterministically() {
     let boundary = SchedulerError::BoundaryViolation {
         message: String::from("bypassed scheduler boundary"),
     };
-    let not_implemented = SchedulerError::NotImplemented { operation: "pick" };
-    let conversion = SchedulerError::from(TimeConversionError::InvalidShift {
-        shift: Shift { bits: 64 },
-    });
+    let conversion =
+        SchedulerError::from(TimeConversionError::NanosecondOverflow { nanos: u64::MAX });
 
-    assert_eq!(
-        not_implemented.to_string(),
-        "scheduler operation pick is not implemented yet"
-    );
     assert_eq!(
         backend.to_string(),
         "backend failed under scheduler control: backend refused"
@@ -1192,7 +945,7 @@ fn scheduler_errors_render_all_variants_deterministically() {
     assert_eq!(boundary.to_string(), "bypassed scheduler boundary");
     assert_eq!(
         conversion.to_string(),
-        "scheduler virtual-time conversion failed: icount shift 64 cannot be represented as u64"
+        "scheduler virtual-time conversion failed: 18446744073709551615 nanoseconds exceeds the simulation tick range"
     );
 }
 
@@ -1202,20 +955,6 @@ fn scheduler_node(name: &str, kind: SchedulingNodeKind) -> SchedulerNodeId {
             name: name.to_string(),
         },
         kind,
-    }
-}
-
-fn shared_timeline(bits: u8) -> SharedTimeline {
-    match SharedTimeline::new(shift(bits)) {
-        Ok(timeline) => timeline,
-        Err(error) => panic!("test timeline should be valid: {error}"),
-    }
-}
-
-fn shift(bits: u8) -> Shift {
-    match Shift::new(bits) {
-        Ok(shift) => shift,
-        Err(error) => panic!("test shift should be valid: {error}"),
     }
 }
 
@@ -1248,13 +987,15 @@ fn event_key(
     producer: &SchedulerNodeId,
     sequence: u64,
 ) -> ScheduledEventKey {
-    ScheduledEventKey::from_parts(
-        VirtualTime {
-            ticks: virtual_time,
+    ScheduledEventKey::new(
+        SharedTimelineKey {
+            virtual_time: SimInstant {
+                ticks: virtual_time,
+            },
+            node: consumer.clone(),
+            sequence,
         },
-        consumer.clone(),
         producer.clone(),
-        sequence,
     )
 }
 
@@ -1280,13 +1021,58 @@ fn test_scheduler(
 ) -> SingleScheduler {
     SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "test-scheduler-quiescence",
-        shift(0),
         16,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         nodes,
         pending_events,
     ))
     .unwrap_or_else(|error| panic!("test scheduler should build: {error}"))
+}
+
+#[test]
+fn attempt_stop_frontier_precedes_branch_and_trigger_horizons() {
+    let mut scheduler = test_scheduler(
+        vec![test_scenario_node(
+            "node-a",
+            0,
+            SchedulerNodeActivity::Runnable,
+            NetworkLookahead::Infinite,
+            ExactLocalEvent::NoArmedTimer,
+        )],
+        Vec::new(),
+    );
+    scheduler
+        .set_trigger_wakeup(Some(VirtualTime { ticks: 30 }), None)
+        .unwrap_or_else(|error| panic!("trigger wakeup should install: {error}"));
+    scheduler
+        .set_branch_frontier_cap(VirtualTime { ticks: 25 })
+        .unwrap_or_else(|error| panic!("branch frontier should install: {error}"));
+    scheduler
+        .set_attempt_stop_frontier(Some(VirtualTime { ticks: 20 }))
+        .unwrap_or_else(|error| panic!("attempt stop should install: {error}"));
+
+    let outcome = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("attempt-capped quantum should run: {error}"));
+
+    assert_eq!(outcome.frontier, VirtualTime { ticks: 20 });
+    assert!(!scheduler.reached_time_limit().unwrap_or_else(|error| {
+        panic!("scenario terminal state should remain inspectable: {error}")
+    }));
+
+    scheduler
+        .set_attempt_stop_frontier(None)
+        .unwrap_or_else(|error| panic!("attempt stop should clear: {error}"));
+    let continued = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("cleared attempt cap should continue: {error}"));
+    assert_eq!(continued.frontier, VirtualTime { ticks: 25 });
 }
 
 #[test]
@@ -1297,6 +1083,7 @@ fn signal_fault_frontier_preserves_parent_time_and_typed_candidates() {
         id: SearchChoiceId::from_content_hash(ContentHash::from_bytes(b"binding-choice")),
         candidates_digest: ContentHash::from_bytes(b"binding-candidates"),
         candidate_count: 2,
+        candidate_semantics: BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };
@@ -1314,13 +1101,23 @@ fn signal_fault_frontier_preserves_parent_time_and_typed_candidates() {
         .unwrap_or_else(|| panic!("typed fault frontier should exist"));
     assert_eq!(frontier.configuration, parent);
     assert_eq!(frontier.at, VirtualTime { ticks: 37 });
-    assert_eq!(frontier.choices.decisions().len(), 2);
-    for (index, decision) in frontier.choices.decisions().iter().enumerate() {
-        let Decision::Override(decision) = decision else {
-            panic!("fault search candidate must remain an override decision");
+    assert_eq!(frontier.choices.choices().len(), 2);
+    for (index, branch) in frontier.choices.choices().iter().enumerate() {
+        let [Decision::Selection(selection), Decision::Override(decision)] = branch.decisions()
+        else {
+            panic!("fault search candidate must retain its typed selection and causal override");
         };
+        assert!(selection.is_campaign_branch());
+        let selection = selection
+            .selection()
+            .unwrap_or_else(|error| panic!("fault search selection should decode: {error}"));
+        assert_eq!(
+            selection.value(),
+            &crucible_campaign::ChoiceValue::Boolean(index == 1)
+        );
+
         let (id, search_override) = SearchOverride::from_override_decision(decision)
-            .unwrap_or_else(|| panic!("fault search candidate should decode"));
+            .unwrap_or_else(|| panic!("fault search candidate override should decode"));
         assert_eq!(id, choice.id);
         assert_eq!(search_override.candidate_index, index as u32);
         assert_eq!(search_override.parent_branch, Some(parent.id()));
@@ -1355,14 +1152,30 @@ fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
     let pending = event(17, &consumer, &producer, 0, b"pending-input");
     let mut scheduler = test_scheduler(vec![node.clone()], vec![pending.clone()]);
     scheduler = scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(11, 8)]));
+    scheduler
+        .set_attempt_stop_frontier(Some(VirtualTime { ticks: 23 }))
+        .unwrap_or_else(|error| panic!("attempt stop should install: {error}"));
+    let retained = ObservableEvent::console_output(
+        VirtualTime { ticks: 11 },
+        NodeId {
+            name: String::from("a"),
+        },
+        b"checkpoint-prefix".to_vec(),
+    );
+    let appended = QuantumLoop::append_backend_observable_events(&mut scheduler, vec![retained])
+        .unwrap_or_else(|error| panic!("scheduler event should append: {error}"));
     let checkpoint = scheduler
         .checkpoint()
         .unwrap_or_else(|error| panic!("scheduler checkpoint should capture: {error}"));
+    assert_eq!(checkpoint.retained_event_log_base_events(), 0);
+    assert_eq!(checkpoint.retained_event_log_entries(), appended.entries);
     let bytes = checkpoint
         .canonical_bytes()
         .unwrap_or_else(|error| panic!("scheduler checkpoint should encode: {error}"));
     let decoded = SingleSchedulerCheckpoint::from_canonical_bytes(&bytes)
         .unwrap_or_else(|error| panic!("scheduler checkpoint should decode: {error}"));
+    assert_eq!(decoded.retained_event_log_base_events(), 0);
+    assert_eq!(decoded.retained_event_log_entries(), appended.entries);
 
     let mut restored = test_scheduler(vec![node], vec![pending]);
     restored = restored.with_device_sub_node(disk_with_reads("a", "disk-a", &[]));
@@ -1370,6 +1183,7 @@ fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
         .restore_into(&mut restored)
         .unwrap_or_else(|error| panic!("scheduler checkpoint should restore: {error}"));
 
+    assert_eq!(restored.attempt_stop_frontier_cap, None);
     assert_eq!(
         restored
             .checkpoint()
@@ -1377,6 +1191,134 @@ fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
             .unwrap_or_else(|error| panic!("restored scheduler should encode: {error}")),
         bytes
     );
+}
+
+#[test]
+fn scheduler_checkpoint_restores_absolute_quantum_coordinate() {
+    const CHECKPOINT_QUANTA: u64 = 2;
+    const STOP_QUANTA: u64 = 4;
+
+    let nodes = ["a", "b", "c", "d"]
+        .into_iter()
+        .map(|name| {
+            test_scenario_node(
+                name,
+                0,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut uninterrupted = test_scheduler(nodes.clone(), Vec::new());
+    let mut checkpointed = test_scheduler(nodes.clone(), Vec::new());
+
+    for _ in 0..CHECKPOINT_QUANTA {
+        let request = QuantumRequest {
+            configuration: checkpointed.configuration().clone(),
+            control: Vec::new(),
+        };
+        checkpointed
+            .drive_quantum(request)
+            .unwrap_or_else(|error| panic!("checkpoint prefix quantum should drive: {error}"));
+    }
+    let encoded = checkpointed
+        .checkpoint()
+        .and_then(|checkpoint| checkpoint.canonical_bytes())
+        .unwrap_or_else(|error| panic!("scheduler checkpoint should encode: {error}"));
+    let decoded = SingleSchedulerCheckpoint::from_canonical_bytes(&encoded)
+        .unwrap_or_else(|error| panic!("scheduler checkpoint should decode: {error}"));
+    assert_eq!(decoded.quanta(), CHECKPOINT_QUANTA);
+
+    let mut restored = test_scheduler(nodes, Vec::new());
+    decoded
+        .restore_into(&mut restored)
+        .unwrap_or_else(|error| panic!("scheduler checkpoint should restore: {error}"));
+    assert_eq!(restored.quanta(), CHECKPOINT_QUANTA);
+
+    let mut suffix_calls = 0;
+    while restored.quanta() < STOP_QUANTA {
+        let request = QuantumRequest {
+            configuration: restored.configuration().clone(),
+            control: Vec::new(),
+        };
+        restored
+            .drive_quantum(request)
+            .unwrap_or_else(|error| panic!("restored suffix quantum should drive: {error}"));
+        suffix_calls += 1;
+    }
+    assert_eq!(suffix_calls, STOP_QUANTA - CHECKPOINT_QUANTA);
+    assert_eq!(restored.quanta(), STOP_QUANTA);
+
+    for _ in 0..STOP_QUANTA {
+        let request = QuantumRequest {
+            configuration: uninterrupted.configuration().clone(),
+            control: Vec::new(),
+        };
+        uninterrupted
+            .drive_quantum(request)
+            .unwrap_or_else(|error| panic!("uninterrupted quantum should drive: {error}"));
+    }
+    assert_eq!(
+        restored
+            .checkpoint()
+            .and_then(|checkpoint| checkpoint.canonical_bytes())
+            .unwrap_or_else(|error| panic!("restored result should encode: {error}")),
+        uninterrupted
+            .checkpoint()
+            .and_then(|checkpoint| checkpoint.canonical_bytes())
+            .unwrap_or_else(|error| panic!("uninterrupted result should encode: {error}"))
+    );
+}
+
+#[test]
+fn live_backend_event_log_suffix_is_adopted_atomically() {
+    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
+    let before = scheduler.event_log().offset();
+    let mut backend_log = scheduler.event_log().clone();
+    let entry = scheduler_event_log_entry(
+        before.events,
+        VirtualTime { ticks: 13 },
+        SchedulerEventLogPayload::Observable(ObservableEventPayload::ConsoleOutput {
+            node: NodeId {
+                name: String::from("a"),
+            },
+            bytes: b"paused-drain".to_vec(),
+        }),
+    );
+    let expected = backend_log
+        .append_entries(vec![entry.clone()])
+        .unwrap_or_else(|error| panic!("backend suffix should append: {error}"));
+
+    let adopted = scheduler
+        .adopt_live_backend_event_log_suffix(&backend_log)
+        .unwrap_or_else(|error| panic!("exact backend suffix should be adopted: {error}"));
+
+    assert_eq!(adopted.entries, vec![entry]);
+    assert_eq!(adopted.offset, expected.offset);
+    assert_eq!(scheduler.event_log().offset(), backend_log.offset());
+
+    let accepted = scheduler.event_log().offset();
+    let mut foreign = scheduler.event_log().clone();
+    let foreign_entry = scheduler_event_log_entry(
+        accepted.events,
+        VirtualTime { ticks: 17 },
+        SchedulerEventLogPayload::Observable(ObservableEventPayload::ConsoleOutput {
+            node: NodeId {
+                name: String::from("a"),
+            },
+            bytes: b"foreign-drain".to_vec(),
+        }),
+    );
+    foreign
+        .append_entries(vec![foreign_entry])
+        .unwrap_or_else(|error| panic!("foreign suffix should be structurally valid: {error}"));
+    foreign.offset.prefix = ContentHash::from_bytes(b"foreign-prefix");
+
+    scheduler
+        .adopt_live_backend_event_log_suffix(&foreign)
+        .expect_err("foreign final offset must fail closed");
+    assert_eq!(scheduler.event_log().offset(), accepted);
 }
 
 #[test]
@@ -1408,7 +1350,7 @@ fn network_transition_drop_clears_inflight_and_authenticates_frames() {
     );
     let link_id = scheduler_link_id_for_nodes(&source, &destination);
     let direction = NetworkLinkDirection::EndpointAToEndpointB;
-    let mut link = crucible_device::NetLink::new(0, 0, 10, 1, crucible_device::LinkFaults::none())
+    let mut link = crucible_device::NetLink::new(0, 10, 1, crucible_device::LinkFaults::none())
         .unwrap_or_else(|error| panic!("test link should build: {error}"));
     link.emit(
         &crucible_device::Frame::new(0, 7, vec![1, 2, 3]),
@@ -1536,8 +1478,8 @@ fn io_completion_event(
         payload: ScheduledEventPayload::IoCompletion(IoCompletion {
             sub_node: producer.clone(),
             target: consumer.node.clone(),
-            delivery_icount: Icount {
-                retired: virtual_time,
+            delivery_tick: SimInstant {
+                ticks: virtual_time,
             },
             payload: payload.to_vec(),
         }),
@@ -1553,7 +1495,7 @@ fn disk_with_reads(
 ) -> crate::device_subnode::DeviceSchedulingSubNode {
     use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
 
-    let core = match IoCore::new(0, 1, 16, 16) {
+    let core = match IoCore::new(1, 16, 16) {
         Ok(core) => core,
         Err(error) => panic!("io core should construct: {error}"),
     };
@@ -1585,7 +1527,7 @@ fn disk_with_reads(
 }
 
 #[test]
-fn resolve_device_completions_stamps_each_completion_at_its_exact_icount() {
+fn resolve_device_completions_keep_non_instruction_aligned_exact_ticks() {
     // The integration capstone ([SCHED-29], [IO-2]): two sequential disk reads
     // resolved at a single consumer frontier above the head completion are each
     // made visible at their OWN exact delivery icount, in canonical order — not
@@ -1601,7 +1543,7 @@ fn resolve_device_completions_stamps_each_completion_at_its_exact_icount() {
         Vec::new(),
     );
     scheduler =
-        scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(0, 8), (2000, 8)]));
+        scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(1, 8), (250_001, 8)]));
 
     assert!(
         scheduler.has_undelivered_device_completion(),
@@ -1609,7 +1551,7 @@ fn resolve_device_completions_stamps_each_completion_at_its_exact_icount() {
     );
 
     let node = scheduler_node("a", SchedulingNodeKind::Vm);
-    let (events, _decisions) = match scheduler.resolve_device_completions(&node, 3008) {
+    let (events, _decisions) = match scheduler.resolve_device_completions(&node, 1_258_001) {
         Ok(resolved) => resolved,
         Err(error) => panic!("resolve should succeed: {error}"),
     };
@@ -1620,9 +1562,10 @@ fn resolve_device_completions_stamps_each_completion_at_its_exact_icount() {
 
     assert_eq!(
         stamped,
-        vec![1008, 3008],
-        "each completion is stamped at its own exact delivery icount"
+        vec![1_008_001, 1_258_001],
+        "each completion is stamped at its own exact delivery tick"
     );
+    assert_ne!(stamped[0] % crate::SIM_TICKS_PER_INSTRUCTION, 0);
     assert!(
         !scheduler.has_undelivered_device_completion(),
         "both completions must be drained after RESOLVE"
@@ -1645,7 +1588,7 @@ fn refresh_device_horizons_folds_the_inflight_head_into_the_node_horizon() {
         )],
         Vec::new(),
     );
-    scheduler = scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(0, 8)]));
+    scheduler = scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(1, 8)]));
 
     scheduler
         .refresh_device_horizons()
@@ -1672,9 +1615,9 @@ fn refresh_device_horizons_folds_the_inflight_head_into_the_node_horizon() {
     assert!(
         matches!(
             exact,
-            ExactLocalEvent::IoCompletion { virtual_time, .. } if virtual_time.nanos == 1008
+            ExactLocalEvent::IoCompletion { virtual_time, .. } if virtual_time.ticks == 1_008_001
         ),
-        "the in-flight head (icount 1008) must bound the node horizon, got {exact:?}"
+        "the in-flight head (icount 1_008_001) must bound the node horizon, got {exact:?}"
     );
 
     // The idle requester is re-activated so it advances to the completion.
@@ -1704,13 +1647,12 @@ fn device_completion_flows_through_live_drive_quantum_at_exact_icount() {
     // through the LIVE `drive_quantum` (not the building blocks) at EXACTLY its
     // delivery icount ([SCHED-29], [IO-2]). The device horizon caps the
     // requester's advance so it is fast-forwarded to exactly the completion.
-    // A time limit comfortably past the completion icount (1008) so the
+    // A time limit comfortably past the completion icount (1_008_001) so the
     // requester can advance to it; budget large enough to reach it.
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "test-device-live-drive",
-        shift(0),
-        4_096,
-        SimInstant { nanos: 4_096 },
+        1_536_000,
+        SimInstant { ticks: 1_536_000 },
         vec![test_scenario_node(
             "a",
             0,
@@ -1722,7 +1664,7 @@ fn device_completion_flows_through_live_drive_quantum_at_exact_icount() {
     );
     let mut scheduler = SingleScheduler::new(scenario)
         .unwrap_or_else(|error| panic!("scheduler should build: {error}"));
-    scheduler = scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(0, 8)]));
+    scheduler = scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(1, 8)]));
 
     // Drive quanta until the run quiesces, recording the icount at which the
     // IoCompletion was resolved through the LIVE loop.
@@ -1752,7 +1694,7 @@ fn device_completion_flows_through_live_drive_quantum_at_exact_icount() {
 
     assert_eq!(
         delivered,
-        Some(1008),
+        Some(1_008_001),
         "the live loop must deliver the completion at its EXACT delivery icount"
     );
     // Once delivered, nothing remains in flight and the system quiesces.
@@ -1767,6 +1709,125 @@ fn device_completion_flows_through_live_drive_quantum_at_exact_icount() {
             .is_quiescent(),
         "the run must quiesce once the completion has been delivered"
     );
+}
+
+#[test]
+fn backend_loop_publishes_resolved_device_completion_as_observation() {
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "test-device-observation",
+        1_536_000,
+        SimInstant { ticks: 1_536_000 },
+        vec![test_scenario_node(
+            "a",
+            0,
+            SchedulerNodeActivity::Runnable,
+            NetworkLookahead::Infinite,
+            ExactLocalEvent::NoArmedTimer,
+        )],
+        Vec::new(),
+    );
+    let scheduler = SingleScheduler::new(scenario)
+        .unwrap_or_else(|error| panic!("scheduler should build: {error}"))
+        .with_device_sub_node(disk_with_reads("a", "disk-a", &[(1, 8)]));
+    let mut configuration = scheduler.configuration().clone();
+    let mut adapter = BackendQuantumLoop::new(scheduler, MockSimulationBackend::new());
+
+    let mut observed = None;
+    for _ in 0..16 {
+        let outcome = adapter
+            .drive_quantum(QuantumRequest {
+                configuration: configuration.clone(),
+                control: Vec::new(),
+            })
+            .unwrap_or_else(|error| panic!("backend quantum should succeed: {error}"));
+        configuration = outcome.configuration.clone();
+        let matching = outcome
+            .event_log_entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.payload(),
+                    SchedulerEventLogPayload::Observable(
+                        ObservableEventPayload::IoCompletion {
+                            node,
+                            kind: IoEventKind::Any,
+                            ..
+                        }
+                    ) if node.name == "a"
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Some(entry) = matching.first() {
+            assert_eq!(
+                matching.len(),
+                1,
+                "one resolved completion must produce exactly one observation"
+            );
+            observed = Some(entry.at());
+            break;
+        }
+    }
+
+    assert_eq!(
+        observed,
+        Some(VirtualTime { ticks: 1_008_001 }),
+        "the resolved World I/O event must enter the trigger observation stream at its exact time"
+    );
+
+    let next = adapter
+        .drive_quantum(QuantumRequest {
+            configuration,
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("the next backend quantum should succeed: {error}"));
+    assert!(
+        next.event_log_entries.iter().all(|entry| !matches!(
+            entry.payload(),
+            SchedulerEventLogPayload::Observable(ObservableEventPayload::IoCompletion {
+                node,
+                kind: IoEventKind::Any,
+                ..
+            }) if node.name == "a"
+        )),
+        "a delivered World I/O completion must not be observed twice"
+    );
+}
+
+#[test]
+fn resolved_device_observation_rejects_a_mismatched_owner() {
+    let scheduler = test_scheduler(
+        vec![
+            test_scenario_node(
+                "a",
+                0,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            ),
+            test_scenario_node(
+                "b",
+                0,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            ),
+        ],
+        Vec::new(),
+    )
+    .with_device_sub_node(disk_with_reads("a", "disk-a", &[]));
+    let event = io_completion_event(
+        8_064,
+        &scheduler_node("b", SchedulingNodeKind::Vm),
+        &scheduler_node("disk-a", SchedulingNodeKind::Disk),
+        0,
+        b"completion",
+    );
+
+    let error = scheduler
+        .resolved_event_observation(&event)
+        .expect_err("a completion may only target its sub-node's owning VM");
+
+    assert!(error.to_string().contains("instead of owner `a`"));
 }
 
 #[test]
@@ -1789,13 +1850,13 @@ fn broken_device_delivery_stamp_diverges_proving_gate_falsifiability() {
             Vec::new(),
         );
         scheduler =
-            scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(0, 8), (2000, 8)]));
+            scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(1, 8), (250_001, 8)]));
         if broken {
             scheduler = scheduler.with_broken_device_delivery_stamp();
         }
         let node = scheduler_node("a", SchedulingNodeKind::Vm);
         let (events, _decisions) = scheduler
-            .resolve_device_completions(&node, 3008)
+            .resolve_device_completions(&node, 1_258_001)
             .unwrap_or_else(|error| panic!("resolve should succeed: {error}"));
         events
             .iter()
@@ -1805,12 +1866,12 @@ fn broken_device_delivery_stamp_diverges_proving_gate_falsifiability() {
 
     assert_eq!(
         resolve_at_frontier(false),
-        vec![1008, 3008],
+        vec![1_008_001, 1_258_001],
         "exact stamps are each completion's own delivery icount"
     );
     assert_eq!(
         resolve_at_frontier(true),
-        vec![3008, 3008],
+        vec![1_258_001, 1_258_001],
         "the freeze-time bug collapses both onto the consumer frontier"
     );
     assert_ne!(

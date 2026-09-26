@@ -3,9 +3,9 @@
 use super::*;
 
 impl IoCore {
-    pub(super) fn insert_computed_at_nanos(
+    pub(super) fn insert_computed_at_tick(
         &mut self,
-        base_completion_nanos: u64,
+        base_completion_tick: u64,
         computed: ComputedResponse,
     ) -> Result<(), DeviceError> {
         if computed.primary.is_none() && !computed.additional.is_empty() {
@@ -14,13 +14,9 @@ impl IoCore {
         let Some(primary) = computed.primary else {
             return Ok(());
         };
-        let primary_nanos = base_completion_nanos
-            .checked_add(computed.additional_latency_nanos)
-            .ok_or(DeviceError::CompletionOverflow {
-                request_icount: self.clock.current_icount(),
-                latency_ns: computed.additional_latency_nanos,
-            })?;
-        let delivery_icount = self.clock.ceil_ns_to_icount(primary_nanos)?;
+        let delivery_icount = self
+            .clock
+            .add_ticks(base_completion_tick, computed.additional_latency_ticks)?;
         if delivery_icount < self.clock.current_icount() {
             return Err(DeviceError::DeliveryInPast {
                 delivery_icount,
@@ -41,15 +37,10 @@ impl IoCore {
         let mut prepared = Vec::with_capacity(computed.additional.len() + 1);
         prepared.push((delivery_icount, primary));
         for additional in computed.additional {
-            let nanos = primary_nanos.checked_add(additional.gap_nanos).ok_or(
-                DeviceError::CompletionOverflow {
-                    request_icount: self.clock.current_icount(),
-                    latency_ns: computed
-                        .additional_latency_nanos
-                        .saturating_add(additional.gap_nanos),
-                },
-            )?;
-            prepared.push((self.clock.ceil_ns_to_icount(nanos)?, additional.response));
+            let additional_tick = self
+                .clock
+                .add_ticks(delivery_icount, additional.gap_ticks)?;
+            prepared.push((additional_tick, additional.response));
         }
         for (delivery_icount, response) in prepared {
             self.insert_computed_response(delivery_icount, response)?;
@@ -72,16 +63,8 @@ impl IoCore {
     where
         D: IoSubNode,
     {
-        let base_ns = self.clock.virtual_ns(request.request_icount)?;
         let latency_ns = device.latency_model().latency_ns(&request);
-        let immutable_completion_ns =
-            base_ns
-                .checked_add(latency_ns)
-                .ok_or(DeviceError::CompletionOverflow {
-                    request_icount: request.request_icount,
-                    latency_ns,
-                })?;
-        let immutable_delivery_icount = self.clock.ceil_ns_to_icount(immutable_completion_ns)?;
+        let immutable_delivery_icount = self.clock.add_ns(request.request_icount, latency_ns)?;
         let current_icount = self.clock.current_icount();
         if immutable_delivery_icount < current_icount {
             return Err(DeviceError::DeliveryInPast {
@@ -105,13 +88,9 @@ impl IoCore {
             let Some(primary) = computed.primary else {
                 return Ok(Vec::new());
             };
-            let primary_ns = immutable_completion_ns
-                .checked_add(computed.additional_latency_nanos)
-                .ok_or(DeviceError::CompletionOverflow {
-                    request_icount: request.request_icount,
-                    latency_ns: latency_ns.saturating_add(computed.additional_latency_nanos),
-                })?;
-            let delivery_icount = self.clock.ceil_ns_to_icount(primary_ns)?;
+            let delivery_icount = self
+                .clock
+                .add_ticks(immutable_delivery_icount, computed.additional_latency_ticks)?;
             if delivery_icount < current_icount {
                 return Err(DeviceError::DeliveryInPast {
                     delivery_icount,
@@ -132,18 +111,10 @@ impl IoCore {
             let mut responses = Vec::with_capacity(computed.additional.len() + 1);
             responses.push((delivery_icount, primary));
             for additional in computed.additional {
-                let additional_ns = primary_ns.checked_add(additional.gap_nanos).ok_or(
-                    DeviceError::CompletionOverflow {
-                        request_icount: request.request_icount,
-                        latency_ns: latency_ns
-                            .saturating_add(computed.additional_latency_nanos)
-                            .saturating_add(additional.gap_nanos),
-                    },
-                )?;
-                responses.push((
-                    self.clock.ceil_ns_to_icount(additional_ns)?,
-                    additional.response,
-                ));
+                let additional_tick = self
+                    .clock
+                    .add_ticks(delivery_icount, additional.gap_ticks)?;
+                responses.push((additional_tick, additional.response));
             }
             Ok(responses)
         })();

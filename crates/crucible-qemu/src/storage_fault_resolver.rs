@@ -606,7 +606,7 @@ pub fn storage_array_rebuild_fault_opportunity(
         FaultOperation::StorageRebuild,
         FaultPhase::Persist,
         FaultCoordinate {
-            virtual_nanos: rebuild.ready_nanos,
+            virtual_ticks: rebuild.ready_ticks,
             retired_instructions: None,
         },
         rebuild.sequence,
@@ -1231,20 +1231,20 @@ pub fn merge_block_fault_phase_directive(
                 .ok_or(StorageFaultResolutionError::PhaseMergeOverflow {
                     field: "additional_latency_nanos",
                 })?;
-            accumulated.execution_nanos = partial.execution_nanos;
+            accumulated.execution_ticks = partial.execution_ticks;
             accumulated.error_result = partial.error_result;
             accumulated.retain_completion = partial.retain_completion;
             accumulated.retention_timeout_response = partial.retention_timeout_response;
-            accumulated.retention_timeout_nanos = partial.retention_timeout_nanos;
+            accumulated.retention_timeout_ticks = partial.retention_timeout_ticks;
             accumulated.retention_recovery_event = partial.retention_recovery_event;
-            accumulated.retention_recovery_after_nanos = partial.retention_recovery_after_nanos;
+            accumulated.retention_recovery_after_ticks = partial.retention_recovery_after_ticks;
             accumulated.retention_recovery_after_sequence =
                 partial.retention_recovery_after_sequence;
             accumulated.read_transforms = partial.read_transforms;
             accumulated.media_rules.extend(partial.media_rules);
         }
         FaultPhase::Persist => {
-            accumulated.execution_nanos = partial.execution_nanos;
+            accumulated.execution_ticks = partial.execution_ticks;
             accumulated.write_disposition = partial.write_disposition;
             accumulated.flush_disposition = partial.flush_disposition;
             if partial.retain_completion {
@@ -1255,16 +1255,16 @@ pub fn merge_block_fault_phase_directive(
                 }
                 accumulated.retain_completion = true;
                 accumulated.retention_timeout_response = partial.retention_timeout_response;
-                accumulated.retention_timeout_nanos = partial.retention_timeout_nanos;
+                accumulated.retention_timeout_ticks = partial.retention_timeout_ticks;
                 accumulated.retention_recovery_event = partial.retention_recovery_event;
-                accumulated.retention_recovery_after_nanos = partial.retention_recovery_after_nanos;
+                accumulated.retention_recovery_after_ticks = partial.retention_recovery_after_ticks;
                 accumulated.retention_recovery_after_sequence =
                     partial.retention_recovery_after_sequence;
             }
             accumulated.cache_policy = partial.cache_policy;
             accumulated.persistence_transforms = partial.persistence_transforms;
             accumulated.persistence_media_rules = partial.persistence_media_rules;
-            accumulated.persistence_admitted_nanos = partial.persistence_admitted_nanos;
+            accumulated.persistence_admitted_ticks = partial.persistence_admitted_ticks;
             accumulated.media_rules.extend(partial.media_rules);
         }
         FaultPhase::Deliver => {
@@ -1334,7 +1334,7 @@ fn resolve_block_fault_directive_with_capacity<'a>(
     validate_request_opportunity(target, request, request_sequence, opportunity)?;
     let mut directive = ResolvedBlockFaultDirective::fault_free(request, capacity);
     directive.request_sequence = request_sequence;
-    directive.execution_nanos = opportunity.coordinate().virtual_nanos;
+    directive.execution_ticks = opportunity.coordinate().virtual_ticks;
     let mut actions = actions.into_iter().collect::<Vec<_>>();
     actions.sort_by(|left, right| {
         left.effect
@@ -1555,22 +1555,28 @@ fn apply_effect(
                 }
             })?;
             if let Some(recovery_event) = recovery_event {
+                let stall_ticks = stall_nanos
+                    .checked_mul(crucible_shmem::TICKS_PER_NS)
+                    .ok_or_else(|| StorageFaultResolutionError::Overflow {
+                        binding: action.binding.clone(),
+                        field: "retention_timeout_ticks",
+                    })?;
                 directive.retain_completion = true;
                 directive.retention_timeout_response =
                     Some(BlockResponse::error_for(request.identity(), timeout));
-                directive.retention_timeout_nanos = Some(
+                directive.retention_timeout_ticks = Some(
                     action
                         .coordinate
-                        .virtual_nanos
-                        .checked_add(stall_nanos)
+                        .virtual_ticks
+                        .checked_add(stall_ticks)
                         .ok_or_else(|| StorageFaultResolutionError::Overflow {
                             binding: action.binding.clone(),
-                            field: "retention_timeout_nanos",
+                            field: "retention_timeout_ticks",
                         })?,
                 );
                 directive.retention_recovery_event =
                     Some(storage_recovery_event_key(recovery_event));
-                directive.retention_recovery_after_nanos = Some(action.coordinate.virtual_nanos);
+                directive.retention_recovery_after_ticks = Some(action.coordinate.virtual_ticks);
             } else {
                 directive.error_result = Some(timeout);
                 directive.additional_latency_nanos = directive
@@ -1821,7 +1827,7 @@ fn apply_effect(
                     expected: "persistence",
                 })?;
             if !directive.persistence_transforms.is_empty()
-                && directive.persistence_admitted_nanos != action.coordinate.virtual_nanos
+                && directive.persistence_admitted_ticks != action.coordinate.virtual_ticks
             {
                 return Err(StorageFaultResolutionError::InvalidDirective {
                     binding: action.binding.clone(),
@@ -1830,7 +1836,7 @@ fn apply_effect(
                     ),
                 });
             }
-            directive.persistence_admitted_nanos = action.coordinate.virtual_nanos;
+            directive.persistence_admitted_ticks = action.coordinate.virtual_ticks;
             directive
                 .persistence_transforms
                 .push(ResolvedBlockPersistenceTransform {
@@ -1997,21 +2003,27 @@ fn apply_effect(
                     directive.retain_completion = true;
                     directive.retention_timeout_response =
                         Some(BlockResponse::error_for(request.identity(), timeout));
-                    directive.retention_timeout_nanos = Some(
+                    let stall_ticks = stall_nanos
+                        .checked_mul(crucible_shmem::TICKS_PER_NS)
+                        .ok_or_else(|| StorageFaultResolutionError::Overflow {
+                            binding: action.binding.clone(),
+                            field: "retention_timeout_ticks",
+                        })?;
+                    directive.retention_timeout_ticks = Some(
                         action
                             .coordinate
-                            .virtual_nanos
-                            .checked_add(stall_nanos)
+                            .virtual_ticks
+                            .checked_add(stall_ticks)
                             .ok_or_else(|| StorageFaultResolutionError::Overflow {
                                 binding: action.binding.clone(),
-                                field: "retention_timeout_nanos",
+                                field: "retention_timeout_ticks",
                             })?,
                     );
                     directive.retention_recovery_event =
                         recovery_event.as_ref().map(storage_recovery_event_key);
-                    directive.retention_recovery_after_nanos = recovery_event
+                    directive.retention_recovery_after_ticks = recovery_event
                         .as_ref()
-                        .map(|_event| action.coordinate.virtual_nanos);
+                        .map(|_event| action.coordinate.virtual_ticks);
                     BlockFaultFlushDisposition::Stall
                 }
             };

@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) fn valid_snapshot() -> (RegionLayout, RegionHeaderSnapshot) {
-    let layout = match RegionLayout::for_config(RegionConfig::new(2, DEFAULT_QUEUE_CAPACITY, 3)) {
+    let layout = match RegionLayout::for_config(RegionConfig::new(2, DEFAULT_QUEUE_CAPACITY)) {
         Ok(layout) => layout,
         Err(error) => panic!("valid setup region layout should build: {error}"),
     };
@@ -22,7 +22,7 @@ pub(super) fn header_snapshot_from_bytes(bytes: &[u8]) -> RegionHeaderSnapshot {
         ring_data_off: read_u64(bytes, REGION_HEADER_RING_DATA_OFF_OFFSET),
         entry_stride: read_u64(bytes, REGION_HEADER_ENTRY_STRIDE_OFFSET),
         region_size: read_u64(bytes, REGION_HEADER_REGION_SIZE_OFFSET),
-        icount_shift: read_u32(bytes, REGION_HEADER_ICOUNT_SHIFT_OFFSET),
+        ticks_per_ns: read_u32(bytes, REGION_HEADER_TICKS_PER_NS_OFFSET),
         pause_requested: 0,
         shutdown_requested: 0,
         fault_payload_arena_bytes: read_u32(bytes, REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET),

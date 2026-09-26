@@ -9,6 +9,9 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
+  planTest = builtins.readFile ../../crates/crucible/tests/event_graph_serialization.rs;
+  propertiesTest = builtins.readFile ../../crates/crucible/tests/property_fingerprint_neutrality.rs;
+  coverageTest = builtins.readFile ../../crates/crucible/tests/coverage_condition_leaf.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -43,10 +46,6 @@
         needle = "plan: Option<Plan>";
       }
       {
-        label = "builder stores plan entries separately";
-        needle = "plan_entries: Vec<PlanEntry>";
-      }
-      {
         label = "builder stores properties separately";
         needle = "properties: Option<Properties>";
       }
@@ -67,16 +66,8 @@
         needle = "pub fn link(mut self, left: impl Into<String>, right: impl Into<String>) -> Self";
       }
       {
-        label = "transport link entry point";
-        needle = "pub fn link_with_transport(";
-      }
-      {
         label = "plan layer entry point";
         needle = "pub fn plan(mut self, plan: Plan) -> Self";
-      }
-      {
-        label = "plan-entry layer entry point";
-        needle = "pub fn plan_entry(mut self, entry: PlanEntry) -> Self";
       }
       {
         label = "properties layer entry point";
@@ -107,8 +98,8 @@
         needle = "world.scenario_def_with_plan_properties_and_seed(&plan, &properties, self.seed)";
       }
       {
-        label = "plan validation uses world";
-        needle = "Plan::from_entries_for_world(world, self.plan_entries.clone())";
+        label = "complete plan remains a separate builder layer";
+        needle = "if let Some(plan) = &self.plan";
       }
       {
         label = "properties validation uses world";
@@ -142,50 +133,44 @@
         needle = "entrypoint(";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/tests/event_graph_serialization.rs" planTest [
       {
-        label = "focused orthogonality test";
-        needle = "fn scenario_layers_stay_structurally_orthogonal()";
-      }
-      {
-        label = "test builds through builder";
-        needle = "ScenarioBuilder::new()";
-      }
-      {
-        label = "test checks serialized world layer";
-        needle = "toml.contains(\"[[world.link]]\")";
+        label = "focused plan orthogonality test";
+        needle = "fn graph_plan_is_the_scenario_plan_component()";
       }
       {
         label = "test checks serialized plan layer";
-        needle = "toml.contains(\"[[plan.entry]]\")";
+        needle = "scenario_toml.contains(\"[[plan.event]]\")";
       }
       {
-        label = "test checks serialized properties layer";
-        needle = "toml.contains(\"[[properties.assertion]]\")";
+        label = "test keeps properties identity separate from plan identity";
+        needle = "changed_properties_form.plan().content_hash(),";
       }
       {
-        label = "test checks serialized seed layer";
-        needle = "toml.contains(\"seed = \\\"0x\")";
+        label = "test keeps world identity separate from plan identity";
+        needle = "changed_world_plan.content_hash(), plan.content_hash()";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/property_fingerprint_neutrality.rs" propertiesTest [
+      {
+        label = "focused property orthogonality test";
+        needle = "fn property_changes_move_scenario_identity_without_moving_run_material()";
       }
       {
-        label = "test rejects missing-link fault";
-        needle = "Err(EngineError::PlanFaultUnknownLink";
+        label = "test preserves world plan and seed when properties change";
+        needle = "assert_same_run_components(&removed, &declared);";
       }
+    ]
+    ++ failuresFor "crates/crucible/tests/coverage_condition_leaf.rs" coverageTest [
       {
         label = "test rejects assertion-declared topology";
         needle = "Err(EngineError::PropertyPredicateUnknownNode";
       }
+    ]
+    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
       {
         label = "test rejects link-declared missing node";
         needle = "Err(EngineError::WorldLinkUnknownNode";
-      }
-      {
-        label = "test forbids boot events";
-        needle = "!toml.contains(\"boot_event\")";
-      }
-      {
-        label = "test forbids entrypoint folding";
-        needle = "!toml.contains(\"entrypoint\")";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -248,8 +233,18 @@ in
               --target-dir "$TMPDIR/crucible-spatial-layer-orthogonality-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible \
-              --lib \
-              scenario_layers_stay_structurally_orthogonal \
+              --test event_graph_serialization \
+              graph_plan_is_the_scenario_plan_component \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-spatial-layer-orthogonality-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --features test-double \
+              --test property_fingerprint_neutrality \
+              property_changes_move_scenario_identity_without_moving_run_material \
               -- --test-threads=1
           '';
         }

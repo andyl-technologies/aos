@@ -1,9 +1,9 @@
-# Patch 0047 — `crucible-fault-command-abi`
+# Capability task 0047 — `crucible-fault-command-abi`
 
 ## Purpose
 
 Adds the closed GPL-side dispatcher shell and capability registry consumed by all
-later fault patches. It applies no mutation by itself. Its absence makes every
+other fault capabilities. It applies no mutation by itself. Its absence makes every
 RFC-0014 node capability unavailable.
 
 ## Capability and dependencies
@@ -11,13 +11,14 @@ RFC-0014 node capability unavailable.
 - Provides `qemu.fault-command-abi.v1`.
 - Depends on the existing sim accelerator, plugin registration, shared-memory
   dispatch, process attestation, and generated boundary ABI.
-- Precedes patches 0048–0070.
+- Provides the registry foundation required by the capabilities specified in
+  capability tasks 0048–0070.
 
 ## Public protocol work
 
 The dual-licensed boundary registry defines the header/result in
 [§14.3](README.md#143-common-commandresult-protocol) and one closed payload tag
-for every later patch. Generated Rust and C views use explicit
+for every fault capability. Generated Rust and C views use explicit
 little-endian field encoding and byte arrays; the C view is not a compiler-native
 wire struct. Golden vectors cover every status, maximum payload, zero reserved
 fields, malformed length/offset, unknown kind, and version mismatch.
@@ -39,7 +40,7 @@ cancel_unarmed_fault(command_sequence)
 ```
 
 Actual QEMU interfaces use upstream-compatible C types and explicit ownership.
-Handlers are registered only by compiled patches; plugins cannot register
+Handlers are built into the compiled atomic integration; plugins cannot register
 arbitrary functions or string-named handlers. Duplicate kind/version
 registration aborts sim-mode startup. Unknown kinds return
 `unsupported_capability`.
@@ -52,8 +53,8 @@ result and never exposed to the host directly.
 ## Capability report
 
 Each capability row contains kind, semantic version, architecture/device scope,
-maximum payload, maximum pending commands, supported phases, and required later
-patch-series feature bits. Rows sort by numeric kind/version/scope. The report
+maximum payload, maximum pending commands, supported phases, and required
+atomic-integration feature bits. Rows sort by numeric kind/version/scope. The report
 hash enters QEMU process identity, reproduction artifacts, and the host admission
 comparison.
 
@@ -73,8 +74,9 @@ comparison.
 ## State and replay
 
 The registry descriptor set is immutable and therefore not VMState. Pending
-commands become VMState in patch 0067. Until 0070 lands, the aggregate gate must
-remain disabled and the PR draft; patch 0047's own microtest uses no save/load.
+commands use the VMState capability specified by capability task 0067. The
+atomic patch admits the complete closed registry only; the command-ABI focused
+microtest itself requires no save/load.
 
 ## Live microtests
 
@@ -84,7 +86,8 @@ remain disabled and the PR draft; patch 0047's own microtest uses no save/load.
    nonzero reserved fields, wrong node hash, and version mismatches; verify exact
    result codes and no guest/QEMU state change.
 3. Fill the command table and prove the next command fails without overwrite.
-4. Revert this patch and prove ABI discovery fails.
+4. Run the same discovery against pristine QEMU and prove the capability is
+   absent.
 5. Run the unpatched reference and patched QEMU without sim/plugin; compare the
    inertness corpus byte-for-byte.
 
@@ -93,8 +96,8 @@ remain disabled and the PR draft; patch 0047's own microtest uses no save/load.
 Modified QEMU files retain upstream notices. Any new registry file carries the
 appropriate QEMU-default or explicit GPL-compatible SPDX notice and is added to
 `LICENSES.md`. Plugin changes remain GPL-2.0-only; generated boundary definitions
-remain `MIT OR Apache-2.0`. The patch commit is DCO-signed and corresponding
-source/catalog/series metadata update together.
+remain `MIT OR Apache-2.0`. The atomic commit is DCO-signed; corresponding
+source, catalog, and integration metadata are updated with it.
 
 - **[QFP-ABI-1]** The ABI registry MUST be closed and immutable after machine
   realization; no runtime plugin-defined mutation callback is permitted.

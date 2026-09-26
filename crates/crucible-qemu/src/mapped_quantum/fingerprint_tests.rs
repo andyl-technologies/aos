@@ -18,6 +18,7 @@ fn sample() -> FingerprintSample {
         ram_bytes: 4096,
         ram_digest: [0x11; 32],
         device_state_bytes: 512,
+        device_state_sections: 17,
         device_state_digest: [0x22; 32],
         device_state_schema_digest: [0x33; 32],
         ..FingerprintSample::default()

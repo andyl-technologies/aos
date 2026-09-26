@@ -104,7 +104,7 @@ where
 
 pub(super) fn scenario_def_store_bytes(def: &ScenarioDef) -> Vec<u8> {
     format!(
-        "crucible.dag-store.scenario-def.v1\nscenario_ref={}\n{}\n{}\n",
+        "crucible.dag-store.scenario-def.v2\nscenario_ref={}\n{}\n{}\n",
         content_hash_hex(def.id),
         seed_material(def.seed),
         app_random_draw_cap_material(def.app_random_draw_cap)
@@ -116,7 +116,7 @@ pub(super) fn reproduction_artifact_canonical_bytes(
     scenario: &ScenarioDefForm,
     schedule: &Schedule,
 ) -> Vec<u8> {
-    let mut writer = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V5);
+    let mut writer = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V9);
     writer.write_binary_blob(&scenario.to_compact_binary());
     writer.write_binary_blob(&schedule.to_compact_binary());
     writer.finish()
@@ -165,7 +165,7 @@ pub(super) fn reproduction_event_log_artifact_id(
         ));
     }
     ContentHash::from_canonical_material(
-        "crucible.reproduction.event-log-artifact.v1",
+        "crucible.reproduction.event-log-artifact.v2",
         &lines.join("\n"),
     )
 }
@@ -178,7 +178,7 @@ pub(super) fn sorted_unique_hashes(mut hashes: Vec<ContentHash>) -> Vec<ContentH
 
 pub(super) fn checkpoint_store_bytes(checkpoint: &Checkpoint) -> Vec<u8> {
     let mut lines = vec![
-        String::from("crucible.dag-store.checkpoint-node.v1"),
+        String::from("crucible.dag-store.checkpoint-node.v2"),
         format!("id={}", content_hash_hex(checkpoint.id)),
         format!(
             "configuration={}",
@@ -247,7 +247,7 @@ pub(super) fn checkpoint_store_bytes(checkpoint: &Checkpoint) -> Vec<u8> {
 
 pub(super) fn schedule_delta_store_bytes(schedule: &Schedule) -> Vec<u8> {
     let mut lines = vec![
-        String::from("crucible.dag-store.schedule-delta.v1"),
+        String::from("crucible.dag-store.schedule-delta.v3"),
         format!("id={}", content_hash_hex(schedule.content_hash())),
         format!("decisions={}", schedule.decisions().len()),
     ];
@@ -258,7 +258,7 @@ pub(super) fn schedule_delta_store_bytes(schedule: &Schedule) -> Vec<u8> {
 }
 
 pub(super) fn cow_delta_store_bytes(cow_ref: CowDeltaRef) -> Vec<u8> {
-    let mut lines = vec![String::from("crucible.dag-store.cow-delta-ref.v1")];
+    let mut lines = vec![String::from("crucible.dag-store.cow-delta-ref.v2")];
     push_cow_delta_ref_lines("cow_delta", cow_ref, &mut lines);
     lines.join("\n").into_bytes()
 }
@@ -350,7 +350,7 @@ pub(super) fn push_decision_lines(index: usize, decision: &Decision, lines: &mut
             lines.push(format!("{prefix}.kind=preemption"));
             lines.push(format!("{prefix}.node_len={}", preemption.node.name.len()));
             lines.push(format!("{prefix}.node={}", preemption.node.name));
-            lines.push(format!("{prefix}.at_retired={}", preemption.at.retired));
+            lines.push(format!("{prefix}.at_tick={}", preemption.at.ticks));
             match &preemption.kind {
                 PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
                     lines.push(format!("{prefix}.preemption_kind=vcpu-switch"));
@@ -364,14 +364,40 @@ pub(super) fn push_decision_lines(index: usize, decision: &Decision, lines: &mut
                 }
             }
         }
-        Decision::AppRandom(random) => {
-            lines.push(format!("{prefix}.kind=app-random"));
-            lines.push(format!("{prefix}.node_len={}", random.node.name.len()));
-            lines.push(format!("{prefix}.node={}", random.node.name));
-            push_rng_stream_lines(&prefix, &random.stream, lines);
-            lines.push(format!("{prefix}.request_id={}", random.request_id));
-            lines.push(format!("{prefix}.width={}", random.width));
-            lines.push(format!("{prefix}.value={}", random.value));
+        Decision::Selection(selection) => {
+            lines.push(format!("{prefix}.kind=campaign-selection"));
+            lines.push(format!(
+                "{prefix}.canonical_selection={}",
+                bytes_hex(selection.canonical_bytes())
+            ));
+            if let Some(config) = selection.preemption_config() {
+                lines.push(format!(
+                    "{prefix}.preemption_producer_node={}",
+                    bytes_hex(config.node.name.as_bytes())
+                ));
+                lines.push(format!(
+                    "{prefix}.preemption_deadline_tick={}",
+                    config.deadline.ticks
+                ));
+                lines.push(format!(
+                    "{prefix}.preemption_horizon_tick={}",
+                    config.horizon.ticks
+                ));
+                lines.push(format!("{prefix}.preemption_step={}", config.step));
+                lines.push(format!(
+                    "{prefix}.preemption_from_vcpu={}",
+                    config.switch_from_vcpu.index
+                ));
+                lines.push(format!(
+                    "{prefix}.preemption_to_vcpu={}",
+                    config.switch_to_vcpu.index
+                ));
+                lines.push(format!(
+                    "{prefix}.preemption_target_vcpu={}",
+                    config.target_vcpu.index
+                ));
+                lines.push(format!("{prefix}.preemption_irq={}", config.irq.vector));
+            }
         }
     }
 }
@@ -382,139 +408,6 @@ pub(super) fn cow_delta_kind_label(kind: CowDeltaKind) -> &'static str {
         CowDeltaKind::DeviceOverlay => "device-overlay",
         CowDeltaKind::ScheduleDelta => "schedule-delta",
         CowDeltaKind::EventLogSegment => "event-log-segment",
-    }
-}
-
-pub(super) fn checkpoint_closure_index_bytes(
-    checkpoint: ContentHash,
-    reproduction_artifact: ContentHash,
-    frontier: VirtualTime,
-) -> Vec<u8> {
-    format!(
-        "crucible.local-dag-store.checkpoint-closure-index.v2\ncheckpoint={}\nreproduction_artifact={}\nfrontier={}\n",
-        ContentAddressedBlobRef::from_hash(checkpoint).to_uri(),
-        ContentAddressedBlobRef::from_hash(reproduction_artifact).to_uri(),
-        frontier.ticks,
-    )
-    .into_bytes()
-}
-
-pub(super) fn parse_checkpoint_closure_index_sidecar(
-    checkpoint: ContentHash,
-    sidecar: &str,
-) -> Result<ContentHash, DagStoreError> {
-    let trimmed = sidecar.trim();
-    if trimmed.is_empty() || trimmed.lines().count() != 1 {
-        return Err(corrupt_checkpoint_index(
-            checkpoint,
-            "sidecar must contain exactly one index reference",
-        ));
-    }
-    ContentAddressedBlobRef::parse("checkpoint closure index", trimmed)
-        .map(ContentAddressedBlobRef::hash)
-        .map_err(|error| corrupt_checkpoint_index(checkpoint, error.to_string()))
-}
-
-pub(super) fn parse_checkpoint_closure_index_bytes(
-    expected_checkpoint: ContentHash,
-    bytes: &[u8],
-) -> Result<LocalCheckpointClosureIndex, DagStoreError> {
-    let text = std::str::from_utf8(bytes).map_err(|error| {
-        corrupt_checkpoint_index(
-            expected_checkpoint,
-            format!("index bytes are not UTF-8: {error}"),
-        )
-    })?;
-    let mut lines = text.lines();
-    match lines.next() {
-        Some("crucible.local-dag-store.checkpoint-closure-index.v2") => {}
-        Some(other) => {
-            return Err(corrupt_checkpoint_index(
-                expected_checkpoint,
-                format!("unsupported schema `{other}`"),
-            ));
-        }
-        None => {
-            return Err(corrupt_checkpoint_index(
-                expected_checkpoint,
-                "index record is empty",
-            ));
-        }
-    }
-    let checkpoint = parse_checkpoint_index_field(expected_checkpoint, lines.next(), "checkpoint")?;
-    if checkpoint != expected_checkpoint {
-        return Err(corrupt_checkpoint_index(
-            expected_checkpoint,
-            format!(
-                "record names checkpoint {}, expected {}",
-                ContentAddressedBlobRef::from_hash(checkpoint).to_uri(),
-                ContentAddressedBlobRef::from_hash(expected_checkpoint).to_uri()
-            ),
-        ));
-    }
-    let reproduction_artifact =
-        parse_checkpoint_index_field(expected_checkpoint, lines.next(), "reproduction_artifact")?;
-    let frontier = parse_checkpoint_frontier_field(expected_checkpoint, lines.next())?;
-    if let Some(extra) = lines.next() {
-        return Err(corrupt_checkpoint_index(
-            expected_checkpoint,
-            format!("unexpected extra line `{extra}`"),
-        ));
-    }
-    Ok(LocalCheckpointClosureIndex {
-        checkpoint,
-        reproduction_artifact,
-        frontier,
-    })
-}
-
-fn parse_checkpoint_frontier_field(
-    checkpoint: ContentHash,
-    line: Option<&str>,
-) -> Result<VirtualTime, DagStoreError> {
-    let line =
-        line.ok_or_else(|| corrupt_checkpoint_index(checkpoint, "missing `frontier` line"))?;
-    let value = line.strip_prefix("frontier=").ok_or_else(|| {
-        corrupt_checkpoint_index(
-            checkpoint,
-            format!("expected `frontier` line, got `{line}`"),
-        )
-    })?;
-    let ticks = value.parse::<u64>().map_err(|error| {
-        corrupt_checkpoint_index(
-            checkpoint,
-            format!("invalid `frontier` value `{value}`: {error}"),
-        )
-    })?;
-    Ok(VirtualTime { ticks })
-}
-
-pub(super) fn parse_checkpoint_index_field(
-    checkpoint: ContentHash,
-    line: Option<&str>,
-    field: &'static str,
-) -> Result<ContentHash, DagStoreError> {
-    let line = line
-        .ok_or_else(|| corrupt_checkpoint_index(checkpoint, format!("missing `{field}` line")))?;
-    let expected_prefix = format!("{field}=");
-    let Some(value) = line.strip_prefix(&expected_prefix) else {
-        return Err(corrupt_checkpoint_index(
-            checkpoint,
-            format!("expected `{field}` line, got `{line}`"),
-        ));
-    };
-    ContentAddressedBlobRef::parse(field, value)
-        .map(ContentAddressedBlobRef::hash)
-        .map_err(|error| corrupt_checkpoint_index(checkpoint, error.to_string()))
-}
-
-pub(super) fn corrupt_checkpoint_index(
-    checkpoint: ContentHash,
-    reason: impl Into<String>,
-) -> DagStoreError {
-    DagStoreError::CorruptIndex {
-        checkpoint,
-        reason: reason.into(),
     }
 }
 

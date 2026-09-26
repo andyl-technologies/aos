@@ -3,6 +3,10 @@
 .section .text
 .global _start
 _start:
+    adrp x0, instruction_stack_top
+    add x0, x0, :lo12:instruction_stack_top
+    mov sp, x0
+
     mov x0, #0xff
     msr mair_el1, x0
     ldr x0, =0x803519
@@ -265,6 +269,11 @@ instruction_vectors:
 .endr
 
 instruction_exception_handler:
+    sub sp, sp, #48
+    stp x0, x1, [sp, #0]
+    stp x2, x3, [sp, #16]
+    str x6, [sp, #32]
+
     mrs x2, elr_el1
     adrp x3, instruction_result_fault_instruction
     add x3, x3, :lo12:instruction_result_fault_instruction
@@ -272,6 +281,7 @@ instruction_exception_handler:
     b.ne 2f
     adrp x6, instruction_result_fault_source
     add x6, x6, :lo12:instruction_result_fault_source
+    str x6, [sp, #32]
     adrp x0, instruction_result_fault_count
     add x0, x0, :lo12:instruction_result_fault_count
     b 4f
@@ -292,6 +302,11 @@ instruction_exception_handler:
     ldr w1, [x0]
     add w1, w1, #1
     str w1, [x0]
+
+    ldr x6, [sp, #32]
+    ldp x2, x3, [sp, #16]
+    ldp x0, x1, [sp, #0]
+    add sp, sp, #48
     eret
 
 .global instruction_result_fault
@@ -326,7 +341,7 @@ instruction_exception_count:
     .word 0
 .global instruction_natural_exception_count
 instruction_natural_exception_count:
-    .word 1
+    .word 0
 .global instruction_result_fault_count
 instruction_result_fault_count:
     .word 2
@@ -362,6 +377,12 @@ instruction_fp_one:
 .align 3
 instruction_replay_exception_pointer:
     .quad 0xffff000000000000
+
+.section .stack, "aw", %nobits
+.align 12
+instruction_stack:
+    .space 4096
+instruction_stack_top:
 
 .section .page_tables, "aw"
 .align 12

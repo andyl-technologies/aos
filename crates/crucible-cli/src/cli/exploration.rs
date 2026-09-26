@@ -1,50 +1,12 @@
 //! Search/fuzz execution and machine-readable outcome rendering.
 
 use super::*;
-pub(super) fn run_builtin_fault_campaign_fuzz(
-    cli: &Cli,
-    plan: &FuzzDriverPlan,
-) -> Result<(), CliError> {
-    let report = crucible::run_fault_campaign_example(plan.config)
-        .map_err(|error| backend_error(format!("built-in fault-campaign fuzz failed: {error}")))?;
-    if should_emit_human_dispatch_output(cli) {
-        println!(
-            "crucible: fuzzed built-in {} with coverage={}",
-            report.family_name,
-            plan.coverage.label()
-        );
-        println!(
-            "crucible: {} iterations, {} coverage fingerprints, discovered configuration {}",
-            report.fuzz_run.iterations.len(),
-            report.coverage_fingerprints.len(),
-            format_content_hash_ref(report.discovered_iteration.configuration_id())
-        );
-        println!(
-            "crucible: captured self-contained artifact {}; replay state {}",
-            format_content_hash_ref(report.finding.artifact.id()),
-            format_content_hash_ref(report.finding.replay.state)
-        );
-        println!(
-            "crucible: save {}, resume {}, fork {}",
-            format_content_hash_ref(report.save.checkpoint),
-            format_content_hash_ref(report.resume.checkpoint),
-            format_content_hash_ref(report.fork.branch.id())
-        );
-    }
-    Ok(())
-}
 
 pub(super) fn fuzz_dispatch_route(
     backend_plan: &BackendSelectionPlan,
-    plan: &FuzzDriverPlan,
 ) -> Option<FuzzDispatchRoute> {
     if backend_plan.target == BackendExecutionTarget::Local && is_packaged_backend(backend_plan) {
         return Some(FuzzDispatchRoute::LocalPackagedBackend);
-    }
-    if backend_plan.target == BackendExecutionTarget::Local
-        && plan.family.is_builtin_fault_campaign()
-    {
-        return Some(FuzzDispatchRoute::BuiltInFaultCampaignProof);
     }
     #[cfg(any(test, feature = "test-double"))]
     {
@@ -103,24 +65,25 @@ pub(super) fn run_local_double_fuzz_workflow_with_family(
             .map_err(|error| {
                 backend_error(format!("local-double fuzz corpus run failed: {error}"))
             })?;
-        local_double_fuzz_report_from_corpus_run(plan, corpus, &run)
+        fuzz_execution_report_from_corpus_run(plan, corpus, &run)
     } else {
         let run = family
             .fuzz_coverage_guided(plan.config, &[])
             .map_err(|error| backend_error(format!("local-double fuzz run failed: {error}")))?;
-        local_double_fuzz_report_from_run(plan, &run)
+        fuzz_execution_report_from_run(plan, &run)
     };
 
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
-    apply_local_double_fuzz_report(&mut outcome, plan, &report);
+    apply_fuzz_execution_report(&mut outcome, plan, &report);
     Ok(outcome)
 }
 
-pub(super) fn local_double_fuzz_report_from_run(
+#[cfg(any(test, feature = "test-double"))]
+pub(super) fn fuzz_execution_report_from_run(
     plan: &FuzzDriverPlan,
     run: &crucible::CoverageGuidedFuzzRun,
-) -> LocalDoubleFuzzReport {
-    LocalDoubleFuzzReport {
+) -> FuzzExecutionReport {
+    FuzzExecutionReport {
         family: plan.family.label(),
         corpus: None,
         iterations: run.iterations.len(),
@@ -140,12 +103,13 @@ pub(super) fn local_double_fuzz_report_from_run(
     }
 }
 
-pub(super) fn local_double_fuzz_report_from_corpus_run(
+#[cfg(any(test, feature = "test-double"))]
+pub(super) fn fuzz_execution_report_from_corpus_run(
     plan: &FuzzDriverPlan,
     corpus: &Path,
     run: &crucible::CoverageGuidedCorpusRun,
-) -> LocalDoubleFuzzReport {
-    LocalDoubleFuzzReport {
+) -> FuzzExecutionReport {
+    FuzzExecutionReport {
         family: plan.family.label(),
         corpus: Some(corpus.to_path_buf()),
         iterations: run.fuzz.iterations.len(),
@@ -166,10 +130,10 @@ pub(super) fn local_double_fuzz_report_from_corpus_run(
     }
 }
 
-pub(super) fn apply_local_double_fuzz_report(
+pub(super) fn apply_fuzz_execution_report(
     outcome: &mut BackendCommandOutcome,
     plan: &FuzzDriverPlan,
-    report: &LocalDoubleFuzzReport,
+    report: &FuzzExecutionReport,
 ) {
     let status = if report.property_findings > 0 {
         BackendCommandStatus::Failed
@@ -237,9 +201,9 @@ mod search;
 
 pub(crate) use search::*;
 
-pub(super) fn unsupported_fuzz_backend_error(plan: &FuzzDriverPlan) -> CliError {
+pub(super) fn fuzz_backend_unavailable_error(plan: &FuzzDriverPlan) -> CliError {
     backend_error(format!(
-        "fuzz family {} runs={} coverage={} requires the exploration-engine driver over phase-6 fuzzing policies tracked by T-CLI-13",
+        "fuzz family {} runs={} coverage={} has no admitted local production backend route",
         plan.family.label(),
         plan.runs,
         plan.coverage.label()
@@ -268,31 +232,31 @@ pub(super) fn emit_backend_command_output(
             println!("{line}");
         }
     }
-    if outcome.status.is_non_passing() {
-        if !outcome.side_reproduction_artifacts.is_empty() {
-            for (label, artifact) in &outcome.side_reproduction_artifacts {
-                let slug = format!("{}-{label}", outcome.status.failure_slug());
-                let report = write_failure_reproduction_artifact(cli, artifact, &slug)?;
-                if emit_human {
-                    println!(
-                        "crucible: wrote reproduction artifact side={} {} ({}) digest={}",
-                        label,
-                        report.path.display(),
-                        REPRODUCTION_ARTIFACT_MEDIA_TYPE,
-                        report.digest
-                    );
-                    println!(
-                        "crucible: reproduce side {} with:\n    {}",
-                        label, report.footer.replay_command
-                    );
-                    println!(
-                        "crucible: debug side {} at the failure with:\n    {}",
-                        label, report.footer.debug_command
-                    );
-                }
+    if !outcome.side_reproduction_artifacts.is_empty() {
+        for (label, artifact) in &outcome.side_reproduction_artifacts {
+            let slug = format!("{}-{label}", outcome.status.artifact_slug());
+            let report = write_reproduction_artifact(cli, artifact, &slug)?;
+            if emit_human {
+                println!(
+                    "crucible: wrote reproduction artifact side={} {} ({}) digest={}",
+                    label,
+                    report.path.display(),
+                    REPRODUCTION_ARTIFACT_MEDIA_TYPE,
+                    report.digest
+                );
+                println!(
+                    "crucible: reproduce side {} with:\n    {}",
+                    label, report.footer.replay_command
+                );
+                println!(
+                    "crucible: debug side {} at failure with:\n    {}",
+                    label, report.footer.debug_command
+                );
             }
-            return Ok(());
         }
+        return Ok(());
+    }
+    if outcome.status.is_non_passing() || outcome.reproduction_artifact.is_some() {
         if outcome_skipped_reproduction_artifacts(outcome) {
             return Ok(());
         }
@@ -302,8 +266,7 @@ pub(super) fn emit_backend_command_output(
                 outcome.status
             )));
         };
-        let report =
-            write_failure_reproduction_artifact(cli, artifact, outcome.status.failure_slug())?;
+        let report = write_reproduction_artifact(cli, artifact, outcome.status.artifact_slug())?;
         if emit_human {
             println!(
                 "crucible: wrote reproduction artifact {} ({}) digest={}",
@@ -316,7 +279,7 @@ pub(super) fn emit_backend_command_output(
                 report.footer.replay_command
             );
             println!(
-                "crucible: debug at the failure with:\n    {}",
+                "crucible: debug at failure with:\n    {}",
                 report.footer.debug_command
             );
         }
@@ -342,6 +305,18 @@ pub(super) fn backend_machine_readable_trace_entries(
     outcome: &BackendCommandOutcome,
 ) -> Vec<CanonicalLogEntry> {
     let mut entries = outcome.canonical_log.clone();
+    for evidence in &outcome.host_scheduler_preemption {
+        entries.push(CanonicalLogEntry {
+            sequence: entries.len() as u64,
+            virtual_time_ticks: entries
+                .last()
+                .map(|entry| entry.virtual_time_ticks.saturating_add(1))
+                .unwrap_or(0),
+            node: String::from("host"),
+            kind: String::from("bounded_scheduler_preemption"),
+            summary: evidence.summary(),
+        });
+    }
     entries.push(CanonicalLogEntry {
         sequence: entries.len() as u64,
         virtual_time_ticks: entries

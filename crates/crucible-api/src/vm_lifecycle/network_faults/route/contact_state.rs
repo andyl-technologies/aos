@@ -94,14 +94,14 @@ pub(in super::super) fn cancel_network_contact_reservations(
     action: &impl NetworkEffectContext,
 ) -> Result<(), SchedulerError> {
     for (key, service) in services {
-        service.settled_cursor_nanos = service.settled_cursor_nanos.max(key.start_nanos);
+        service.settled_cursor_ticks = service.settled_cursor_ticks.max(key.start_ticks);
         let (removed_bundles, removed_bytes) = service
             .reservations
             .iter()
             .filter(|reservation| {
                 reservation.custody_owner.as_ref() == Some(owner)
                     && opportunities.contains(&reservation.opportunity)
-                    && reservation.finish_nanos > now
+                    && reservation.finish_ticks > now
             })
             .try_fold((0_u64, 0_u64), |(bundles, bytes), reservation| {
                 bundles
@@ -114,19 +114,19 @@ pub(in super::super) fn cancel_network_contact_reservations(
         service.reservations.retain(|reservation| {
             reservation.custody_owner.as_ref() != Some(owner)
                 || !opportunities.contains(&reservation.opportunity)
-                || reservation.finish_nanos <= now
+                || reservation.finish_ticks <= now
         });
-        service.settled_cursor_nanos = service.settled_cursor_nanos.max(
+        service.settled_cursor_ticks = service.settled_cursor_ticks.max(
             service
                 .reservations
                 .iter()
-                .filter(|reservation| reservation.finish_nanos <= now)
-                .map(|reservation| reservation.finish_nanos)
+                .filter(|reservation| reservation.finish_ticks <= now)
+                .map(|reservation| reservation.finish_ticks)
                 .max()
-                .unwrap_or(key.start_nanos),
+                .unwrap_or(key.start_ticks),
         );
         service.reservations.retain(|reservation| {
-            reservation.finish_nanos > now
+            reservation.finish_ticks > now
                 || reservation.custody_owner.as_ref() != Some(owner)
                 || !opportunities.contains(&reservation.opportunity)
         });
@@ -146,13 +146,13 @@ pub(in super::super) fn cancel_network_contact_reservations(
                         "contact byte cancellation underflowed",
                     )
                 })?;
-        service.service_cursor_nanos = service.settled_cursor_nanos.max(
+        service.service_cursor_ticks = service.settled_cursor_ticks.max(
             service
                 .reservations
                 .iter()
-                .map(|reservation| reservation.finish_nanos)
+                .map(|reservation| reservation.finish_ticks)
                 .max()
-                .unwrap_or(key.start_nanos),
+                .unwrap_or(key.start_ticks),
         );
     }
     Ok(())
@@ -173,26 +173,26 @@ pub(in super::super) fn prune_network_contact_services(
         })
         .collect::<BTreeSet<_>>();
     for (key, service) in &mut state.contact_services {
-        service.settled_cursor_nanos = service.settled_cursor_nanos.max(key.start_nanos);
+        service.settled_cursor_ticks = service.settled_cursor_ticks.max(key.start_ticks);
         service.reservations.retain(|reservation| {
             let live = reservation.custody_owner.as_ref().is_some_and(|owner| {
                 live_custody.contains(&(owner.clone(), reservation.opportunity))
             });
-            if reservation.finish_nanos <= now && !live {
-                service.settled_cursor_nanos =
-                    service.settled_cursor_nanos.max(reservation.finish_nanos);
+            if reservation.finish_ticks <= now && !live {
+                service.settled_cursor_ticks =
+                    service.settled_cursor_ticks.max(reservation.finish_ticks);
                 false
             } else {
                 true
             }
         });
-        service.service_cursor_nanos = service.settled_cursor_nanos.max(
+        service.service_cursor_ticks = service.settled_cursor_ticks.max(
             service
                 .reservations
                 .iter()
-                .map(|reservation| reservation.finish_nanos)
+                .map(|reservation| reservation.finish_ticks)
                 .max()
-                .unwrap_or(key.start_nanos),
+                .unwrap_or(key.start_ticks),
         );
     }
 }

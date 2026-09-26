@@ -21,10 +21,10 @@
 //!   decode -> serve over overlay/base -> BlockResponse
 //!   malformed bytes / out-of-range    -> error-status BlockResponse (never panic)
 //! response payload = BlockResponse::encode()
-//! delivery_icount  = ceil(vt(request_icount) + BlockLatency::latency_ns)
+//! delivery_icount  = request_icount + 8 * BlockLatency::latency_ns
 //! ```
 
-use crucible_shmem::{FrameEntry, NodeSlot, RingHeader, icount_to_virtual_ns};
+use crucible_shmem::{FrameEntry, NodeSlot, RingHeader};
 
 use crate::error::DeviceError;
 use crate::request::{ComputedResponse, LatencyModel, Request, Response, ResponseStatus};
@@ -209,7 +209,7 @@ pub fn install_cross_device_misdirected_persistence(
             &mut next_destination.overlay,
             resolved.opportunity.request.request_id,
             resolved.directive.request_sequence,
-            resolved.opportunity.ready_nanos,
+            resolved.opportunity.ready_ticks,
             destination_offset,
             resolved.opportunity.request.data.clone(),
         )?;
@@ -248,16 +248,6 @@ fn block_response_to_uniform_device(response: &BlockResponse) -> Result<Response
         status,
         response.encode().map_err(DeviceError::Codec)?,
     ))
-}
-
-fn ceil_nanos_to_valid_icount(target_nanos: u64, shift_bits: u8) -> u64 {
-    debug_assert!(shift_bits < 64);
-    if shift_bits == 0 {
-        return target_nanos;
-    }
-    let quotient = target_nanos >> shift_bits;
-    let mask = (1_u64 << shift_bits) - 1;
-    quotient + u64::from(target_nanos & mask != 0)
 }
 
 /// The detached COMPUTE view a [`BlockDevice`] hands to [`IoCore::process_inbox`].

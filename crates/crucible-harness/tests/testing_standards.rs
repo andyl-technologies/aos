@@ -42,6 +42,7 @@ enum TestShape {
     ObservedInjectionIcountVectors,
     FingerprintCompare,
     AbiGoldenVectors,
+    TypedChoiceConformance,
     QemuInertCompare,
     PatchMicrotests,
     ResponsivenessBound,
@@ -50,6 +51,19 @@ enum TestShape {
     AdversarialCompare,
     FleetEquivalence,
     CampaignContinuity,
+    CampaignColdContinuity,
+    CampaignModel,
+    CampaignReplay,
+    CampaignStatistics,
+    BranchPointModel,
+    LazyFrontier,
+    ControlResponsiveness,
+    WorldForkAtomicity,
+    CampaignComponentContract,
+    AttemptIdempotence,
+    CampaignMutationScaling,
+    CampaignStoreEquivalence,
+    CampaignStoreComposition,
     BasicBlockCoverage,
     CheckpointMaterialization,
     StateSpaceSearch,
@@ -72,6 +86,24 @@ struct CrateTestingOwnership {
     gates: &'static [&'static str],
 }
 
+// Library-exact campaign gates are absent from the RFC-0010 integration-target
+// table. Keep them in the same layer, backend, and ownership checks without
+// claiming that the selector is an integration-test target.
+const CAMPAIGN_LIBRARY_EXACT_TESTING_TARGETS: &[GateTargetSpec] = &[
+    GateTargetSpec {
+        gate: "gate:control-responsiveness",
+        package: "crucible-daemon",
+        test_target: "executor_pool::tests::campaign_controls_remain_responsive_while_every_executor_slot_is_busy",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:world-fork-atomicity",
+        package: "crucible-daemon",
+        test_target: "qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically",
+        required_features: &[],
+    },
+];
+
 const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
     GateTestingStandard {
         gate: "gate:harness-lint",
@@ -88,20 +120,29 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         backend: TestBackend::StaticLint,
     },
     GateTestingStandard {
+        gate: "gate:campaign-gate-matrix",
+        owner_packages: &["crucible-harness"],
+        layers: &[Layer::CrossCutting],
+        shape: TestShape::StaticLint,
+        backend: TestBackend::StaticLint,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-release-acceptance",
+        owner_packages: &["crucible-harness"],
+        layers: &[Layer::CrossCutting],
+        shape: TestShape::StaticLint,
+        backend: TestBackend::StaticLint,
+    },
+    GateTestingStandard {
         gate: "gate:layer0-determinism",
-        owner_packages: &["crucible-sim", "crucible-assert", "crucible"],
-        layers: &[Layer::L0, Layer::L3],
-        shape: TestShape::TwiceReduceCompareByHash,
-        backend: TestBackend::InProcess,
+        owner_packages: &["crucible-qemu"],
+        layers: &[Layer::L2],
+        shape: TestShape::FingerprintCompare,
+        backend: TestBackend::RealQemu,
     },
     GateTestingStandard {
         gate: "gate:single-vm-fingerprint",
-        owner_packages: &[
-            "crucible",
-            "crucible-qemu",
-            "crucible-qemu-plugin",
-            "crucible-guest",
-        ],
+        owner_packages: &["crucible-qemu", "crucible-qemu-plugin", "crucible-guest"],
         layers: &[Layer::L2, Layer::L3],
         shape: TestShape::FingerprintCompare,
         backend: TestBackend::Mixed,
@@ -135,6 +176,104 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         backend: TestBackend::InProcess,
     },
     GateTestingStandard {
+        gate: "gate:campaign-model",
+        owner_packages: &["crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::CampaignModel,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-replay",
+        owner_packages: &["crucible", "crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::CampaignReplay,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-statistics",
+        owner_packages: &["crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::CampaignStatistics,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:branch-point-model",
+        owner_packages: &["crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::BranchPointModel,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:lazy-frontier",
+        owner_packages: &["crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::LazyFrontier,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:control-responsiveness",
+        owner_packages: &["crucible-daemon"],
+        layers: &[Layer::L4],
+        shape: TestShape::ControlResponsiveness,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:world-fork-atomicity",
+        owner_packages: &["crucible-daemon"],
+        layers: &[Layer::L4],
+        shape: TestShape::WorldForkAtomicity,
+        backend: TestBackend::Mixed,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-component-contract",
+        owner_packages: &["crucible-daemon"],
+        layers: &[Layer::L4],
+        shape: TestShape::CampaignComponentContract,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-cold-continuity",
+        owner_packages: &["crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::CampaignColdContinuity,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:attempt-idempotence",
+        owner_packages: &["crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::AttemptIdempotence,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-mutation-scaling",
+        owner_packages: &["crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::CampaignMutationScaling,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-store-equivalence",
+        owner_packages: &["crucible-cas"],
+        layers: &[Layer::L3],
+        shape: TestShape::CampaignStoreEquivalence,
+        backend: TestBackend::Mixed,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-store-composition",
+        owner_packages: &["crucible-cas", "crucible-cli"],
+        layers: &[Layer::L3, Layer::L4],
+        shape: TestShape::CampaignStoreComposition,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
+        gate: "gate:typed-choice",
+        owner_packages: &["crucible-campaign"],
+        layers: &[Layer::L3],
+        shape: TestShape::TypedChoiceConformance,
+        backend: TestBackend::InProcess,
+    },
+    GateTestingStandard {
         gate: "gate:replay-oracle",
         owner_packages: &["crucible"],
         layers: &[Layer::L3],
@@ -150,10 +289,10 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
     },
     GateTestingStandard {
         gate: "gate:scheduler-liveness",
-        owner_packages: &["crucible"],
-        layers: &[Layer::L3],
-        shape: TestShape::TwiceReduceCompareByHash,
-        backend: TestBackend::SimDouble,
+        owner_packages: &["crucible-qemu"],
+        layers: &[Layer::L2],
+        shape: TestShape::ResponsivenessBound,
+        backend: TestBackend::RealQemu,
     },
     GateTestingStandard {
         gate: "gate:control-responsive",
@@ -261,11 +400,11 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
 const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     CrateTestingOwnership {
         package: "crucible-sim",
-        gates: &["gate:layer0-determinism", "gate:content-address"],
+        gates: &["gate:content-address"],
     },
     CrateTestingOwnership {
         package: "crucible-assert",
-        gates: &["gate:layer0-determinism"],
+        gates: &[],
     },
     CrateTestingOwnership {
         package: "crucible-shmem",
@@ -282,7 +421,9 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     CrateTestingOwnership {
         package: "crucible-qemu",
         gates: &[
+            "gate:layer0-determinism",
             "gate:single-vm-fingerprint",
+            "gate:scheduler-liveness",
             "gate:any-guest",
             "gate:qemu-inert",
             "gate:basic-block-coverage",
@@ -304,12 +445,9 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     CrateTestingOwnership {
         package: "crucible",
         gates: &[
-            "gate:layer0-determinism",
-            "gate:single-vm-fingerprint",
             "gate:abi-conformance",
             "gate:replay-oracle",
             "gate:content-address",
-            "gate:scheduler-liveness",
             "gate:adversarial-determinism",
             "gate:e2e-determinism",
             "gate:fleet-equivalence",
@@ -317,11 +455,35 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
             "gate:checkpoint-materialization",
             "gate:state-space-search",
             "gate:signal-fault-system",
+            "gate:campaign-replay",
         ],
     },
     CrateTestingOwnership {
         package: "crucible-cas",
         gates: &["gate:campaign-continuity"],
+    },
+    CrateTestingOwnership {
+        package: "crucible-cas",
+        gates: &[
+            "gate:campaign-store-equivalence",
+            "gate:campaign-store-composition",
+        ],
+    },
+    CrateTestingOwnership {
+        package: "crucible-campaign",
+        gates: &[
+            "gate:campaign-model",
+            "gate:campaign-statistics",
+            "gate:branch-point-model",
+            "gate:campaign-cold-continuity",
+            "gate:lazy-frontier",
+            "gate:typed-choice",
+            "gate:campaign-replay",
+        ],
+    },
+    CrateTestingOwnership {
+        package: "crucible-campaign",
+        gates: &["gate:attempt-idempotence", "gate:campaign-mutation-scaling"],
     },
     CrateTestingOwnership {
         package: "crucible-session",
@@ -333,11 +495,20 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     },
     CrateTestingOwnership {
         package: "crucible-daemon",
-        gates: &["gate:control-responsive"],
+        gates: &[
+            "gate:control-responsive",
+            "gate:control-responsiveness",
+            "gate:campaign-component-contract",
+            "gate:world-fork-atomicity",
+        ],
     },
     CrateTestingOwnership {
         package: "crucible-cli",
         gates: &["gate:e2e-determinism"],
+    },
+    CrateTestingOwnership {
+        package: "crucible-cli",
+        gates: &["gate:campaign-store-composition"],
     },
     CrateTestingOwnership {
         package: "crucible-harness",
@@ -347,6 +518,8 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
             "gate:abi-conformance",
             "gate:divergence-bisect",
             "gate:perf-bench",
+            "gate:campaign-gate-matrix",
+            "gate:campaign-release-acceptance",
         ],
     },
 ];
@@ -358,20 +531,132 @@ const FLAKY_ESCAPE_PATTERNS: &[&str] = &[
     "thread::sleep",
     "std::thread::sleep",
 ];
-const HASH_COMPARE_GATES: &[&str] = &[
-    "gate:layer0-determinism",
-    "gate:replay-oracle",
-    "gate:content-address",
-    "gate:scheduler-liveness",
-];
+const HASH_COMPARE_GATES: &[&str] = &["gate:replay-oracle", "gate:content-address"];
 const TWICE_REDUCE_HELPER: &str = "assert_twice_reduce_canonical_digest(";
 const DUMP_COMPARE_PATTERNS: &[&str] = &["human_formatted_dump", "formatted_dump", "dump()"];
+
+#[test]
+fn campaign_model_standard_requires_public_repository_recovery_proofs() -> Result<(), Box<dyn Error>>
+{
+    let target = gate_targets()
+        .iter()
+        .find(|target| target.gate == "gate:campaign-model")
+        .ok_or("campaign-model gate target is missing")?;
+    let standard =
+        standard_for_gate(target.gate).ok_or("campaign-model testing standard is missing")?;
+    let source = fs::read_to_string(
+        workspace_root().join("crates/crucible-campaign/tests/gate_campaign_model.rs"),
+    )?;
+    assert!(source_shape_failures(target, standard, &source).is_empty());
+
+    for proof in [
+        "CampaignRepository::new",
+        "CampaignLineage::new",
+        "assert_eq!(lineage.id()?, reverse_lineage.id()?)",
+        "CampaignRepositoryError::Stale",
+        "derive_campaign",
+        "assert_eq!(rebuilt.snapshot_id(), derived.new_snapshot)",
+        "restarted.state",
+    ] {
+        let without_proof = source.replace(proof, "missing_repository_proof");
+        assert!(
+            !source_shape_failures(target, standard, &without_proof).is_empty(),
+            "campaign model standard accepted a gate missing {proof}",
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn control_responsiveness_standard_requires_daemon_proofs() -> Result<(), Box<dyn Error>> {
+    let target = CAMPAIGN_LIBRARY_EXACT_TESTING_TARGETS
+        .first()
+        .ok_or("control-responsiveness library target is missing")?;
+    let standard = standard_for_gate(target.gate)
+        .ok_or("control-responsiveness testing standard is missing")?;
+    let source = fs::read_to_string(
+        workspace_root().join("crates/crucible-daemon/src/executor_pool/tests.rs"),
+    )?;
+    assert!(source_shape_failures(target, standard, &source).is_empty());
+
+    for proof in [
+        "CampaignClient::new(RepositoryCampaignService::new(",
+        "CampaignControlAction::Pause(ActiveAttemptPolicy::Drain)",
+        ".get_campaign_status(",
+        ".pin_campaign(",
+        "const CONTROL_BOUND: Duration = Duration::from_millis(250);",
+        "assert_eq!(saturated.active(), 3);",
+        "assert_eq!(saturated.queued(), 1);",
+        "pool.request_shutdown();",
+        "Err(LocalExecutorPoolServiceError::ShuttingDown)",
+        "state.cancellations_observed, 2,",
+        ".operational_activity_snapshot();",
+        "assert!(activity.worker_in_flight);",
+        "assert!(activity.cancellation_requested);",
+        "assert_eq!(report.active(), 0);",
+        "assert_eq!(report.queued(), 0);",
+        "assert_eq!(report.executions(), 2,",
+        "assert_eq!(report.terminal_stops(), 3);",
+    ] {
+        let without_proof = source.replace(proof, "missing_control_responsiveness_proof");
+        assert!(
+            !source_shape_failures(target, standard, &without_proof).is_empty(),
+            "control-responsiveness standard accepted a gate missing {proof}",
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn world_fork_atomicity_standard_requires_production_transaction_proofs()
+-> Result<(), Box<dyn Error>> {
+    let target = CAMPAIGN_LIBRARY_EXACT_TESTING_TARGETS
+        .iter()
+        .find(|target| target.gate == "gate:world-fork-atomicity")
+        .ok_or("world-fork-atomicity library target is missing")?;
+    let standard =
+        standard_for_gate(target.gate).ok_or("world-fork-atomicity testing standard is missing")?;
+    let root = workspace_root();
+    let source = [
+        "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance.rs",
+        "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/failures.rs",
+    ]
+    .into_iter()
+    .map(|path| fs::read_to_string(root.join(path)))
+    .collect::<Result<Vec<_>, _>>()?
+    .join("\n");
+    assert!(source_shape_failures(target, standard, &source).is_empty());
+    assert!(backend_failures(target, standard).is_empty());
+
+    for proof in [
+        "QemuProductionHotForkWorldLifecycleFactory",
+        "production_factory_forks_complete_live_world_atomically",
+        "production_factory_exposes_no_world_when_second_real_fork_fails",
+        "production_factory_exposes_no_world_when_second_real_adoption_fails",
+        "production_factory_keeps_source_private_until_target_cleanup_retries",
+        "production_factory_keeps_source_private_across_repository_publication_retry",
+    ] {
+        let without_proof = source.replace(proof, "missing_world_fork_atomicity_proof");
+        assert!(
+            !source_shape_failures(target, standard, &without_proof).is_empty(),
+            "world-fork-atomicity standard accepted a gate missing {proof}",
+        );
+    }
+
+    Ok(())
+}
 
 #[test]
 fn gate_targets_follow_per_layer_testing_standards() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let source_overrides = gate_target_source_overrides(&root)?;
-    let mut failures = testing_standard_failures(gate_targets(), &source_overrides);
+    let testing_targets = gate_targets()
+        .iter()
+        .chain(CAMPAIGN_LIBRARY_EXACT_TESTING_TARGETS)
+        .copied()
+        .collect::<Vec<_>>();
+    let mut failures = testing_standard_failures(&testing_targets, &source_overrides);
     failures.extend(testing_standard_regression_failures());
 
     assert!(

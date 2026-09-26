@@ -4,30 +4,26 @@
   qemuPackage ? pkgs.qemu-crucible,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
-  patchName = "0039-crucible-blk-device-completion-advance.patch";
-  patchSeries = import (patchDir + "/_series.nix");
-  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  atomicPatch = import (patchDir + "/_atomic-patch.nix");
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
   failures =
     lib.optionals (!(hasInfix "qemu_plugin_register_blk_wait_cb" patchSource)) [
-      "${patchName}: block device-wait registration export is absent"
+      "${atomicPatch.file}: block device-wait registration export is absent"
     ]
     ++ lib.optionals (!(hasInfix "crucible_blk_wait_cb(request_id" patchSource)) [
-      "${patchName}: pending block poll does not enter the device-wait callback"
+      "${atomicPatch.file}: pending block poll does not enter the device-wait callback"
     ]
     ++ lib.optionals (!(hasInfix "QEMU_PLUGIN_BLK_POLL_PENDING" patchSource)) [
-      "${patchName}: wait hook is not tied to the pending completion state"
+      "${atomicPatch.file}: wait hook is not tied to the pending completion state"
     ]
     ++ lib.optionals (!(hasInfix "qemu_plugin_time_advance_complete_bh" patchSource)) [
-      "${patchName}: completion resume is not ordered after the advance barrier"
+      "${atomicPatch.file}: completion resume is not ordered after the advance barrier"
     ]
     ++ lib.optionals (!(hasInfix "QEMU_PLUGIN_WAKE_EVENT_DRAINED" patchSource)) [
-      "${patchName}: completed advance does not resume wake-fd-backed device waiters"
-    ]
-    ++ lib.optionals (!(builtins.elem patchName patchSeries.patchFiles)) [
-      "${patchName}: device-completion patch is not carried by the patch series"
+      "${atomicPatch.file}: completed advance does not resume wake-fd-backed device waiters"
     ];
 in
   if failures != []
@@ -97,9 +93,7 @@ in
             fi
             grep -q 'qemu_plugin_blk_wait' stock-device-completion-api.err
 
-            for patch in ${builtins.concatStringsSep " " patchSeries.patchFiles}; do
-              patch --batch --fuzz=0 -p1 < "${patchDir}/$patch"
-            done
+            patch --batch --fuzz=0 -p1 < "${patchDir}/${atomicPatch.file}"
 
             cc -std=c11 -Wall -Werror -I fixture/include -I include -I . \
               -c device-completion-api.c \
@@ -121,7 +115,7 @@ in
             {
               echo PASS
               echo gate=gate:patch-microtests
-              echo patch=${patchName}
+              echo atomic_patch=${atomicPatch.file}
               echo patched_fixture_exercised=true
               echo stock_negative_control=true
               echo patched_api_compiles=true

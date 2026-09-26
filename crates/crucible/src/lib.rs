@@ -32,6 +32,7 @@ pub mod decision;
 pub mod device;
 pub mod device_subnode;
 pub mod event_catalog;
+pub mod exact_checkpoint;
 pub mod example_corpus;
 mod local_backend;
 pub mod model;
@@ -41,6 +42,9 @@ pub mod scheduler;
 mod sim_backend;
 pub mod tracing_bridge;
 pub mod trigger;
+
+/// Portable canonical campaign vocabulary owned by `crucible-campaign`.
+pub use crucible_campaign as campaign;
 
 pub use backend::{
     AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput,
@@ -53,7 +57,15 @@ pub use backend::{
 #[cfg(any(test, feature = "test-double"))]
 pub use backend::{MockSimulationBackend, MockSimulationBackendState};
 pub use crucible_device::{ResolvedNetworkFrameEffects, ResolvedNetworkFrameEffectsError};
-pub use decision::{DecisionRecordError, DecisionRecorder};
+pub use decision::{
+    AppRandomSelectable, AppRandomSelectableError, DecisionRecordError, DecisionRecorder,
+    MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES, MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES,
+    NETWORK_FAULT_CAMPAIGN_ADAPTER, NetworkFaultCampaignBranch, NetworkFaultCampaignReplayPlan,
+    NetworkFaultPhase, NetworkFaultSelectable, NetworkFaultSelectableError,
+    SIGNAL_FAULT_CAMPAIGN_ADAPTER, SignalFaultCampaignBranch, SignalFaultCampaignReplayPlan,
+    SignalFaultSelectable, SignalFaultSelectableError, app_random_stream_belongs_to_node,
+    validate_app_random_model_selection,
+};
 pub use device::{LinkEmitDecisionRecord, NetworkLinkDirection, device_overlay, device_stream_id};
 pub use device_subnode::{
     DEFAULT_WORLD_IO_INBOX_CAPACITY, DEFAULT_WORLD_IO_OUTBOX_CAPACITY, DeviceDelivery,
@@ -80,42 +92,44 @@ pub use example_corpus::{
     verify_partition_recovery_default_runs,
 };
 pub use local_backend::{SimBackend, SimBackendState};
+pub use model::FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION;
 pub use model::{
     ADAPTIVE_UCB_SCORE_ONE_MICRO, APPLICATION_TRAFFIC_ORIGINATES_IN_GUEST, AdaptiveCampaignConfig,
     AdaptiveCampaignRun, AdaptiveCampaignSelection, AdaptiveStrategyArm, AdaptiveStrategyConfig,
     AdaptiveStrategyCredit, AdaptiveStrategyReward, AdaptiveStrategyRun, AdaptiveStrategySelection,
-    AppRandomBranchConfig, AppRandomBranchRun, AppRandomDecision, AppRandomDrawSite,
+    AppRandomBranchConfig, AppRandomBranchError, AppRandomBranchRun, AppRandomDrawSite,
     AppRandomSampleBudget, AssertionDef, AssertionId, AssertionPhase,
-    AssertionProximityGuidanceSignal, Checkpoint, CheckpointKind, CheckpointMeta, ChoiceTag,
-    CodePoint, Configuration, ContentAddressedBlobRef, ContentHash, CoverageGuidanceSignal,
-    CoverageGuidedCorpus, CoverageGuidedCorpusAdmission, CoverageGuidedCorpusAdmissionDecision,
-    CoverageGuidedCorpusConfig, CoverageGuidedCorpusEntry, CoverageGuidedCorpusEntryOrigin,
-    CoverageGuidedCorpusError, CoverageGuidedCorpusRun, CoverageGuidedFuzzConfig,
-    CoverageGuidedFuzzIteration, CoverageGuidedFuzzRun, CoverageGuidedFuzzThroughputReport,
-    CoverageGuidedFuzzThroughputTarget, CowDeltaKind, CowDeltaRef, CowSharingStats,
+    AssertionProximityGuidanceSignal, BackendRngEvidence, Checkpoint, CheckpointKind,
+    CheckpointMeta, ChoiceTag, CodePoint, Configuration, ContentAddressedBlobRef, ContentHash,
+    CoverageGuidanceSignal, CoverageGuidedCorpus, CoverageGuidedCorpusAdmission,
+    CoverageGuidedCorpusAdmissionDecision, CoverageGuidedCorpusConfig, CoverageGuidedCorpusEntry,
+    CoverageGuidedCorpusEntryOrigin, CoverageGuidedCorpusError, CoverageGuidedCorpusRun,
+    CoverageGuidedFuzzConfig, CoverageGuidedFuzzIteration, CoverageGuidedFuzzRun,
+    CoverageGuidedFuzzThroughputReport, CoverageGuidedFuzzThroughputTarget,
+    CoverageGuidedFuzzingEvidence, CowDeltaKind, CowDeltaRef, CowSharingStats,
     DEFAULT_ADAPTIVE_UCB_EXPLORATION_WEIGHT_MICROS, DEFAULT_APP_RANDOM_DRAW_CAP,
     DEFAULT_COVERAGE_GUIDED_FUZZ_THROUGHPUT_TARGET, DagStore, DagStoreError,
     DagStoreReproductionArtifact, DebugAttachChannelKind, DebugAttachChannelSet, DebugAttachReport,
     DebugAttachRequest, DebugBreakpointClientKind, DebugBreakpointMechanism, DebugBreakpointReport,
     DebugBreakpointRequest, DebugBreakpointTarget, DebugCheckpointCadenceReport,
     DebugCheckpointCadenceRequest, DebugCheckpointStride, DebugCliSurfaceContract, DebugCoordinate,
-    DebugDivergenceCoordinate, DebugFailureFooterCommand, DebugGdbEndpoint, DebugGdbstubChannel,
-    DebugGdbstubStepPolicy, DebugGotoReport, DebugGotoRequest, DebugGuestEdit, DebugGuestEditKind,
-    DebugMultiVcpuPolicy, DebugNonCanonicalBranch, DebugNonCanonicalBranchAction,
-    DebugNonCanonicalBranchReport, DebugNonCanonicalBranchRequest, DebugNonCanonicalBranchTrigger,
-    DebugNonCanonicalForkMarker, DebugNonCanonicalLiveStatus, DebugOperatorControlKind,
-    DebugPerNodeGotoReport, DebugPerNodeTimeTravelReport, DebugPerNodeTimeTravelRequest,
-    DebugReadMutationBoundaryPolicy, DebugReadOnlyCheckpointFootprint,
-    DebugReadOnlyInspectionFootprint, DebugReadOnlyInspectionKind, DebugReadOnlyInspectionReport,
-    DebugReadOnlyInspectionRequest, DebugReplayOracleBisectionRequest, DebugRetiredWorldCleanup,
-    DebugReverseContinueMatch, DebugReverseContinueReport, DebugReverseContinueRequest,
-    DebugReverseLatencyPolicy, DebugReverseStepGrain, DebugReverseStepReport,
-    DebugReverseStepRequest, DebugRuntimeRepositionReport, DebugRuntimeRepositionRequest,
-    DebugSymbolResolutionPolicy, DebugTargetResolverReport, DebugTargetResolverRequest,
-    DebugTargetSelector, DebugWholeWorldTarget, DebugWholeWorldTimeTravelReport,
-    DebugWholeWorldTimeTravelRequest, Decision, DecisionRngState, DeliveryOrderDecision, DeviceId,
-    DeviceOverlayDelta, DeviceRngState, EngineError, EventId, EventKey, EventLogOffset,
-    EventSequenceKey, EventSequenceState, FailureCausalCone, FailureCluster, FailureClusterFinding,
+    DebugDivergenceCoordinate, DebugGdbEndpoint, DebugGdbstubChannel, DebugGotoReport,
+    DebugGotoRequest, DebugGuestEdit, DebugGuestEditKind, DebugMultiVcpuPolicy,
+    DebugNonCanonicalBranch, DebugNonCanonicalBranchAction, DebugNonCanonicalBranchReport,
+    DebugNonCanonicalBranchRequest, DebugNonCanonicalBranchTrigger, DebugNonCanonicalForkMarker,
+    DebugNonCanonicalLiveStatus, DebugOperatorControlKind, DebugPerNodeGotoReport,
+    DebugPerNodeTimeTravelReport, DebugPerNodeTimeTravelRequest, DebugReadMutationBoundaryPolicy,
+    DebugReadOnlyCheckpointFootprint, DebugReadOnlyInspectionFootprint,
+    DebugReadOnlyInspectionKind, DebugReadOnlyInspectionReport, DebugReadOnlyInspectionRequest,
+    DebugReplayOracleBisectionRequest, DebugRetiredWorldCleanup, DebugReverseContinueMatch,
+    DebugReverseContinueReport, DebugReverseContinueRequest, DebugReverseLatencyPolicy,
+    DebugReverseStepGrain, DebugReverseStepReport, DebugReverseStepRequest,
+    DebugRuntimeRepositionReport, DebugRuntimeRepositionRequest, DebugSymbolResolutionPolicy,
+    DebugTargetResolverReport, DebugTargetResolverRequest, DebugTargetSelector,
+    DebugWholeWorldTarget, DebugWholeWorldTimeTravelReport, DebugWholeWorldTimeTravelRequest,
+    Decision, DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta,
+    DeviceRngState, EngineError, EventId, EventKey, EventLogOffset, EventSequenceKey,
+    EventSequenceState, FailureCausalCone, FailureCluster, FailureClusterFinding,
     FailureClusterMember, FailureClusterReport, FailureClusterReportCausalStep,
     FailureClusterReportDivergence, FailureClusterReportFailure, FailureClusterReportFormat,
     FailureClusterReportReproduction, FailureClusterReportSet, FailureClusteringResult,
@@ -124,23 +138,26 @@ pub use model::{
     FailureRecordedEventLog, FailureSignature, FailureSignatureKey, FailureSignatureNormalization,
     FailureSignaturePreservingMinimizationResult, FailureSignaturePreservingMinimizationRun,
     FailureSymmetryCanonicalizer, FailureTimeoutBudgetKind, FailureTimeoutRecord,
-    FailureTriageChangedCluster, FailureTriageResult, FailureTriageResultDiff,
-    FailureTriageResultIdentity, FailureTriageSignatureCheckRecord, FailureTriageSignatureMismatch,
-    FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput,
-    FailureTriageStoredArtifact, FamilyParams, FamilySpace, FaultSignalPlan, FindingDiscoveryPath,
-    FindingReproductionArtifact, FindingReproductionArtifactError, FleetEquivalenceDivergence,
-    FleetEquivalenceReport, FleetFindingSetEntry, FleetWorkClaim, FleetWorkStealingConfig,
-    FleetWorkStealingSearchRun, FramePredicate, FrontierChild, FrontierCoveredChild,
-    FrontierReductionPolicy, FrontierReductionReason, FrontierReductionReport, GenesisCheckpoint,
-    GuestWorkloadBinary, GuestWorkloadConfigTreeDelivery, GuestWorkloadConfigTreeRef,
-    GuestWorkloadLoadPatternFixture, GuestWorkloadParameterKey, GuestWorkloadPattern,
-    GuestWorkloadScalarParameter, GuestWorkloadSeed, GuestWorkloadSpikeMode,
-    GuestWorkloadTimeSource, GuidanceDeterminismLintReport, GuidanceObservation,
-    GuidanceRarityTable, GuidanceScore, GuidanceSearchConfig, GuidanceSearchState, GuidanceSignal,
-    GuidanceSignalComposition, GuidanceSignalInput, GuidanceSignalKind, GuidanceSignalWeight,
-    Icount, IoEventKind, IrqVector, LinkDef, LinkId, LinkLossProbability,
-    LocalCheckpointClosureIndex, LocalDagStore, MAX_APP_RANDOM_SAMPLES_PER_DRAW, MIN_LINK_LATENCY,
-    MarkerId, MaterializationPolicy, MaterializationTrigger, MaterializedSearchMutation,
+    FailureTriageChangedCluster, FailureTriageReplayEvidence, FailureTriageResult,
+    FailureTriageResultDiff, FailureTriageResultIdentity, FailureTriageSignatureCheckRecord,
+    FailureTriageSignatureMismatch, FailureTriageSignatureSelfCheck,
+    FailureTriageSignatureSelfCheckInput, FailureTriageStoredArtifact, FamilyParams, FamilySpace,
+    FaultSignalPlan, FindingDiscoveryPath, FindingReproductionArtifact,
+    FindingReproductionArtifactError, FleetEquivalenceDivergence, FleetEquivalenceReport,
+    FleetFindingSetEntry, FleetWorkClaim, FleetWorkStealingConfig, FleetWorkStealingSearchRun,
+    FramePredicate, FrontierChild, FrontierCoveredChild, FrontierReductionPolicy,
+    FrontierReductionReason, FrontierReductionReport, GenesisCheckpoint, GuestWorkloadBinary,
+    GuestWorkloadConfigTreeDelivery, GuestWorkloadConfigTreeRef, GuestWorkloadLoadPatternFixture,
+    GuestWorkloadParameterKey, GuestWorkloadPattern, GuestWorkloadScalarParameter,
+    GuestWorkloadSeed, GuestWorkloadSpikeMode, GuestWorkloadTimeSource,
+    GuidanceDeterminismLintReport, GuidanceObservation, GuidanceRarityTable, GuidanceScore,
+    GuidanceSearchConfig, GuidanceSearchState, GuidanceSignal, GuidanceSignalComposition,
+    GuidanceSignalInput, GuidanceSignalKind, GuidanceSignalWeight, Icount,
+    InterestingScheduleWindow, InterestingScheduleWindowBasis, IoEventKind, IrqVector, LinkDef,
+    LinkId, LinkLossProbability, LocalDagStore, MAX_APP_RANDOM_SAMPLES_PER_DRAW,
+    MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS, MAX_FAILURE_TRIAGE_REPLAY_EVIDENCE_BYTES,
+    MAX_MINIMIZATION_CANDIDATE_WORK_BYTES, MAX_MINIMIZATION_CANDIDATES, MIN_LINK_LATENCY, MarkerId,
+    MaterializationPolicy, MaterializationTrigger, MaterializedSearchMutation,
     MaterializedSearchPlan, MaterializedState, MemPlace, MemoryCmp, MemoryDagStore, MemoryWidth,
     MinimizationAttempt, MinimizationConfig, MinimizationRun, NetworkLinkPendingFrame,
     NetworkLinkRuntimeCursor, NodeBlobRef, NodeCounter, NodeId, NodeLifecycle, NodeTemplate,
@@ -152,19 +169,22 @@ pub use model::{
     ReachabilityExpectation, ReachableDisposition, ReadyPoint, RegexProgram, ReplayOracleCheck,
     ReproductionArtifact, ReproductionEventLogArtifact, ReproductionEventLogReplay,
     ReproductionReplay, ResolvedFaultTarget, RngDecision, RngStreamId, RngStreamPosition,
-    RuntimeState, ScenarioBuilder, ScenarioDef, ScenarioDefForm, ScenarioFamily, Schedule,
+    RuntimeState, SIM_TICKS_PER_INSTRUCTION, SIM_TICKS_PER_NS, ScenarioBuilder, ScenarioDef,
+    ScenarioDefForm, ScenarioFamily, ScenarioSelectableLimits, ScenarioSelectables, Schedule,
     ScheduleError, SchedulerNodeId, SchedulerState, SchedulingNodeKind, SchedulingPoint,
-    SearchBudget, SearchDiscoveredFailure, SearchExpansion, SearchFailureOracle,
-    SearchFrontierChoice, SearchFrontierChoices, SearchReplayOracleBisectionRequest,
-    SearchReplayOracleSamplingConfig, SearchReplayOracleSamplingReport,
-    SearchRetainedLogAssertionEvidence, SearchRetainedLogPredicateResolutions,
-    SearchRuntimeFrontier, SearchStrategy, Seed, SeedSpace, SeededRngStream, Shift,
-    SignaturePolicy, SignaturePolicyLevel, SimDuration, SimInstant, SimOffset, State,
-    SymmetryClassId, SymmetryReductionClasses, SymmetryReductionKey, TargetSelector, TemporalGraph,
+    SearchAssertionFinding, SearchBudget, SearchDiscoveredFailure, SearchExpansion,
+    SearchFailureOracle, SearchFrontierChoice, SearchFrontierChoices,
+    SearchReplayOracleBisectionRequest, SearchReplayOracleSamplingConfig,
+    SearchReplayOracleSamplingReport, SearchRetainedLogAssertionEvidence,
+    SearchRetainedLogPredicateResolutions, SearchRuntimeFrontier, SearchStrategy, Seed, SeedSpace,
+    SeededRngStream, SelectionDecision, SignaturePolicy, SignaturePolicyLevel, SimDuration,
+    SimInstant, SimOffset, SimTick, State, StateSpaceSearchEvidence, SymmetryClassId,
+    SymmetryReductionClasses, SymmetryReductionKey, TargetSelector, TemporalGraph,
     TemporalGraphFork, TemporalGraphGcReport, TemporalGraphGcRoots, TemporalGraphReferenceCounts,
-    TemporalGraphRuntime, TemporalGraphSampledSearchRun, TemporalGraphSave, TemporalGraphSearch,
-    TemporalGraphSearchRun, TemporalGraphStoreError, TemporalGraphStoreKeys, TimeConversionError,
-    TimerId, TimerRegistry, TimerState, TopologyShape, TopologySizeRange,
+    TemporalGraphReplayEvidence, TemporalGraphResumeEvidence, TemporalGraphRuntime,
+    TemporalGraphSampledSearchRun, TemporalGraphSave, TemporalGraphSaveEvidence,
+    TemporalGraphSearch, TemporalGraphSearchRun, TemporalGraphStoreError, TemporalGraphStoreKeys,
+    TimeConversionError, TimerId, TimerRegistry, TimerState, TopologyShape, TopologySizeRange,
     UnifiedGraphOperationEvidence, UnifiedGraphOperationKind, UnifiedGraphOperationReport, VcpuId,
     VirtualInstant, VirtualTime, VmArchitecture, VmSnapshotRef,
     WORKLOAD_CONFIG_TREE_DETERMINISTIC_QIDS, WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER,
@@ -178,46 +198,48 @@ pub use model::{
     WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER, WORKLOAD_TIME_VARIATION_REQUIRES_VIRTUAL_TIME,
     WhiteBoxPolicy, WorkloadEngineRole, World, WorldBlockLatency, WorldDeviceKind,
     WorldIoCoreConfig, WorldIoNode, WorldIoNodeKind, WorldLookaheadEdge, WorldNinePLatency,
-    WorldNode, WorldNodeDef, WorldStaticTopology, WorldWorkloadConfigTree,
-    app_random_branch_decisions, app_random_draw_sites_from_schedule, bake, instantiate,
-    lint_guidance_determinism_source, materialize_search_plans, preemption_branch_decisions,
-    reduce, run_adaptive_strategy_selection, step, try_step,
+    WorldNode, WorldNodeDef, WorldStaticTopology, WorldVmNodes, WorldWorkloadConfigTree,
+    app_random_branch_decisions, bake, instantiate, lint_guidance_determinism_source,
+    materialize_search_plans, preemption_branch_choices, reduce, run_adaptive_strategy_selection,
+    try_step, validate_preemption_branch_schedule,
 };
-pub use node_time::{NodeTimeMapping, NodeTimeProjection};
+pub use node_time::NodeTimeMapping;
 #[cfg(feature = "test-double")]
 pub use scheduler::SchedulerRunCeilingHandoffError;
 /// Shared-memory ABI version used by Crucible backends and artifacts.
 pub const SHMEM_ABI_VERSION: u32 = include!("../../crucible-shmem/src/abi_version.in");
 pub use scheduler::{
-    AssertionRunVerdict, AssertionVerdictFailure, BackendNetworkOutputInterceptor,
-    BackendNetworkSettlement, BackendQuantumLoop, CheckpointTerminalCause, ComposedRunVerdict,
-    ComposedRunVerdictFailure, ConcurrentQuantumLoop, ConservativeAdvanceAuthorization,
-    ControlOperation, ControlOperationKind, EventAttributeValue, EventClass,
+    AssertionRunVerdict, AssertionVerdictFailure, BackendNetworkAdmission,
+    BackendNetworkOutputInterceptor, BackendNetworkSettlement, BackendQuantumLoop,
+    CheckpointTerminalCause, ComposedRunVerdict, ComposedRunVerdictFailure, ConcurrentBackendRun,
+    ConcurrentBackendRunOutcome, ConcurrentQuantumLoop, ConcurrentSimulationBackend,
+    ConservativeAdvanceAuthorization, ControlOperation, ControlOperationKind, EventAttributeValue,
     EventDiagnosticPayload, EventLevel, EventLog, EventLogAssertionProximityProjection,
     EventLogAssertionProximityProjectionEntry, EventLogCausalDivergencePoint,
     EventLogCausalProjection, EventLogCausalProjectionEntry, EventLogCoverageFeedback,
     EventLogCoverageFeedbackConsumer, EventLogCoverageObservation, EventLogCoverageProjection,
     EventLogCoverageProjectionEntry, EventLogDeterminismComparison, EventLogDeterminismMismatch,
-    EventLogIcountStamp, EventLogTime, EventPayload, EventSource, ExactLocalEvent, IoCompletion,
-    LogEntry, NetworkDroppedFrameEvidence, NetworkInFlightDropEvidence, NetworkLookahead,
-    NodeTimelineProjection, NoopBackendNetworkOutputInterceptor, QuantumLoop, QuantumOutcome,
-    QuantumRequest, QuantumTerminalVerdict, SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA,
-    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, ScheduledEventResolveClass,
-    SchedulerActor, SchedulerActorError, SchedulerActorHandle, SchedulerActorReply,
-    SchedulerActorStateSnapshot, SchedulerConcurrentQuantumOutcome,
-    SchedulerConcurrentRunCandidate, SchedulerConcurrentRunSet, SchedulerControlApplication,
-    SchedulerEffectiveClock, SchedulerEffectiveClockSource, SchedulerError,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogAppend, SchedulerEventLogClass,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerHorizon, SchedulerHorizonLimit,
-    SchedulerHorizonSource, SchedulerLivenessError, SchedulerLivenessReport,
+    EventLogTickStamp, EventLogTime, EventPayload, EventSource, ExactLocalEvent, IoCompletion,
+    LiveNetworkPreselection, MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES, NetworkDroppedFrameEvidence,
+    NetworkInFlightDropEvidence, NetworkLookahead, NodeTimelineProjection,
+    NoopBackendNetworkOutputInterceptor, QuantumLoop, QuantumOutcome, QuantumRequest,
+    QuantumTerminalVerdict, SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA, ScheduledEvent,
+    ScheduledEventKey, ScheduledEventPayload, ScheduledEventResolveClass, SchedulerActor,
+    SchedulerActorError, SchedulerActorHandle, SchedulerActorReply, SchedulerActorStateSnapshot,
+    SchedulerConcurrentQuantumOutcome, SchedulerConcurrentRunCandidate, SchedulerConcurrentRunSet,
+    SchedulerControlApplication, SchedulerEffectiveClock, SchedulerEffectiveClockSource,
+    SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerEventLogAppend,
+    SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerHorizon,
+    SchedulerHorizonLimit, SchedulerHorizonSource, SchedulerLivenessError, SchedulerLivenessReport,
     SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerLookaheadEdgeEndpoint,
     SchedulerLookaheadGraph, SchedulerNetworkCheckpoint, SchedulerNetworkCheckpointCodecError,
     SchedulerNetworkLinkCheckpoint, SchedulerNodeActivity, SchedulerNodeCheckpoint,
-    SchedulerNodeVcpuIdleSnapshot, SchedulerPreemptionApplication, SchedulerQuiescence,
-    SchedulerQuiescenceBlocker, SchedulerRendezvous, SchedulerRendezvousNode,
-    SchedulerRendezvousPurpose, SchedulerRendezvousRecord, SchedulerRunCeilingPublication,
-    SchedulerRunSubdivisionPolicy, SchedulerRunSubdivisionRecord, SchedulerRunSubdivisionSlice,
-    SchedulerScenarioNode, SchedulerSendAuthorization, SchedulerSendAuthorizer, SchedulerTerminal,
+    SchedulerNodeVcpuIdleSnapshot, SchedulerOperationalFailureClass,
+    SchedulerPreemptionApplication, SchedulerQuiescence, SchedulerQuiescenceBlocker,
+    SchedulerRendezvous, SchedulerRendezvousNode, SchedulerRendezvousPurpose,
+    SchedulerRendezvousRecord, SchedulerRunCeilingPublication, SchedulerRunSubdivisionPolicy,
+    SchedulerRunSubdivisionRecord, SchedulerRunSubdivisionSlice, SchedulerScenarioNode,
+    SchedulerSendAuthorization, SchedulerSendAuthorizer, SchedulerTerminal,
     SchedulerTopologyChange, SchedulerTopologyChangeApplication, SchedulerTopologyChangeEffect,
     SchedulerTopologyChangeTrigger, SchedulerTopologyLookaheadUpdate, SchedulerVcpuIdleState,
     SchedulerWorldInstantiationError, SharedTimeline, SharedTimelineKey, SingleScheduler,
@@ -230,8 +252,7 @@ pub use scheduler::{
     event_log_coverage_projection, exact_local_event_from_io_completion,
     exact_local_event_from_scheduled_event, exact_local_event_from_timer_deadline_ns,
     horizon_from_exact_local_event, horizon_from_network_lookahead,
-    is_supported_live_world_network_override, live_world_network_override_matches_world,
-    live_world_network_override_point_prefixes, lookahead_for_node, network_horizon_from_lookahead,
+    is_live_world_network_selection, lookahead_for_node, network_horizon_from_lookahead,
     next_exact_local_event, next_scheduled_event_key, ordered_scheduled_events,
     ordered_timeline_keys, rendezvous_cap_for, resolve_due_scheduled_events,
     scheduled_event_delivery_time, scheduled_event_resolve_class, scheduler_rr_run_subdivision,
@@ -258,7 +279,8 @@ pub use trigger::{
     EventFiring, EventFirings, EventGraph, EventGraphBuilder, EventGraphError,
     EventGraphEventBuilder, EventGraphState, ExternalFormalTraceExport,
     ExternalFormalTraceExporter, FirePolicy, GuestAssertionDetail, GuestAssertionKind,
-    GuestAssertionMarker, HostAssertionCheckpointError, HostAssertionEvaluator,
+    GuestAssertionMarker, GuestMeasurementEvent, GuestMeasurementRational, GuestMeasurementValue,
+    GuestSemanticMarkerDetail, HostAssertionCheckpointError, HostAssertionEvaluator,
     HostAssertionEvaluatorCheckpoint, HostAssertionHarnessLint, HostAssertionHarnessLintError,
     HostAssertionHarnessLintViolation, HostAssertionLifecycle, HostAssertionOracle,
     HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionPredicate, HostAssertionProximity,
@@ -353,15 +375,85 @@ pub mod test_support {
         entry.with_content_hash_for_test(content_hash)
     }
 
-    /// Replaces an entry's icount stamp while keeping its content hash consistent.
+    /// Builds one synthetic typed scheduler selection for graph-search tests.
+    ///
+    /// The label derives every semantic identity, so identical labels produce
+    /// identical decisions and distinct labels produce distinct opportunities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::EngineError`] if the typed campaign choice cannot be
+    /// constructed under the current protocol.
+    pub fn typed_search_decision_for_test(
+        label: &str,
+    ) -> Result<crate::Decision, crate::EngineError> {
+        let choice_error = |error: crucible_campaign::CampaignCodecError| {
+            crate::EngineError::ScenarioSerialization {
+                reason: format!("test search choice protocol rejected `{label}`: {error}"),
+            }
+        };
+        let identity =
+            ContentHash::from_canonical_material("crucible.test.typed-search-choice.v1", label);
+        let domain = crucible_campaign::ChoiceDomain::Boolean(
+            crucible_campaign::BooleanDomain::new(1).map_err(choice_error)?,
+        );
+        let declaration = crucible_campaign::SelectableDeclaration::new(
+            "test-search-choice",
+            crucible_campaign::ChoiceSource::Scheduler {
+                producer: String::from("crucible.test.typed-search-choice.v1"),
+            },
+            domain.clone(),
+            crucible_campaign::ChoiceValue::Boolean(false),
+            crucible_campaign::ChoiceClassContext::new(std::collections::BTreeSet::new())
+                .map_err(choice_error)?,
+            std::collections::BTreeSet::new(),
+            false,
+        )
+        .map_err(choice_error)?;
+        let campaign_identity = crucible_campaign::CampaignHash::from_bytes(identity.bytes);
+        let opportunity = crucible_campaign::ChoiceOpportunity::new(
+            crucible_campaign::ScenarioDefId::from_hash(campaign_identity),
+            &declaration,
+            &domain,
+            crucible_campaign::ChoiceCoordinate {
+                scheduler: campaign_identity,
+                producer: campaign_identity,
+            },
+            format!("choice-{}", identity.to_hex()),
+            None,
+        )
+        .map_err(choice_error)?;
+        let branch_point = opportunity.branch_point_id(
+            crucible_campaign::ConfigurationId::from_hash(campaign_identity),
+        );
+        let selection = crucible_campaign::Selection::new_campaign_branch(
+            &opportunity,
+            &domain,
+            crucible_campaign::ChoiceValue::Boolean(true),
+            branch_point,
+        )
+        .map_err(choice_error)?;
+
+        Ok(crate::Decision::Selection(crate::SelectionDecision::new(
+            &selection,
+        )))
+    }
+
+    /// Adds an observed raw retirement to an entry while preserving its exact tick.
     #[must_use]
-    pub fn condition_entry_with_icount_stamp_for_test(
+    pub fn condition_entry_with_retirement_witness_for_test(
         entry: SchedulerEventLogEntry,
         node: Option<NodeId>,
         icount: Icount,
     ) -> SchedulerEventLogEntry {
         let mut time = entry.time().clone();
-        time.icount = crate::scheduler::EventLogIcountStamp { node, icount };
+        time.stamp = crate::scheduler::EventLogTickStamp {
+            node,
+            tick: crate::SimInstant {
+                ticks: time.virtual_time.ticks,
+            },
+            retired: Some(icount),
+        };
         entry.with_time_for_test(time)
     }
 

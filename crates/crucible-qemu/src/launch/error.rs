@@ -4,6 +4,35 @@ use thiserror::Error;
 
 use super::QemuPreSpawnLaunchValidationError;
 
+/// Reports an admitted executor ceiling below a QEMU launch requirement.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum QemuLaunchResourceError {
+    /// The command's fixed vCPU topology exceeds the admitted ceiling.
+    #[error("QEMU launch requires {required} vCPUs but executor admitted {admitted}")]
+    VirtualCpus {
+        /// Fixed `-smp` vCPU count.
+        required: u32,
+        /// Admitted executor vCPU ceiling.
+        admitted: u32,
+    },
+    /// The command's guest RAM alone exceeds the admitted resident ceiling.
+    #[error("QEMU launch requires {required} guest-memory bytes but executor admitted {admitted}")]
+    ResidentBytes {
+        /// Fixed guest RAM baseline.
+        required: u64,
+        /// Admitted resident-memory ceiling.
+        admitted: u64,
+    },
+    /// The exact-VMState container cannot fit below the admitted disk ceiling.
+    #[error("QEMU launch requires {required} writable bytes but executor admitted {admitted}")]
+    WritableBytes {
+        /// Minimum writable VMState/container bytes.
+        required: u64,
+        /// Admitted aggregate writable-byte ceiling.
+        admitted: u64,
+    },
+}
+
 /// Reports an invalid QEMU launch command.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuLaunchCommandError {
@@ -23,6 +52,15 @@ pub enum QemuLaunchCommandError {
     /// App-random was configured without enabling the white-box callback.
     #[error("app-random QEMU launch requires white-box mode")]
     AppRandomWhileWhiteboxDisabled,
+    /// A selectable catalog was configured without enabling white-box callbacks.
+    #[error("guest-selectable QEMU launch requires white-box mode")]
+    SelectableCatalogWhileWhiteboxDisabled,
+    /// Campaign marker parking was configured without white-box callbacks.
+    #[error("campaign marker parking requires white-box mode")]
+    CampaignMarkerParkingWhileWhiteboxDisabled,
+    /// The composite setup plan could not be encoded within its fixed profile.
+    #[error("QEMU plugin setup plan cannot be represented canonically")]
+    InvalidPluginSetupPlan,
     /// Only part of the app-random branch configuration was supplied.
     #[error("app-random branch seed and prefix draw count must be configured together")]
     InvalidAppRandomBranchConfiguration,
@@ -32,14 +70,6 @@ pub enum QemuLaunchCommandError {
     /// The node name cannot be represented in QEMU's comma-separated plugin args.
     #[error("app-random node name must not contain `,` or `=`")]
     InvalidAppRandomNodeName,
-    /// A terminal state dump lacked fingerprint mode, a target, or a safe path.
-    #[error(
-        "terminal state dump requires fingerprint mode, a nonzero target, and an absolute comma-free path"
-    )]
-    InvalidStateDumpConfiguration,
-    /// A translation-prefetch experiment lacked a safe absolute report path.
-    #[error("translation-prefetch report path must be absolute and comma-free")]
-    InvalidTranslationPrefetchReportPath,
     /// The executable name did not identify an implemented fault architecture.
     #[error("QEMU executable does not identify an x86_64 or aarch64 fault backend: `{executable}`")]
     UnsupportedFaultCapabilityArchitecture {
@@ -75,6 +105,12 @@ pub enum QemuLaunchCommandError {
     InvalidLaunchText {
         /// Invalid command-line field.
         field: &'static str,
+    },
+    /// A debug gdbstub would listen outside the guarded QEMU run directory.
+    #[error("QEMU gdbstub endpoint must be a relative private Unix listener, got `{endpoint}`")]
+    InvalidGdbstubEndpoint {
+        /// Rejected QEMU `-gdb` endpoint.
+        endpoint: String,
     },
     /// An immutable launch input was not resolved to an AOS store path.
     #[error("{field} must be an AOS store path, got `{path}`")]

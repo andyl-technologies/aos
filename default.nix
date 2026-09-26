@@ -697,101 +697,26 @@
       fleetFiles
     );
 
-  crucibleChecksBase = import ./tests/crucible {inherit pkgs lib;};
+  crucibleChecksBase = import ./tests/crucible {
+    inherit pkgs lib mkSystem testing;
+  };
 
   # T-PKG-15: the shared Crucible VM/fleet check substrate. It assembles the
   # whole Crucible closure (patched QEMU + plugin + CLI + kernel + fixtures) as
   # hermetic inputs and runs the built CLI under TCG with NO `kvm` system
-  # feature ([PKG-29], [PKG-30], spec §26.8). Both the e2e-determinism fleet
-  # check and the real-VM performance checks ride this same runner.
+  # feature ([PKG-29], [PKG-30], spec §26.8). The canonical Phase 4 gate and
+  # the real-VM performance checks ride this same runner.
   crucibleFleetRunner = import ./tests/crucible/_fleet-runner.nix {inherit pkgs lib;};
 
   crucibleFleetChecks = {
-    # gate:e2e-determinism as a real AOS VM/fleet check ([PKG-29], [PKG-30]).
-    # It builds the entire Crucible closure hermetically and EXECUTES the built
-    # `crucible` CLI end to end over the built-in adversarial multi-node,
-    # fault-injected example corpus (happy-path, partition-recovery,
-    # crash-restart, and the fault-campaign family) under the hostile
-    # host-condition matrix (`--adversarial`), bisecting the first divergence
-    # (`--bisect`) and asserting bit-identical reductions — the representative
-    # multi-VM, fault-injected + reproduce scenario of §26.8. The phase7 e2e
-    # gate (in-process determinism proof of the same scenario) is consumed as a
-    # precondition so this fleet check advances only behind a green harness.
-    #
-    # Each independent reduction launches the closure-owned patched QEMU and
-    # production plugin under TCG before the session-level comparison.
-    crucible-e2e-determinism = let
-      e2eGate = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;
-    in
-      crucibleFleetRunner.mkCrucibleFleetCheck {
-        name = "crucible-e2e-determinism";
-        gateResults = [e2eGate];
-        runPhaseScript = ''
-          # The phase7 e2e gate must be green before the fleet scenario runs.
-          grep -q '^PASS$' "${e2eGate}/result"
-          grep -q '^gate=gate:e2e-determinism$' "${e2eGate}/result"
-          grep -q '^fleet_check_surface=checks.fleet.crucible-e2e-determinism$' "${e2eGate}/result"
+    # Release and CI must build the live aggregate, including its required
+    # claims and packaged-QEMU evidence, before claiming campaign acceptance.
+    crucible-campaign-release-acceptance = crucibleChecks.phase9.gates.campaignReleaseAcceptance;
+    # Preserve the established fleet check name as the same derivation as the
+    # canonical Phase 4 gate. One execution therefore supplies both check-tree
+    # surfaces and one retained evidence bundle.
+    crucible-e2e-determinism = crucibleChecks.phase4.gates.e2eDeterminism.rawGate;
 
-          crucible_bin="$CRUCIBLE/bin/crucible"
-
-          # Run the representative multi-VM, fault-injected scenario end to end
-          # over each built-in adversarial example, under the hostile
-          # host-condition matrix, bisecting the first divergence. The JSONL
-          # stream emits one `independent_reduction` event per (run x hostile
-          # profile) and a `final_outcome` with `status=passed`; a non-passing
-          # reduction exits the CLI non-zero and fails the check.
-          for scenario in \
-            happy-path.scn \
-            partition-recovery.scn \
-            crash-restart.scn \
-            fault-campaign.fam
-          do
-            verify_out="$FLEET_WORKDIR/verify-$scenario.out"
-            "$crucible_bin" \
-              --backend qemu \
-              --seed 31 \
-              --store "$FLEET_STORE" \
-              --artifact-dir "$FLEET_ARTIFACTS" \
-              verify "$scenario" \
-              --runs 2 \
-              --adversarial \
-              --bisect \
-              > "$verify_out"
-
-            # The scenario passed end to end under the adversarial matrix.
-            grep -q '"kind":"final_outcome".*subcommand=verify status=passed' "$verify_out"
-
-            # It actually ran under the hostile host-condition matrix (more than
-            # one adversarial profile) and every independent reduction is
-            # bit-identical — the same canonical_log across all profiles. A
-            # single distinct canonical_log among the reductions proves the
-            # scenario reproduced bit-identically across adversarial hosts.
-            reductions="$(grep -c '"kind":"independent_reduction"' "$verify_out")"
-            test "$reductions" -ge 2
-            distinct_logs="$(
-              grep '"kind":"independent_reduction"' "$verify_out" \
-                | grep -o 'canonical_log=[^ ]*' \
-                | sort -u \
-                | wc -l
-            )"
-            test "$distinct_logs" -eq 1
-          done
-        '';
-        resultLines = [
-          "gate=gate:e2e-determinism"
-          "source_check=checks.crucible.phase7.gates.e2eDeterminism"
-          "e2e_gate_result=${e2eGate}/result"
-          "fleet_surface=true"
-          "scenario=adversarial-multi-node-fault-injected-corpus"
-          "scenario_corpus=happy-path.scn,partition-recovery.scn,crash-restart.scn,fault-campaign.fam"
-          "adversarial_matrix=hostile-host-condition-profiles"
-          "reproduce=verify-reduction-bisection"
-          "cli_backend=qemu-tcg-live-probe-plus-deterministic-session"
-          "live_qemu_per_reduction=true"
-          "lib_testing_runner=tests/crucible/_fleet-runner.nix"
-          "tcg_only_vm_runner=crucible-cli-verify-adversarial-bisect"
-        ];
-      };
     # The real-process performance discharge for RFC-0010 §25 ([PERF-3],
     # [PERF-12], [PERF-13], [PERF-14], [PERF-27]): the deterministic
     # `gate:perf-bench` asserts the cost-model structure and host-independent
@@ -801,17 +726,27 @@
     # against the AOS-built kernel/root fixture before its session workload.
     crucible-perf = let
       perfGate = crucibleChecks.phase7.gates.perfBench.rawGate;
-      savevmLoadvmGate = crucibleChecks.phase0.s3SavevmLoadvm;
+      checkpointDeltaFlight = crucibleChecks.phase2.qemuCheckpointDeltaFlight;
     in
       crucibleFleetRunner.mkCrucibleFleetCheck {
         name = "crucible-perf";
-        gateResults = [perfGate savevmLoadvmGate];
+        gateResults = [perfGate checkpointDeltaFlight];
         runPhaseScript = ''
           # The modeled perf-bench gate must be green before the fleet numbers
           # are captured: the ratchet compares fleet numbers against baselines
           # the modeled gate already holds structurally.
           grep -q '^PASS$' "${perfGate}/result"
           grep -q '^gate=gate:perf-bench$' "${perfGate}/result"
+          restore_result="${checkpointDeltaFlight}/result"
+          grep -q '^PASS$' "$restore_result"
+          grep -q '^restore_latency_measurement=descriptor-restore-through-cont-ack$' \
+            "$restore_result"
+          direct_restore_us="$(sed -n 's/^direct_restore_to_runnable_us=//p' "$restore_result")"
+          delta_restore_us="$(sed -n 's/^delta_restore_to_runnable_us=//p' "$restore_result")"
+          test -n "$direct_restore_us"
+          test -n "$delta_restore_us"
+          restore_ms=$(( (delta_restore_us + 999) / 1000 ))
+          restore_source=exact-descriptor-delta-restore-through-cont-ack
 
           crucible_bin="$CRUCIBLE/bin/crucible"
           scenario="happy-path.scn"
@@ -934,50 +869,6 @@
             } >> "$fleet_sweep"
           done
 
-          # --- Restore latency ([PERF-12]): the Phase-0 live QEMU corpus
-          # measures snapshot-load through the runnable `cont` acknowledgement.
-          # The production thin-checkpoint fallback is measured here by
-          # replaying an artifact whose prefix was produced by a live QEMU run.
-          loadvm_boot_ms=
-          loadvm_cpu_timer_ms=
-          loadvm_mid_io_ms=
-          while IFS='=' read -r key value; do
-            case "$key" in
-              boot_window_restore_to_runnable_ms) loadvm_boot_ms="$value" ;;
-              cpu_timer_restore_to_runnable_ms) loadvm_cpu_timer_ms="$value" ;;
-              mid_io_restore_to_runnable_ms) loadvm_mid_io_ms="$value" ;;
-            esac
-          done < "${savevmLoadvmGate}/result"
-          test -n "$loadvm_boot_ms"
-          test -n "$loadvm_cpu_timer_ms"
-          test -n "$loadvm_mid_io_ms"
-
-          set +e
-          "$crucible_bin" \
-            --backend qemu --seed 31 \
-            --store "$FLEET_STORE" --artifact-dir "$FLEET_ARTIFACTS" \
-            run "$scenario" --max-quanta 1 \
-            > "$FLEET_WORKDIR/replay-source.out" 2>&1
-          replay_source_status=$?
-          set -e
-          test "$replay_source_status" -eq 2
-          grep -q '"kind":"final_outcome".*status=timeout' \
-            "$FLEET_WORKDIR/replay-source.out"
-          set -- "$FLEET_ARTIFACTS"/repro-timeout-*.crucible
-          test "$#" -eq 1
-          test -s "$1"
-          replay_source="$1"
-          r_start=$(now_ns)
-          "$crucible_bin" \
-            --backend qemu --seed 31 \
-            --store "$FLEET_STORE" --artifact-dir "$FLEET_ARTIFACTS" \
-            replay "$replay_source" \
-            > "$FLEET_WORKDIR/replay.out" 2>&1
-          r_end=$(now_ns)
-          grep -q '"kind":"final_outcome".*status=passed' "$FLEET_WORKDIR/replay.out"
-          restore_ms=$(( (r_end - r_start) / 1000000 ))
-          restore_source=thin-replay-from-live-qemu-artifact
-
           # --- Idle compression ([PERF-2], real): the same scenario at the
           # QEMU-backed workflow runs in bounded wall-clock; record it. ---
           idle_ms=$seq_ms
@@ -992,9 +883,6 @@
             echo "realized_speedup_x100=$speedup_x100"
             echo "restore_latency_ms=$restore_ms"
             echo "restore_source=$restore_source"
-            echo "loadvm_boot_window_restore_ms=$loadvm_boot_ms"
-            echo "loadvm_cpu_timer_restore_ms=$loadvm_cpu_timer_ms"
-            echo "loadvm_mid_io_restore_ms=$loadvm_mid_io_ms"
             echo "idle_batch_ms=$idle_ms"
             echo "batch_size=$batch"
           } > "$FLEET_WORKDIR/perf-numbers.txt"
@@ -1019,15 +907,14 @@
           "realized_speedup_x100=$speedup_x100"
           "restore_latency_ms=$restore_ms"
           "restore_source=$restore_source"
-          "loadvm_boot_window_restore_ms=$loadvm_boot_ms"
-          "loadvm_cpu_timer_restore_ms=$loadvm_cpu_timer_ms"
-          "loadvm_mid_io_restore_ms=$loadvm_mid_io_ms"
+          "direct_restore_to_runnable_us=$direct_restore_us"
+          "delta_restore_to_runnable_us=$delta_restore_us"
           "idle_batch_ms=$idle_ms"
           "batch_size=$batch"
           "$(cat \"$fleet_sweep\")"
           "metric_throughput=real-process-wall-clock-batch [PERF-13]"
           "metric_parallelism=real-process-concurrent-speedup [PERF-3]"
-          "metric_restore_latency=live-qmp-loadvm-plus-thin-replay-fallback [PERF-12]"
+          "metric_restore_latency=exact-descriptor-restore-through-runnable-cont [PERF-12]"
           "metric_coverage_ips=checks.crucible.phase0.coverageOverhead [PERF-14]"
           "metric_fleet_sweep=logical-host-concurrency-on-reference-runner [PERF-27]"
           "modeled_gate=checks.crucible.phase7.gates.perfBench"
@@ -1037,7 +924,7 @@
     crucible-distributed-continuous-exploration = let
       fleetStore = pkgs.crucible-fleet-store;
       explorer = pkgs.crucible;
-      e2eGate = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;
+      e2eNativeSlice = crucibleFleetChecks."crucible-e2e-determinism";
       fleetStoreGate = crucibleChecks.phase7.crucibleFleetStore;
       sharedDagStoreGate = crucibleChecks.phase7.crucibleSharedDagStore;
       frontierLeaseGate = crucibleChecks.phase7.crucibleFrontierLeases;
@@ -1060,7 +947,7 @@
           pkgs.grep
           fleetStore
           explorer
-          e2eGate
+          e2eNativeSlice
           fleetStoreGate
           sharedDagStoreGate
           frontierLeaseGate
@@ -1080,9 +967,10 @@
             script = ''
               set -eu
 
-              result="${e2eGate}/result"
+              result="${e2eNativeSlice}/result"
               grep -q '^PASS$' "$result"
-              grep -q '^gate=gate:e2e-determinism$' "$result"
+              grep -q '^component=gate:e2e-determinism/native-qemu-acceptance$' "$result"
+              grep -q '^canonical_gate_status=satisfied$' "$result"
 
               fleet_store_result="${fleetStoreGate}/result"
               grep -q '^PASS$' "$fleet_store_result"
@@ -1255,10 +1143,14 @@
               cat > "$out/result" <<'RESULT'
               PASS
               check=checks.fleet.crucible-distributed-continuous-exploration
-              gate=gate:fleet-equivalence
+              component=distributed-continuous-exploration-surface
+              component_status=passed
+              canonical_gate=gate:fleet-equivalence
+              canonical_gate_status=unmet
+              e2e_determinism_gate_status=satisfied
               source_check=checks.crucible.phase7.crucibleSharedDagStore
               package_check=checks.crucible.phase7.crucibleFleetStore
-              e2e_gate_result=${e2eGate}/result
+              e2e_native_slice_result=${e2eNativeSlice}/result
               fleet_store_gate_result=${fleetStoreGate}/result
               shared_dag_store_gate_result=${sharedDagStoreGate}/result
               frontier_lease_gate_result=${frontierLeaseGate}/result
@@ -1535,21 +1427,33 @@ in {
       };
       package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
-      # Externally finalized variants have no final image or image-budget
-      # check. Their unsigned assembly is covered by its own build checks.
-      golden-image-budgets = builtins.listToAttrs (builtins.concatMap (
-        name: let
-          system = discoverSystems.${name};
-        in
-          if system.checks ? image-budget
-          then [
-            {
-              inherit name;
-              value = system.checks.image-budget;
-            }
-          ]
-          else []
-      ) (builtins.attrNames discoverSystems));
+      # aos-testing leaves signing to the release finalizer, so Nix has no
+      # final image for the signed-artifact budget check. Keep the exemption
+      # explicit: any other missing check must stop whole-check evaluation.
+      imageBudgetExemptSystemNames = ["aos-testing"];
+      systemsMissingImageBudgets = builtins.filter (
+        name: !(discoverSystems.${name}.checks ? image-budget)
+      ) (builtins.attrNames discoverSystems);
+      invalidImageBudgetExemptions =
+        builtins.filter (
+          name:
+            !discoverSystems.${name}.config.aos.boot.secureBoot.externalFinalization.enable
+            || discoverSystems.${name}.build.unsignedImageAssembly == null
+        )
+        imageBudgetExemptSystemNames;
+      imageBudgetSystems =
+        if systemsMissingImageBudgets != imageBudgetExemptSystemNames
+        then
+          throw ''
+            golden image budget inventory mismatch: expected exemptions ${builtins.toJSON imageBudgetExemptSystemNames}, found ${builtins.toJSON systemsMissingImageBudgets}
+          ''
+        else if invalidImageBudgetExemptions != []
+        then
+          throw ''
+            golden image budget exemptions must produce an external-finalization assembly: ${builtins.toJSON invalidImageBudgetExemptions}
+          ''
+        else builtins.removeAttrs discoverSystems imageBudgetExemptSystemNames;
+      golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) imageBudgetSystems;
     in
       {
         inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-dev-cache-identity;

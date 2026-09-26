@@ -46,10 +46,11 @@ fn qemu_quantum_binds_external_shmem_and_finishes_after_plugin_report() {
         &mut outbound_entries,
     );
 
-    let pending = match hot_path.start_quantum(horizon(10)) {
-        Ok(pending) => pending,
-        Err(error) => panic!("quantum start should publish ceiling: {error}"),
-    };
+    let pending =
+        match hot_path.start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling) {
+            Ok(pending) => pending,
+            Err(error) => panic!("quantum start should publish ceiling: {error}"),
+        };
     assert_eq!(slot.snapshot().max_advance_icount, 10);
     assert_eq!(slot.snapshot().current_icount, 0);
     assert!(
@@ -58,7 +59,7 @@ fn qemu_quantum_binds_external_shmem_and_finishes_after_plugin_report() {
             .contains(&QemuQuantumOperation::FutexWake)
     );
 
-    if let Err(error) = slot.publish_reached_icount(10, 0) {
+    if let Err(error) = slot.publish_reached_icount(10) {
         panic!("plugin report should publish through shared node slot: {error}");
     }
     let report = match hot_path.finish_quantum(pending) {
@@ -100,7 +101,7 @@ fn qemu_quantum_start_uses_ordered_scheduler_wake_handoff() {
         &[
             "self.record(QemuQuantumOperation::StoreSchedulerCeiling);",
             "self.record(QemuQuantumOperation::FutexWake);",
-            ".publish_scheduler_inbox_and_ceiling(",
+            ".publish_scheduler_inbox_and_advance(",
             "self.config.vm_slot,",
             "self.config.router_slot,",
             "self.view.inbound_ring,",
@@ -121,7 +122,7 @@ fn qemu_quantum_inbound_uses_ordered_scheduler_wake_handoff() {
             "self.record(QemuQuantumOperation::EnqueueInboundFrame);",
             "self.record(QemuQuantumOperation::StoreSchedulerCeiling);",
             "self.record(QemuQuantumOperation::FutexWake);",
-            ".publish_scheduler_inbox_and_ceiling(",
+            ".publish_scheduler_inbox_and_advance(",
             "self.config.vm_slot,",
             "entry.src_node,",
             "self.view.inbound_ring,",
@@ -148,10 +149,11 @@ fn qemu_quantum_rejects_finish_before_reaching_a_boundary() {
         &mut outbound_entries,
     );
 
-    let pending = match hot_path.start_quantum(horizon(10)) {
-        Ok(pending) => pending,
-        Err(error) => panic!("quantum start should publish ceiling: {error}"),
-    };
+    let pending =
+        match hot_path.start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling) {
+            Ok(pending) => pending,
+            Err(error) => panic!("quantum start should publish ceiling: {error}"),
+        };
     let result = hot_path.finish_quantum(pending);
 
     assert!(matches!(
@@ -161,6 +163,38 @@ fn qemu_quantum_rejects_finish_before_reaching_a_boundary() {
             ceiling: 10,
         })
     ));
+}
+
+#[test]
+fn qemu_quantum_accepts_a_fresh_explicit_quiesced_boundary() {
+    let slot = NodeSlot::default();
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    let mut hot_path = hot_path(
+        &slot,
+        &inbound_ring,
+        &mut inbound_entries,
+        &outbound_ring,
+        &mut outbound_entries,
+    );
+
+    let pending = hot_path
+        .start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("quantum start should publish ceiling: {error}"));
+    slot.publish_pause_quiesced(0, 0)
+        .unwrap_or_else(|error| panic!("fresh quiesced boundary should publish: {error}"));
+    let report = hot_path
+        .finish_quantum(pending)
+        .unwrap_or_else(|error| panic!("fresh quiesced boundary should complete: {error}"));
+
+    assert_eq!(
+        report.outcome,
+        AdvanceOutcome::Paused {
+            at: Icount { retired: 0 },
+        }
+    );
 }
 
 #[test]
@@ -178,11 +212,12 @@ fn qemu_quantum_reports_idle_before_horizon() {
         &mut outbound_entries,
     );
 
-    let pending = match hot_path.start_quantum(horizon(10)) {
-        Ok(pending) => pending,
-        Err(error) => panic!("quantum start should publish ceiling: {error}"),
-    };
-    if let Err(error) = slot.publish_idle(4, 12, 0) {
+    let pending =
+        match hot_path.start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling) {
+            Ok(pending) => pending,
+            Err(error) => panic!("quantum start should publish ceiling: {error}"),
+        };
+    if let Err(error) = slot.publish_idle(4, 12) {
         panic!("plugin idle report should publish through shared node slot: {error}");
     }
     let report = match hot_path.finish_quantum(pending) {
@@ -221,7 +256,8 @@ fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
     });
     assert!(enqueue.is_ok());
 
-    let pending = match hot_path.start_quantum(horizon(6)) {
+    let pending = match hot_path.start_quantum(horizon(6), crate::QemuQuantumStopCondition::Ceiling)
+    {
         Ok(pending) => pending,
         Err(error) => panic!("pending delivery should cap the quantum: {error}"),
     };
@@ -231,10 +267,11 @@ fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
         pending.completion_fence,
         Some(QemuAdvanceCompletionFence {
             initial_publish_generation: 0,
+            stop_condition: crate::QemuQuantumStopCondition::Ceiling,
         })
     );
     let consumed = plugin_consume_inbound(&mut hot_path, 1);
-    if let Err(error) = slot.publish_reached_icount(5, 0) {
+    if let Err(error) = slot.publish_reached_icount(5) {
         panic!("plugin should stop at the delivery boundary: {error}");
     }
     let report = match hot_path.finish_quantum(pending) {
@@ -255,10 +292,12 @@ fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
 #[test]
 fn qemu_quantum_rejects_unproven_frame_behind_current_icount() {
     let slot = NodeSlot::default();
-    if let Err(error) = slot.publish_scheduler_ceiling(ceiling(0, 5)) {
+    if let Err(error) =
+        slot.publish_scheduler_advance(ceiling(0, 5), crucible_shmem::AdvanceStopCondition::Ceiling)
+    {
         panic!("test ceiling should publish: {error}");
     }
-    if let Err(error) = slot.publish_reached_icount(5, 0) {
+    if let Err(error) = slot.publish_reached_icount(5) {
         panic!("test current icount should publish: {error}");
     }
     let inbound_ring = RingHeader::new();
@@ -279,7 +318,7 @@ fn qemu_quantum_rejects_unproven_frame_behind_current_icount() {
     );
 
     let pending = hot_path
-        .start_quantum(horizon(5))
+        .start_quantum(horizon(5), crate::QemuQuantumStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("late-frame rejection quantum should start: {error}"));
     assert_eq!(
         hot_path.finish_quantum(pending),
@@ -306,16 +345,17 @@ fn qemu_quantum_rejects_unconsumed_mid_quantum_publication() {
         &mut outbound_entries,
     );
 
-    let pending = match hot_path.start_quantum(horizon(10)) {
-        Ok(pending) => pending,
-        Err(error) => panic!("quantum should start with no known inbound frame: {error}"),
-    };
+    let pending =
+        match hot_path.start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling) {
+            Ok(pending) => pending,
+            Err(error) => panic!("quantum should start with no known inbound frame: {error}"),
+        };
     enqueue_raw(
         &inbound_ring,
         hot_path.view.inbound_entries,
         frame(5, 31, 7, b"late-mid-quantum"),
     );
-    if let Err(error) = slot.publish_reached_icount(10, 0) {
+    if let Err(error) = slot.publish_reached_icount(10) {
         panic!("plugin report should publish through shared node slot: {error}");
     }
 
@@ -345,7 +385,7 @@ fn qemu_quantum_accepts_ledgered_mid_quantum_publication() {
     );
 
     let pending = hot_path
-        .start_quantum(horizon(10))
+        .start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("quantum should start without inbound frames: {error}"));
     hot_path
         .enqueue_inbound_frame(QemuInboundFrame {
@@ -356,7 +396,7 @@ fn qemu_quantum_accepts_ledgered_mid_quantum_publication() {
         })
         .unwrap_or_else(|error| panic!("host publication should join the ledger: {error}"));
     let consumed = plugin_consume_inbound(&mut hot_path, 1);
-    slot.publish_reached_icount(10, 0)
+    slot.publish_reached_icount(10)
         .unwrap_or_else(|error| panic!("plugin report should publish: {error}"));
 
     let report = hot_path
@@ -419,9 +459,8 @@ fn pending_topology_scheduler() -> crucible::SingleScheduler {
     let router = qemu_scheduler_node(&node_id("net-router"), SchedulingNodeKind::Network);
     let scenario = crucible::SchedulerLivenessScenario::from_canonical_material(
         "qemu-outbound-send-freeze",
-        crucible::Shift::new(0).expect("test shift should be valid"),
         8,
-        crucible::SimInstant { nanos: 40 },
+        crucible::SimInstant { ticks: 40 },
         vec![crucible::SchedulerScenarioNode {
             id: vm.clone(),
             counter: crucible::NodeCounter { ticks: 0 },
@@ -434,18 +473,20 @@ fn pending_topology_scheduler() -> crucible::SingleScheduler {
     .with_effective_topology_edges(vec![crucible::SchedulerLookaheadEdge::new(
         vm.clone(),
         router.clone(),
-        crucible::SimDuration { nanos: 20 },
+        crucible::SimDuration { ticks: 20 },
     )]);
     let mut scheduler = crucible::SingleScheduler::new(scenario).expect("scenario should build");
-    scheduler.queue_topology_change(crucible::SchedulerTopologyChange::new(
-        1,
-        crucible::SchedulerTopologyChangeTrigger::LatencyChange,
-        vec![crucible::SchedulerLookaheadEdge::new(
-            vm,
-            router,
-            crucible::SimDuration { nanos: 5 },
-        )],
-    ));
+    scheduler
+        .schedule_topology_change(crucible::SchedulerTopologyChange::new(
+            1,
+            crucible::SchedulerTopologyChangeTrigger::LatencyChange,
+            vec![crucible::SchedulerLookaheadEdge::new(
+                vm,
+                router,
+                crucible::SimDuration { ticks: 5 },
+            )],
+        ))
+        .expect("future topology change should enqueue");
     scheduler
 }
 

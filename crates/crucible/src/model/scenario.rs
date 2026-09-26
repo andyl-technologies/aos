@@ -7,27 +7,10 @@ mod definition;
 pub use definition::ScenarioDef;
 
 impl World {
-    /// Builds an opaque world handle from an already-computed content address.
-    ///
-    /// This is the compatibility path for backend tests and adapters that do
-    /// not yet carry full spatial-graph node material.
-    #[must_use]
-    pub fn from_content_hash(id: ContentHash) -> Self {
-        Self {
-            id,
-            topology_nodes: Vec::new(),
-            nodes: Vec::new(),
-            links: Vec::new(),
-            fault_topology: WorldFaultTopology::default(),
-            fault_topology_id: ContentHash::default(),
-            fault_topology_wire: Vec::new(),
-        }
-    }
-
     /// Builds a world from an already-recorded identity and validated topology.
     ///
-    /// This compatibility path lets adapters preserve an external world handle
-    /// while still enforcing the same static topology invariants as
+    /// VM realization uses this constructor to validate an externally recorded
+    /// world handle against the same static topology invariants as
     /// [`World::from_nodes_and_links`]. Non-empty logical worlds derive
     /// [`ScenarioDef`] and bake identity from their heterogeneous node/link material rather
     /// than this recorded handle.
@@ -67,7 +50,6 @@ impl World {
         Ok(Self {
             id,
             topology_nodes,
-            nodes,
             links,
             fault_topology: WorldFaultTopology::default(),
             fault_topology_id: ContentHash::default(),
@@ -91,22 +73,10 @@ impl World {
         &self.topology_nodes
     }
 
-    /// Returns the derived VM-only compatibility projection.
-    ///
-    /// This is not a third logical World collection and is never serialized or
-    /// hashed independently. Constructors rebuild it from [`World::nodes`].
+    /// Returns a VM-only view over the canonical heterogeneous topology.
     #[must_use]
-    pub fn vm_nodes(&self) -> &[WorldNode] {
-        &self.nodes
-    }
-
-    /// Returns the canonical heterogeneous logical node topology.
-    ///
-    /// This compatibility spelling is equivalent to [`World::nodes`]. New code
-    /// should use `nodes` to match the public RFC vocabulary.
-    #[must_use]
-    pub fn topology_nodes(&self) -> &[WorldNodeDef] {
-        self.nodes()
+    pub fn vm_nodes(&self) -> WorldVmNodes<'_> {
+        WorldVmNodes::new(&self.topology_nodes)
     }
 
     /// Iterates the world's first-class deterministic I/O sub-nodes.
@@ -167,7 +137,7 @@ impl World {
     /// additionally validated to match the node's read-only `root_image`.
     #[must_use]
     pub fn workload_config_trees(&self) -> Vec<WorldWorkloadConfigTree> {
-        self.nodes
+        self.vm_nodes()
             .iter()
             .filter_map(|node| {
                 node.guest_workload_config_tree()
@@ -197,8 +167,7 @@ impl World {
     /// [`EngineError::ReadyPointConsoleMarkerEmpty`] when a node selects an
     /// empty console marker. Returns
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
-    /// [`EngineError::WorldNodeMemoryMibZero`], or
-    /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
+    /// or [`EngineError::WorldNodeMemoryMibZero`] when a node's fixed launch
     /// fields are invalid. Returns workload scenario-parameter validation errors
     /// when reserved workload, seed, scalar-parameter, config-tree, load-pattern,
     /// spike-mode, or time-source command-line config is malformed, duplicated,
@@ -225,8 +194,7 @@ impl World {
     /// [`EngineError::ReadyPointConsoleMarkerEmpty`] when a node selects an
     /// empty console marker,
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
-    /// [`EngineError::WorldNodeMemoryMibZero`], or
-    /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
+    /// or [`EngineError::WorldNodeMemoryMibZero`] when a node's fixed launch
     /// fields are invalid, workload scenario-parameter validation errors when
     /// reserved workload, seed, scalar-parameter, config-tree, load-pattern,
     /// spike-mode, or time-source command-line config is malformed, duplicated,
@@ -274,9 +242,8 @@ impl World {
             fault_topology_id.to_hex()
         );
         Ok(Self {
-            id: ContentHash::from_canonical_material("crucible.model.world.v4", &material),
+            id: ContentHash::from_canonical_material("crucible.model.world.v6", &material),
             topology_nodes,
-            nodes,
             links,
             fault_topology: WorldFaultTopology::default(),
             fault_topology_id,
@@ -299,8 +266,7 @@ impl World {
     /// [`EngineError::ReadyPointConsoleMarkerEmpty`] when a node selects an
     /// empty console marker,
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
-    /// [`EngineError::WorldNodeMemoryMibZero`], or
-    /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
+    /// or [`EngineError::WorldNodeMemoryMibZero`] when a node's fixed launch
     /// fields are invalid, workload scenario-parameter validation errors when
     /// reserved workload, seed, scalar-parameter, config-tree, load-pattern,
     /// spike-mode, or time-source command-line config is malformed, duplicated,
@@ -325,8 +291,7 @@ impl World {
     /// [`EngineError::ReadyPointConsoleMarkerEmpty`] when a node selects an
     /// empty console marker,
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
-    /// [`EngineError::WorldNodeMemoryMibZero`], or
-    /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
+    /// or [`EngineError::WorldNodeMemoryMibZero`] when a node's fixed launch
     /// fields are invalid, workload scenario-parameter validation errors when
     /// reserved workload, seed, scalar-parameter, config-tree, load-pattern,
     /// spike-mode, or time-source command-line config is malformed, duplicated,
@@ -340,7 +305,7 @@ impl World {
     /// transport configuration violates the latency floor, or an I/O-node owner
     /// or static-core configuration is invalid.
     pub fn validate_topology(&self) -> Result<(), EngineError> {
-        validate_world_nodes(&self.nodes)?;
+        validate_world_nodes(&world_vm_node_projection(&self.topology_nodes))?;
         validate_world_node_defs(&self.topology_nodes)?;
         validate_world_links_for_node_defs(&self.topology_nodes, &self.links)
     }
@@ -373,38 +338,6 @@ impl World {
         self.scenario_def_from_components(&Plan::empty(), &Properties::empty(), Seed::default())
     }
 
-    /// Builds the canonical scenario definition for this world, plan, and empty
-    /// properties.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError`] when the plan's events, predicates, signal
-    /// bindings, or resolved targets are incompatible with this World.
-    pub fn scenario_def_with_plan(&self, plan: &Plan) -> Result<ScenarioDef, EngineError> {
-        plan.validate_for_world(self)?;
-        Ok(self.scenario_def_from_components(plan, &Properties::empty(), Seed::default()))
-    }
-
-    /// Builds the canonical scenario definition for this world, empty plan, and
-    /// properties.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::PropertyDuplicateAssertionId`],
-    /// [`EngineError::PropertyPredicateUnknownNode`], or
-    /// [`EngineError::PropertyPredicateEmptyCompound`], or
-    /// [`EngineError::PropertyPredicateTriggerOnly`] when `properties` cannot be
-    /// layered over this world's static topology.
-    pub fn scenario_def_with_properties(
-        &self,
-        properties: &Properties,
-    ) -> Result<ScenarioDef, EngineError> {
-        let plan = Plan::empty();
-        let properties = resolve_properties_dsl_for_context(self, &plan, properties)?;
-        properties.validate_for_world(self)?;
-        Ok(self.scenario_def_from_components(&plan, &properties, Seed::default()))
-    }
-
     /// Builds the canonical scenario definition for this world, plan, and
     /// properties, using the default seed.
     ///
@@ -430,22 +363,6 @@ impl World {
     #[must_use]
     pub fn scenario_def_with_seed(&self, seed: Seed) -> ScenarioDef {
         self.scenario_def_from_components(&Plan::empty(), &Properties::empty(), seed)
-    }
-
-    /// Builds the canonical scenario definition for this world, empty plan,
-    /// empty properties, `seed`, and app-random draw cap.
-    #[must_use]
-    pub fn scenario_def_with_seed_and_app_random_draw_cap(
-        &self,
-        seed: Seed,
-        app_random_draw_cap: u64,
-    ) -> ScenarioDef {
-        self.scenario_def_from_components_with_app_random_draw_cap(
-            &Plan::empty(),
-            &Properties::empty(),
-            seed,
-            app_random_draw_cap,
-        )
     }
 
     /// Builds the canonical scenario definition for this world, plan,
@@ -489,7 +406,7 @@ impl World {
     /// Returns [`EngineError::ScenarioSerialization`] if the TOML renderer rejects
     /// the internal DTO shape.
     pub fn to_canonical_toml(&self) -> Result<String, EngineError> {
-        toml::to_string(&world_to_toml(self)).map_err(|source| {
+        toml::to_string(&world_to_toml(self)?).map_err(|source| {
             scenario_serialization_error(format!("serialize world TOML: {source}"))
         })
     }
@@ -513,7 +430,7 @@ impl World {
     /// Serializes this world component as compact binary.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(WORLD_BINARY_MAGIC_V4);
+        let mut writer = ScenarioBinaryWriter::new(WORLD_BINARY_MAGIC_V6);
         write_world_binary(self, &mut writer);
         writer.finish()
     }
@@ -526,7 +443,7 @@ impl World {
     /// or an id mismatch, or a world validation error for invalid topology,
     /// launch fields, ready points, or workload scenario-parameter delivery.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, WORLD_BINARY_MAGIC_V4)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, WORLD_BINARY_MAGIC_V6)?;
         let world = read_world_binary(&mut reader)?;
         reader.finish()?;
         Ok(world)
@@ -553,7 +470,7 @@ impl World {
         let material = scenario_world_plan_properties_seed_material(self, plan, properties, seed);
         ScenarioDef {
             id: ContentHash::from_canonical_material(
-                "crucible.model.world-plan-properties-seed-scenario.v1",
+                "crucible.model.world-plan-properties-seed-scenario.v2",
                 &material,
             ),
             seed,
@@ -561,23 +478,28 @@ impl World {
         }
     }
 
-    pub(super) fn scenario_def_from_components_with_app_random_draw_cap(
+    pub(super) fn scenario_def_from_components_with_measurements_selectables_and_app_random_draw_cap(
         &self,
         plan: &Plan,
         properties: &Properties,
+        measurements: &MeasurementDefinitions,
+        selectables: &ScenarioSelectables,
         seed: Seed,
         app_random_draw_cap: u64,
     ) -> ScenarioDef {
-        let material = scenario_world_plan_properties_seed_app_random_cap_material(
-            self,
-            plan,
-            properties,
-            seed,
-            app_random_draw_cap,
-        );
+        let material =
+            scenario_world_plan_properties_measurements_selectables_seed_app_random_cap_material(
+                self,
+                plan,
+                properties,
+                measurements,
+                selectables,
+                seed,
+                app_random_draw_cap,
+            );
         ScenarioDef {
             id: ContentHash::from_canonical_material(
-                "crucible.model.world-plan-properties-seed-scenario.v1",
+                "crucible.model.world-plan-properties-seed-scenario.v2",
                 &material,
             ),
             seed,

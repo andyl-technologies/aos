@@ -3,6 +3,7 @@
 use super::*;
 
 use std::collections::VecDeque;
+use std::os::unix::process::ExitStatusExt;
 
 use crate::{
     QemuCrashCause, QemuNodeIdleState, QemuQuantumOperation, QemuShutdownAttempt, QemuShutdownRung,
@@ -68,6 +69,7 @@ fn async_driver_arms_the_pending_scheduler_input_fence_before_waiting() {
     let mut target = ScriptedTarget::completed();
     target.completion_fence = Some(QemuAdvanceCompletionFence {
         initial_publish_generation: 17,
+        stop_condition: crate::QemuQuantumStopCondition::Ceiling,
     });
     let mut runtime = ScriptedRuntime::new([QemuAsyncWaitOutcome::Completed]);
     let crash_detector = QemuCrashDetector::new("vm-a");
@@ -195,6 +197,90 @@ fn async_driver_timeout_surfaces_crash_and_escalates_shutdown() {
     assert!(!report.yielded_after_quantum);
     assert_eq!(target.started, vec![20]);
     assert_eq!(target.finished, 0);
+    assert_eq!(target.shutdowns, 1);
+}
+
+#[test]
+fn campaign_advance_can_outlive_multiple_host_poll_slices() {
+    let policy = QemuAsyncDriverPolicy::fast_test().with_unbounded_advance_completion();
+    let mut target = ScriptedTarget::completed();
+    target.completion_fence = Some(QemuAdvanceCompletionFence {
+        initial_publish_generation: 17,
+        stop_condition: crate::QemuQuantumStopCondition::Ceiling,
+    });
+    let mut runtime = ScriptedRuntime::new([
+        QemuAsyncWaitOutcome::TimedOut,
+        QemuAsyncWaitOutcome::TimedOut,
+        QemuAsyncWaitOutcome::Completed,
+    ]);
+    let crash_detector = QemuCrashDetector::new("vm-a");
+
+    let report = match run_bounded_qemu_node_step(
+        &mut target,
+        &mut runtime,
+        policy,
+        &crash_detector,
+        horizon(20),
+    ) {
+        Ok(report) => report,
+        Err(error) => panic!("a host polling slice is not a campaign stop outcome: {error}"),
+    };
+
+    assert!(matches!(
+        report.outcome,
+        QemuAsyncNodeStepOutcome::Completed { .. }
+    ));
+    assert_eq!(target.started, vec![20]);
+    assert_eq!(target.shutdowns, 0);
+    assert_eq!(runtime.awaits, 1);
+    assert_eq!(runtime.repolls, 2);
+    assert_eq!(runtime.renewals, 2);
+    assert_eq!(runtime.armed_fences, vec![target.completion_fence]);
+    assert_eq!(policy.handshake_timeout, Duration::from_millis(1));
+    assert_eq!(policy.qmp_command_timeout, Duration::from_millis(2));
+    assert_eq!(policy.process_event_timeout, Duration::from_millis(3));
+}
+
+#[test]
+fn campaign_advance_detects_child_exit_within_one_host_poll_slice() {
+    let policy = QemuAsyncDriverPolicy::new(
+        Duration::from_secs(300),
+        Duration::from_secs(300),
+        Duration::from_secs(300),
+        Duration::from_secs(300),
+    )
+    .with_unbounded_advance_completion();
+    let mut target = ScriptedTarget {
+        child_exit_status: Some(std::process::ExitStatus::from_raw(1 << 8)),
+        ..ScriptedTarget::completed()
+    };
+    let mut runtime = ScriptedRuntime::new([QemuAsyncWaitOutcome::TimedOut]);
+    let crash_detector = QemuCrashDetector::new("vm-a");
+
+    let report = match run_bounded_qemu_node_step(
+        &mut target,
+        &mut runtime,
+        policy,
+        &crash_detector,
+        horizon(20),
+    ) {
+        Ok(report) => report,
+        Err(error) => panic!("an exited child is reported as an infrastructure crash: {error}"),
+    };
+
+    assert!(matches!(
+        report.outcome,
+        QemuAsyncNodeStepOutcome::Crashed { .. }
+    ));
+    assert!(report.async_operations.iter().any(|operation| matches!(
+        operation,
+        QemuAsyncDriverOperation::AwaitChild {
+            wait: QemuAsyncWait::AdvanceCompletion,
+            timeout,
+            outcome: QemuAsyncWaitOutcome::TimedOut,
+        } if *timeout == Duration::from_secs(1)
+    )));
+    assert_eq!(runtime.renewals, 0);
     assert_eq!(target.shutdowns, 1);
 }
 
@@ -382,6 +468,7 @@ struct ScriptedRuntime {
     yields: usize,
     awaits: usize,
     repolls: usize,
+    renewals: usize,
     armed_fences: Vec<Option<QemuAdvanceCompletionFence>>,
 }
 
@@ -392,12 +479,21 @@ impl ScriptedRuntime {
             yields: 0,
             awaits: 0,
             repolls: 0,
+            renewals: 0,
             armed_fences: Vec::new(),
         }
     }
 }
 
 impl QemuHostIoRuntime for ScriptedRuntime {
+    fn renew_advance_completion_poll(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.renewals += 1;
+        Ok(())
+    }
+
     fn publish_current_execution_fingerprint(
         &mut self,
         _timeout: Duration,
@@ -449,6 +545,7 @@ struct ScriptedTarget {
     finished: usize,
     shutdowns: usize,
     completion_fence: Option<QemuAdvanceCompletionFence>,
+    child_exit_status: Option<std::process::ExitStatus>,
 }
 
 impl ScriptedTarget {
@@ -474,6 +571,7 @@ impl ScriptedTarget {
             finished: 0,
             shutdowns: 0,
             completion_fence: None,
+            child_exit_status: None,
         }
     }
 
@@ -503,6 +601,12 @@ impl QemuAsyncCrashEscalationTarget for ScriptedTarget {
 
 impl QemuAsyncNodeStepTarget for ScriptedTarget {
     type PendingQuantum = u64;
+
+    fn child_exit_status(
+        &mut self,
+    ) -> Result<Option<std::process::ExitStatus>, QemuAsyncDriverTargetError> {
+        Ok(self.child_exit_status)
+    }
 
     fn start_quantum(
         &mut self,

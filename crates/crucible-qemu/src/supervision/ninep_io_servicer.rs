@@ -8,7 +8,7 @@
 //! ```text
 //!   pin request -> resolve signal phases -> COMPUTE response into in-flight queue
 //!   advance_to_shmem(guest_icount, response ring) -> DELIVER due responses
-//!   store_device_completion_deadline_icount(next_exact_local_event)
+//!   store_device_completion_deadline_tick(next_exact_local_event)
 //! ```
 //! A response is not published until its exact visibility and deliver phases
 //! have been evaluated. The pending phase authorization and request identity
@@ -28,8 +28,8 @@ use crucible_device::{
 };
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    NodeSlotSnapshot, RegionHeaderSnapshot, SLOT_9P_IO, STATUS_IDLE, STATUS_RUNNING,
-    SetupRegionMapError, mmap_setup_region,
+    RegionHeaderSnapshot, SLOT_9P_IO, STATUS_IDLE, STATUS_RUNNING, SetupRegionMapError,
+    mmap_setup_region,
 };
 use thiserror::Error;
 
@@ -61,10 +61,39 @@ pub struct QemuLive9pIoTransactionCheckpoint {
         BTreeMap<(u64, NinepRequestIdentity), (NinepRequestOpportunity, bool)>,
     frames_processed: usize,
     frames_delivered: usize,
-    device_completion_deadline_icount: u64,
+    device_completion_deadline_tick: u64,
 }
 
 impl QemuLive9pIoServicer {
+    /// Clones this quiescent device onto one branch-private shared-memory ring.
+    ///
+    /// The immutable filesystem tree is shared by value. Session state, fids,
+    /// visibility frontiers, directives, transport cursors, and pending replies
+    /// are restored into an independent device continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLive9pIoServicerError`] when the source is not quiescent,
+    /// the private mapping differs from the captured topology, or the complete
+    /// continuation cannot be restored.
+    pub(crate) fn clone_hot_fork_continuation(
+        &mut self,
+        shmem_fd: BorrowedFd<'_>,
+        region_len: u64,
+        execution_binding: ContentHash,
+    ) -> Result<Self, QemuLive9pIoServicerError> {
+        let checkpoint = self.checkpoint(execution_binding)?;
+        let mut continuation = Self::from_shmem_fd_with_tree(
+            shmem_fd,
+            region_len,
+            checkpoint.vm_slot,
+            self.tree.clone(),
+            checkpoint.device.latency,
+        )?;
+        continuation.restore_checkpoint(execution_binding, &checkpoint)?;
+        Ok(continuation)
+    }
+
     /// Returns pending operation count and the largest retained request.
     ///
     /// # Errors
@@ -88,9 +117,7 @@ impl QemuLive9pIoServicer {
 
     /// Maps `shmem_fd` read-write and binds a deterministic 9p device to `vm_slot`.
     ///
-    /// The `icount_shift` must equal the guest's launch-profile icount shift so
-    /// the device's `delivery_icount` arithmetic lands in the same virtual-time
-    /// domain as the guest. The backing [`FsTree`] is a fixed, host-independent
+    /// The backing [`FsTree`] is a fixed, host-independent
     /// tree (a single regular file under the root), so any 9p walk/read is
     /// reproducible without consulting a host filesystem.
     ///
@@ -98,23 +125,15 @@ impl QemuLive9pIoServicer {
     ///
     /// Returns [`QemuLive9pIoServicerError::MapRegion`] when the shared-memory
     /// region cannot be mapped, [`QemuLive9pIoServicerError::Device`] when the
-    /// I/O core rejects the shift or ring capacities, or
+    /// I/O core rejects the ring capacities, or
     /// [`QemuLive9pIoServicerError::Tree`] when the fixed tree is malformed.
     pub fn from_shmem_fd(
         shmem_fd: BorrowedFd<'_>,
         region_len: u64,
         vm_slot: u32,
-        icount_shift: u8,
     ) -> Result<Self, QemuLive9pIoServicerError> {
         let tree = deterministic_fs_tree()?;
-        Self::from_shmem_fd_with_tree(
-            shmem_fd,
-            region_len,
-            vm_slot,
-            icount_shift,
-            tree,
-            NinepLatency::default(),
-        )
+        Self::from_shmem_fd_with_tree(shmem_fd, region_len, vm_slot, tree, NinepLatency::default())
     }
 
     /// Maps the live 9p transport over one authenticated immutable tree.
@@ -128,14 +147,12 @@ impl QemuLive9pIoServicer {
         shmem_fd: BorrowedFd<'_>,
         region_len: u64,
         vm_slot: u32,
-        icount_shift: u8,
         tree: FsTree,
         latency: NinepLatency,
     ) -> Result<Self, QemuLive9pIoServicerError> {
         let region = mmap_setup_region(shmem_fd, region_len)
             .map_err(|source| QemuLive9pIoServicerError::MapRegion { source })?;
         let core = IoCore::new(
-            icount_shift,
             SLOT_9P_IO as u32,
             SERVICER_INBOX_CAPACITY,
             SERVICER_OUTBOX_CAPACITY,
@@ -244,11 +261,11 @@ impl QemuLive9pIoServicer {
     /// Returns [`QemuLive9pIoServicerError::Device`] for inconsistent state.
     pub fn advance_visibility(
         &mut self,
-        now_nanos: u64,
+        now_tick: u64,
         events: &BTreeMap<[u8; 32], u64>,
     ) -> Result<(u64, u64), QemuLive9pIoServicerError> {
         self.device
-            .advance_visibility(now_nanos, events)
+            .advance_visibility(now_tick, events)
             .map_err(|source| QemuLive9pIoServicerError::Device { source })
     }
 
@@ -309,17 +326,17 @@ impl QemuLive9pIoServicer {
     pub fn begin_transaction(
         &mut self,
     ) -> Result<QemuLive9pIoTransactionCheckpoint, QemuLive9pIoServicerError> {
-        let device_completion_deadline_icount = self
+        let device_completion_deadline_tick = self
             .region
             .node_slot(self.vm_slot)
             .map_err(|source| QemuLive9pIoServicerError::RegionAccess { source })?
-            .device_completion_deadline_icount();
+            .device_completion_deadline_tick();
         Ok(QemuLive9pIoTransactionCheckpoint {
             device: self.device.snapshot(),
             pending_fault_opportunities: self.pending_fault_opportunities.clone(),
             frames_processed: self.frames_processed,
             frames_delivered: self.frames_delivered,
-            device_completion_deadline_icount,
+            device_completion_deadline_tick,
         })
     }
 
@@ -337,7 +354,7 @@ impl QemuLive9pIoServicer {
         self.region
             .node_slot(self.vm_slot)
             .map_err(|source| QemuLive9pIoServicerError::RegionAccess { source })?
-            .store_device_completion_deadline_icount(checkpoint.device_completion_deadline_icount);
+            .store_device_completion_deadline_tick(checkpoint.device_completion_deadline_tick);
         self.device = staged;
         self.pending_fault_opportunities = checkpoint.pending_fault_opportunities;
         self.frames_processed = checkpoint.frames_processed;
@@ -468,7 +485,7 @@ impl QemuLive9pIoServicer {
                 QemuLive9pIoCommitFailure::after(QemuLive9pIoServicerError::Device { source })
             })?;
         pair.node_slot
-            .store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
+            .store_device_completion_deadline_tick(next_completion_icount.unwrap_or(0));
         Ok(QemuLive9pIoServiceStep {
             processed: 1,
             delivered: 0,
@@ -605,7 +622,7 @@ impl QemuLive9pIoServicer {
                 source: DeviceError::from(source),
             });
         }
-        pair.node_slot.store_device_completion_deadline_icount(
+        pair.node_slot.store_device_completion_deadline_tick(
             staged.core().next_exact_local_event().unwrap_or(0),
         );
         self.device = staged;
@@ -783,7 +800,7 @@ impl QemuLive9pIoServicer {
         *frames_delivered += delivery.delivered;
         let next_completion_icount = device.core().next_exact_local_event();
         pair.node_slot
-            .store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
+            .store_device_completion_deadline_tick(next_completion_icount.unwrap_or(0));
         Ok(QemuLive9pIoServiceStep {
             processed: 0,
             delivered: delivery.delivered,
@@ -930,11 +947,11 @@ impl QemuLive9pIoServicer {
         *frames_delivered += delivered;
 
         // Publish the next device-completion deadline to the guest node slot so a
-        // time-owning plugin whose guest is blocked on 9p I/O can idle-jump to it
-        // (0039 Part A). Zero when nothing is in flight, which retracts any stale
-        // deadline.
+        // time-owning plugin whose guest is blocked on 9p I/O can idle-jump to it.
+        // The atomic capability uses zero when nothing is in flight, retracting
+        // any stale deadline.
         let next_completion_icount = device.core().next_exact_local_event();
-        node_slot.store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
+        node_slot.store_device_completion_deadline_tick(next_completion_icount.unwrap_or(0));
 
         Ok(QemuLive9pIoServiceStep {
             processed: inbox.processed,
@@ -965,20 +982,6 @@ impl QemuLive9pIoServicer {
     #[must_use]
     pub fn next_completion_icount(&self) -> Option<u64> {
         self.device.core().next_exact_local_event()
-    }
-
-    /// Reads the guest VM node slot's published state from the servicer's mapping.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuLive9pIoServicerError::RegionAccess`] when the guest node
-    /// slot cannot be borrowed from the mapped region.
-    pub fn vm_node_snapshot(&self) -> Result<NodeSlotSnapshot, QemuLive9pIoServicerError> {
-        Ok(self
-            .region
-            .node_slot(self.vm_slot)
-            .map_err(|source| QemuLive9pIoServicerError::RegionAccess { source })?
-            .snapshot())
     }
 }
 
@@ -1093,8 +1096,6 @@ impl NinepIoDiagnostics {
     ///
     /// `current_icount`, `device_io_active`, and `idle_wake_icount` are the guest
     /// slot's published state at the poll; `serviced` is the servicing outcome.
-    // crucible-lint: allow rust-allow -- consumed by the stage-2 live 9p harness (mirrors block_node_gate's diagnostics.record); retained beside the sink it records into, and exercised by this module's unit tests.
-    #[allow(dead_code)]
     pub(crate) fn record(
         &self,
         current_icount: u64,
@@ -1204,7 +1205,7 @@ fn same_region_layout(left: RegionHeaderSnapshot, right: RegionHeaderSnapshot) -
         && left.ring_data_off == right.ring_data_off
         && left.entry_stride == right.entry_stride
         && left.region_size == right.region_size
-        && left.icount_shift == right.icount_shift
+        && left.ticks_per_ns == right.ticks_per_ns
         && left.fault_payload_arena_bytes == right.fault_payload_arena_bytes
 }
 

@@ -1,5 +1,177 @@
 //! Live World-network search choices for probabilistic frame transforms.
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use crucible_campaign::{
+    AlternativeId, CampaignCodecError, CampaignHash, ChoiceClassContext, ChoiceCoordinate,
+    ChoiceDiscovery, ChoiceDomain, ChoiceSource, ChoiceValue, ConfigurationId, DiscreteAlternative,
+    DiscreteDomain, ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin,
+};
+
+use crate::{Configuration, SchedulingPoint, VirtualTime};
+
+pub(in crate::scheduler) const LIVE_NETWORK_SELECTABLE_PRODUCER: &str =
+    "crucible.live-world-network.v1";
+
+#[derive(Clone, Debug)]
+pub(in crate::scheduler) struct LiveNetworkSelectable {
+    domain: ChoiceDomain,
+    opportunity: crucible_campaign::ChoiceOpportunity,
+    discovery: ChoiceDiscovery,
+    names: BTreeMap<AlternativeId, String>,
+}
+
+impl LiveNetworkSelectable {
+    pub(in crate::scheduler) fn new(
+        parent: &Configuration,
+        at: VirtualTime,
+        point: &SchedulingPoint,
+        choices: &[LiveNetworkBranchChoice],
+        faults: &crucible_device::LinkFaults,
+        default_draws: &crucible_device::FrameDraws,
+    ) -> Result<Self, CampaignCodecError> {
+        let mut alternatives = BTreeMap::new();
+        let mut names = BTreeMap::new();
+        let mut default = None;
+        for choice in choices {
+            let id = live_network_alternative_id(&choice.name);
+            alternatives.insert(id, DiscreteAlternative::new(id, choice.name.clone(), None)?);
+            names.insert(id, choice.name.clone());
+            if live_network_choice_matches_draws(&choice.name, faults, default_draws) {
+                default = Some(id);
+            }
+        }
+        let default = default.ok_or(CampaignCodecError::InvalidValue {
+            reason: "live-network domain does not contain the modeled outcome",
+        })?;
+        let domain = ChoiceDomain::Discrete(DiscreteDomain::new(1, alternatives)?);
+        let declaration = SelectableDeclaration::new(
+            "live-world-network-outcome",
+            ChoiceSource::Scheduler {
+                producer: String::from(LIVE_NETWORK_SELECTABLE_PRODUCER),
+            },
+            domain.clone(),
+            ChoiceValue::Discrete(default),
+            ChoiceClassContext::new(BTreeSet::from([
+                String::from("per-event"),
+                String::from("world-network"),
+            ]))?,
+            BTreeSet::from([
+                String::from("network-fault"),
+                String::from("probabilistic-outcome"),
+            ]),
+            false,
+        )?;
+        let producer = CampaignHash::derive(
+            "crucible.live-world-network.opportunity.v1",
+            point.key.as_bytes(),
+        );
+        let opportunity = crucible_campaign::ChoiceOpportunity::new(
+            ScenarioDefId::from_hash(CampaignHash::from_bytes(parent.def.id().bytes)),
+            &declaration,
+            &domain,
+            ChoiceCoordinate {
+                scheduler: CampaignHash::from_bytes(parent.id().bytes),
+                producer,
+            },
+            format!("frame-{:016x}", at.ticks),
+            None,
+        )?;
+        let discovery = ChoiceDiscovery::new(declaration, domain.clone(), opportunity.clone())?;
+        Ok(Self {
+            domain,
+            opportunity,
+            discovery,
+            names,
+        })
+    }
+
+    pub(in crate::scheduler) fn discovery(&self) -> ChoiceDiscovery {
+        self.discovery.clone()
+    }
+
+    pub(in crate::scheduler) fn opportunity_id(
+        &self,
+    ) -> Result<crucible_campaign::ChoiceOpportunityId, CampaignCodecError> {
+        self.opportunity.id()
+    }
+
+    pub(in crate::scheduler) fn default_selection(&self) -> Result<Selection, CampaignCodecError> {
+        Selection::new(
+            &self.opportunity,
+            &self.domain,
+            self.opportunity.default().clone(),
+            SelectionOrigin::Default,
+        )
+    }
+
+    pub(in crate::scheduler) fn branch_selection(
+        &self,
+        parent: &Configuration,
+        name: &str,
+    ) -> Result<Selection, CampaignCodecError> {
+        Selection::new_campaign_branch(
+            &self.opportunity,
+            &self.domain,
+            ChoiceValue::Discrete(live_network_alternative_id(name)),
+            self.opportunity
+                .branch_point_id(ConfigurationId::from_hash(CampaignHash::from_bytes(
+                    parent.id().bytes,
+                ))),
+        )
+    }
+
+    pub(in crate::scheduler) fn selected_name(
+        &self,
+        parent: &Configuration,
+        selection: &Selection,
+    ) -> Result<&str, CampaignCodecError> {
+        selection.validate_branch_replay(
+            &self.opportunity,
+            &self.domain,
+            self.opportunity
+                .branch_point_id(ConfigurationId::from_hash(CampaignHash::from_bytes(
+                    parent.id().bytes,
+                ))),
+        )?;
+        let ChoiceValue::Discrete(id) = selection.value() else {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "live-network selection is not discrete",
+            });
+        };
+        self.names
+            .get(id)
+            .map(String::as_str)
+            .ok_or(CampaignCodecError::InvalidValue {
+                reason: "live-network selection names an unknown outcome",
+            })
+    }
+}
+
+fn live_network_choice_matches_draws(
+    name: &str,
+    faults: &crucible_device::LinkFaults,
+    draws: &crucible_device::FrameDraws,
+) -> bool {
+    name.split('+').all(|token| {
+        let (axis, outcome) = token.split_once('-').unwrap_or_default();
+        let fires = match axis {
+            "loss" => faults.loss.fires(draws.loss),
+            "duplicate" => faults.duplicate.fires(draws.duplicate),
+            "corrupt" => faults.corrupt.fires(draws.corrupt),
+            _ => return false,
+        };
+        fires == (outcome == "fire")
+    })
+}
+
+pub(in crate::scheduler) fn live_network_alternative_id(name: &str) -> AlternativeId {
+    AlternativeId::from_hash(CampaignHash::derive(
+        "crucible.live-world-network.alternative.v1",
+        name.as_bytes(),
+    ))
+}
+
 /// One canonical combined choice for a frame's genuine probabilistic axes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::scheduler) struct LiveNetworkBranchChoice {
@@ -75,7 +247,8 @@ pub(in crate::scheduler) fn live_network_branch_draws(
 }
 
 /// Returns whether a choice name belongs to the closed live-network vocabulary.
-pub(in crate::scheduler) fn is_live_network_branch_choice_name(name: &str) -> bool {
+#[cfg(test)]
+fn is_live_network_branch_choice_name(name: &str) -> bool {
     let mut saw_axis = false;
     let mut previous_rank = 0_u8;
     for token in name.split('+') {

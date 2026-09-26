@@ -8,9 +8,15 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   simBackend = import ./_crucible-local-and-test-backends-source.nix;
-  qemuQuantum = builtins.readFile ../../crates/crucible-qemu/src/quantum.rs;
+  qemuQuantum = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/quantum.rs;
+  };
   topologyChangeTest = builtins.readFile ../../crates/crucible/tests/scheduler_topology_change.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -34,7 +40,7 @@
       }
       {
         label = "runtime queue note";
-        needle = "runtime `queue_topology_change` APIs";
+        needle = "`SingleScheduler::schedule_topology_change` lets fault, heal, and latency";
       }
       {
         label = "production adapter note";
@@ -53,14 +59,6 @@
       {
         label = "scenario queues topology changes";
         needle = "pub topology_changes: Vec<SchedulerTopologyChange>";
-      }
-      {
-        label = "actor topology message";
-        needle = "QueueTopologyChange(SchedulerTopologyChange)";
-      }
-      {
-        label = "actor topology queue method";
-        needle = "pub fn queue_topology_change";
       }
       {
         label = "boundary apply helper";
@@ -189,10 +187,6 @@
       {
         label = "runtime queue test";
         needle = "runtime_topology_change_queue_recomputes_before_next_pick";
-      }
-      {
-        label = "actor queue test";
-        needle = "actor_topology_change_message_recomputes_before_next_pick";
       }
       {
         label = "lowered lookahead before pick test";

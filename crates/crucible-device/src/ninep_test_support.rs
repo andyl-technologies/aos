@@ -55,13 +55,30 @@ pub(super) fn sample_tree() -> FsTree {
 /// Builds a 9p device over the sample tree with a default latency model.
 pub(super) fn device() -> NinepDevice {
     let src = crucible_shmem::SLOT_9P_IO as u32;
-    let core = ok(IoCore::new(8, src, 16, 16));
+    let core = ok(IoCore::new(src, 16, 16));
     NinepDevice::new(core, sample_tree(), NinepLatency::default())
 }
 
 #[test]
 pub(super) fn ninep_snapshot_codec_round_trips_complete_device_state() {
-    let device = device();
+    let mut device = device();
+    ok(device.commit_visibility_update(
+        [7; 32],
+        NinepObjectVersion {
+            path: "/alpha".to_string(),
+            version: 2,
+            mode: 0o100_644,
+            data: b"updated".to_vec(),
+            deleted: false,
+        },
+        NinepVisibilityPolicy {
+            scope: NinepVisibilityScope::Global,
+            atomic_metadata_and_data: true,
+            retain_deleted_objects: false,
+        },
+        NinepVisibilityRelease::AtTicks(15),
+        0,
+    ));
     let snapshot = device.snapshot();
     let bytes = ok(snapshot.to_canonical_bytes());
     assert_eq!(ok(NinepSnapshot::from_canonical_bytes(&bytes)), snapshot);
@@ -87,10 +104,17 @@ pub(super) fn ninep_snapshot_codec_round_trips_complete_device_state() {
         })
     );
 
-    let mut prior_version = bytes.clone();
+    let mut unsupported_version = bytes.clone();
     let version_index = b"crucible.ninep-snapshot.v".len();
-    assert_eq!(prior_version[version_index], b'2');
-    prior_version[version_index] = b'1';
+    assert_eq!(unsupported_version[version_index], b'4');
+    unsupported_version[version_index] = b'?';
+    assert_eq!(
+        NinepSnapshot::from_canonical_bytes(&unsupported_version),
+        Err(NinepSnapshotCodecError::Version)
+    );
+
+    let mut prior_version = bytes.clone();
+    prior_version[version_index] = b'3';
     assert_eq!(
         NinepSnapshot::from_canonical_bytes(&prior_version),
         Err(NinepSnapshotCodecError::Version)
@@ -188,8 +212,9 @@ pub(super) fn treadlink(tag: u16, fid: u32) -> Vec<u8> {
 
 /// Submits a single request frame and returns the reply frame.
 pub(super) fn round_trip(dev: &mut NinepDevice, t: u64, req: &[u8]) -> (u64, Vec<u8>) {
-    ok(dev.submit(t, req));
-    let lim = dev.core().next_exact_local_event().unwrap_or(t);
+    let request_tick = dev.core().current_icount().max(t);
+    ok(dev.submit(request_tick, req));
+    let lim = dev.core().next_exact_local_event().unwrap_or(request_tick);
     ok(dev.advance_to(lim));
     let reply = dev
         .next_response()

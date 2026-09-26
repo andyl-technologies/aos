@@ -20,7 +20,7 @@
 //!   server.handle(bytes) -> 9p reply frame
 //!   malformed / mutating / unknown -> Rlerror frame (never panic)
 //! response payload = 9p reply frame
-//! delivery_icount  = ceil(vt(request_icount) + NinepLatency::latency_ns)
+//! delivery_icount  = request_icount + 8 * NinepLatency::latency_ns
 //! ```
 
 use std::collections::BTreeMap;

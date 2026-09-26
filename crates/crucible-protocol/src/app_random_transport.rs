@@ -35,28 +35,77 @@ pub fn app_random_stream_name(node_name: &str, stream_tag: &str) -> String {
     )
 }
 
+/// Returns whether a canonical app-random stream name belongs to `node_name`.
+///
+/// The length-framed node component prevents a prefix collision with another
+/// node name or an embedded `/stream:` substring.
+#[must_use]
+pub fn app_random_stream_name_belongs_to_node(stream_name: &str, node_name: &str) -> bool {
+    app_random_stream_name_components(stream_name)
+        .is_some_and(|(recorded_node, _stream_tag)| recorded_node == node_name)
+}
+
+/// Returns whether `stream_name` is one canonical app-random stream name.
+///
+/// This parser is used when a typed campaign branch replaces a model-sampled
+/// selection: the preceding named RNG draw remains the schedule-level proof
+/// that the branch consumes one application-random request.
+#[must_use]
+pub fn app_random_stream_name_is_canonical(stream_name: &str) -> bool {
+    app_random_stream_name_components(stream_name).is_some()
+}
+
+/// Parses one canonical app-random stream name into its node and guest tag.
+///
+/// Returns `None` when the length-framed syntax is noncanonical or malformed.
+#[must_use]
+pub fn app_random_stream_name_components(stream_name: &str) -> Option<(&str, &str)> {
+    let framed_node = stream_name.strip_prefix("app-random/node:")?;
+    let (declared_node_len, node_and_stream) = framed_node.split_once(':')?;
+    let node_len = parse_canonical_length(declared_node_len)?;
+    let node = node_and_stream.get(..node_len)?;
+    let framed_stream = node_and_stream
+        .get(node_len..)
+        .and_then(|tail| tail.strip_prefix("/stream:"))?;
+    let (declared_tag_len, tag) = framed_stream.split_once(':')?;
+    (parse_canonical_length(declared_tag_len) == Some(tag.len())).then_some((node, tag))
+}
+
+fn parse_canonical_length(value: &str) -> Option<usize> {
+    if value.is_empty() || (value.len() > 1 && value.starts_with('0')) {
+        return None;
+    }
+    value.bytes().try_fold(0_usize, |length, byte| {
+        let digit = byte.checked_sub(b'0')?;
+        if digit > 9 {
+            return None;
+        }
+        length.checked_mul(10)?.checked_add(usize::from(digit))
+    })
+}
+
 /// One completed deterministic app-random request.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AppRandomDecisionTransportRecord {
+pub struct BackendRngEvidenceTransportRecord {
     request_id: u32,
     width_bytes: u8,
     value: u64,
     stream_tag: String,
 }
 
-impl AppRandomDecisionTransportRecord {
+impl BackendRngEvidenceTransportRecord {
     /// Builds a transport record after validating the requested width and value.
     ///
     /// # Errors
     ///
-    /// Returns [`AppRandomDecisionTransportError`] when the width is outside
+    /// Returns [`BackendRngEvidenceTransportError`] when the width is outside
     /// `1..=8`, the value does not fit that width, or the stream tag is too long.
     pub fn new(
         request_id: u32,
         width_bytes: u8,
         value: u64,
         stream_tag: impl Into<String>,
-    ) -> Result<Self, AppRandomDecisionTransportError> {
+    ) -> Result<Self, BackendRngEvidenceTransportError> {
         let stream_tag = stream_tag.into();
         validate(width_bytes, value, stream_tag.len())?;
         Ok(Self {
@@ -71,11 +120,11 @@ impl AppRandomDecisionTransportRecord {
     ///
     /// # Errors
     ///
-    /// Returns [`AppRandomDecisionTransportError`] when the bytes are truncated,
+    /// Returns [`BackendRngEvidenceTransportError`] when the bytes are truncated,
     /// have trailing data, contain invalid UTF-8, or fail width/value validation.
-    pub fn decode(bytes: &[u8]) -> Result<Self, AppRandomDecisionTransportError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, BackendRngEvidenceTransportError> {
         if bytes.len() < FIXED_LEN {
-            return Err(AppRandomDecisionTransportError::Truncated {
+            return Err(BackendRngEvidenceTransportError::Truncated {
                 len: bytes.len(),
                 minimum_len: FIXED_LEN,
             });
@@ -88,13 +137,13 @@ impl AppRandomDecisionTransportRecord {
         let tag_len = usize::from(u16::from_le_bytes([bytes[13], bytes[14]]));
         let expected_len = FIXED_LEN.saturating_add(tag_len);
         if bytes.len() != expected_len {
-            return Err(AppRandomDecisionTransportError::LengthMismatch {
+            return Err(BackendRngEvidenceTransportError::LengthMismatch {
                 expected_len,
                 actual_len: bytes.len(),
             });
         }
         let stream_tag = std::str::from_utf8(&bytes[FIXED_LEN..])
-            .map_err(|_source| AppRandomDecisionTransportError::InvalidUtf8)?
+            .map_err(|_source| BackendRngEvidenceTransportError::InvalidUtf8)?
             .to_owned();
         Self::new(request_id, width_bytes, value, stream_tag)
     }
@@ -140,16 +189,16 @@ fn validate(
     width_bytes: u8,
     value: u64,
     stream_tag_len: usize,
-) -> Result<(), AppRandomDecisionTransportError> {
+) -> Result<(), BackendRngEvidenceTransportError> {
     if !(1..=8).contains(&width_bytes) {
-        return Err(AppRandomDecisionTransportError::InvalidWidth { width_bytes });
+        return Err(BackendRngEvidenceTransportError::InvalidWidth { width_bytes });
     }
     let width_bits = width_bytes.saturating_mul(8);
     if width_bits < 64 && value >= (1_u64 << width_bits) {
-        return Err(AppRandomDecisionTransportError::ValueOutOfRange { width_bits, value });
+        return Err(BackendRngEvidenceTransportError::ValueOutOfRange { width_bits, value });
     }
     if stream_tag_len > usize::from(u16::MAX) {
-        return Err(AppRandomDecisionTransportError::StreamTagTooLong {
+        return Err(BackendRngEvidenceTransportError::StreamTagTooLong {
             len: stream_tag_len,
             maximum: usize::from(u16::MAX),
         });
@@ -159,7 +208,7 @@ fn validate(
 
 /// Invalid plugin-to-host app-random result bytes.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum AppRandomDecisionTransportError {
+pub enum BackendRngEvidenceTransportError {
     /// The fixed portion of the record was missing.
     #[error("app-random decision record has {len} bytes, expected at least {minimum_len}")]
     Truncated {
@@ -209,10 +258,10 @@ mod tests {
 
     #[test]
     fn completed_decision_round_trips() {
-        let record = AppRandomDecisionTransportRecord::new(7, 3, 0x0000_beef, "node-local")
+        let record = BackendRngEvidenceTransportRecord::new(7, 3, 0x0000_beef, "node-local")
             .unwrap_or_else(|error| panic!("record should validate: {error}"));
         assert_eq!(
-            AppRandomDecisionTransportRecord::decode(&record.encode()),
+            BackendRngEvidenceTransportRecord::decode(&record.encode()),
             Ok(record)
         );
     }
@@ -220,11 +269,37 @@ mod tests {
     #[test]
     fn completed_decision_rejects_out_of_range_value() {
         assert_eq!(
-            AppRandomDecisionTransportRecord::new(7, 1, 0x100, "node-local"),
-            Err(AppRandomDecisionTransportError::ValueOutOfRange {
+            BackendRngEvidenceTransportRecord::new(7, 1, 0x100, "node-local"),
+            Err(BackendRngEvidenceTransportError::ValueOutOfRange {
                 width_bits: 8,
                 value: 0x100,
             })
         );
+    }
+
+    #[test]
+    fn stream_name_membership_uses_the_complete_length_framed_node() {
+        let stream = app_random_stream_name("node-a", "tag/with/slashes");
+        assert!(app_random_stream_name_is_canonical(&stream));
+        assert!(app_random_stream_name_belongs_to_node(&stream, "node-a"));
+        assert!(!app_random_stream_name_belongs_to_node(&stream, "node"));
+        assert!(!app_random_stream_name_belongs_to_node(
+            &stream,
+            "node-a/stream"
+        ));
+        assert!(!app_random_stream_name_belongs_to_node(
+            "app-random/node:6:node-a/stream:3:toolong",
+            "node-a"
+        ));
+        assert!(!app_random_stream_name_is_canonical(
+            "app-random/node:6:node-a/stream:3:toolong"
+        ));
+        assert!(!app_random_stream_name_belongs_to_node(
+            "app-random/node:6:node-a/stream:03:tag",
+            "node-a"
+        ));
+        assert!(!app_random_stream_name_is_canonical(
+            "app-random/node:6:node-a/stream:03:tag"
+        ));
     }
 }

@@ -151,10 +151,6 @@
         needle = "fn run_live_qemu_backend_probe";
       }
       {
-        label = "API-owned live plugin gate";
-        needle = "production_api::run_production_plugin_install_gate";
-      }
-      {
         label = "double resolved backend";
         needle = "ResolvedLocalBackend::Double";
       }
@@ -331,12 +327,17 @@ in
   pkgs.mkDerivation {
     pname = "crucible-phase5-cli-backend-selection";
     version = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+    runtimeDeps = [pkgs.sqlite];
     src = crucibleSrc;
 
     buildDeps = [
       pkgs.coreutils
       pkgs.rust
       pkgs.sed
+
+      pkgs.pkg-config
+      pkgs.sqlite
     ];
 
     CRUCIBLE_T_CLI_3_FAILURES = failureText;

@@ -160,13 +160,13 @@ impl<'a> FaultBindingRuntime<'a> {
             .states
             .get_mut(binding.id())
             .ok_or_else(|| BindingRuntimeError::MissingState(binding.id().clone()))?;
-        state.last_sample_nanos = Some(coordinate.virtual_nanos);
+        state.last_sample_ticks = Some(coordinate.virtual_ticks);
         let inactive_identity = ContentHash::from_canonical_material(
             "crucible.binding-inactive-sample.v1",
             &format!(
-                "binding={};virtual_nanos={};retired_instructions={:?};opportunity={}",
+                "binding={};virtual_ticks={};retired_instructions={:?};opportunity={}",
                 binding.id().as_str(),
-                coordinate.virtual_nanos,
+                coordinate.virtual_ticks,
                 coordinate.retired_instructions,
                 opportunity
                     .map(FaultOpportunity::id)

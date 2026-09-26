@@ -63,8 +63,8 @@ impl ScenarioDef {
 
     /// Builds a scenario definition from canonical material and root seed.
     ///
-    /// This helper is the compatibility entry point for backend-produced
-    /// canonical material when the caller also has the scenario seed component.
+    /// Backend producers use this entry point when canonical material carries a
+    /// distinct scenario seed component.
     /// The seed is included in the returned content address so it cannot drift
     /// from scenario identity.
     #[must_use]
@@ -96,25 +96,6 @@ impl ScenarioDef {
         );
         Self {
             id: ContentHash::from_canonical_material(domain, &material),
-            seed,
-            app_random_draw_cap,
-        }
-    }
-
-    /// Builds an opaque scenario definition from already-addressed components.
-    ///
-    /// This is the compatibility path for API adapters that receive an inline
-    /// scenario handle over a transport before the full scenario form lands on
-    /// the wire. Callers are responsible for supplying the content address that
-    /// corresponds to the seed and app-random policy.
-    #[must_use]
-    pub fn from_content_hash_seed_and_app_random_draw_cap(
-        id: ContentHash,
-        seed: Seed,
-        app_random_draw_cap: u64,
-    ) -> Self {
-        Self {
-            id,
             seed,
             app_random_draw_cap,
         }

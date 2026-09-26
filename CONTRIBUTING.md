@@ -77,7 +77,7 @@ for the complete intake and record-handling requirements.
   Otherwise they inherit QEMU's documented default, currently
   `GPL-2.0-or-later`. Update
   [`pkgs/emulation/qemu-patches/LICENSES.md`](pkgs/emulation/qemu-patches/LICENSES.md)
-  whenever the patch series starts creating or deleting a file.
+  whenever the atomic patch starts creating or deleting a file.
 - Third-party code retains its own license and notices.
 - The patched `qemu-crucible` package is not a standalone release root. Use the
   `crucible` aggregate when publishing; its release policy must retain the

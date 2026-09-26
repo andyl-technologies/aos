@@ -3,6 +3,35 @@
 use super::*;
 
 impl MappedSetupRegion {
+    /// Returns the acquire-observed host fault-command producer frontier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedSetupRegionAccessError`] when the mapped header is
+    /// invalid, `vm_slot` is not a logical VM, or the ring header is outside
+    /// the validated region.
+    pub fn fault_command_write_index(
+        &self,
+        vm_slot: u32,
+    ) -> Result<u64, MappedSetupRegionAccessError> {
+        let layout = self
+            .layout()
+            .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
+        validate_fault_vm_slot(layout, vm_slot, "fault command transport")?;
+        let ring_offset = mapped_fault_ring_header_offset(
+            layout.fault_command_ring_hdr_off,
+            layout.fault_command_ring_count,
+            self.len,
+            vm_slot,
+            "fault command ring header",
+        )?;
+        let base = self.base_ptr();
+        // SAFETY: the offset helper validated the complete aligned ring-header
+        // range in this owned mapping. The accessor performs only atomic reads.
+        let ring = unsafe { &*base.add(ring_offset).cast::<RingHeader>() };
+        Ok(ring.write_index())
+    }
+
     /// Borrows one VM's host-to-plugin fault command transport.
     ///
     /// # Errors
@@ -115,7 +144,7 @@ impl MappedSetupRegion {
             layout.fault_result_slot_off,
             layout.fault_result_ring_count,
             layout.fault_result_queue_capacity,
-            FAULT_RESULT_SLOT_V1_BYTES,
+            FAULT_RESULT_SLOT_V2_BYTES,
             self.len,
             vm_slot,
             "fault result slot",
@@ -155,7 +184,7 @@ impl MappedSetupRegion {
             (
                 &*base.add(ring_offset).cast::<RingHeader>(),
                 core::slice::from_raw_parts_mut(
-                    base.add(slots_offset).cast::<FaultResultSlotV1>(),
+                    base.add(slots_offset).cast::<FaultResultSlotV2>(),
                     slot_count,
                 ),
                 &*base

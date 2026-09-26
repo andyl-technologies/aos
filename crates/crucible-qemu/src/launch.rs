@@ -11,24 +11,28 @@ mod crucible_accelerator;
 mod crucible_shmem_9p;
 mod crucible_shmem_block;
 mod crucible_shmem_network;
+mod device_topology;
 mod entropy;
 mod error;
+mod fingerprint_projection;
 mod helpers;
 mod modes;
 mod plugin_config;
+#[cfg(test)]
+mod profile_tests;
 mod validation;
 mod whitebox_setup;
 
 use std::collections::BTreeMap;
 use std::fmt;
 
-use canonical::{canonical_node_icount_shift_lines, validate_icount_shift};
+use canonical::canonical_node_tick_scale_lines;
 pub use control_channels::{QemuGdbstubChannelConfig, QemuQmpChannelConfig};
-use crucible::{ContentHash, SchedulerError, SchedulerNodeId, SchedulerRunSubdivisionPolicy, Seed};
+use crucible::{ContentHash, SIM_TICKS_PER_INSTRUCTION, SIM_TICKS_PER_NS, Seed};
 pub use crucible_accelerator::{CrucibleAcceleratorDevice, DEFAULT_CRUCIBLE_ACCELERATOR_DEVICE_ID};
 pub use crucible_shmem_9p::{
-    CrucibleShmem9pDevice, CrucibleShmem9pFsdevBackend, DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID,
-    DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID, DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG,
+    CrucibleShmem9pDevice, DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID,
+    DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG,
 };
 pub use crucible_shmem_block::{
     CrucibleShmemBlockDevice, DEFAULT_CRUCIBLE_SHMEM_BLOCK_NODE_NAME,
@@ -38,16 +42,22 @@ pub use crucible_shmem_network::{
     CrucibleShmemNetworkDevice, DEFAULT_CRUCIBLE_SHMEM_NETDEV_ID,
     DEFAULT_CRUCIBLE_SHMEM_NETWORK_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_NETWORK_MAC,
 };
+pub use device_topology::QemuRootImageFormat;
+use device_topology::{
+    QEMU_ACCELERATOR_PCI_ADDRESS, QEMU_DEBUG_SERIAL_PCI_ADDRESS, QEMU_NETWORK_PCI_ADDRESS,
+    QEMU_NINEP_PCI_ADDRESS, QEMU_PCI_BUS, QEMU_RNG_PCI_ADDRESS, QEMU_ROOT_PCI_ADDRESS,
+    QEMU_SHMEM_BLOCK_PCI_ADDRESS,
+};
 use entropy::{GUEST_ENTROPY_FW_CFG_NAME, GUEST_ENTROPY_RNG_ID, GUEST_ENTROPY_SEED_FILE_NAME};
 pub use entropy::{GuestEntropySeed, GuestEntropySeedFile};
-pub use error::QemuLaunchCommandError;
+pub use error::{QemuLaunchCommandError, QemuLaunchResourceError};
+use fingerprint_projection::expected_fingerprint_projection_manifest;
 use helpers::{
-    content_hash_hex, validate_fd, validate_launch_text, validate_node_icount_shifts,
+    content_hash_hex, validate_fd, validate_launch_text, validate_node_ids,
     validate_overlay_file_name, validate_store_path,
 };
 pub use modes::{
-    DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, IcountShiftSetting, InputPolicy,
-    MachineResetMode,
+    DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, InputPolicy, MachineResetMode,
 };
 pub use plugin_config::{
     QemuLaunchAppRandomConfig, QemuLaunchInheritedFds, QemuLaunchPluginConfig,
@@ -58,15 +68,32 @@ pub use validation::{
     validate_pre_spawn_qemu_launch_args,
 };
 use validation::{canonical_cpu_model, validate_accelerator, validate_fixed_text};
+#[cfg(target_os = "linux")]
+pub(crate) use whitebox_setup::probe_x86_whitebox_setup_guarded;
 pub use whitebox_setup::{
-    QemuWhiteboxSetupError, QemuWhiteboxSetupValidation, probe_x86_whitebox_setup,
-    validate_aarch64_whitebox_setup, validate_x86_whitebox_hmp_mtree,
+    QemuWhiteboxSetupError, QemuWhiteboxSetupValidation, validate_aarch64_whitebox_setup,
+    validate_x86_whitebox_hmp_mtree,
 };
 
 /// Stable QEMU chardev identifier for output-only guest console capture.
 pub const QEMU_CONSOLE_CHARDEV_ID: &str = "crucible-console";
 /// Stable run-directory Unix socket carrying output-only guest console bytes.
 pub const QEMU_CONSOLE_SOCKET_FILE_NAME: &str = "crucible-console.sock";
+/// Run-directory file containing the RR control-boundary trace when enabled.
+pub const QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME: &str = "crucible-rr-control-boundary.trace";
+pub(crate) const QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION: &str =
+    "enable=crucible_sim_rr_control_boundary";
+pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES: usize = 65_536;
+/// Fixed child-relative file used by the runtime-determinism diagnostic trace.
+pub const QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME: &str = "crucible-runtime-determinism.trace";
+pub(crate) const QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION: &str =
+    "enable=crucible_sim_determinism_*";
+// Keep the diagnostic trace sparse enough that the bounded retained tail
+// includes the QMP exchange after a 60-second command timeout.
+pub(crate) const QEMU_RUNTIME_LIVENESS_TRACE_SELECTION: &str = "enable=*qmp*";
+pub(crate) const MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES: u64 = 32 * 1024 * 1024;
+pub(crate) const MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES: usize = 131_072;
 /// Stable QEMU chardev identifier for fork-time debug guest activation.
 pub const QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID: &str = "crucible-debug-activation";
 /// Stable run-directory socket used to inject the fork-time activation token.
@@ -121,10 +148,16 @@ pub const QEMU_PLUGIN_WAKE_FD: i32 = FIXED_PLUGIN_WAKE_FD;
 pub const DEFAULT_ROOT_OVERLAY_FILE_NAME: &str = "crucible-root-overlay.qcow2";
 /// Default per-run qcow2 container for exact VMState snapshots.
 pub const DEFAULT_VMSTATE_FILE_NAME: &str = "crucible-vmstate.qcow2";
-const VMSTATE_DRIVE_ID: &str = "vmstate";
-const ROOT_DRIVE_ID: &str = "crucible-root0";
+/// Node name of the parentless qcow2 VMState container in every launch.
+///
+/// Hot-fork child-private file plans select the container's writable leaf by
+/// this name, so it is part of the QEMU-facing launch contract.
+pub const DEFAULT_VMSTATE_NODE_NAME: &str = "vmstate";
+const VMSTATE_DRIVE_ID: &str = DEFAULT_VMSTATE_NODE_NAME;
+/// Stable QEMU block-backend identifier for the writable root overlay.
+pub const ROOT_DRIVE_ID: &str = "crucible-root0";
 const ROOT_DEVICE_ID: &str = "crucible-root-device0";
-const MAX_ICOUNT_SHIFT: u8 = 62;
+const ICOUNT_SHIFT: u8 = 0;
 const MAX_RR_SWITCH_QUANTUM: u64 = i32::MAX as u64;
 
 /// A candidate QEMU launch profile before determinism validation.
@@ -140,8 +173,6 @@ pub struct LaunchProfileCandidate {
     pub memory_mib: u32,
     /// The requested number of virtual CPUs.
     pub smp_vcpus: u16,
-    /// The requested icount shift setting.
-    pub icount_shift: IcountShiftSetting,
     /// The fixed single-threaded round-robin switch quantum in node icount.
     pub rr_switch_quantum: u64,
     /// The QEMU RTC clock mode.
@@ -172,7 +203,6 @@ impl Default for LaunchProfileCandidate {
             machine_type: DEFAULT_MACHINE_TYPE.to_owned(),
             memory_mib: DEFAULT_MEMORY_MIB,
             smp_vcpus: 1,
-            icount_shift: IcountShiftSetting::Fixed(0),
             rr_switch_quantum: DEFAULT_RR_SWITCH_QUANTUM,
             rtc_clock: "vm".to_owned(),
             kernel_cmdline: DEFAULT_KERNEL_CMDLINE.to_owned(),
@@ -192,13 +222,6 @@ impl LaunchProfileCandidate {
     #[must_use]
     pub fn with_cpu_model(mut self, cpu_model: impl Into<String>) -> Self {
         self.cpu_model = cpu_model.into();
-        self
-    }
-
-    /// Returns a candidate with a different accelerator string.
-    #[must_use]
-    pub fn with_accelerator(mut self, accelerator: impl Into<String>) -> Self {
-        self.accelerator = accelerator.into();
         self
     }
 
@@ -223,24 +246,10 @@ impl LaunchProfileCandidate {
         self
     }
 
-    /// Returns a candidate with a different icount shift setting.
-    #[must_use]
-    pub fn with_icount_shift(mut self, icount_shift: IcountShiftSetting) -> Self {
-        self.icount_shift = icount_shift;
-        self
-    }
-
     /// Returns a candidate with a different RR switch quantum.
     #[must_use]
     pub fn with_rr_switch_quantum(mut self, rr_switch_quantum: u64) -> Self {
         self.rr_switch_quantum = rr_switch_quantum;
-        self
-    }
-
-    /// Returns a candidate with a different RTC clock mode.
-    #[must_use]
-    pub fn with_rtc_clock(mut self, rtc_clock: impl Into<String>) -> Self {
-        self.rtc_clock = rtc_clock.into();
         self
     }
 
@@ -267,41 +276,6 @@ impl LaunchProfileCandidate {
         self
     }
 
-    /// Returns a candidate with a different machine-reset mode.
-    #[must_use]
-    pub fn with_machine_reset(mut self, machine_reset: MachineResetMode) -> Self {
-        self.machine_reset = machine_reset;
-        self
-    }
-
-    /// Returns a candidate with a different disk image mode.
-    #[must_use]
-    pub fn with_disk_image_mode(mut self, disk_image_mode: DiskImageMode) -> Self {
-        self.disk_image_mode = disk_image_mode;
-        self
-    }
-
-    /// Returns a candidate with a different genesis backing-state policy.
-    #[must_use]
-    pub fn with_guest_backing_state(mut self, guest_backing_state: GuestBackingStateMode) -> Self {
-        self.guest_backing_state = guest_backing_state;
-        self
-    }
-
-    /// Returns a candidate with a different guest core-content policy.
-    #[must_use]
-    pub fn with_guest_core_content(mut self, guest_core_content: GuestCoreContentMode) -> Self {
-        self.guest_core_content = guest_core_content;
-        self
-    }
-
-    /// Returns a candidate with a different input policy.
-    #[must_use]
-    pub fn with_input_policy(mut self, input_policy: InputPolicy) -> Self {
-        self.input_policy = input_policy;
-        self
-    }
-
     /// Validates this candidate as a deterministic launch profile.
     ///
     /// # Errors
@@ -319,10 +293,6 @@ impl LaunchProfileCandidate {
             return Err(LaunchProfileError::SmpVcpuCountZero);
         }
 
-        let icount_shift = match self.icount_shift {
-            IcountShiftSetting::Fixed(shift) => validate_icount_shift(shift)?,
-            IcountShiftSetting::Auto => return Err(LaunchProfileError::IcountShiftAuto),
-        };
         if self.rr_switch_quantum == 0 {
             return Err(LaunchProfileError::RrSwitchQuantumZero);
         }
@@ -385,7 +355,6 @@ impl LaunchProfileCandidate {
             machine_type: self.machine_type,
             memory_mib: self.memory_mib,
             smp_vcpus: self.smp_vcpus,
-            icount_shift,
             rr_switch_quantum: self.rr_switch_quantum,
             kernel_cmdline: self.kernel_cmdline,
             scenario_seed: self.scenario_seed,
@@ -395,26 +364,6 @@ impl LaunchProfileCandidate {
             guest_core_content: self.guest_core_content,
             guest_entropy_seed: GuestEntropySeed::from_scenario_seed(self.scenario_seed),
         })
-    }
-}
-
-/// A node-local icount shift declaration from scenario launch content.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NodeIcountShift {
-    /// The stable scenario node identifier.
-    pub node_id: String,
-    /// The node's fixed `-icount shift=N` value.
-    pub shift: u8,
-}
-
-impl NodeIcountShift {
-    /// Builds a node-local icount shift declaration.
-    #[must_use]
-    pub fn new(node_id: impl Into<String>, shift: u8) -> Self {
-        Self {
-            node_id: node_id.into(),
-            shift,
-        }
     }
 }
 
@@ -430,6 +379,105 @@ pub struct QemuLaunchCommand {
     plugin_coverage: QemuLaunchPluginSwitch,
     plugin_fault_node_hash: [u8; 32],
     fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
+    resource_requirements: QemuLaunchResourceRequirements,
+    plugin_setup_plan: crucible_protocol::plugin_setup_plan::PluginSetupPlan,
+    plugin_setup_plan_digest: [u8; 32],
+    fingerprint_projection_manifest: crate::qmp::QmpFingerprintProjectionManifest,
+}
+
+/// Static host-resource baseline derived from one validated launch command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuLaunchResourceRequirements {
+    virtual_cpus: u32,
+    guest_memory_bytes: u64,
+    minimum_writable_bytes: u64,
+    root_overlay: bool,
+}
+
+impl QemuLaunchResourceRequirements {
+    /// Builds the fixed host-resource baseline for one VM shape.
+    ///
+    /// The base writable minimum reserves the guest memory plus the fixed
+    /// VMState container headroom. Command construction adds any enabled fixed
+    /// diagnostic trace ceiling before process admission.
+    #[must_use]
+    pub const fn from_vm_shape(memory_mib: u32, smp_vcpus: u16, root_overlay: bool) -> Self {
+        let mebibyte = 1024_u64 * 1024;
+        Self {
+            virtual_cpus: smp_vcpus as u32,
+            guest_memory_bytes: memory_mib as u64 * mebibyte,
+            minimum_writable_bytes: (memory_mib as u64 + 512) * mebibyte,
+            root_overlay,
+        }
+    }
+
+    /// Adds one fixed diagnostic trace ceiling to pre-spawn writable admission.
+    pub(crate) const fn with_diagnostic_trace_bytes(mut self, trace_bytes: u64) -> Self {
+        self.minimum_writable_bytes = self.minimum_writable_bytes.saturating_add(trace_bytes);
+        self
+    }
+
+    /// Returns the exact fixed virtual-CPU count.
+    #[must_use]
+    pub const fn virtual_cpus(self) -> u32 {
+        self.virtual_cpus
+    }
+
+    /// Returns the fixed guest-RAM baseline in bytes.
+    #[must_use]
+    pub const fn guest_memory_bytes(self) -> u64 {
+        self.guest_memory_bytes
+    }
+
+    /// Returns the minimum writable bytes needed by VMState and fixed diagnostics.
+    #[must_use]
+    pub const fn minimum_writable_bytes(self) -> u64 {
+        self.minimum_writable_bytes
+    }
+
+    /// Returns whether the launch also uses a writable root overlay.
+    #[must_use]
+    pub const fn has_root_overlay(self) -> bool {
+        self.root_overlay
+    }
+
+    /// Validates this fixed baseline against admitted executor ceilings.
+    ///
+    /// The resident value is only the guest-RAM baseline; the concrete host
+    /// guard must still reserve QEMU/plugin overhead within the admitted
+    /// ceiling. Likewise, a root overlay consumes the remaining aggregate
+    /// writable quota after the VMState minimum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLaunchResourceError`] when vCPU, resident-memory, or
+    /// writable-byte admission is below the command's fixed baseline.
+    pub const fn validate_ceiling(
+        self,
+        maximum_vcpus: u32,
+        maximum_resident_bytes: u64,
+        maximum_writable_bytes: u64,
+    ) -> Result<(), QemuLaunchResourceError> {
+        if self.virtual_cpus > maximum_vcpus {
+            return Err(QemuLaunchResourceError::VirtualCpus {
+                required: self.virtual_cpus,
+                admitted: maximum_vcpus,
+            });
+        }
+        if self.guest_memory_bytes > maximum_resident_bytes {
+            return Err(QemuLaunchResourceError::ResidentBytes {
+                required: self.guest_memory_bytes,
+                admitted: maximum_resident_bytes,
+            });
+        }
+        if self.minimum_writable_bytes > maximum_writable_bytes {
+            return Err(QemuLaunchResourceError::WritableBytes {
+                required: self.minimum_writable_bytes,
+                admitted: maximum_writable_bytes,
+            });
+        }
+        Ok(())
+    }
 }
 
 impl QemuLaunchCommand {
@@ -439,16 +487,16 @@ impl QemuLaunchCommand {
         &self.executable
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_test_executable(mut self, executable: impl Into<String>) -> Self {
+        self.executable = executable.into();
+        self
+    }
+
     /// Returns the argv tail passed after the executable.
     #[must_use]
     pub fn args(&self) -> &[String] {
         &self.args
-    }
-
-    /// Returns the virtual size required for the exact-VMState qcow2 container.
-    #[must_use]
-    pub(crate) const fn vmstate_size_mib(&self) -> u64 {
-        self.vmstate_size_mib
     }
 
     /// Returns the world-derived VM launch material paired with this command.
@@ -487,39 +535,35 @@ impl QemuLaunchCommand {
         &self.fault_capability_requirement
     }
 
-    /// Appends one content-addressed observation-only QEMU plugin.
-    ///
-    /// This is used by loaded-QEMU gates that need an independent fingerprint
-    /// observer alongside the production control plugin. The complete argument
-    /// remains part of [`Self::command_line_hash_material`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuLaunchCommandError`] when the argument is unstable text,
-    /// its shared-object prefix is not an AOS store path, or the extended argv
-    /// fails deterministic pre-spawn validation.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn with_observation_plugin(
-        mut self,
-        plugin_argument: impl Into<String>,
-    ) -> Result<Self, QemuLaunchCommandError> {
-        let plugin_argument = plugin_argument.into();
-        validate_launch_text("observation_plugin_argument", &plugin_argument)?;
-        let plugin_path = plugin_argument
-            .split_once(',')
-            .map_or(plugin_argument.as_str(), |(path, _arguments)| path);
-        validate_store_path("observation_plugin_path", plugin_path)?;
-        self.args.extend(["-plugin".to_owned(), plugin_argument]);
-        validate_pre_spawn_qemu_launch_args(&self.args)
-            .map_err(|source| QemuLaunchCommandError::PreSpawnValidation { source })?;
-        Ok(self)
+    /// Returns the static resource baseline authenticated by this command.
+    #[must_use]
+    pub const fn resource_requirements(&self) -> QemuLaunchResourceRequirements {
+        self.resource_requirements
     }
 
-    /// Returns canonical material for hashing the complete QEMU command line.
+    /// Returns the complete current-version plugin setup plan.
+    #[must_use]
+    pub const fn plugin_setup_plan(
+        &self,
+    ) -> &crucible_protocol::plugin_setup_plan::PluginSetupPlan {
+        &self.plugin_setup_plan
+    }
+
+    /// Returns the exact ordered projection manifest admitted for this launch.
+    #[must_use]
+    pub(crate) const fn fingerprint_projection_manifest(
+        &self,
+    ) -> &crate::qmp::QmpFingerprintProjectionManifest {
+        &self.fingerprint_projection_manifest
+    }
+
+    /// Returns current v3 canonical material for hashing the complete QEMU command line.
+    ///
+    /// Every launch identity binds the complete encoded plugin setup plan.
     #[must_use]
     pub fn command_line_hash_material(&self) -> String {
-        let mut lines = Vec::with_capacity(self.args.len() + 3);
-        lines.push("crucible.qemu-launch-command.v1".to_owned());
+        let mut lines = Vec::with_capacity(self.args.len() + 6);
+        lines.push("crucible.qemu-launch-command.v3".to_owned());
         lines.push("command_line_in_hash=executable-and-argv".to_owned());
         lines.push(format!("executable={}", self.executable));
         lines.push(format!(
@@ -529,6 +573,10 @@ impl QemuLaunchCommand {
         lines.push(format!(
             "ready_marker_manifest_v1={}",
             lower_hex(self.fault_capability_requirement.ready_marker_digest())
+        ));
+        lines.push(format!(
+            "plugin_setup_plan_v1={}",
+            lower_hex(self.plugin_setup_plan_digest)
         ));
         for (index, argument) in self.args.iter().enumerate() {
             lines.push(format!("argv[{index}]={argument}"));
@@ -546,17 +594,13 @@ pub struct QemuLaunchCommandBuilder {
     plugin: QemuLaunchPluginConfig,
     gdbstub: Option<QemuGdbstubChannelConfig>,
     qmp: Option<QemuQmpChannelConfig>,
-    translation_prefetch: Option<QemuTranslationPrefetchExperiment>,
     console_capture: bool,
     fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
     allow_live_gate_manifest_discovery: bool,
     debug_guest_activation_endpoint: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct QemuTranslationPrefetchExperiment {
-    enabled: bool,
-    report_path: String,
+    rr_control_boundary_trace: bool,
+    runtime_determinism_trace: bool,
+    runtime_liveness_trace: bool,
 }
 
 impl QemuLaunchCommandBuilder {
@@ -577,11 +621,13 @@ impl QemuLaunchCommandBuilder {
             plugin,
             gdbstub: None,
             qmp: None,
-            translation_prefetch: None,
             console_capture: false,
             fault_capability_requirement,
             allow_live_gate_manifest_discovery: false,
             debug_guest_activation_endpoint: false,
+            rr_control_boundary_trace: false,
+            runtime_determinism_trace: false,
+            runtime_liveness_trace: false,
         }
     }
 
@@ -629,7 +675,12 @@ impl QemuLaunchCommandBuilder {
         self
     }
 
-    /// Returns a builder that enables the QMP machine-control channel.
+    /// Returns a builder that enables QMP control from a stopped guest.
+    ///
+    /// QMP-bearing production launches stay stopped until the host completes
+    /// capabilities negotiation and authenticates the realized device
+    /// projection. The lifecycle owner resumes the guest only after those
+    /// checks succeed.
     #[must_use]
     pub fn with_qmp(mut self, qmp: QemuQmpChannelConfig) -> Self {
         self.qmp = Some(qmp);
@@ -656,21 +707,44 @@ impl QemuLaunchCommandBuilder {
         self
     }
 
-    /// Returns a builder with the gate-only translation-prefetch experiment.
+    /// Enables the native RR control-boundary trace in the launch directory.
     ///
-    /// This host-mechanism switch is intentionally absent from scenario hash
-    /// material. It exists only to run the same content-addressed scenario with
-    /// helper translation off and on for the PERF-32 neutrality proof.
+    /// The trace observes native request, acknowledgement, and completion
+    /// generations. Its fixed event and file names keep the diagnostic part of
+    /// the command identity and prevent callers from injecting arbitrary QEMU
+    /// trace patterns or host paths.
     #[must_use]
-    pub fn with_translation_prefetch_experiment(
-        mut self,
-        enabled: bool,
-        report_path: impl Into<String>,
-    ) -> Self {
-        self.translation_prefetch = Some(QemuTranslationPrefetchExperiment {
-            enabled,
-            report_path: report_path.into(),
-        });
+    pub(crate) const fn with_rr_control_boundary_trace(mut self) -> Self {
+        self.rr_control_boundary_trace = true;
+        self.runtime_determinism_trace = false;
+        self.runtime_liveness_trace = false;
+        self
+    }
+
+    /// Enables the fixed runtime-determinism trace in the launch directory.
+    ///
+    /// This diagnostic records only native virtual-timer callbacks and
+    /// idle-advance request/completion snapshots needed to localize a cross-run
+    /// divergence. Its fixed event selection and child-relative file name are
+    /// part of launch identity.
+    #[must_use]
+    pub(crate) const fn with_runtime_determinism_trace(mut self) -> Self {
+        self.rr_control_boundary_trace = false;
+        self.runtime_determinism_trace = true;
+        self.runtime_liveness_trace = false;
+        self
+    }
+
+    /// Enables the fixed QMP monitor trace in the launch directory.
+    ///
+    /// The monitor receive, queue, dispatch, and response events distinguish
+    /// a QMP transport stall from a command stuck in QEMU's dispatcher. The
+    /// sparse selection leaves the final exchange in the bounded trace tail.
+    #[must_use]
+    pub(crate) const fn with_runtime_liveness_trace(mut self) -> Self {
+        self.rr_control_boundary_trace = false;
+        self.runtime_determinism_trace = false;
+        self.runtime_liveness_trace = true;
         self
     }
 
@@ -720,6 +794,14 @@ impl QemuLaunchCommandBuilder {
         if required_target.architecture() != executable_architecture {
             return Err(QemuLaunchCommandError::FaultCapabilityArchitectureMismatch);
         }
+        let fingerprint_projection_manifest = expected_fingerprint_projection_manifest(
+            required_target.architecture(),
+            self.profile.smp_vcpus,
+            &self.vm,
+            self.console_capture,
+            self.debug_guest_activation_endpoint,
+        )
+        .ok_or(QemuLaunchCommandError::InvalidFaultCapabilityRequirement)?;
         let configured_cpu = self
             .profile
             .cpu_model
@@ -745,13 +827,19 @@ impl QemuLaunchCommandBuilder {
         if let Some(qmp) = &self.qmp {
             qmp.validate()?;
         }
-        if let Some(experiment) = &self.translation_prefetch
-            && (!experiment.report_path.starts_with('/') || experiment.report_path.contains(','))
-        {
-            return Err(QemuLaunchCommandError::InvalidTranslationPrefetchReportPath);
-        }
-
         let vmstate_size_mib = u64::from(self.profile.memory_mib) + 512;
+        let mut resource_requirements = QemuLaunchResourceRequirements::from_vm_shape(
+            self.profile.memory_mib,
+            self.profile.smp_vcpus,
+            self.vm.root_image().is_some(),
+        );
+        if self.rr_control_boundary_trace {
+            resource_requirements = resource_requirements
+                .with_diagnostic_trace_bytes(MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES);
+        } else if self.runtime_determinism_trace || self.runtime_liveness_trace {
+            resource_requirements = resource_requirements
+                .with_diagnostic_trace_bytes(MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES);
+        }
         let mut vm_hash_material = self.vm.launch_hash_material();
         if self.debug_guest_activation_endpoint {
             vm_hash_material.push_str("\ndebug_guest_activation_endpoint=fixed-inert-v1");
@@ -773,6 +861,7 @@ impl QemuLaunchCommandBuilder {
                 ),
             ]);
         }
+        args.extend(self.vm.qemu_args());
         if self.debug_guest_activation_endpoint {
             args.extend([
                 "-chardev".to_owned(),
@@ -780,38 +869,52 @@ impl QemuLaunchCommandBuilder {
                     "socket,id={QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID},path={QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME}"
                 ),
                 "-device".to_owned(),
-                format!("virtio-serial-pci,id={QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID},bus=pcie.0"),
+                format!(
+                    "virtio-serial-pci,id={QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID},bus={QEMU_PCI_BUS},addr={QEMU_DEBUG_SERIAL_PCI_ADDRESS}"
+                ),
                 "-device".to_owned(),
                 format!(
                     "virtserialport,bus={QEMU_DEBUG_GUEST_VIRTIO_SERIAL_ID}.0,chardev={QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID},name={QEMU_DEBUG_GUEST_ACTIVATION_PORT_NAME}"
                 ),
             ]);
         }
-        if let Some(experiment) = &self.translation_prefetch {
-            let accelerator = args
-                .windows(2)
-                .position(|window| window[0] == "-accel")
-                .map(|index| index + 1)
-                .ok_or(QemuLaunchCommandError::InvalidLaunchText {
-                    field: "translation_prefetch_accelerator",
-                })?;
-            args[accelerator] = format!(
-                "{DEFAULT_ACCEL},crucible-translation-prefetch={},crucible-translation-prefetch-report={}",
-                if experiment.enabled { "on" } else { "off" },
-                experiment.report_path
-            );
-        }
-        args.extend(self.vm.qemu_args());
         args.extend(["-plugin".to_owned(), self.plugin.qemu_plugin_argument()]);
         if let Some(qmp) = &self.qmp {
-            args.extend(["-qmp".to_owned(), qmp.qemu_endpoint()]);
+            args.extend(["-S".to_owned(), "-qmp".to_owned(), qmp.qemu_endpoint()]);
         }
         if let Some(gdbstub) = &self.gdbstub {
             args.extend(["-gdb".to_owned(), gdbstub.qemu_endpoint().to_owned()]);
         }
+        if self.rr_control_boundary_trace {
+            args.extend([
+                "-D".to_owned(),
+                QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME.to_owned(),
+                "-trace".to_owned(),
+                QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION.to_owned(),
+            ]);
+        } else if self.runtime_determinism_trace {
+            args.extend([
+                "-D".to_owned(),
+                QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME.to_owned(),
+                "-trace".to_owned(),
+                QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION.to_owned(),
+            ]);
+        } else if self.runtime_liveness_trace {
+            args.extend([
+                "-D".to_owned(),
+                QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME.to_owned(),
+                "-trace".to_owned(),
+                QEMU_RUNTIME_LIVENESS_TRACE_SELECTION.to_owned(),
+            ]);
+        }
         validate_pre_spawn_qemu_launch_args(&args)
             .map_err(|source| QemuLaunchCommandError::PreSpawnValidation { source })?;
 
+        let plugin_setup_plan = self.plugin.plugin_setup_plan();
+        let plugin_setup_plan_bytes = plugin_setup_plan
+            .encode()
+            .map_err(|_source| QemuLaunchCommandError::InvalidPluginSetupPlan)?;
+        let plugin_setup_plan_digest = *blake3::hash(&plugin_setup_plan_bytes).as_bytes();
         Ok(QemuLaunchCommand {
             executable: self.executable,
             args,
@@ -822,6 +925,10 @@ impl QemuLaunchCommandBuilder {
             plugin_coverage: self.plugin.coverage(),
             plugin_fault_node_hash: self.plugin.fault_node_hash(),
             fault_capability_requirement,
+            resource_requirements,
+            plugin_setup_plan,
+            plugin_setup_plan_digest,
+            fingerprint_projection_manifest,
         })
     }
 }
@@ -896,25 +1003,6 @@ impl QemuLaunchArtifact {
     }
 }
 
-/// On-disk format of an immutable root-image backing artifact.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum QemuRootImageFormat {
-    /// The backing artifact is a QCOW2 image.
-    #[default]
-    Qcow2,
-    /// The backing artifact is a raw disk or filesystem image.
-    Raw,
-}
-
-impl QemuRootImageFormat {
-    const fn qemu_driver(self) -> &'static str {
-        match self {
-            Self::Qcow2 => "qcow2",
-            Self::Raw => "raw",
-        }
-    }
-}
-
 /// VM launch inputs derived from one static `World` VM node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuVmLaunchConfig {
@@ -960,7 +1048,7 @@ impl QemuVmLaunchConfig {
     /// virtio-blk root disk during boot never issues block I/O that a runner
     /// without a host block-I/O runtime cannot service.
     #[must_use]
-    pub fn new_diskless(
+    pub(crate) fn new_diskless(
         node_id: impl Into<String>,
         kernel: QemuLaunchArtifact,
         firmware: QemuLaunchArtifact,
@@ -1009,20 +1097,6 @@ impl QemuVmLaunchConfig {
         self
     }
 
-    /// Returns a config with a pinned content-addressed guest firmware image.
-    #[must_use]
-    pub fn with_firmware(mut self, firmware: QemuLaunchArtifact) -> Self {
-        self.firmware = Some(firmware);
-        self
-    }
-
-    /// Returns a config with a different stable root overlay file name.
-    #[must_use]
-    pub fn with_root_overlay_file_name(mut self, file_name: impl Into<String>) -> Self {
-        self.root_overlay_file_name = file_name.into();
-        self
-    }
-
     /// Returns a config with the declared immutable root-image format.
     #[must_use]
     pub const fn with_root_image_format(mut self, format: QemuRootImageFormat) -> Self {
@@ -1037,7 +1111,7 @@ impl QemuVmLaunchConfig {
     /// the `SLOT_BLK_IO` shared-memory rings. A config without one emits
     /// byte-identical argv.
     #[must_use]
-    pub fn with_crucible_shmem_block(mut self, device: CrucibleShmemBlockDevice) -> Self {
+    pub(crate) fn with_crucible_shmem_block(mut self, device: CrucibleShmemBlockDevice) -> Self {
         self.crucible_shmem_block = Some(device);
         self
     }
@@ -1054,7 +1128,7 @@ impl QemuVmLaunchConfig {
     /// patch forwards to the host 9p servicer over the `SLOT_9P_IO` shared-memory
     /// rings. A config without one emits byte-identical argv.
     #[must_use]
-    pub fn with_crucible_shmem_9p(mut self, device: CrucibleShmem9pDevice) -> Self {
+    pub(crate) fn with_crucible_shmem_9p(mut self, device: CrucibleShmem9pDevice) -> Self {
         self.crucible_shmem_9p = Some(device);
         self
     }
@@ -1070,7 +1144,10 @@ impl QemuVmLaunchConfig {
     /// The loaded plugin intercepts guest TX and delivers scheduled RX through
     /// shared-memory rings. The QEMU hub port has no external backend.
     #[must_use]
-    pub fn with_crucible_shmem_network(mut self, device: CrucibleShmemNetworkDevice) -> Self {
+    pub(crate) fn with_crucible_shmem_network(
+        mut self,
+        device: CrucibleShmemNetworkDevice,
+    ) -> Self {
         self.crucible_shmem_network = Some(device);
         self
     }
@@ -1083,7 +1160,7 @@ impl QemuVmLaunchConfig {
 
     /// Returns a config with a deterministic accelerator co-simulation device.
     #[must_use]
-    pub fn with_crucible_accelerator(mut self, device: CrucibleAcceleratorDevice) -> Self {
+    pub(crate) fn with_crucible_accelerator(mut self, device: CrucibleAcceleratorDevice) -> Self {
         self.crucible_accelerator = Some(device);
         self
     }
@@ -1217,7 +1294,9 @@ impl QemuVmLaunchConfig {
                     root_image.path
                 ),
                 "-device".to_owned(),
-                format!("virtio-blk-pci,drive={ROOT_DRIVE_ID},id={ROOT_DEVICE_ID}"),
+                format!(
+                    "virtio-blk-pci,drive={ROOT_DRIVE_ID},id={ROOT_DEVICE_ID},bus={QEMU_PCI_BUS},addr={QEMU_ROOT_PCI_ADDRESS}"
+                ),
             ]);
         }
         if let Some(initrd) = &self.initrd {
@@ -1279,7 +1358,6 @@ pub struct DeterministicLaunchProfile {
     machine_type: String,
     memory_mib: u32,
     smp_vcpus: u16,
-    icount_shift: u8,
     rr_switch_quantum: u64,
     kernel_cmdline: String,
     scenario_seed: u64,
@@ -1349,8 +1427,8 @@ impl DeterministicLaunchProfile {
             self.smp_vcpus.to_string(),
             "-icount".to_owned(),
             format!(
-                "shift={},sleep=off,align=off,rr_switch_quantum={}",
-                self.icount_shift, self.rr_switch_quantum
+                "shift={ICOUNT_SHIFT},sleep=off,align=off,rr_switch_quantum={}",
+                self.rr_switch_quantum
             ),
             "-rtc".to_owned(),
             format!("base={DEFAULT_RTC_EPOCH_UTC},clock=vm"),
@@ -1364,7 +1442,9 @@ impl DeterministicLaunchProfile {
             "-object".to_owned(),
             format!("rng-builtin,id={GUEST_ENTROPY_RNG_ID}"),
             "-device".to_owned(),
-            format!("virtio-rng-pci,rng={GUEST_ENTROPY_RNG_ID}"),
+            format!(
+                "virtio-rng-pci,rng={GUEST_ENTROPY_RNG_ID},bus={QEMU_PCI_BUS},addr={QEMU_RNG_PCI_ADDRESS}"
+            ),
             "-append".to_owned(),
             self.kernel_cmdline.clone(),
         ]
@@ -1414,7 +1494,7 @@ impl DeterministicLaunchProfile {
     #[must_use]
     pub fn scenario_hash_material(&self) -> String {
         [
-            "crucible.launch.v1".to_owned(),
+            "crucible.launch.v3".to_owned(),
             format!("cpu_model={}", self.cpu_model),
             format!("machine_type={}", self.machine_type),
             format!("memory_mib={}", self.memory_mib),
@@ -1425,16 +1505,19 @@ impl DeterministicLaunchProfile {
             "accelerator_family=tcg-derived-sim".to_owned(),
             "simulation_mode=on".to_owned(),
             "stock_tcg_crucible_runtime=forbidden".to_owned(),
-            format!("icount_shift={}", self.icount_shift),
+            format!("qemu_icount_shift={ICOUNT_SHIFT}"),
+            "sim_tick=picosecond".to_owned(),
+            format!("sim_ticks_per_ns={SIM_TICKS_PER_NS}"),
+            format!("sim_ticks_per_instruction={SIM_TICKS_PER_INSTRUCTION}"),
             format!("rr_switch_quantum={}", self.rr_switch_quantum),
-            "rr_switch_quantum_units=node-icount".to_owned(),
+            "rr_switch_quantum_units=retired-instructions".to_owned(),
             "rr_vcpu_rotation=ascending-vcpu-id".to_owned(),
-            "virtual_time_ns=icount<<shift".to_owned(),
+            format!("virtual_time_ns=floor(sim_tick/{SIM_TICKS_PER_NS})"),
             "per_vcpu_cpu_model=uniform".to_owned(),
-            "per_vcpu_tsc_source=node-icount".to_owned(),
+            "per_vcpu_tsc_source=logical-picoseconds-div-250".to_owned(),
             format!("rtc_epoch_utc={DEFAULT_RTC_EPOCH_UTC}"),
             "rtc_clock=vm".to_owned(),
-            "guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time".to_owned(),
+            "guest_time_sources=rtc,tsc,timer-devices:logical-picosecond-virtual-time-with-ns-projections".to_owned(),
             "guest_time_epoch=fixed-rtc-epoch".to_owned(),
             "time_control_owner=crucible-qemu-plugin".to_owned(),
             "time_control_acquire=registration-before-first-visible-instruction".to_owned(),
@@ -1461,10 +1544,12 @@ impl DeterministicLaunchProfile {
                 self.guest_entropy_seed.to_lower_hex()
             ),
             format!("guest_entropy_rng_object=rng-builtin,id={GUEST_ENTROPY_RNG_ID}"),
-            format!("guest_entropy_rng_device=virtio-rng-pci,rng={GUEST_ENTROPY_RNG_ID}"),
+            format!(
+                "guest_entropy_rng_device=virtio-rng-pci,rng={GUEST_ENTROPY_RNG_ID},bus={QEMU_PCI_BUS},addr={QEMU_RNG_PCI_ADDRESS}"
+            ),
             "guest_entropy_host_sources=disabled".to_owned(),
             "per_vcpu_rng_source=scenario-seed-and-run-seed".to_owned(),
-            "per_vcpu_rng_timing_axis=node-icount".to_owned(),
+            "per_vcpu_rng_timing_axis=raw-retirement-rr-order".to_owned(),
             "secondary_vcpu_bringup=rr-sim-tcg-icount-deterministic".to_owned(),
             format!("kernel_cmdline={}", self.kernel_cmdline),
         ]
@@ -1482,23 +1567,21 @@ impl DeterministicLaunchProfile {
         material
     }
 
-    /// Returns canonical scenario hash material after validating node shifts.
+    /// Returns canonical scenario hash material after validating node IDs.
     ///
-    /// Node shift declarations are sorted by node identifier before they enter
+    /// Fixed node tick scales are sorted by node identifier before they enter
     /// the material so callers do not have to preserve a host-dependent
     /// iteration order.
     ///
     /// # Errors
     ///
-    /// Returns [`LaunchProfileError`] when a node identifier is not stable text,
-    /// a node is declared more than once, a node requests an unsupported fixed
-    /// shift, or a node shift differs from the scenario-wide launch-profile
-    /// shift.
+    /// Returns [`LaunchProfileError`] when a node identifier is not stable text
+    /// or a node is declared more than once.
     pub fn scenario_hash_material_for_nodes(
         &self,
-        node_shifts: &[NodeIcountShift],
+        node_ids: &[crucible::NodeId],
     ) -> Result<String, LaunchProfileError> {
-        let node_shift_lines = canonical_node_icount_shift_lines(self.icount_shift, node_shifts)?;
+        let node_shift_lines = canonical_node_tick_scale_lines(node_ids)?;
         let mut material = self.scenario_hash_material();
         for line in node_shift_lines {
             material.push('\n');
@@ -1546,12 +1629,6 @@ impl DeterministicLaunchProfile {
         self.guest_backing_state
     }
 
-    /// Returns the fixed `-icount shift=N` value pinned by this launch profile.
-    #[must_use]
-    pub fn icount_shift(&self) -> u8 {
-        self.icount_shift
-    }
-
     /// Returns the fixed QEMU `-smp` vCPU count.
     #[must_use]
     pub fn smp_vcpus(&self) -> u16 {
@@ -1564,52 +1641,23 @@ impl DeterministicLaunchProfile {
         self.rr_switch_quantum
     }
 
-    /// Derives the scheduler's RUN-subdivision policy from this exact launch profile.
-    ///
-    /// This keeps the scheduler model and patched QEMU on the same vCPU count
-    /// and retired-instruction switch quantum instead of duplicating launch
-    /// defaults at the call site.
+    /// Validates each node identifier before rendering its fixed tick scale.
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError`] if the validated launch topology cannot be
-    /// represented as a scheduler subdivision policy.
-    pub fn scheduler_run_subdivision_policy(
+    /// Returns [`LaunchProfileError`] when a node identifier is not stable text
+    /// or a node is declared more than once.
+    pub fn validate_node_ids(
         &self,
-        node: SchedulerNodeId,
-    ) -> Result<SchedulerRunSubdivisionPolicy, SchedulerError> {
-        SchedulerRunSubdivisionPolicy::new(node, u32::from(self.smp_vcpus), self.rr_switch_quantum)
-    }
-
-    /// Validates that every node launch declaration uses this profile's shift.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LaunchProfileError`] when a node identifier is not stable text,
-    /// a node is declared more than once, a node requests an unsupported fixed
-    /// shift, or a node shift differs from the scenario-wide launch-profile
-    /// shift.
-    pub fn validate_node_icount_shifts(
-        &self,
-        node_shifts: &[NodeIcountShift],
+        node_ids: &[crucible::NodeId],
     ) -> Result<(), LaunchProfileError> {
-        validate_node_icount_shifts(self.icount_shift, node_shifts)
+        validate_node_ids(node_ids)
     }
 
     /// Converts an instruction count to virtual nanoseconds.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LaunchProfileError::VirtualTimeOverflow`] when the configured
-    /// shift would overflow `u64`.
-    pub fn virtual_ns_from_icount(&self, icount: u64) -> Result<u64, LaunchProfileError> {
-        let scale = 1_u64 << u32::from(self.icount_shift);
-        icount
-            .checked_mul(scale)
-            .ok_or(LaunchProfileError::VirtualTimeOverflow {
-                icount,
-                shift: self.icount_shift,
-            })
+    #[must_use]
+    pub const fn virtual_ns_from_tick(&self, tick: u64) -> u64 {
+        tick / SIM_TICKS_PER_NS
     }
 }
 

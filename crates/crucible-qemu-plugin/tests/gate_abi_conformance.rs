@@ -12,7 +12,10 @@ fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Er
     let plugin_lib = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/lib.rs"))?;
     let io_wire_fuzz =
         fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/io_wire_fuzz.rs"))?;
-    let block_io = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/block_io.rs"))?;
+    let block_wire =
+        fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/block_io/wire.rs"))?;
+    let block_errors =
+        fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/block_io/errors.rs"))?;
     let ninep_io = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/ninep_io.rs"))?;
     let phase_check =
         fs::read_to_string(root.join("tests/crucible/phase2-protocol-codec-fuzz.nix"))?;
@@ -27,11 +30,11 @@ fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Er
     assert_contains(&plugin_lib, "handle_ninep_wire_fuzz_message");
 
     assert_contains(
-        &block_io,
+        &block_wire,
         "pub fn decode(payload: &[u8]) -> Result<(BlockRequestIdentity, Self), BlockWireError>",
     );
-    assert_contains(&block_io, "UnknownOperation");
-    assert_contains(&block_io, "RequestCountExceedsPayload");
+    assert_contains(&block_errors, "UnknownOperation");
+    assert_contains(&block_errors, "RequestCountExceedsPayload");
 
     assert_contains(&ninep_io, "pub struct NinePWireMessage");
     assert_contains(&ninep_io, "pub struct NinePWireHandlerOutcome");

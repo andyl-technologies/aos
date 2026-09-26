@@ -38,9 +38,9 @@ pub struct BackendNetworkFaultCursor {
     /// Canonically ordered target/phase pairs already resolved for this frame.
     completed_phases: Vec<BackendNetworkCompletedFaultPhase>,
     /// Earliest virtual coordinate at which evaluation may resume.
-    not_before_nanos: u64,
+    not_before_ticks: u64,
     /// Latest release from an adapter phase that has already resumed.
-    completed_release_nanos: u64,
+    completed_release_ticks: u64,
     /// Queue opportunity that owns the current reservation, when deferred.
     queue_opportunity: Option<ContentHash>,
     /// Sole effect kind allowed to repeat an intentionally incomplete phase.
@@ -91,17 +91,17 @@ impl BackendNetworkFaultCursor {
 
     /// Returns the earliest virtual coordinate at which the frame may resume.
     #[must_use]
-    pub const fn not_before_nanos(&self) -> u64 {
-        self.not_before_nanos
+    pub const fn not_before_ticks(&self) -> u64 {
+        self.not_before_ticks
     }
 
     /// Returns the latest committed adapter release coordinate.
     #[must_use]
-    pub const fn release_nanos(&self) -> u64 {
-        if self.not_before_nanos > self.completed_release_nanos {
-            self.not_before_nanos
+    pub const fn release_ticks(&self) -> u64 {
+        if self.not_before_ticks > self.completed_release_ticks {
+            self.not_before_ticks
         } else {
-            self.completed_release_nanos
+            self.completed_release_ticks
         }
     }
 
@@ -160,12 +160,12 @@ impl BackendNetworkFaultCursor {
                 self.completed_phases.insert(index, completed);
             }
         }
-        self.completed_release_nanos = if self.not_before_nanos > self.completed_release_nanos {
-            self.not_before_nanos
+        self.completed_release_ticks = if self.not_before_ticks > self.completed_release_ticks {
+            self.not_before_ticks
         } else {
-            self.completed_release_nanos
+            self.completed_release_ticks
         };
-        self.not_before_nanos = 0;
+        self.not_before_ticks = 0;
         self.queue_opportunity = None;
         self.repeated_phase_effect = None;
         self.queue_priority = None;
@@ -173,8 +173,8 @@ impl BackendNetworkFaultCursor {
     }
 
     /// Defers the already-resolved phase until an exact future coordinate.
-    pub fn defer_until(&mut self, not_before_nanos: u64, opportunity: ContentHash) {
-        self.not_before_nanos = not_before_nanos;
+    pub fn defer_until(&mut self, not_before_ticks: u64, opportunity: ContentHash) {
+        self.not_before_ticks = not_before_ticks;
         self.queue_opportunity = Some(opportunity);
         self.repeated_phase_effect = None;
         self.queue_priority = None;
@@ -183,12 +183,12 @@ impl BackendNetworkFaultCursor {
     /// Defers a phase while allowing only its owning effect to run on resume.
     pub fn defer_repeated_effect_until(
         &mut self,
-        not_before_nanos: u64,
+        not_before_ticks: u64,
         opportunity: ContentHash,
         effect: EffectKind,
         queue_priority: Option<u8>,
     ) {
-        self.not_before_nanos = not_before_nanos;
+        self.not_before_ticks = not_before_ticks;
         self.queue_opportunity = Some(opportunity);
         self.repeated_phase_effect = Some(effect);
         self.queue_priority = queue_priority;
@@ -203,12 +203,12 @@ impl BackendNetworkFaultCursor {
     pub fn reschedule_queue_until(
         &mut self,
         opportunity: ContentHash,
-        not_before_nanos: u64,
+        not_before_ticks: u64,
     ) -> Result<(), BackendNetworkFaultCursorError> {
         if self.queue_opportunity != Some(opportunity) {
             return Err(BackendNetworkFaultCursorError::QueueReservationMismatch);
         }
-        self.not_before_nanos = not_before_nanos;
+        self.not_before_ticks = not_before_ticks;
         Ok(())
     }
 }

@@ -10,7 +10,7 @@ or implicit host-tool lookup.
 
 The world declares VM nodes, logical links, deterministic link characteristics,
 and device sub-nodes. Node configuration includes architecture, memory, vCPU
-count, instruction-count shift, kernel command line, and ready-point policy.
+count, fixed 50-picosecond instruction clock, kernel command line, and ready-point policy.
 
 The topology's objects are declared before the run. Signal bindings may change
 route, association, availability, lifecycle, and isolation state during
@@ -108,16 +108,16 @@ Commands that accept `SCENARIO` resolve it in this order:
 The older `crucible-hash:<hash>` spelling is rejected for scenario input. Use a
 `blake3:<hash>` DAG-store reference.
 
-The built-in scenario aliases are:
+The built-in scenario names are:
 
 ```text
-builtin:happy-path.scn       happy-path.scn       happy-path
+builtin:happy-path.scn
 builtin:partition-recovery.scn
 builtin:crash-restart.scn
 ```
 
-`fault-campaign.fam`, `fault-campaign`, and `builtin:fault-campaign` identify
-the built-in scenario family where a command accepts a family.
+`fault-campaign.fam` identifies the built-in scenario family where a command
+accepts a family. Other spellings are rejected.
 
 ## Packaged guest assets
 

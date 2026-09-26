@@ -1,8 +1,8 @@
-# 0096 - Physical page-table region fixture
+# Capability task 0096 — Physical page-table region fixture
 
 ## Purpose
 
-Patch `0096` makes the live persistent-region page-table scenario target the
+Capability task `0096` makes the live persistent-region page-table scenario target the
 descriptor's guest physical address. Page-table mutation opportunities carry
 the initiating guest virtual address and descriptor GPA as distinct
 coordinates. Declaring the descriptor address as virtual therefore indexes the
@@ -21,7 +21,7 @@ descriptor storage identity.
 
 ## Files and license scope
 
-The patch modifies GPL-side
+The atomic patch modifies GPL-side
 `tests/tcg/plugins/crucible-memory-access.c`. It changes no production QEMU
 code, shared-memory layout, or control wire format and adds no QEMU file.
 
@@ -29,8 +29,8 @@ code, shared-memory layout, or control wire format and adds no QEMU file.
 
 1. The x86_64 and AArch64 failed-region page-table cases must pass alone.
 2. The complete memory-access matrix must remain green.
-3. Patch-prefix provenance, attribution, regeneration, drop-one, ABI, and
-   license-boundary gates must pass.
+3. Atomic-patch source attribution, regeneration, pristine-QEMU negative, ABI,
+   and license-boundary gates must pass.
 
 - **[MEM-PTE-REGION-1]** Persistent page-table descriptor regions MUST be
   matched by descriptor GPA.

@@ -40,7 +40,10 @@ pub(super) async fn actor_publishes_backend_coverage_from_the_canonical_event_lo
     assert_eq!(frame.entry.class(), SchedulerEventLogClass::Observational);
     let projection = crucible::event_log_coverage_projection(&[frame.entry]);
     assert_eq!(projection.len(), 1);
-    assert_eq!(projection.entries()[0].at.icount.retired, 17);
+    assert_eq!(
+        projection.entries()[0].at.retired,
+        Some(crucible::Icount { retired: 17 })
+    );
     assert_eq!(actor.event_log().len(), 2);
     assert_eq!(actor.engine().event_log_len(), 2);
 }
@@ -88,7 +91,10 @@ pub(super) async fn actor_publishes_final_backend_coverage_before_shutdown_compl
     assert_eq!(frame.entry.class(), SchedulerEventLogClass::Observational);
     let projection = crucible::event_log_coverage_projection(&[frame.entry]);
     assert_eq!(projection.len(), 1);
-    assert_eq!(projection.entries()[0].at.icount.retired, 0);
+    assert_eq!(
+        projection.entries()[0].at.retired,
+        Some(crucible::Icount { retired: 0 })
+    );
     assert_eq!(actor.event_log().len(), 2);
     assert_eq!(actor.engine().event_log_len(), 2);
     assert!(matches!(

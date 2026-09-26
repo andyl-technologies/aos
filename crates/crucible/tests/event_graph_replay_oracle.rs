@@ -11,7 +11,7 @@ use crucible::{
     NodeTemplate, ObservableEvent, ObservableEventPayload, OverrideDecision, Plan, Predicate,
     Properties, Property, ReadyPoint, RegexProgram, ReproductionArtifact, ReproductionReplay,
     ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulingPoint, Seed, Shift, SimDuration,
+    SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulingPoint, Seed, SimDuration,
     SimInstant, SingleScheduler, TimerId, TriggerActionApplication, TriggerActionState,
     VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
@@ -53,11 +53,7 @@ fn icount(retired: u64) -> Icount {
 }
 
 fn duration(nanos: u64) -> SimDuration {
-    SimDuration { nanos }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift { bits }
+    SimDuration { ticks: nanos }
 }
 
 fn ready_node(name: &str) -> WorldNode {
@@ -69,7 +65,6 @@ fn ready_node(name: &str) -> WorldNode {
         ready_point: ReadyPoint::FixedIcount { icount: icount(1) },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -87,9 +82,8 @@ fn world() -> World {
 fn scenario(name: &str, world: &World) -> SchedulerLivenessScenario {
     SchedulerLivenessScenario::from_canonical_material(
         name,
-        shift(0),
         16,
-        SimInstant { nanos: 100 },
+        SimInstant { ticks: 100 },
         Vec::new(),
         Vec::new(),
     )
@@ -341,6 +335,28 @@ fn observable_event_material(event: &ObservableEvent) -> String {
             retired_icount.retired,
             node.name,
             marker.name
+        ),
+        ObservableEventPayload::GuestMeasurement {
+            retired_icount,
+            node,
+            event: measurement,
+        } => format!(
+            "observable:guest-measurement:at={}:retired_icount={}:node={}:event={measurement:?}",
+            event.at().ticks,
+            retired_icount.retired,
+            node.name,
+        ),
+        ObservableEventPayload::GuestSemanticMarker {
+            retired_icount,
+            node,
+            marker,
+            instance,
+            details,
+        } => format!(
+            "observable:guest-semantic-marker:at={}:retired_icount={}:node={}:marker={marker}:instance={instance}:details={details:?}",
+            event.at().ticks,
+            retired_icount.retired,
+            node.name,
         ),
         ObservableEventPayload::GuestAssertionMarker {
             retired_icount,

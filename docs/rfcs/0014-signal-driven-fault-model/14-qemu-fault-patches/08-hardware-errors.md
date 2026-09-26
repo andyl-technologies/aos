@@ -1,11 +1,12 @@
-# Patch 0054 — `crucible-hardware-error-inject`
+# Capability task 0054 — `crucible-hardware-error-inject`
 
 ## Purpose
 
 Adds architecture/platform-correct CPU and memory hardware-error injection:
 x86 machine checks, AArch64 synchronous/asynchronous hardware errors, corrected
 and uncorrectable memory/ECC records, and deterministic reset/fatal outcomes.
-Generic exceptions remain in 0052; memory access poison remains in 0050.
+Generic exceptions remain in capability task 0052; memory access poison remains
+in capability task 0050.
 
 ## Capability and dependencies
 
@@ -17,7 +18,8 @@ Generic exceptions remain in 0052; memory access poison remains in 0050.
   Admission requires the requested record kind and all of its exact field masks
   to be present. An empty member advertises only ordinary exception entry and
   cannot admit a hardware-error record.
-- Depends on 0047–0053 and machine firmware/platform error-reporting realization.
+- Requires the capabilities specified by capability tasks 0047–0053 and the
+  machine firmware/platform error-reporting realization.
 
 ## Error manifest
 
@@ -29,7 +31,8 @@ The realized machine reports a closed architecture/platform manifest:
 | AArch64 | synchronous external abort where architecturally valid, asynchronous SError, corrected platform record, fatal hardware error |
 | Both | corrected/uncorrectable memory ECC record tied to GPA and optional channel/rank/bank/syndrome |
 
-This manifest member is part of the capability digest exchanged by 0047; it is
+This manifest member is part of the capability digest exchanged by capability
+task 0047; it is
 not a separately negotiated command or an unversioned extension string. Rows
 specify exact status/syndrome field masks, bank/record IDs, delivery phase,
 maskability, guest firmware/table/device prerequisite, supported privilege level,
@@ -38,7 +41,7 @@ admission rather than logging a host-only fake error.
 
 ## Platform reporting device
 
-When upstream machine support is insufficient, the patch adds a sim-only
+When upstream machine support is insufficient, the atomic patch adds a sim-only
 `crucible-hw-error` platform component realized only under `-accel sim` with the
 matched plugin. It publishes architecture-standard error records through the
 pinned machine's supported mechanism, such as ACPI APEI/GHES for compatible
@@ -73,7 +76,7 @@ than an optional opaque command-sequence field.
 - Uncorrectable recoverable error publishes record and injects the declared
   architecture exception; poisoned access may be the triggering opportunity.
 - Fatal error follows architecture/platform fatal delivery, then the declared
-  deterministic node lifecycle outcome from patch 0056.
+  deterministic node lifecycle outcome specified by capability task 0056.
 - x86 machine-check fields and bank state are written through architecture
   helpers before injection; invalid combinations reject.
 - AArch64 ESR/FAR/SError state and target exception level follow the manifest;
@@ -88,7 +91,8 @@ and command order key.
 Evidence includes manifest and machine/firmware identity, target, raw typed
 record fields, prior/new bank/platform record state, linked memory state,
 architecture injection acknowledgement, guest-visible entry where observable,
-fatal lifecycle transition, and fingerprints. Patch 0067 serializes platform
+fatal lifecycle transition, and fingerprints. The VMState capability specified
+by capability task 0067 serializes platform
 device queues, bank/record state, pending delivery, and links to memory commands.
 
 ## Live microtests
@@ -103,8 +107,8 @@ device queues, bank/record state, pending delivery, and links to memory commands
 4. Exercise masking, repeated/overflowed records, simultaneous banks/records,
    wrong firmware/machine, invalid fields, and unsupported privilege states.
 5. Save/restore pending and delivered records.
-6. Revert patch and fail capability/live gates; prove non-sim device enumeration
-   and behavior equal unpatched QEMU.
+6. Run the capability/live gates against pristine QEMU and require capability
+   absence; prove non-sim device enumeration and behavior equal pristine QEMU.
 
 ## Licensing checklist
 

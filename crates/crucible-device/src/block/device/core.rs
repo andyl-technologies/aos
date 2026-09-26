@@ -9,8 +9,7 @@ impl BlockDevice {
     /// starts empty so every read falls through to the base.
     #[must_use]
     pub fn new(core: IoCore, base: BaseImage, latency: BlockLatency) -> Self {
-        let mut storage_faults = BlockFaultState::write_through(base.len());
-        storage_faults.set_icount_shift(core.shift_bits());
+        let storage_faults = BlockFaultState::write_through(base.len());
         Self {
             core,
             base,
@@ -99,7 +98,6 @@ impl BlockDevice {
             });
         }
         let mut state = BlockFaultState::new(config)?;
-        state.set_icount_shift(self.core.shift_bits());
         state.require_directives(require_directives);
         self.storage_faults = state;
         Ok(())
@@ -156,9 +154,9 @@ impl BlockDevice {
     #[must_use]
     pub fn next_storage_execution_opportunity(
         &self,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Option<BlockExecutionOpportunity> {
-        self.storage_faults.next_execution_opportunity(now_nanos)
+        self.storage_faults.next_execution_opportunity(now_ticks)
     }
 
     /// Installs one complete resolve/persist decision for a staged request.
@@ -178,10 +176,10 @@ impl BlockDevice {
     #[must_use]
     pub fn next_storage_request_persistence_opportunity(
         &self,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Option<BlockRequestPersistenceOpportunity> {
         self.storage_faults
-            .next_request_persistence_opportunity(now_nanos)
+            .next_request_persistence_opportunity(now_ticks)
     }
 
     /// Installs one exact persist-phase decision for a staged request mutation.
@@ -202,9 +200,9 @@ impl BlockDevice {
     #[must_use]
     pub fn next_storage_delivery_opportunity(
         &self,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Option<BlockDeliveryOpportunity> {
-        self.storage_faults.next_delivery_opportunity(now_nanos)
+        self.storage_faults.next_delivery_opportunity(now_ticks)
     }
 
     /// Installs one exact deliver-phase decision for a computed completion.
@@ -220,13 +218,13 @@ impl BlockDevice {
         self.storage_faults.install_delivery_directive(directive)
     }
 
-    /// Returns the next physical persistence opportunity ready at `now_nanos`.
+    /// Returns the next physical persistence opportunity ready at `now_ticks`.
     #[must_use]
     pub fn next_storage_persistence_opportunity(
         &self,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Option<BlockPersistenceOpportunity> {
-        self.storage_faults.next_persistence_opportunity(now_nanos)
+        self.storage_faults.next_persistence_opportunity(now_ticks)
     }
 
     /// Installs one exact resolved physical-media directive.
@@ -289,34 +287,15 @@ impl BlockDevice {
 
     /// Returns the earliest response, service, or persistence event coordinate.
     pub fn next_exact_local_event(&self) -> Option<u64> {
-        let service = self
-            .storage_faults
-            .next_service_completion_nanos()
-            .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
-        let persistence = self
-            .storage_faults
-            .next_persistence_deadline_nanos()
-            .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
-        let execution = self
-            .storage_faults
-            .next_execution_deadline_nanos()
-            .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
+        let service = self.storage_faults.next_service_completion_ticks();
+        let persistence = self.storage_faults.next_persistence_deadline_ticks();
+        let execution = self.storage_faults.next_execution_deadline_ticks();
         let request_persistence = self
             .storage_faults
-            .next_request_persistence_deadline_nanos()
-            .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
-        let delivery = self
-            .storage_faults
-            .next_delivery_deadline_nanos()
-            .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
-        let retained_timeout = self
-            .storage_faults
-            .next_retained_timeout_nanos()
-            .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
-        let array_rebuild = self
-            .storage_faults
-            .next_array_rebuild_deadline_nanos()
-            .map(|nanos| ceil_nanos_to_valid_icount(nanos, self.core.shift_bits()));
+            .next_request_persistence_deadline_ticks();
+        let delivery = self.storage_faults.next_delivery_deadline_ticks();
+        let retained_timeout = self.storage_faults.next_retained_timeout_ticks();
+        let array_rebuild = self.storage_faults.next_array_rebuild_deadline_ticks();
         self.core
             .next_exact_local_event()
             .into_iter()
@@ -363,13 +342,13 @@ impl BlockDevice {
     pub fn apply_storage_controller_transition(
         &mut self,
         transition: &ResolvedBlockControllerTransition,
-        boundary_nanos: u64,
+        boundary_ticks: u64,
     ) -> Result<(), DeviceError> {
         let emulator_virtual_limit = i64::MAX as u64;
-        if boundary_nanos > emulator_virtual_limit
+        if boundary_ticks > emulator_virtual_limit
             || transition.recovery_nanos > emulator_virtual_limit
-            || boundary_nanos
-                .checked_add(transition.recovery_nanos)
+            || boundary_ticks
+                .checked_add(crate::ns_to_tick(transition.recovery_nanos)?)
                 .is_none_or(|deadline| deadline > emulator_virtual_limit)
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
@@ -379,7 +358,7 @@ impl BlockDevice {
         let current_epoch = self.storage_faults.transport_epoch().unwrap_or(0);
         let reset = transition.transport_reset(current_epoch)?;
         let mut next_faults = self.storage_faults.clone();
-        let immediate = next_faults.apply_transport_reset(reset, boundary_nanos)?;
+        let immediate = next_faults.apply_transport_reset(reset, boundary_ticks)?;
         let mut next_core = self.core.clone();
         next_core.check_response_sequence_capacity(immediate.len())?;
         let mut inflight = next_core.take_inflight_from_snapshot();
@@ -465,7 +444,7 @@ impl BlockDevice {
         )],
     ) -> Result<Vec<BlockRetainedReleaseOutcome>, DeviceError> {
         let mut next = self.clone();
-        let now_nanos = icount_to_virtual_ns(next.core.current_icount(), next.core.shift_bits())?;
+        let now_ticks = next.core.current_icount();
         let mut outcomes = Vec::with_capacity(releases.len());
         for (identity, release) in releases {
             let response = next.storage_faults.resolve_retained_completion(
@@ -473,7 +452,7 @@ impl BlockDevice {
                 &mut next.overlay,
                 *identity,
                 *release,
-                now_nanos,
+                now_ticks,
             )?;
             match response {
                 Some(response) => {

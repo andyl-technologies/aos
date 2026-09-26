@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginInboundFrames",
-  taskIds ? ["T-PLUG-8"],
-  openTaskIds ? [],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-8"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -378,8 +378,8 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=complete
-            live_gate=checks.crucible.phase2.qemuLiveNetworkIo
+            status=partial
+            component_gate=checks.crucible.phase2.qemuPluginInboundFrames
             inbound_peek=non-consuming-min-head-delivery
             injection_order=delivery_icount,src_node,seq
             late_delivery=fails-before-direct-advance

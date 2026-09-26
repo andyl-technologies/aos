@@ -20,7 +20,8 @@ use std::fmt::Display;
 use std::io::IsTerminal;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 const PLAIN_PROGRESS_INTERVAL: Duration = Duration::from_secs(30);
 const PLAIN_PROGRESS_PERCENT_STEP: u64 = 10;

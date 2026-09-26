@@ -2,6 +2,11 @@
 
 use super::*;
 
+#[cfg(all(target_os = "linux", not(any(test, feature = "test-double"))))]
+use crucible_daemon::{
+    LinuxQemuAttemptHostConfig, ProductionPluginProbeRequest, run_guarded_production_plugin_probe,
+};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LiveQemuProbeEvidence {
     pub(crate) qemu_build_id: String,
@@ -17,8 +22,40 @@ pub(crate) trait LiveQemuProbeRunner {
     ) -> Result<LiveQemuProbeEvidence, CliError>;
 }
 
-pub(super) struct ProductionLiveQemuProbeRunner;
+#[cfg(any(test, feature = "test-double"))]
+pub(super) struct TestDoubleSelftestProbeRunner;
 
+#[cfg(any(test, feature = "test-double"))]
+impl LiveQemuProbeRunner for TestDoubleSelftestProbeRunner {
+    fn run_probe(
+        &mut self,
+        _backend: &ResolvedLocalBackend,
+    ) -> Result<LiveQemuProbeEvidence, CliError> {
+        Err(backend_error(
+            "test-double QEMU selftest requires an explicitly injected probe runner",
+        ))
+    }
+}
+
+#[cfg(not(any(test, feature = "test-double")))]
+pub(super) struct ProductionLiveQemuProbeRunner {
+    #[cfg(target_os = "linux")]
+    deployment_path: Option<PathBuf>,
+    #[cfg(target_os = "linux")]
+    host: Option<LinuxQemuAttemptHostConfig>,
+}
+
+#[cfg(all(target_os = "linux", not(any(test, feature = "test-double"))))]
+impl ProductionLiveQemuProbeRunner {
+    pub(super) fn new(deployment_path: Option<PathBuf>) -> Self {
+        Self {
+            deployment_path,
+            host: None,
+        }
+    }
+}
+
+#[cfg(not(any(test, feature = "test-double")))]
 impl LiveQemuProbeRunner for ProductionLiveQemuProbeRunner {
     fn run_probe(
         &mut self,
@@ -35,6 +72,21 @@ impl LiveQemuProbeRunner for ProductionLiveQemuProbeRunner {
                 return Err(backend_error("live QEMU probe requires the QEMU backend"));
             }
         };
+        #[cfg(target_os = "linux")]
+        let report = {
+            if self.host.is_none() {
+                let deployment = load_guarded_campaign_deployment(self.deployment_path.as_deref())
+                    .map_err(|error| {
+                        backend_error(format!("load guarded selftest host deployment: {error}"))
+                    })?;
+                self.host = Some(deployment.host);
+            }
+            let host = self.host.clone().ok_or_else(|| {
+                backend_error("live QEMU selftest has no guarded host deployment")
+            })?;
+            run_live_qemu_backend_probe(backend, host)?
+        };
+        #[cfg(not(target_os = "linux"))]
         let report = run_live_qemu_backend_probe(backend)?;
         let execution_fingerprint = report.execution_fingerprint.ok_or_else(|| {
             backend_error("live QEMU probe did not publish an execution fingerprint")
@@ -43,23 +95,15 @@ impl LiveQemuProbeRunner for ProductionLiveQemuProbeRunner {
             qemu_build_id: qemu_build_id.clone(),
             plugin_abi: plugin_abi.clone(),
             completed_icount: report.completed_icount,
-            execution_fingerprint: format_content_hash_ref(execution_fingerprint.hash),
+            execution_fingerprint: format_content_hash_ref(execution_fingerprint),
         })
     }
 }
 
 /// Executes the live backend admission required by the delegated debug wrapper.
 pub(crate) fn run_local_qemu_debug_workflow(
-    backend: &ResolvedLocalBackend,
-    plan: &DebugInvocationPlan,
-) -> Result<Vec<String>, CliError> {
-    run_local_qemu_debug_workflow_with_probe(backend, plan, &mut ProductionLiveQemuProbeRunner)
-}
-
-pub(crate) fn run_local_qemu_debug_workflow_with_probe(
     _backend: &ResolvedLocalBackend,
     plan: &DebugInvocationPlan,
-    _probe: &mut impl LiveQemuProbeRunner,
 ) -> Result<Vec<String>, CliError> {
     let artifact_context = artifact_debug_context(plan)?;
     let target = match &plan.target {
@@ -192,15 +236,11 @@ fn escape_debug_plan_field(value: &str) -> String {
 }
 
 /// Boots one bounded live QEMU/plugin probe and returns its observed proof.
+#[cfg(all(target_os = "linux", not(any(test, feature = "test-double"))))]
 pub(crate) fn run_live_qemu_backend_probe(
     backend: &ResolvedLocalBackend,
-) -> Result<production_api::ProductionPluginInstallReport, CliError> {
-    if !cfg!(target_os = "linux") {
-        return Err(backend_error(
-            "live local QEMU/plugin execution requires a Linux host",
-        ));
-    }
-
+    host: LinuxQemuAttemptHostConfig,
+) -> Result<crucible_daemon::ProductionPluginProbeReport, CliError> {
     let (qemu, plugin) = match backend {
         ResolvedLocalBackend::Qemu { qemu, plugin, .. } => (qemu, plugin),
         #[cfg(any(test, feature = "test-double"))]
@@ -218,73 +258,26 @@ pub(crate) fn run_live_qemu_backend_probe(
         option_env!("CRUCIBLE_AOS_ROOT_IMAGE"),
         "root image",
     )?;
-    let architecture = match live_qemu_native_guest_architecture()? {
-        crucible::VmArchitecture::X86_64 => production_api::ProductionGuestArchitecture::X86_64,
-        crucible::VmArchitecture::Aarch64 => production_api::ProductionGuestArchitecture::Aarch64,
-    };
-    let run_directory = tempfile::TempDir::new()?;
-    prepare_live_qemu_root_overlay(qemu, &root_image, run_directory.path())?;
-    let mut config = production_api::ProductionPluginInstallConfig::new(
-        qemu,
-        plugin,
-        kernel,
-        root_image,
-        run_directory.path(),
-        architecture,
-    )
-    .with_root_image_format(production_api::ProductionRootImageFormat::Raw)
-    .with_fingerprint(production_api::ProductionPluginSwitch::On);
+    let architecture = live_qemu_native_guest_architecture()?;
+    let mut request =
+        ProductionPluginProbeRequest::new(qemu, plugin, kernel, root_image, architecture, host);
     if let Some(cmdline) = live_qemu_kernel_cmdline() {
-        config = config.with_kernel_cmdline(cmdline);
+        request = request.with_kernel_cmdline(cmdline);
     }
-    production_api::run_production_plugin_install_gate(&config).map_err(|error| {
+    run_guarded_production_plugin_probe(request).map_err(|error| {
         backend_error(format!(
             "live local QEMU/plugin execution failed after hermetic discovery: {error}"
         ))
     })
 }
 
-fn prepare_live_qemu_root_overlay(
-    qemu: &Path,
-    raw_root_image: &Path,
-    run_directory: &Path,
-) -> Result<(), CliError> {
-    let qemu_img = qemu.with_file_name("qemu-img");
-    validate_readable_file_artifact("QEMU image tool", &qemu_img)?;
-    let overlay = run_directory.join("crucible-root-overlay.qcow2");
-    let virtual_size = format!("{}B", std::fs::metadata(raw_root_image)?.len());
-    run_qemu_img(
-        &qemu_img,
-        "create the writable root overlay",
-        &[
-            std::ffi::OsStr::new("create"),
-            std::ffi::OsStr::new("-q"),
-            std::ffi::OsStr::new("-f"),
-            std::ffi::OsStr::new("qcow2"),
-            overlay.as_os_str(),
-            virtual_size.as_ref(),
-        ],
-    )
-}
-
-fn run_qemu_img(
-    qemu_img: &Path,
-    operation: &'static str,
-    arguments: &[&std::ffi::OsStr],
-) -> Result<(), CliError> {
-    let output = std::process::Command::new(qemu_img)
-        .args(arguments)
-        .output()
-        .map_err(|source| backend_error(format!("failed to {operation}: {source}")))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Err(backend_error(format!(
-        "failed to {operation} with {}: {}",
-        output.status,
-        stderr.trim()
-    )))
+#[cfg(all(not(target_os = "linux"), not(any(test, feature = "test-double"))))]
+pub(crate) fn run_live_qemu_backend_probe(
+    _backend: &ResolvedLocalBackend,
+) -> Result<crucible_daemon::ProductionPluginProbeReport, CliError> {
+    Err(backend_error(
+        "live local QEMU/plugin execution requires a Linux host",
+    ))
 }
 
 pub(super) fn required_live_qemu_asset(
@@ -335,20 +328,6 @@ pub(super) fn live_qemu_native_guest_architecture() -> Result<crucible::VmArchit
         ))),
         Err(std::env::VarError::NotUnicode(_)) => Err(backend_error(
             "CRUCIBLE_NATIVE_GUEST_ARCHITECTURE is not valid UTF-8",
-        )),
-    }
-}
-
-/// Resolves opt-in verification that declared boot references match selected files.
-pub(super) fn live_qemu_validate_guest_asset_references() -> Result<bool, CliError> {
-    match std::env::var("CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES").as_deref() {
-        Ok("1" | "true") => Ok(true),
-        Err(std::env::VarError::NotPresent) => Ok(false),
-        Ok(value) => Err(backend_error(format!(
-            "CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES has unsupported value `{value}`"
-        ))),
-        Err(std::env::VarError::NotUnicode(_)) => Err(backend_error(
-            "CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES is not valid UTF-8",
         )),
     }
 }

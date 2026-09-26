@@ -5,14 +5,16 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    AssertionDef, AssertionId, AssertionRunVerdict, BlackBoxHostOracle, ConditionEvaluationError,
-    ConditionLeaf, ContentHash, FramePredicate, HostAssertionEvaluator, HostAssertionOutcome,
-    HostAssertionOutcomeKind, HostAssertionPredicate, HostAssertionReport, Icount,
-    LintedHostAssertionOracle, MarkerId, NodeId, NodeTemplate, ObservableEvent, ObservedState,
-    OfflineAssertionCheckError, OfflineAssertionChecker, Predicate, Properties, Property,
-    ReachabilityExpectation, ReachableDisposition, ReadyPoint, RecordedAssertionLog,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, VirtualTime, VmArchitecture,
-    WhiteBoxPolicy, World, WorldNode,
+    AssertionDef, AssertionId, AssertionRunVerdict, BackendInput, BlackBoxHostOracle,
+    ConditionEvaluationError, ConditionLeaf, ContentHash, Decision, EventEvaluationKind,
+    FramePredicate, HostAssertionEvaluator, HostAssertionOutcome, HostAssertionOutcomeKind,
+    HostAssertionPredicate, HostAssertionReport, Icount, LintedHostAssertionOracle, MarkerId,
+    NodeId, NodeTemplate, ObservableEvent, ObservedState, OfflineAssertionCheckError,
+    OfflineAssertionChecker, Predicate, Properties, Property, ReachabilityExpectation,
+    ReachableDisposition, ReadyPoint, RecordedAssertionLog, RngDecision, RngStreamId,
+    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind,
+    SharedTimelineKey, SimInstant, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 fn assertion_id(name: &str) -> AssertionId {
@@ -46,7 +48,6 @@ fn ready_node(name: &str, white_box: WhiteBoxPolicy) -> WorldNode {
         ready_point: ReadyPoint::FixedIcount { icount: icount(1) },
         white_box,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -401,6 +402,439 @@ fn offline_assertion_checker_rejects_invalid_recorded_log() {
             ConditionEvaluationError::InvalidEventLogEntryHash { sequence: 1 }
         )
     ));
+}
+
+#[test]
+fn offline_assertion_checker_defers_incomplete_atomic_observation_segment() {
+    let world = world();
+    let properties = properties(
+        &world,
+        vec![assertion(
+            "sometimes-retained-marker",
+            "an observation retained behind the prior frontier remains visible",
+            Property::Sometimes {
+                predicate: Predicate::guest_marker(marker_id("retained")),
+            },
+        )],
+    );
+    let observation =
+        ObservableEvent::guest_marker(icount(5), node("guest"), marker_id("retained"));
+    let event_log = vec![
+        crucible::test_support::condition_boundary_entry_for_test(
+            0,
+            time(10),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+        crucible::test_support::condition_observation_entry_for_test(1, &observation),
+        crucible::test_support::condition_boundary_entry_for_test(
+            2,
+            time(10),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
+
+    let offline = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(&world)
+        .check_run(&properties, &event_log)
+        .expect("the trailing boundary should close the atomic observation segment");
+
+    let first = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(
+        event_log[..1].to_vec(),
+    )
+    .expect("first online boundary should be valid");
+    let terminal =
+        crucible::test_support::condition_prefix_from_scheduler_entries_for_test(event_log.clone())
+            .expect("atomic online boundary should be valid");
+    let mut online_evaluator =
+        HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
+    let mut oracle = BlackBoxHostOracle;
+    online_evaluator.observe_prefix(&first, &mut oracle);
+    let online = online_evaluator.finalize_prefix(&terminal, &mut oracle);
+
+    assert_eq!(offline, online);
+    assert!(matches!(
+        offline.verdict(),
+        AssertionRunVerdict::Failed { .. }
+    ));
+    assert!(terminal.observable_events().contains(&observation));
+}
+
+#[test]
+fn offline_assertion_checker_defers_unpublished_causal_prefix_inside_quantum() {
+    // A live linked delivery produced this shape: the prior evaluation was at
+    // 3.75B ticks, then one atomic quantum appended a physical backend input
+    // near 3.58B and its observation and boundary at 3.75B.
+    let world = world();
+    let properties = properties(
+        &world,
+        vec![assertion(
+            "sometimes-delivered-frame",
+            "the modeled frame reaches the peer",
+            Property::Sometimes {
+                predicate: Predicate::network_match(
+                    None,
+                    FramePredicate::contains(b"delivered".to_vec()),
+                ),
+            },
+        )],
+    );
+    let delivered = ObservableEvent::network_delivered(time(10), None, b"delivered".to_vec());
+    let peer = node("guest");
+    let delivery = ScheduledEvent {
+        key: ScheduledEventKey::new(
+            SharedTimelineKey {
+                virtual_time: SimInstant { ticks: 5 },
+                node: SchedulerNodeId {
+                    node: peer.clone(),
+                    kind: SchedulingNodeKind::Vm,
+                },
+                sequence: 0,
+            },
+            SchedulerNodeId {
+                node: node("sender"),
+                kind: SchedulingNodeKind::Vm,
+            },
+        ),
+        payload: ScheduledEventPayload::BackendInput(BackendInput {
+            node: peer,
+            payload: b"delivered".to_vec(),
+        }),
+    };
+    let entries = vec![
+        crucible::test_support::condition_boundary_entry_for_test(
+            0,
+            time(10),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+        crucible::test_support::condition_entry_with_retirement_witness_for_test(
+            crucible::test_support::condition_payload_entry_for_test(
+                1,
+                time(5),
+                SchedulerEventLogPayload::ResolvedHappening(delivery),
+            ),
+            Some(node("guest")),
+            Icount { retired: 0 },
+        ),
+        crucible::test_support::condition_payload_entry_for_test(
+            2,
+            time(5),
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+                stream: RngStreamId::from_name("late-quantum"),
+                value: 7,
+            })),
+        ),
+        crucible::test_support::condition_observation_entry_for_test(3, &delivered),
+        crucible::test_support::condition_boundary_entry_for_test(
+            4,
+            time(10),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
+    let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
+
+    let flat = checker
+        .check_run(&properties, &entries)
+        .expect("the completed quantum hides its intermediate physical prefix");
+    let atomic =
+        RecordedAssertionLog::from_segments(vec![entries[..1].to_vec(), entries[1..].to_vec()])
+            .expect("atomic quantum segments should fold");
+    let mut oracle = BlackBoxHostOracle;
+    let segmented = checker
+        .check_run_with_oracle(&properties, &atomic, &mut oracle)
+        .expect("published quantum boundaries should regrade");
+
+    assert_eq!(flat, segmented);
+    assert_eq!(flat.verdict(), &AssertionRunVerdict::Passed);
+
+    let separately_published = RecordedAssertionLog::from_segments(vec![
+        entries[..1].to_vec(),
+        entries[1..2].to_vec(),
+        entries[2..].to_vec(),
+    ])
+    .expect("separate segments should fold");
+    let error = checker
+        .check_run_with_oracle(&properties, &separately_published, &mut oracle)
+        .expect_err("a published lower-time causal prefix must remain invalid");
+    assert!(matches!(
+        error,
+        OfflineAssertionCheckError::ConditionEvaluation(
+            ConditionEvaluationError::FutureEventLogEntry {
+                point,
+                sequence: 0,
+                event_at,
+            }
+        ) if point == time(5) && event_at == time(10)
+    ));
+}
+
+#[test]
+fn offline_assertion_checker_rejects_unbounded_future_observation_prefix() {
+    let world = world();
+    let properties = amended_properties(&world);
+    let early = ObservableEvent::guest_marker(icount(5), node("guest"), marker_id("early"));
+    let later = ObservableEvent::guest_marker(icount(10), node("guest"), marker_id("later"));
+    let event_log = vec![
+        crucible::test_support::condition_boundary_entry_for_test(
+            0,
+            time(10),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+        crucible::test_support::condition_observation_entry_for_test(1, &early),
+        crucible::test_support::condition_observation_entry_for_test(2, &later),
+    ];
+
+    let error = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(&world)
+        .check_run(&properties, &event_log)
+        .expect_err("an observation without an explicit closing boundary must fail");
+
+    assert!(matches!(
+        error,
+        OfflineAssertionCheckError::ConditionEvaluation(
+            ConditionEvaluationError::FutureEventLogEntry {
+                point,
+                sequence: 0,
+                event_at,
+            }
+        ) if point == time(5) && event_at == time(10)
+    ));
+}
+
+#[test]
+fn offline_assertion_checker_rejects_regressed_explicit_evaluation_boundary() {
+    let world = world();
+    let properties = amended_properties(&world);
+    let event_log = vec![
+        crucible::test_support::condition_boundary_entry_for_test(
+            0,
+            time(10),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+        crucible::test_support::condition_boundary_entry_for_test(
+            1,
+            time(8),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+        crucible::test_support::condition_boundary_entry_for_test(
+            2,
+            time(10),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
+
+    let error = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(&world)
+        .check_run(&properties, &event_log)
+        .expect_err("an explicit regressed evaluation boundary must fail");
+
+    assert!(matches!(
+        error,
+        OfflineAssertionCheckError::ConditionEvaluation(
+            ConditionEvaluationError::FutureEventLogEntry {
+                point,
+                sequence: 0,
+                event_at,
+            }
+        ) if point == time(8) && event_at == time(10)
+    ));
+}
+
+#[test]
+fn offline_assertion_checker_rejects_future_observation_at_recorded_segment_boundary() {
+    let world = world();
+    let properties = amended_properties(&world);
+    let observation =
+        ObservableEvent::guest_marker(icount(5), node("guest"), marker_id("split-segment"));
+    let entries = [
+        crucible::test_support::condition_boundary_entry_for_test(
+            0,
+            time(10),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+        crucible::test_support::condition_observation_entry_for_test(1, &observation),
+        crucible::test_support::condition_boundary_entry_for_test(
+            2,
+            time(10),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
+    let recorded_log = RecordedAssertionLog::from_segments(vec![
+        entries[..1].to_vec(),
+        entries[1..2].to_vec(),
+        entries[2..].to_vec(),
+    ])
+    .expect("split observation segments should fold");
+    let mut oracle = BlackBoxHostOracle;
+
+    let error = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(&world)
+        .check_run_with_oracle(&properties, &recorded_log, &mut oracle)
+        .expect_err("a published future-observation prefix must fail");
+
+    assert!(matches!(
+        error,
+        OfflineAssertionCheckError::ConditionEvaluation(
+            ConditionEvaluationError::FutureEventLogEntry {
+                point,
+                sequence: 0,
+                event_at,
+            }
+        ) if point == time(5) && event_at == time(10)
+    ));
+}
+
+#[test]
+fn offline_assertion_checker_evaluates_valid_observation_after_deferred_prefix() {
+    let world = world();
+    let properties = properties(
+        &world,
+        vec![assertion(
+            "always-healthy-boundary",
+            "every published boundary remains healthy",
+            Property::Always {
+                predicate: Predicate::named("healthy-boundary"),
+            },
+        )],
+    );
+    let early = ObservableEvent::guest_marker(icount(5), node("guest"), marker_id("early"));
+    let current = ObservableEvent::guest_marker(icount(10), node("guest"), marker_id("current"));
+    let entries = vec![
+        crucible::test_support::condition_boundary_entry_for_test(
+            0,
+            time(10),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+        crucible::test_support::condition_observation_entry_for_test(1, &early),
+        crucible::test_support::condition_observation_entry_for_test(2, &current),
+        crucible::test_support::condition_boundary_entry_for_test(
+            3,
+            time(10),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
+    let recorded_log = RecordedAssertionLog::from_segments(vec![
+        entries[..1].to_vec(),
+        entries[1..3].to_vec(),
+        entries[3..].to_vec(),
+    ])
+    .expect("mixed observation segments should fold");
+    let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
+    let oracle = |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
+        ConditionLeaf::Named { name, nodes } => {
+            name == "healthy-boundary"
+                && nodes.is_empty()
+                && state.point().kind() != EventEvaluationKind::EventBoundary
+        }
+        ConditionLeaf::GuestMarker { .. } => false,
+    };
+    let mut offline_oracle = linted_host_oracle(oracle);
+
+    let offline = checker
+        .check_run_with_oracle(&properties, &recorded_log, &mut offline_oracle)
+        .expect("the current observation should make its recorded prefix valid");
+
+    let first = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(
+        entries[..1].to_vec(),
+    )
+    .expect("first online boundary should be valid");
+    let observations = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(
+        entries[..3].to_vec(),
+    )
+    .expect("current observation should make the online prefix valid");
+    let terminal =
+        crucible::test_support::condition_prefix_from_scheduler_entries_for_test(entries.clone())
+            .expect("terminal online boundary should be valid");
+    let mut online_evaluator =
+        HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
+    let mut online_oracle = linted_host_oracle(oracle);
+    online_evaluator.observe_prefix(&first, &mut online_oracle);
+    online_evaluator.observe_prefix(&observations, &mut online_oracle);
+    let online = online_evaluator.finalize_prefix(&terminal, &mut online_oracle);
+
+    assert_eq!(offline, online);
+    assert!(matches!(
+        offline.verdict(),
+        AssertionRunVerdict::Failed { .. }
+    ));
+    assert_eq!(
+        outcome(offline.outcomes(), "always-healthy-boundary").kind,
+        HostAssertionOutcomeKind::Violated
+    );
+}
+
+#[test]
+fn offline_atomic_batch_matches_online_and_preserves_earlier_always_failure() {
+    let world = world();
+    let properties = properties(
+        &world,
+        vec![assertion(
+            "always-healthy-boundary",
+            "every evaluated boundary remains healthy",
+            Property::Always {
+                predicate: Predicate::named("healthy-boundary"),
+            },
+        )],
+    );
+    let retained = ObservableEvent::guest_marker(icount(4), node("guest"), marker_id("retained"));
+    let entries = vec![
+        crucible::test_support::condition_boundary_entry_for_test(
+            0,
+            time(5),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+        crucible::test_support::condition_observation_entry_for_test(1, &retained),
+        crucible::test_support::condition_boundary_entry_for_test(
+            2,
+            time(10),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
+    let recorded_log =
+        RecordedAssertionLog::from_segments(vec![entries[..1].to_vec(), entries[1..].to_vec()])
+            .expect("atomic observation segments should fold");
+    let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
+    let mut offline_oracle = linted_host_oracle(
+        |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
+            ConditionLeaf::Named { name, nodes } => {
+                name == "healthy-boundary" && nodes.is_empty() && state.at() != time(5)
+            }
+            ConditionLeaf::GuestMarker { .. } => false,
+        },
+    );
+
+    let offline = checker
+        .check_run_with_oracle(&properties, &recorded_log, &mut offline_oracle)
+        .expect("offline evaluation should honor the atomic boundary");
+
+    let first = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(
+        entries[..1].to_vec(),
+    )
+    .expect("first online boundary should be valid");
+    let terminal =
+        crucible::test_support::condition_prefix_from_scheduler_entries_for_test(entries.clone())
+            .expect("atomic online boundary should be valid");
+    let mut online_evaluator =
+        HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
+    let mut online_oracle = linted_host_oracle(
+        |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
+            ConditionLeaf::Named { name, nodes } => {
+                name == "healthy-boundary" && nodes.is_empty() && state.at() != time(5)
+            }
+            ConditionLeaf::GuestMarker { .. } => false,
+        },
+    );
+    online_evaluator.observe_prefix(&first, &mut online_oracle);
+    let online = online_evaluator.finalize_prefix(&terminal, &mut online_oracle);
+
+    assert_eq!(offline, online);
+    assert!(matches!(
+        offline.verdict(),
+        AssertionRunVerdict::Failed { .. }
+    ));
+    assert_eq!(
+        outcome(offline.outcomes(), "always-healthy-boundary").kind,
+        HostAssertionOutcomeKind::Violated
+    );
 }
 
 #[test]

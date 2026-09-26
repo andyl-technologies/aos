@@ -1,0 +1,2515 @@
+//! Imported-history, closure, identity, and owner-validation repository tests.
+
+use super::*;
+use crate::{
+    CampaignCommandId, ExactRational, FeedbackWait, IntegerDomain, IntegerRepresentation,
+    IntegerValue, Objective, ObjectiveGoal, ObjectiveValue, PinChange, PinRetention,
+    RankingCandidate, RankingMethod, SurvivorRule, evaluate_objectives, rank_survivors,
+};
+
+struct PermitExhaustive;
+
+impl crate::CampaignPrincipalAuthorizer for PermitExhaustive {
+    fn authorize(
+        &self,
+        _principal: &crate::CampaignPrincipal,
+        _operation: crate::CampaignServiceOperation,
+        _campaign: &crate::CampaignName,
+        _request_digest: CampaignHash,
+    ) -> Result<(), crate::CampaignAuthorizationError> {
+        Ok(())
+    }
+}
+
+fn expect_integrity_reason<T>(result: Result<T, CampaignRepositoryError>, expected: &'static str) {
+    match result {
+        Err(CampaignRepositoryError::Integrity { reason }) => assert_eq!(reason, expected),
+        Err(error) => panic!("expected integrity error `{expected}`, got `{error}`"),
+        Ok(_) => panic!("missing current index `{expected}` was accepted"),
+    }
+}
+
+#[test]
+fn current_exploration_index_anchors_are_required_without_writes() {
+    let (repository, _lineage, _policy, blobs) = counted_fixture();
+    let empty = repository.merkle.empty().expect("empty root").content_id();
+    let exploration_without = |omitted| {
+        [
+            frontier_index_anchor_key(),
+            branch_request_index_anchor_key(),
+            planner_scan_index_anchor_key(),
+        ]
+        .into_iter()
+        .filter(|anchor| *anchor != omitted)
+        .try_fold(empty, |root, anchor| {
+            repository
+                .merkle
+                .insert(root, anchor, empty)
+                .map(|map| map.content_id())
+        })
+        .expect("partial current exploration root")
+    };
+
+    let missing_frontier = exploration_without(frontier_index_anchor_key());
+    let missing_branch_requests = exploration_without(branch_request_index_anchor_key());
+    let missing_planner_scan = exploration_without(planner_scan_index_anchor_key());
+    let objects_before = blobs.object_count().expect("objects before rejection");
+
+    expect_integrity_reason(
+        repository.frontier_index_after(missing_frontier, &[], false),
+        "current-campaign-frontier-index-is-missing",
+    );
+    expect_integrity_reason(
+        repository.branch_request_index_after(missing_branch_requests, &[], false),
+        "current-campaign-branch-request-index-is-missing",
+    );
+    let mut remaining = 1;
+    expect_integrity_reason(
+        repository.branch_point_requests(
+            missing_branch_requests,
+            crate::BranchPointId::from_hash(CampaignHash::from_bytes([0x51; 32])),
+            &mut remaining,
+        ),
+        "current-campaign-branch-request-index-is-missing",
+    );
+    expect_integrity_reason(
+        repository.planner_scan_index_after(missing_planner_scan, &[], None, false),
+        "current-campaign-planner-scan-index-is-missing",
+    );
+
+    assert_eq!(
+        blobs.object_count().expect("objects after rejection"),
+        objects_before,
+        "missing current exploration indexes caused repository writes"
+    );
+}
+
+#[test]
+fn survivor_decision_publication_is_failure_atomic_and_replayable() {
+    let (repository, lineage, base, blobs) = counted_fixture();
+    let objective_name = "latency";
+    let policy = CampaignPolicy::new(
+        CampaignPolicy::identity(
+            base.scenario(),
+            base.campaign_seed(),
+            base.mode(),
+            base.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base.choice_policies().clone(),
+            BTreeMap::from([(
+                objective_name.to_owned(),
+                Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000)
+                    .expect("objective"),
+            )]),
+            base.guidance().clone(),
+            base.stop_conditions().clone(),
+            base.fairness(),
+            base.retention(),
+            base.admits_scenario_defaults(),
+        ),
+    )
+    .expect("objective policy");
+    repository.publish_policy(&policy).expect("publish policy");
+    let campaign_observations = (0_u64..16)
+        .map(|ordinal| {
+            let name = format!("objective-publication-{ordinal}");
+            let (_created, _admitted, observation) =
+                admitted_observation_fixture(&repository, &lineage, &policy, &name);
+            (name, observation)
+        })
+        .collect::<Vec<_>>();
+    let candidates = campaign_observations
+        .iter()
+        .map(|(_name, observation)| {
+            let properties = repository
+                .load_property_verdict_set(observation.properties())
+                .expect("properties");
+            let evaluation = evaluate_objectives(
+                &policy,
+                observation,
+                &properties,
+                BTreeMap::from([(objective_name.to_owned(), ObjectiveValue::Unsigned(7))]),
+            )
+            .expect("evaluation");
+            RankingCandidate::new(evaluation, 3, 0)
+        })
+        .collect();
+    let bundle = rank_survivors(
+        &policy,
+        SurvivorRule::new(RankingMethod::WeightedTopK, 8, 2, 2).expect("rule"),
+        candidates,
+    )
+    .expect("ranking");
+
+    let before = blobs
+        .object_count()
+        .expect("objects before rejected publication");
+    assert!(matches!(
+        repository.publish_survivor_selection(&bundle),
+        Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+    ));
+    assert_eq!(
+        blobs
+            .object_count()
+            .expect("objects after rejected publication"),
+        before
+    );
+
+    for (name, observation) in &campaign_observations {
+        let current = repository
+            .head(name)
+            .expect("current campaign")
+            .snapshot_id();
+        repository
+            .publish_observation(name, current, observation)
+            .expect("publish observation");
+    }
+    let selection = repository
+        .publish_survivor_selection(&bundle)
+        .expect("publish survivor selection");
+    assert_eq!(
+        repository
+            .load_survivor_selection(selection)
+            .expect("load and replay survivor selection"),
+        bundle
+    );
+    let mut cache = ChoiceValidationCache::default();
+    assert_eq!(
+        repository
+            .read_survivor_selection_bundle_cached(selection.content_id(), &mut cache)
+            .expect("load shared-policy survivor selection"),
+        bundle
+    );
+    assert_eq!(cache.objective_contracts.len(), 1);
+    let after = blobs.object_count().expect("objects after publication");
+    assert_eq!(
+        repository
+            .publish_survivor_selection(&bundle)
+            .expect("idempotent publication"),
+        selection
+    );
+    assert_eq!(blobs.object_count().expect("objects after replay"), after);
+}
+
+#[test]
+fn objective_evaluation_publication_is_snapshot_owned_replayable_and_failure_atomic() {
+    let (repository, lineage, base, blobs) = counted_fixture();
+    let objective_name = "latency";
+    let policy = CampaignPolicy::new(
+        CampaignPolicy::identity(
+            base.scenario(),
+            base.campaign_seed(),
+            base.mode(),
+            base.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base.choice_policies().clone(),
+            BTreeMap::from([(
+                objective_name.to_owned(),
+                Objective::new(objective_name, ObjectiveGoal::Minimize, 1_000_000)
+                    .expect("objective"),
+            )]),
+            base.guidance().clone(),
+            base.stop_conditions().clone(),
+            base.fairness(),
+            base.retention(),
+            base.admits_scenario_defaults(),
+        ),
+    )
+    .expect("objective policy");
+    repository.publish_policy(&policy).expect("publish policy");
+    let name = "objective-evaluation-owner";
+    let (_genesis, admitted, observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, name);
+    let properties = repository
+        .load_property_verdict_set(observation.properties())
+        .expect("properties");
+    let evaluation = evaluate_objectives(
+        &policy,
+        &observation,
+        &properties,
+        BTreeMap::from([(objective_name.to_owned(), ObjectiveValue::Unsigned(7))]),
+    )
+    .expect("evaluation");
+
+    let before = blobs.object_count().expect("objects before rejection");
+    let rejected =
+        repository.publish_objective_evaluation(name, admitted.new_snapshot, &evaluation);
+    assert!(
+        matches!(
+            rejected,
+            Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+        ),
+        "{rejected:?}"
+    );
+    assert_eq!(
+        blobs.object_count().expect("objects after rejection"),
+        before
+    );
+
+    let observed = repository
+        .publish_observation(name, admitted.new_snapshot, &observation)
+        .expect("publish observation");
+    let published = repository
+        .publish_objective_evaluation(name, observed.new_snapshot, &evaluation)
+        .expect("publish objective evaluation");
+    assert_eq!(published.prior_snapshot, observed.new_snapshot);
+    assert_eq!(
+        published.evaluation,
+        evaluation.id().expect("evaluation ID")
+    );
+    assert!(!published.replayed);
+    let published_snapshot = repository
+        .read_snapshot(published.new_snapshot.content_id())
+        .expect("objective publication snapshot");
+    let transition = published_snapshot
+        .snapshot
+        .transition()
+        .expect("objective publication transition");
+    assert_eq!(transition.content_id().schema_version(), 15);
+    assert_eq!(
+        repository
+            .read_fact(transition.content_id())
+            .expect("objective publication fact"),
+        CampaignFact::ObjectiveEvaluationPublished(published.evaluation)
+    );
+    let observed_snapshot = repository
+        .read_snapshot(observed.new_snapshot.content_id())
+        .expect("objective parent snapshot");
+    let mut forged_roots = published_snapshot.snapshot.roots();
+    forged_roots.observations = repository
+        .merkle
+        .insert(
+            observed_snapshot.snapshot.roots().observations,
+            CampaignHash::derive("test-objective-evaluation-wrong-key", b"wrong"),
+            published.evaluation.content_id(),
+        )
+        .expect("forge wrong objective index key")
+        .content_id();
+    let forged_snapshot = CampaignSnapshot::successor(
+        observed.new_snapshot,
+        published_snapshot.snapshot.lineage(),
+        published_snapshot.snapshot.active_policy(),
+        forged_roots,
+        transition,
+        published_snapshot.snapshot.budget_ledger(),
+    )
+    .expect("forged objective successor");
+    let forged_content = repository
+        .put_snapshot(&forged_snapshot)
+        .expect("put forged objective successor");
+    assert!(matches!(
+        repository.validate_complete_head(forged_content),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "objective-evaluation-transition-observation-root"
+        })
+    ));
+
+    let conflicting = evaluate_objectives(
+        &policy,
+        &observation,
+        &properties,
+        BTreeMap::from([(objective_name.to_owned(), ObjectiveValue::Unsigned(8))]),
+    )
+    .expect("conflicting evaluation");
+    let before_conflict = blobs.object_count().expect("objects before conflict");
+    assert!(matches!(
+        repository.publish_objective_evaluation(name, published.new_snapshot, &conflicting),
+        Err(CampaignRepositoryError::AlreadyExists)
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after conflict"),
+        before_conflict
+    );
+
+    let advanced = repository
+        .apply_control(
+            name,
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "test-objective-evaluation-control",
+                    b"resume",
+                )),
+                expected_snapshot: published.new_snapshot,
+                action: CampaignControlAction::Resume,
+            },
+        )
+        .expect("advance after objective evaluation");
+    repository
+        .validated_heads
+        .lock()
+        .expect("validated-head cache")
+        .clear();
+    assert_eq!(
+        repository
+            .head(name)
+            .expect("restart-validate objective head")
+            .snapshot_id(),
+        advanced.new_snapshot
+    );
+    assert_eq!(
+        repository
+            .publish_objective_evaluation(name, observed.new_snapshot, &evaluation)
+            .expect("replay objective evaluation after later mutation"),
+        ObjectiveEvaluationPublicationResult {
+            replayed: true,
+            ..published
+        }
+    );
+}
+
+#[test]
+fn objective_scan_cursor_tracks_a_late_lower_ordinal_observation() {
+    let (repository, lineage, base_policy) = fixture();
+    let policy = CampaignPolicy::new(
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            CampaignMode::Streaming,
+            base_policy.explorer().clone(),
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            base_policy.objectives().clone(),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
+    )
+    .expect("streaming policy");
+    let name = "objective-scan-late-observation";
+    let genesis = repository
+        .create_funded(name, &lineage, &policy, &BTreeMap::new())
+        .expect("create objective scan campaign");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        name,
+    );
+    let requested = repository
+        .submit_known_branch_request(name, genesis.snapshot_id(), &request)
+        .expect("submit objective scan request");
+
+    let first_proposal = finite_proposal(
+        &request,
+        &policy,
+        &repository.head(name).expect("first proposal head"),
+        ChoiceValue::Boolean(false),
+        1,
+    );
+    let first_issued = repository
+        .issue_proposal(name, requested.new_snapshot, &first_proposal)
+        .expect("issue first proposal");
+    let (first_selection, first_path, first_attempt) =
+        branch_attempt(&repository, &request, &first_proposal);
+    let first_admission = repository
+        .admit_proposal(
+            name,
+            first_issued.new_snapshot,
+            first_issued.proposal,
+            &first_selection,
+            &first_path,
+            &first_attempt,
+        )
+        .expect("admit first proposal");
+
+    let second_proposal = finite_proposal(
+        &request,
+        &policy,
+        &repository.head(name).expect("second proposal head"),
+        ChoiceValue::Boolean(true),
+        2,
+    );
+    let second_issued = repository
+        .issue_proposal(name, first_admission.new_snapshot, &second_proposal)
+        .expect("issue second proposal");
+    let (second_selection, second_path, second_attempt) =
+        branch_attempt(&repository, &request, &second_proposal);
+    let second_admission = repository
+        .admit_proposal(
+            name,
+            second_issued.new_snapshot,
+            second_issued.proposal,
+            &second_selection,
+            &second_path,
+            &second_attempt,
+        )
+        .expect("admit second proposal");
+
+    let first_observation = generated_observation(
+        &repository,
+        &lineage,
+        &first_admission,
+        &first_path,
+        request.opportunity(),
+        "late-first",
+    );
+    let second_observation = generated_observation(
+        &repository,
+        &lineage,
+        &second_admission,
+        &second_path,
+        request.opportunity(),
+        "early-second",
+    );
+    repository
+        .publish_observation(name, second_admission.new_snapshot, &second_observation)
+        .expect("publish second observation first");
+
+    let first_page = repository
+        .scan_objective_evaluation_inputs(name, None, 1)
+        .expect("scan missing first ordinal");
+    assert!(first_page.input().is_none());
+    assert!(!first_page.complete());
+    assert_eq!(first_page.visited_ordinals(), 1);
+    assert_eq!(first_page.cursor().after_ordinal(), 1);
+
+    let second_page = repository
+        .scan_objective_evaluation_inputs(name, Some(first_page.cursor()), 1)
+        .expect("scan available second ordinal");
+    assert!(second_page.complete());
+    assert_eq!(second_page.visited_ordinals(), 1);
+    let completed_cursor = second_page.cursor();
+    let second_input = second_page.into_input().expect("second evaluation input");
+    assert_eq!(
+        second_input
+            .observation()
+            .id()
+            .expect("second observation id"),
+        second_observation.id().expect("second observation id")
+    );
+    let second_evaluation = evaluate_objectives(
+        &policy,
+        second_input.observation(),
+        second_input.properties(),
+        BTreeMap::new(),
+    )
+    .expect("evaluate second observation");
+    let second_evaluated = repository
+        .publish_objective_evaluation(name, second_input.snapshot(), &second_evaluation)
+        .expect("publish second evaluation");
+    let completed_page = repository
+        .scan_objective_evaluation_inputs(name, Some(completed_cursor), 1)
+        .expect("reuse complete cursor");
+    assert!(completed_page.input().is_none());
+    assert!(completed_page.complete());
+    assert_eq!(completed_page.visited_ordinals(), 0);
+
+    repository
+        .publish_observation(name, second_evaluated.new_snapshot, &first_observation)
+        .expect("publish late first observation");
+    let reset_page = repository
+        .scan_objective_evaluation_inputs(name, Some(completed_page.cursor()), 1)
+        .expect("reset scan after late observation");
+    assert_ne!(
+        reset_page.cursor().accounting(),
+        completed_page.cursor().accounting()
+    );
+    assert_eq!(reset_page.cursor().after_ordinal(), 2);
+    assert_eq!(reset_page.visited_ordinals(), 1);
+    assert_eq!(
+        reset_page
+            .input()
+            .expect("late first input")
+            .observation()
+            .id()
+            .expect("late first observation id"),
+        first_observation.id().expect("first observation id")
+    );
+}
+
+#[test]
+fn objective_scan_work_is_linear_as_completed_history_grows() {
+    let (repository, lineage, base_policy) = fixture();
+    let policy = CampaignPolicy::new(
+        CampaignPolicy::identity(
+            base_policy.scenario(),
+            base_policy.campaign_seed(),
+            base_policy.mode(),
+            ExplorerPolicy::Beam {
+                width: 1,
+                novelty_reserve: 0,
+            },
+        ),
+        CampaignPolicy::rules(
+            base_policy.choice_policies().clone(),
+            base_policy.objectives().clone(),
+            base_policy.guidance().clone(),
+            base_policy.stop_conditions().clone(),
+            base_policy.fairness(),
+            base_policy.retention(),
+            base_policy.admits_scenario_defaults(),
+        ),
+    )
+    .expect("Beam objective scan policy");
+    let name = "objective-scan-linear-growth";
+    repository
+        .create_funded(name, &lineage, &policy, &BTreeMap::new())
+        .expect("create objective scan campaign");
+    let mut cursor = None;
+    let mut visited = 0_u64;
+    const ATTEMPTS: u64 = 64;
+
+    for index in 0..ATTEMPTS {
+        let label = format!("objective-linear-{index}");
+        let request = branch_request(
+            &repository,
+            &lineage,
+            lineage.genesis_content(),
+            lineage.genesis(),
+            &label,
+        );
+        let request = BranchRequest::new(
+            BranchRequest::identity(
+                request.branch_point(),
+                request.parent(),
+                request.opportunity(),
+                request.domain(),
+            ),
+            CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(false)]))
+                .expect("single Beam candidate"),
+            request.cause(),
+            BranchBudget::new(1, 1).expect("single Beam attempt"),
+            request.stop().clone(),
+        )
+        .expect("closed single-candidate Beam request");
+        let requested = repository
+            .submit_known_branch_request(
+                name,
+                repository.head(name).expect("request head").snapshot_id(),
+                &request,
+            )
+            .expect("submit objective scan request");
+        let proposal = finite_proposal(
+            &request,
+            &policy,
+            &repository.head(name).expect("proposal head"),
+            ChoiceValue::Boolean(false),
+            1,
+        );
+        let proposed = repository
+            .issue_proposal(name, requested.new_snapshot, &proposal)
+            .expect("issue objective scan proposal");
+        let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
+        let admitted = repository
+            .admit_proposal(
+                name,
+                proposed.new_snapshot,
+                proposed.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("admit objective scan attempt");
+
+        let pending_page = repository
+            .scan_objective_evaluation_inputs(name, cursor, 8)
+            .expect("scan newly admitted pending ordinal");
+        visited += u64::from(pending_page.visited_ordinals());
+        assert!(pending_page.input().is_none());
+        cursor = Some(pending_page.cursor());
+
+        let observation = generated_observation(
+            &repository,
+            &lineage,
+            &admitted,
+            &path,
+            request.opportunity(),
+            &label,
+        );
+        repository
+            .publish_observation(
+                name,
+                repository
+                    .head(name)
+                    .expect("pre-observation head")
+                    .snapshot_id(),
+                &observation,
+            )
+            .expect("publish objective scan observation");
+        let evaluation_page = repository
+            .scan_objective_evaluation_inputs(name, cursor, 8)
+            .expect("scan newly completed ordinal");
+        visited += u64::from(evaluation_page.visited_ordinals());
+        let input = evaluation_page
+            .input()
+            .expect("new completion must need evaluation");
+        assert_eq!(
+            input.observation().id().expect("scanned observation ID"),
+            observation.id().expect("published observation ID")
+        );
+        let evaluation = evaluate_objectives(
+            &policy,
+            input.observation(),
+            input.properties(),
+            BTreeMap::new(),
+        )
+        .expect("evaluate completed ordinal");
+        let evaluated = repository
+            .publish_objective_evaluation(name, input.snapshot(), &evaluation)
+            .expect("publish completed ordinal evaluation");
+        cursor = Some(evaluation_page.cursor());
+        let snapshot = repository
+            .read_snapshot(evaluated.new_snapshot.content_id())
+            .expect("load growing Beam snapshot");
+        repository
+            .project_beam_planner(&snapshot, &policy)
+            .expect("project growing Beam history");
+    }
+
+    assert_eq!(visited, ATTEMPTS * 2);
+    let cache = repository
+        .beam_projection_cache
+        .lock()
+        .expect("Beam projection cache");
+    let cache = cache.as_ref().expect("Beam projection cache entry");
+    assert!(cache.full_observation_root_visits < 32);
+    assert!(cache.delta_snapshot_visits <= ATTEMPTS as usize * 8);
+    assert_eq!(cache.target_attempt_visits, 0);
+}
+
+#[test]
+fn objective_cursor_cannot_skip_a_divergent_campaign_with_the_same_accounting_root() {
+    let (repository, lineage, policy) = fixture();
+    let source = "objective-cursor-source";
+    let target = "objective-cursor-target";
+    let (_, admitted, observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, source);
+    let observed = repository
+        .publish_observation(source, admitted.new_snapshot, &observation)
+        .expect("publish shared observation");
+    repository
+        .derive_campaign(source, observed.new_snapshot, target, None)
+        .expect("derive same-accounting target");
+    let source_page = repository
+        .scan_objective_evaluation_inputs(source, None, 8)
+        .expect("scan source evaluation input");
+    let source_input = source_page.input().expect("source evaluation input");
+    let evaluation = evaluate_objectives(
+        &policy,
+        source_input.observation(),
+        source_input.properties(),
+        BTreeMap::new(),
+    )
+    .expect("evaluate source observation");
+    repository
+        .publish_objective_evaluation(source, source_input.snapshot(), &evaluation)
+        .expect("publish source evaluation");
+    let complete_source = repository
+        .scan_objective_evaluation_inputs(source, Some(source_page.cursor()), 8)
+        .expect("complete source scan");
+    assert!(complete_source.complete());
+    assert!(complete_source.input().is_none());
+
+    let target_page = repository
+        .scan_objective_evaluation_inputs(target, Some(complete_source.cursor()), 8)
+        .expect("scan divergent target with source cursor");
+    assert_eq!(target_page.visited_ordinals(), 1);
+    assert_eq!(
+        target_page
+            .input()
+            .expect("target evaluation must not be skipped")
+            .observation()
+            .id()
+            .expect("target observation ID"),
+        observation.id().expect("shared observation ID")
+    );
+}
+
+#[test]
+fn canonical_frontier_planner_basis_is_complete_and_idempotent() {
+    let (repository, _lineage, _policy, blobs) = counted_fixture();
+    let before = blobs.object_count().expect("objects before planner basis");
+
+    let basis = repository
+        .publish_canonical_frontier_planner_basis()
+        .expect("publish canonical planner basis");
+    let after = blobs.object_count().expect("objects after planner basis");
+    assert_eq!(after, before + 4);
+    assert_eq!(
+        basis,
+        CanonicalFrontierPlanner::basis().expect("closed basis")
+    );
+
+    let objects = repository
+        .authenticated_closure_ids([
+            basis.artifact().id().expect("artifact id").content_id(),
+            basis.initial_state().id().expect("state id").content_id(),
+        ])
+        .expect("authenticate planner basis");
+    assert!(objects.contains(&CanonicalFrontierPlanner::dependency_lock_id()));
+    assert!(objects.contains(&basis.engine().id().expect("engine id").content_id()));
+
+    assert_eq!(
+        repository
+            .publish_canonical_frontier_planner_basis()
+            .expect("replay canonical planner basis"),
+        basis
+    );
+    assert_eq!(
+        blobs.object_count().expect("objects after basis replay"),
+        after
+    );
+}
+
+#[test]
+fn authenticated_closure_inventory_includes_campaign_records_and_merkle_nodes() {
+    let (repository, lineage, policy) = fixture();
+    let created = repository
+        .create("closure-inventory", &lineage, &policy, &BTreeMap::new())
+        .expect("create campaign");
+    let head = repository.head("closure-inventory").expect("load head");
+
+    let objects = repository
+        .authenticated_closure_ids([created.snapshot_id().content_id()])
+        .expect("authenticate complete closure");
+
+    assert!(objects.contains(&created.snapshot_id().content_id()));
+    assert!(objects.contains(&lineage.id().expect("lineage id").content_id()));
+    assert!(objects.contains(&policy.id().expect("policy id").content_id()));
+    for root in snapshot_roots(head.snapshot()) {
+        assert!(objects.contains(&root), "missing Merkle root {root}");
+    }
+}
+
+#[test]
+fn published_choice_group_retains_and_authenticates_member_declarations() {
+    let (repository, _lineage, _policy) = fixture();
+    let member_domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
+    let member = SelectableDeclaration::new(
+        "fault.enabled",
+        ChoiceSource::Workload {
+            producer: "network-fault".to_owned(),
+        },
+        member_domain.clone(),
+        ChoiceValue::Boolean(false),
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("member declaration");
+    let member_id = member.id().expect("member id");
+    let group = crate::ChoiceGroup::new(
+        &BTreeMap::from([(member_id, member.clone())]),
+        crate::ChoiceGroupDomain::Finite {
+            members: BTreeMap::from([(member_id, member_domain)]),
+            tuples: BTreeSet::from([crate::ChoiceTuple::new(BTreeMap::from([(
+                member_id,
+                ChoiceValue::Boolean(false),
+            )]))]),
+        },
+        crate::ChoiceGroupApplication::new("network.fault", 1).expect("application"),
+    )
+    .expect("choice group");
+
+    let group_id = repository
+        .publish_choice_group(&group)
+        .expect("publish group and member closure");
+    assert_eq!(
+        repository
+            .load_choice_group(group_id)
+            .expect("load exact group"),
+        group
+    );
+    let closure = repository
+        .authenticated_closure_ids([group_id.content_id()])
+        .expect("authenticate group closure");
+    assert!(closure.contains(&member_id.content_id()));
+}
+
+#[test]
+fn generated_group_request_replays_identical_ordinals_after_repository_reopen() {
+    let (repository, lineage, _policy, blobs) = counted_fixture();
+    let duration_domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(1_000),
+            IntegerValue::Unsigned(30_000_000),
+            1,
+            Some("us".to_owned()),
+            ExactRational::new(1, 1).expect("scale"),
+            vec![IntegerValue::Unsigned(10_000_000)],
+        )
+        .expect("duration domain"),
+    );
+    let duration = SelectableDeclaration::new(
+        "fault.duration_us",
+        ChoiceSource::Workload {
+            producer: "network-fault".to_owned(),
+        },
+        duration_domain.clone(),
+        ChoiceValue::Integer(IntegerValue::Unsigned(1_000_000)),
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("duration declaration");
+    let duration_id = duration.id().expect("duration id");
+    let group = crate::ChoiceGroup::new(
+        &BTreeMap::from([(duration_id, duration)]),
+        crate::ChoiceGroupDomain::Cartesian {
+            members: BTreeMap::from([(duration_id, duration_domain)]),
+            constraints: BTreeSet::new(),
+        },
+        crate::ChoiceGroupApplication::new("network.fault", 1).expect("application"),
+    )
+    .expect("group");
+    let default = ChoiceValue::Group(
+        group
+            .select(crate::ChoiceTuple::new(BTreeMap::from([(
+                duration_id,
+                ChoiceValue::Integer(IntegerValue::Unsigned(1_000_000)),
+            )])))
+            .expect("group default"),
+    );
+    let domain = ChoiceDomain::Group(Box::new(group));
+    let declaration = SelectableDeclaration::new(
+        "fault.network",
+        ChoiceSource::Workload {
+            producer: "network-fault".to_owned(),
+        },
+        domain.clone(),
+        default,
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("group declaration");
+    repository
+        .publish_choice_domain(&domain)
+        .expect("publish group domain");
+    repository
+        .publish_selectable(&declaration)
+        .expect("publish group declaration");
+    let opportunity = ChoiceOpportunity::new(
+        lineage.scenario(),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test", b"group scheduler"),
+            producer: CampaignHash::derive("test", b"group producer"),
+        },
+        "phase-1",
+        None,
+    )
+    .expect("one group opportunity");
+    repository
+        .publish_choice_opportunity(&opportunity)
+        .expect("publish opportunity");
+    let generator = CandidateGeneratorSpec::new(
+        crate::GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::GroupProgressive {
+            maximum_proposals: 4,
+        },
+    )
+    .expect("group generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish generator");
+    let request = BranchRequest::new(
+        BranchRequest::identity(
+            opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
+        CandidateSource::generated(generator_id),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"group request",
+        ))),
+        BranchBudget::new(4, 4).expect("budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("group request");
+    request
+        .validate_resolved(
+            &repository
+                .load_configuration_artifact(lineage.genesis_content())
+                .expect("parent"),
+            &opportunity,
+            &domain,
+        )
+        .expect("resolved request");
+
+    let reopened = CampaignRepository::new(blobs, Arc::new(MemoryRefBackend::new()));
+    let restored_domain = reopened
+        .load_choice_domain(domain.id().expect("domain id"))
+        .expect("load persisted group domain");
+    let restored_request = BranchRequest::from_canonical_bytes(&request.canonical_bytes())
+        .expect("decode exact request");
+    let original = (1..=4)
+        .map(|ordinal| {
+            repository
+                .static_candidate_at(&request, &domain, ordinal)
+                .expect("original candidate")
+                .expect("candidate value")
+        })
+        .collect::<Vec<_>>();
+    let replayed = (1..=4)
+        .map(|ordinal| {
+            reopened
+                .static_candidate_at(&restored_request, &restored_domain, ordinal)
+                .expect("replayed candidate")
+                .expect("candidate value")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(replayed, original);
+    assert_eq!(original.iter().collect::<BTreeSet<_>>().len(), 4);
+}
+
+fn generated_integer_request(
+    repository: &CampaignRepository,
+    lineage: &CampaignLineage,
+    domain: ChoiceDomain,
+    default: IntegerValue,
+    generator: CandidateGeneratorSpecId,
+    label: &str,
+    budget: u64,
+) -> (ChoiceDomain, BranchRequest) {
+    let declaration = SelectableDeclaration::new(
+        format!("generated.integer.{label}"),
+        ChoiceSource::Workload {
+            producer: "generated-integer".to_owned(),
+        },
+        domain.clone(),
+        ChoiceValue::Integer(default),
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("declaration");
+    repository
+        .publish_choice_domain(&domain)
+        .expect("publish domain");
+    repository
+        .publish_selectable(&declaration)
+        .expect("publish declaration");
+    let opportunity = ChoiceOpportunity::new(
+        lineage.scenario(),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test", label.as_bytes()),
+            producer: CampaignHash::derive("test", b"generated-integer-producer"),
+        },
+        label,
+        None,
+    )
+    .expect("opportunity");
+    repository
+        .publish_choice_opportunity(&opportunity)
+        .expect("publish opportunity");
+    let request = BranchRequest::new(
+        BranchRequest::identity(
+            opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
+        CandidateSource::generated(generator),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            format!("{label}-request").as_bytes(),
+        ))),
+        BranchBudget::new(budget, budget).expect("budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("request");
+    (domain, request)
+}
+
+fn generated_discrete_request(
+    repository: &CampaignRepository,
+    lineage: &CampaignLineage,
+    domain: ChoiceDomain,
+    default: AlternativeId,
+    generator: CandidateGeneratorSpecId,
+    label: &str,
+    budget: u64,
+) -> (ChoiceDomain, BranchRequest) {
+    let declaration = SelectableDeclaration::new(
+        format!("generated.discrete.{label}"),
+        ChoiceSource::Workload {
+            producer: "generated-discrete".to_owned(),
+        },
+        domain.clone(),
+        ChoiceValue::Discrete(default),
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("declaration");
+    repository
+        .publish_choice_domain(&domain)
+        .expect("publish domain");
+    repository
+        .publish_selectable(&declaration)
+        .expect("publish declaration");
+    let opportunity = ChoiceOpportunity::new(
+        lineage.scenario(),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test", label.as_bytes()),
+            producer: CampaignHash::derive("test", b"generated-discrete-producer"),
+        },
+        label,
+        None,
+    )
+    .expect("opportunity");
+    repository
+        .publish_choice_opportunity(&opportunity)
+        .expect("publish opportunity");
+    let request = BranchRequest::new(
+        BranchRequest::identity(
+            opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
+        CandidateSource::generated(generator),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            format!("{label}-request").as_bytes(),
+        ))),
+        BranchBudget::new(budget, budget).expect("budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("request");
+    (domain, request)
+}
+
+fn generated_observation(
+    repository: &CampaignRepository,
+    lineage: &CampaignLineage,
+    admission: &AttemptAdmissionResult,
+    path: &BranchPath,
+    opportunity: ChoiceOpportunityId,
+    label: &str,
+) -> Observation {
+    generated_observation_with_coverage(
+        repository,
+        lineage,
+        admission,
+        path,
+        opportunity,
+        label,
+        BTreeSet::new(),
+    )
+}
+
+fn generated_observation_with_coverage(
+    repository: &CampaignRepository,
+    lineage: &CampaignLineage,
+    admission: &AttemptAdmissionResult,
+    path: &BranchPath,
+    opportunity: ChoiceOpportunityId,
+    label: &str,
+    coverage_identities: BTreeSet<CampaignHash>,
+) -> Observation {
+    let child = ConfigurationId::from_hash(CampaignHash::derive(
+        "test-progressive-child",
+        label.as_bytes(),
+    ));
+    let child_content = repository
+        .publish_configuration_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            child,
+            1,
+            format!("progressive child:{label}").into_bytes(),
+        )
+        .expect("publish progressive child");
+    let measurements = repository
+        .publish_measurement_set(
+            &MeasurementSet::test_evaluation(b"empty", BTreeSet::new()).expect("measurements"),
+        )
+        .expect("publish measurements");
+    let properties = repository
+        .publish_property_verdict_set(
+            &PropertyVerdictSet::new(BTreeMap::new()).expect("properties"),
+        )
+        .expect("publish properties");
+    let coverage = repository
+        .publish_coverage_projection(
+            &CoverageProjection::new(coverage_identities, BTreeSet::new()).expect("coverage"),
+        )
+        .expect("publish coverage");
+    Observation::new(
+        admission.attempt,
+        Observation::outcome(
+            child,
+            child_content,
+            path.id().expect("path id"),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            measurements,
+            properties,
+            coverage,
+        ),
+        BTreeSet::from([opportunity]),
+    )
+    .expect("progressive observation")
+}
+
+mod generator_expansion;
+
+mod generator_strategies;
+
+#[test]
+fn cold_ancestry_rejects_a_forged_branch_acceptance_summary() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create(
+            "forged-acceptance-summary",
+            &lineage,
+            &policy,
+            &BTreeMap::new(),
+        )
+        .expect("create");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "forged-acceptance-summary",
+    );
+    let discovered = repository
+        .discover_choice_opportunity(
+            "forged-acceptance-summary",
+            genesis.snapshot_id(),
+            request.parent(),
+            request.opportunity(),
+        )
+        .expect("discover request opportunity");
+    let accepted = repository
+        .submit_branch_request(
+            "forged-acceptance-summary",
+            discovered.new_snapshot,
+            &request,
+        )
+        .expect("accept branch request");
+    let accepted_snapshot = repository
+        .read_snapshot(accepted.new_snapshot.content_id())
+        .expect("accepted snapshot");
+    let forged_summary = BranchAcceptanceSummary::new(
+        BranchAcceptanceCount::Exact(2),
+        BranchAcceptanceCount::Exact(1),
+        BranchAcceptanceCount::Exact(1),
+        2,
+        2,
+    )
+    .expect("internally consistent forged summary");
+    assert_ne!(forged_summary, accepted.summary);
+    let forged_fact = repository
+        .put_fact(&CampaignFact::BranchRequestAccepted {
+            request: accepted.request,
+            summary: forged_summary,
+        })
+        .expect("put forged acceptance fact");
+    let forged_snapshot = CampaignSnapshot::successor(
+        discovered.new_snapshot,
+        accepted_snapshot.snapshot.lineage(),
+        accepted_snapshot.snapshot.active_policy(),
+        accepted_snapshot.snapshot.roots(),
+        CampaignFactId::from_content_id(forged_fact).expect("forged fact ID"),
+        accepted_snapshot.snapshot.budget_ledger(),
+    )
+    .expect("forge acceptance successor");
+    let forged_content = repository
+        .put_snapshot(&forged_snapshot)
+        .expect("put forged acceptance snapshot");
+
+    repository
+        .validated_heads
+        .lock()
+        .expect("validated-head cache")
+        .clear();
+    let result = repository.validate_complete_head(forged_content);
+    assert!(
+        matches!(
+            result,
+            Err(CampaignRepositoryError::Integrity {
+                reason: "branch-request-acceptance-summary-mismatch"
+            })
+        ),
+        "unexpected forged acceptance result: {result:?}"
+    );
+}
+
+#[test]
+fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("forged-request", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "forged-request",
+    );
+    let discovered = repository
+        .discover_choice_opportunity(
+            "forged-request",
+            genesis.snapshot_id(),
+            request.parent(),
+            request.opportunity(),
+        )
+        .expect("discover forged-request opportunity");
+    let parent = repository
+        .read_snapshot(discovered.new_snapshot.content_id())
+        .expect("discovery parent");
+    let request_content = repository
+        .put_branch_request(&request)
+        .expect("put request");
+    let request_id = BranchRequestId::from_content_id(request_content).expect("request id");
+    let summary = repository
+        .branch_acceptance_summary(parent.snapshot.roots().graph, &request)
+        .expect("branch acceptance summary");
+    let transition_content = repository
+        .put_fact(&CampaignFact::BranchRequestAccepted {
+            request: request_id,
+            summary,
+        })
+        .expect("put transition");
+    let mut roots = parent.snapshot.roots();
+    roots.exploration = repository
+        .merkle
+        .insert(
+            roots.exploration,
+            map_key_content("exploration.branch-request", request_content),
+            request_content,
+        )
+        .expect("request root")
+        .content_id();
+    let next_frontier = repository
+        .frontier_index_after(
+            parent.snapshot.roots().exploration,
+            &[(
+                request_id,
+                request.branch_point(),
+                repository
+                    .initial_continuation_state(&request)
+                    .expect("initial continuation"),
+            )],
+            true,
+        )
+        .expect("frontier projection");
+    roots.exploration = repository
+        .merkle
+        .insert(
+            roots.exploration,
+            frontier_index_anchor_key(),
+            next_frontier,
+        )
+        .expect("frontier root")
+        .content_id();
+    let scan_index = repository
+        .planner_scan_index_after(
+            parent.snapshot.roots().exploration,
+            &[(request_id, request.branch_point())],
+            None,
+            true,
+        )
+        .expect("scan update");
+    roots.exploration = repository
+        .merkle
+        .insert(
+            roots.exploration,
+            planner_scan_index_anchor_key(),
+            scan_index,
+        )
+        .expect("scan root")
+        .content_id();
+    roots.accounting = repository
+        .merkle
+        .insert(
+            roots.accounting,
+            map_key_content("accounting.forged", request_content),
+            request_content,
+        )
+        .expect("forged accounting root")
+        .content_id();
+    let forged = CampaignSnapshot::successor(
+        discovered.new_snapshot,
+        parent.snapshot.lineage(),
+        parent.snapshot.active_policy(),
+        roots,
+        CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
+    )
+    .expect("forged snapshot");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged snapshot");
+
+    let result = repository.validate_complete_head(forged_content);
+    assert!(
+        matches!(
+            result,
+            Err(CampaignRepositoryError::Integrity {
+                reason: "branch-request-transition-accounting-root-mismatch"
+            })
+        ),
+        "unexpected forged branch-request result: {result:?}"
+    );
+}
+
+#[test]
+fn ancestry_rejects_a_forged_initial_frontier_projection() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("forged-frontier", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "forged-frontier",
+    );
+    let discovered = repository
+        .discover_choice_opportunity(
+            "forged-frontier",
+            genesis.snapshot_id(),
+            request.parent(),
+            request.opportunity(),
+        )
+        .expect("discover forged-frontier opportunity");
+    let parent = repository
+        .read_snapshot(discovered.new_snapshot.content_id())
+        .expect("discovery parent");
+    let request_content = repository
+        .put_branch_request(&request)
+        .expect("put request");
+    let request_id = BranchRequestId::from_content_id(request_content).expect("request id");
+    let summary = repository
+        .branch_acceptance_summary(parent.snapshot.roots().graph, &request)
+        .expect("branch acceptance summary");
+    let transition_content = repository
+        .put_fact(&CampaignFact::BranchRequestAccepted {
+            request: request_id,
+            summary,
+        })
+        .expect("put transition");
+
+    let mut roots = parent.snapshot.roots();
+    roots.exploration = repository
+        .merkle
+        .insert(
+            roots.exploration,
+            map_key_content("exploration.branch-request", request_content),
+            request_content,
+        )
+        .expect("request root")
+        .content_id();
+    let forged_frontier = repository
+        .frontier_index_after(
+            parent.snapshot.roots().exploration,
+            &[(
+                request_id,
+                request.branch_point(),
+                ContinuationState::Closed,
+            )],
+            true,
+        )
+        .expect("forged frontier projection");
+    roots.exploration = repository
+        .merkle
+        .insert(
+            roots.exploration,
+            frontier_index_anchor_key(),
+            forged_frontier,
+        )
+        .expect("frontier root")
+        .content_id();
+    let BranchRequestCause::Operator(command) = request.cause() else {
+        panic!("operator request")
+    };
+    roots.accounting = repository
+        .merkle
+        .insert(
+            roots.accounting,
+            map_key_hash("accounting.command", command.as_hash()),
+            transition_content,
+        )
+        .expect("command root")
+        .content_id();
+    roots.coordination = repository
+        .coordination_with_parent_result(discovered.new_snapshot.content_id(), &parent)
+        .expect("coordination root");
+    let forged = CampaignSnapshot::successor(
+        discovered.new_snapshot,
+        parent.snapshot.lineage(),
+        parent.snapshot.active_policy(),
+        roots,
+        CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
+    )
+    .expect("forged snapshot");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged snapshot");
+
+    let validation = repository.validate_complete_head(forged_content);
+    assert!(
+        matches!(
+            validation,
+            Err(CampaignRepositoryError::Integrity {
+                reason: "branch-request-transition-exploration-root-mismatch"
+            })
+        ),
+        "unexpected forged frontier validation result: {validation:?}"
+    );
+}
+
+#[test]
+fn imported_ancestry_rejects_cross_type_mutation_command_reuse() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("duplicate-command", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "shared-command",
+    );
+    let accepted = repository
+        .submit_known_branch_request("duplicate-command", genesis.snapshot_id(), &request)
+        .expect("accept request");
+    let head = repository.head("duplicate-command").expect("head");
+    let BranchRequestCause::Operator(command_id) = request.cause() else {
+        panic!("operator request")
+    };
+    let control = ControlRequest {
+        command: command_id,
+        expected_snapshot: accepted.new_snapshot,
+        action: CampaignControlAction::Resume,
+    };
+    let transition_content = repository
+        .put_fact(&CampaignFact::ControlRequested(control.clone()))
+        .expect("put control");
+    let mut roots = head.snapshot().roots();
+    roots.accounting = repository
+        .merkle
+        .insert(
+            roots.accounting,
+            map_key_hash("accounting.command", command_id.as_hash()),
+            transition_content,
+        )
+        .expect("accounting root")
+        .content_id();
+    let forged = CampaignSnapshot::successor(
+        accepted.new_snapshot,
+        head.snapshot().lineage(),
+        head.snapshot().active_policy(),
+        roots,
+        CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
+    )
+    .expect("forged snapshot");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged snapshot");
+    let campaign_ref = campaign_ref("duplicate-command").expect("campaign ref");
+    repository
+        .refs
+        .compare_exchange(&campaign_ref, Some(head.content_id()), forged_content)
+        .expect("forge ref");
+
+    assert!(matches!(
+        repository.head("duplicate-command"),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "control-transition-reused-command"
+        })
+    ));
+}
+
+#[test]
+fn command_replay_precedes_stale_check_and_preserves_response() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("test", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let resume = command(
+        "resume",
+        genesis.snapshot_id(),
+        CampaignControlAction::Resume,
+    );
+    let first = repository.apply_control("test", &resume).expect("resume");
+    let pause = command(
+        "pause",
+        first.new_snapshot,
+        CampaignControlAction::Pause(crate::ActiveAttemptPolicy::Drain),
+    );
+    repository.apply_control("test", &pause).expect("pause");
+
+    let replay = repository.apply_control("test", &resume).expect("replay");
+    assert!(replay.replayed);
+    assert_eq!(replay.prior_snapshot, first.prior_snapshot);
+    assert_eq!(replay.new_snapshot, first.new_snapshot);
+
+    let reused = ControlRequest {
+        command: resume.command,
+        expected_snapshot: resume.expected_snapshot,
+        action: CampaignControlAction::Complete,
+    };
+    assert!(matches!(
+        repository.apply_control("test", &reused),
+        Err(CampaignRepositoryError::CommandReuse)
+    ));
+}
+
+#[test]
+fn pin_command_projects_retention_and_replays_exactly_after_later_mutation() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("pin-replay", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"pin-command")),
+        expected_snapshot: genesis.snapshot_id(),
+        change: PinChange::new(lineage.genesis(), Some(PinRetention::Thin), "triage")
+            .expect("pin change"),
+    };
+
+    let accepted = repository
+        .apply_pin("pin-replay", &request)
+        .expect("accept pin");
+    repository.evict_local_checkpoint(accepted.new_snapshot.content_id());
+    let accepted_head = repository.head("pin-replay").expect("accepted head");
+    let pin_content = repository
+        .merkle
+        .get(
+            accepted_head.snapshot().roots().pins,
+            pin_configuration_key(lineage.genesis()),
+        )
+        .expect("read pin projection")
+        .expect("pin projection value");
+    assert_eq!(
+        repository.read_fact(pin_content).expect("pin fact"),
+        CampaignFact::PinCommandAccepted(request.clone())
+    );
+
+    let resume = command(
+        "pin-replay-resume",
+        accepted.new_snapshot,
+        CampaignControlAction::Resume,
+    );
+    repository
+        .apply_control("pin-replay", &resume)
+        .expect("later mutation");
+
+    let replay = repository
+        .apply_pin("pin-replay", &request)
+        .expect("replay pin");
+    assert!(replay.replayed);
+    assert_eq!(replay.prior_snapshot, accepted.prior_snapshot);
+    assert_eq!(replay.new_snapshot, accepted.new_snapshot);
+
+    let reused = PinRequest {
+        command: request.command,
+        expected_snapshot: request.expected_snapshot,
+        change: PinChange::new(lineage.genesis(), Some(PinRetention::Exact), "retain")
+            .expect("changed pin"),
+    };
+    assert!(matches!(
+        repository.apply_pin("pin-replay", &reused),
+        Err(CampaignRepositoryError::CommandReuse)
+    ));
+
+    let reused_as_control = ControlRequest {
+        command: request.command,
+        expected_snapshot: repository
+            .head("pin-replay")
+            .expect("current head")
+            .snapshot_id(),
+        action: CampaignControlAction::Complete,
+    };
+    assert!(matches!(
+        repository.apply_control("pin-replay", &reused_as_control),
+        Err(CampaignRepositoryError::CommandReuse)
+    ));
+
+    let current = repository.head("pin-replay").expect("head before unpin");
+    let unpin = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"unpin-command")),
+        expected_snapshot: current.snapshot_id(),
+        change: PinChange::new(lineage.genesis(), None, "resolved").expect("unpin change"),
+    };
+    repository
+        .apply_pin("pin-replay", &unpin)
+        .expect("accept unpin");
+    let unpinned = repository.head("pin-replay").expect("unpinned head");
+    let tombstone = repository
+        .merkle
+        .get(
+            unpinned.snapshot().roots().pins,
+            pin_configuration_key(lineage.genesis()),
+        )
+        .expect("read unpin projection")
+        .expect("unpin tombstone");
+    assert_eq!(
+        repository.read_fact(tombstone).expect("unpin fact"),
+        CampaignFact::PinCommandAccepted(unpin)
+    );
+}
+
+#[test]
+fn pin_retention_inventory_is_snapshot_bound_and_reconstructs_after_cache_eviction() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("pin-retention", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let thin = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"pin-retention-thin")),
+        expected_snapshot: genesis.snapshot_id(),
+        change: PinChange::new(
+            lineage.genesis(),
+            Some(PinRetention::Thin),
+            "retain semantic replay inputs",
+        )
+        .expect("thin pin"),
+    };
+    let accepted = repository
+        .apply_pin("pin-retention", &thin)
+        .expect("accept thin pin");
+    repository.evict_local_checkpoint(accepted.new_snapshot.content_id());
+
+    let mut roots = Vec::new();
+    let summary = repository
+        .visit_pin_retention_roots("pin-retention", &mut |record| roots.push(record))
+        .expect("visit thin retention roots after cache eviction");
+    assert_eq!(summary.snapshot(), accepted.new_snapshot);
+    assert_eq!(summary.entries(), 1);
+    assert_eq!(summary.thin_pins(), 1);
+    assert_eq!(summary.exact_pins(), 0);
+    assert_eq!(summary.tombstones(), 0);
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].request(), &thin);
+    assert_eq!(roots[0].retention(), PinRetention::Thin);
+    assert_eq!(roots[0].configuration_artifact(), lineage.genesis_content());
+    assert_eq!(roots[0].scenario_artifact(), lineage.scenario_content());
+
+    let exact = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"pin-retention-exact")),
+        expected_snapshot: accepted.new_snapshot,
+        change: PinChange::new(
+            lineage.genesis(),
+            Some(PinRetention::Exact),
+            "retain a portable exact closure",
+        )
+        .expect("exact pin"),
+    };
+    let exact_accepted = repository
+        .apply_pin("pin-retention", &exact)
+        .expect("upgrade pin to exact");
+    roots.clear();
+    let exact_summary = repository
+        .visit_pin_retention_roots("pin-retention", &mut |record| roots.push(record))
+        .expect("visit exact retention roots");
+    assert_eq!(exact_summary.snapshot(), exact_accepted.new_snapshot);
+    assert_eq!(exact_summary.entries(), 1);
+    assert_eq!(exact_summary.thin_pins(), 0);
+    assert_eq!(exact_summary.exact_pins(), 1);
+    assert_eq!(exact_summary.tombstones(), 0);
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].request(), &exact);
+    assert_eq!(roots[0].retention(), PinRetention::Exact);
+
+    let unpin = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"pin-retention-unpin")),
+        expected_snapshot: exact_accepted.new_snapshot,
+        change: PinChange::new(lineage.genesis(), None, "retention no longer required")
+            .expect("unpin"),
+    };
+    let unpinned = repository
+        .apply_pin("pin-retention", &unpin)
+        .expect("accept unpin");
+    roots.clear();
+    let unpinned_summary = repository
+        .visit_pin_retention_roots("pin-retention", &mut |record| roots.push(record))
+        .expect("visit unpinned projection");
+    assert_eq!(unpinned_summary.snapshot(), unpinned.new_snapshot);
+    assert_eq!(unpinned_summary.entries(), 1);
+    assert_eq!(unpinned_summary.thin_pins(), 0);
+    assert_eq!(unpinned_summary.exact_pins(), 0);
+    assert_eq!(unpinned_summary.tombstones(), 1);
+    assert!(roots.is_empty());
+}
+
+#[test]
+fn pin_rejects_stale_or_nonauthoritative_configuration_before_writes() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let genesis = repository
+        .create("pin-invalid", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let missing = ConfigurationId::from_hash(CampaignHash::derive("test", b"missing-config"));
+    let request = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"missing-pin")),
+        expected_snapshot: genesis.snapshot_id(),
+        change: PinChange::new(missing, Some(PinRetention::Thin), "missing").expect("pin change"),
+    };
+    let before = blobs.object_count().expect("objects before rejection");
+
+    assert!(matches!(
+        repository.apply_pin("pin-invalid", &request),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "pin-configuration-is-not-in-campaign-graph"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after rejection"),
+        before
+    );
+    assert_eq!(
+        repository.head("pin-invalid").expect("head").snapshot_id(),
+        genesis.snapshot_id()
+    );
+
+    let stale = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"stale-pin")),
+        expected_snapshot: CampaignSnapshotId::from_content_id(ContentId::for_bytes(
+            ObjectKind::CampaignSnapshot,
+            3,
+            b"stale-pin-snapshot",
+        ))
+        .expect("stale snapshot id"),
+        change: PinChange::new(lineage.genesis(), None, "stale").expect("unpin change"),
+    };
+    assert!(matches!(
+        repository.apply_pin("pin-invalid", &stale),
+        Err(CampaignRepositoryError::Stale { .. })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after stale request"),
+        before
+    );
+}
+
+#[test]
+fn imported_pin_transition_requires_the_exact_pin_projection() {
+    let (repository, lineage, policy) = fixture();
+    let source = repository
+        .create("pin-source", &lineage, &policy, &BTreeMap::new())
+        .expect("create source");
+    repository
+        .create("pin-forged", &lineage, &policy, &BTreeMap::new())
+        .expect("create target");
+    let request = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"imported-pin")),
+        expected_snapshot: source.snapshot_id(),
+        change: PinChange::new(lineage.genesis(), Some(PinRetention::Exact), "reproduce")
+            .expect("pin change"),
+    };
+    let accepted = repository
+        .apply_pin("pin-source", &request)
+        .expect("accept source pin");
+    let accepted_head = repository.head("pin-source").expect("accepted head");
+    let transition = accepted_head
+        .snapshot()
+        .transition()
+        .expect("pin transition");
+    let mut roots = accepted_head.snapshot().roots();
+    roots.pins = source.snapshot().roots().pins;
+    let forged = CampaignSnapshot::successor(
+        source.snapshot_id(),
+        source.snapshot().lineage(),
+        source.snapshot().active_policy(),
+        roots,
+        transition,
+        crate::test_budget_ledger_id(),
+    )
+    .expect("forged snapshot");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged snapshot");
+    let target_ref = campaign_ref("pin-forged").expect("target ref");
+    repository
+        .refs
+        .compare_exchange(&target_ref, Some(source.content_id()), forged_content)
+        .expect("advance forged ref");
+    repository.evict_local_checkpoint(forged_content);
+
+    assert!(matches!(
+        repository.head("pin-forged"),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "pin-transition-pins-root-mismatch"
+        })
+    ));
+    assert_eq!(accepted.prior_snapshot, source.snapshot_id());
+}
+
+#[test]
+fn stale_and_invalid_transitions_do_not_advance_head() {
+    let (repository, lineage, policy) = fixture();
+    let genesis = repository
+        .create("test", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let stale = command(
+        "stale",
+        CampaignSnapshotId::from_content_id(ContentId::for_bytes(
+            ObjectKind::CampaignSnapshot,
+            3,
+            b"stale",
+        ))
+        .expect("stale snapshot id"),
+        CampaignControlAction::Resume,
+    );
+    assert!(matches!(
+        repository.apply_control("test", &stale),
+        Err(CampaignRepositoryError::Stale { .. })
+    ));
+    assert_eq!(
+        repository.head("test").expect("head").snapshot_id(),
+        genesis.snapshot_id()
+    );
+
+    let invalid = command(
+        "invalid",
+        genesis.snapshot_id(),
+        CampaignControlAction::Pause(crate::ActiveAttemptPolicy::Drain),
+    );
+    assert!(matches!(
+        repository.apply_control("test", &invalid),
+        Err(CampaignRepositoryError::InvalidTransition {
+            state: CampaignState::Created
+        })
+    ));
+    assert_eq!(
+        repository.head("test").expect("head").snapshot_id(),
+        genesis.snapshot_id()
+    );
+}
+
+#[test]
+fn nonempty_policy_round_trips_and_missing_generator_fails_before_ref_publication() {
+    let (repository, lineage, _) = fixture();
+    let generator = CandidateGeneratorSpec::new(
+        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )
+    .expect("generator");
+    let generator_id = generator.id().expect("generator id");
+    let policy = policy_with_generator(lineage.scenario(), generator_id);
+    let generators = BTreeMap::from([(generator_id, generator)]);
+
+    let created = repository
+        .create("with-generator", &lineage, &policy, &generators)
+        .expect("create with generator");
+    assert_eq!(
+        repository
+            .head("with-generator")
+            .expect("authenticated head")
+            .snapshot_id(),
+        created.snapshot_id()
+    );
+
+    let missing = CandidateGeneratorSpecId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Policy,
+        1,
+        b"missing-generator",
+    ))
+    .expect("missing generator id");
+    let missing_policy = policy_with_generator(lineage.scenario(), missing);
+    assert!(matches!(
+        repository.create(
+            "missing-generator",
+            &lineage,
+            &missing_policy,
+            &BTreeMap::new(),
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "campaign-policy-generator-was-not-supplied"
+        })
+    ));
+    assert!(matches!(
+        repository.head("missing-generator"),
+        Err(CampaignRepositoryError::NotFound)
+    ));
+}
+
+#[test]
+fn closure_walker_rejects_missing_generator_grandchildren() {
+    let (repository, lineage, _, blobs) = counted_fixture();
+    let missing = CandidateGeneratorSpecId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Policy,
+        1,
+        b"missing-mixture-child",
+    ))
+    .expect("missing child");
+    let mixture = CandidateGeneratorSpec::new(
+        crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::OrderedMixture {
+            components: vec![WeightedGenerator::new(missing, 1).expect("weighted child")],
+        },
+    )
+    .expect("mixture");
+    let mixture_id = mixture.id().expect("mixture id");
+    let policy = policy_with_generator(lineage.scenario(), mixture_id);
+    let objects_before = blobs.object_count().expect("objects before rejection");
+
+    assert!(matches!(
+        repository.create(
+            "incomplete-closure",
+            &lineage,
+            &policy,
+            &BTreeMap::from([(mixture_id, mixture)]),
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "campaign-policy-generator-was-not-supplied"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after rejection"),
+        objects_before,
+        "an incomplete generator closure wrote immutable objects"
+    );
+    assert!(matches!(
+        repository.head("incomplete-closure"),
+        Err(CampaignRepositoryError::NotFound)
+    ));
+}
+
+#[test]
+fn generator_publication_rejects_missing_children_before_writing() {
+    let (repository, _, _, blobs) = counted_fixture();
+    let missing = CandidateGeneratorSpecId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Policy,
+        1,
+        b"missing-published-generator-child",
+    ))
+    .expect("missing child");
+    let generator = CandidateGeneratorSpec::new(
+        crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::OrderedMixture {
+            components: vec![WeightedGenerator::new(missing, 1).expect("weighted child")],
+        },
+    )
+    .expect("generator");
+    let objects_before = blobs.object_count().expect("objects before rejection");
+
+    assert!(matches!(
+        repository.publish_generator(&generator),
+        Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after rejection"),
+        objects_before,
+        "a generator with a missing child wrote its immutable parent"
+    );
+}
+
+#[test]
+fn creation_rejects_unrelated_generators_before_publication() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let unrelated = CandidateGeneratorSpec::new(
+        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )
+    .expect("generator");
+    let unrelated_id = unrelated.id().expect("generator id");
+    let objects_before = blobs.object_count().expect("objects before rejection");
+
+    assert!(matches!(
+        repository.create(
+            "unrelated-generator",
+            &lineage,
+            &policy,
+            &BTreeMap::from([(unrelated_id, unrelated)]),
+        ),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "campaign-generator-map-has-unreachable-record"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after rejection"),
+        objects_before,
+        "an unrelated generator wrote immutable objects"
+    );
+    assert!(matches!(
+        repository.head("unrelated-generator"),
+        Err(CampaignRepositoryError::NotFound)
+    ));
+}
+
+#[test]
+fn creation_generator_byte_budget_is_checked_at_the_boundary() {
+    let mut bytes = crate::MAX_CREATE_CAMPAIGN_GENERATOR_BYTES - 1;
+    super::super::transactions::charge_creation_generator_bytes(&mut bytes, 1)
+        .expect("exact generator byte boundary");
+    assert_eq!(bytes, crate::MAX_CREATE_CAMPAIGN_GENERATOR_BYTES);
+    assert!(matches!(
+        super::super::transactions::charge_creation_generator_bytes(&mut bytes, 1),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "campaign-generator-byte-limit"
+        })
+    ));
+    assert_eq!(bytes, crate::MAX_CREATE_CAMPAIGN_GENERATOR_BYTES);
+}
+
+#[test]
+fn head_rejects_a_snapshot_with_missing_parent_and_transition() {
+    let (repository, lineage, policy) = fixture();
+    let created = repository
+        .create("damaged", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let missing_parent = CampaignSnapshotId::from_content_id(ContentId::for_bytes(
+        ObjectKind::CampaignSnapshot,
+        3,
+        b"missing-parent",
+    ))
+    .expect("parent id");
+    let missing_transition = crate::CampaignFactId::from_content_id(ContentId::for_bytes(
+        ObjectKind::CampaignFact,
+        15,
+        b"missing-transition",
+    ))
+    .expect("transition id");
+    let damaged = CampaignSnapshot::successor(
+        missing_parent,
+        created.snapshot().lineage(),
+        created.snapshot().active_policy(),
+        created.snapshot().roots(),
+        missing_transition,
+        crate::test_budget_ledger_id(),
+    )
+    .expect("damaged snapshot");
+    let damaged_content = repository.put_snapshot(&damaged).expect("put damaged");
+    let campaign_ref = campaign_ref("damaged").expect("campaign ref");
+    assert!(matches!(
+        repository
+            .refs
+            .compare_exchange(&campaign_ref, Some(created.content_id()), damaged_content)
+            .expect("advance ref"),
+        RefCasOutcome::Advanced { .. }
+    ));
+
+    assert!(matches!(
+        repository.head("damaged"),
+        Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
+    ));
+}
+
+#[test]
+fn head_rejects_forged_control_successors_and_noncontrol_transitions() {
+    let (repository, lineage, policy) = fixture();
+    let created = repository
+        .create("forged", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let request = command(
+        "forged-resume",
+        created.snapshot_id(),
+        CampaignControlAction::Resume,
+    );
+    let transition = CampaignFact::ControlRequested(request.clone());
+    let transition_content = repository.put_fact(&transition).expect("put transition");
+    let accounting = repository
+        .merkle
+        .insert(
+            created.snapshot().roots().accounting,
+            map_key_hash("accounting.command", request.command.as_hash()),
+            transition_content,
+        )
+        .expect("accounting root");
+    let mut changed_roots = created.snapshot().roots();
+    changed_roots.accounting = accounting.content_id();
+    changed_roots.coverage = changed_roots.graph;
+    let forged = CampaignSnapshot::successor(
+        created.snapshot_id(),
+        created.snapshot().lineage(),
+        created.snapshot().active_policy(),
+        changed_roots,
+        CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
+    )
+    .expect("forged snapshot");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged snapshot");
+    let forged_ref = campaign_ref("forged").expect("campaign ref");
+    repository
+        .refs
+        .compare_exchange(&forged_ref, Some(created.content_id()), forged_content)
+        .expect("advance ref");
+    assert!(matches!(
+        repository.head("forged"),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "control-transition-changed-nonaccounting-root"
+        })
+    ));
+
+    let (repository, lineage, policy) = fixture();
+    let created = repository
+        .create("noncontrol", &lineage, &policy, &BTreeMap::new())
+        .expect("create");
+    let noncontrol = CampaignFact::BudgetGranted(BudgetGrant::new(1, 0).expect("grant"));
+    let transition_content = repository.put_fact(&noncontrol).expect("put fact");
+    let forged = CampaignSnapshot::successor(
+        created.snapshot_id(),
+        created.snapshot().lineage(),
+        created.snapshot().active_policy(),
+        created.snapshot().roots(),
+        CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
+    )
+    .expect("forged snapshot");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged snapshot");
+    let noncontrol_ref = campaign_ref("noncontrol").expect("campaign ref");
+    repository
+        .refs
+        .compare_exchange(&noncontrol_ref, Some(created.content_id()), forged_content)
+        .expect("advance ref");
+    assert!(matches!(
+        repository.head("noncontrol"),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "snapshot-transition-type-is-not-implemented"
+        })
+    ));
+}
+
+#[test]
+fn imported_derivation_rejects_changed_semantic_roots() {
+    let (repository, lineage, policy) = fixture();
+    let source = repository
+        .create("forged-derive-source", &lineage, &policy, &BTreeMap::new())
+        .expect("create source");
+    let loaded_source = repository
+        .read_snapshot(source.content_id())
+        .expect("load source");
+    let transition_content = repository
+        .put_fact(&CampaignFact::CampaignDerived(CampaignDerivation::new(
+            source.snapshot_id(),
+            source.snapshot().active_policy(),
+        )))
+        .expect("put derivation fact");
+    let mut roots = source.snapshot().roots();
+    roots.coordination = repository
+        .coordination_with_parent_result(source.content_id(), &loaded_source)
+        .expect("coordination root");
+    roots.coverage = roots.graph;
+    let forged = CampaignSnapshot::successor(
+        source.snapshot_id(),
+        source.snapshot().lineage(),
+        source.snapshot().active_policy(),
+        roots,
+        CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
+    )
+    .expect("forged derivation");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged derivation");
+    repository
+        .refs
+        .compare_exchange(
+            &campaign_ref("forged-derive-target").expect("target ref"),
+            None,
+            forged_content,
+        )
+        .expect("install forged target");
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert!(matches!(
+        restarted.head("forged-derive-target"),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "derivation-transition-changed-semantic-root"
+        })
+    ));
+}
+
+#[test]
+fn imported_derivation_enforces_the_bounded_generator_closure() {
+    let (repository, lineage, policy, blobs) = counted_fixture();
+    let source = repository
+        .create("bounded-derive-source", &lineage, &policy, &BTreeMap::new())
+        .expect("create source");
+    let mut generator = CandidateGeneratorSpec::new(
+        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )
+    .expect("base generator");
+    let mut generator_id = CandidateGeneratorSpecId::from_content_id(
+        repository
+            .put_generator(&generator)
+            .expect("put base generator"),
+    )
+    .expect("base generator id");
+    for _ in 0..crate::MAX_CREATE_CAMPAIGN_GENERATORS {
+        generator = CandidateGeneratorSpec::new(
+            crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
+            CandidateGeneratorAlgorithm::OrderedMixture {
+                components: vec![
+                    WeightedGenerator::new(generator_id, 1).expect("weighted generator"),
+                ],
+            },
+        )
+        .expect("linked generator");
+        generator_id = CandidateGeneratorSpecId::from_content_id(
+            repository
+                .put_generator(&generator)
+                .expect("put linked generator"),
+        )
+        .expect("linked generator id");
+    }
+    let oversized_policy = policy_with_generator(lineage.scenario(), generator_id);
+    let oversized_policy_id = CampaignPolicyId::from_content_id(
+        repository
+            .put_policy(&oversized_policy)
+            .expect("put oversized policy"),
+    )
+    .expect("oversized policy id");
+    let loaded_source = repository
+        .read_snapshot(source.content_id())
+        .expect("load source");
+    let transition_content = repository
+        .put_fact(&CampaignFact::CampaignDerived(CampaignDerivation::new(
+            source.snapshot_id(),
+            oversized_policy_id,
+        )))
+        .expect("put derivation fact");
+    let mut roots = source.snapshot().roots();
+    roots.coordination = repository
+        .coordination_with_parent_result(source.content_id(), &loaded_source)
+        .expect("coordination root");
+    let forged = CampaignSnapshot::successor(
+        source.snapshot_id(),
+        source.snapshot().lineage(),
+        oversized_policy_id,
+        roots,
+        CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
+    )
+    .expect("forged derivation");
+    let forged_content = repository
+        .put_snapshot(&forged)
+        .expect("put forged derivation");
+    repository
+        .refs
+        .compare_exchange(
+            &campaign_ref("bounded-derive-target").expect("target ref"),
+            None,
+            forged_content,
+        )
+        .expect("install forged target");
+    let objects_before = blobs.object_count().expect("objects before validation");
+
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    assert!(matches!(
+        restarted.head("bounded-derive-target"),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "campaign-generator-count-limit"
+        })
+    ));
+    assert_eq!(
+        blobs.object_count().expect("objects after validation"),
+        objects_before,
+        "import validation wrote while rejecting an oversized generator closure"
+    );
+}
+
+#[test]
+fn head_rejects_genesis_without_canonical_configuration_membership() {
+    let (repository, lineage, policy) = fixture();
+    let lineage_content = repository.put_lineage(&lineage).expect("lineage");
+    let policy_content = repository.put_policy(&policy).expect("policy");
+    let empty = repository.merkle.empty().expect("empty root").content_id();
+    let graph = repository
+        .merkle
+        .insert(empty, choice_index_anchor_key(), empty)
+        .expect("choice index anchor");
+    let graph = repository
+        .merkle
+        .insert(
+            graph.content_id(),
+            map_key_hash(
+                "graph.configuration",
+                crate::CampaignHash::from_bytes([0x77; 32]),
+            ),
+            lineage.genesis_content().content_id(),
+        )
+        .expect("wrong genesis configuration member");
+    let exploration = repository
+        .merkle
+        .insert(empty, frontier_index_anchor_key(), empty)
+        .expect("frontier index anchor");
+    let exploration = repository
+        .merkle
+        .insert(
+            exploration.content_id(),
+            branch_request_index_anchor_key(),
+            empty,
+        )
+        .expect("branch-request index anchor");
+    let exploration = repository
+        .merkle
+        .insert(
+            exploration.content_id(),
+            planner_scan_index_anchor_key(),
+            empty,
+        )
+        .expect("planner-scan index anchor");
+    let malformed = CampaignSnapshot::genesis(
+        CampaignLineageId::from_content_id(lineage_content).expect("lineage id"),
+        CampaignPolicyId::from_content_id(policy_content).expect("policy id"),
+        crate::CampaignRoots {
+            graph: graph.content_id(),
+            exploration: exploration.content_id(),
+            observations: empty,
+            corpus: empty,
+            coverage: empty,
+            findings: empty,
+            pins: empty,
+            accounting: empty,
+            coordination: empty,
+        },
+        repository
+            .put_budget_ledger(
+                crate::CampaignBudgetLedger::empty(empty).expect("empty budget ledger"),
+            )
+            .expect("publish budget ledger"),
+    )
+    .expect("malformed genesis");
+    let content = repository.put_snapshot(&malformed).expect("snapshot");
+    let campaign_ref = campaign_ref("missing-genesis").expect("campaign ref");
+    repository
+        .refs
+        .compare_exchange(&campaign_ref, None, content)
+        .expect("publish malformed head");
+    let error = repository
+        .head("missing-genesis")
+        .expect_err("genesis without canonical membership must fail closed");
+    assert_eq!(
+        error.to_string(),
+        "campaign repository integrity failure: genesis-configuration-root-mismatch"
+    );
+}
+
+#[test]
+fn genesis_payload_and_exact_checkpoint_closure_versions_are_independent() {
+    let (repository, original, policy) = fixture();
+    let genesis = repository
+        .publish_configuration_artifact(
+            original.scenario(),
+            original.scenario_content(),
+            original.genesis(),
+            2,
+            b"configuration payload version two".to_vec(),
+        )
+        .expect("version-two genesis payload");
+    let lineage = CampaignLineage::new(
+        original.scenario(),
+        original.scenario_content(),
+        original.genesis(),
+        genesis,
+        original.crucible_version(),
+        original.qemu_build(),
+        original.protocol_versions().clone(),
+        original.scenario_schema(),
+        4,
+    )
+    .expect("version-four exact closure lineage");
+
+    let created = repository
+        .create("independent-versions", &lineage, &policy, &BTreeMap::new())
+        .expect("configuration payload is not an exact checkpoint closure");
+    let reopened = repository
+        .head("independent-versions")
+        .expect("revalidate head");
+    assert_eq!(created, reopened);
+    let content = repository.put_lineage(&lineage).expect("store lineage");
+    assert_eq!(
+        repository
+            .read_lineage(content)
+            .expect("revalidate lineage"),
+        lineage
+    );
+}
+
+#[test]
+fn imported_lineages_revalidate_scenario_and_configuration_bindings() {
+    let (repository, lineage, _) = fixture();
+    let other_scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", b"other"));
+    let mismatched_lineage = CampaignLineage::new(
+        other_scenario,
+        lineage.scenario_content(),
+        lineage.genesis(),
+        lineage.genesis_content(),
+        lineage.crucible_version(),
+        lineage.qemu_build(),
+        lineage.protocol_versions().clone(),
+        lineage.scenario_schema(),
+        lineage.exact_closure_schema(),
+    )
+    .expect("structurally valid lineage");
+    let content = repository
+        .put_lineage(&mismatched_lineage)
+        .expect("put mismatched lineage");
+    assert!(matches!(
+        repository.read_lineage(content),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "lineage-execution-model-artifact-mismatch"
+        })
+    ));
+
+    let mismatched_configuration = ConfigurationArtifact::new(
+        other_scenario,
+        lineage.scenario_content(),
+        lineage.genesis(),
+        1,
+        b"mismatched configuration".to_vec(),
+    )
+    .expect("configuration");
+    let content = repository
+        .put_configuration_artifact(&mismatched_configuration)
+        .expect("put configuration");
+    assert!(matches!(
+        repository.read_configuration_artifact(content),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "configuration-scenario-artifact-mismatch"
+        })
+    ));
+}
+
+#[test]
+fn every_reachable_merkle_root_uses_the_owner_validator() {
+    let (repository, _, _) = fixture();
+    let malformed = ObjectEnvelope::for_record(
+        crate::CampaignRecordKind::MerkleNode,
+        BTreeSet::new(),
+        vec![0],
+    )
+    .expect("structural malformed node");
+    let malformed_content = repository
+        .put_envelope(malformed)
+        .expect("put malformed node");
+    let empty = repository.merkle.empty().expect("empty root").content_id();
+    let view =
+        CampaignPlanningView::new(malformed_content, empty, empty, empty, empty, empty, empty)
+            .expect("planning view");
+    let view_envelope = ObjectEnvelope::for_record(
+        crate::CampaignRecordKind::PlanningView,
+        crate::object::content_children(view.content_children()).expect("children"),
+        view.canonical_bytes(),
+    )
+    .expect("view envelope");
+    let view_content = repository.put_envelope(view_envelope).expect("put view");
+    assert!(matches!(
+        repository.verify_campaign_closure(view_content),
+        Err(CampaignRepositoryError::Merkle(_))
+    ));
+}
+
+mod planner_binding;

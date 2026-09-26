@@ -8,7 +8,7 @@ use std::error::Error;
 use std::fmt;
 
 use super::definition::FINGERPRINT_DIGEST_BYTES;
-use super::definition::{FingerprintDefinition, FingerprintDigest, FingerprintSampleTrigger};
+use super::definition::{FingerprintDefinition, FingerprintDigest};
 use super::hasher::FingerprintHasher;
 use super::stream::FingerprintSample;
 
@@ -150,8 +150,6 @@ pub struct FingerprintObservationRequest {
     pub node: String,
     /// Node-local instruction count at the sample point.
     pub icount: u64,
-    /// The deterministic reason this sample is taken.
-    pub trigger: FingerprintSampleTrigger,
 }
 
 /// A host-side black-box observation boundary for execution fingerprints.
@@ -220,7 +218,6 @@ pub struct FingerprintSampleMaterial {
     seq: u64,
     node: String,
     icount: u64,
-    trigger: FingerprintSampleTrigger,
     vcpu_registers: Vec<VcpuRegisterDigest>,
     rr_scheduler: RrSchedulerState,
     memory_digest: FingerprintDigest,
@@ -259,7 +256,6 @@ impl FingerprintSampleMaterial {
             seq: request.seq,
             node: request.node,
             icount: request.icount,
-            trigger: request.trigger,
             vcpu_registers,
             rr_scheduler,
             memory_digest,
@@ -283,12 +279,6 @@ impl FingerprintSampleMaterial {
     #[must_use]
     pub fn icount(&self) -> u64 {
         self.icount
-    }
-
-    /// Returns the deterministic reason this sample is taken.
-    #[must_use]
-    pub fn trigger(&self) -> FingerprintSampleTrigger {
-        self.trigger
     }
 
     /// Returns sorted vCPU register digests.
@@ -349,13 +339,6 @@ pub enum FingerprintSampleError {
         /// The aggregate icount reported by the backend observation.
         observed: u64,
     },
-    /// The sample was requested away from the fixed cadence.
-    OffCadence {
-        /// The offending aggregate icount.
-        icount: u64,
-        /// The rejected sample trigger.
-        trigger: FingerprintSampleTrigger,
-    },
     /// The host-side observation boundary failed.
     Observation {
         /// The backend observation error.
@@ -397,10 +380,6 @@ impl fmt::Display for FingerprintSampleError {
                 formatter,
                 "execution-fingerprint observed icount {observed} does not match requested icount {requested}"
             ),
-            Self::OffCadence { icount, trigger } => write!(
-                formatter,
-                "execution-fingerprint sample at icount {icount} is off cadence for {trigger:?}"
-            ),
             Self::Observation { source } => {
                 write!(
                     formatter,
@@ -418,7 +397,7 @@ impl Error for FingerprintSampleError {}
 /// # Errors
 ///
 /// Returns [`FingerprintSampleError`] when observation fails, vCPU state is
-/// ambiguous, or the sample is not allowed by the fixed cadence.
+/// ambiguous, or the backend cannot provide the requested exact coordinate.
 pub fn observe_fingerprint_sample<Observer: FingerprintObserver>(
     definition: &FingerprintDefinition,
     previous_rolling_fingerprint: &[u8],
@@ -449,20 +428,13 @@ pub fn observe_fingerprint_sample<Observer: FingerprintObserver>(
 ///
 /// # Errors
 ///
-/// Returns [`FingerprintSampleError::OffCadence`] when `material` is not at the
-/// fixed periodic cadence or an allowed deterministic event boundary.
+/// Returns [`FingerprintSampleError`] when the supplied sample material is
+/// structurally invalid.
 pub fn compute_fingerprint_sample(
     definition: &FingerprintDefinition,
     previous_rolling_fingerprint: &[u8],
     material: &FingerprintSampleMaterial,
 ) -> Result<FingerprintSample, FingerprintSampleError> {
-    if !definition.accepts_sample(material.icount, material.trigger) {
-        return Err(FingerprintSampleError::OffCadence {
-            icount: material.icount,
-            trigger: material.trigger,
-        });
-    }
-
     let mut hasher = FingerprintHasher::new();
     hasher.write_tag("fingerprint-sample");
     hasher.write_bytes(&definition.digest());
@@ -470,7 +442,7 @@ pub fn compute_fingerprint_sample(
     hasher.write_u64(material.seq);
     hasher.write_bytes(material.node.as_bytes());
     hasher.write_u64(material.icount);
-    write_trigger(&mut hasher, material.trigger);
+    hasher.write_tag("authenticated-request");
     write_registers(&mut hasher, &material.vcpu_registers);
     write_rr_scheduler(&mut hasher, &material.rr_scheduler);
     hasher.write_bytes(&material.memory_digest);
@@ -480,22 +452,8 @@ pub fn compute_fingerprint_sample(
         seq: material.seq,
         node: material.node.clone(),
         icount: material.icount,
-        trigger: material.trigger,
         rolling_fingerprint: hasher.finish(),
     })
-}
-
-fn write_trigger(hasher: &mut FingerprintHasher, trigger: FingerprintSampleTrigger) {
-    hasher.write_tag(match trigger {
-        FingerprintSampleTrigger::Periodic => "periodic",
-        FingerprintSampleTrigger::Event(event) => match event {
-            super::definition::FingerprintEventBoundary::HorizonAdvance => "horizon-advance",
-            super::definition::FingerprintEventBoundary::FrameDelivery => "frame-delivery",
-            super::definition::FingerprintEventBoundary::SignalEffectBoundary => {
-                "signal-effect-boundary"
-            }
-        },
-    });
 }
 
 fn write_registers(hasher: &mut FingerprintHasher, registers: &[VcpuRegisterDigest]) {

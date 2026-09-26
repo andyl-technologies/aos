@@ -43,17 +43,16 @@ fn ok<T, E: Debug>(result: Result<T, E>) -> T {
 // Block device
 // =========================================================================
 
-const BLOCK_SHIFT: u8 = 8;
-
 /// Builds a fresh block harness over a 3-page base image with a fixed latency.
 fn block_harness() -> BlockHarness {
     let src = crucible_shmem::SLOT_BLK_IO as u32;
-    let core = ok(IoCore::new(BLOCK_SHIFT, src, 64, 64));
+    let core = ok(IoCore::new(src, 64, 64));
     // A 12 KiB base whose bytes are their offset modulo 251 (a deterministic,
     // non-trivial pattern), so reads return distinctive content.
     let base_bytes: Vec<u8> = (0..12_288u32).map(|i| (i % 251) as u8).collect();
     let base = BaseImage::new(base_bytes);
-    BlockHarness::new(BlockDevice::new(core, base, BlockLatency::default()))
+    let latency = BlockLatency::new(10, 15, 5, 1, 0);
+    BlockHarness::new(BlockDevice::new(core, base, latency))
 }
 
 /// A representative block script: a write that dirties a page, a read of it
@@ -62,10 +61,10 @@ fn block_script() -> Script<BlockRequest> {
     Script::new()
         .request(0, BlockRequest::write(1, 4096, vec![0xAB; 256]))
         .request(0, BlockRequest::read(2, 4096, 256))
-        .advance_to(50)
-        .request(50, BlockRequest::flush(3))
-        .request(50, BlockRequest::get_length(4))
-        .advance_to(2_000)
+        .advance_to(20_000)
+        .request(20_000, BlockRequest::flush(3))
+        .request(20_000, BlockRequest::get_length(4))
+        .advance_to(40_000)
 }
 
 #[test]
@@ -87,7 +86,7 @@ fn block_harness_exposes_device_visible_state() {
     h.apply_request(0, &BlockRequest::write(1, 4096, vec![0xAB; 256]))
         .map(|_| ())
         .unwrap_or_else(|e| panic!("write failed: {e:?}"));
-    ok(h.advance_to(2_000));
+    ok(h.advance_to(40_000));
     let _ = ok(h.drain_records());
     // Exactly one page (the page at base 4096) was copied up and dirtied.
     let overlay = h.device().overlay();
@@ -110,17 +109,16 @@ fn block_divergence_localizes_first_differing_payload_byte() {
     // is 0x00 from the base pattern). Their read-back payloads differ at byte 0,
     // and the divergence must localize to the read record's first byte ([IO-28]).
     //
-    // The read (read_base 1000 ns -> 5 icounts) delivers before the write ack
-    // (write_base 1500 ns -> 7 icounts), so the read is record index 0.
+    // The read completes before the write acknowledgement, so it is record 0.
     let baseline = block_script();
     let perturbed = Script::new()
         .request(0, BlockRequest::write(1, 4096, vec![0xAB; 256]))
         // Perturb: read the untouched base page instead of the written one.
         .request(0, BlockRequest::read(2, 0, 256))
-        .advance_to(50)
-        .request(50, BlockRequest::flush(3))
-        .request(50, BlockRequest::get_length(4))
-        .advance_to(2_000);
+        .advance_to(20_000)
+        .request(20_000, BlockRequest::flush(3))
+        .request(20_000, BlockRequest::get_length(4))
+        .advance_to(40_000);
 
     let left = ok(crucible_device::run_script::<BlockHarness, _>(
         block_harness,
@@ -179,25 +177,26 @@ fn block_idle_equals_busy_poll_with_bounded_outbox_under_coincident_deliveries()
     // bounded outbox capped the idle log at `outbox_capacity` records while the
     // busy-poll path (which drains every step) emitted all of them — a false
     // divergence on a perfectly deterministic device. Here five `get_length`
-    // requests all complete at the SAME icount (latency 100 ns -> 1 icount at
-    // shift 8), and the outbox capacity is only 2 (< 5 coincident deliveries).
+    // requests all complete at the same tick (1 ns -> 1,000 ticks), and the
+    // outbox capacity is only 2 (< 5 coincident deliveries).
     // With the drain-to-quiescent fix both paths must report all five.
     let factory = || {
         let src = crucible_shmem::SLOT_BLK_IO as u32;
         // Outbox capacity 2 (a power of two), strictly below the 5 coincident
         // deliveries. Inbox is roomy so all five COMPUTE up front.
-        let core = ok(IoCore::new(BLOCK_SHIFT, src, 8, 2));
+        let core = ok(IoCore::new(src, 8, 2));
         let base = BaseImage::new(vec![0u8; 4096]);
-        BlockHarness::new(BlockDevice::new(core, base, BlockLatency::default()))
+        let latency = BlockLatency::new(10, 15, 5, 1, 0);
+        BlockHarness::new(BlockDevice::new(core, base, latency))
     };
-    // Five get-length requests at icount 0; all deliver coincidentally at icount 1.
+    // Five get-length requests at tick 0; all deliver at tick 1,000.
     let script = Script::new()
         .request(0, BlockRequest::get_length(1))
         .request(0, BlockRequest::get_length(2))
         .request(0, BlockRequest::get_length(3))
         .request(0, BlockRequest::get_length(4))
         .request(0, BlockRequest::get_length(5))
-        .advance_to(100);
+        .advance_to(1_000);
 
     let result = ok(idle_busy_poll_equivalence::<BlockHarness, _>(
         factory, &script,
@@ -217,8 +216,8 @@ fn block_idle_equals_busy_poll_with_bounded_outbox_under_coincident_deliveries()
     assert_eq!(result.busy_poll_log.len(), 5);
     // All five land at the same icount, in deterministic (icount, src, seq) order.
     assert!(
-        result.idle_log.iter().all(|r| r.delivery_icount == 1),
-        "all five get-length deliveries are coincident at icount 1"
+        result.idle_log.iter().all(|r| r.delivery_icount == 1_000),
+        "all five get-length deliveries are coincident at tick 1,000"
     );
     let seqs: Vec<u32> = result.idle_log.iter().map(|r| r.seq).collect();
     assert_eq!(seqs, vec![0, 1, 2, 3, 4], "seq order is deterministic");
@@ -227,8 +226,6 @@ fn block_idle_equals_busy_poll_with_bounded_outbox_under_coincident_deliveries()
 // =========================================================================
 // 9p device
 // =========================================================================
-
-const NINEP_SHIFT: u8 = 8;
 
 /// Builds the sample 9p tree: a root with a subdir, files, and a symlink.
 fn ninep_tree() -> FsTree {
@@ -256,14 +253,14 @@ fn ninep_tree() -> FsTree {
     FsTree::try_new(Node::Directory { children: root }).expect("test 9p tree components are valid")
 }
 
-/// Builds a fresh 9p harness over the sample tree with a default latency.
+/// Builds a fresh 9p harness over the sample tree with a fixed latency.
 fn ninep_harness() -> NinepHarness {
     let src = crucible_shmem::SLOT_9P_IO as u32;
-    let core = ok(IoCore::new(NINEP_SHIFT, src, 64, 64));
+    let core = ok(IoCore::new(src, 64, 64));
     NinepHarness::new(NinepDevice::new(
         core,
         ninep_tree(),
-        NinepLatency::default(),
+        NinepLatency::new(8, 12, 0),
     ))
 }
 
@@ -331,7 +328,8 @@ fn ninep_script() -> Script<Vec<u8>> {
         .request(0, tversion(1, 4096, codec::PROTOCOL_VERSION))
         .advance_to(20_000)
         .request(20_000, tattach(2, 1))
-        .request(20_000, twalk(3, 1, 2, &["bin", "tool"]))
+        .advance_to(40_000)
+        .request(40_000, twalk(3, 1, 2, &["bin", "tool"]))
         .advance_to(60_000)
         .request(60_000, tlopen(4, 2, 0))
         .request(60_000, tread(5, 2, 0, 64))
@@ -379,8 +377,9 @@ fn ninep_divergence_localizes_first_differing_record() {
         .request(0, tversion(1, 4096, codec::PROTOCOL_VERSION))
         .advance_to(20_000)
         .request(20_000, tattach(2, 1))
+        .advance_to(40_000)
         // Walk to a different file (zeta) so the opened+read content differs.
-        .request(20_000, twalk(3, 1, 2, &["zeta"]))
+        .request(40_000, twalk(3, 1, 2, &["zeta"]))
         .advance_to(60_000)
         .request(60_000, tlopen(4, 2, 0))
         .request(60_000, tread(5, 2, 0, 64))
@@ -396,11 +395,11 @@ fn ninep_divergence_localizes_first_differing_record() {
     ));
     let divergence = localize_divergence(&left, &right)
         .unwrap_or_else(|| panic!("expected the perturbed 9p run to diverge"));
-    // Records in delivery order: [Rversion, Rattach, Rwalk, Rlopen, Rread].
-    // The Rwalk (record 2) already differs because the walked QID differs.
+    // Attach completes before either walk is requested. The two Rwalk QIDs
+    // are the first differing records, regardless of their frame lengths.
     assert_eq!(
         divergence.record_index, 2,
-        "the differing walk is the third record"
+        "the differing walk is the third delivered record"
     );
     // Determinism of localization.
     assert_eq!(localize_divergence(&left, &right), Some(divergence));
@@ -424,28 +423,21 @@ fn ninep_idle_equals_busy_poll() {
 // Network link
 // =========================================================================
 
-const LINK_SHIFT: u8 = 8;
-const LINK_FLOOR_NS: u64 = 1_000;
-const LINK_BASE_NS: u64 = 2_560; // exactly 10 icounts at shift 8
+const LINK_FLOOR_TICKS: u64 = 1_000;
+const LINK_BASE_TICKS: u64 = 2_560;
 
 /// Builds a fresh link harness with a fixed fault table that exercises jitter,
 /// reorder, duplicate, and corrupt (all seeded by injected draws).
 fn link_harness() -> NetLinkHarness {
     let src = crucible_shmem::SLOT_NET_ROUTER as u32;
     let mut faults = LinkFaults::none();
-    faults.jitter_window_ns = 1_024;
-    faults.reorder_window_ns = 2_048;
+    faults.jitter_window_ticks = 1_024;
+    faults.reorder_window_ticks = 2_048;
     faults.duplicate = Probability::new(1, 2);
-    faults.duplicate_gap_ns = 512;
+    faults.duplicate_gap_ticks = 512;
     faults.corrupt = Probability::new(1, 2);
     faults.corruption_strategies = vec![LinkCorruptionStrategy::BitFlip { max_bits: 1 }];
-    let link = ok(NetLink::new(
-        LINK_SHIFT,
-        src,
-        LINK_BASE_NS,
-        LINK_FLOOR_NS,
-        faults,
-    ));
+    let link = ok(NetLink::new(src, LINK_BASE_TICKS, LINK_FLOOR_TICKS, faults));
     NetLinkHarness::new(link, PastDeliveryPolicy::ClampToFuture)
 }
 

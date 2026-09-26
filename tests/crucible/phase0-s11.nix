@@ -5,7 +5,6 @@
   qemuDataDir ? "${qemuPackage}/share/qemu",
   qemuRuntimeDeps ? [],
   tracePluginPackage ? pkgs.crucible-qemu-trace-plugin,
-  execBoundaryPluginPackage ? null,
   accelerator ? "sim,thread=single",
   rrSwitchQuantum ? 4096,
   realtimeDeadlineProbe ? false,
@@ -17,7 +16,6 @@
   stopAt ? 4000000000,
   memoryMib ? 256,
   vcpuCount ? 4,
-  detIpiProbe ? false,
   # Some focused boot-prefix probes exercise deterministic INIT/SIPI delivery
   # before Linux starts the secondary vCPU's normal RR execution. They still
   # validate every exported cursor snapshot but leave the positive handoff
@@ -26,15 +24,118 @@
   # This bounds host wall time only. The deterministic proof horizon remains
   # the content-addressed stopAt node-icount under host preemption.
   runTimeoutSeconds ? 2400,
-  # Drop-one probes need a successful derivation even when a full-minus-patch
-  # QEMU produces a divergent trace. The canonical gate keeps this false.
-  permitTraceMismatch ? false,
-  # A drop-one build may classify a patch as build-required before producing
-  # a runnable QEMU. In that case, preserve the successful classification
-  # without attempting this runtime discriminator.
-  skipUnlessBuilt ? null,
 }: let
   boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
+  # Keep four runnable guest CPUs while skipping deployment-only drivers whose
+  # initialization does not contribute to the RR fingerprint proof at 50 ps.
+  s11Kernel = pkgs.mkDerivation {
+    pname = "crucible-phase0-s11-linux";
+    inherit (pkgs.linux) version src;
+
+    buildDeps = [
+      pkgs.bc
+      pkgs.bison
+      pkgs.elfutils
+      pkgs.flex
+      pkgs.gawk
+      pkgs.gnumake
+      pkgs.llvm
+      pkgs.openssl
+      pkgs.patch
+      pkgs.perl
+      pkgs.python3
+      pkgs.zlib
+    ];
+    hardeningDisable = ["all"];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf "$src"
+          cd linux-${pkgs.linux.version}
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          patch -p1 < ${../../pkgs/kernel/linux-gawk-array-argument.patch}
+          patch -p1 < ${./linux-tsc-known-frequency.patch}
+          patch -p1 < ${./phase0-s5-apic-known-period.patch}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          make ARCH=x86_64 LLVM=1 HOSTCC=cc HOSTCXX=c++ tinyconfig
+          cat > .s11.config <<'KCONFIG'
+          CONFIG_64BIT=y
+          CONFIG_X86_64=y
+          CONFIG_PRINTK=y
+          CONFIG_BINFMT_ELF=y
+          CONFIG_FUTEX=y
+          CONFIG_BLK_DEV_INITRD=y
+          CONFIG_RD_GZIP=y
+          CONFIG_MMU=y
+          CONFIG_TTY=y
+          CONFIG_SERIAL_8250=y
+          CONFIG_SERIAL_8250_CONSOLE=y
+          CONFIG_SMP=y
+          CONFIG_NR_CPUS=4
+          CONFIG_ACPI=y
+          CONFIG_PCI=y
+          CONFIG_MODULES=n
+          CONFIG_DEBUG_INFO_NONE=y
+          CONFIG_DEBUG_INFO_BTF=n
+          KCONFIG
+          scripts/kconfig/merge_config.sh -m .config .s11.config
+          make ARCH=x86_64 LLVM=1 HOSTCC=cc HOSTCXX=c++ olddefconfig
+
+          for option in \
+            CONFIG_BINFMT_ELF=y \
+            CONFIG_FUTEX=y \
+            CONFIG_BLK_DEV_INITRD=y \
+            CONFIG_SERIAL_8250_CONSOLE=y \
+            CONFIG_SMP=y \
+            CONFIG_NR_CPUS=4 \
+            CONFIG_X86_MPPARSE=y \
+            CONFIG_X86_LOCAL_APIC=y \
+            CONFIG_X86_IO_APIC=y \
+            CONFIG_ACPI=y; do
+            grep -Fxq "$option" .config || {
+              echo "S11 kernel option did not resolve: $option" >&2
+              exit 1
+            }
+          done
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          export LD_LIBRARY_PATH="${pkgs.elfutils}/lib:${pkgs.openssl}/lib:${pkgs.zlib}/lib"
+          make -j"$NIX_BUILD_CORES" ARCH=x86_64 LLVM=1 HOSTCC=cc HOSTCXX=c++ bzImage
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/boot"
+          cp arch/x86/boot/bzImage "$out/boot/vmlinuz-${pkgs.linux.version}"
+          cp System.map "$out/boot/System.map-${pkgs.linux.version}"
+          cp .config "$out/boot/config-${pkgs.linux.version}"
+        '';
+      }
+    ];
+  };
+  kernelCommandLine = lib.concatStringsSep " " [
+    "console=ttyS0 reboot=k panic=1 rdinit=/init"
+    "lpj=1 tsc_early_khz=4000000"
+    # The 50 ps clock makes Linux's legacy IOAPIC IRQ0 wiring self-check spend
+    # hundreds of millions of instructions in a TSC delay. S11 still boots
+    # with the local APIC, IOAPIC, and four CPUs; its proof is SMP/RR execution.
+    "no_timer_check"
+    "norandmaps random.trust_cpu=off"
+  ];
   workload = pkgs.mkDerivation {
     pname = "crucible-phase0-s11-workload";
     version = "0";
@@ -204,148 +305,238 @@
           }
           SMP_C
 
-          cc -std=c11 -O2 -pthread smp-contended.c -o "$out/bin/smp-contended"
+          cc -static -std=c11 -O2 -pthread smp-contended.c -o "$out/bin/smp-contended"
+          if readelf -l "$out/bin/smp-contended" | grep -q INTERP; then
+            echo "S11 workload unexpectedly requires a dynamic interpreter" >&2
+            exit 1
+          fi
         '';
       }
     ];
   };
 
-  rebootHelper = pkgs.mkDerivation {
-    pname = "crucible-phase0-s11-reboot";
+  initramfs = pkgs.mkDerivation {
+    pname = "crucible-phase0-s11-initramfs";
     version = "0";
     src = null;
 
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.findutils
+      pkgs.cpio
+      pkgs.pigz
+    ];
+
     phases = [
       {
-        name = "build-reboot-helper";
+        name = "build-initramfs";
         script = ''
-          mkdir -p "$out/bin"
+          set -eu
 
-          cat > reboot.c <<'REBOOT_C'
+          mkdir -p root/bin root/dev root/proc root/sys root/tmp
+          cp ${workload}/bin/smp-contended root/bin/smp-contended
+
+          cat > s11-init.c <<'INIT_C'
+          #define _GNU_SOURCE
+
+          #include <errno.h>
           #include <stdio.h>
           #include <sys/reboot.h>
+          #include <sys/types.h>
+          #include <sys/wait.h>
           #include <unistd.h>
 
+          enum {
+            SUSTAIN_WORKLOAD = ${
+            if stopAt == null
+            then "0"
+            else "1"
+          }
+          };
+
           int main(void) {
+            int status;
+            pid_t child;
+
+            puts("CRUCIBLE_S11_READY");
+            fflush(stdout);
+
+            child = fork();
+            if (child < 0) {
+              perror("fork");
+              puts("TEST_RESULT:FAIL");
+              return 1;
+            }
+            if (child == 0) {
+              if (SUSTAIN_WORKLOAD) {
+                execl(
+                  "/bin/smp-contended",
+                  "smp-contended",
+                  "--sustain",
+                  (char *)0);
+              } else {
+                execl("/bin/smp-contended", "smp-contended", (char *)0);
+              }
+              perror("exec smp-contended");
+              _exit(127);
+            }
+
+            while (waitpid(child, &status, 0) < 0) {
+              if (errno != EINTR) {
+                perror("waitpid");
+                puts("TEST_RESULT:FAIL");
+                return 1;
+              }
+            }
+
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+              puts("TEST_RESULT:PASS");
+            } else {
+              fprintf(
+                stderr,
+                "CRUCIBLE_S11_CHILD_EXIT code=%d signal=%d\n",
+                WIFEXITED(status) ? WEXITSTATUS(status) : -1,
+                WIFSIGNALED(status) ? WTERMSIG(status) : -1);
+              puts("TEST_RESULT:FAIL");
+            }
+            fflush(stdout);
+
             sync();
+            usleep(500000);
             if (reboot(RB_AUTOBOOT) != 0) {
               perror("reboot");
               return 1;
             }
             return 0;
           }
-          REBOOT_C
+          INIT_C
 
-          cc reboot.c -o "$out/bin/s11-reboot"
+          cc -static -std=c11 -O2 s11-init.c -o root/init
+          strip root/init
+          if readelf -l root/init | grep -q INTERP; then
+            echo "S11 init unexpectedly requires a dynamic interpreter" >&2
+            exit 1
+          fi
+
+          mkdir -p "$out"
+          (
+            cd root
+            find . -print0 \
+              | LC_ALL=C sort -z \
+              | cpio --quiet -o -H newc -R +0:+0 --reproducible --null \
+              | pigz -9 -n -p "''${NIX_BUILD_CORES:-1}" > "$out/initrd.img"
+          )
+        '';
+      }
+    ];
+
+    meta = {
+      description = "Crucible Phase 0 S11 diskless initramfs";
+    };
+  };
+
+  # Skip SeaBIOS's calibration-heavy prefix while retaining the q35 devices
+  # and guest-driven AP INIT/SIPI sequence. This is the S5 reset image.
+  linuxReset = pkgs.mkDerivation {
+    pname = "crucible-phase0-s11-linux-reset";
+    version = "0";
+    src = null;
+
+    reset = builtins.readFile ./phase0-s5-linux-reset.S;
+    linker = builtins.readFile ./x86-direct-reset.ld;
+    passAsFile = ["reset" "linker"];
+    buildDeps = [pkgs.binutils];
+
+    phases = [
+      {
+        name = "build-linux-reset";
+        script = ''
+          cp "$resetPath" reset.S
+          as --32 reset.S -o reset.o
+          ld -m elf_i386 -T "$linkerPath" reset.o -o reset.elf
+          objcopy -O binary --gap-fill 0 reset.elf reset.bin
+          [ "$(wc -c < reset.bin)" -eq 65536 ]
+
+          mkdir -p "$out"
+          cp reset.bin "$out/"
         '';
       }
     ];
   };
 
-  initramfs = let
-    initramfsDeps = [
-      pkgs.bash
-      pkgs.coreutils
-      workload
-      rebootHelper
+  mpTable = pkgs.mkDerivation {
+    pname = "crucible-phase0-s11-mp-table";
+    version = "0";
+    src = null;
+
+    generator = builtins.readFile ./phase0-s11-mptable.py;
+    passAsFile = ["generator"];
+    buildDeps = [pkgs.python3];
+
+    phases = [
+      {
+        name = "build-mp-table";
+        script = ''
+          mkdir -p "$out"
+          python3 "$generatorPath" "$out/mptable.bin"
+          [ "$(wc -c < "$out/mptable.bin")" -le 1024 ]
+        '';
+      }
     ];
-    depPaths = builtins.concatStringsSep ":" (
-      builtins.concatMap (
-        dep: let
-          base = builtins.toString dep;
-        in [
-          "${base}/bin"
-          "${base}/sbin"
-        ]
-      )
-      initramfsDeps
-    );
-    graphPairs =
-      lib.concatLists
-      (lib.imap (i: dep: [
-          "closure-${builtins.toString i}"
-          dep
-        ])
-        initramfsDeps);
-  in
-    pkgs.mkDerivation {
-      pname = "crucible-phase0-s11-initramfs";
-      version = "0";
-      src = null;
+  };
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.findutils
-        pkgs.cpio
-        pkgs.pigz
-      ];
+  linuxImage = pkgs.mkDerivation {
+    pname = "crucible-phase0-s11-linux-image";
+    version = "0";
+    src = null;
 
-      exportReferencesGraph = graphPairs;
+    KERNEL = builtins.toString s11Kernel;
+    INITRAMFS = "${initramfs}/initrd.img";
+    KERNEL_CMDLINE = kernelCommandLine;
+    buildDeps = [pkgs.coreutils pkgs.gawk];
 
-      phases = [
-        {
-          name = "build-initramfs";
-          script = ''
-            set -eu
+    phases = [
+      {
+        name = "prepare-linux-image";
+        script = ''
+          set -eu
 
-            grep -h '^/nix/store/' closure-* | sort -u > closure-paths
+          vmlinuz=$(find "$KERNEL"/boot -maxdepth 1 -type f -name 'vmlinuz*' | head -1)
+          [ -n "$vmlinuz" ]
+          setup_sectors=$(od -An -tu1 -j 497 -N 1 "$vmlinuz" | tr -d ' ')
+          [ -n "$setup_sectors" ] && [ "$setup_sectors" -gt 0 ]
+          setup_blocks=$((setup_sectors + 1))
 
-            mkdir -p root/bin root/sbin root/nix/store root/tmp root/proc root/sys root/dev root/run
-            while IFS= read -r p; do
-              cp -a "$p" root"$p"
-            done < closure-paths
+          mkdir -p "$out"
+          dd if="$vmlinuz" of="$out/setup.bin" bs=512 count="$setup_blocks" status=none
+          dd if="$vmlinuz" of="$out/kernel.bin" bs=512 skip="$setup_blocks" status=none
+          cp "$INITRAMFS" "$out/initrd.img"
+          printf '%s\0' "$KERNEL_CMDLINE" > "$out/cmdline.bin"
 
-            ln -sfn ${pkgs.bash}/bin/bash root/bin/sh
-            ln -sfn ${pkgs.bash}/bin/bash root/bin/bash
-            ln -sfn ${rebootHelper}/bin/s11-reboot root/sbin/reboot
+          # Linux boot-protocol fields match the fixed loader addresses below.
+          printf '\260' | dd of="$out/setup.bin" bs=1 seek=$((0x210)) conv=notrunc status=none
+          printf '\201' | dd of="$out/setup.bin" bs=1 seek=$((0x211)) conv=notrunc status=none
+          printf '\000\000\000\010' | dd of="$out/setup.bin" bs=1 seek=$((0x218)) conv=notrunc status=none
+          initrd_size=$(wc -c < "$out/initrd.img")
+          gawk -v size="$initrd_size" 'BEGIN {
+            for (byte = 0; byte < 4; byte++) {
+              printf "%c", int(size / (256 ^ byte)) % 256
+            }
+          }' > initrd-size.bin
+          dd if=initrd-size.bin of="$out/setup.bin" bs=1 seek=$((0x21c)) conv=notrunc status=none
+          printf '\000\376' | dd of="$out/setup.bin" bs=1 seek=$((0x224)) conv=notrunc status=none
+          printf '\000\000\002\000' | dd of="$out/setup.bin" bs=1 seek=$((0x228)) conv=notrunc status=none
 
-            cat > root/init <<'INIT'
-            #!${pkgs.bash}/bin/bash
-            export PATH="/bin:/sbin:${depPaths}"
-            export HOME=/tmp
-
-            echo "CRUCIBLE_S11_READY"
-            test_result=0
-            if [ "${
-              if stopAt == null
-              then "0"
-              else "1"
-            }" -eq 1 ]; then
-              smp-contended --sustain || test_result=1
-            else
-              smp-contended || test_result=1
-            fi
-
-            if [ "$test_result" -eq 0 ]; then
-              echo 'TEST_RESULT:PASS'
-            else
-              echo 'TEST_RESULT:FAIL'
-            fi
-
-            sync
-            sleep 0.5
-            reboot
-            INIT
-            chmod +x root/init
-
-            mkdir -p "$out"
-            (
-              cd root
-              find . -print0 \
-                | LC_ALL=C sort -z \
-                | cpio --quiet -o -H newc -R +0:+0 --reproducible --null \
-                | pigz -9 -n -p "''${NIX_BUILD_CORES:-1}" > "$out/initrd.img"
-            )
-          '';
-        }
-      ];
-
-      meta = {
-        description = "Crucible Phase 0 S11 diskless initramfs";
-      };
-    };
+          [ "$(od -An -tx4 -j $((0x202)) -N 4 "$out/setup.bin" | tr -d ' ')" = 53726448 ]
+          [ "$(wc -c < "$out/kernel.bin")" -gt 0 ]
+          [ "$initrd_size" -gt 0 ]
+        '';
+      }
+    ];
+  };
 in
   assert runTimeoutSeconds > 60;
+  assert vcpuCount == 4;
     pkgs.mkDerivation {
       pname = "crucible-phase0-s11-multi-vcpu-fingerprint";
       version = "0";
@@ -362,18 +553,17 @@ in
           tracePluginPackage
           pkgs.socat
         ]
-        ++ qemuRuntimeDeps
-        ++ lib.optionals (execBoundaryPluginPackage != null) [execBoundaryPluginPackage];
+        ++ qemuRuntimeDeps;
 
       INITRAMFS = "${initramfs}/initrd.img";
-      KERNEL = builtins.toString pkgs.linux;
+      KERNEL = builtins.toString s11Kernel;
+      KERNEL_APPEND = kernelCommandLine;
+      LINUX_RESET = "${linuxReset}/reset.bin";
+      MP_TABLE = "${mpTable}/mptable.bin";
+      LINUX_IMAGE = builtins.toString linuxImage;
       QEMU = "${qemuPackage}/bin/qemu-system-x86_64";
       QEMU_DATA_DIR = qemuDataDir;
       PLUGIN = "${tracePluginPackage}/lib/qemu/plugins/crucible-qemu-trace-plugin.so";
-      EXEC_BOUNDARY_PLUGIN =
-        if execBoundaryPluginPackage == null
-        then ""
-        else "${execBoundaryPluginPackage}/lib/qemu/plugins/drop-one-exec-boundary-plugin.so";
       CADENCE = builtins.toString cadence;
       RR_SWITCH_QUANTUM = builtins.toString rrSwitchQuantum;
       VCPU_COUNT = builtins.toString vcpuCount;
@@ -400,24 +590,12 @@ in
         if stopAt == null
         then "0"
         else "1";
-      DET_IPI_PROBE =
-        if detIpiProbe
-        then "1"
-        else "0";
-      PERMIT_TRACE_MISMATCH =
-        if permitTraceMismatch
-        then "1"
-        else "0";
       REALTIME_DEADLINE_PROBE =
         if realtimeDeadlineProbe
         then "1"
         else "0";
-      BUILD_GUARD =
-        if skipUnlessBuilt == null
-        then ""
-        else "${skipUnlessBuilt}";
-      # RR cursor / RR switch-quantum export is gated to `-accel sim` in the
-      # patch stack; under plain TCG the plugin reports inert cursor fields and
+      # RR cursor / RR switch-quantum export is gated to `-accel sim`; under
+      # plain TCG the plugin reports inert cursor fields and
       # emits no rr_switch rows.
       EXPECT_RR_CURSOR =
         if lib.hasPrefix "sim," accelerator || accelerator == "sim"
@@ -438,18 +616,6 @@ in
             grep -Fxq PASS "$BOUNDED_PREEMPTION_CHECK/result"
 
             unset LD_LIBRARY_PATH || true
-
-            if [ -n "$BUILD_GUARD" ] \
-              && [ "$(cat "$BUILD_GUARD/outcome")" != built ]; then
-              mkdir -p "$out"
-              cat > "$out/result" <<RESULT
-            PASS
-            check=phase0-s11
-            sim_discriminator_classification=not-applicable
-            reason=variant-not-built
-            RESULT
-              exit 0
-            fi
 
             active_timer_sink_pid=""
             active_hmp_client_pid=""
@@ -489,14 +655,25 @@ in
             trace_plugin_build_digest=$(sha256sum "$PLUGIN" | gawk '{ print $1 }')
             kernel_digest=$(sha256sum "$vmlinuz" | gawk '{ print $1 }')
             initramfs_digest=$(sha256sum "$INITRAMFS" | gawk '{ print $1 }')
+            reset_digest=$(sha256sum "$LINUX_RESET" | gawk '{ print $1 }')
+            mp_table_digest=$(sha256sum "$MP_TABLE" | gawk '{ print $1 }')
+            setup_digest=$(sha256sum "$LINUX_IMAGE/setup.bin" | gawk '{ print $1 }')
+            kernel_image_digest=$(sha256sum "$LINUX_IMAGE/kernel.bin" | gawk '{ print $1 }')
+            cmdline_digest=$(sha256sum "$LINUX_IMAGE/cmdline.bin" | gawk '{ print $1 }')
             seed_digest=$(sha256sum "$seed" | gawk '{ print $1 }')
             printf '%s\n' \
               "qemu_build_digest=$qemu_build_digest" \
               "trace_plugin_build_digest=$trace_plugin_build_digest" \
               "kernel_digest=$kernel_digest" \
               "initramfs_digest=$initramfs_digest" \
+              "reset_digest=$reset_digest" \
+              "mp_table_digest=$mp_table_digest" \
+              "setup_digest=$setup_digest" \
+              "kernel_image_digest=$kernel_image_digest" \
+              "cmdline_digest=$cmdline_digest" \
               "seed_digest=$seed_digest" \
               'machine=q35' \
+              'boot=direct_reset_linux_setup' \
               "accelerator=$ACCELERATOR" \
               "icount=shift=0,sleep=off,align=off,rr_switch_quantum=$RR_SWITCH_QUANTUM" \
               'cpu=qemu64' \
@@ -504,13 +681,12 @@ in
               "vcpus=$VCPU_COUNT" \
               'rtc=base=2026-01-01T00:00:00,clock=vm' \
               'seed=0x0010c011' \
-              'kernel_append=console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0' \
+              "kernel_append=$KERNEL_APPEND" \
               "plugin_cadence=$CADENCE" \
               "plugin_stop_at=$STOP_AT" \
-              'plugin_extended=on' \
+              'plugin_fingerprint=aggregate' \
               'plugin_mem_events=off' \
               "plugin_vcpus=$VCPU_COUNT" \
-              "det_ipi_probe=$DET_IPI_PROBE" \
               "realtime_deadline_probe=$REALTIME_DEADLINE_PROBE" \
               "sustain_workload=$SUSTAIN_WORKLOAD" \
               > "$TMPDIR/launch-definition.txt"
@@ -522,6 +698,11 @@ in
               "$trace_plugin_build_digest" \
               "$kernel_digest" \
               "$initramfs_digest" \
+              "$reset_digest" \
+              "$mp_table_digest" \
+              "$setup_digest" \
+              "$kernel_image_digest" \
+              "$cmdline_digest" \
               "$seed_digest" \
               "$launch_definition_digest"; do
               printf '%s\n' "$digest" | grep -E -q '^[0-9a-f]{64}$' \
@@ -690,22 +871,16 @@ in
               label="$1"
               trace_path="$TMPDIR/trace-current.jsonl"
               serial_path="$TMPDIR/serial-current.log"
-              exec_boundary_path="$TMPDIR/exec-boundaries-current.tsv"
-              plugin_arg="$PLUGIN,out=$trace_path,cadence=$CADENCE,extended=on,mem_events=off,vcpus=$VCPU_COUNT,launch_digest=$launch_definition_digest,qemu_build_digest=$qemu_build_digest,plugin_build_digest=$trace_plugin_build_digest"
+              plugin_arg="$PLUGIN,out=$trace_path,cadence=$CADENCE,mem_events=off,vcpus=$VCPU_COUNT,launch_digest=$launch_definition_digest,qemu_build_digest=$qemu_build_digest,plugin_build_digest=$trace_plugin_build_digest"
               qmp_socket="$TMPDIR/qmp-current.sock"
               hmp_socket="$TMPDIR/hmp-current.sock"
               migration_socket="$TMPDIR/migration-sink-current.sock"
               rm -f \
                 "$trace_path" \
                 "$serial_path" \
-                "$exec_boundary_path" \
                 "$qmp_socket" \
                 "$hmp_socket" \
                 "$migration_socket"
-
-              if [ "$DET_IPI_PROBE" -eq 1 ]; then
-                plugin_arg="$plugin_arg,det_ipi_probe=on"
-              fi
 
               if [ -n "$STOP_AT" ]; then
                 plugin_arg="$plugin_arg,stop_at=$STOP_AT"
@@ -726,17 +901,15 @@ in
                 -rtc base=2026-01-01T00:00:00,clock=vm \
                 -seed 0x0010c011 \
                 -fw_cfg name=opt/crucible/seed,file="$seed" \
-                -kernel "$vmlinuz" \
-                -initrd "$INITRAMFS" \
-                -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0" \
+                -bios "$LINUX_RESET" \
+                -device "loader,file=$MP_TABLE,addr=0x9fc00,force-raw=on" \
+                -device "loader,file=$LINUX_IMAGE/setup.bin,addr=0x10000,force-raw=on" \
+                -device "loader,file=$LINUX_IMAGE/kernel.bin,addr=0x100000,force-raw=on" \
+                -device "loader,file=$LINUX_IMAGE/cmdline.bin,addr=0x20000,force-raw=on" \
+                -device "loader,file=$LINUX_IMAGE/initrd.img,addr=0x8000000,force-raw=on" \
                 -chardev file,id=serial0,path="$serial_path" \
                 -serial chardev:serial0 \
                 -plugin "$plugin_arg"
-
-              if [ -n "$EXEC_BOUNDARY_PLUGIN" ]; then
-                set -- "$@" \
-                  -plugin "$EXEC_BOUNDARY_PLUGIN,out=$exec_boundary_path"
-              fi
 
               if [ "$REALTIME_DEADLINE_PROBE" -eq 1 ]; then
                 socat \
@@ -839,13 +1012,64 @@ in
               fi
               cp "$trace_path" "$TMPDIR/trace-$label.jsonl"
               cp "$serial_path" "$TMPDIR/serial-$label.log"
-              if [ -n "$EXEC_BOUNDARY_PLUGIN" ]; then
-                cp "$exec_boundary_path" "$TMPDIR/exec-boundaries-$label.tsv"
-              fi
             }
 
             run_one a
             run_one b
+
+            # Each run reuses the same output and control paths. An exact argv
+            # match keeps the plugin's raw process attestation comparable.
+            if ! diff -u "$TMPDIR/qemu-args-a.txt" "$TMPDIR/qemu-args-b.txt" \
+              > "$TMPDIR/qemu-args.diff"; then
+              cat "$TMPDIR/qemu-args.diff" >&2
+              fail "S11 replay launch argv differs"
+            fi
+
+            diagnose_guest_completion() {
+              label="$1"
+              serial="$TMPDIR/serial-$label.log"
+              trace="$TMPDIR/trace-$label.jsonl"
+
+              echo "S11 guest completion diagnostic for run $label" >&2
+              echo "serial_bytes=$(wc -c < "$serial")" >&2
+              echo "serial_first_4096_bytes:" >&2
+              head -c 4096 "$serial" >&2 || true
+              echo "serial_final_4096_bytes:" >&2
+              tail -c 4096 "$serial" >&2 || true
+              echo "serial_final_nonblank_lines:" >&2
+              tr -d '\r' < "$serial" | awk 'NF' | tail -n 80 >&2 || true
+
+              echo "first_trace_record:" >&2
+              head -1 "$trace" | jq -c \
+                '{
+                  kind: (.kind // "sample"),
+                  retired,
+                  observed_icount,
+                  final,
+                  register_retired,
+                  rr_current_vcpu,
+                  rr_cursor_position,
+                  rr_switch_quantum
+                }' >&2 || true
+              echo "final_trace_record:" >&2
+              tail -1 "$trace" | jq -c \
+                '{
+                  kind: (.kind // "sample"),
+                  retired,
+                  observed_icount,
+                  final,
+                  stop_at,
+                  stop_requested,
+                  register_retired,
+                  rr_current_vcpu,
+                  rr_cursor_position,
+                  rr_switch_quantum,
+                  sample_register_failures,
+                  register_read_failures,
+                  ram_status,
+                  device_state_status
+                }' >&2 || true
+            }
 
             diagnose_trace_structure() {
               label="$1"
@@ -874,11 +1098,10 @@ in
                       exact_horizon_sample_count: ([ $samples[]
                         | select(.final != true and .observed_icount == $stop_at)
                       ] | length),
-                      bounded_post_horizon_final_count: ([ $samples[]
+                      exact_horizon_final_count: ([ $samples[]
                         | select(
                             .final == true
-                            and .observed_icount >= $stop_at
-                            and (.observed_icount - $stop_at) <= $quantum
+                            and .observed_icount == $stop_at
                             and .stop_requested == true
                           )
                       ] | length)
@@ -910,8 +1133,17 @@ in
                         rr_cursor_source,
                         sample_register_failures,
                         register_read_failures,
+                        register_retired,
+                        ram_status,
                         ram_bytes,
                         ram_digest,
+                        device_state_status,
+                        device_state_schema_status,
+                        device_state_complete,
+                        device_state_sections,
+                        device_state_bytes,
+                        device_state_digest,
+                        device_state_schema_digest,
                         memory_events_enabled,
                         device_event_capture,
                         device_event_hash,
@@ -952,10 +1184,14 @@ in
 
             for label in a b; do
               if [ "$REQUIRE_GUEST_PASS" -eq 1 ]; then
-                if ! grep -q "TEST_RESULT:PASS" "$TMPDIR/serial-$label.log"; then
-                  cat "$TMPDIR/serial-$label.log" >&2
-                  diagnose_trace_structure "$label"
-                  fail "guest $label did not report TEST_RESULT:PASS"
+                pass_count=$(
+                  tr -d '\r' < "$TMPDIR/serial-$label.log" \
+                    | grep -Ec '^TEST_RESULT:PASS$' || true
+                )
+                if [ "$pass_count" -ne 1 ] \
+                  || grep -q "TEST_RESULT:FAIL" "$TMPDIR/serial-$label.log"; then
+                  diagnose_guest_completion "$label"
+                  fail "guest $label did not report exactly one PASS with zero FAIL markers"
                 fi
                 grep -q "CRUCIBLE_S11_DONE" "$TMPDIR/serial-$label.log" \
                   || fail "guest $label did not run the SMP workload"
@@ -1007,17 +1243,33 @@ in
                   [ .[] | select((.kind // "sample") == "sample") ] as $samples
                   | [ .[] | select(.kind == "rr_switch") ] as $switches
                   | ($samples | length) >= 4
+                  and ([$samples[].process_argv_digest] | unique | length) == 1
                   and all($samples[]; (
-                    .schema == "crucible.qemu.trace-fingerprint.v6"
+                    .schema == "crucible.qemu.trace-fingerprint.v7"
                     and .tracked_vcpus == $vcpus
                     and .launch_definition_digest == $launch_definition_digest
                     and .qemu_build_digest == $qemu_build_digest
                     and .trace_plugin_build_digest == $trace_plugin_build_digest
+                    and .process_argv_attestation_version == 2
+                    and .process_argv_encoding == "raw-unix-argv-v2"
+                    and .process_argv_argc > 0
+                    and .process_argv_raw_bytes > 0
+                    and (.process_argv_digest | test("^[0-9a-f]{64}$"))
+                    and .process_argv_digest != "0000000000000000000000000000000000000000000000000000000000000000"
+                    and .process_argv_status == 0
                     and rr_cursor_expectation
                     and .sample_register_failures == 0
                     and .register_read_failures == 0
+                    and .ram_status == 0
                     and .ram_bytes > 0
                     and .ram_digest != "0000000000000000000000000000000000000000000000000000000000000000"
+                    and .device_state_status == 0
+                    and .device_state_schema_status == 0
+                    and .device_state_complete == true
+                    and .device_state_sections > 0
+                    and .device_state_bytes > 0
+                    and .device_state_digest != "0000000000000000000000000000000000000000000000000000000000000000"
+                    and .device_state_schema_digest != "0000000000000000000000000000000000000000000000000000000000000000"
                     and .memory_events_enabled == false
                     and .device_event_capture == false
                     and .device_event_hash == null
@@ -1030,6 +1282,10 @@ in
                     and (.register_file_bytes | type == "array")
                     and (.register_file_bytes | length) == $vcpus
                     and all(.register_file_bytes[]; . > 0)
+                    and (.register_retired | type == "array")
+                    and (.register_retired | length) == $vcpus
+                    and all(.register_retired[]; . >= 0)
+                    and (.register_retired | add) == .retired
                     and (.register_schema_digests | type == "array")
                     and (.register_schema_digests | length) == $vcpus
                     and all(.register_schema_digests[]; . != "0000000000000000000000000000000000000000000000000000000000000000")
@@ -1054,8 +1310,7 @@ in
                       and ([ $samples[]
                         | select(
                             .final == true
-                            and .observed_icount >= $stop_at
-                            and (.observed_icount - $stop_at) <= $quantum
+                            and .observed_icount == $stop_at
                             and .stop_at == $stop_at
                             and .stop_requested == true
                           )
@@ -1217,7 +1472,7 @@ in
                       elif $left[0].ram_digest != $right[0].ram_digest then "ram_digest"
                       elif $left[0].device_event_hash != $right[0].device_event_hash then "device_event_hash"
                       elif $left[0].stream_hash != $right[0].stream_hash then "stream_hash"
-                      elif $left[0].diagnostic_extended_fnv != $right[0].diagnostic_extended_fnv then "diagnostic_extended_fnv"
+                      elif $left[0].aggregate_fingerprint_fnv != $right[0].aggregate_fingerprint_fnv then "aggregate_fingerprint_fnv"
                       else "unknown"
                       end;
                     component
@@ -1266,27 +1521,8 @@ in
                 "$TMPDIR/trace-authoritative-a.jsonl" \
                 "$TMPDIR/trace-authoritative-b.jsonl" \
                 "$out/first-difference.txt"
-              if [ "$PERMIT_TRACE_MISMATCH" -eq 1 ]; then
-                cp "$TMPDIR/trace-a.jsonl" "$out/trace-a.jsonl"
-                cp "$TMPDIR/trace-b.jsonl" "$out/trace-b.jsonl"
-                cp "$TMPDIR/trace-authoritative-a.jsonl" "$out/trace-authoritative-a.jsonl"
-                cp "$TMPDIR/trace-authoritative-b.jsonl" "$out/trace-authoritative-b.jsonl"
-                if [ -n "$EXEC_BOUNDARY_PLUGIN" ]; then
-                  cp "$TMPDIR/exec-boundaries-a.tsv" "$out/exec-boundaries-a.tsv"
-                  cp "$TMPDIR/exec-boundaries-b.tsv" "$out/exec-boundaries-b.tsv"
-                fi
-                {
-                  echo PASS
-                  echo spike=multi-vcpu-rr-sim-tcg-fingerprint
-                  echo extended_fingerprint_match=false
-                  echo drop_one_mismatch_recorded=true
-                  cat "$out/first-difference.txt"
-                } > "$out/result"
-                exit 0
-              else
-                cat "$out/first-difference.txt" >&2
-                fail "authoritative extended fingerprint mismatch"
-              fi
+              cat "$out/first-difference.txt" >&2
+              fail "authoritative aggregate fingerprint mismatch"
             fi
             [ "$rr_switch_trace_match" = true ] \
               || fail "RR switch projection differs despite equal raw traces"
@@ -1332,20 +1568,28 @@ in
               || fail "RR cursor mismatch localizer did not identify the cursor"
 
             final_line=$(grep '"final":true' "$TMPDIR/trace-a.jsonl" | tail -1)
-            [ -n "$final_line" ] || fail "trace a omitted the plugin-exit sample"
+            [ -n "$final_line" ] || fail "trace a omitted the final aggregate sample"
             final_line_b=$(grep '"final":true' "$TMPDIR/trace-b.jsonl" | tail -1)
-            [ -n "$final_line_b" ] || fail "trace b omitted the plugin-exit sample"
-            plugin_exit_retired=$(printf '%s\n' "$final_line" | jq -r '.retired')
-            plugin_exit_retired_b=$(printf '%s\n' "$final_line_b" | jq -r '.retired')
-            plugin_exit_observed_icount=$(printf '%s\n' "$final_line" | jq -r '.observed_icount')
-            plugin_exit_observed_icount_b=$(printf '%s\n' "$final_line_b" | jq -r '.observed_icount')
-            plugin_exit_stop_requested=$(printf '%s\n' "$final_line" | jq -r '.stop_requested')
-            plugin_exit_stop_requested_b=$(printf '%s\n' "$final_line_b" | jq -r '.stop_requested')
-            final_extended_hash=$(printf '%s\n' "$final_line" | jq -r '.diagnostic_extended_fnv')
+            [ -n "$final_line_b" ] || fail "trace b omitted the final aggregate sample"
+            final_sample_retired=$(printf '%s\n' "$final_line" | jq -r '.retired')
+            final_sample_retired_b=$(printf '%s\n' "$final_line_b" | jq -r '.retired')
+            final_sample_observed_icount=$(printf '%s\n' "$final_line" | jq -r '.observed_icount')
+            final_sample_observed_icount_b=$(printf '%s\n' "$final_line_b" | jq -r '.observed_icount')
+            final_sample_stop_requested=$(printf '%s\n' "$final_line" | jq -r '.stop_requested')
+            final_sample_stop_requested_b=$(printf '%s\n' "$final_line_b" | jq -r '.stop_requested')
+            final_aggregate_hash=$(printf '%s\n' "$final_line" | jq -r '.aggregate_fingerprint_fnv')
             final_register_hashes=$(printf '%s\n' "$final_line" | jq -c '.register_digests')
             final_register_hash=$(printf '%s' "$final_register_hashes" | sha256sum | gawk '{print $1}')
             final_register_counts=$(printf '%s\n' "$final_line" | jq -c '.register_counts')
             final_register_file_bytes=$(printf '%s\n' "$final_line" | jq -c '.register_file_bytes')
+            final_register_retired=$(printf '%s\n' "$final_line" | jq -c '.register_retired')
+            for final_sample in "$final_line" "$final_line_b"; do
+              printf '%s\n' "$final_sample" \
+                | jq -e --argjson vcpus "$VCPU_COUNT" \
+                  '(.register_retired | length) == $vcpus
+                   and all(.register_retired[]; . > 0)' >/dev/null \
+                || fail "an S11 vCPU retired no instructions by the final sample"
+            done
             final_ram_hash=$(printf '%s\n' "$final_line" | jq -r '.ram_digest')
             final_ram_bytes=$(printf '%s\n' "$final_line" | jq -r '.ram_bytes')
             final_rr_cursor=$(printf '%s\n' "$final_line" \
@@ -1357,23 +1601,20 @@ in
             horizon_sample_retired=not-applicable
             horizon_sample_observed_icount=not-applicable
             horizon_sample_stop_requested=not-applicable
-            horizon_sample_plugin_exit_retired_match=not-applicable
-            horizon_sample_plugin_exit_stream_match=not-applicable
-            horizon_sample_plugin_exit_register_match=not-applicable
-            horizon_sample_plugin_exit_ram_match=not-applicable
-            horizon_sample_plugin_exit_rr_match=not-applicable
+            horizon_sample_final_retired_match=not-applicable
+            horizon_sample_final_stream_match=not-applicable
+            horizon_sample_final_register_match=not-applicable
+            horizon_sample_final_ram_match=not-applicable
+            horizon_sample_final_rr_match=not-applicable
             horizon_sample_cross_run_match=not-applicable
-            horizon_sample_plugin_exit_state_comparison=not-applicable
+            horizon_sample_final_state_comparison=not-applicable
             exact_horizon_authoritative=not-applicable
-            plugin_exit_semantics=guest-complete
-            plugin_exit_pause_overshoot=not-applicable
-            plugin_exit_pause_overshoot_bound=not-applicable
-            plugin_exit_pause_overshoot_bounded=not-applicable
-            plugin_exit_pause_overshoot_cross_run_match=not-applicable
-            plugin_exit_cross_run_match=not-applicable
+            final_sample_semantics=guest-complete
+            final_sample_exact_horizon=not-applicable
+            final_sample_cross_run_match=not-applicable
             periodic_samples_expected=not-applicable
             periodic_samples_observed=not-applicable
-            plugin_exit_fingerprint_compared=true
+            final_sample_fingerprint_compared=true
             if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then
               horizon_line=$(jq -c --argjson stop_at "$STOP_AT_VALUE" \
                 'select((.kind // "sample") == "sample" and .final != true and .observed_icount == $stop_at)' \
@@ -1389,77 +1630,75 @@ in
               horizon_ram_bytes=$(printf '%s\n' "$horizon_line" | jq -r '.ram_bytes')
               horizon_rr_cursor=$(printf '%s\n' "$horizon_line" \
                 | jq -c '[.rr_current_vcpu,.rr_cursor_position,.rr_switch_quantum]')
-              plugin_exit_stream_hash=$(printf '%s\n' "$final_line" | jq -r '.stream_hash')
+              final_sample_stream_hash=$(printf '%s\n' "$final_line" | jq -r '.stream_hash')
 
               horizon_sample_observed_icount=$(printf '%s\n' "$horizon_line" | jq -r '.observed_icount')
               [ "$horizon_sample_observed_icount" = "$STOP_AT" ] \
                 || fail "horizon sample observed-icount mismatch: $horizon_sample_observed_icount/$STOP_AT"
               [ "$horizon_sample_stop_requested" = true ] \
                 || fail "horizon sample omitted the exact-boundary stop request"
-              [ "$plugin_exit_stop_requested" = true ] \
-                || fail "plugin-exit sample omitted the stop request"
-              [ "$plugin_exit_stop_requested_b" = true ] \
-                || fail "run b plugin-exit sample omitted the stop request"
+              [ "$final_sample_stop_requested" = true ] \
+                || fail "final aggregate sample omitted the stop request"
+              [ "$final_sample_stop_requested_b" = true ] \
+                || fail "run b final aggregate sample omitted the stop request"
 
-              [ "$plugin_exit_observed_icount" -ge "$STOP_AT" ] \
-                || fail "plugin exit observed before the exact horizon: $plugin_exit_observed_icount/$STOP_AT"
-              [ "$plugin_exit_observed_icount_b" -ge "$STOP_AT" ] \
-                || fail "run b plugin exit observed before the exact horizon: $plugin_exit_observed_icount_b/$STOP_AT"
-              plugin_exit_pause_overshoot=$((plugin_exit_observed_icount - STOP_AT))
-              plugin_exit_pause_overshoot_b=$((plugin_exit_observed_icount_b - STOP_AT))
+              [ "$final_sample_observed_icount" = "$STOP_AT" ] \
+                || fail "final aggregate missed the exact horizon: $final_sample_observed_icount/$STOP_AT"
+              [ "$final_sample_observed_icount_b" = "$STOP_AT" ] \
+                || fail "run b final aggregate missed the exact horizon: $final_sample_observed_icount_b/$STOP_AT"
               periodic_samples_expected=$(((STOP_AT + CADENCE - 1) / CADENCE))
               periodic_samples_observed=$((samples_a - 1))
               [ "$periodic_samples_observed" -eq "$periodic_samples_expected" ] \
                 || fail "non-final periodic sample count mismatch: $periodic_samples_observed/$periodic_samples_expected"
-              [ "$plugin_exit_pause_overshoot" -le "$RR_SWITCH_QUANTUM" ] \
-                || fail "plugin-exit pause overshoot exceeds one RR quantum: $plugin_exit_pause_overshoot/$RR_SWITCH_QUANTUM"
-              [ "$plugin_exit_pause_overshoot_b" -le "$RR_SWITCH_QUANTUM" ] \
-                || fail "run b plugin-exit pause overshoot exceeds one RR quantum: $plugin_exit_pause_overshoot_b/$RR_SWITCH_QUANTUM"
-              if [ "$plugin_exit_pause_overshoot" -eq "$plugin_exit_pause_overshoot_b" ]; then
-                plugin_exit_pause_overshoot_cross_run_match=true
-              else
-                plugin_exit_pause_overshoot_cross_run_match=false
-              fi
               if [ "$final_line" = "$final_line_b" ]; then
-                plugin_exit_cross_run_match=true
+                final_sample_cross_run_match=true
               else
-                plugin_exit_cross_run_match=false
+                final_sample_cross_run_match=false
               fi
 
-              if [ "$horizon_sample_retired" = "$plugin_exit_retired" ]; then
-                horizon_sample_plugin_exit_retired_match=true
+              if [ "$horizon_sample_retired" = "$final_sample_retired" ]; then
+                horizon_sample_final_retired_match=true
               else
-                horizon_sample_plugin_exit_retired_match=false
+                horizon_sample_final_retired_match=false
               fi
-              if [ "$horizon_stream_hash" = "$plugin_exit_stream_hash" ]; then
-                horizon_sample_plugin_exit_stream_match=true
+              if [ "$horizon_stream_hash" = "$final_sample_stream_hash" ]; then
+                horizon_sample_final_stream_match=true
               else
-                horizon_sample_plugin_exit_stream_match=false
+                horizon_sample_final_stream_match=false
               fi
               if [ "$horizon_register_hash" = "$final_register_hash" ] \
                 && [ "$horizon_register_hashes" = "$final_register_hashes" ]; then
-                horizon_sample_plugin_exit_register_match=true
+                horizon_sample_final_register_match=true
               else
-                horizon_sample_plugin_exit_register_match=false
+                horizon_sample_final_register_match=false
               fi
               if [ "$horizon_ram_hash" = "$final_ram_hash" ] \
                 && [ "$horizon_ram_bytes" = "$final_ram_bytes" ]; then
-                horizon_sample_plugin_exit_ram_match=true
+                horizon_sample_final_ram_match=true
               else
-                horizon_sample_plugin_exit_ram_match=false
+                horizon_sample_final_ram_match=false
               fi
               if [ "$horizon_rr_cursor" = "$final_rr_cursor" ]; then
-                horizon_sample_plugin_exit_rr_match=true
+                horizon_sample_final_rr_match=true
               else
-                horizon_sample_plugin_exit_rr_match=false
+                horizon_sample_final_rr_match=false
               fi
+              [ "$horizon_sample_final_retired_match" = true ] \
+                || fail "final aggregate retired count differs at the exact horizon"
+              [ "$horizon_sample_final_stream_match" = true ] \
+                || fail "final aggregate stream differs at the exact horizon"
+              [ "$horizon_sample_final_register_match" = true ] \
+                || fail "final aggregate registers differ at the exact horizon"
+              [ "$horizon_sample_final_ram_match" = true ] \
+                || fail "final aggregate RAM differs at the exact horizon"
+              [ "$horizon_sample_final_rr_match" = true ] \
+                || fail "final aggregate RR cursor differs at the exact horizon"
               horizon_sample_cross_run_match=true
-              horizon_sample_plugin_exit_state_comparison=recorded-non-authoritative-teardown
+              horizon_sample_final_state_comparison=exact-same-boundary
               exact_horizon_authoritative=true
-              plugin_exit_semantics=post-stop-request-teardown-observation
-              plugin_exit_pause_overshoot_bound="$RR_SWITCH_QUANTUM"
-              plugin_exit_pause_overshoot_bounded=true
-              plugin_exit_fingerprint_compared=diagnostic-only
+              final_sample_semantics=exact-observer-aggregate-before-native-vmstop
+              final_sample_exact_horizon=true
+              final_sample_fingerprint_compared=authoritative
             fi
 
             workload_affinity_active=false
@@ -1488,10 +1727,6 @@ in
             cp "$TMPDIR/trace-b.jsonl" "$out/trace-b.jsonl"
             cp "$TMPDIR/trace-authoritative-a.jsonl" "$out/trace-authoritative-a.jsonl"
             cp "$TMPDIR/trace-authoritative-b.jsonl" "$out/trace-authoritative-b.jsonl"
-            if [ -n "$EXEC_BOUNDARY_PLUGIN" ]; then
-              cp "$TMPDIR/exec-boundaries-a.tsv" "$out/exec-boundaries-a.tsv"
-              cp "$TMPDIR/exec-boundaries-b.tsv" "$out/exec-boundaries-b.tsv"
-            fi
             cp "$TMPDIR/rr-switch-trace-a.tsv" "$out/rr-switch-trace-a.tsv"
             cp "$TMPDIR/rr-switch-trace-b.tsv" "$out/rr-switch-trace-b.tsv"
             cp "$TMPDIR/per-vcpu-delta-trace-a.tsv" "$out/per-vcpu-delta-trace-a.tsv"
@@ -1525,11 +1760,6 @@ in
               else
                 echo workload_affinity_vcpus=not-observed
               fi
-              if [ "$DET_IPI_PROBE" -eq 1 ]; then
-                echo det_ipi_probe=enabled
-              else
-                echo det_ipi_probe=disabled
-              fi
               echo host_adversary=bounded-scheduler-preemption
               echo host_adversary_perturbations=6
               echo host_adversary_configured_pause_milliseconds=15
@@ -1549,7 +1779,7 @@ in
                 echo rr_cursor_export=inert-non-sim
                 echo rr_cursor_assertion=inert_non_sim
               fi
-              echo extended_fingerprint_match=true
+              echo aggregate_fingerprint_match=true
               echo aggregate_icount_stream_match=true
               echo rr_switch_trace_match=true
               echo per_vcpu_delta_trace_match=true
@@ -1558,46 +1788,42 @@ in
               echo horizon_sample_retired="$horizon_sample_retired"
               echo horizon_sample_observed_icount="$horizon_sample_observed_icount"
               echo horizon_sample_stop_requested="$horizon_sample_stop_requested"
-              echo plugin_exit_retired="$plugin_exit_retired"
-              echo plugin_exit_observed_icount="$plugin_exit_observed_icount"
-              echo plugin_exit_stop_requested="$plugin_exit_stop_requested"
+              echo final_sample_retired="$final_sample_retired"
+              echo final_sample_observed_icount="$final_sample_observed_icount"
+              echo final_sample_stop_requested="$final_sample_stop_requested"
               echo exact_horizon_authoritative="$exact_horizon_authoritative"
-              echo plugin_exit_semantics="$plugin_exit_semantics"
-              echo plugin_exit_pause_overshoot="$plugin_exit_pause_overshoot"
-              if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then
-                echo plugin_exit_pause_overshoot_run_b="$plugin_exit_pause_overshoot_b"
-              fi
-              echo plugin_exit_pause_overshoot_bound="$plugin_exit_pause_overshoot_bound"
-              echo plugin_exit_pause_overshoot_bounded="$plugin_exit_pause_overshoot_bounded"
-              echo plugin_exit_pause_overshoot_cross_run_match="$plugin_exit_pause_overshoot_cross_run_match"
+              echo final_sample_semantics="$final_sample_semantics"
+              echo final_sample_exact_horizon="$final_sample_exact_horizon"
               echo periodic_samples_expected="$periodic_samples_expected"
               echo periodic_samples_observed="$periodic_samples_observed"
               echo stop_request="$stop_request"
-              echo stop_requested="$plugin_exit_stop_requested"
-              echo plugin_exit_fingerprint_compared="$plugin_exit_fingerprint_compared"
+              echo stop_requested="$final_sample_stop_requested"
+              echo final_sample_fingerprint_compared="$final_sample_fingerprint_compared"
               echo horizon_sample_cross_run_match="$horizon_sample_cross_run_match"
-              echo plugin_exit_cross_run_match="$plugin_exit_cross_run_match"
-              echo horizon_sample_plugin_exit_state_comparison="$horizon_sample_plugin_exit_state_comparison"
-              echo horizon_sample_plugin_exit_retired_match="$horizon_sample_plugin_exit_retired_match"
-              echo horizon_sample_plugin_exit_stream_match="$horizon_sample_plugin_exit_stream_match"
-              echo horizon_sample_plugin_exit_register_match="$horizon_sample_plugin_exit_register_match"
-              echo horizon_sample_plugin_exit_ram_match="$horizon_sample_plugin_exit_ram_match"
-              echo horizon_sample_plugin_exit_rr_match="$horizon_sample_plugin_exit_rr_match"
+              echo final_sample_cross_run_match="$final_sample_cross_run_match"
+              echo horizon_sample_final_state_comparison="$horizon_sample_final_state_comparison"
+              echo horizon_sample_final_retired_match="$horizon_sample_final_retired_match"
+              echo horizon_sample_final_stream_match="$horizon_sample_final_stream_match"
+              echo horizon_sample_final_register_match="$horizon_sample_final_register_match"
+              echo horizon_sample_final_ram_match="$horizon_sample_final_ram_match"
+              echo horizon_sample_final_rr_match="$horizon_sample_final_rr_match"
               if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then
                 echo horizon_stream_hash="$horizon_stream_hash"
                 echo horizon_register_hash="$horizon_register_hash"
                 echo horizon_ram_hash="$horizon_ram_hash"
                 echo horizon_ram_bytes="$horizon_ram_bytes"
                 echo horizon_rr_cursor="$horizon_rr_cursor"
-                echo plugin_exit_stream_hash="$plugin_exit_stream_hash"
-                echo plugin_exit_rr_cursor="$final_rr_cursor"
+                echo final_sample_stream_hash="$final_sample_stream_hash"
+                echo final_sample_rr_cursor="$final_rr_cursor"
               fi
               echo samples="$samples_a"
-              echo final_extended_hash="$final_extended_hash"
+              echo final_aggregate_hash="$final_aggregate_hash"
               echo final_register_hash="$final_register_hash"
               echo final_register_hashes="$final_register_hashes"
               echo final_register_counts="$final_register_counts"
               echo final_register_file_bytes="$final_register_file_bytes"
+              echo final_per_vcpu_retired="$final_register_retired"
+              echo all_vcpus_retired=true
               echo final_ram_hash="$final_ram_hash"
               echo final_ram_bytes="$final_ram_bytes"
               echo device_event_capture=false
@@ -1614,6 +1840,11 @@ in
               echo launch_definition_digest="$launch_definition_digest"
               echo kernel_digest="$kernel_digest"
               echo initramfs_digest="$initramfs_digest"
+              echo reset_digest="$reset_digest"
+              echo mp_table_digest="$mp_table_digest"
+              echo setup_digest="$setup_digest"
+              echo kernel_image_digest="$kernel_image_digest"
+              echo cmdline_digest="$cmdline_digest"
               echo seed_digest="$seed_digest"
               echo provenance_digest_source=external-artifacts-and-canonical-launch-material
               echo embedded_zero_digests_sufficient=false
@@ -1624,20 +1855,10 @@ in
               echo first_differing_component=none
               echo mismatch_localization_vcpu_negative_test=true
               echo mismatch_localization_rr_cursor_negative_test=true
-              echo fallback=smp1_not_needed
             } > "$out/result"
           '';
         }
       ];
-
-      passthru = {
-        crucibleSmpGuest = {
-          inherit initramfs;
-          kernel = pkgs.linux;
-          kernelAppend = "console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0";
-          stockEntropyKernelAppend = "console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0";
-        };
-      };
 
       meta = {
         description = "Crucible Phase 0 S11 multi-vCPU RR-TCG fingerprint spike";

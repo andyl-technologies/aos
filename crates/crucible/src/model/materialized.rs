@@ -22,6 +22,12 @@ impl RngStreamId {
         Self::new(DECISION_RNG_NAME_HASH_DOMAIN, name)
     }
 
+    /// Returns whether this stream uses the default decision-RNG domain.
+    #[must_use]
+    pub fn is_default_domain(&self) -> bool {
+        self.domain == DECISION_RNG_NAME_HASH_DOMAIN
+    }
+
     /// Builds a node-scoped stream id.
     #[must_use]
     pub fn for_node(name: impl Into<String>) -> Self {
@@ -104,8 +110,8 @@ pub struct OverrideDecision {
 pub struct PreemptionDecision {
     /// The node whose execution is preempted.
     pub node: NodeId,
-    /// The instruction count where the preemption occurs.
-    pub at: Icount,
+    /// The exact logical tick where the preemption occurs.
+    pub at: SimInstant,
     /// The kind of preemption.
     pub kind: PreemptionKind,
 }
@@ -116,7 +122,7 @@ impl PreemptionDecision {
     pub fn to_compact_binary(&self) -> Vec<u8> {
         let mut writer = ScenarioBinaryWriter::new(PREEMPTION_DECISION_BINARY_MAGIC);
         writer.write_string(&self.node.name);
-        writer.write_u64(self.at.retired);
+        writer.write_u64(self.at.ticks);
         write_preemption_kind_binary(&self.kind, &mut writer);
         writer.finish()
     }
@@ -133,8 +139,8 @@ impl PreemptionDecision {
             node: NodeId {
                 name: reader.read_string()?,
             },
-            at: Icount {
-                retired: reader.read_u64()?,
+            at: SimInstant {
+                ticks: reader.read_u64()?,
             },
             kind: read_preemption_kind_binary(&mut reader)?,
         };
@@ -164,7 +170,7 @@ pub enum PreemptionKind {
 
 /// An application-requested random draw payload.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct AppRandomDecision {
+pub struct BackendRngEvidence {
     /// The requesting node.
     pub node: NodeId,
     /// The decision stream used to serve the request.
@@ -336,25 +342,6 @@ impl SearchFrontierChoices {
         }
     }
 
-    /// Builds a frontier-choice set from scheduler-derived candidate decisions.
-    ///
-    /// The retained decisions are limited to the closed search taxonomy:
-    /// decision-RNG draws and search overrides. Delivery order is excluded here
-    /// because RESOLVE already imposes a total order over scheduled events.
-    #[must_use]
-    pub fn from_decisions<I>(decisions: I) -> Self
-    where
-        I: IntoIterator<Item = Decision>,
-    {
-        Self::from_choices(decisions.into_iter().filter_map(|decision| {
-            if is_genuine_search_frontier_decision(&decision) {
-                Some(SearchFrontierChoice::single(decision))
-            } else {
-                None
-            }
-        }))
-    }
-
     /// Builds a frontier-choice set from candidate decision sequences.
     #[must_use]
     pub fn from_decision_sequences<I, J>(choices: I) -> Self
@@ -408,13 +395,6 @@ pub struct SearchFrontierChoice {
 }
 
 impl SearchFrontierChoice {
-    fn single(decision: Decision) -> Self {
-        Self {
-            decision: decision.clone(),
-            decisions: vec![decision],
-        }
-    }
-
     fn from_decisions<I>(decisions: I) -> Option<Self>
     where
         I: IntoIterator<Item = Decision>,
@@ -422,17 +402,15 @@ impl SearchFrontierChoice {
         let decisions = decisions.into_iter().collect::<Vec<_>>();
         let decision = match decisions.as_slice() {
             [decision] if is_genuine_search_frontier_decision(decision) => decision.clone(),
-            [
-                decision @ Decision::Override(override_decision),
-                causal @ ..,
-            ] if override_decision
-                .point
-                .key
-                .starts_with("live-world-network/")
-                && causal
-                    .iter()
-                    .all(|decision| matches!(decision, Decision::RngDraw(_)))
-                && !causal.is_empty() =>
+            [decision @ Decision::Selection(selection), causal @ ..]
+                if selection.is_campaign_branch()
+                    && causal.iter().all(|decision| {
+                        matches!(
+                            decision,
+                            Decision::RngDraw(_) | Decision::Override(_) | Decision::Preemption(_)
+                        )
+                    })
+                    && !causal.is_empty() =>
             {
                 decision.clone()
             }
@@ -789,24 +767,6 @@ pub struct MaterializedState {
 }
 
 impl MaterializedState {
-    /// Builds a legacy materialized-state handle from an existing content address.
-    ///
-    /// The resulting value is not sufficient for a loadable fat checkpoint
-    /// unless `id` is the canonical hash of the empty component set. Use
-    /// [`Self::from_components`] for loadable checkpoint state.
-    #[must_use]
-    pub fn from_content_hash(id: ContentHash) -> Self {
-        Self {
-            id,
-            vm_snapshots: BTreeMap::new(),
-            device_overlays: BTreeMap::new(),
-            scheduler: SchedulerState::empty(),
-            decision_rng: DecisionRngState::empty(),
-            event_log: EventLogOffset::default(),
-            event_log_segments: Vec::new(),
-        }
-    }
-
     /// Builds a materialized state from content-addressed components.
     #[must_use]
     pub fn from_components(
@@ -1160,7 +1120,7 @@ impl Checkpoint {
     /// Serializes this checkpoint as compact canonical bytes.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(CHECKPOINT_BINARY_MAGIC);
+        let mut writer = ScenarioBinaryWriter::new(CHECKPOINT_BINARY_MAGIC_V6);
         write_checkpoint_binary(self, &mut writer);
         writer.finish()
     }
@@ -1174,7 +1134,7 @@ impl Checkpoint {
     /// match their decoded components, or when the outer checkpoint shape is
     /// internally inconsistent.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, CHECKPOINT_BINARY_MAGIC)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, CHECKPOINT_BINARY_MAGIC_V6)?;
         let checkpoint = read_checkpoint_binary(&mut reader)?;
         validate_checkpoint_binary_shape(&checkpoint)?;
         reader.finish()?;

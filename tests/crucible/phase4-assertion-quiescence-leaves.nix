@@ -9,7 +9,10 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   assertionTest = builtins.readFile ../../crates/crucible/tests/assertion_quiescence_leaves.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -59,7 +62,7 @@
       }
       {
         label = "quiescent property predicate";
-        needle = "Predicate::At { .. }\n        | Predicate::NetworkMatch { .. }\n        | Predicate::Quiescent\n        | Predicate::FaultActive { .. } => Ok(())";
+        needle = "Predicate::At { .. } | Predicate::NetworkMatch { .. } | Predicate::Quiescent => Ok(())";
       }
       {
         label = "assertion-state TOML";

@@ -2,7 +2,7 @@
 
 use super::*;
 pub(crate) fn scheduler_event_log_empty_prefix() -> ContentHash {
-    ContentHash::from_canonical_material("crucible.scheduler.event-log.prefix.v1", "empty=true")
+    ContentHash::from_canonical_material("crucible.scheduler.event-log.prefix.v2", "empty=true")
 }
 
 pub(super) fn scheduler_event_log_prefix_for_resume(offset: EventLogOffset) -> ContentHash {
@@ -28,7 +28,7 @@ pub(super) fn scheduler_event_log_prefix_after_append(
         previous_prefix.to_hex(),
         appended_segment.to_hex(),
     );
-    ContentHash::from_canonical_material("crucible.scheduler.event-log.prefix.v1", &prefix_material)
+    ContentHash::from_canonical_material("crucible.scheduler.event-log.prefix.v2", &prefix_material)
 }
 
 pub(super) fn scheduler_event_log_sequence(
@@ -96,9 +96,9 @@ pub(super) fn search_schedule_decision_event_time(
     match decision {
         Decision::DeliveryOrder(order) => order.at,
         Decision::Preemption(preemption) => VirtualTime {
-            ticks: preemption.at.retired,
+            ticks: preemption.at.ticks,
         },
-        Decision::RngDraw(_) | Decision::Override(_) | Decision::AppRandom(_) => VirtualTime {
+        Decision::RngDraw(_) | Decision::Override(_) | Decision::Selection(_) => VirtualTime {
             ticks: fallback_sequence,
         },
     }
@@ -114,6 +114,19 @@ pub(super) fn scheduler_event_log_entry(
     scheduler_event_log_entry_with_class(sequence, at, class, event_payload, payload)
 }
 
+pub(super) fn scheduler_event_log_entry_with_physical_icount(
+    sequence: u64,
+    at: VirtualTime,
+    payload: SchedulerEventLogPayload,
+    node: NodeId,
+    icount: Icount,
+) -> SchedulerEventLogEntry {
+    let event_payload = event_payload_from_scheduler_payload(&payload);
+    let class = event_kind_catalog_class_for_entry_construction(&event_payload);
+    let time = scheduler_event_log_time(at, &payload).with_icount(node, icount);
+    scheduler_event_log_entry_with_time(sequence, time, class, event_payload, payload)
+}
+
 pub(super) fn scheduler_event_log_entry_with_class(
     sequence: u64,
     at: VirtualTime,
@@ -122,10 +135,20 @@ pub(super) fn scheduler_event_log_entry_with_class(
     payload: SchedulerEventLogPayload,
 ) -> SchedulerEventLogEntry {
     let time = scheduler_event_log_time(at, &payload);
+    scheduler_event_log_entry_with_time(sequence, time, class, event_payload, payload)
+}
+
+pub(super) fn scheduler_event_log_entry_with_time(
+    sequence: u64,
+    time: EventLogTime,
+    class: SchedulerEventLogClass,
+    event_payload: EventPayload,
+    payload: SchedulerEventLogPayload,
+) -> SchedulerEventLogEntry {
     let source = scheduler_event_log_payload_source(&payload);
     let level = scheduler_event_log_payload_level(&payload);
     let content_hash = ContentHash::from_canonical_material(
-        "crucible.scheduler.event-log.entry.v1",
+        "crucible.scheduler.event-log.entry.v4",
         &scheduler_event_log_entry_material(
             sequence,
             &time,
@@ -159,7 +182,7 @@ pub(super) fn scheduler_event_log_entry_with_material(
     payload: SchedulerEventLogPayload,
 ) -> SchedulerEventLogEntry {
     let content_hash = ContentHash::from_canonical_material(
-        "crucible.scheduler.event-log.entry.v1",
+        "crucible.scheduler.event-log.entry.v4",
         &scheduler_event_log_entry_material(
             sequence,
             &at,
@@ -195,14 +218,18 @@ pub(super) fn scheduler_event_log_entry_material(
     let mut lines = Vec::new();
     lines.push(format!("sequence={sequence}"));
     lines.push(format!("at_virtual_time_ticks={}", at.virtual_time.ticks));
-    lines.push(format!("at_icount_retired={}", at.icount.icount.retired));
-    match &at.icount.node {
+    lines.push(format!("at_tick={}", at.stamp.tick.ticks));
+    match at.stamp.retired {
+        Some(retired) => lines.push(format!("at_raw_retired={}", retired.retired)),
+        None => lines.push(String::from("at_raw_retired=none")),
+    }
+    match &at.stamp.node {
         Some(node) => {
-            lines.push(String::from("at_icount_node=some"));
-            lines.push(format!("at_icount_node_len={}", node.name.len()));
-            lines.push(format!("at_icount_node_name={}", node.name));
+            lines.push(String::from("at_node=some"));
+            lines.push(format!("at_node_len={}", node.name.len()));
+            lines.push(format!("at_node_name={}", node.name));
         }
-        None => lines.push(String::from("at_icount_node=none")),
+        None => lines.push(String::from("at_node=none")),
     }
     lines.push(scheduler_event_log_source_material("source", source));
     lines.push(format!("level={}", event_level_label(level)));
@@ -328,8 +355,10 @@ pub(super) fn resolved_happening_event_payload(event: &ScheduledEvent) -> EventP
                 EventAttributeValue::Node(completion.target.clone()),
             );
             attributes.insert(
-                String::from("delivery_icount"),
-                EventAttributeValue::Icount(completion.delivery_icount),
+                String::from("delivery_tick"),
+                EventAttributeValue::VirtualTime(VirtualTime {
+                    ticks: completion.delivery_tick.ticks,
+                }),
             );
             attributes.insert(
                 String::from("payload"),
@@ -397,7 +426,9 @@ pub(super) fn decision_event_payload(decision: &Decision) -> EventPayload {
             );
             attributes.insert(
                 String::from("at"),
-                EventAttributeValue::Icount(preemption.at),
+                EventAttributeValue::VirtualTime(VirtualTime {
+                    ticks: preemption.at.ticks,
+                }),
             );
             attributes.insert(
                 String::from("kind"),
@@ -405,32 +436,12 @@ pub(super) fn decision_event_payload(decision: &Decision) -> EventPayload {
             );
             EventPayload::new("preemption", attributes)
         }
-        Decision::AppRandom(random) => {
+        Decision::Selection(selection) => {
             attributes.insert(
-                String::from("node"),
-                EventAttributeValue::Node(random.node.clone()),
+                String::from("canonical_selection"),
+                EventAttributeValue::Bytes(selection.canonical_bytes().to_vec()),
             );
-            attributes.insert(
-                String::from("stream_domain"),
-                EventAttributeValue::String(random.stream.domain.clone()),
-            );
-            attributes.insert(
-                String::from("stream_name"),
-                EventAttributeValue::String(random.stream.name.clone()),
-            );
-            attributes.insert(
-                String::from("request_id"),
-                EventAttributeValue::U64(random.request_id),
-            );
-            attributes.insert(
-                String::from("width"),
-                EventAttributeValue::U64(u64::from(random.width)),
-            );
-            attributes.insert(
-                String::from("value"),
-                EventAttributeValue::U64(random.value),
-            );
-            EventPayload::new("app_random", attributes)
+            EventPayload::new("campaign_selection", attributes)
         }
     }
 }
@@ -656,6 +667,90 @@ pub(super) fn observable_event_payload(observable: &ObservableEventPayload) -> E
             );
             EventPayload::new("guest_marker", attributes)
         }
+        ObservableEventPayload::GuestMeasurement {
+            retired_icount,
+            node,
+            event,
+        } => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("retired_icount"),
+                EventAttributeValue::Icount(*retired_icount),
+            );
+            match event {
+                GuestMeasurementEvent::Begin {
+                    measurement,
+                    instance,
+                } => {
+                    insert_guest_measurement_basis(&mut attributes, measurement, instance);
+                    EventPayload::new("guest_measurement_begin", attributes)
+                }
+                GuestMeasurementEvent::Sample {
+                    measurement,
+                    instance,
+                    metric,
+                    value,
+                } => {
+                    insert_guest_measurement_basis(&mut attributes, measurement, instance);
+                    attributes.insert(
+                        String::from("metric"),
+                        EventAttributeValue::String(metric.clone()),
+                    );
+                    insert_guest_measurement_value(&mut attributes, "value", value);
+                    EventPayload::new("guest_metric_sample", attributes)
+                }
+                GuestMeasurementEvent::End {
+                    measurement,
+                    instance,
+                } => {
+                    insert_guest_measurement_basis(&mut attributes, measurement, instance);
+                    EventPayload::new("guest_measurement_end", attributes)
+                }
+            }
+        }
+        ObservableEventPayload::GuestSemanticMarker {
+            retired_icount,
+            node,
+            marker,
+            instance,
+            details,
+        } => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("retired_icount"),
+                EventAttributeValue::Icount(*retired_icount),
+            );
+            attributes.insert(
+                String::from("marker"),
+                EventAttributeValue::String(marker.clone()),
+            );
+            attributes.insert(
+                String::from("instance"),
+                EventAttributeValue::String(instance.clone()),
+            );
+            attributes.insert(
+                String::from("details_len"),
+                EventAttributeValue::U64(u64::try_from(details.len()).unwrap_or(u64::MAX)),
+            );
+            for (index, detail) in details.iter().enumerate() {
+                attributes.insert(
+                    format!("detail.{index}.key"),
+                    EventAttributeValue::String(detail.key.clone()),
+                );
+                insert_guest_measurement_value(
+                    &mut attributes,
+                    &format!("detail.{index}.value"),
+                    &detail.value,
+                );
+            }
+            EventPayload::new("guest_semantic_marker", attributes)
+        }
         ObservableEventPayload::GuestAssertionMarker {
             retired_icount,
             node,
@@ -700,6 +795,101 @@ pub(super) fn observable_event_payload(observable: &ObservableEventPayload) -> E
             insert_guest_assertion_details(&mut attributes, &marker.details);
             EventPayload::new("guest_marker", attributes)
         }
+    }
+}
+
+fn insert_guest_measurement_basis(
+    attributes: &mut BTreeMap<String, EventAttributeValue>,
+    measurement: &str,
+    instance: &str,
+) {
+    attributes.insert(
+        String::from("measurement"),
+        EventAttributeValue::String(measurement.to_owned()),
+    );
+    attributes.insert(
+        String::from("instance"),
+        EventAttributeValue::String(instance.to_owned()),
+    );
+}
+
+fn insert_guest_measurement_value(
+    attributes: &mut BTreeMap<String, EventAttributeValue>,
+    prefix: &str,
+    value: &GuestMeasurementValue,
+) {
+    let (kind, elements) = match value {
+        GuestMeasurementValue::Signed(value) => {
+            attributes.insert(
+                format!("{prefix}.signed"),
+                EventAttributeValue::String(value.to_string()),
+            );
+            ("signed", None)
+        }
+        GuestMeasurementValue::Unsigned(value) => {
+            attributes.insert(
+                format!("{prefix}.unsigned"),
+                EventAttributeValue::U64(*value),
+            );
+            ("unsigned", None)
+        }
+        GuestMeasurementValue::Rational(value) => {
+            attributes.insert(
+                format!("{prefix}.negative"),
+                EventAttributeValue::Bool(value.negative),
+            );
+            attributes.insert(
+                format!("{prefix}.numerator"),
+                EventAttributeValue::U128(value.numerator),
+            );
+            attributes.insert(
+                format!("{prefix}.denominator"),
+                EventAttributeValue::U128(value.denominator),
+            );
+            ("rational", None)
+        }
+        GuestMeasurementValue::Boolean(value) => {
+            attributes.insert(
+                format!("{prefix}.boolean"),
+                EventAttributeValue::Bool(*value),
+            );
+            ("boolean", None)
+        }
+        GuestMeasurementValue::Enumerated(value) => {
+            attributes.insert(
+                format!("{prefix}.enumerated"),
+                EventAttributeValue::String(value.clone()),
+            );
+            ("enumerated", None)
+        }
+        GuestMeasurementValue::SignedVector(values) => {
+            for (index, value) in values.iter().enumerate() {
+                attributes.insert(
+                    format!("{prefix}.element.{index}"),
+                    EventAttributeValue::String(value.to_string()),
+                );
+            }
+            ("signed_vector", Some(values.len()))
+        }
+        GuestMeasurementValue::UnsignedVector(values) => {
+            for (index, value) in values.iter().enumerate() {
+                attributes.insert(
+                    format!("{prefix}.element.{index}"),
+                    EventAttributeValue::U64(*value),
+                );
+            }
+            ("unsigned_vector", Some(values.len()))
+        }
+    };
+    attributes.insert(
+        format!("{prefix}.kind"),
+        EventAttributeValue::String(kind.to_owned()),
+    );
+    if let Some(elements) = elements {
+        attributes.insert(
+            format!("{prefix}.elements"),
+            EventAttributeValue::U64(u64::try_from(elements).unwrap_or(u64::MAX)),
+        );
     }
 }
 
@@ -770,65 +960,67 @@ pub(super) fn scheduler_event_log_time(
 ) -> EventLogTime {
     EventLogTime {
         virtual_time: at,
-        icount: scheduler_event_log_payload_icount(at, payload),
+        stamp: scheduler_event_log_payload_stamp(at, payload),
     }
 }
 
-pub(super) fn scheduler_event_log_payload_icount(
+pub(super) fn scheduler_event_log_payload_stamp(
     at: VirtualTime,
     payload: &SchedulerEventLogPayload,
-) -> EventLogIcountStamp {
+) -> EventLogTickStamp {
     match payload {
         SchedulerEventLogPayload::ResolvedHappening(event) => {
-            scheduled_event_payload_icount(at, &event.payload)
+            scheduled_event_payload_stamp(at, &event.payload)
         }
-        SchedulerEventLogPayload::Decision(decision) => decision_icount(at, decision),
+        SchedulerEventLogPayload::Decision(decision) => decision_stamp(at, decision),
         SchedulerEventLogPayload::Observable(observable) => {
-            observable_payload_icount(at, observable)
+            observable_payload_stamp(at, observable)
         }
         SchedulerEventLogPayload::EvaluationBoundary(_)
         | SchedulerEventLogPayload::TriggerFired(_)
         | SchedulerEventLogPayload::TriggerActionApplied(_)
         | SchedulerEventLogPayload::FaultObservation(_)
-        | SchedulerEventLogPayload::Diagnostic(_) => boundary_icount(at),
+        | SchedulerEventLogPayload::Diagnostic(_) => boundary_stamp(at),
     }
 }
 
-pub(super) fn scheduled_event_payload_icount(
+pub(super) fn scheduled_event_payload_stamp(
     at: VirtualTime,
     payload: &ScheduledEventPayload,
-) -> EventLogIcountStamp {
+) -> EventLogTickStamp {
     match payload {
-        ScheduledEventPayload::BackendInput(input) => node_boundary_icount(at, &input.node),
-        ScheduledEventPayload::IoCompletion(completion) => EventLogIcountStamp {
+        ScheduledEventPayload::BackendInput(input) => node_boundary_stamp(at, &input.node),
+        ScheduledEventPayload::IoCompletion(completion) => EventLogTickStamp {
             node: Some(completion.target.clone()),
-            icount: completion.delivery_icount,
+            tick: completion.delivery_tick,
+            retired: None,
         },
-        ScheduledEventPayload::Control(_) => boundary_icount(at),
+        ScheduledEventPayload::Control(_) => boundary_stamp(at),
     }
 }
 
-pub(super) fn decision_icount(at: VirtualTime, decision: &Decision) -> EventLogIcountStamp {
+pub(super) fn decision_stamp(at: VirtualTime, decision: &Decision) -> EventLogTickStamp {
     match decision {
-        Decision::Preemption(preemption) => EventLogIcountStamp {
+        Decision::Preemption(preemption) => EventLogTickStamp {
             node: Some(preemption.node.clone()),
-            icount: preemption.at,
+            tick: preemption.at,
+            retired: None,
         },
-        Decision::AppRandom(random) => node_boundary_icount(at, &random.node),
-        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => {
-            boundary_icount(at)
-        }
+        Decision::DeliveryOrder(_)
+        | Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::Selection(_) => boundary_stamp(at),
     }
 }
 
-pub(super) fn observable_payload_icount(
+pub(super) fn observable_payload_stamp(
     at: VirtualTime,
     observable: &ObservableEventPayload,
-) -> EventLogIcountStamp {
+) -> EventLogTickStamp {
     match observable {
         ObservableEventPayload::ConsoleOutput { node, .. }
         | ObservableEventPayload::IoCompletion { node, .. }
-        | ObservableEventPayload::NodeState { node, .. } => node_boundary_icount(at, node),
+        | ObservableEventPayload::NodeState { node, .. } => node_boundary_stamp(at, node),
         ObservableEventPayload::CoverageBlock {
             execution_icount,
             node,
@@ -838,19 +1030,31 @@ pub(super) fn observable_payload_icount(
             retired_icount: execution_icount,
             node,
             ..
-        } => EventLogIcountStamp {
+        } => EventLogTickStamp {
             node: Some(node.clone()),
-            icount: *execution_icount,
+            tick: SimInstant { ticks: at.ticks },
+            retired: Some(*execution_icount),
         },
         ObservableEventPayload::MemorySample {
             sample_icount,
             node,
             ..
-        } => EventLogIcountStamp {
+        } => EventLogTickStamp {
             node: Some(node.clone()),
-            icount: *sample_icount,
+            tick: SimInstant { ticks: at.ticks },
+            retired: Some(*sample_icount),
         },
         ObservableEventPayload::GuestMarker {
+            retired_icount,
+            node,
+            ..
+        }
+        | ObservableEventPayload::GuestMeasurement {
+            retired_icount,
+            node,
+            ..
+        }
+        | ObservableEventPayload::GuestSemanticMarker {
             retired_icount,
             node,
             ..
@@ -859,28 +1063,31 @@ pub(super) fn observable_payload_icount(
             retired_icount,
             node,
             ..
-        } => EventLogIcountStamp {
+        } => EventLogTickStamp {
             node: Some(node.clone()),
-            icount: *retired_icount,
+            tick: SimInstant { ticks: at.ticks },
+            retired: Some(*retired_icount),
         },
         ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::AssertionProximity { .. }
         | ObservableEventPayload::AssertionStateChanged { .. }
-        | ObservableEventPayload::AssertionEvaluated { .. } => boundary_icount(at),
+        | ObservableEventPayload::AssertionEvaluated { .. } => boundary_stamp(at),
     }
 }
 
-pub(super) fn boundary_icount(at: VirtualTime) -> EventLogIcountStamp {
-    EventLogIcountStamp {
+pub(super) fn boundary_stamp(at: VirtualTime) -> EventLogTickStamp {
+    EventLogTickStamp {
         node: None,
-        icount: Icount { retired: at.ticks },
+        tick: SimInstant { ticks: at.ticks },
+        retired: None,
     }
 }
 
-pub(super) fn node_boundary_icount(at: VirtualTime, node: &NodeId) -> EventLogIcountStamp {
-    EventLogIcountStamp {
+pub(super) fn node_boundary_stamp(at: VirtualTime, node: &NodeId) -> EventLogTickStamp {
+    EventLogTickStamp {
         node: Some(node.clone()),
-        icount: Icount { retired: at.ticks },
+        tick: SimInstant { ticks: at.ticks },
+        retired: None,
     }
 }
 
@@ -931,12 +1138,10 @@ pub(super) fn decision_source(decision: &Decision) -> EventSource {
         Decision::Preemption(preemption) => EventSource::Node {
             node: preemption.node.clone(),
         },
-        Decision::AppRandom(random) => EventSource::Guest {
-            node: random.node.clone(),
-        },
-        Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Override(_) => {
-            EventSource::Engine
-        }
+        Decision::DeliveryOrder(_)
+        | Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::Selection(_) => EventSource::Engine,
     }
 }
 
@@ -950,6 +1155,8 @@ pub(super) fn observable_payload_source(observable: &ObservableEventPayload) -> 
         }
         ObservableEventPayload::GuestMarker { node, .. }
         | ObservableEventPayload::CoverageMarker { node, .. }
+        | ObservableEventPayload::GuestMeasurement { node, .. }
+        | ObservableEventPayload::GuestSemanticMarker { node, .. }
         | ObservableEventPayload::GuestAssertionMarker { node, .. } => {
             EventSource::Guest { node: node.clone() }
         }
@@ -992,6 +1199,8 @@ pub(super) fn observable_payload_level(observable: &ObservableEventPayload) -> E
         | ObservableEventPayload::AssertionEvaluated { .. }
         | ObservableEventPayload::CoverageMarker { .. }
         | ObservableEventPayload::GuestMarker { .. }
+        | ObservableEventPayload::GuestMeasurement { .. }
+        | ObservableEventPayload::GuestSemanticMarker { .. }
         | ObservableEventPayload::GuestAssertionMarker { .. } => EventLevel::Info,
     }
 }
@@ -1163,7 +1372,7 @@ pub(super) fn fault_observation_event_payload(observation: &FaultObservation) ->
     attributes.insert(
         String::from("coordinate"),
         EventAttributeValue::VirtualTime(VirtualTime {
-            ticks: observation.coordinate.virtual_nanos,
+            ticks: observation.coordinate.virtual_ticks,
         }),
     );
     if let Some(retired) = observation.coordinate.retired_instructions {
@@ -1302,7 +1511,7 @@ pub(super) fn trigger_action_material(prefix: &str, action: &Action) -> String {
         Action::ArmTimer { name, after } => {
             lines.push(format!("{prefix}.kind=arm-timer"));
             lines.push(trigger_timer_material(&format!("{prefix}.timer"), name));
-            lines.push(format!("{prefix}.after_nanos={}", after.nanos));
+            lines.push(format!("{prefix}.after_ticks={}", after.ticks));
         }
         Action::CancelTimer { name } => {
             lines.push(format!("{prefix}.kind=cancel-timer"));
@@ -1394,7 +1603,6 @@ pub(super) fn scheduler_link_id_for_nodes(left: &NodeId, right: &NodeId) -> Link
 
 pub(super) fn instantiate_world_network_links(
     world: &World,
-    shift: Shift,
 ) -> Result<
     BTreeMap<(LinkId, NetworkLinkDirection), WorldNetworkLinkRuntime>,
     SchedulerWorldInstantiationError,
@@ -1419,16 +1627,20 @@ pub(super) fn instantiate_world_network_links(
                     count: physical_index,
                 }
             })?;
-            let base_faults = world_link_base_faults(definition);
+            let base_faults = world_link_base_faults(definition).ok_or_else(|| {
+                SchedulerWorldInstantiationError::NetworkTimingOverflow {
+                    link: canonical_id.clone(),
+                    direction,
+                }
+            })?;
             let minimum_latency = definition
                 .latency()
-                .nanos
-                .saturating_sub(definition.jitter().nanos);
+                .ticks
+                .saturating_sub(definition.jitter().ticks);
             let link = crucible_device::NetLink::new(
-                shift.bits,
                 source_node,
                 minimum_latency,
-                MIN_LINK_LATENCY.nanos,
+                MIN_LINK_LATENCY.ticks,
                 base_faults.clone(),
             )
             .map_err(|source| SchedulerWorldInstantiationError::Network {
@@ -1457,9 +1669,9 @@ pub(super) fn instantiate_world_network_links(
     Ok(links)
 }
 
-pub(super) fn world_link_base_faults(link: &LinkDef) -> crucible_device::LinkFaults {
+pub(super) fn world_link_base_faults(link: &LinkDef) -> Option<crucible_device::LinkFaults> {
     let mut faults = crucible_device::LinkFaults::none();
-    faults.jitter_window_ns = link.jitter().nanos.saturating_mul(2);
+    faults.jitter_window_ticks = link.jitter().ticks.checked_mul(2)?;
     if link.loss().millionths() != 0 {
         faults.loss =
             crucible_device::Probability::new(u64::from(link.loss().millionths()), 1_000_000);
@@ -1467,7 +1679,7 @@ pub(super) fn world_link_base_faults(link: &LinkDef) -> crucible_device::LinkFau
     if let Some(bits_per_second) = link.bandwidth_bps() {
         faults.bandwidth_bits_per_sec.push(bits_per_second);
     }
-    faults
+    Some(faults)
 }
 
 pub(super) fn apply_trigger_action(
@@ -1530,11 +1742,11 @@ pub(super) fn apply_trigger_effect(
             let ticks = application
                 .at
                 .ticks
-                .checked_add(after.nanos)
+                .checked_add(after.ticks)
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: format!(
                         "trigger timer `{}` overflows virtual time at {} + {}",
-                        name.name, application.at.ticks, after.nanos
+                        name.name, application.at.ticks, after.ticks
                     ),
                 })?;
             state
@@ -1680,8 +1892,9 @@ impl SchedulerEventLogSegmentMaterial {
         for entry in &self.entries {
             write_u64_le(&mut bytes, entry.sequence);
             write_u64_le(&mut bytes, entry.at_virtual_time_ticks);
-            write_u64_le(&mut bytes, entry.at_icount_retired);
-            write_optional_string(&mut bytes, entry.at_icount_node.as_deref());
+            write_u64_le(&mut bytes, entry.at_tick);
+            write_optional_u64(&mut bytes, entry.at_raw_retired);
+            write_optional_string(&mut bytes, entry.at_node.as_deref());
             write_string(&mut bytes, &entry.source_material);
             bytes.push(event_level_code(entry.level));
             bytes.push(event_class_code(entry.class));
@@ -1696,10 +1909,10 @@ impl SchedulerEventLogSegmentMaterial {
     pub(super) fn text_view(&self) -> String {
         let mut lines = Vec::new();
         lines.push(String::from(
-            "format=crucible.scheduler.event-log.segment-text.v1",
+            "format=crucible.scheduler.event-log.segment-text.v4",
         ));
         lines.push(String::from(
-            "canonical_format=crucible.scheduler.event-log.segment.v1",
+            "canonical_format=crucible.scheduler.event-log.segment.v4",
         ));
         lines.push(format!("schema_version={EVENT_LOG_SEGMENT_BINARY_VERSION}"));
         lines.push(format!("previous_prefix={}", self.previous_prefix.to_hex()));
@@ -1710,16 +1923,17 @@ impl SchedulerEventLogSegmentMaterial {
                 "entry.at_virtual_time_ticks={}",
                 entry.at_virtual_time_ticks
             ));
-            lines.push(format!(
-                "entry.at_icount_retired={}",
-                entry.at_icount_retired
-            ));
-            match &entry.at_icount_node {
+            lines.push(format!("entry.at_tick={}", entry.at_tick));
+            match entry.at_raw_retired {
+                Some(retired) => lines.push(format!("entry.at_raw_retired={retired}")),
+                None => lines.push(String::from("entry.at_raw_retired=none")),
+            }
+            match &entry.at_node {
                 Some(node) => {
-                    lines.push(String::from("entry.at_icount_node=some"));
-                    lines.push(format!("entry.at_icount_node_name={node}"));
+                    lines.push(String::from("entry.at_node=some"));
+                    lines.push(format!("entry.at_node_name={node}"));
                 }
-                None => lines.push(String::from("entry.at_icount_node=none")),
+                None => lines.push(String::from("entry.at_node=none")),
             }
             lines.push(entry.source_material.clone());
             lines.push(format!("entry.level={}", event_level_label(entry.level)));
@@ -1743,8 +1957,9 @@ impl SchedulerEventLogSegmentMaterial {
 pub(super) struct SchedulerEventLogSegmentEntryMaterial {
     pub(super) sequence: u64,
     pub(super) at_virtual_time_ticks: u64,
-    pub(super) at_icount_retired: u64,
-    pub(super) at_icount_node: Option<String>,
+    pub(super) at_tick: u64,
+    pub(super) at_raw_retired: Option<u64>,
+    pub(super) at_node: Option<String>,
     pub(super) source_material: String,
     pub(super) level: EventLevel,
     pub(super) class: SchedulerEventLogClass,
@@ -1763,6 +1978,7 @@ pub(super) enum SchedulerEventLogSegmentDecodeError {
     InvalidFlag { field: &'static str, value: u8 },
     InvalidLevel { value: u8 },
     InvalidClass { value: u8 },
+    InvalidBackendInputStamp { sequence: u64 },
     LengthTooLarge { field: &'static str, len: u64 },
     TrailingBytes { remaining: usize },
 }
@@ -1815,6 +2031,17 @@ impl<'a> SchedulerEventLogSegmentCursor<'a> {
         let mut word = [0; 8];
         word.copy_from_slice(self.read_exact(field, 8)?);
         Ok(u64::from_le_bytes(word))
+    }
+
+    fn read_optional_u64(
+        &mut self,
+        field: &'static str,
+    ) -> Result<Option<u64>, SchedulerEventLogSegmentDecodeError> {
+        match self.read_u8(field)? {
+            EVENT_LOG_SEGMENT_NODE_ABSENT => Ok(None),
+            EVENT_LOG_SEGMENT_NODE_PRESENT => self.read_u64_le(field).map(Some),
+            value => Err(SchedulerEventLogSegmentDecodeError::InvalidFlag { field, value }),
+        }
     }
 
     fn read_string(
@@ -1893,8 +2120,9 @@ pub(super) fn scheduler_event_log_segment_material(
             SchedulerEventLogSegmentEntryMaterial {
                 sequence: entry.sequence,
                 at_virtual_time_ticks: entry.at.virtual_time.ticks,
-                at_icount_retired: entry.at.icount.icount.retired,
-                at_icount_node: entry.at.icount.node.as_ref().map(|node| node.name.clone()),
+                at_tick: entry.at.stamp.tick.ticks,
+                at_raw_retired: entry.at.stamp.retired.map(|count| count.retired),
+                at_node: entry.at.stamp.node.as_ref().map(|node| node.name.clone()),
                 source_material: scheduler_event_log_source_material("entry.source", &entry.source),
                 level: entry.level,
                 class: entry.class,
@@ -1934,11 +2162,12 @@ pub(super) fn decode_scheduler_event_log_segment(
     })?;
     let mut entries = Vec::with_capacity(entry_count);
     for _ in 0..entry_count {
-        entries.push(SchedulerEventLogSegmentEntryMaterial {
+        let entry = SchedulerEventLogSegmentEntryMaterial {
             sequence: cursor.read_u64_le("entry.sequence")?,
             at_virtual_time_ticks: cursor.read_u64_le("entry.at_virtual_time_ticks")?,
-            at_icount_retired: cursor.read_u64_le("entry.at_icount_retired")?,
-            at_icount_node: cursor.read_optional_string("entry.at_icount_node")?,
+            at_tick: cursor.read_u64_le("entry.at_tick")?,
+            at_raw_retired: cursor.read_optional_u64("entry.at_raw_retired")?,
+            at_node: cursor.read_optional_string("entry.at_node")?,
             source_material: cursor.read_string("entry.source")?,
             level: event_level_from_code(cursor.read_u8("entry.level")?)?,
             class: event_class_from_code(cursor.read_u8("entry.class")?)?,
@@ -1946,7 +2175,26 @@ pub(super) fn decode_scheduler_event_log_segment(
             payload_attribute_count: cursor.read_u64_le("entry.payload.attributes")?,
             content_hash: cursor.read_content_hash("entry.hash")?,
             entry_material: cursor.read_string("entry.material")?,
-        });
+        };
+        if entry.payload_kind == "backend_input" {
+            let valid_source = entry.at_node.as_ref().is_some_and(|node| {
+                entry.source_material
+                    == scheduler_event_log_source_material(
+                        "entry.source",
+                        &EventSource::Node {
+                            node: NodeId { name: node.clone() },
+                        },
+                    )
+            });
+            if !valid_source || entry.at_raw_retired.is_none() {
+                return Err(
+                    SchedulerEventLogSegmentDecodeError::InvalidBackendInputStamp {
+                        sequence: entry.sequence,
+                    },
+                );
+            }
+        }
+        entries.push(entry);
     }
     cursor.finish()?;
     Ok(SchedulerEventLogSegmentMaterial {
@@ -1969,6 +2217,16 @@ pub(super) fn write_optional_string(bytes: &mut Vec<u8>, value: Option<&str>) {
         Some(value) => {
             bytes.push(EVENT_LOG_SEGMENT_NODE_PRESENT);
             write_string(bytes, value);
+        }
+        None => bytes.push(EVENT_LOG_SEGMENT_NODE_ABSENT),
+    }
+}
+
+pub(super) fn write_optional_u64(bytes: &mut Vec<u8>, value: Option<u64>) {
+    match value {
+        Some(value) => {
+            bytes.push(EVENT_LOG_SEGMENT_NODE_PRESENT);
+            write_u64_le(bytes, value);
         }
         None => bytes.push(EVENT_LOG_SEGMENT_NODE_ABSENT),
     }
@@ -2017,13 +2275,12 @@ pub(super) fn event_class_from_code(
 pub(super) fn scheduler_ordered_decisions(
     decisions: Vec<Decision>,
     fallback: SimInstant,
-    shift: Shift,
     preemption_times: &[(PreemptionDecision, SimInstant)],
 ) -> Result<Vec<Decision>, SchedulerError> {
     let mut keyed = Vec::with_capacity(decisions.len());
     for (index, decision) in decisions.into_iter().enumerate() {
         keyed.push((
-            scheduler_decision_event_log_time(&decision, fallback, shift, preemption_times)?,
+            scheduler_decision_event_log_time(&decision, fallback, preemption_times)?,
             index,
             decision,
         ));
@@ -2041,7 +2298,6 @@ pub(super) fn scheduler_ordered_decisions(
 pub(super) fn scheduler_decision_event_log_time(
     decision: &Decision,
     fallback: SimInstant,
-    shift: Shift,
     preemption_times: &[(PreemptionDecision, SimInstant)],
 ) -> Result<VirtualTime, SchedulerError> {
     match decision {
@@ -2052,16 +2308,16 @@ pub(super) fn scheduler_decision_event_log_time(
                 .find(|(decision, _)| decision == preemption)
             {
                 Ok(VirtualTime {
-                    ticks: virtual_time.nanos,
+                    ticks: virtual_time.ticks,
                 })
             } else {
                 Ok(VirtualTime {
-                    ticks: preemption.at.to_virtual(shift)?.nanos,
+                    ticks: preemption.at.ticks,
                 })
             }
         }
-        Decision::RngDraw(_) | Decision::Override(_) | Decision::AppRandom(_) => Ok(VirtualTime {
-            ticks: fallback.nanos,
+        Decision::RngDraw(_) | Decision::Override(_) | Decision::Selection(_) => Ok(VirtualTime {
+            ticks: fallback.ticks,
         }),
     }
 }
@@ -2108,7 +2364,7 @@ pub(super) fn scheduler_decision_material(decision: &Decision) -> String {
             lines.push(String::from("decision=preemption"));
             lines.push(format!("node_len={}", preemption.node.name.len()));
             lines.push(format!("node={}", preemption.node.name));
-            lines.push(format!("at_retired={}", preemption.at.retired));
+            lines.push(format!("at_tick={}", preemption.at.ticks));
             match &preemption.kind {
                 PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
                     lines.push(String::from("preemption_kind=vcpu-switch"));
@@ -2122,18 +2378,23 @@ pub(super) fn scheduler_decision_material(decision: &Decision) -> String {
                 }
             }
         }
-        Decision::AppRandom(random) => {
-            lines.push(String::from("decision=app-random"));
-            lines.push(format!("node_len={}", random.node.name.len()));
-            lines.push(format!("node={}", random.node.name));
-            lines.push(format!("stream_domain_len={}", random.stream.domain.len()));
-            lines.push(format!("stream_domain={}", random.stream.domain));
-            lines.push(format!("stream_name_len={}", random.stream.name.len()));
-            lines.push(format!("stream_name={}", random.stream.name));
-            lines.push(format!("request_id={}", random.request_id));
-            lines.push(format!("width={}", random.width));
-            lines.push(format!("value={}", random.value));
+        Decision::Selection(selection) => {
+            lines.push(String::from("decision=campaign-selection"));
+            lines.push(format!(
+                "canonical_selection={}",
+                scheduler_hex_bytes(selection.canonical_bytes())
+            ));
         }
     }
     lines.join("\n")
+}
+
+fn scheduler_hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }

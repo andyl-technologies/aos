@@ -355,7 +355,7 @@ mod tests {
             campaign.persist_accumulated_coverage_map([])?,
             campaign.persist_findings_ledger([])?,
             ContentHash::from_bytes(b"genesis-pin"),
-            CampaignProvenance::new("crucible-test", "qemu-test+series", "shmem:1,gh:1,rpc:1"),
+            CampaignProvenance::new("crucible-test", "qemu-test+atomic", "shmem:1,gh:1,rpc:1"),
         );
 
         let seeds = campaign.seed_next_run(&manifest, &manifest.provenance)?;
@@ -497,7 +497,7 @@ mod tests {
             coverage_map_root,
             findings_root,
             genesis_pin,
-            CampaignProvenance::new("crucible-test", "qemu-test+series", "shmem:1,gh:1,rpc:1"),
+            CampaignProvenance::new("crucible-test", "qemu-test+atomic", "shmem:1,gh:1,rpc:1"),
         );
 
         let candidates = [
@@ -637,7 +637,7 @@ mod tests {
             .manifest_store()
             .put(b"retention-genesis-pin")?;
         let provenance =
-            CampaignProvenance::new("crucible-test", "qemu-test+series", "shmem:1,gh:1,rpc:1");
+            CampaignProvenance::new("crucible-test", "qemu-test+atomic", "shmem:1,gh:1,rpc:1");
         let full_manifest = CampaignManifest::new(
             left_corpus,
             coverage_root,
@@ -735,7 +735,7 @@ mod tests {
         let findings_root = campaign.persist_findings_ledger([])?;
         let genesis_pin = campaign.manifest_store().put(b"merge-retention-genesis")?;
         let provenance =
-            CampaignProvenance::new("crucible-test", "qemu-test+series", "shmem:1,gh:1,rpc:1");
+            CampaignProvenance::new("crucible-test", "qemu-test+atomic", "shmem:1,gh:1,rpc:1");
         let corpus_root =
             campaign.persist_campaign_corpus([artifact_a.clone(), artifact_b.clone()])?;
         let retention = campaign.retain_campaign_corpus_under_cap(
@@ -822,7 +822,7 @@ mod tests {
             artifact_b.clone(),
         );
         let provenance =
-            CampaignProvenance::new("crucible-test", "qemu-test+series", "shmem:1,gh:1,rpc:1");
+            CampaignProvenance::new("crucible-test", "qemu-test+atomic", "shmem:1,gh:1,rpc:1");
         let first = CampaignManifest::new(
             campaign.persist_campaign_corpus([artifact_a])?,
             campaign.persist_accumulated_coverage_map([edge_a])?,
@@ -893,7 +893,7 @@ mod tests {
             artifact_b.clone(),
         );
         let provenance =
-            CampaignProvenance::new("crucible-test", "qemu-test+series", "shmem:1,gh:1,rpc:1");
+            CampaignProvenance::new("crucible-test", "qemu-test+atomic", "shmem:1,gh:1,rpc:1");
         let full_corpus = campaign.persist_campaign_corpus([artifact_a.clone(), artifact_b])?;
         let full_coverage = campaign.persist_accumulated_coverage_map([edge_a, edge_b])?;
         let full_findings =
@@ -1200,7 +1200,7 @@ mod tests {
             campaign_root_fixture(campaign, "coverage-map", coverage)?,
             campaign_root_fixture(campaign, "findings", findings)?,
             ContentHash::from_bytes(b"genesis-pin"),
-            CampaignProvenance::new("crucible-test", "qemu-test+series", "shmem:1,gh:1,rpc:1"),
+            CampaignProvenance::new("crucible-test", "qemu-test+atomic", "shmem:1,gh:1,rpc:1"),
         ))
     }
 

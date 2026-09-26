@@ -59,7 +59,7 @@
       }
       {
         label = "live preemption completion gate";
-        needle = "`checks.crucible.phase2.qemuLivePluginPreemption`";
+        needle = "`checks.crucible.phase2.qemuPreemptionInject`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" patchSpec [
@@ -226,26 +226,26 @@
         needle = "pub fn resolve_qemu_inject_preemption_symbol";
       }
       {
-        label = "preemption install scaffold";
-        needle = "pub fn install_required_preemption_scaffold";
+        label = "preemption capability admission";
+        needle = "PluginPreemptionInjector::require(symbols.inject_preemption)";
       }
       {
-        label = "preemption install from qemu info";
-        needle = "pub fn install_required_preemption_scaffold_from_qemu_info";
+        label = "preemption runtime symbol";
+        needle = "inject_preemption: Option<QemuInjectPreemptionFn>";
       }
       {
         label = "ABI preemption capability error";
         needle = "PreemptionInjectionCapability";
       }
       {
-        label = "state partition stores preemption injector";
-        needle = "preemption_injector";
+        label = "runtime install validates preemption injector";
+        needle = "_preemption_injector";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
       {
         label = "ABI preemption capability test";
-        needle = "abi_install_requires_preemption_injection_symbol";
+        needle = "runtime_install_rejects_each_missing_capability_family";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/inertness.rs" pluginInertness [
@@ -366,8 +366,8 @@ in
               preemption::tests::deterministic_ipi_delivery_rejects_bad_vcpu_pairs_and_overflow \
               preemption::tests::deterministic_ipi_delivery_rejects_bad_vcpu_pairs_and_overflow
             run_exact_test \
-              abi::tests::capabilities::abi_install_requires_preemption_injection_symbol \
-              abi::tests::capabilities::abi_install_requires_preemption_injection_symbol
+              abi::tests::capabilities::runtime_install_rejects_each_missing_capability_family \
+              abi::tests::capabilities::runtime_install_rejects_each_missing_capability_family
           '';
         }
         {

@@ -217,9 +217,6 @@ pub struct VmDef {
     /// Fixed vCPU count. `N >= 1`; multi-vCPU nodes use single-threaded RR-TCG
     /// with a content-addressed RR switch quantum (10/[QEMU-5], 10/[QEMU-43]).
     pub smp_vcpus: u16,
-    /// The fixed `-icount shift=N` for this node (09, 10); never `auto`.
-    /// Hashed so a shift change is a different scenario ([TIME] cross-ref).
-    pub icount_shift: u8,
     /// Optional white-box agent opt-in: enables the guest↔host channel (16)
     /// for agent-signal ready points and in-guest markers. Default off ([G-3]).
     pub white_box: WhiteBoxPolicy,
@@ -243,8 +240,9 @@ pub enum ReadyPoint {
 
 The fields are exactly the launch-time inputs to QEMU plus the determinism knobs:
 architecture, kernel/root/initrd blobs, command line, memory, the fixed vCPU
-count, the fixed icount
-shift, the ready-point policy, and the white-box opt-in. Note what is *absent*:
+count, the ready-point policy, and the white-box opt-in. The global fixed
+1000-tick-per-nanosecond scale enters scenario identity; no per-node shift
+exists. Note what is *absent*:
 no host paths, no "snapshot path" (genesis snapshots are derived by `bake`, not
 authored — 05 §6), no participant count, no shmem geometry, no per-run scratch
 directories. The `NodeDef` is portable because it contains only content and
@@ -257,7 +255,7 @@ content-addressed references.
 
 - **[SPAT-7]** A VM node's configuration MUST carry only launch-time inputs:
   architecture, content-addressed kernel/root/initrd references, kernel command
-  line, memory size, the fixed vCPU count, the fixed icount shift, the ready-point
+  line, memory size, the fixed vCPU count, the ready-point
   policy, and the white-box opt-in. It MUST NOT carry host-varying absolute
   paths, an authored genesis-snapshot path (genesis snapshots are produced by
   `bake`, 05 §6), or any content that Crucible places inside the guest for core
@@ -266,9 +264,9 @@ content-addressed references.
 - **[SPAT-8]** Each VM node MUST request a fixed vCPU count `N >= 1`; `N` MUST be
   part of the hashed configuration, so a vCPU-count change is a different
   scenario. A multi-vCPU node (`N > 1`) MUST use the single-threaded RR-TCG
-  launch contract from 10/[QEMU-5] and 10/[QEMU-43], never MTTCG. The
-  `icount_shift` MUST be a fixed value (never `auto`) and MUST also be part of
-  the hashed configuration, so a shift change is a different scenario. *Gate:*
+  launch contract from 10/[QEMU-5] and 10/[QEMU-43], never MTTCG. The fixed
+  1000-tick-per-nanosecond scale MUST remain part of scenario identity.
+  Authored scenarios MUST NOT expose a shift field. *Gate:*
   `gate:content-address`. *Spec:* §3.1; cross-ref 09, 10.
 
 - **[SPAT-9]** Each node MUST declare a `ReadyPoint` policy ([EXEC-20]); the
@@ -581,7 +579,6 @@ let scenario = ScenarioBuilder::new()
         .root_image(root_blob)
         .cmdline("console=ttyS0 quiet")
         .memory_mib(512)
-        .icount_shift(7)
         .ready_point(ReadyPoint::ConsoleMarker { marker: "crucible-ready".into() }))
     .node("db-1", VmDef::x86_64().like("db-0"))   // reuse a node template
     .node("db-2", VmDef::x86_64().like("db-0"))
@@ -632,7 +629,6 @@ kernel = "blake3:9f86d0..."        # content-addressed blob ref (§8)
 root_image = "blake3:2c26b4..."
 cmdline = "console=ttyS0 quiet"
 memory_mib = 512
-icount_shift = 7
 ready_point = { kind = "console_marker", marker = "crucible-ready" }
 
 # ... db-1, db-2 emitted in canonical (sorted) order ...
@@ -853,7 +849,7 @@ The required checks:
 | Property refs | every predicate's node reference is declared | [SPAT-21] |
 | Ready point | white-box ready point requires the node's white-box opt-in | [SPAT-9] |
 | vCPU count | a fixed count `N >= 1`; `N > 1` uses single-threaded RR-TCG | [SPAT-8] |
-| Icount shift | a fixed, in-range shift (never `auto`) | [SPAT-8] |
+| Clock scale | fixed 1000 logical ticks per nanosecond, with no authored shift | [SPAT-8] |
 
 ```rust,illustrative
 /// Build-time validation failures. Every variant is a well-formedness error
@@ -868,7 +864,6 @@ pub enum BuildError {
     FaultSignalPlan { detail: String },
     InvalidPlanCoordinate { event: ScenarioEventId, detail: String },
     WhiteBoxReadyPointWithoutOptIn { node: NodeId },
-    InvalidIcountShift { node: NodeId, shift_was_auto: bool },
     // ... one variant per row of the validation table ...
 }
 ```
@@ -1024,14 +1019,15 @@ authority for its shape. The contract those files may rely on:
     `checks.crucible.phase1.spatialWorldTopology` gates the task.
 - [x] **T-SPAT-5** Implement `NodeDef`/`VmDef` carrying only launch-time inputs
   (arch, content-addressed kernel/root/initrd, cmdline, memory, fixed vCPU count,
-  fixed icount shift, ready point, white-box opt-in); test no host-path leakage.
+  ready point, white-box opt-in); bind the global 1000-tick-per-nanosecond scale
+  into scenario identity and test no host-path leakage.
   — satisfies [SPAT-7], [SPAT-8]; spec §3.1.
   - Completed by `crates/crucible/src/model.rs`: `WorldNode` and
     `NodeTemplate` are the concrete NodeDef/VmDef-bearing model for this phase
     and carry only launch-time inputs: `VmArchitecture`, content-addressed
     kernel/root/initrd references, command line, memory size, fixed vCPU count,
-    fixed icount shift, ready point, and white-box opt-in. TOML, compact binary,
-    and canonical material include those fields, and parsing rejects host-path
+    ready point, and white-box opt-in. TOML, compact binary, and canonical
+    material include those fields and the fixed clock scale; parsing rejects host-path
     image references. The focused
     `world_node_launch_inputs_are_portable_and_identity_bearing` test and
     `checks.crucible.phase1.spatialNodeLaunchInputs` gate cover field retention,
@@ -1115,10 +1111,10 @@ authority for its shape. The contract those files may rely on:
   - Completed in `crates/crucible/src/model/plan_properties.rs` and
     `crates/crucible/src/model/fault_signal/plan.rs`: `Plan` carries one event
     graph plus one canonical `FaultSignalPlan`, and
-    `World::scenario_def_with_plan` composes the independent world and plan
-    hashes without folding plan state into topology. Canonical program and
-    binding ordering makes authoring order irrelevant while preserving scenario
-    identity sensitivity to every semantic plan change. The terminal
+    `World::scenario_def_with_plan_properties_and_seed` composes the
+    independent world and plan hashes without folding plan state into topology.
+    Canonical program and binding ordering makes authoring order irrelevant while
+    preserving scenario identity sensitivity to every semantic plan change. The terminal
     `checks.crucible.phase7.gates.signalFaultSystem` gate covers this contract.
 - [x] **T-SPAT-13** Carry `Properties` as an orthogonal content-addressed component
   (defined in 18) with build-time predicate node-reference validation. — satisfies
@@ -1153,9 +1149,9 @@ authority for its shape. The contract those files may rely on:
   orthogonal entry points and node/world templating; no boot-event folding. —
   satisfies [SPAT-23]; spec §6, §10.
   - Completed in `crates/crucible/src/model.rs`: `ScenarioBuilder` now exposes
-    distinct world-layer entry points (`world`, `node`, `node_like`, `link`,
-    `link_with_transport`, `link_def`), plan-layer entry points (`plan`,
-    `plan_entry`), properties-layer entry points (`properties`, `property`), and
+    distinct world-layer entry points (`world`, `node`, `node_like`, `link`),
+    plan-layer entry points (`plan`, `plan_entry`), properties-layer entry points
+    (`properties`, `property`), and
     `seed`, all flowing through the existing validated component composition path.
     `NodeTemplate` supports reusable node settings and builder-level `node_like`
     templating, with no boot-event topology/assertion folding API. The focused
@@ -1253,10 +1249,10 @@ authority for its shape. The contract those files may rely on:
     link endpoints, invalid latency/jitter/loss, bad plan refs,
     unsupported/unknown plan fault params, dangling heal tags, negative plan
     times, undeclared property refs, empty compound predicates, white-box ready
-    points without opt-in, zero fixed vCPU counts, and out-of-range fixed icount
-    shifts. `WorldNode` now carries fixed `smp_vcpus` and `icount_shift`, and
-    both fields participate in world/scenario identity; `crucible-qemu`
-    launch-profile validation mirrors those rows before spawn and continues to
+    points without opt-in and zero fixed vCPU counts. `WorldNode` carries fixed
+    `smp_vcpus`, and the global 1000-tick-per-nanosecond scale participates in
+    world/scenario identity; `crucible-qemu` launch-profile validation mirrors
+    those rows before spawn and continues to
     reject MTTCG/non-pinned launch material. The focused
     `scenario_def_form_rejects_well_formedness_matrix_before_hashing` test and
     `checks.crucible.phase1.spatialValidationPass` gate lock the §9 validation

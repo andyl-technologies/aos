@@ -52,7 +52,7 @@ fn qemu_node_publishes_scheduler_preemption_before_owned_run() -> Result<(), Box
         &mut node,
         &BackendEffect::Preemption(crucible::PreemptionDecision {
             node: node_id("vm-a"),
-            at: Icount { retired: 27 },
+            at: crucible::SimInstant { ticks: 27 },
             kind: crucible::PreemptionKind::InterruptAt {
                 target_vcpu: crucible::VcpuId { index: 1 },
                 irq: crucible::IrqVector { vector: 48 },
@@ -75,9 +75,9 @@ fn qemu_node_publishes_scheduler_preemption_before_owned_run() -> Result<(), Box
     assert_eq!(
         calls[command_index],
         ChannelCall::ShmemPreemption(SchedulerPreemptionCommand {
-            at_icount: 27,
-            deadline_icount: 23,
-            ceiling_icount: 29,
+            at_tick: 27,
+            deadline_tick: 23,
+            ceiling_tick: 29,
             kind: ShmemSchedulerPreemptionKind::InterruptAt {
                 target_vcpu: 1,
                 irq: 48,
@@ -90,7 +90,7 @@ fn qemu_node_publishes_scheduler_preemption_before_owned_run() -> Result<(), Box
 }
 
 #[test]
-fn qemu_node_open_gdbstub_reports_configured_channel() -> Result<(), Box<dyn Error>> {
+fn qemu_node_keeps_exact_preemption_after_an_idle_time_jump() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let mut node = scripted_node_with_runtime(
         Arc::clone(&log),
@@ -98,41 +98,36 @@ fn qemu_node_open_gdbstub_reports_configured_channel() -> Result<(), Box<dyn Err
         false,
         false,
         [QemuAsyncWaitOutcome::Completed],
-    )?
-    .with_gdbstub(QemuGdbstubChannelConfig::new(
-        "tcp:127.0.0.1:9001",
-        "127.0.0.1:0",
-    )?);
-
-    let info = SimulationBackend::open_gdbstub(
-        &mut node,
-        node_id("vm-a"),
-        GdbListen::new("127.0.0.1:0")?,
     )?;
 
-    assert_eq!(info.node, node_id("vm-a"));
-    assert_eq!(info.qemu_endpoint, "tcp:127.0.0.1:9001");
-    let active_listener = node
-        .active_gdbstub_listener()
-        .expect("open_gdbstub should bind an operator listener");
-    assert_ne!(active_listener.port(), 0);
-    assert_eq!(info.operator_listen.as_str(), active_listener.to_string());
-    assert!(
-        TcpListener::bind(active_listener).is_err(),
-        "gdbstub attach should keep the operator listener bound"
-    );
-    assert!(info.is_out_of_band_debug_proxy());
-    assert!(matches!(
-        SimulationBackend::open_gdbstub(
-            &mut node,
-            node_id("vm-a"),
-            GdbListen::new("127.0.0.1:0")?,
-        ),
-        Err(BackendError::Rejected { message }) if message.contains("already active")
-    ));
-    assert_eq!(recorded(&log), Vec::<ChannelCall>::new());
-    assert!(node.shutdown_child()?.reaped);
+    // The VM can advance logical time without retiring any instruction.
+    node.last_observed_time = VirtualTime { ticks: 1_000 };
+    SimulationBackend::apply(
+        &mut node,
+        &BackendEffect::Preemption(crucible::PreemptionDecision {
+            node: node_id("vm-a"),
+            at: crucible::SimInstant { ticks: 1_001 },
+            kind: crucible::PreemptionKind::InterruptAt {
+                target_vcpu: crucible::VcpuId { index: 1 },
+                irq: crucible::IrqVector { vector: 48 },
+            },
+        }),
+        VirtualTime { ticks: 1_000 },
+    )?;
+    SimulationBackend::step_to(&mut node, VirtualTime { ticks: 1_050 })?;
 
+    assert!(
+        recorded(&log).contains(&ChannelCall::ShmemPreemption(SchedulerPreemptionCommand {
+            at_tick: 1_001,
+            deadline_tick: 1_000,
+            ceiling_tick: 1_050,
+            kind: ShmemSchedulerPreemptionKind::InterruptAt {
+                target_vcpu: 1,
+                irq: 48,
+            },
+        }))
+    );
+    SimulationBackend::shutdown(&mut node)?;
     Ok(())
 }
 
@@ -212,95 +207,6 @@ fn qemu_node_timeout_reports_crash_and_runs_shutdown() -> Result<(), Box<dyn Err
 
     Ok(())
 }
-
-#[test]
-fn qemu_node_terminates_after_indeterminate_qmp_save_failure() -> Result<(), Box<dyn Error>> {
-    let log = shared_log();
-    let mut node = scripted_node(Arc::clone(&log), false, false, true)?;
-
-    let mut checkpoint = checkpoint("qmp-failure");
-    checkpoint.virtual_time = node.synchronize_observed_time()?;
-    let node_identity = node_id("vm-a");
-    checkpoint.node_icounts.insert(
-        node_identity.clone(),
-        Icount {
-            retired: checkpoint.virtual_time.ticks,
-        },
-    );
-    let result = node.capture_exact_snapshot(&node_identity, checkpoint.clone());
-
-    let error = result.expect_err("failed QMP save must reject exact capture");
-    assert!(error.to_string().contains("save_checkpoint_vmstate"));
-    assert!(error.to_string().contains("QMP error"));
-    assert!(error.to_string().contains("terminated and reaped"));
-    assert_eq!(
-        recorded(&log),
-        vec![
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::QmpStop,
-            ChannelCall::HostCheckpointClearWhileStopped,
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::QmpExactSave(checkpoint.id),
-            ChannelCall::PluginQuit,
-            ChannelCall::QmpQuit,
-        ]
-    );
-    assert!(node.child_reaped());
-
-    Ok(())
-}
-
-#[test]
-fn qemu_node_qmp_timeout_terminates_indeterminate_save_job() -> Result<(), Box<dyn Error>> {
-    let log = shared_log();
-    let mut node = scripted_node_with_options(
-        Arc::clone(&log),
-        ScriptedNodeOptions {
-            qmp_snapshot_timeout: true,
-            ..ScriptedNodeOptions::default()
-        },
-        [QemuAsyncWaitOutcome::Completed],
-    )?;
-
-    let mut checkpoint = checkpoint("qmp-timeout");
-    checkpoint.virtual_time = node.synchronize_observed_time()?;
-    let node_identity = node_id("vm-a");
-    checkpoint.node_icounts.insert(
-        node_identity.clone(),
-        Icount {
-            retired: checkpoint.virtual_time.ticks,
-        },
-    );
-    let result = node.capture_exact_snapshot(&node_identity, checkpoint.clone());
-
-    let error = result.expect_err("timed-out QMP save must crash and reject exact capture");
-    let message = error.to_string();
-    assert!(message.contains("timed out"));
-    assert!(message.contains("terminated and reaped"));
-    assert!(message.contains("save_checkpoint_vmstate"));
-    assert!(node.child_reaped());
-    assert_eq!(
-        node.lifecycle_state(),
-        QemuNodeLifecycleState::ShutdownRequested
-    );
-    assert_eq!(
-        recorded(&log),
-        vec![
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::QmpStop,
-            ChannelCall::HostCheckpointClearWhileStopped,
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::QmpExactSave(checkpoint.id),
-            ChannelCall::PluginQuit,
-            ChannelCall::QmpQuit,
-        ]
-    );
-
-    Ok(())
-}
-
 #[test]
 fn qemu_node_shutdown_continues_to_reap_when_plugin_quit_fails() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
@@ -350,5 +256,180 @@ fn qemu_node_repeated_shutdown_is_idempotent_after_reap() -> Result<(), Box<dyn 
     );
     assert!(node.child_reaped());
 
+    Ok(())
+}
+
+#[test]
+fn qemu_node_retires_process_endpoints_after_normal_reap() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions {
+            track_process_endpoint_retirement: true,
+            ..ScriptedNodeOptions::default()
+        },
+        [QemuAsyncWaitOutcome::Completed],
+    )?;
+
+    let report = node.shutdown_child()?;
+
+    assert!(report.reaped);
+    assert_eq!(
+        recorded(&log),
+        vec![
+            ChannelCall::PluginQuit,
+            ChannelCall::QmpQuit,
+            ChannelCall::QmpRetireProcessScopedEndpoints,
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn qemu_node_retires_process_endpoints_when_already_reaped() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions {
+            track_process_endpoint_retirement: true,
+            ..ScriptedNodeOptions::default()
+        },
+        [QemuAsyncWaitOutcome::Completed],
+    )?;
+
+    assert!(node.shutdown_child()?.reaped);
+    let second = node.shutdown_child()?;
+
+    assert!(second.reaped);
+    assert!(second.attempts.is_empty());
+    assert_eq!(
+        recorded(&log),
+        vec![
+            ChannelCall::PluginQuit,
+            ChannelCall::QmpQuit,
+            ChannelCall::QmpRetireProcessScopedEndpoints,
+            ChannelCall::QmpRetireProcessScopedEndpoints,
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn qemu_node_retires_process_endpoints_after_crash_reap() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions {
+            track_process_endpoint_retirement: true,
+            ..ScriptedNodeOptions::default()
+        },
+        [QemuAsyncWaitOutcome::TimedOut],
+    )?;
+
+    let result = Backend::advance_to_horizon(
+        &mut node,
+        ExecutionHorizon {
+            icount: Icount { retired: 31 },
+        },
+    );
+
+    assert!(matches!(result, Err(BackendError::Rejected { .. })));
+    assert!(node.child_reaped());
+    assert_eq!(
+        recorded(&log).last(),
+        Some(&ChannelCall::QmpRetireProcessScopedEndpoints)
+    );
+    Ok(())
+}
+
+#[test]
+fn qemu_node_retains_process_endpoints_when_reap_fails() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions {
+            track_process_endpoint_retirement: true,
+            ..ScriptedNodeOptions::default()
+        },
+        [QemuAsyncWaitOutcome::Completed],
+    )?;
+
+    // Reap the fixture's owned child before installing the controlled
+    // externally parented process that remains alive through every rung.
+    assert!(node.shutdown_child()?.reaped);
+    node.child = QemuNodeProcessControl::External(Box::new(UnreapableExternalProcessControl));
+    log.lock().unwrap().clear();
+
+    let error = node
+        .shutdown_child()
+        .expect_err("an unreapable process must fail shutdown");
+
+    let QemuNodeError::Shutdown {
+        source: crate::QemuShutdownError::LeakedChild { report },
+    } = error
+    else {
+        panic!("expected a leaked-child shutdown error, got {error:?}");
+    };
+    assert!(report.leaked);
+    assert!(!report.reaped);
+    assert_eq!(
+        recorded(&log),
+        vec![ChannelCall::PluginQuit, ChannelCall::QmpQuit]
+    );
+    Ok(())
+}
+
+#[test]
+fn bounded_scheduler_preemption_rejects_externally_owned_process() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions::default(),
+        [QemuAsyncWaitOutcome::Completed],
+    )?;
+    assert!(node.shutdown_child()?.reaped);
+    node.child = QemuNodeProcessControl::External(Box::new(UnreapableExternalProcessControl));
+
+    let evidence = crate::BoundedSchedulerPreemptionEvidence::default();
+    node.enable_bounded_scheduler_preemption(evidence.claim()?);
+    let error = node
+        .advance_to_ceiling_report(Icount { retired: 31 })
+        .expect_err("externally owned process must be rejected before pidfd_open");
+
+    assert!(matches!(
+        error,
+        QemuNodeError::BoundedSchedulerPreemptionTarget {
+            target: QemuBoundedSchedulerPreemptionTargetError::ExternallyOwned,
+        }
+    ));
+    assert!(evidence.snapshot().is_none());
+    assert!(evidence.claim().is_err());
+    Ok(())
+}
+
+#[test]
+fn bounded_scheduler_preemption_rejects_reaped_direct_child() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_options(
+        log,
+        ScriptedNodeOptions::default(),
+        [QemuAsyncWaitOutcome::Completed],
+    )?;
+    assert!(node.shutdown_child()?.reaped);
+
+    let evidence = crate::BoundedSchedulerPreemptionEvidence::default();
+    node.enable_bounded_scheduler_preemption(evidence.claim()?);
+    let error = node
+        .advance_to_ceiling_report(Icount { retired: 31 })
+        .expect_err("reaped direct child must be rejected before pidfd_open");
+
+    assert!(matches!(
+        error,
+        QemuNodeError::BoundedSchedulerPreemptionTarget {
+            target: QemuBoundedSchedulerPreemptionTargetError::AlreadyReaped,
+        }
+    ));
+    assert!(evidence.snapshot().is_none());
+    assert!(evidence.claim().is_err());
     Ok(())
 }

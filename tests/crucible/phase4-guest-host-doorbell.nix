@@ -71,7 +71,7 @@
       }
       {
         label = "service trap method";
-        needle = "pub fn service_trap";
+        needle = "fn service_trap";
       }
       {
         label = "trap event exact icount";

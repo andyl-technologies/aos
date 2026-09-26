@@ -8,7 +8,10 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   session = import ./_crucible-session-source.nix {inherit lib;};
-  sessionGate = builtins.readFile ../../crates/crucible-session/tests/gate_control_responsive.rs;
+  sessionGate = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-session/tests/gate_control_responsive.rs;
+  };
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   apiStream = builtins.readFile ../../crates/crucible-api/src/event_log_stream.rs;
   apiGate = builtins.readFile ../../crates/crucible-api/tests/gate_control_responsive.rs;
@@ -114,11 +117,11 @@
       }
       {
         label = "causal stream assertion";
-        needle = "EventClass::Causal";
+        needle = "SchedulerEventLogClass::Causal";
       }
       {
         label = "observational stream assertion";
-        needle = "EventClass::Observational";
+        needle = "SchedulerEventLogClass::Observational";
       }
       {
         label = "command-source correlation assertion";
@@ -244,12 +247,17 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase4-event-log-control-plane-streaming";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
+
+        pkgs.pkg-config
+        pkgs.sqlite
       ];
 
       phases = [

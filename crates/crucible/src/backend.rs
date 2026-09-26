@@ -6,8 +6,8 @@
 
 use crate::model::{FaultObjectId, FaultPhase};
 use crate::{
-    Checkpoint, ContentHash, Decision, Icount, NodeId, ObservableEvent, PreemptionDecision,
-    VirtualTime,
+    BackendRngEvidence, Checkpoint, ContentHash, Icount, NodeId, ObservableEvent,
+    PreemptionDecision, VirtualTime,
 };
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 mod error;
@@ -122,9 +122,10 @@ pub trait SimulationBackend {
         Ok(Vec::new())
     }
 
-    /// Drains causal decisions produced by synchronous backend callbacks.
+    /// Drains typed RNG evidence produced by synchronous backend callbacks.
     ///
-    /// The authoritative scheduler validates and appends these decisions before
+    /// The authoritative scheduler validates and converts this evidence into
+    /// canonical RNG-draw and selection decisions before
     /// it admits observational events or begins another step. Backends without
     /// a causal callback transport return an empty batch.
     ///
@@ -132,7 +133,7 @@ pub trait SimulationBackend {
     ///
     /// Returns a [`BackendError`] when the causal transport is corrupt or
     /// cannot be drained completely at the completed boundary.
-    fn drain_causal_decisions(&mut self) -> Result<Vec<Decision>, BackendError> {
+    fn drain_rng_evidence(&mut self) -> Result<Vec<BackendRngEvidence>, BackendError> {
         Ok(Vec::new())
     }
 
@@ -333,9 +334,11 @@ pub struct StepObservation {
     /// Scheduler-safe frontier established before returning control.
     ///
     /// This normally equals the backend's physical instruction count. A
-    /// backend that parks earlier with a proven exact wake strictly beyond the
-    /// requested ceiling may report the requested ceiling here while retaining
-    /// the physical park point in [`AdvanceOutcome::Paused`].
+    /// backend that parks earlier because it has a proven exact wake strictly
+    /// beyond the requested ceiling, or because an unresolved external request
+    /// prevents all guest progress until a host reply arrives, may report the
+    /// requested ceiling here while retaining the physical park point in
+    /// [`AdvanceOutcome::Paused`].
     pub reached: VirtualTime,
     /// Low-level backend advancement result.
     pub outcome: AdvanceOutcome,

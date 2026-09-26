@@ -3,8 +3,46 @@
 use super::*;
 
 #[test]
+fn world_link_preserves_three_tick_jitter() {
+    let link = LinkDef::with_transport(
+        NodeId { name: "a".into() },
+        NodeId { name: "b".into() },
+        SimDuration { ticks: 1_003 },
+        SimDuration { ticks: 3 },
+        crate::LinkLossProbability::ZERO,
+        None,
+    )
+    .unwrap_or_else(|error| panic!("fractional link should construct: {error}"));
+
+    let faults = world_link_base_faults(&link)
+        .unwrap_or_else(|| panic!("fractional jitter window should fit"));
+
+    assert_eq!(link.latency().ticks - link.jitter().ticks, 1_000);
+    assert_eq!(faults.jitter_window_ticks, 6);
+}
+
+#[test]
+fn rejects_prior_nanosecond_link_checkpoint_version() {
+    let checkpoint = SchedulerNetworkCheckpoint {
+        links: Vec::new(),
+        rng_positions: Vec::new(),
+        signal_fault_wakeup_ticks: None,
+    };
+    let mut bytes = checkpoint
+        .canonical_bytes()
+        .unwrap_or_else(|error| panic!("network checkpoint should encode: {error}"));
+    bytes[..b"crucible.scheduler-network.v1\0".len()]
+        .copy_from_slice(b"crucible.scheduler-network.v1\0");
+
+    assert_eq!(
+        SchedulerNetworkCheckpoint::from_canonical_bytes(&bytes),
+        Err(SchedulerNetworkCheckpointCodecError::Version)
+    );
+}
+
+#[test]
 fn rejects_declared_link_count_before_allocation() {
-    let mut bytes = b"crucible.scheduler-network.v1\0".to_vec();
+    let mut bytes = b"crucible.scheduler-network.v2\0".to_vec();
     bytes.extend_from_slice(&65_537_u32.to_le_bytes());
 
     assert_eq!(
@@ -21,7 +59,7 @@ fn rejects_declared_link_count_before_allocation() {
 
 #[test]
 fn rejects_declared_rng_count_before_allocation() {
-    let mut bytes = b"crucible.scheduler-network.v1\0".to_vec();
+    let mut bytes = b"crucible.scheduler-network.v2\0".to_vec();
     bytes.extend_from_slice(&0_u32.to_le_bytes());
     bytes.extend_from_slice(&65_537_u32.to_le_bytes());
 
@@ -42,7 +80,7 @@ fn enforces_authored_aggregate_limit() {
     let checkpoint = SchedulerNetworkCheckpoint {
         links: Vec::new(),
         rng_positions: Vec::new(),
-        signal_fault_wakeup_nanos: Some(17),
+        signal_fault_wakeup_ticks: Some(17),
     };
     let bytes = checkpoint
         .canonical_bytes()
@@ -76,7 +114,7 @@ fn enforces_authored_aggregate_limit() {
 #[test]
 fn preserves_nested_link_resource_coordinates() {
     let link = LinkId::from_name("link-a");
-    let state = crucible_device::NetLink::new(8, 3, 256, 256, crucible_device::LinkFaults::none())
+    let state = crucible_device::NetLink::new(3, 256, 256, crucible_device::LinkFaults::none())
         .unwrap_or_else(|error| panic!("test link should construct: {error}"))
         .snapshot();
     let state_bytes = state
@@ -91,7 +129,7 @@ fn preserves_nested_link_resource_coordinates() {
             state,
         }],
         rng_positions: vec![(link, 0)],
-        signal_fault_wakeup_nanos: None,
+        signal_fault_wakeup_ticks: None,
     };
 
     assert!(matches!(

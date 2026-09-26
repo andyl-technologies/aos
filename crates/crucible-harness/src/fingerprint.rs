@@ -17,10 +17,8 @@ mod observation;
 mod stream;
 
 pub use definition::{
-    CANONICAL_FINGERPRINT_PERIOD_ICOUNT, DEVICE_DIGEST_ALGORITHM,
-    EXECUTION_FINGERPRINT_DEFINITION_VERSION, FINGERPRINT_DIGEST_BYTES, FINGERPRINT_HASH_ALGORITHM,
-    FingerprintCadence, FingerprintDefinition, FingerprintDigest, FingerprintEventBoundary,
-    FingerprintSampleTrigger, MEMORY_DIGEST_ALGORITHM, MemoryFingerprintScope,
+    DEVICE_DIGEST_ALGORITHM, EXECUTION_FINGERPRINT_DEFINITION_VERSION, FINGERPRINT_DIGEST_BYTES,
+    FINGERPRINT_HASH_ALGORITHM, FingerprintDefinition, FingerprintDigest, MEMORY_DIGEST_ALGORITHM,
     REGISTER_DIGEST_ALGORITHM,
 };
 pub use observation::{

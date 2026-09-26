@@ -95,6 +95,19 @@ site, not a boolean a caller can forget to set. That distinction is the subject 
 [§19.3](#193-causal-vs-observational-is-baked-into-the-schema); this section gives
 the whole record shape.
 
+For a resolved `backend_input`, the entry keeps the scheduler's logical
+delivery time as `virtual_time` and records the exact target VM physical
+retired-instruction counter in its node-local `icount` stamp. The scheduler
+computes that stamp when it resolves the delivery, before any later backend
+restart can rebase the node's logical-to-physical time mapping. Replay uses the
+retained physical stamp and verifies that its node matches the input target.
+Binary event-log segments use schema version 2 for this meaning; version 1
+segments are rejected rather than interpreted with the new semantics.
+The stamp authenticates a delivery within its backend generation. It does not
+prove how a later replacement backend reached a new counter origin, so guarded
+replay must reject a multi-generation target unless it has separate evidence
+for each generation boundary.
+
 ```rust,illustrative
 /// One entry in the unified event log (§19.1). Every observability consumer
 /// reads a projection of a stream of these (§19.6).
@@ -128,12 +141,12 @@ pub struct LogEntry {
     /// Whether this entry is part of the deterministic backbone (`Causal`) or a
     /// run-to-run-variable observation (`Observational`). Determined by the
     /// payload variant at the typed append site, never set ad hoc (§19.3).
-    pub class: EventClass,
+    pub class: SchedulerEventLogClass,
 }
 
 /// The causal-vs-observational distinction, baked into the schema (§19.3).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum EventClass {
+pub enum SchedulerEventLogClass {
     /// Part of the deterministic backbone: MUST be byte-identical across runs of
     /// the same (scenario, seed, schedule). This is what the determinism gates
     /// compare (§19.5).
@@ -144,7 +157,7 @@ pub enum EventClass {
     Observational,
 }
 
-/// Display priority, orthogonal to `EventClass` (§19.2.3).
+/// Display priority, orthogonal to `SchedulerEventLogClass` (§19.2.3).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Level {
     Trace, // highest-frequency, lowest-information (per-tick internal state)
@@ -174,7 +187,7 @@ seq=00042  at=vt:000123456ns icount{node=raft-a:9_812_440}  src=engine  class=ob
 - **[OBS-5]** Every log entry MUST carry, at minimum: a monotonic per-run `seq`
   (§19.2); the `at` virtual-time / icount coordinate at which it occurred (09); a
   `source` (§19.2.1); a structured `payload` with an open-set `kind` and typed
-  attributes (§19.2.2, §19.7); a display `level` (§19.2.3); and an `EventClass`
+  attributes (§19.2.2, §19.7); a display `level` (§19.2.3); and an `SchedulerEventLogClass`
   (`Causal` or `Observational`) determined by the payload variant (§19.3). An
   entry missing any of these fields is malformed. *Gate:* `gate:harness-lint`.
   *Spec:* §19.2.
@@ -234,7 +247,7 @@ pub enum EventSource {
   command MUST be sourced `Command { command_id }` with the client-supplied id, so
   that the live stream ([§19.6](#196-consumers-of-the-log), 20/21) lets a
   subscriber correlate a command with the entries it caused. This MUST NOT change
-  the entry's `EventClass`: a command-caused causal transition is still `Causal`;
+  the entry's `SchedulerEventLogClass`: a command-caused causal transition is still `Causal`;
   a command-caused diagnostic is still `Observational`. *Gate:* `gate:harness-lint`.
   *Spec:* §19.2.1.
 
@@ -243,7 +256,7 @@ pub enum EventSource {
 The payload is the *what*. It is an **open set** of kinds: the catalog in
 [§19.7](#197-event-kind-catalog) is the initial, versioned vocabulary, but the
 schema is designed so that new kinds can be added (with a schema-version bump)
-without breaking decoders of older kinds. Each kind carries **typed attributes**
+under an explicit event-schema version bump. Each kind carries **typed attributes**
 (not a free-form blob), so that projections and assertions read fields by name and
 type rather than scraping a message string. A free-form `diagnostic` kind with a
 small typed key/value body exists as the escape hatch for things that do not
@@ -252,8 +265,8 @@ deserve a first-class kind.
 - **[OBS-10]** The `payload` MUST be a structured value with an **open-set**
   `kind` discriminator and **typed attributes** per kind (§19.7), not a free-form
   string or untyped blob. The catalog of [§19.7](#197-event-kind-catalog) is the
-  initial versioned vocabulary; adding a `kind` MUST be a backward-compatible,
-  schema-versioned change (§19.4) that does not break decoders of existing kinds.
+  current versioned vocabulary; adding a `kind` MUST bump the event schema and
+  regenerate its conformance evidence (§19.4).
   A general `diagnostic` kind with a small typed key/value body MUST exist as the
   escape hatch for entries that do not warrant a first-class kind. *Gate:*
   `gate:harness-lint`, `gate:content-address`. *Spec:* §19.2.2, §19.7.
@@ -267,9 +280,9 @@ deserve a first-class kind.
 
 ### 19.2.3 Level vs class
 
-`Level` (Trace…Error) and `EventClass` (Causal/Observational) are **orthogonal**.
+`Level` (Trace…Error) and `SchedulerEventLogClass` (Causal/Observational) are **orthogonal**.
 `Level` governs verbosity — "how loud is this, should a viewer at this filter show
-it" — and is *never* consulted by the determinism comparison. `EventClass` governs
+it" — and is *never* consulted by the determinism comparison. `SchedulerEventLogClass` governs
 determinism — "can two equivalent runs disagree on this" — and is *never* a
 display concern. A causal entry may be `Trace`-level (a high-frequency state
 transition a user usually filters out but which is still part of the deterministic
@@ -277,10 +290,10 @@ backbone); an observational entry may be `Error`-level (a host diagnostic about 
 serious-but-run-variable condition). Conflating the two — e.g. excluding
 `Debug`-level entries from the determinism comparison — is a defect.
 
-- **[OBS-12]** `Level` and `EventClass` MUST be orthogonal fields with independent
+- **[OBS-12]** `Level` and `SchedulerEventLogClass` MUST be orthogonal fields with independent
   meanings: `Level` governs display verbosity and MUST NOT influence the
-  determinism comparison; `EventClass` governs determinism and MUST NOT be derived
-  from or coupled to `Level`. The determinism comparison MUST key off `EventClass`
+  determinism comparison; `SchedulerEventLogClass` governs determinism and MUST NOT be derived
+  from or coupled to `Level`. The determinism comparison MUST key off `SchedulerEventLogClass`
   alone (causal subsequence), never off `Level`. Each emission site MUST pick its
   own `Level`; there is no kind-to-level default mapping that a consumer may rely
   on. *Gate:* `gate:replay-oracle`, `gate:harness-lint`. *Spec:* §19.2.3.
@@ -292,7 +305,7 @@ The single most load-bearing distinction in the log is between **causal** entrie
 `(scenario, seed, schedule)` — and **observational** entries, which describe the
 run but MAY legitimately vary between equivalent runs and are therefore *excluded*
 from the determinism comparison. This distinction is **part of the schema**: it is
-the typed `EventClass` field ([§19.2](#192-the-entry-schema)), set by the typed
+the typed `SchedulerEventLogClass` field ([§19.2](#192-the-entry-schema)), set by the typed
 append API from the payload variant, not a boolean an emitter may forget to flip.
 
 Why baked in, not a side flag: if "is this comparable" were a caller-supplied
@@ -319,7 +332,7 @@ overrides it.
   any host-side measurement that is not part of `reduce`.
 
 ```text
-  EventClass = property of the payload kind (§19.7), set at the typed append site
+  SchedulerEventLogClass = property of the payload kind (§19.7), set at the typed append site
   ─────────────────────────────────────────────────────────────────────────────
   CAUSAL (deterministic backbone, compared by the gates §19.5):
     state_transition · trigger_fired · message_delivered · message_dropped ·
@@ -334,8 +347,8 @@ overrides it.
 ```
 
 - **[OBS-13]** The causal-vs-observational distinction MUST be encoded in the
-  schema as the typed `EventClass` field ([§19.2](#192-the-entry-schema)), and an
-  entry's `EventClass` MUST be determined by its payload `kind` per the catalog
+  schema as the typed `SchedulerEventLogClass` field ([§19.2](#192-the-entry-schema)), and an
+  entry's `SchedulerEventLogClass` MUST be determined by its payload `kind` per the catalog
   ([§19.7](#197-event-kind-catalog)), assigned by the typed append API — **not** by
   a free, caller-supplied boolean that an emission site can set or forget. *Gate:*
   `gate:harness-lint`. *Spec:* §19.3, §19.7.
@@ -357,7 +370,7 @@ overrides it.
   comparison ([§19.5](#195-determinism-the-causal-subsequence-is-byte-identical)).
   *Gate:* `gate:e2e-determinism`. *Spec:* §19.3, §19.5.
 
-- **[OBS-16]** A lint MUST verify that every append site's recorded `EventClass`
+- **[OBS-16]** A lint MUST verify that every append site's recorded `SchedulerEventLogClass`
   matches the catalog class of its payload `kind` ([§19.7](#197-event-kind-catalog)),
   so that no site can silently mis-class an entry (excluding a real causal event
   from the gate, or including a run-variable observation in it). A `kind` whose
@@ -425,7 +438,7 @@ and a resume or fork continues appending its own segment after it.
 
 The determinism contract for the log is precise: across two runs of the same
 `(scenario, seed, schedule)`, the **causal subsequence** of the log — the
-projection that keeps only `EventClass::Causal` entries — MUST be **byte-identical**
+projection that keeps only `SchedulerEventLogClass::Causal` entries — MUST be **byte-identical**
 after the causal subsequence is renumbered independently of observational
 interleaving. This is exactly what `gate:replay-oracle` and `gate:e2e-determinism`
 compare. Observational entries are excluded from this comparison: they may appear,
@@ -433,7 +446,7 @@ vanish, or differ between the two runs without indicating a determinism bug.
 
 The **canonical run** (equivalently the **canonical event log**), as the term is
 used in 20/22, is this causal subsequence under the canonical serialization: the
-`EventClass::Causal` projection renumbered independently of observational
+`SchedulerEventLogClass::Causal` projection renumbered independently of observational
 interleaving. It is the deterministic backbone two runs are compared on.
 
 The renumbering is what makes the comparison robust to observational noise: two
@@ -454,7 +467,7 @@ construction) byte-for-byte.
 ```
 
 - **[OBS-21]** Across two runs of the same `(scenario, seed, schedule)`, the
-  **causal subsequence** of the log (the `EventClass::Causal` projection,
+  **causal subsequence** of the log (the `SchedulerEventLogClass::Causal` projection,
   renumbered independently of observational interleaving) MUST be **byte-identical**
   under the canonical serialization ([§19.4](#194-content-addressing-and-prefix-sharing)).
   This is the determinism oracle that `gate:replay-oracle` and `gate:e2e-determinism`
@@ -628,7 +641,7 @@ scheduler).
 Host-side diagnostics via the `tracing` crate are an **observational, opt-in**
 bridge: Crucible's engine MAY mirror selected internal events to `tracing` for
 familiar `RUST_LOG`-style debugging, but the `tracing` bridge is *off by default*,
-every `tracing`-bridged entry is `EventClass::Observational`, and the bridge MUST
+every `tracing`-bridged entry is `SchedulerEventLogClass::Observational`, and the bridge MUST
 NOT influence determinism. Concretely: `tracing` subscriber configuration,
 filtering, and output are host concerns that may vary between runs and machines,
 so nothing the engine does for `tracing` may enter the causal subsequence or
@@ -636,7 +649,7 @@ change the order in which causal entries are appended.
 
 - **[OBS-32]** Host diagnostics via `tracing` MUST be **observational and opt-in**:
   the bridge MUST be off by default, every `tracing`-mirrored entry MUST be
-  `EventClass::Observational`, and enabling/configuring/filtering `tracing` MUST
+  `SchedulerEventLogClass::Observational`, and enabling/configuring/filtering `tracing` MUST
   NOT change the causal subsequence or the order in which causal entries are
   appended ([OBS-24]). The `tracing` bridge MUST NOT be on any ordering-significant
   engine path ([INV-9]). *Gate:* `gate:e2e-determinism`, `gate:harness-lint`.
@@ -652,9 +665,9 @@ change the order in which causal entries are appended.
 ## 19.7 Event-kind catalog
 
 The `kind` discriminator is an **open set**; the table below is the initial,
-versioned vocabulary, with each kind's `EventClass` fixed here
+versioned vocabulary, with each kind's `SchedulerEventLogClass` fixed here
 ([OBS-13](#193-causal-vs-observational-is-baked-into-the-schema)). Adding a kind is
-a backward-compatible, schema-versioned change ([OBS-10](#1922-payload-open-set-kind--typed-attributes)).
+an event-schema bump with regenerated conformance evidence ([OBS-10](#1922-payload-open-set-kind--typed-attributes)).
 Kinds 18, 20, 22, and 24 all reference this catalog: assertion kinds feed 18, the
 streamed kinds feed 20/21, the coverage kind feeds 22, and the whole causal
 subsequence feeds the comparison and bisection of 24.
@@ -702,11 +715,15 @@ the per-point truth of every standing condition is not itself a log entry.
 | `coverage` | Observational | Engine, Guest | `kind` (basic_block / named), `id`/`block`, `node` (22, [GHC-7]/[GHC-22]) |
 | `assertion_proximity` | Observational | Engine | `id`, `quantifier`, `distance` (non-negative u128, 0=satisfied), `node` (18 §18.13, [ASRT-33]; steering-only, excluded from the comparison) |
 | `guest_marker` | Observational | Guest | `marker_kind` (assert/lifecycle/event/coverage/random_request), typed body (16 §16.5) |
+| `guest_measurement_begin` | Observational | Guest | `node`, `retired_icount`, `measurement`, `instance` (16 §16.5, RFC-0020 §08.4) |
+| `guest_metric_sample` | Observational | Guest | `node`, `retired_icount`, `measurement`, `instance`, `metric`, one bounded typed value (16 §16.5, RFC-0020 §08.4) |
+| `guest_measurement_end` | Observational | Guest | `node`, `retired_icount`, `measurement`, `instance` (16 §16.5, RFC-0020 §08.4) |
+| `guest_semantic_marker` | Observational | Guest | `node`, `retired_icount`, `marker`, `instance`, bounded key-ordered typed details (16 §16.5, RFC-0020 §08.4) |
 
 ```rust,illustrative
 /// The open-set payload (§19.2.2). The catalog (§19.7) fixes each variant's
-/// `EventClass` (§19.3); the typed attributes are read by name (§19.2.2).
-/// Adding a variant is a schema-versioned, backward-compatible change (§19.4).
+/// `SchedulerEventLogClass` (§19.3); the typed attributes are read by name (§19.2.2).
+/// Adding a variant requires an event-schema bump and regenerated conformance evidence (§19.4).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive] // open set: new kinds may be added with a schema-version bump
 pub enum EventPayload {
@@ -735,6 +752,10 @@ pub enum EventPayload {
     Coverage { kind: CoverageKind, id: CoverageId, node: NodeId },
     AssertionProximity { id: AssertionId, quantifier: AssertionFlavor, distance: u128, node: Option<NodeId> }, // 18 §18.13, steering-only
     GuestMarker { node: NodeId, marker_kind: MarkerKind, body: Attrs }, // from 16 §16.5
+    GuestMeasurementBegin { node: NodeId, retired_icount: u64, measurement: Str, instance: Str },
+    GuestMetricSample { node: NodeId, retired_icount: u64, measurement: Str, instance: Str, metric: Str, value: TypedValue },
+    GuestMeasurementEnd { node: NodeId, retired_icount: u64, measurement: Str, instance: Str },
+    GuestSemanticMarker { node: NodeId, retired_icount: u64, marker: Str, instance: Str, details: Attrs },
 }
 ```
 
@@ -744,8 +765,9 @@ pub enum EventPayload {
   (armed/fired/cancelled); message delivered/dropped; assertion evaluated and
   state-changed; savepoint and fork structural markers; scheduler tick/quantum;
   and the observational `diagnostic`, `coverage`, `assertion_proximity`, and
-  `guest_marker` kinds — with
-  each kind's `EventClass` fixed as in the table ([OBS-13], [OBS-14], [OBS-15]).
+  `guest_marker`, `guest_measurement_begin`, `guest_metric_sample`,
+  `guest_measurement_end`, and `guest_semantic_marker` kinds — with
+  each kind's `SchedulerEventLogClass` fixed as in the table ([OBS-13], [OBS-14], [OBS-15]).
   The catalog is open and versioned ([OBS-10]). *Gate:* `gate:harness-lint`,
   `gate:content-address`. *Spec:* §19.7.
 
@@ -779,8 +801,8 @@ ONE LOG (§19.1): totally-ordered · content-addressed · icount-stamped stream 
   the fork-point index · the coverage record — every consumer reads a projection.
 
 SCHEMA (§19.2): seq · at(virtual_time + per-node icount) · source · payload
-  (open-set kind + typed attrs) · level · EventClass(Causal|Observational).
-  EventClass is a SCHEMA FIELD set by the kind (§19.3), not a caller flag.
+  (open-set kind + typed attrs) · level · SchedulerEventLogClass(Causal|Observational).
+  SchedulerEventLogClass is a SCHEMA FIELD set by the kind (§19.3), not a caller flag.
 
 DETERMINISM (§19.5): causal subsequence is BYTE-IDENTICAL across runs of the same
   (scenario, seed, schedule) — what gate:replay-oracle / gate:e2e-determinism
@@ -819,25 +841,25 @@ log, so they cannot disagree about what happened.
   single append path `EventLog::append_entries`, and offset plus condition-log
   consumers read projections from that one retained stream.
 - [x] **T-OBS-2** Define the entry schema (`seq`, `at` virtual-time+icount,
-  `source`, open-set typed `payload`, `level`, `EventClass`) with monotonic
+  `source`, open-set typed `payload`, `level`, `SchedulerEventLogClass`) with monotonic
   gap-free `seq`, icount stamping, and the closed `EventSource` set incl.
   `Command` correlation. — satisfies [OBS-5], [OBS-6], [OBS-7], [OBS-8], [OBS-9];
   spec §19.2, §19.2.1.
   Completed by `checks.crucible.phase4.eventLogSchema`: `LogEntry` now carries a
   full `EventLogTime` (`VirtualTime` plus an `Icount` stamp, with a node on
-  node-local stamps), `EventSource`, `EventLevel`, and `EventClass`;
+  node-local stamps), `EventSource`, `EventLevel`, and `SchedulerEventLogClass`;
   command-caused entries preserve `Command { command_id }` correlation, and
   append material includes the schema fields in the content-addressed segment.
 - [x] **T-OBS-3** Implement the open-set, typed `payload` (kind + named typed
   attributes, `diagnostic` escape hatch) read by name, and the orthogonal
-  `Level`-vs-`EventClass` rule (level never consulted by the comparison). —
+  `Level`-vs-`SchedulerEventLogClass` rule (level never consulted by the comparison). —
   satisfies [OBS-10], [OBS-11], [OBS-12]; spec §19.2.2, §19.2.3.
   Completed by `checks.crucible.phase4.eventLogPayload`: `LogEntry` now stores an
   open-set `EventPayload` projection with a kind string and typed named
   `EventAttributeValue` fields, exposes name/type accessors for projections,
   includes that payload view in canonical entry and segment material, and carries
   a typed `diagnostic` escape hatch whose display `EventLevel` stays independent
-  from `EventClass`.
+  from `SchedulerEventLogClass`.
 - [x] **T-OBS-4** Bake the causal/observational split into the schema: class is a
   function of the payload kind set at the typed append site, with a lint that
   rejects any append whose class mismatches the catalog. — satisfies [OBS-13],

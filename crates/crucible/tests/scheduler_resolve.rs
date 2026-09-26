@@ -5,12 +5,12 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    BackendInput, Decision, EventKey, ExactLocalEvent, Icount, IoCompletion, NetworkLookahead,
-    NodeCounter, NodeId, QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey,
-    ScheduledEventPayload, ScheduledEventResolveClass, SchedulerError, SchedulerLivenessScenario,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Shift,
-    SimDuration, SimInstant, SingleScheduler, VirtualTime, ordered_scheduled_events,
-    resolve_due_scheduled_events, scheduled_event_delivery_time, scheduled_event_resolve_class,
+    BackendInput, Decision, EventKey, ExactLocalEvent, IoCompletion, NetworkLookahead, NodeCounter,
+    NodeId, QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    ScheduledEventResolveClass, SchedulerError, SchedulerLivenessScenario, SchedulerNodeActivity,
+    SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, SimDuration, SimInstant,
+    SingleScheduler, VirtualTime, ordered_scheduled_events, resolve_due_scheduled_events,
+    scheduled_event_delivery_time, scheduled_event_resolve_class,
 };
 
 #[test]
@@ -22,9 +22,8 @@ fn resolve_quantum_processes_frame_and_io_at_exact_delivery_icount_in_total_orde
     let io = io_event(5, &consumer, &disk, 1, b"io");
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "resolve-mixed-payloads",
-        shift(0),
         8,
-        SimInstant { nanos: 30 },
+        SimInstant { ticks: 30 },
         vec![scenario_node("consumer", 0, finite_lookahead(10))],
         vec![frame.clone(), io.clone()],
     ))
@@ -49,7 +48,7 @@ fn resolve_quantum_processes_frame_and_io_at_exact_delivery_icount_in_total_orde
     );
     assert_eq!(
         delivery_times(&outcome.resolved_events),
-        vec![SimInstant { nanos: 5 }, SimInstant { nanos: 5 },]
+        vec![SimInstant { ticks: 5 }, SimInstant { ticks: 5 },]
     );
     assert_eq!(
         delivery_order(&outcome.decisions),
@@ -84,20 +83,12 @@ fn resolve_due_events_are_independent_of_pending_transport_order() {
         future.clone(),
     ];
 
-    let first = resolve_due_scheduled_events(
-        &mut first_pending,
-        &consumer,
-        SimInstant { nanos: 4 },
-        shift(0),
-    )
-    .expect("first pending order should resolve");
-    let second = resolve_due_scheduled_events(
-        &mut second_pending,
-        &consumer,
-        SimInstant { nanos: 4 },
-        shift(0),
-    )
-    .expect("second pending order should resolve");
+    let first =
+        resolve_due_scheduled_events(&mut first_pending, &consumer, SimInstant { ticks: 4 })
+            .expect("first pending order should resolve");
+    let second =
+        resolve_due_scheduled_events(&mut second_pending, &consumer, SimInstant { ticks: 4 })
+            .expect("second pending order should resolve");
 
     assert_eq!(first, vec![due_first, due_second]);
     assert_eq!(second, first);
@@ -121,9 +112,8 @@ fn resolve_rejects_backend_input_with_mismatched_payload_target() {
     }
     let mut pending = vec![event];
 
-    let error =
-        resolve_due_scheduled_events(&mut pending, &consumer, SimInstant { nanos: 4 }, shift(0))
-            .expect_err("backend input target mismatch must fail loudly");
+    let error = resolve_due_scheduled_events(&mut pending, &consumer, SimInstant { ticks: 4 })
+        .expect_err("backend input target mismatch must fail loudly");
 
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
     assert!(error.to_string().contains("backend input key consumer"));
@@ -137,9 +127,8 @@ fn resolve_rejects_late_event_before_advanced_frontier() {
     let event = backend_event(3, &consumer, &producer, 0, b"late");
     let mut pending = vec![event];
 
-    let error =
-        resolve_due_scheduled_events(&mut pending, &consumer, SimInstant { nanos: 4 }, shift(0))
-            .expect_err("late delivery must fail loudly");
+    let error = resolve_due_scheduled_events(&mut pending, &consumer, SimInstant { ticks: 4 })
+        .expect_err("late delivery must fail loudly");
 
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
     assert!(error.to_string().contains("late scheduled event"));
@@ -153,9 +142,8 @@ fn single_scheduler_rejects_self_delivery_that_would_be_late() {
     let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "resolve-late-self-delivery",
-        shift(0),
         8,
-        SimInstant { nanos: 30 },
+        SimInstant { ticks: 30 },
         vec![scenario_node("consumer", 5, finite_lookahead(10))],
         vec![backend_event(4, &consumer, &consumer, 0, b"late-self")],
     ))
@@ -183,28 +171,26 @@ fn resolve_leaves_future_backend_input_unvalidated_until_due() {
     }
     let mut pending = vec![event.clone()];
 
-    let resolved =
-        resolve_due_scheduled_events(&mut pending, &consumer, SimInstant { nanos: 4 }, shift(0))
-            .expect("future events should not be validated by this RESOLVE quantum");
+    let resolved = resolve_due_scheduled_events(&mut pending, &consumer, SimInstant { ticks: 4 })
+        .expect("future events should not be validated by this RESOLVE quantum");
 
     assert!(resolved.is_empty());
     assert_eq!(pending, vec![event]);
 }
 
 #[test]
-fn resolve_rejects_io_completion_with_non_exact_delivery_icount() {
+fn resolve_rejects_io_completion_with_non_exact_delivery_tick() {
     let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
     let disk = scheduler_node("disk", SchedulingNodeKind::Disk);
     let mut pending = vec![io_event_at_virtual_time(
         6, 5, &consumer, &disk, 0, b"bad-io",
     )];
 
-    let error =
-        resolve_due_scheduled_events(&mut pending, &consumer, SimInstant { nanos: 6 }, shift(0))
-            .expect_err("I/O visibility mismatch must fail loudly");
+    let error = resolve_due_scheduled_events(&mut pending, &consumer, SimInstant { ticks: 6 })
+        .expect_err("I/O visibility mismatch must fail loudly");
 
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
-    assert!(error.to_string().contains("does not match delivery icount"));
+    assert!(error.to_string().contains("does not match delivery tick"));
     assert_eq!(pending.len(), 1);
 }
 
@@ -216,7 +202,7 @@ fn delivery_order(decisions: &[Decision]) -> Vec<EventKey> {
             Decision::RngDraw(_)
             | Decision::Override(_)
             | Decision::Preemption(_)
-            | Decision::AppRandom(_) => Vec::new(),
+            | Decision::Selection(_) => Vec::new(),
         })
         .collect()
 }
@@ -229,7 +215,7 @@ fn delivery_times(events: &[ScheduledEvent]) -> Vec<SimInstant> {
     events
         .iter()
         .map(|event| {
-            scheduled_event_delivery_time(event, shift(0))
+            scheduled_event_delivery_time(event)
                 .expect("test event should have an exact visibility time")
         })
         .collect()
@@ -273,13 +259,18 @@ fn backend_event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    ticks: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             producer.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),
@@ -314,19 +305,24 @@ fn io_event_at_virtual_time(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    ticks: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             sub_node.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::IoCompletion(IoCompletion {
             sub_node: sub_node.clone(),
             target: consumer.node.clone(),
-            delivery_icount: Icount {
-                retired: delivery_icount,
+            delivery_tick: crucible::SimInstant {
+                ticks: delivery_icount,
             },
             payload: payload.to_vec(),
         }),
@@ -334,7 +330,7 @@ fn io_event_at_virtual_time(
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }
 
 fn scheduler_node(name: &str, kind: SchedulingNodeKind) -> SchedulerNodeId {
@@ -348,8 +344,4 @@ fn node(name: &str) -> NodeId {
     NodeId {
         name: name.to_owned(),
     }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }

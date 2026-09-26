@@ -8,7 +8,10 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -108,8 +111,8 @@
         needle = "scheduler_quiescence_fast_forwards_idle_pending_delivery_without_deadlock";
       }
       {
-        label = "I/O and fault blocker test";
-        needle = "scheduler_quiescence_blocks_future_io_and_fault_events";
+        label = "future I/O blocker test";
+        needle = "scheduler_quiescence_blocks_future_io_events";
       }
       {
         label = "idle peer non-constraint test";

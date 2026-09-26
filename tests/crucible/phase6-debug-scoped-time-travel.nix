@@ -11,7 +11,10 @@
   debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
+  engineLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   timeTravelTest = builtins.readFile ../../crates/crucible/tests/gate_debug_time_travel.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -107,8 +110,8 @@
         needle = "pub fn debug_apply_checkpoint_cadence";
       }
       {
-        label = "explicit thin-only cache policy";
-        needle = "pub fn thin_only() -> Self";
+        label = "explicit thin-only cadence request";
+        needle = "pub fn thin_only(current: Configuration, stride: DebugCheckpointStride) -> Self";
       }
       {
         label = "ordinary materialization integration";
@@ -187,8 +190,8 @@
         needle = "assert_eq!(exact_runtime.id, replay_runtime.id)";
       }
       {
-        label = "thin default evicts fat assertion";
-        needle = "cached_snapshots_after, 0";
+        label = "thin cadence keeps the snapshot cache empty";
+        needle = "thin_graph.cached_snapshot_count(), 0";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

@@ -239,8 +239,8 @@ pub fn materialize_trace_window(
         return Err(SearchMaterializationError::ProgramIdentity);
     }
     let BindingSearchPolicy::MutateTraceWindow {
-        start_nanos,
-        end_nanos,
+        start_ticks,
+        end_ticks,
         candidates,
         maximum_mutations,
     } = binding.search()
@@ -268,7 +268,7 @@ pub fn materialize_trace_window(
         || mutation
             .samples
             .iter()
-            .any(|sample| sample.coordinate < *start_nanos || sample.coordinate >= *end_nanos)
+            .any(|sample| sample.coordinate < *start_ticks || sample.coordinate >= *end_ticks)
     {
         return Err(SearchMaterializationError::InvalidMutation);
     }

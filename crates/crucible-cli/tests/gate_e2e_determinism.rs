@@ -1,4 +1,8 @@
-//! CLI-owned final acceptance target for `gate:e2e-determinism`.
+//! CLI component tests for the modeled end-to-end reproduction artifact.
+//!
+//! These tests exercise the shared mock artifact and adversary-profile model.
+//! Packaged-QEMU execution and cross-machine replay belong to the aggregate
+//! `gate:e2e-determinism` acceptance check.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
@@ -14,7 +18,7 @@ use crucible_harness::e2e::{
 };
 
 #[test]
-fn gate_e2e_determinism_cli_target_runs_final_acceptance_artifact() -> Result<(), Box<dyn Error>> {
+fn e2e_artifact_component_runs_mock_fault_and_property_corpus() -> Result<(), Box<dyn Error>> {
     let artifact = representative_mock_e2e_artifact();
     let profiles = canonical_host_adversary_matrix();
     let report =
@@ -76,8 +80,7 @@ fn gate_e2e_determinism_cli_target_runs_final_acceptance_artifact() -> Result<()
 }
 
 #[test]
-fn gate_e2e_determinism_cli_target_replays_from_artifact_on_different_machine_profile()
--> Result<(), Box<dyn Error>> {
+fn e2e_artifact_component_replays_across_modeled_machine_profiles() -> Result<(), Box<dyn Error>> {
     let artifact = representative_mock_e2e_artifact();
     let baseline = reproduce_mock_e2e_artifact_on_profile(
         &artifact,
@@ -99,7 +102,7 @@ fn gate_e2e_determinism_cli_target_replays_from_artifact_on_different_machine_pr
 }
 
 #[test]
-fn gate_e2e_determinism_cli_target_rejects_build_identity_drift() {
+fn e2e_artifact_component_rejects_build_identity_drift() {
     let mut artifact = representative_mock_e2e_artifact();
     artifact.build_identity.backend_build_id = String::from("different-cli-backend");
 
@@ -116,14 +119,14 @@ fn gate_e2e_determinism_cli_target_rejects_build_identity_drift() {
 }
 
 #[test]
-fn gate_e2e_determinism_cli_target_requires_cross_machine_reproduction() {
+fn e2e_artifact_component_requires_distinct_modeled_machine_profiles() {
     let artifact = representative_mock_e2e_artifact();
     let profiles = [HostAdversaryProfile::quiet_single_core()];
 
     let error =
         match run_mock_e2e_determinism_gate(&artifact, &profiles, &canonical_mock_build_identity())
         {
-            Ok(_) => panic!("the CLI e2e gate must require a different machine profile"),
+            Ok(_) => panic!("the artifact model must require a distinct modeled profile"),
             Err(error) => error,
         };
 

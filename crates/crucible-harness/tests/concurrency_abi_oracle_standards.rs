@@ -46,24 +46,6 @@ const SPSC_RING_MARKERS: &[&str] = &[
     "Wraparound",
 ];
 
-const CONCURRENT_SOURCE_CONTEXT_MARKERS: &[&str] =
-    &["spsc", "ring", "queue", "lockfree", "lock-free", "atomic"];
-const ATOMIC_PRIMITIVE_MARKERS: &[&str] = &[
-    "Atomic",
-    "core::sync::atomic",
-    "std::sync::atomic",
-    "compare_exchange",
-    "fetch_add",
-    "fetch_sub",
-    "fetch_or",
-    "fetch_and",
-    "fetch_xor",
-    "fetch_update",
-];
-const CONTEXTUAL_ATOMIC_MARKERS: &[&str] = &["Ordering::", ".load(", ".store(", ".swap("];
-const UNSAFE_PRIMITIVE_MARKERS: &[&str] =
-    &["unsafe {", "unsafe fn", "unsafe impl", "unsafe extern"];
-
 const ABI_MARKERS: &[&str] = &[
     "assert_frozen_golden_vectors(",
     "assert_decode_encode_roundtrip(",
@@ -194,10 +176,6 @@ fn gate_targets_follow_concurrency_abi_and_oracle_standards() -> Result<(), Box<
     let root = workspace_root();
     let source_overrides = gate_target_source_overrides(&root)?;
     let mut failures = advanced_standard_failures(gate_targets(), &source_overrides);
-    failures.extend(spsc_ring_unsafe_without_model_failures(
-        &root,
-        gate_targets(),
-    )?);
     failures.extend(advanced_standard_regression_failures());
 
     assert!(

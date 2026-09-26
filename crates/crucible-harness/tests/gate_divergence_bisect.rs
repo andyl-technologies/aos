@@ -10,9 +10,7 @@ use crucible_harness::divergence::{
     DivergenceStateDump, bisect_diverging_runs, bisect_diverging_runs_with_segment_replay,
     locate_first_decision_mismatch,
 };
-use crucible_harness::fingerprint::{
-    FingerprintSample, FingerprintSampleTrigger, FingerprintStream,
-};
+use crucible_harness::fingerprint::{FingerprintSample, FingerprintStream};
 use crucible_harness::replay_oracle::{
     ReplayOracleCheckpointKind, ReplayOracleDivergenceError, ReplayOracleDivergenceInputs,
     ReplayOracleMaterializedCase, ReplayOracleSamplingConfig, ReplayOracleSearchBisectionError,
@@ -594,7 +592,6 @@ fn sample(seq: u64, node: &str, icount: u64, rolling_fingerprint: &[u8]) -> Fing
         seq,
         node: node.to_owned(),
         icount,
-        trigger: FingerprintSampleTrigger::Periodic,
         rolling_fingerprint: rolling_fingerprint.to_vec(),
     }
 }

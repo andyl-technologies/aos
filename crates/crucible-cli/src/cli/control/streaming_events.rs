@@ -200,10 +200,14 @@ fn streaming_event_summary(frame: &crucible_api::StreamingEventFrame) -> String 
     summary.push_str(&frame.event.sequence.to_string());
     summary.push_str(" virtual_time=");
     summary.push_str(&frame.event.at.virtual_time_ticks.to_string());
-    summary.push_str(" icount=");
-    summary.push_str(&frame.event.at.icount_retired.to_string());
-    if let Some(node) = &frame.event.at.icount_node {
-        summary.push_str(" icount_node=");
+    summary.push_str(" stamp_tick=");
+    summary.push_str(&frame.event.at.stamp_tick.to_string());
+    if let Some(retired) = frame.event.at.stamp_retired {
+        summary.push_str(" stamp_retired=");
+        summary.push_str(&retired.to_string());
+    }
+    if let Some(node) = &frame.event.at.stamp_node {
+        summary.push_str(" stamp_node=");
         summary.push_str(&escape_event_summary_field(node));
     }
     summary.push_str(" source=");
@@ -428,8 +432,9 @@ mod summary_tests {
                 sequence: 3,
                 at: crucible_api::OpenSetEventTime {
                     virtual_time_ticks: 40,
-                    icount_retired: 40,
-                    icount_node: None,
+                    stamp_tick: 40,
+                    stamp_retired: Some(40),
+                    stamp_node: None,
                 },
                 source: crucible_api::OpenSetEventSource::Engine,
                 level: crucible::EventLevel::Info,
@@ -456,7 +461,7 @@ mod summary_tests {
 
         assert_eq!(
             streaming_event_summary(&frame),
-            "crucible.event.assertion_state_changed sequence=3 virtual_time=40 icount=40 source=engine class=causal id=suspect-must-crash new_state=Violated"
+            "crucible.event.assertion_state_changed sequence=3 virtual_time=40 stamp_tick=40 stamp_retired=40 source=engine class=causal id=suspect-must-crash new_state=Violated"
         );
     }
 
@@ -470,8 +475,9 @@ mod summary_tests {
                 sequence: 7,
                 at: crucible_api::OpenSetEventTime {
                     virtual_time_ticks: 91,
-                    icount_retired: 27,
-                    icount_node: Some(String::from("server")),
+                    stamp_tick: 91,
+                    stamp_retired: Some(27),
+                    stamp_node: Some(String::from("server")),
                 },
                 source: crucible_api::OpenSetEventSource::Scenario {
                     event: String::from("partition-server"),
@@ -512,7 +518,7 @@ mod summary_tests {
 
         assert_eq!(
             streaming_event_summary(&frame),
-            "crucible.event.effect_applied sequence=7 virtual_time=91 icount=27 icount_node=server source=scenario:partition-server class=causal description=partition\\sclient\\sto\\sserver kind=partition tag=network-cut targets=client,server"
+            "crucible.event.effect_applied sequence=7 virtual_time=91 stamp_tick=91 stamp_retired=27 stamp_node=server source=scenario:partition-server class=causal description=partition\\sclient\\sto\\sserver kind=partition tag=network-cut targets=client,server"
         );
     }
 
@@ -527,8 +533,9 @@ mod summary_tests {
                 sequence: 1,
                 at: crucible_api::OpenSetEventTime {
                     virtual_time_ticks: 1,
-                    icount_retired: 1,
-                    icount_node: Some(String::from("suspect")),
+                    stamp_tick: 1,
+                    stamp_retired: Some(1),
+                    stamp_node: Some(String::from("suspect")),
                 },
                 source: crucible_api::OpenSetEventSource::Node {
                     node: String::from("suspect"),
@@ -550,7 +557,7 @@ mod summary_tests {
         let summary = streaming_event_summary(&frame);
         assert_eq!(
             summary,
-            "crucible.event.console_output sequence=1 virtual_time=1 icount=1 icount_node=suspect source=node:suspect class=observational bytes_len=18 bytes_content=redacted"
+            "crucible.event.console_output sequence=1 virtual_time=1 stamp_tick=1 stamp_retired=1 stamp_node=suspect source=node:suspect class=observational bytes_len=18 bytes_content=redacted"
         );
         assert!(!summary.contains("super-secret"));
     }

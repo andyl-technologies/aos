@@ -8,8 +8,8 @@ use crucible::{
     ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
     SchedulerError, SchedulerLivenessScenario, SchedulerLookaheadEdge,
     SchedulerLookaheadEdgeEndpoint, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulerTopologyChange, SchedulerTopologyChangeTrigger, SchedulingNodeKind, Shift,
-    SimDuration, SimInstant, SingleScheduler, VirtualTime,
+    SchedulerTopologyChange, SchedulerTopologyChangeTrigger, SchedulingNodeKind, SimDuration,
+    SimInstant, SingleScheduler, VirtualTime,
 };
 
 #[test]
@@ -88,7 +88,7 @@ fn partition_last_inbound_edge_recomputes_infinite_lookahead() {
     assert_eq!(outcome.frontier, VirtualTime { ticks: 40 });
     assert_eq!(
         scheduler.run_ceiling_publications()[0].target_time,
-        SimInstant { nanos: 40 }
+        SimInstant { ticks: 40 }
     );
     let application = only_topology_application(&scheduler);
     assert_eq!(
@@ -182,10 +182,12 @@ fn partition_removed_edge_blocks_send_until_heal_restores_it() {
         .expect_err("partitioned edge must block sends");
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
 
-    scheduler.queue_topology_change(SchedulerTopologyChange::heal(
-        2,
-        vec![edge(&producer, &consumer, 8)],
-    ));
+    scheduler
+        .schedule_topology_change(SchedulerTopologyChange::heal(
+            2,
+            vec![edge(&producer, &consumer, 8)],
+        ))
+        .expect("future topology change should enqueue");
     drive_one_quantum(&mut scheduler);
 
     let authorization = scheduler
@@ -197,9 +199,8 @@ fn partition_removed_edge_blocks_send_until_heal_restores_it() {
 fn base_scenario(material: &str, nodes: Vec<SchedulerScenarioNode>) -> SchedulerLivenessScenario {
     SchedulerLivenessScenario::from_canonical_material(
         material,
-        shift(0),
         8,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         nodes,
         Vec::new(),
     )
@@ -258,9 +259,5 @@ fn finite_lookahead(nanos: u64) -> NetworkLookahead {
 }
 
 fn duration(nanos: u64) -> SimDuration {
-    SimDuration { nanos }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
+    SimDuration { ticks: nanos }
 }

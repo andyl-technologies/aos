@@ -269,7 +269,7 @@ fn observation_identity_material_with_checkpoint_offset(
     };
     material.append(&observation.semantic_version.to_be_bytes())?;
     material.append_length_prefixed(observation.kind.as_str().as_bytes())?;
-    material.append(&observation.coordinate.virtual_nanos.to_be_bytes())?;
+    material.append(&observation.coordinate.virtual_ticks.to_be_bytes())?;
     match observation.coordinate.retired_instructions {
         Some(retired) => {
             material.push(1)?;
@@ -369,7 +369,7 @@ pub(super) fn production_checkpoint_identity(
     for event in emitted_events {
         material.append(event.signal.as_str().as_bytes())?;
         material.push(0)?;
-        material.append(&event.coordinate.virtual_nanos.to_be_bytes())?;
+        material.append(&event.coordinate.virtual_ticks.to_be_bytes())?;
         material.append(
             &event
                 .coordinate
@@ -433,7 +433,7 @@ pub(super) fn production_checkpoint_identity(
         material.append(&identity.bytes)?;
     }
     Ok(ContentHash::from_canonical_hex_bytes(
-        "crucible.production-fault-runtime-checkpoint.v9",
+        "crucible.production-fault-runtime-checkpoint.v10",
         material.as_slice(),
     ))
 }

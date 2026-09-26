@@ -52,7 +52,7 @@
     else if builtins.isAttrs package && !(package ? outPath)
     then "metadata-probe"
     else toString package;
-  qemuSeries = qemuPassthru.series;
+  atomicPatch = qemuPassthru.atomicPatch;
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
   guestHostProtocolVersion =
     sourceConst
@@ -79,7 +79,7 @@
     "qemu_source_hash"
     "qemu_nix_hash"
     "qemu_configure_flags_hash"
-    "qemu_patch_series_hash"
+    "qemu_atomic_patch_hash"
     "qemu_patch_branch_bundle_hash"
     "qemu_patch_branch_material_hash"
     "qemu_shmem_abi_version"
@@ -100,21 +100,22 @@
       source = {
         rootName = "crucible-workspace-src";
         inherit sourceStoreName sourceStoreHash;
-        excludedPathBasenames = [".git" "target" "result"];
+        excludedPathBasenames = [".git" "target"];
+        excludedRootPaths = ["result"];
       };
     };
     qemu = {
       package = "qemu-crucible";
-      version = qemuSeries.qemuVersion;
-      sourceUrl = qemuSeries.qemuSourceUrl;
-      sourceHash = qemuSeries.qemuSourceHash;
-      patchBranchRef = qemuSeries.patchBranchRef;
-      patchSeriesHash = qemuPassthru.patchSeriesHash;
+      version = atomicPatch.qemuVersion;
+      sourceUrl = atomicPatch.qemuSourceUrl;
+      sourceHash = atomicPatch.qemuSourceHash;
+      patchBranchRef = atomicPatch.branchRef;
+      atomicPatchHash = qemuPassthru.atomicPatchHash;
       patchBranchBundleHash = qemuPassthru.patchBranchBundleHash;
       patchBranchMaterialHash = qemuPassthru.patchBranchMaterialHash;
       buildId = qemuPassthru.qemuBuildIdentity;
-      deterministicBaseDate = qemuSeries.deterministicBaseDate;
-      deterministicPatchDate = qemuSeries.deterministicPatchDate;
+      deterministicBaseDate = atomicPatch.deterministicBaseDate;
+      deterministicPatchDate = atomicPatch.deterministicPatchDate;
     };
     components = {
       controller = {
@@ -214,7 +215,7 @@
         "crucible.cargoDeps.hash"
         "crucible.source.sourceStoreHash"
         "qemu.sourceHash"
-        "qemu.patchSeriesHash"
+        "qemu.atomicPatchHash"
         "qemu.patchBranchBundleHash"
         "qemu.patchBranchMaterialHash"
         "abi.shmem.generatedHeaderHash"
@@ -237,7 +238,7 @@
     qemu_source_url=${manifest.qemu.sourceUrl}
     qemu_source_hash=${manifest.qemu.sourceHash}
     qemu_patch_branch_ref=${manifest.qemu.patchBranchRef}
-    qemu_patch_series_hash=${manifest.qemu.patchSeriesHash}
+    qemu_atomic_patch_hash=${manifest.qemu.atomicPatchHash}
     qemu_patch_branch_bundle_hash=${manifest.qemu.patchBranchBundleHash}
     qemu_patch_branch_material_hash=${manifest.qemu.patchBranchMaterialHash}
     qemu_build_id=${manifest.qemu.buildId}

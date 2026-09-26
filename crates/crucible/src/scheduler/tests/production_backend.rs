@@ -1,9 +1,80 @@
 //! Production-backend scheduler binding, observation, and branch-frontier tests.
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crate::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use super::*;
 use crate::{
-    AppRandomDecision, BackendEffect, BackendSnapshot, MockSimulationBackend, StepObservation,
+    AppRandomSelectable, BackendEffect, BackendRngEvidence, BackendSnapshot, MockSimulationBackend,
+    SelectionDecision, StepObservation,
 };
+
+#[test]
+fn backend_quantum_loop_applies_resolved_preemption_before_run() {
+    struct PreemptionLoop {
+        decision: PreemptionDecision,
+    }
+
+    impl QuantumLoop for PreemptionLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime { ticks: 10 },
+                advanced_node: Some(scheduler_node("vm-a", SchedulingNodeKind::Vm)),
+                resolved_events: Vec::new(),
+                decisions: vec![Decision::Preemption(self.decision.clone())],
+                discovered_choices: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: EventLogOffset::default(),
+                scheduler_quiescence: None,
+            })
+        }
+    }
+
+    let decision = PreemptionDecision {
+        node: NodeId {
+            name: String::from("vm-a"),
+        },
+        at: SimInstant { ticks: 7 },
+        kind: PreemptionKind::VcpuSwitch {
+            from_vcpu: VcpuId { index: 0 },
+            to_vcpu: VcpuId { index: 1 },
+        },
+    };
+    let config = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.scheduler.backend-preemption",
+        "scenario=backend-preemption",
+    ));
+    let mut adapter = BackendQuantumLoop::new(
+        PreemptionLoop {
+            decision: decision.clone(),
+        },
+        MockSimulationBackend::default(),
+    );
+
+    adapter
+        .drive_quantum(QuantumRequest {
+            configuration: config,
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("preemption-backed quantum should run: {error}"));
+
+    assert_eq!(adapter.backend().now(), VirtualTime { ticks: 10 });
+    assert_eq!(
+        adapter.backend().state().applied_effects,
+        vec![BackendEffect::Preemption(decision)]
+    );
+}
 
 #[test]
 fn quantum_loop_trait_is_object_safe() {
@@ -20,6 +91,7 @@ fn quantum_loop_trait_is_object_safe() {
                 advanced_node: None,
                 resolved_events: Vec::new(),
                 decisions: Vec::new(),
+                discovered_choices: Vec::new(),
                 event_log_entries: Vec::new(),
                 event_log_segment_bytes: Vec::new(),
                 event_log_segment_text: String::new(),
@@ -58,9 +130,8 @@ fn production_scenario_binding_preserves_the_submitted_configuration_identity() 
     );
     let runtime = SchedulerLivenessScenario::from_canonical_material(
         "runtime scheduler parameters",
-        Shift::new(0).unwrap_or_else(|error| panic!("zero shift should be valid: {error}")),
         1,
-        SimInstant { nanos: 1 },
+        SimInstant { ticks: 1 },
         Vec::new(),
         Vec::new(),
     )
@@ -70,6 +141,62 @@ fn production_scenario_binding_preserves_the_submitted_configuration_identity() 
         runtime.canonical_configuration(),
         Configuration::genesis(scenario)
     );
+}
+
+#[test]
+fn live_app_random_consumes_an_exact_parent_campaign_selection() {
+    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
+    let configuration = scheduler.configuration().clone();
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let stream = RngStreamId::from_name("app-random/node:6:node-a/stream:6:branch");
+    let mut seeded = configuration
+        .def
+        .seed()
+        .decision_rng()
+        .fork_in_domain(&stream.domain, &stream.name);
+    let raw = seeded.next_u64();
+    let selected = raw ^ 1;
+    let live = BackendRngEvidence {
+        node,
+        stream: stream.clone(),
+        request_id: 9,
+        width: 64,
+        value: selected,
+    };
+    let parent = accepted_step!(
+        &configuration,
+        Decision::RngDraw(RngDecision { stream, value: raw }),
+    );
+    let selectable = AppRandomSelectable::from_decision(&configuration.def, &live)
+        .expect("live app-random request should reconstruct");
+    let selection = selectable
+        .branch_selection(&parent, selected)
+        .expect("exact parent should admit campaign selection");
+    scheduler
+        .install_app_random_branch_selections([(parent.id(), SelectionDecision::new(&selection))])
+        .expect("campaign selection should install");
+    assert!(matches!(
+        scheduler.checkpoint(),
+        Err(SingleSchedulerCheckpointError::Transient)
+    ));
+
+    let (recorded, discoveries, advanced, _append) =
+        QuantumLoop::append_backend_rng_evidence(&mut scheduler, vec![live])
+            .expect("live selected value should authenticate");
+
+    assert_eq!(scheduler.pending_branch_effect_choice_count(), 0);
+    assert_eq!(
+        advanced.id(),
+        accepted_step!(&parent, recorded[1].clone()).id()
+    );
+    assert_eq!(discoveries.len(), 1);
+    assert!(matches!(
+        recorded.as_slice(),
+        [Decision::RngDraw(draw), Decision::Selection(selection)]
+            if draw.value == raw && selection.is_campaign_branch()
+    ));
 }
 
 #[test]
@@ -104,12 +231,14 @@ fn lifecycle_activity_requirement_rejects_release_before_scheduler_publication()
 #[test]
 fn admitted_ready_counter_is_the_scheduler_epoch() {
     let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
+    let backend_node = NodeId {
+        name: String::from("node-a"),
+    };
     let ready = NodeCounter { ticks: 4_096 };
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "production-ready-counter-origin",
-        Shift::new(0).unwrap_or_else(|error| panic!("zero shift should be valid: {error}")),
         4,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         vec![SchedulerScenarioNode {
             id: node.clone(),
             counter: ready,
@@ -126,12 +255,7 @@ fn admitted_ready_counter_is_the_scheduler_epoch() {
     assert_eq!(scheduler.frontier(), VirtualTime { ticks: 0 });
     assert_eq!(
         scheduler
-            .backend_observation_time(
-                &NodeId {
-                    name: String::from("node-a"),
-                },
-                VirtualTime { ticks: 4_103 },
-            )
+            .backend_observation_time(&backend_node, VirtualTime { ticks: 4_103 })
             .unwrap_or_else(|error| panic!("backend observation should project: {error}")),
         VirtualTime { ticks: 7 }
     );
@@ -139,15 +263,32 @@ fn admitted_ready_counter_is_the_scheduler_epoch() {
         scheduler
             .node_time_for_counter(&scheduler.nodes[0], NodeCounter { ticks: 4_103 })
             .unwrap_or_else(|error| panic!("relative node time should project: {error}")),
-        SimInstant { nanos: 7 }
+        SimInstant { ticks: 7 }
     );
+
+    let mut backend = MockSimulationBackend::new();
+    backend
+        .step_to(VirtualTime { ticks: 4_103 })
+        .unwrap_or_else(|error| panic!("backend should reach raw node counter: {error}"));
+    let raw = backend
+        .fingerprint(backend_node.clone())
+        .unwrap_or_else(|error| panic!("backend should sample raw fingerprint: {error}"));
+    let mut adapter = BackendQuantumLoop::new(scheduler, backend);
+    let projected = adapter
+        .sample_fingerprint(backend_node)
+        .unwrap_or_else(|error| panic!("adapter should project fingerprint time: {error}"));
+
+    assert_eq!(projected.at, VirtualTime { ticks: 7 });
+    assert_eq!(projected.fingerprint, raw.fingerprint);
 }
 
 #[test]
-fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
+fn backend_quantum_loop_buffers_observations_at_an_ahead_node_poll_boundary() {
+    #[derive(Clone)]
     struct BoundaryLoop {
         event_log: EventLog,
         frontiers: std::vec::IntoIter<VirtualTime>,
+        poll_boundary: VirtualTime,
     }
 
     impl QuantumLoop for BoundaryLoop {
@@ -161,15 +302,17 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
                     .ok_or_else(|| SchedulerError::BoundaryViolation {
                         message: String::from("test boundary loop exhausted"),
                     })?;
-            let append = self
-                .event_log
-                .append_evaluation_boundary(frontier, SchedulerEvaluationBoundaryKind::Quantum)?;
+            let append = self.event_log.append_evaluation_boundary(
+                frontier.max(self.poll_boundary),
+                SchedulerEvaluationBoundaryKind::Quantum,
+            )?;
             Ok(QuantumOutcome {
                 configuration: request.configuration,
                 frontier,
                 advanced_node: None,
                 resolved_events: Vec::new(),
                 decisions: Vec::new(),
+                discovered_choices: Vec::new(),
                 event_log_entries: append.entries,
                 event_log_segment_bytes: append.segment_bytes,
                 event_log_segment_text: append.segment_text,
@@ -177,6 +320,10 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
                 event_log_offset: append.offset,
                 scheduler_quiescence: None,
             })
+        }
+
+        fn backend_observation_poll_boundary(&self, frontier: VirtualTime) -> VirtualTime {
+            frontier.max(self.event_log.condition_prefix().point().at())
         }
 
         fn append_backend_observations_at_boundary(
@@ -192,6 +339,7 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
         }
     }
 
+    #[derive(Clone)]
     struct ObservingBackend {
         inner: MockSimulationBackend,
         observations: Vec<ObservableEvent>,
@@ -236,17 +384,18 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
         "scenario=buffered-observation",
     );
     let configuration = Configuration::genesis(scenario);
-    let observation = ObservableEvent::console_output(
-        VirtualTime { ticks: 10 },
+    let observation = ObservableEvent::guest_marker(
+        Icount { retired: 5 },
         NodeId {
             name: String::from("vm-a"),
         },
-        b"committed".to_vec(),
+        MarkerId::from_name("fault.transport.ready"),
     );
     let mut adapter = BackendQuantumLoop::new(
         BoundaryLoop {
             event_log: EventLog::new(),
             frontiers: vec![VirtualTime { ticks: 5 }, VirtualTime { ticks: 10 }].into_iter(),
+            poll_boundary: VirtualTime { ticks: 10 },
         },
         ObservingBackend {
             inner: MockSimulationBackend::new(),
@@ -260,12 +409,20 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
             control: Vec::new(),
         })
         .unwrap_or_else(|error| panic!("first boundary should buffer the observation: {error}"));
-    assert!(
-        first
-            .event_log_entries
-            .iter()
-            .all(|entry| entry.at() != observation.at())
-    );
+    assert!(first.event_log_entries.iter().all(|entry| !matches!(
+        entry.payload(),
+        SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMarker { .. })
+    )));
+
+    let mut uncommitted = adapter.clone();
+    let diagnostic = uncommitted
+        .shutdown()
+        .expect_err("shutdown must reject an observation beyond the shared frontier")
+        .to_string();
+    assert!(diagnostic.contains("first timestamp is 10"));
+    assert!(diagnostic.contains("kind guest-marker"));
+    assert!(diagnostic.contains("source `vm-a`"));
+    assert!(diagnostic.contains("committed frontier 5"));
 
     let second = adapter
         .drive_quantum(QuantumRequest {
@@ -288,53 +445,209 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
 }
 
 #[test]
-fn branch_prefix_admission_records_only_explorer_overrides() {
-    let mut scheduler = test_scheduler(
-        vec![test_scenario_node(
-            "node-a",
-            0,
-            SchedulerNodeActivity::Halted,
-            NetworkLookahead::Infinite,
-            ExactLocalEvent::NoArmedTimer,
-        )],
-        Vec::new(),
+fn shutdown_rejects_causal_decisions_without_a_discovery_handoff() {
+    struct ShutdownDecisionBackend {
+        inner: MockSimulationBackend,
+        evidence: Vec<BackendRngEvidence>,
+    }
+
+    impl SimulationBackend for ShutdownDecisionBackend {
+        fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
+            self.inner.step_to(ceiling)
+        }
+
+        fn drain_rng_evidence(&mut self) -> Result<Vec<BackendRngEvidence>, BackendError> {
+            Ok(std::mem::take(&mut self.evidence))
+        }
+
+        fn apply(&mut self, effect: &BackendEffect, at: VirtualTime) -> Result<(), BackendError> {
+            self.inner.apply(effect, at)
+        }
+
+        fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError> {
+            self.inner.snapshot()
+        }
+
+        fn restore(&mut self, snapshot: &BackendSnapshot) -> Result<(), BackendError> {
+            self.inner.restore(snapshot)
+        }
+
+        fn now(&self) -> VirtualTime {
+            self.inner.now()
+        }
+
+        fn fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, BackendError> {
+            self.inner.fingerprint(node)
+        }
+
+        fn shutdown(&mut self) -> Result<(), BackendError> {
+            self.inner.shutdown()
+        }
+    }
+
+    let scheduler = test_scheduler(Vec::new(), Vec::new());
+    let mut adapter = BackendQuantumLoop::new(
+        scheduler,
+        ShutdownDecisionBackend {
+            inner: MockSimulationBackend::new(),
+            evidence: vec![BackendRngEvidence {
+                node: NodeId {
+                    name: String::from("node-a"),
+                },
+                stream: RngStreamId::from_name("app-random/node:6:node-a/stream:4:test"),
+                request_id: 1,
+                width: 8,
+                value: 7,
+            }],
+        },
     );
-    let decision = Decision::Override(crate::OverrideDecision {
-        point: crate::SchedulingPoint {
-            key: String::from("fuzz/sample"),
-        },
-        choice: crate::ChoiceTag {
-            name: String::from("candidate-7"),
-        },
-    });
+
+    let error = adapter
+        .shutdown()
+        .expect_err("shutdown must not lose typed choice discoveries");
+    assert!(
+        error
+            .to_string()
+            .contains("without a quantum discovery handoff")
+    );
+    assert!(adapter.loop_impl().configuration().schedule.is_empty());
+}
+
+#[test]
+fn signal_fault_branch_admission_requires_the_exact_typed_boundary() {
+    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
+    let parent = scheduler.configuration().clone();
+    let frontier = scheduler.frontier();
+    let choice = crate::model::BindingSearchChoice {
+        id: crate::model::SearchChoiceId::from_content_hash(ContentHash::from_bytes(
+            b"typed-scheduler-signal-choice",
+        )),
+        candidates_digest: ContentHash::from_bytes(b"typed-scheduler-signal-candidates"),
+        candidate_count: 2,
+        candidate_semantics: crate::model::BindingSearchCandidateSemantics::Outcome,
+        selected_index: None,
+        overridden: false,
+    };
+    let selectable = crate::SignalFaultSelectable::from_binding_choice(&parent, frontier, &choice)
+        .expect("typed signal selectable");
+    let selection = selectable
+        .branch_selection(&parent, 1)
+        .expect("typed signal selection");
+    let branch = selectable
+        .resolve_branch(&selection)
+        .expect("typed signal branch");
 
     let (configuration, append) = scheduler
-        .append_branch_prefix_overrides(vec![decision.clone()])
-        .expect("an explorer override must be admitted");
-
-    assert_eq!(
-        configuration.schedule.decisions(),
-        std::slice::from_ref(&decision)
-    );
-    assert_eq!(scheduler.configuration(), &configuration);
-    assert!(
-        append.entries.iter().any(|entry| {
-            entry.payload() == &SchedulerEventLogPayload::Decision(decision.clone())
-        })
-    );
+        .append_signal_fault_campaign_branch(&branch)
+        .expect("exact typed branch should append");
+    assert_eq!(configuration, *branch.selected());
+    assert_eq!(scheduler.configuration(), branch.selected());
+    assert!(branch.decisions().iter().all(|decision| {
+        append
+            .entries
+            .iter()
+            .any(|entry| entry.payload() == &SchedulerEventLogPayload::Decision(decision.clone()))
+    }));
 
     let error = scheduler
-        .append_branch_prefix_overrides(vec![Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("not-an-override"),
-            value: 1,
-        })])
-        .expect_err("raw RNG choices must use their owning resolution path");
+        .append_signal_fault_campaign_branch(&branch)
+        .expect_err("a consumed branch must not apply at another parent");
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
 }
 
 #[test]
+fn external_selection_advances_the_authoritative_scheduler_frontier() {
+    let mut scheduler = test_scheduler(Vec::new(), Vec::new());
+    let prior = scheduler
+        .append_observable_events([ObservableEvent::console_output(
+            VirtualTime { ticks: 37 },
+            NodeId {
+                name: String::from("node-a"),
+            },
+            b"prior-node-local-event".to_vec(),
+        )])
+        .expect("a prior event ahead of the conservative frontier should append");
+    let parent = scheduler.configuration().clone();
+    let quanta = scheduler.quanta();
+    let live = BackendRngEvidence {
+        node: NodeId {
+            name: String::from("node-a"),
+        },
+        stream: RngStreamId::from_name("app-random/node:6:node-a/stream:8:external"),
+        request_id: 11,
+        width: 64,
+        value: 7,
+    };
+    let selectable = AppRandomSelectable::from_decision(&parent.def, &live)
+        .expect("app-random selectable should reconstruct");
+    let selection = selectable
+        .branch_selection(&parent, live.value)
+        .expect("selection should bind to the exact parent");
+    let decision = SelectionDecision::new(&selection);
+    let selected = accepted_step!(&parent, Decision::Selection(decision.clone()));
+    let configuration_before_failure = scheduler.configuration().clone();
+    let quanta_before_failure = scheduler.quanta();
+    let offset_before_failure = scheduler.event_log_offset();
+    let point_before_failure = scheduler.condition_event_log_prefix().point();
+    let rejected_publisher_called = std::cell::Cell::new(false);
+
+    let error =
+        match scheduler.apply_external_selection(&parent, decision.clone(), &selected, || {
+            rejected_publisher_called.set(true);
+            Err(SchedulerError::BoundaryViolation {
+                message: String::from("fixture publisher rejected selection"),
+            })
+        }) {
+            Ok(_) => panic!("a publisher failure must reject the transition"),
+            Err(error) => error,
+        };
+    assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
+    assert!(rejected_publisher_called.get());
+    assert_eq!(scheduler.configuration(), &configuration_before_failure);
+    assert_eq!(scheduler.quanta(), quanta_before_failure);
+    assert_eq!(scheduler.event_log_offset(), offset_before_failure);
+    assert_eq!(
+        scheduler.condition_event_log_prefix().point(),
+        point_before_failure
+    );
+
+    let append = scheduler
+        .apply_external_selection(&parent, decision.clone(), &selected, || Ok(()))
+        .expect("exact external selection should append");
+
+    assert_eq!(scheduler.configuration(), &selected);
+    assert_eq!(scheduler.quanta(), quanta);
+    assert_eq!(append.entries[0].sequence(), prior.offset.events);
+    assert_eq!(append.entries[0].at(), VirtualTime { ticks: 37 });
+    assert!(append.entries.iter().any(|entry| {
+        entry.payload()
+            == &SchedulerEventLogPayload::Decision(Decision::Selection(decision.clone()))
+    }));
+    scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: selected,
+            control: Vec::new(),
+        })
+        .expect("the selected configuration should drive the next quantum");
+
+    let current = scheduler.configuration().clone();
+    let stale_publisher_called = std::cell::Cell::new(false);
+    let error = match scheduler.apply_external_selection(&parent, decision, &current, || {
+        stale_publisher_called.set(true);
+        Ok(())
+    }) {
+        Ok(_) => panic!("a stale parent must be rejected"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
+    assert!(!stale_publisher_called.get());
+}
+
+#[test]
 fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
-    fn app_random_decisions(seed: Seed) -> Vec<Decision> {
+    fn app_random_decisions(
+        seed: Seed,
+    ) -> (Vec<Decision>, Vec<crucible_campaign::ChoiceDiscovery>) {
         let node = NodeId {
             name: String::from("node-a"),
         };
@@ -347,27 +660,48 @@ fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
         scheduler
             .reseed_future_decisions(seed)
             .expect("an idle scheduler should admit a branch re-seed");
-        let (decisions, _configuration, _append) = QuantumLoop::append_backend_causal_decisions(
-            &mut scheduler,
-            vec![Decision::AppRandom(AppRandomDecision {
-                node,
-                stream,
-                request_id: 0,
-                width: 64,
-                value: expected_value,
-            })],
-        )
-        .expect("the live app-random value should match the branch seed");
-        decisions
+        let (decisions, discovered, _configuration, _append) =
+            QuantumLoop::append_backend_rng_evidence(
+                &mut scheduler,
+                vec![BackendRngEvidence {
+                    node,
+                    stream,
+                    request_id: 0,
+                    width: 64,
+                    value: expected_value,
+                }],
+            )
+            .expect("the live app-random value should match the branch seed");
+        assert!(matches!(
+            decisions.as_slice(),
+            [Decision::RngDraw(_), Decision::Selection(_)]
+        ));
+        assert_eq!(discovered.len(), 1);
+        let Decision::Selection(selection) = &decisions[1] else {
+            panic!("typed app-random decision should be a selection")
+        };
+        assert_eq!(
+            selection
+                .selection()
+                .expect("canonical selection")
+                .opportunity(),
+            discovered[0]
+                .opportunity()
+                .id()
+                .expect("discovered opportunity id")
+        );
+        (decisions, discovered)
     }
 
     let first_seed = Seed::from_u64(0xa990_0001);
     let second_seed = Seed::from_u64(0xa990_0002);
-    let first = app_random_decisions(first_seed);
-    let replayed = app_random_decisions(first_seed);
-    let second = app_random_decisions(second_seed);
+    let (first, first_discovered) = app_random_decisions(first_seed);
+    let (replayed, replayed_discovered) = app_random_decisions(first_seed);
+    let (second, second_discovered) = app_random_decisions(second_seed);
     assert_eq!(first, replayed);
+    assert_eq!(first_discovered, replayed_discovered);
     assert_ne!(first, second);
+    assert_eq!(first_discovered, second_discovered);
 
     let mut scheduler = test_scheduler(Vec::new(), Vec::new());
     let link = LinkId::for_endpoints(
@@ -385,4 +719,128 @@ fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
         .reseed_future_decisions(second_seed)
         .expect("an idle scheduler should reset World-network cursors");
     assert_eq!(scheduler.world_network_rng_positions.get(&link), Some(&0));
+
+    let mut checkpoint_scheduler = test_scheduler(Vec::new(), Vec::new());
+    checkpoint_scheduler
+        .reseed_future_decisions(second_seed)
+        .expect("an idle scheduler should admit a branch re-seed");
+    let scenario = checkpoint_scheduler.configuration().def.clone();
+    let checkpoint = checkpoint_scheduler
+        .checkpoint()
+        .expect("reseeded scheduler checkpoint");
+    assert_eq!(
+        checkpoint
+            .configuration_for(&scenario)
+            .expect("reseeded checkpoint configuration"),
+        *checkpoint_scheduler.configuration()
+    );
+}
+#[test]
+fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {
+    struct StubLoop;
+
+    impl QuantumLoop for StubLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime { ticks: 0 },
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: Vec::new(),
+                discovered_choices: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: EventLogOffset::default(),
+                scheduler_quiescence: None,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct GdbBackend {
+        opened: Vec<(NodeId, String)>,
+    }
+
+    impl SimulationBackend for GdbBackend {
+        fn step_to(
+            &mut self,
+            _ceiling: VirtualTime,
+        ) -> Result<crate::StepObservation, BackendError> {
+            Err(BackendError::Unsupported {
+                capability: "step_to",
+            })
+        }
+
+        fn apply(
+            &mut self,
+            _effect: &crate::BackendEffect,
+            _at: VirtualTime,
+        ) -> Result<(), BackendError> {
+            Err(BackendError::Unsupported {
+                capability: "apply",
+            })
+        }
+
+        fn snapshot(&mut self) -> Result<crate::BackendSnapshot, BackendError> {
+            Err(BackendError::Unsupported {
+                capability: "snapshot",
+            })
+        }
+
+        fn restore(&mut self, _snapshot: &crate::BackendSnapshot) -> Result<(), BackendError> {
+            Err(BackendError::Unsupported {
+                capability: "restore",
+            })
+        }
+
+        fn now(&self) -> VirtualTime {
+            VirtualTime::default()
+        }
+
+        fn fingerprint(&mut self, _node: NodeId) -> Result<crate::FingerprintSample, BackendError> {
+            Err(BackendError::Unsupported {
+                capability: "fingerprint",
+            })
+        }
+
+        fn open_gdbstub(
+            &mut self,
+            node: NodeId,
+            listen: GdbListen,
+        ) -> Result<GdbAttachInfo, BackendError> {
+            self.opened.push((node.clone(), listen.as_str().to_owned()));
+            GdbAttachInfo::new(node, "tcp:127.0.0.1:9001", listen)
+        }
+
+        fn shutdown(&mut self) -> Result<(), BackendError> {
+            Ok(())
+        }
+    }
+
+    let mut adapter = BackendQuantumLoop::new(StubLoop, GdbBackend::default());
+    let info = adapter
+        .open_gdbstub(
+            NodeId {
+                name: String::from("vm-a"),
+            },
+            GdbListen::new("127.0.0.1:9000")
+                .unwrap_or_else(|error| panic!("test listen should be stable: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("backend adapter should route gdbstub attach: {error}"));
+
+    assert_eq!(info.qemu_endpoint, "tcp:127.0.0.1:9001");
+    assert_eq!(
+        adapter.backend().opened,
+        vec![(
+            NodeId {
+                name: String::from("vm-a"),
+            },
+            String::from("127.0.0.1:9000"),
+        )]
+    );
 }

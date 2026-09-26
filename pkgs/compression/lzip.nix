@@ -43,7 +43,10 @@ in
       {
         name = "check";
         # Cross-target test programs run during target qualification.
-        script = if stdenv.isCross then ":" else ''make check'';
+        script =
+          if stdenv.isCross
+          then ":"
+          else ''make check'';
       }
       {
         name = "install";

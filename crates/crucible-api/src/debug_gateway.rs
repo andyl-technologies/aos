@@ -6,7 +6,8 @@
 //! reconcile idempotent prepare/commit operations after a lost acknowledgement.
 
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, SocketAddr};
+use std::net::Shutdown;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -29,7 +30,7 @@ pub struct DebugGatewayProcess {
     child: Child,
     client: DebugGatewayControlClient,
     control_socket: std::path::PathBuf,
-    operator_listen: Option<SocketAddr>,
+    operator_endpoint: Option<String>,
     _directory: tempfile::TempDir,
 }
 
@@ -45,7 +46,7 @@ impl DebugGatewayProcess {
     /// be created, the process cannot be spawned, exits before negotiation, or
     /// does not become ready within [`DEBUG_GATEWAY_STARTUP_TIMEOUT`].
     pub fn launch(executable: impl AsRef<Path>) -> Result<Self, DebugGatewayClientError> {
-        Self::launch_internal(executable.as_ref(), DEBUG_GATEWAY_STARTUP_TIMEOUT, None)
+        Self::launch_internal(executable.as_ref(), DEBUG_GATEWAY_STARTUP_TIMEOUT, false)
     }
 
     /// Spawns a standalone gateway with an explicit startup bound.
@@ -58,46 +59,36 @@ impl DebugGatewayProcess {
         executable: impl AsRef<Path>,
         timeout: Duration,
     ) -> Result<Self, DebugGatewayClientError> {
-        Self::launch_internal(executable.as_ref(), timeout, None)
+        Self::launch_internal(executable.as_ref(), timeout, false)
     }
 
-    /// Spawns a gateway with an explicitly unauthenticated loopback GDB listener.
-    ///
-    /// This mode is intended only for a trusted local host. Remote and
-    /// multi-user access must use the authenticated daemon relay instead.
+    /// Spawns a gateway whose operator RSP endpoint is private to this owner.
     ///
     /// # Errors
     ///
-    /// Returns [`DebugGatewayClientError`] for process startup, negotiation, or
-    /// listener-status failures.
-    pub fn launch_with_trusted_loopback(
+    /// Returns [`DebugGatewayClientError`] if the private directory, gateway
+    /// process, or operator endpoint cannot be prepared.
+    pub fn launch_with_owner_unix(
         executable: impl AsRef<Path>,
-        listen: SocketAddr,
     ) -> Result<Self, DebugGatewayClientError> {
-        if !listen.ip().is_loopback() {
-            return Err(DebugGatewayClientError::UntrustedOperatorListen(listen));
-        }
-        Self::launch_internal(
-            executable.as_ref(),
-            DEBUG_GATEWAY_STARTUP_TIMEOUT,
-            Some(listen),
-        )
+        Self::launch_internal(executable.as_ref(), DEBUG_GATEWAY_STARTUP_TIMEOUT, true)
     }
 
     fn launch_internal(
         executable: &Path,
         timeout: Duration,
-        trusted_loopback: Option<SocketAddr>,
+        owner_unix: bool,
     ) -> Result<Self, DebugGatewayClientError> {
         let directory = tempfile::tempdir().map_err(DebugGatewayClientError::CreateDirectory)?;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .map_err(DebugGatewayClientError::CreateDirectory)?;
         let control_socket = directory.path().join("control.sock");
         let mut command = Command::new(executable);
         command.arg("--control-socket").arg(&control_socket);
-        if let Some(listen) = trusted_loopback {
+        if owner_unix {
             command
-                .arg("--allow-unauthenticated-gdb")
-                .arg("--gdb-listen")
-                .arg(listen.to_string());
+                .arg("--owner-gdb-socket")
+                .arg(directory.path().join("operator.sock"));
         }
         let mut child = command
             .stdin(Stdio::null())
@@ -109,8 +100,8 @@ impl DebugGatewayProcess {
         loop {
             match DebugGatewayControlClient::connect(&control_socket) {
                 Ok(mut client) => {
-                    let operator_listen = match client.operator_listen() {
-                        Ok(operator_listen) => operator_listen,
+                    let operator_endpoint = match client.operator_endpoint() {
+                        Ok(operator_endpoint) => operator_endpoint,
                         Err(error) => {
                             let _ = terminate_child(&mut child);
                             return Err(error);
@@ -120,7 +111,7 @@ impl DebugGatewayProcess {
                         child,
                         client,
                         control_socket,
-                        operator_listen,
+                        operator_endpoint,
                         _directory: directory,
                     });
                 }
@@ -163,15 +154,27 @@ impl DebugGatewayProcess {
         &self.control_socket
     }
 
-    /// Returns the stable operator-facing GDB listener bound by the gateway.
+    /// Returns the private owner Unix RSP endpoint.
     #[must_use]
-    pub const fn operator_listen(&self) -> Option<SocketAddr> {
-        self.operator_listen
+    pub fn operator_endpoint(&self) -> Option<&str> {
+        self.operator_endpoint.as_deref()
     }
 
     /// Returns the negotiated control client.
     pub fn client_mut(&mut self) -> &mut DebugGatewayControlClient {
         &mut self.client
+    }
+
+    /// Unlocks guest-write RSP packets after the owner actor records its fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when the private gateway rejects
+    /// the transition or the control transport fails.
+    pub(crate) fn authorize_noncanonical_guest_write(
+        &mut self,
+    ) -> Result<(), DebugGatewayClientError> {
+        self.client.authorize_noncanonical_guest_write()
     }
 
     /// Returns the next scheduler-owned RSP run-control request, if one is queued.
@@ -250,9 +253,11 @@ impl DebugGatewayProcess {
     /// version negotiation fails.
     pub fn reconnect_control(&mut self) -> Result<(), DebugGatewayClientError> {
         let pending_run_control_stream = self.client.pending_run_control_stream;
+        let pending_interrupt_delivered = self.client.pending_interrupt_delivered;
         self.client.disconnect();
         self.client = DebugGatewayControlClient::connect(&self.control_socket)?;
         self.client.pending_run_control_stream = pending_run_control_stream;
+        self.client.pending_interrupt_delivered = pending_interrupt_delivered;
         Ok(())
     }
 
@@ -388,6 +393,7 @@ fn format_reconciliation(
 pub struct DebugGatewayControlClient {
     stream: UnixStream,
     pending_run_control_stream: Option<u32>,
+    pending_interrupt_delivered: bool,
 }
 
 impl DebugGatewayControlClient {
@@ -403,6 +409,7 @@ impl DebugGatewayControlClient {
         let mut client = Self {
             stream,
             pending_run_control_stream: None,
+            pending_interrupt_delivered: false,
         };
         let reply = client.request(DebugGatewayMessageKind::Hello, 0, Vec::new())?;
         if reply.kind != DebugGatewayMessageKind::HelloAck
@@ -438,13 +445,13 @@ impl DebugGatewayControlClient {
             .map_err(|error| DebugGatewayClientError::InvalidPayload(error.to_string()))
     }
 
-    /// Returns the stable operator-facing GDB listener address.
+    /// Returns the operator endpoint reported by the gateway.
     ///
     /// # Errors
     ///
-    /// Returns [`DebugGatewayClientError`] when transport or framing fails, the
-    /// gateway rejects the query, or the response is not a valid socket address.
-    pub fn operator_listen(&mut self) -> Result<Option<SocketAddr>, DebugGatewayClientError> {
+    /// Returns [`DebugGatewayClientError`] for a failed control exchange or
+    /// malformed UTF-8 endpoint.
+    pub fn operator_endpoint(&mut self) -> Result<Option<String>, DebugGatewayClientError> {
         let reply = self.request(DebugGatewayMessageKind::OperatorStatus, 0, Vec::new())?;
         if reply.kind != DebugGatewayMessageKind::OperatorStatusAck {
             return Err(DebugGatewayClientError::UnexpectedReply {
@@ -457,10 +464,31 @@ impl DebugGatewayControlClient {
         }
         let value = std::str::from_utf8(&reply.payload)
             .map_err(|error| DebugGatewayClientError::InvalidPayload(error.to_string()))?;
-        value
-            .parse()
-            .map(Some)
-            .map_err(|_| DebugGatewayClientError::InvalidOperatorListen(value.to_owned()))
+        Ok(Some(value.to_owned()))
+    }
+
+    /// Unlocks guest-write RSP packets on the private owner Unix endpoint.
+    ///
+    /// The actor calls this only after it has committed a noncanonical guest
+    /// edit fork. The gateway exposes only a private Unix operator endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when the gateway rejects the
+    /// transition or the control exchange fails.
+    fn authorize_noncanonical_guest_write(&mut self) -> Result<(), DebugGatewayClientError> {
+        let reply = self.request(
+            DebugGatewayMessageKind::OperatorAccess,
+            0,
+            b"branch-guest-write".to_vec(),
+        )?;
+        if reply.kind != DebugGatewayMessageKind::Ack {
+            return Err(DebugGatewayClientError::UnexpectedReply {
+                expected: DebugGatewayMessageKind::Ack,
+                actual: reply.kind,
+            });
+        }
+        Ok(())
     }
 
     /// Polls one raw RSP run-control packet queued by the operator connection.
@@ -475,9 +503,15 @@ impl DebugGatewayControlClient {
             DebugGatewayMessageKind::RunControl if reply.payload.is_empty() => Ok(None),
             DebugGatewayMessageKind::RunControl => {
                 if self.pending_run_control_stream == Some(reply.stream_id) {
+                    // Ctrl-C supersedes the in-flight run without opening a second request.
+                    if reply.payload == [0x03] && !self.pending_interrupt_delivered {
+                        self.pending_interrupt_delivered = true;
+                        return Ok(Some(reply.payload));
+                    }
                     return Ok(None);
                 }
                 self.pending_run_control_stream = Some(reply.stream_id);
+                self.pending_interrupt_delivered = reply.payload == [0x03];
                 Ok(Some(reply.payload))
             }
             actual => Err(DebugGatewayClientError::UnexpectedReply {
@@ -516,6 +550,7 @@ impl DebugGatewayControlClient {
             });
         }
         self.pending_run_control_stream = None;
+        self.pending_interrupt_delivered = false;
         Ok(())
     }
 
@@ -763,12 +798,6 @@ pub enum DebugGatewayClientError {
     /// A QEMU endpoint could not be represented by the protocol.
     #[error("QEMU debugger endpoint is not valid UTF-8: {0}")]
     InvalidEndpoint(std::path::PathBuf),
-    /// The gateway reported an invalid operator listener address.
-    #[error("debugger gateway reported invalid operator listener `{0}`")]
-    InvalidOperatorListen(String),
-    /// A direct unauthenticated listener was requested outside loopback.
-    #[error("unauthenticated debugger listener must be loopback, not `{0}`")]
-    UntrustedOperatorListen(SocketAddr),
     /// A backend promotion could not be proven after an ambiguous response.
     #[error(
         "debugger backend {operation} failed with `{failure}`; reconciliation {reconciliation}"
@@ -803,6 +832,8 @@ impl DebugGatewayClientError {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- protocol fixtures use expect for precise failure localization.
+#[allow(clippy::expect_used)]
 mod tests {
     use std::os::unix::net::UnixListener;
     use std::thread;
@@ -818,6 +849,67 @@ mod tests {
         stream
             .write_all(&bytes)
             .unwrap_or_else(|error| panic!("reply should write: {error}"));
+    }
+
+    #[test]
+    fn client_delivers_interrupt_once_for_outstanding_run() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let socket = directory.path().join("gateway.sock");
+        let listener = UnixListener::bind(&socket).expect("bind test gateway");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept client");
+            assert_eq!(
+                read_frame(&mut stream).expect("read hello").kind,
+                DebugGatewayMessageKind::Hello
+            );
+            write_reply(
+                &mut stream,
+                DebugGatewayFrame::v1(
+                    DebugGatewayMessageKind::HelloAck,
+                    0,
+                    DEBUG_GATEWAY_V1_CAPABILITY.to_vec(),
+                )
+                .expect("build hello reply"),
+            );
+            for payload in [b"c".as_slice(), b"c", &[0x03], &[0x03]] {
+                assert_eq!(
+                    read_frame(&mut stream).expect("read scheduler poll").kind,
+                    DebugGatewayMessageKind::RunControl
+                );
+                write_reply(
+                    &mut stream,
+                    DebugGatewayFrame::v1(DebugGatewayMessageKind::RunControl, 7, payload.to_vec())
+                        .expect("build scheduler poll reply"),
+                );
+            }
+            let completion = read_frame(&mut stream).expect("read scheduler completion");
+            assert_eq!(completion.kind, DebugGatewayMessageKind::RspData);
+            assert_eq!(completion.stream_id, 7);
+            write_reply(
+                &mut stream,
+                DebugGatewayFrame::v1(DebugGatewayMessageKind::Ack, 0, Vec::new())
+                    .expect("build completion reply"),
+            );
+        });
+
+        let mut client = DebugGatewayControlClient::connect(&socket).expect("connect gateway");
+        assert_eq!(
+            client.poll_run_control().expect("first poll"),
+            Some(b"c".to_vec())
+        );
+        assert_eq!(client.poll_run_control().expect("duplicate poll"), None);
+        assert_eq!(
+            client.poll_run_control().expect("interrupt poll"),
+            Some(vec![0x03])
+        );
+        assert_eq!(
+            client.poll_run_control().expect("duplicate interrupt"),
+            None
+        );
+        client
+            .complete_run_control(b"T02")
+            .expect("complete interrupted run");
+        server.join().expect("gateway server thread");
     }
 
     #[test]

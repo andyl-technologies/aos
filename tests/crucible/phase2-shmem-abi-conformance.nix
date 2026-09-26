@@ -13,7 +13,10 @@
   shmemLib =
     import ./_crucible-shmem-source.nix {inherit lib;}
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
+    + import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+    }
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/futex.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/preemption_mailbox.rs
@@ -90,6 +93,14 @@
         needle = "const _: () = assert!(REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET == 61);";
       }
       {
+        label = "region header control padding Rust static assertion";
+        needle = "const _: () = assert!(REGION_HEADER_CONTROL_PADDING_OFFSET == 62);";
+      }
+      {
+        label = "region header fault arena size Rust static assertion";
+        needle = "const _: () = assert!(REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET == 64);";
+      }
+      {
         label = "region header reserved Rust static assertion";
         needle = "const _: () = assert!(REGION_HEADER_RESERVED_OFFSET == 68);";
       }
@@ -106,16 +117,24 @@
         needle = "const _: () = assert!(RING_HEADER_READ_IDX_OFFSET == 0);";
       }
       {
+        label = "ring header consumer-state Rust static assertion";
+        needle = "const _: () = assert!(RING_HEADER_CONSUMER_STATE_OFFSET == 8);";
+      }
+      {
         label = "ring header read padding Rust static assertion";
-        needle = "const _: () = assert!(RING_HEADER_PAD_READ_OFFSET == 8);";
+        needle = "const _: () = assert!(RING_HEADER_PAD_READ_OFFSET == 16);";
       }
       {
         label = "ring header write index Rust static assertion";
         needle = "const _: () = assert!(RING_HEADER_WRITE_IDX_OFFSET == 64);";
       }
       {
+        label = "ring header producer-state Rust static assertion";
+        needle = "const _: () = assert!(RING_HEADER_PRODUCER_STATE_OFFSET == 72);";
+      }
+      {
         label = "ring header write padding Rust static assertion";
-        needle = "const _: () = assert!(RING_HEADER_PAD_WRITE_OFFSET == 72);";
+        needle = "const _: () = assert!(RING_HEADER_PAD_WRITE_OFFSET == 80);";
       }
       {
         label = "ring header size Rust static assertion";
@@ -250,12 +269,16 @@
         needle = "const _: () = assert!(NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET == 38);";
       }
       {
-        label = "node slot padding Rust static assertion";
-        needle = "const _: () = assert!(NODE_SLOT_PAD0_OFFSET == 39);";
+        label = "node slot advance stop-condition Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_ADVANCE_STOP_CONDITION_OFFSET == 39);";
       }
       {
         label = "node slot publish generation Rust static assertion";
         needle = "const _: () = assert!(NODE_SLOT_PUBLISH_GEN_OFFSET == 40);";
+      }
+      {
+        label = "node slot control-boundary acknowledgement Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET == 44);";
       }
       {
         label = "node slot device completion Rust static assertion";
@@ -294,12 +317,84 @@
         needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_KIND_OFFSET == 96);";
       }
       {
+        label = "node slot preemption padding Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_PAD2_OFFSET == 97);";
+      }
+      {
         label = "node slot logical-time raw Rust static assertion";
         needle = "const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET == 104);";
       }
       {
+        label = "node slot logical-time restore target Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET == 112);";
+      }
+      {
+        label = "node slot logical-time restore request Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET == 120);";
+      }
+      {
+        label = "node slot logical-time restore acknowledgement Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET == 124);";
+      }
+      {
+        label = "node slot fault frontier Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET == 128);";
+      }
+      {
+        label = "node slot capture request Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET == 136);";
+      }
+      {
+        label = "node slot control-boundary padding Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_PAD3_OFFSET == 140);";
+      }
+      {
+        label = "node slot timer witness generation Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET == 144);";
+      }
+      {
+        label = "node slot timer witness deadline Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET == 152);";
+      }
+      {
+        label = "node slot timer witness logical deadline Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET == 160);";
+      }
+      {
+        label = "node slot timer witness armed raw icount Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET == 168);";
+      }
+      {
+        label = "node slot timer witness fired expiry Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET == 176);";
+      }
+      {
+        label = "node slot timer witness fired virtual time Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET == 184);";
+      }
+      {
+        label = "node slot timer witness fired raw icount Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET == 192);";
+      }
+      {
+        label = "node slot timer witness completion Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET == 200);";
+      }
+      {
+        label = "node slot timer witness reserved Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET == 204);";
+      }
+      {
+        label = "node slot advance publication sequence Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET == 208);";
+      }
+      {
+        label = "node slot remaining padding Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_PAD4_OFFSET == 216);";
+      }
+      {
         label = "node slot size Rust static assertion";
-        needle = "const _: () = assert!(NODE_SLOT_SIZE == 128);";
+        needle = "const _: () = assert!(NODE_SLOT_SIZE == 256);";
       }
       {
         label = "node slot alignment Rust static assertion";
@@ -378,12 +473,20 @@
     ]
     ++ failuresFor "crates/crucible-shmem/tests/setup_validation.rs" setupValidation [
       {
-        label = "current ABI explicitly rejects an older region header";
-        needle = "abi_version: ABI_VERSION - 1";
+        label = "current ABI explicitly rejects an unsupported region header";
+        needle = "abi_version: u32::MAX";
       }
       {
         label = "current ABI also rejects future region headers";
         needle = "abi_version: ABI_VERSION + 1";
+      }
+      {
+        label = "held ring image clone and private-mapping restore";
+        needle = "hot_fork_ring_image_round_trips_queued_bytes_into_a_held_private_mapping";
+      }
+      {
+        label = "ring image rejects an open or active endpoint";
+        needle = "hot-fork-ring-image-open-or-active-header";
       }
     ]
     ++ forbiddenFor "crates/crucible-shmem/tests/gate_abi_conformance.rs" shmemGate [
@@ -413,11 +516,11 @@
     ++ failuresFor "crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=17";
+        needle = "abi_version=29";
       }
       {
         label = "total serialized length";
-        needle = "total_len=19296";
+        needle = "total_len=19424";
       }
       {
         label = "region magic";
@@ -425,40 +528,52 @@
       }
       {
         label = "payload marker";
-        needle = "544=50494e47";
+        needle = "672=50494e47";
       }
       {
         label = "coverage entry exact-icount marker";
-        needle = "5152=8503000000000000";
+        needle = "5280=8503";
       }
       {
         label = "coverage entry block marker";
-        needle = "5180=04000000";
+        needle = "5308=04";
       }
       {
         label = "white-box marker exact-icount marker";
-        needle = "5216=9103000000000000";
+        needle = "5344=9103";
       }
       {
         label = "white-box marker payload marker";
-        needle = "5232=4d41524b";
+        needle = "5360=4d41524b";
       }
       {
         label = "guest-introspection sequence marker";
-        needle = "9888=1300000000000000";
+        needle = "10016=13";
       }
       {
         label = "guest-introspection complete CRGI record marker";
-        needle = "9904=4352474901000700010000000000000000000000";
+        needle = "10032=4352474901";
       }
     ]
     ++ failuresFor "crates/crucible-shmem/interface/crucible-shmem-abi.toml" interfaceManifest [
       {
         label = "machine-readable ABI version";
-        needle = "abi_version = 17";
+        needle = "abi_version = 29";
+      }
+      {
+        label = "selectable reply direction";
+        needle = "selectable_reply_direction = \"host-to-plugin\"";
+      }
+      {
+        label = "selectable reply single-entry capacity";
+        needle = "selectable_reply_queue_capacity = 1";
       }
     ]
     ++ failuresFor "crates/crucible-shmem/include/crucible_shmem_abi.h" generatedHeader [
+      {
+        label = "selectable reply capacity constant";
+        needle = "#define CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY 1u";
+      }
       {
         label = "region header static assert";
         needle = "sizeof(crucible_shmem_region_header) == CRUCIBLE_SHMEM_REGION_HEADER_SIZE";
@@ -560,8 +675,8 @@
         needle = "offsetof(crucible_shmem_node_slot, device_io_active) == CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET";
       }
       {
-        label = "node slot padding offset static assert";
-        needle = "offsetof(crucible_shmem_node_slot, pad0) == CRUCIBLE_SHMEM_NODE_SLOT_PAD0_OFFSET";
+        label = "node slot advance stop-condition offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, advance_stop_condition) == CRUCIBLE_SHMEM_NODE_SLOT_ADVANCE_STOP_CONDITION_OFFSET";
       }
       {
         label = "node slot publish generation offset static assert";
@@ -608,6 +723,46 @@
         needle = "offsetof(crucible_shmem_node_slot, logical_time_restore_ack) == CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET";
       }
       {
+        label = "node slot timer witness generation offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, timer_witness_generation) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET";
+      }
+      {
+        label = "node slot timer witness deadline offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, timer_witness_deadline_ps) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET";
+      }
+      {
+        label = "node slot timer witness logical deadline offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, timer_witness_deadline_tick) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET";
+      }
+      {
+        label = "node slot timer witness armed raw icount offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, timer_witness_armed_raw_icount) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET";
+      }
+      {
+        label = "node slot timer witness fired expiry offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, timer_witness_fired_expire_ps) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET";
+      }
+      {
+        label = "node slot timer witness fired virtual time offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, timer_witness_fired_virtual_ps) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET";
+      }
+      {
+        label = "node slot timer witness fired raw icount offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, timer_witness_fired_raw_icount) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET";
+      }
+      {
+        label = "node slot timer witness completion offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, timer_witness_completed) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET";
+      }
+      {
+        label = "node slot timer witness reserved offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, timer_witness_reserved) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET";
+      }
+      {
+        label = "node slot advance publication sequence offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, advance_publication_sequence) == CRUCIBLE_SHMEM_NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET";
+      }
+      {
         label = "ring header static assert";
         needle = "sizeof(crucible_shmem_ring_header) == CRUCIBLE_SHMEM_RING_HEADER_SIZE";
       }
@@ -626,6 +781,10 @@
       {
         label = "ring header write index offset static assert";
         needle = "offsetof(crucible_shmem_ring_header, write_idx) == CRUCIBLE_SHMEM_RING_HEADER_WRITE_IDX_OFFSET";
+      }
+      {
+        label = "ring header producer-state offset static assert";
+        needle = "offsetof(crucible_shmem_ring_header, producer_state) == CRUCIBLE_SHMEM_RING_HEADER_PRODUCER_STATE_OFFSET";
       }
       {
         label = "ring header write padding offset static assert";
@@ -735,7 +894,6 @@
           package: "crucible-shmem",
                   test_target: "gate_abi_conformance",
                   required_features: &[],
-                  placeholder: false,
         '';
       }
     ]
@@ -746,12 +904,7 @@
           package = "crucible-shmem";
                 testTarget = "gate_abi_conformance";
                 requiredFeatures = [];
-                placeholder = false;
         '';
-      }
-      {
-        label = "placeholder target count";
-        needle = "placeholder_targets=0";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
@@ -828,6 +981,16 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-shmem \
               --test preemption_mailbox \
+              -- --test-threads=1
+
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-shmem-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-shmem \
+              --test setup_validation \
+              hot_fork_ring_image_round_trips_queued_bytes_into_a_held_private_mapping \
               -- --test-threads=1
 
             cargo run \
@@ -951,10 +1114,10 @@ in
                 atomic_init(&header.node_count, CRUCIBLE_SHMEM_MAX_NODES);
                 atomic_init(&header.queue_capacity, 8u);
                 atomic_init(&header.ring_count, 12u);
-                atomic_init(&header.ring_hdr_off, 4352u);
-                atomic_init(&header.ring_data_off, 5888u);
+                atomic_init(&header.ring_hdr_off, 8448u);
+                atomic_init(&header.ring_data_off, 9984u);
                 atomic_init(&header.entry_stride, CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE);
-                atomic_init(&header.region_size, 42012416u);
+                atomic_init(&header.region_size, 42026112u);
                 atomic_init(&header.icount_shift, 4u);
                 atomic_init(&header.pause_requested, 1u);
                 atomic_init(&header.shutdown_requested, 0u);
@@ -990,11 +1153,26 @@ in
                 atomic_init(&slot.logical_time_restore_target, 128u);
                 atomic_init(&slot.logical_time_restore_request, 13u);
                 atomic_init(&slot.logical_time_restore_ack, 13u);
+                atomic_init(&slot.control_boundary_fault_command_frontier, 9u);
+                atomic_init(&slot.control_boundary_capture_request, 3u);
+                atomic_init(&slot.timer_witness_generation, 17u);
+                atomic_init(&slot.timer_witness_deadline_ps, 989u);
+                atomic_init(&slot.timer_witness_deadline_tick, 62u);
+                atomic_init(&slot.timer_witness_armed_raw_icount, 60u);
+                atomic_init(&slot.timer_witness_fired_expire_ps, 989u);
+                atomic_init(&slot.timer_witness_fired_virtual_ps, 992u);
+                atomic_init(&slot.timer_witness_fired_raw_icount, 60u);
+                atomic_init(&slot.timer_witness_completed, 1u);
+                atomic_init(&slot.timer_witness_reserved, 0u);
 
                 crucible_shmem_ring_header ring;
                 memset(&ring, 0, sizeof(ring));
                 atomic_init(&ring.read_idx, 5u);
                 atomic_init(&ring.write_idx, 9u);
+                atomic_init(
+                    &ring.producer_state,
+                    (UINT64_C(1) << 63) | UINT64_C(3)
+                );
 
                 crucible_shmem_frame_entry frame;
                 memset(&frame, 0, sizeof(frame));
@@ -1068,41 +1246,48 @@ in
                     || request_ring != 2u
                     || response_ring != 3u
                     || crucible_shmem_guest_introspection_layout_compute(
-                        5888u,
+                        9984u,
                         12u,
                         8u,
                         CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
                         2u,
                         CRUCIBLE_FAULT_DEFAULT_PAYLOAD_ARENA_BYTES,
-                        42012416u,
+                        42026112u,
                         &guest_layout
                     ) != 0
                     || guest_layout.ring_count != 4u
                     || guest_layout.queue_capacity
                         != CRUCIBLE_SHMEM_GUEST_INTROSPECTION_QUEUE_CAPACITY
-                    || guest_layout.ring_hdr_off != 38390528u
-                    || guest_layout.ring_data_off != 38391040u
+                    || guest_layout.ring_hdr_off != 38394624u
+                    || guest_layout.ring_data_off != 38395136u
                     || guest_layout.entry_stride
                         != CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SIZE
-                    || guest_layout.region_size != 42012416u
+                    || guest_layout.selectable_reply_ring_count != 2u
+                    || guest_layout.selectable_reply_queue_capacity
+                        != CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY
+                    || guest_layout.selectable_reply_ring_hdr_off != 42016512u
+                    || guest_layout.selectable_reply_ring_data_off != 42016768u
+                    || guest_layout.selectable_reply_entry_stride
+                        != CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE
+                    || guest_layout.region_size != 42026112u
                     || crucible_shmem_guest_introspection_layout_compute(
-                        5888u,
+                        9984u,
                         12u,
                         8u,
                         CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
                         2u,
                         0u,
-                        42012416u,
+                        42026112u,
                         &guest_layout
                     ) == 0
                     || crucible_shmem_guest_introspection_layout_compute(
-                        5888u,
+                        9984u,
                         12u,
                         8u,
                         CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
                         2u,
                         CRUCIBLE_FAULT_DEFAULT_PAYLOAD_ARENA_BYTES,
-                        42012415u,
+                        42026111u,
                         &guest_layout
                     ) == 0) {
                     fprintf(stderr, "guest-introspection geometry validation failed\n");
@@ -1217,10 +1402,10 @@ in
                     || atomic_load_explicit(&header.node_count, memory_order_acquire) != CRUCIBLE_SHMEM_MAX_NODES
                     || atomic_load_explicit(&header.queue_capacity, memory_order_acquire) != 8u
                     || atomic_load_explicit(&header.ring_count, memory_order_acquire) != 12u
-                    || atomic_load_explicit(&header.ring_hdr_off, memory_order_acquire) != 4352u
-                    || atomic_load_explicit(&header.ring_data_off, memory_order_acquire) != 5888u
+                    || atomic_load_explicit(&header.ring_hdr_off, memory_order_acquire) != 8448u
+                    || atomic_load_explicit(&header.ring_data_off, memory_order_acquire) != 9984u
                     || atomic_load_explicit(&header.entry_stride, memory_order_acquire) != CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE
-                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 42012416u
+                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 42026112u
                     || atomic_load_explicit(&header.icount_shift, memory_order_acquire) != 4u
                     || atomic_load_explicit(&header.pause_requested, memory_order_acquire) != 1u
                     || atomic_load_explicit(&header.shutdown_requested, memory_order_acquire) != 0u
@@ -1254,7 +1439,51 @@ in
                     || atomic_load_explicit(&slot.logical_time_raw_icount, memory_order_acquire) != 96u
                     || atomic_load_explicit(&slot.logical_time_restore_target, memory_order_acquire) != 128u
                     || atomic_load_explicit(&slot.logical_time_restore_request, memory_order_acquire) != 13u
-                    || atomic_load_explicit(&slot.logical_time_restore_ack, memory_order_acquire) != 13u) {
+                    || atomic_load_explicit(&slot.logical_time_restore_ack, memory_order_acquire) != 13u
+                    || atomic_load_explicit(
+                        &slot.control_boundary_fault_command_frontier,
+                        memory_order_acquire
+                    ) != 9u
+                    || atomic_load_explicit(
+                        &slot.control_boundary_capture_request,
+                        memory_order_acquire
+                    ) != 3u
+                    || atomic_load_explicit(
+                        &slot.timer_witness_generation,
+                        memory_order_acquire
+                    ) != 17u
+                    || atomic_load_explicit(
+                        &slot.timer_witness_deadline_ps,
+                        memory_order_acquire
+                    ) != 989u
+                    || atomic_load_explicit(
+                        &slot.timer_witness_deadline_tick,
+                        memory_order_acquire
+                    ) != 62u
+                    || atomic_load_explicit(
+                        &slot.timer_witness_armed_raw_icount,
+                        memory_order_acquire
+                    ) != 60u
+                    || atomic_load_explicit(
+                        &slot.timer_witness_fired_expire_ps,
+                        memory_order_acquire
+                    ) != 989u
+                    || atomic_load_explicit(
+                        &slot.timer_witness_fired_virtual_ps,
+                        memory_order_acquire
+                    ) != 992u
+                    || atomic_load_explicit(
+                        &slot.timer_witness_fired_raw_icount,
+                        memory_order_acquire
+                    ) != 60u
+                    || atomic_load_explicit(
+                        &slot.timer_witness_completed,
+                        memory_order_acquire
+                    ) != 1u
+                    || atomic_load_explicit(
+                        &slot.timer_witness_reserved,
+                        memory_order_acquire
+                    ) != 0u) {
                     fprintf(stderr, "node slot validation failed\n");
                     return 1;
                 }
@@ -1382,7 +1611,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            rust_tests=crucible-shmem::gate_abi_conformance,crucible-shmem::preemption_mailbox
+            rust_tests=crucible-shmem::gate_abi_conformance,crucible-shmem::preemption_mailbox,crucible-shmem::hot_fork_ring_image
             generated_header_diff=checked
             bilateral_static_asserts=compiled
             golden_vector_roundtrip=rust,c

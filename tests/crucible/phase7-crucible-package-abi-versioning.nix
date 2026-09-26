@@ -39,7 +39,12 @@
     (lib.removePrefix prefix (firstLineWith label prefix content));
 
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
-  guestHostProtocolVersion = sourceConst "guest-host protocol version" "pub const CONTROL_PROTOCOL_VERSION: u32 = " protocolLib;
+  guestHostProtocolVersionSource = sourceConst "guest-host protocol version" "pub const CONTROL_PROTOCOL_VERSION: u32 = " protocolLib;
+  # The constant includes a version file shared with the package build.
+  guestHostProtocolVersion =
+    if lib.hasPrefix "include!(" guestHostProtocolVersionSource
+    then lib.trim (builtins.readFile ../../crates/crucible-protocol/src/control_protocol_version.in)
+    else guestHostProtocolVersionSource;
   rpcProtocolMajor = sourceConst "RPC ABI major version" "pub const RPC_PROTOCOL_MAJOR: u16 = " apiRpcAbi;
   rpcProtocolMinor = sourceConst "RPC ABI minor version" "pub const RPC_PROTOCOL_MINOR: u16 = " apiRpcAbi;
   rpcProtocolPatch = sourceConst "RPC ABI patch version" "pub const RPC_PROTOCOL_PATCH: u16 = " apiRpcAbi;
@@ -50,35 +55,62 @@
   shmemHeaderHash = builtins.hashFile "sha256" ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
   qemuPackageMetadataProbe = import ../../pkgs/emulation/qemu.nix {
     inherit lib;
-    inherit (pkgs) buildPackages stdenv libcap-ng libusb1 libgcrypt gnutls fuse3;
     pname = "qemu-crucible";
     enablePlugins = true;
-    applyCruciblePatches = true;
+    applyCruciblePatch = true;
     mkDerivation = args: let
       passthru = args.passthru or {};
     in
       args // passthru;
     fetchurl = args: args;
     gnumake = null;
+    bash = "/aos-bash";
+    perl = "/aos-perl";
     pkg-config = null;
     meson = null;
     ninja = null;
     python3 = "/aos-python3";
+    stdenv = {
+      isCross = false;
+      hostPlatform = {
+        isDarwin = false;
+        isLinux = true;
+        constraints.cpu = "x86_64";
+      };
+    };
+    buildPackages = {};
     setuptools = null;
     distlib = null;
-    pip = null;
-    wheel = null;
+    python3-pygdbmi = null;
     glib = null;
     pixman = null;
     zlib = null;
     libslirp = null;
     dtc = null;
+    libcap-ng = null;
+    libusb1 = null;
+    libgcrypt = null;
+    gnutls = null;
+    fuse3 = null;
+    gcc-libs = "/aos-gcc-libs";
+    libisoburn = null;
+    mtools = null;
+    socat = null;
+    zstd = null;
+    samba-smbd = {
+      outPath = "/aos-samba-smbd";
+      version = "4.24.7";
+      src = {
+        outputHash = "sha256-Rbd0ekdFLv8rIVmkTMY+tDaQ0zn9EGkIjgI6AV/tBsc=";
+        outputHashAlgo = "sha256";
+      };
+    };
   };
   qemuPackageShmemAbi = qemuPackageMetadataProbe.shmemAbi;
   qemuPackageShmemAbiVersion = qemuPackageMetadataProbe.shmemAbiVersion;
   qemuPackageShmemHeaderHash = qemuPackageMetadataProbe.shmemHeaderHash;
   qemuPackageShmemHeaderInstallPath = qemuPackageMetadataProbe.shmemHeaderInstallPath;
-  qemuIdentityMaterialLine = "qemu_build_id_material_includes=qemu_version,qemu_source_hash,qemu_nix_hash,qemu_configure_flags_hash,patch_series_hash,patch_branch_bundle_hash,patch_branch_material_hash,qemu_shmem_abi_version,qemu_shmem_header_hash";
+  qemuIdentityMaterialLine = "qemu_build_id_material_includes=qemu_version,qemu_source_hash,qemu_nix_hash,qemu_configure_flags_hash,atomic_patch_hash,patch_branch_bundle_hash,patch_branch_material_hash,qemu_shmem_abi_version,qemu_shmem_header_hash";
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -282,7 +314,7 @@
     ++ failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
       {
         label = "guest-host protocol version constant";
-        needle = "pub const CONTROL_PROTOCOL_VERSION: u32 = ${guestHostProtocolVersion};";
+        needle = "pub const CONTROL_PROTOCOL_VERSION: u32 = ${guestHostProtocolVersionSource};";
       }
       {
         label = "guest-host handshake loud ABI mismatch";
@@ -317,8 +349,8 @@
         needle = "pub const RPC_PROTOCOL_BUILD: &str = \"${rpcProtocolBuild}\";";
       }
       {
-        label = "RPC major mismatch fails loudly";
-        needle = "RpcAbiError::MajorVersionMismatch";
+        label = "RPC exact version mismatch fails loudly";
+        needle = "RpcAbiError::ExactVersionMismatch";
       }
       {
         label = "RPC golden vectors track live version";
@@ -327,12 +359,12 @@
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_abi_conformance.rs" apiAbiGate [
       {
-        label = "RPC v2 gate assertion";
+        label = "current RPC major gate assertion";
         needle = "assert_eq!(RPC_PROTOCOL_MAJOR, ${rpcProtocolMajor});";
       }
       {
-        label = "RPC major mismatch gate assertion";
-        needle = "RpcAbiError::MajorVersionMismatch";
+        label = "RPC exact version mismatch gate assertion";
+        needle = "RpcAbiError::ExactVersionMismatch";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-aos-workspace-build.nix" workspaceBuildCheck [
@@ -398,7 +430,7 @@
     ++ failuresFor "tests/crucible/phase5-cli-hermetic-discovery.nix" cliHermeticDiscoveryCheck [
       {
         label = "phase5 validates QEMU marker";
-        needle = "qemu_crucible_patches_applied";
+        needle = "qemu_crucible_atomic_patch_applied";
       }
       {
         label = "phase5 validates plugin marker";

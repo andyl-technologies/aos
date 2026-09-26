@@ -8,7 +8,10 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   session = import ./_crucible-session-source.nix {inherit lib;};
-  sessionGate = builtins.readFile ../../crates/crucible-session/tests/gate_control_responsive.rs;
+  sessionGate = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-session/tests/gate_control_responsive.rs;
+  };
   gateTargetNix = builtins.readFile ./phase1-gate-target-mapping.nix;
   gateTargetRust = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -63,7 +66,7 @@
       }
       {
         label = "actor-only publish helper";
-        needle = "fn publish(&self, snapshot: &EngineSnapshot, control_acknowledgements: u64)";
+        needle = "fn publish(\n        &self,\n        snapshot: &EngineSnapshot,\n        control_acknowledgements: u64,";
       }
       {
         label = "session actor owns live snapshot";
@@ -151,10 +154,6 @@
         label = "session control-responsive test target";
         needle = ''testTarget = "gate_control_responsive";'';
       }
-      {
-        label = "implemented gate target marker";
-        needle = "placeholder = false;";
-      }
     ]
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargetRust [
       {
@@ -164,10 +163,6 @@
       {
         label = "harness session control-responsive test target";
         needle = ''test_target: "gate_control_responsive",'';
-      }
-      {
-        label = "harness implemented gate target marker";
-        needle = "placeholder: false,";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

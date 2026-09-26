@@ -11,9 +11,37 @@
   replayOracleGate = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
+  cliManifestToml = builtins.fromTOML cliManifest;
+  cliRuntimeDependencyTables =
+    [
+      {
+        scope = "dependencies";
+        dependencies = cliManifestToml.dependencies or {};
+      }
+    ]
+    ++ map (target: {
+      scope = "target.${target}.dependencies";
+      dependencies = cliManifestToml.target.${target}.dependencies or {};
+    }) (builtins.attrNames (cliManifestToml.target or {}));
+  cliDevDependencies = cliManifestToml."dev-dependencies" or {};
+  cliRuntimeProtocolBypasses =
+    builtins.filter (
+      table: builtins.hasAttr "crucible-protocol" table.dependencies
+    )
+    cliRuntimeDependencyTables;
+  cliManifestDependencyFailures =
+    lib.optional
+    (!(builtins.hasAttr "crucible-api" cliManifestToml.dependencies))
+    "crates/crucible-cli/Cargo.toml: missing CLI control-plane API dependency"
+    ++ lib.optional
+    (!(builtins.hasAttr "crucible-protocol" cliDevDependencies))
+    "crates/crucible-cli/Cargo.toml: missing black-box guest protocol fixture dev dependency"
+    ++ map (
+      table: "crates/crucible-cli/Cargo.toml ${table.scope}: forbidden production CLI bypass of the API protocol re-export"
+    )
+    cliRuntimeProtocolBypasses;
   defaultChecks = builtins.readFile ./default.nix;
   gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;
-  artifactFormatGate = builtins.readFile ./phase7-reproduction-artifact-format.nix;
   releaseManifestGate = builtins.readFile ./phase7-crucible-release-manifest.nix;
   protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
@@ -52,19 +80,19 @@
       }
       {
         label = "PKG-38 provenance triple text";
-        needle = "QEMU patch-series hash, shmem ABI version, guest-host protocol";
+        needle = "build identity + atomic-patch hash, and the three ABI versions";
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
     ]
     ++ failuresFor "crates/crucible-harness/src/reproduction.rs" reproduction [
       {
-        label = "v2 schema";
-        needle = "pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v3\";";
+        label = "current reproduction schema";
+        needle = "pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v4\";";
       }
       {
-        label = "QEMU patch-series identity field";
-        needle = "pub qemu_patch_series_hash: String";
+        label = "QEMU atomic-patch identity field";
+        needle = "pub qemu_atomic_patch_hash: String";
       }
       {
         label = "shmem ABI version field";
@@ -83,12 +111,12 @@
         needle = "pub rpc_abi_build: String";
       }
       {
-        label = "v2 identity decode arity";
+        label = "current identity decode arity";
         needle = "require_field_count(line_index, tag, &fields, 11)?;";
       }
       {
-        label = "QEMU patch-series validation";
-        needle = "build_identity.qemu_patch_series_hash";
+        label = "QEMU atomic-patch validation";
+        needle = "build_identity.qemu_atomic_patch_hash";
       }
       {
         label = "guest-host validation";
@@ -107,8 +135,8 @@
         needle = "engine_version: source.crucible_version.clone()";
       }
       {
-        label = "QEMU patch-series e2e conversion";
-        needle = "qemu_patch_series_hash: source.qemu_patch_series_hash.clone()";
+        label = "QEMU atomic-patch e2e conversion";
+        needle = "qemu_atomic_patch_hash: source.qemu_atomic_patch_hash.clone()";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/e2e.rs" e2e [
@@ -121,8 +149,8 @@
         needle = "crucible_version: env!(\"CARGO_PKG_VERSION\").to_string()";
       }
       {
-        label = "mock e2e QEMU patch-series identity";
-        needle = "pub qemu_patch_series_hash: String";
+        label = "mock e2e QEMU atomic-patch identity";
+        needle = "pub qemu_atomic_patch_hash: String";
       }
       {
         label = "mock e2e shmem ABI source";
@@ -134,7 +162,7 @@
       }
       {
         label = "mock e2e guest-host ABI source";
-        needle = "guest_host_protocol_version: String::from(\"${guestHostProtocolVersion}\")";
+        needle = "guest_host_protocol_version: CANONICAL_GUEST_HOST_PROTOCOL_VERSION.to_string()";
       }
       {
         label = "mock e2e RPC ABI source";
@@ -157,8 +185,8 @@
         needle = "CanonicalField::Str(&self.build_identity.crucible_version)";
       }
       {
-        label = "mock e2e canonical material includes patch series";
-        needle = "CanonicalField::Str(&self.build_identity.qemu_patch_series_hash)";
+        label = "mock e2e canonical material includes atomic patch";
+        needle = "CanonicalField::Str(&self.build_identity.qemu_atomic_patch_hash)";
       }
       {
         label = "mock e2e canonical material includes plugin ABI";
@@ -175,8 +203,8 @@
         needle = "crucible_version: env!(\"CARGO_PKG_VERSION\").to_string()";
       }
       {
-        label = "replay-oracle QEMU patch-series identity";
-        needle = "pub qemu_patch_series_hash: String";
+        label = "replay-oracle QEMU atomic-patch identity";
+        needle = "pub qemu_atomic_patch_hash: String";
       }
       {
         label = "replay-oracle shmem ABI source";
@@ -184,7 +212,7 @@
       }
       {
         label = "replay-oracle guest-host ABI source";
-        needle = "guest_host_protocol_version: String::from(\"${guestHostProtocolVersion}\")";
+        needle = "guest_host_protocol_version: crate::e2e::CANONICAL_GUEST_HOST_PROTOCOL_VERSION";
       }
       {
         label = "replay-oracle RPC ABI source";
@@ -218,7 +246,7 @@
       }
       {
         label = "engine replay-oracle guest-host ABI source";
-        needle = "guest_host_protocol_version: String::from(\"${guestHostProtocolVersion}\")";
+        needle = "guest_host_protocol_version: crucible_protocol::CONTROL_PROTOCOL_VERSION.to_string()";
       }
       {
         label = "engine replay-oracle RPC ABI source";
@@ -229,28 +257,15 @@
         needle = "plugin_abi: String::from(\"simdouble-mock-plugin-abi\")";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
-      {
-        label = "CLI control-plane API dependency";
-        needle = "crucible-api = { path = \"../crucible-api\" }";
-      }
-    ]
-    ++ forbiddenFor "crates/crucible-cli/Cargo.toml" cliManifest [
-      {
-        label = "CLI bypass of the API protocol re-export";
-        needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
-      }
-    ]
+    ++ cliManifestDependencyFailures
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
       {
-        label = "CLI v2 schema";
-        needle = "const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v3\";";
+        label = "CLI current reproduction schema";
+        needle = "const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v4\";";
       }
       {
-        # Needle evolution: the CLI now reads the shared guest-host protocol
-        # version through `crucible-api`'s re-export (control-plane boundary),
-        # not directly from `crucible-protocol`. The provenance triple still
-        # records the SHARED constant; only the import path moved.
+        # The CLI reads the shared guest-host protocol through the public API
+        # boundary and records that exact constant in the provenance triple.
         label = "CLI reads guest-host protocol constant";
         needle = "CONTROL_PROTOCOL_VERSION, CommandResultStatus";
       }
@@ -263,8 +278,8 @@
         needle = "RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH";
       }
       {
-        label = "CLI identity carries QEMU patch-series hash";
-        needle = "qemu_patch_series_hash: String";
+        label = "CLI identity carries QEMU atomic-patch hash";
+        needle = "qemu_atomic_patch_hash: String";
       }
       {
         label = "CLI identity carries shmem ABI version";
@@ -283,16 +298,16 @@
         needle = "rpc_abi_build: String";
       }
       {
-        label = "CLI requires QEMU marker patch series";
-        needle = "required_metadata_field(&fields, \"qemu_patch_series_hash\", &marker)";
+        label = "CLI requires QEMU marker atomic patch";
+        needle = "required_metadata_field(&fields, \"qemu_atomic_patch_hash\", &marker)";
       }
       {
-        label = "CLI v2 decode arity";
+        label = "CLI current identity decode arity";
         needle = "require_field_count(line_index, tag, &fields, 11)?;";
       }
       {
-        label = "CLI replay mismatch names patch-series";
-        needle = "patch-series";
+        label = "CLI replay mismatch names atomic-patch";
+        needle = "atomic-patch";
       }
       {
         label = "CLI replay mismatch names guest-host";
@@ -323,8 +338,20 @@
         needle = "mock failure reproduction artifacts require local producer provenance";
       }
       {
-        label = "CLI only emits non-passing artifacts for local producers";
-        needle = "outcome.status.is_non_passing() && backend_plan.target == BackendExecutionTarget::Local";
+        label = "CLI identifies captured Interactive session artifacts";
+        needle = "let captures_interactive_session = run_plan.execution_mode == RunExecutionMode::Interactive";
+      }
+      {
+        label = "CLI binds captured Interactive artifacts to session ownership";
+        needle = "report.execution_owner == RunExecutionOwner::Session";
+      }
+      {
+        label = "CLI emits non-passing or captured Interactive artifacts";
+        needle = "outcome.status.is_non_passing() || captures_interactive_session";
+      }
+      {
+        label = "CLI limits emitted artifacts to local producers";
+        needle = "backend_plan.target == BackendExecutionTarget::Local";
       }
       {
         label = "CLI skips remote verify artifacts without provenance";
@@ -339,20 +366,10 @@
         needle = "artifact: Option<Vec<u8>>";
       }
     ]
-    ++ failuresFor "tests/crucible/phase7-reproduction-artifact-format.nix" artifactFormatGate [
-      {
-        label = "format gate reports v2 schema";
-        needle = "schema=crucible.reproduction-artifact.v3";
-      }
-      {
-        label = "format gate reports expanded pinned identities";
-        needle = "qemu-patch-series,shmem-abi,guest-host-protocol,rpc-abi";
-      }
-    ]
     ++ failuresFor "tests/crucible/phase7-crucible-release-manifest.nix" releaseManifestGate [
       {
-        label = "release manifest gate validates patch-series";
-        needle = "qemu_patch_series_hash=" + "$" + "{qemuPackageMetadataProbe.patchSeriesHash}";
+        label = "release manifest gate validates atomic-patch";
+        needle = "qemu_atomic_patch_hash=" + "$" + "{qemuPackageMetadataProbe.atomicPatchHash}";
       }
       {
         label = "release manifest gate validates guest-host ABI";
@@ -404,9 +421,10 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
-            schema=crucible.reproduction-artifact.v3
-            provenance=crucible-version,qemu-build-id,qemu-patch-series-hash,shmem-abi-version,guest-host-protocol-version,rpc-abi-version,rpc-abi-build,plugin-abi
+            schema=crucible.reproduction-artifact.v4
+            provenance=crucible-version,qemu-build-id,qemu-atomic-patch-hash,shmem-abi-version,guest-host-protocol-version,rpc-abi-version,rpc-abi-build,plugin-abi
             replay_refusal=identity-mismatch
+            local_artifacts=non-passing-or-interactive-session
             remote_verify_artifacts=skipped-without-producer-provenance
             e2e_dependency=checks.crucible.phase7.reproductionProvenanceTriple
             RESULT

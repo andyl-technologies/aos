@@ -15,6 +15,9 @@ pub(super) const BUILT_IN_CORPUS_SELFTEST_GATES: &[&str] = &[
 // crucible-lint: allow rust-allow -- the test harness builds the binary root without invoking its imported entrypoint.
 #[cfg_attr(test, allow(dead_code))]
 pub(super) fn main() {
+    if run_internal_canonical_planner_worker() {
+        return;
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
@@ -32,6 +35,31 @@ pub(super) fn main() {
     }
 }
 
+fn run_internal_canonical_planner_worker() -> bool {
+    let mut arguments = std::env::args_os().skip(1);
+    if arguments.next().as_deref()
+        != Some(std::ffi::OsStr::new(
+            crucible_daemon::CANONICAL_PLANNER_WORKER_ARGUMENT,
+        ))
+    {
+        return false;
+    }
+    if arguments.next().is_some() {
+        eprintln!("crucible: canonical planner worker received an unexpected argument");
+        std::process::exit(2);
+    }
+
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    if let Err(error) =
+        crucible_daemon::serve_canonical_planner_process_once(stdin.lock(), stdout.lock())
+    {
+        eprintln!("crucible: canonical planner worker failed: {error}");
+        std::process::exit(3);
+    }
+    true
+}
+
 pub(super) fn cli_parse_error_exit_code(error: &clap::Error) -> i32 {
     match error.kind() {
         clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => 0,
@@ -42,6 +70,27 @@ pub(super) fn cli_parse_error_exit_code(error: &clap::Error) -> i32 {
 pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let thin_plan = plan_cli_invocation(cli);
     execute_cli_dispatch_plan(&thin_plan, &mut NullOperationRecorder)?;
+    if let Commands::Campaign(args) = &cli.command {
+        return run_campaign_invocation(cli, args);
+    }
+    if let Commands::Triage(args) = &cli.command {
+        let campaign = CampaignArgs {
+            socket: Some(args.campaign_socket.clone()),
+            principal: Some(args.principal.clone()),
+            command: CampaignCommand::Triage(CampaignTriageArgs {
+                name: args.campaign.name.clone(),
+                snapshot: args.campaign.snapshot.clone(),
+                policy: args.campaign.policy,
+                minimize: args.campaign.minimize,
+                report: args.campaign.report.clone(),
+                recompute_signatures: args.campaign.recompute_signatures,
+            }),
+        };
+        return run_campaign_invocation(cli, &campaign);
+    }
+    if let Commands::Store(args) = &cli.command {
+        return run_store_invocation(cli, args);
+    }
     let mut seed_entropy = OsSeedEntropySource;
     let ergonomics_plan =
         plan_determinism_ergonomics(cli, &ProcessSeedEnvironment, &mut seed_entropy)?;
@@ -52,6 +101,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let run_plan = match &cli.command {
         Commands::Run(args) => {
             let mut plan = plan_run_invocation(args, &run_store_root)?;
+            plan.campaign_deployment = cli.campaign_deployment.clone();
             if let Some(seed) = run_identity_seed {
                 pin_run_invocation_seed(&mut plan, seed)?;
             }
@@ -66,6 +116,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let save_plan = match &cli.command {
         Commands::Save(args) => {
             let mut plan = plan_save_invocation(args, &run_store_root, &cli.artifact_dir)?;
+            plan.run_plan.campaign_deployment = cli.campaign_deployment.clone();
             if let Some(seed) = run_identity_seed {
                 pin_run_invocation_seed(&mut plan.run_plan, seed)?;
             }
@@ -77,32 +128,11 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Commands::Resume(args) => Some(plan_resume_invocation(args, &run_store_root)?),
         _ => None,
     };
-    let fork_plan = match &cli.command {
-        Commands::Fork(args) => {
-            let fork_seed = if cli.seed.is_some() {
-                Some(
-                    ergonomics_plan
-                        .as_ref()
-                        .ok_or_else(|| backend_error("fork requires a resolved explicit seed"))?
-                        .seed
-                        .value,
-                )
-            } else {
-                None
-            };
-            Some(plan_fork_invocation(
-                args,
-                fork_seed,
-                &cli.artifact_dir,
-                &run_store_root,
-            )?)
-        }
-        _ => None,
-    };
     let search_plan = match &cli.command {
         Commands::Search(args) => {
             let mut plan =
                 plan_search_invocation_with_artifact_dir(args, &run_store_root, &cli.artifact_dir)?;
+            plan.campaign_deployment = cli.campaign_deployment.clone();
             if let Some(seed) = run_identity_seed {
                 pin_search_invocation_seed(&mut plan, seed)?;
             }
@@ -115,18 +145,18 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let seed = ergonomics_plan.as_ref().ok_or_else(|| {
                 backend_error("fuzz requires a resolved deterministic campaign seed")
             })?;
-            Some(plan_fuzz_invocation_with_artifact_dir(
+            let mut plan = plan_fuzz_invocation_with_artifact_dir(
                 args,
                 seed,
                 &run_store_root,
                 &cli.artifact_dir,
-            )?)
+            )?;
+            plan.campaign_deployment = cli.campaign_deployment.clone();
+            Some(plan)
         }
         _ => None,
     };
-    if let Some(plan) = &fuzz_plan
-        && !plan.family.is_builtin_fault_campaign()
-    {
+    if let Some(plan) = &fuzz_plan {
         load_fuzz_family(plan)?;
     }
     let debug_plan = match &cli.command {
@@ -191,7 +221,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         ergonomics_plan.as_ref(),
                         resume_plan,
                     ),
-                    None => Err(unsupported_resume_backend_error(resume_plan)),
+                    None => Err(resume_backend_unavailable_error(resume_plan)),
                 }?;
                 let backend = backend_plan.resolved_backend.as_ref().ok_or_else(|| {
                     backend_error("local resume completed without a resolved backend")
@@ -223,41 +253,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 }
                 return Ok(());
             }
-            return Err(unsupported_resume_backend_error(resume_plan));
-        }
-        if let Some(fork_plan) = &fork_plan {
-            if backend_plan.target == BackendExecutionTarget::Local {
-                let outcome = match backend_plan.resolved_backend.as_ref() {
-                    #[cfg(any(test, feature = "test-double"))]
-                    Some(ResolvedLocalBackend::Double) => run_local_double_fork_workflow(
-                        &thin_plan,
-                        &backend_plan,
-                        ergonomics_plan.as_ref(),
-                        fork_plan,
-                    ),
-                    Some(ResolvedLocalBackend::Qemu { .. }) => run_local_qemu_fork_workflow(
-                        &thin_plan,
-                        &backend_plan,
-                        ergonomics_plan.as_ref(),
-                        fork_plan,
-                    ),
-                    None => Err(unsupported_fork_backend_error(fork_plan)),
-                }?;
-                let backend = backend_plan.resolved_backend.as_ref().ok_or_else(|| {
-                    backend_error("local fork completed without a resolved backend")
-                })?;
-                let evidence = observe_local_backend_execution(backend)?;
-                validate_backend_execution_evidence(&backend_plan, &evidence)?;
-                if emit_human && backend_plan.should_announce(cli.quiet) {
-                    println!("{}", backend_plan.announcement());
-                }
-                emit_backend_command_output(cli, &outcome)?;
-                if outcome.status.is_non_passing() {
-                    return Err(CliError::Outcome(outcome.status));
-                }
-                return Ok(());
-            }
-            return Err(unsupported_fork_backend_error(fork_plan));
+            return Err(resume_backend_unavailable_error(resume_plan));
         }
         if let Some(search_plan) = &search_plan {
             if backend_plan.target == BackendExecutionTarget::Local {
@@ -275,7 +271,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         ergonomics_plan.as_ref(),
                         search_plan,
                     ),
-                    None => Err(unsupported_search_backend_error(search_plan)),
+                    None => Err(search_backend_unavailable_error(search_plan)),
                 }?;
                 let backend = backend_plan.resolved_backend.as_ref().ok_or_else(|| {
                     backend_error("local search completed without a resolved backend")
@@ -291,14 +287,10 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 }
                 return Ok(());
             }
-            return Err(unsupported_search_backend_error(search_plan));
+            return Err(search_backend_unavailable_error(search_plan));
         }
         if let Some(fuzz_plan) = &fuzz_plan {
-            match fuzz_dispatch_route(&backend_plan, fuzz_plan) {
-                Some(FuzzDispatchRoute::BuiltInFaultCampaignProof) => {
-                    run_builtin_fault_campaign_fuzz(cli, fuzz_plan)?;
-                    return Ok(());
-                }
+            match fuzz_dispatch_route(&backend_plan) {
                 #[cfg(any(test, feature = "test-double"))]
                 Some(FuzzDispatchRoute::LocalDouble) => {
                     let outcome = run_local_double_fuzz_workflow(
@@ -342,7 +334,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     }
                     return Ok(());
                 }
-                None => return Err(unsupported_fuzz_backend_error(fuzz_plan)),
+                None => return Err(fuzz_backend_unavailable_error(fuzz_plan)),
             }
         }
         if !matches!(&cli.command, Commands::Replay(_)) {
@@ -435,44 +427,17 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Commands::Verify(_)
         | Commands::Save(_)
         | Commands::Resume(_)
-        | Commands::Fork(_)
         | Commands::Search(_)
         | Commands::Fuzz(_)
         | Commands::Debug(_)
-        | Commands::Serve(_) => Ok(()),
+        | Commands::Serve(_)
+        | Commands::Campaign(_)
+        | Commands::Store(_) => Ok(()),
         Commands::Completions(args) => {
             write_completions(args.shell, &mut io::stdout());
             Ok(())
         }
-        Commands::Triage(args) => {
-            let report = run_triage_invocation(cli, args)?;
-            if !cli.quiet {
-                println!(
-                    "crucible: triage findings={} findings_count={} ledger={} ledger_cache_hit={} policy={} minimize={} clusters={} report={} format={} store={} result={} cache_hit={} compare={}",
-                    report.plan.findings.label(),
-                    report.ledger.artifact_count(),
-                    format_content_hash_ref(report.stored_ledger.key),
-                    report.stored_ledger.cache_hit,
-                    report.plan.policy_label(),
-                    report.plan.minimize_label(),
-                    report.result.clustering.cluster_count(),
-                    report.report_path.display(),
-                    report.plan.format_label(),
-                    report.plan.store_root.display(),
-                    format_content_hash_ref(report.stored_result.key),
-                    report.stored_result.cache_hit,
-                    report
-                        .compare
-                        .as_ref()
-                        .map(|diff| diff.status_label())
-                        .unwrap_or("none")
-                );
-                if let Some(diff) = &report.compare {
-                    println!("{}", diff.content_diff());
-                }
-            }
-            Ok(())
-        }
+        Commands::Triage(_) => Ok(()),
     }
 }
 

@@ -1,6 +1,6 @@
-# Patch 0072 — `crucible-typed-node-result-schema`
+# Capability task 0072 — `crucible-typed-node-result-schema`
 
-Patch `0072` preserves the fixed node-command result schema when an immediate
+This capability preserves the fixed node-command result schema when an immediate
 typed impulse also emits command-specific occurrence evidence. The command
 result and occurrence event are separate protocol records with separate
 consumers; one must never replace the other.
@@ -56,10 +56,11 @@ exact bytes into the result header. The before/after hashes are the values
 produced by the mutation, not the prepare-only prediction.
 
 Deferred impulses retain their dedicated deferred status and completion path;
-this patch does not misreport a deferred transition as synchronously applied.
+this capability does not misreport a deferred transition as synchronously applied.
 The result bridge publishes the final typed result only after QEMU completes or
 fails the deferred mutation, and the host validates that terminal result before
-committing its binding state. Patch 0074 closes the producer half of this rule:
+committing its binding state. The capability specified by capability task 0074
+closes the producer half of this rule:
 both deferred success and deferred failure encode `NodeFaultEvidenceV1` from the
 immutable copied rule and final before/after hashes, then hash those exact bytes
 into the result header. An empty deferred result payload is malformed.
@@ -77,10 +78,11 @@ specified by [`accelerator result opportunity`](25-accelerator-result-opportunit
 
 ## Required proofs
 
-- The per-patch microtest proves the impulse payload replacement was removed and
-  the canonical result encoder, prepare-only frozen-state equality, and result
+- The focused atomic-patch capability test proves the impulse payload
+  replacement was removed and the canonical result encoder, prepare-only
+  frozen-state equality, and result
   digest remain present.
-- Patch regeneration proves exact diff bytes, commit/tree identities, DCO, and
+- Atomic-patch regeneration proves exact diff bytes, commit/tree identities, DCO, and
   the tracked corresponding-source bundle.
 - A live production node impulse proves the host independently validates the
   fixed command result and command-specific occurrence event.
@@ -94,17 +96,12 @@ specified by [`accelerator result opportunity`](25-accelerator-result-opportunit
   request, and requires exact command kind, operation, target kind, model phase,
   generation, action hash, target hash, schema hash, request SHA-256, and
   before/after hash agreement. The gate has no reduced result validator.
-- The same derivation builds the tracked QEMU patch prefix ending at `0071`,
-  builds the Rust plugin against that exact prefix identity, and runs the live
-  transaction. It must fail while decoding the command result and must never
-  print `PASS`; this proves that removing only `0072` is detected before an
-  occurrence can be classified as committed.
-  This prefix build is compatibility-test-only and explicitly non-distributable;
-  it carries no false full-series corresponding-source claim. Its machine-readable
-  release policy marks it as an internal component, disables standalone release,
-  gives it no release route, and declares it non-publishable. Because no matching
-  prefix corresponding-source artifact exists, closure publication fails closed.
+- A capability-focused malformed-result fixture changes the result schema while
+  retaining the authentic occurrence record. The production decoder must reject
+  it before an occurrence can be classified as committed. The pristine-QEMU
+  negative proves that the Crucible result ABI is absent without the atomic
+  patch.
 
-The patch changes only QEMU/GPL-side code and uses the existing versioned
+The atomic patch changes only QEMU/GPL-side code and uses the existing versioned
 shared-memory result and event protocols. It adds no pointer, callback, native
 layout, or implementation object to the process boundary.

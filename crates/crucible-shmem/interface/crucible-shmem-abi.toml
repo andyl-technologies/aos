@@ -7,7 +7,7 @@
 name = "crucible-shmem"
 kind = "process-shared-memory"
 license = "MIT OR Apache-2.0"
-abi_version = 17
+abi_version = 29
 magic_ascii = "CRUCSHM1"
 target = "x86_64-unknown-linux-gnu"
 byte_order = "little"
@@ -44,6 +44,20 @@ accelerator_completion_direction = "host-to-plugin"
 accelerator_queue_capacity = 64
 accelerator_record_protocol = "CRAC-v1"
 accelerator_full_queue = "bounded-backpressure-no-overwrite"
+selectable_reply_rings_per_vm = 1
+selectable_reply_direction = "host-to-plugin"
+selectable_reply_queue_capacity = 1
+selectable_reply_record_protocol = "SelectionReplyV1-in-whitebox-envelope"
+selectable_reply_full_queue = "bounded-backpressure-no-overwrite"
+hot_fork_ring_producer_admission = "reversible-held-bit+in-flight-count"
+hot_fork_ring_consumer_admission = "reversible-held-bit+in-flight-count"
+hot_fork_ring_snapshot_precondition = "all-producers-and-consumers-held-and-drained"
+virtual_timer_witness = "plugin-validated-actual-qemu-clock-virtual-callback"
+virtual_timer_witness_publication = "node-slot-publish-generation-seqlock"
+virtual_timer_witness_noncurrent_version_policy = "reject"
+advance_stop_condition = "node-slot-byte-39"
+advance_stop_condition_unknown_tag = "reject"
+advance_stop_condition_next_idle = "publish-idle-without-authorizing-deadline"
 
 [representation]
 allowed = [
@@ -63,10 +77,12 @@ forbidden = [
 
 [fault_command_protocol]
 abi_major = 1
-abi_minor = 1
+abi_minor = 3
 semantic_version = 1
 command_header_bytes = 216
-result_header_bytes = 188
+result_header_version = 2
+result_header_bytes = 196
+result_emitted_tick_offset = 36
 capability_row_bytes = 60
 command_slot_bytes = 256
 result_slot_bytes = 256
@@ -113,6 +129,15 @@ producer = "qemu-plugin"
 consumer = "apache-host"
 command_results_are_events = false
 overflow = "fail-run-without-dropping-event"
+
+[coverage_restore]
+semantic_version = 1
+transaction = "logical-time-restore-request-ack"
+plugin_commit = "discard-ring+zero-local-map+zero-retained-per-vcpu-scoreboard-before-ack"
+host_commit = "confirm-native-pause+require-empty-ring+clear-consumer-state"
+scoreboard_replacement = "forbidden"
+control_frame = "forbidden"
+failure = "fail-realization-before-authoritative-execution"
 
 [conformance]
 c_header = "../include/crucible_shmem_abi.h"

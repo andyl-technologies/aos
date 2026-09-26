@@ -1,6 +1,51 @@
 //! Core model, scenario identity, and step-transition unit tests.
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crate::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use super::*;
+use crucible_campaign::{
+    BooleanDomain, CampaignCodecError, CampaignHash, ChoiceClassContext, ChoiceCoordinate,
+    ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue, ScenarioDefId,
+    SelectableDeclaration, Selection, SelectionOrigin,
+};
+use std::collections::BTreeSet;
+
+fn campaign_selection_fixture() -> Result<Selection, CampaignCodecError> {
+    let domain = ChoiceDomain::Boolean(BooleanDomain::new(1)?);
+    let declaration = SelectableDeclaration::new(
+        "product.test.selection",
+        ChoiceSource::Scheduler {
+            producer: String::from("test-scheduler"),
+        },
+        domain.clone(),
+        ChoiceValue::Boolean(false),
+        ChoiceClassContext::new(BTreeSet::new())?,
+        BTreeSet::new(),
+        true,
+    )?;
+    let opportunity = ChoiceOpportunity::new(
+        ScenarioDefId::from_hash(CampaignHash::derive("test", b"selection-scenario")),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test", b"selection-scheduler"),
+            producer: CampaignHash::derive("test", b"selection-producer"),
+        },
+        "selection-instance",
+        None,
+    )?;
+    Selection::new(
+        &opportunity,
+        &domain,
+        ChoiceValue::Boolean(false),
+        SelectionOrigin::Default,
+    )
+}
 
 #[test]
 fn streamed_content_hash_matches_in_memory_hash() -> Result<(), std::io::Error> {
@@ -11,7 +56,7 @@ fn streamed_content_hash_matches_in_memory_hash() -> Result<(), std::io::Error> 
 }
 
 #[test]
-fn step_appends_decision_without_mutating_parent() {
+fn try_step_appends_decision_without_mutating_parent() {
     let config = Configuration::genesis(ScenarioDef::from_canonical_material(
         "crucible.test.step",
         "scenario=stub",
@@ -21,14 +66,44 @@ fn step_appends_decision_without_mutating_parent() {
         value: 42,
     });
 
-    let child = step(&config, decision.clone());
+    let child = accepted_step!(&config, decision.clone());
 
     assert!(config.schedule.is_empty());
     assert_eq!(child.schedule.decisions(), &[decision]);
 }
 
 #[test]
-fn step_is_pure_temporal_graph_edge_constructor() {
+fn campaign_selection_decision_is_strict_and_changes_schedule_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let selection = campaign_selection_fixture()?;
+    let decision = SelectionDecision::new(&selection);
+    assert_eq!(decision.selection()?, selection);
+    assert!(!decision.is_app_random_model_sample());
+
+    let schedule = Schedule::empty().appended(Decision::Selection(decision.clone()));
+    let encoded = schedule.to_compact_binary();
+    assert!(encoded.starts_with(b"crucible.schedule.v4\0"));
+    assert_eq!(Schedule::from_compact_binary(&encoded)?, schedule);
+    assert_ne!(schedule.content_hash(), Schedule::empty().content_hash());
+
+    let serialized = serde_json::to_vec(&decision)?;
+    assert_eq!(
+        serde_json::from_slice::<SelectionDecision>(&serialized)?,
+        decision
+    );
+
+    let mut corrupted = decision.canonical_bytes().to_vec();
+    corrupted.push(0);
+    assert!(SelectionDecision::from_canonical_bytes(&corrupted).is_err());
+
+    let mut noncurrent = encoded;
+    noncurrent[..b"crucible.schedule.v4\0".len()].copy_from_slice(b"crucible.schedule.v0\0");
+    assert!(Schedule::from_compact_binary(&noncurrent).is_err());
+    Ok(())
+}
+
+#[test]
+fn try_step_is_pure_temporal_graph_edge_constructor() {
     for seed in 0..64 {
         let parent = Configuration {
             def: generated_scenario(seed),
@@ -37,7 +112,7 @@ fn step_is_pure_temporal_graph_edge_constructor() {
         let original_parent = parent.clone();
         let decision = generated_decision(seed, 64);
 
-        let child = step(&parent, decision.clone());
+        let child = accepted_step!(&parent, decision.clone());
 
         assert_eq!(parent, original_parent);
         assert_eq!(child.def, parent.def);
@@ -81,69 +156,67 @@ fn schedule_prefix_bounds_are_checked() {
 
 #[test]
 fn time_vocabulary_converts_icount_and_virtual_instants_exactly() {
-    let shift = match Shift::new(4) {
-        Ok(shift) => shift,
-        Err(error) => panic!("valid shift should construct: {error}"),
-    };
     let icount = Icount { retired: 17 };
-    let instant = match icount.to_virtual(shift) {
-        Ok(instant) => instant,
-        Err(error) => panic!("valid icount conversion should succeed: {error}"),
-    };
-    let unaligned = VirtualInstant { nanos: 275 };
+    let instant = icount
+        .initial_virtual_time()
+        .unwrap_or_else(|error| panic!("retirement time should fit: {error}"));
+    let unaligned = VirtualInstant { ticks: 275 };
 
-    assert_eq!(instant, VirtualInstant { nanos: 272 });
-    assert_eq!(instant.to_icount_floor(shift), Ok(icount));
-    assert_eq!(instant.to_icount_ceil(shift), Ok(icount));
-    assert_eq!(unaligned.to_icount_floor(shift), Ok(Icount { retired: 17 }));
-    assert_eq!(unaligned.to_icount_ceil(shift), Ok(Icount { retired: 18 }));
+    assert_eq!(instant, VirtualInstant { ticks: 850 });
+    assert_eq!(unaligned.ticks, 275);
+    assert_eq!(VirtualInstant { ticks: 7 }.nanoseconds_floor(), 0);
+    assert_eq!(VirtualInstant { ticks: 1_000 }.nanoseconds_floor(), 1);
+    assert_eq!(VirtualInstant { ticks: 1_001 }.nanoseconds_floor(), 1);
+    assert_eq!(
+        VirtualInstant::from_nanoseconds(1),
+        Ok(VirtualInstant { ticks: 1_000 })
+    );
     let alias: SimInstant = instant;
     assert_eq!(alias, instant);
 }
 
 #[test]
 fn time_vocabulary_keeps_duration_and_offset_distinct() {
-    let earlier = VirtualInstant { nanos: 40 };
-    let later = VirtualInstant { nanos: 100 };
-    let duration = SimDuration { nanos: 25 };
+    let earlier = VirtualInstant { ticks: 40 };
+    let later = VirtualInstant { ticks: 100 };
+    let duration = SimDuration { ticks: 25 };
 
-    assert_eq!(later.duration_since(earlier), SimDuration { nanos: 60 });
-    assert_eq!(earlier.duration_since(later), SimDuration { nanos: 0 });
-    assert_eq!(earlier + duration, VirtualInstant { nanos: 65 });
+    assert_eq!(later.duration_since(earlier), SimDuration { ticks: 60 });
+    assert_eq!(earlier.duration_since(later), SimDuration { ticks: 0 });
+    assert_eq!(earlier + duration, VirtualInstant { ticks: 65 });
     assert_eq!(
-        duration + SimDuration { nanos: 5 },
-        SimDuration { nanos: 30 }
+        duration + SimDuration { ticks: 5 },
+        SimDuration { ticks: 30 }
     );
-    assert_eq!(duration * 3, SimDuration { nanos: 75 });
+    assert_eq!(duration * 3, SimDuration { ticks: 75 });
     assert_eq!(
-        VirtualInstant { nanos: 10 }.with_skew(SimOffset { nanos: -15 }),
+        VirtualInstant { ticks: 10 }.with_skew(SimOffset { ticks: -15 }),
         VirtualInstant::EPOCH
     );
     assert_eq!(
-        VirtualInstant { nanos: 10 }.with_skew(SimOffset { nanos: 15 }),
-        VirtualInstant { nanos: 25 }
+        VirtualInstant { ticks: 10 }.with_skew(SimOffset { ticks: 15 }),
+        VirtualInstant { ticks: 25 }
     );
 }
 
 #[test]
-fn time_vocabulary_rejects_invalid_shift_and_virtual_time_overflow() {
-    let invalid = Shift { bits: 64 };
-    let valid = Shift { bits: 63 };
-
+fn time_vocabulary_rejects_nanosecond_overflow() {
     assert_eq!(
-        Shift::new(64),
-        Err(TimeConversionError::InvalidShift { shift: invalid })
+        Icount { retired: 2 }.initial_virtual_time(),
+        Ok(VirtualInstant { ticks: 100 })
     );
+    let overflowing = Icount {
+        retired: u64::MAX / SIM_TICKS_PER_INSTRUCTION + 1,
+    };
     assert_eq!(
-        Icount { retired: 1 }.to_virtual(invalid),
-        Err(TimeConversionError::InvalidShift { shift: invalid })
-    );
-    assert_eq!(
-        Icount { retired: 2 }.to_virtual(valid),
+        overflowing.initial_virtual_time(),
         Err(TimeConversionError::VirtualTimeOverflow {
-            icount: Icount { retired: 2 },
-            shift: valid,
+            icount: overflowing,
         })
+    );
+    assert_eq!(
+        SimDuration::from_nanoseconds(u64::MAX),
+        Err(TimeConversionError::NanosecondOverflow { nanos: u64::MAX })
     );
 }
 
@@ -184,7 +257,6 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
         ready_point: ready_point.clone(),
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: 2,
-        icount_shift: 1,
         kernel: Some(kernel),
         root_image: Some(root_image),
         initrd: Some(initrd),
@@ -200,7 +272,6 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
                 .cmdline(cmdline)
                 .white_box(WhiteBoxPolicy::Enabled)
                 .smp_vcpus(2)
-                .icount_shift(1)
                 .kernel(kernel)
                 .root_image(root_image)
                 .initrd(initrd),
@@ -219,25 +290,38 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
     assert_eq!(template_scenario, base_scenario);
     assert_eq!(
         base_world.id(),
-        ContentHash::from_canonical_material("crucible.model.world.v4", &material)
+        ContentHash::from_canonical_material("crucible.model.world.v6", &material)
     );
     assert_eq!(base_world.vm_nodes().len(), 1);
-    assert_eq!(base_world.vm_nodes()[0].arch, VmArchitecture::Aarch64);
-    assert_eq!(base_world.vm_nodes()[0].memory_mib, 2048);
-    assert_eq!(base_world.vm_nodes()[0].cmdline, cmdline);
-    assert_eq!(base_world.vm_nodes()[0].ready_point, ready_point);
-    assert_eq!(base_world.vm_nodes()[0].white_box, WhiteBoxPolicy::Enabled);
-    assert_eq!(base_world.vm_nodes()[0].smp_vcpus, 2);
-    assert_eq!(base_world.vm_nodes()[0].icount_shift, 1);
-    assert_eq!(base_world.vm_nodes()[0].kernel, Some(kernel));
-    assert_eq!(base_world.vm_nodes()[0].root_image, Some(root_image));
-    assert_eq!(base_world.vm_nodes()[0].initrd, Some(initrd));
+    let Some(base_node) = base_world.vm_nodes().first() else {
+        panic!("template world should contain one VM node");
+    };
+    let base_node = base_node.clone();
+    assert_eq!(base_node.arch, VmArchitecture::Aarch64);
+    assert_eq!(base_node.memory_mib, 2048);
+    assert_eq!(base_node.cmdline, cmdline);
+    assert_eq!(base_node.ready_point, ready_point);
+    assert_eq!(base_node.white_box, WhiteBoxPolicy::Enabled);
+    assert_eq!(base_node.smp_vcpus, 2);
+    assert_eq!(base_node.kernel, Some(kernel));
+    assert_eq!(base_node.root_image, Some(root_image));
+    assert_eq!(base_node.initrd, Some(initrd));
     assert_eq!(
         World::from_canonical_toml(&toml)
             .unwrap_or_else(|error| panic!("world TOML should parse: {error}")),
         base_world
     );
     assert_eq!(round_trip_binary, base_world);
+    assert!(!toml.contains("icount_shift"));
+    assert!(
+        World::from_canonical_toml(&toml.replacen(
+            "smp_vcpus = 2\n",
+            "smp_vcpus = 2\nicount_shift = 1\n",
+            1,
+        ))
+        .is_err(),
+        "authored worlds must reject the removed icount shift setting"
+    );
     assert!(toml.contains("arch = \"aarch64\""));
     assert!(toml.contains("memory_mib = 2048"));
     assert!(toml.contains("cmdline = \"console=ttyS0 root=/dev/vda ro\""));
@@ -301,13 +385,6 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
         "fixed vCPU count must affect identity",
         WorldNode {
             smp_vcpus: 3,
-            ..base_node.clone()
-        },
-    );
-    assert_identity_changes(
-        "fixed icount shift must affect identity",
-        WorldNode {
-            icount_shift: 2,
             ..base_node.clone()
         },
     );
@@ -478,22 +555,17 @@ fn reduce_is_prefix_closed_by_schedule_hash() {
     let scenario =
         ScenarioDef::from_canonical_material("crucible.test.reduce", "node=a\nseed=prefix");
     let root = Configuration::genesis(scenario.clone());
-    let child = step(
+    let child = accepted_step!(
         &root,
         Decision::DeliveryOrder(DeliveryOrderDecision {
             at: VirtualTime { ticks: 4 },
             order: vec![event_key(4, 1), event_key(4, 2)],
         }),
     );
-    let grandchild = step(
+    let grandchild = accepted_step!(
         &child,
-        Decision::AppRandom(AppRandomDecision {
-            node: NodeId {
-                name: String::from("node-a"),
-            },
+        Decision::RngDraw(RngDecision {
             stream: RngStreamId::for_node("app/request"),
-            request_id: 3,
-            width: 16,
             value: 0xace,
         }),
     );
@@ -747,10 +819,30 @@ fn compact_checkpoint_round_trips_concrete_execution_closure() {
     );
     let checkpoint = fat_checkpoint_for(&config).with_execution_closure(closure);
     let bytes = checkpoint.to_compact_binary();
+    assert!(bytes.starts_with(b"crucible.checkpoint.v6\0"));
     let restored = Checkpoint::from_compact_binary(&bytes)
         .unwrap_or_else(|error| panic!("checkpoint closure should decode: {error}"));
     assert_eq!(restored, checkpoint);
     assert_eq!(restored.execution_closure, Some(closure));
+}
+
+#[test]
+fn compact_checkpoint_versions_campaign_selection_grammar() {
+    let selection = campaign_selection_fixture()
+        .unwrap_or_else(|error| panic!("selection fixture should construct: {error}"));
+    let config = Configuration {
+        def: generated_scenario(90),
+        schedule: Schedule::empty()
+            .appended(Decision::Selection(SelectionDecision::new(&selection))),
+    };
+    let checkpoint = fat_checkpoint_for(&config);
+    let bytes = checkpoint.to_compact_binary();
+    assert!(bytes.starts_with(b"crucible.checkpoint.v6\0"));
+    assert_eq!(
+        Checkpoint::from_compact_binary(&bytes)
+            .unwrap_or_else(|error| panic!("V5 selection checkpoint should decode: {error}")),
+        checkpoint
+    );
 }
 
 #[test]
@@ -1035,14 +1127,13 @@ fn temporal_graph_replay_checkpoint_rejects_materialized_payload_drift() {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
     }]);
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let config = step(&genesis, generated_decision(84, 0));
+    let config = accepted_step!(&genesis, generated_decision(84, 0));
     let baked = match bake(&world) {
         Ok(genesis) => genesis,
         Err(error) => panic!("world bake should produce a genesis checkpoint: {error}"),
@@ -1113,14 +1204,13 @@ fn temporal_graph_replay_oracle_rejects_cached_snapshot_to_thin() {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
     }]);
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let config = step(&genesis, generated_decision(87, 0));
+    let config = accepted_step!(&genesis, generated_decision(87, 0));
     let baked = match bake(&world) {
         Ok(genesis) => genesis,
         Err(error) => panic!("world bake should produce a genesis checkpoint: {error}"),
@@ -1251,15 +1341,14 @@ fn temporal_graph_replay_oracle_admits_cached_ancestors_before_target() {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
     }]);
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let ancestor = step(&genesis, generated_decision(88, 0));
-    let target = step(&ancestor, generated_decision(88, 1));
+    let ancestor = accepted_step!(&genesis, generated_decision(88, 0));
+    let target = accepted_step!(&ancestor, generated_decision(88, 1));
     let baked = match bake(&world) {
         Ok(genesis) => genesis,
         Err(error) => panic!("world bake should produce a genesis checkpoint: {error}"),
@@ -1518,7 +1607,7 @@ fn world_ready_point_policies_are_hashed_canonically() {
     let idle = ready_node(
         "b",
         ReadyPoint::NetworkIdle {
-            window: SimDuration { nanos: 1_000 },
+            window: SimDuration { ticks: 1_000 },
         },
     );
     let console = ready_node(
@@ -1535,7 +1624,6 @@ fn world_ready_point_policies_are_hashed_canonically() {
         ready_point: ReadyPoint::AgentSignal,
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -1728,8 +1816,8 @@ fn world_link_transport_material_affects_world_identity() {
 
     assert_eq!(base.id, reordered.id);
     assert_eq!(base.links(), reordered.links());
-    assert_eq!(base.links()[0].latency(), SimDuration { nanos: 5 });
-    assert_eq!(base.links()[0].jitter(), SimDuration { nanos: 1 });
+    assert_eq!(base.links()[0].latency(), SimDuration { ticks: 5_000 });
+    assert_eq!(base.links()[0].jitter(), SimDuration { ticks: 1_000 });
     assert_eq!(base.links()[0].loss().millionths(), 250_000);
     assert_eq!(base.links()[0].bandwidth_bps(), Some(1_000_000));
     assert_ne!(base.id, changed_latency.id);
@@ -1749,16 +1837,16 @@ fn world_link_transport_rejects_invalid_floor_and_loss() {
     let below_floor = LinkDef::with_transport(
         node_id("a"),
         node_id("b"),
-        SimDuration { nanos: 0 },
-        SimDuration { nanos: 0 },
+        SimDuration { ticks: 0 },
+        SimDuration { ticks: 0 },
         LinkLossProbability::ZERO,
         None,
     );
     let jitter_below_floor = LinkDef::with_transport(
         node_id("a"),
         node_id("b"),
-        SimDuration { nanos: 5 },
-        SimDuration { nanos: 5 },
+        SimDuration { ticks: 1_000 },
+        SimDuration { ticks: 1_000 },
         LinkLossProbability::ZERO,
         None,
     );
@@ -1771,7 +1859,7 @@ fn world_link_transport_rejects_invalid_floor_and_loss() {
         ],
     );
 
-    assert_eq!(MIN_LINK_LATENCY, SimDuration { nanos: 1 });
+    assert_eq!(MIN_LINK_LATENCY, SimDuration { ticks: 1_000 });
     assert_eq!(
         LinkLossProbability::ONE.millionths(),
         LinkLossProbability::from_millionths(1_000_000)
@@ -1781,7 +1869,7 @@ fn world_link_transport_rejects_invalid_floor_and_loss() {
     assert!(matches!(
         below_floor,
         Err(EngineError::WorldLinkLatencyBelowFloor { latency, minimum, .. })
-            if latency == SimDuration { nanos: 0 } && minimum == MIN_LINK_LATENCY
+            if latency == SimDuration { ticks: 0 } && minimum == MIN_LINK_LATENCY
     ));
     assert!(matches!(
         jitter_below_floor,
@@ -1790,8 +1878,8 @@ fn world_link_transport_rejects_invalid_floor_and_loss() {
             jitter,
             minimum,
             ..
-        }) if latency == SimDuration { nanos: 5 }
-            && jitter == SimDuration { nanos: 5 }
+        }) if latency == SimDuration { ticks: 1_000 }
+            && jitter == SimDuration { ticks: 1_000 }
             && minimum == MIN_LINK_LATENCY
     ));
     assert!(matches!(
@@ -1812,7 +1900,7 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
     let below_floor = LinkDef::with_transport(
         node_id("a"),
         node_id("b"),
-        SimDuration { nanos: 0 },
+        SimDuration { ticks: 0 },
         SimDuration::default(),
         LinkLossProbability::ZERO,
         None,
@@ -1820,8 +1908,8 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
     let jitter_below_floor = LinkDef::with_transport(
         node_id("a"),
         node_id("b"),
-        SimDuration { nanos: 5 },
-        SimDuration { nanos: 5 },
+        SimDuration { ticks: 1_000 },
+        SimDuration { ticks: 1_000 },
         LinkLossProbability::ZERO,
         None,
     );
@@ -1838,11 +1926,11 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
         vec![transport_link("a", "b", 2, 0, 0, None)],
     );
 
-    assert_eq!(MIN_LINK_LATENCY, SimDuration { nanos: 1 });
+    assert_eq!(MIN_LINK_LATENCY, SimDuration { ticks: 1_000 });
     assert!(matches!(
         below_floor,
         Err(EngineError::WorldLinkLatencyBelowFloor { latency, minimum, .. })
-            if latency == SimDuration { nanos: 0 } && minimum == MIN_LINK_LATENCY
+            if latency == SimDuration { ticks: 0 } && minimum == MIN_LINK_LATENCY
     ));
     assert!(matches!(
         jitter_below_floor,
@@ -1851,19 +1939,19 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
             jitter,
             minimum,
             ..
-        }) if latency == SimDuration { nanos: 5 }
-            && jitter == SimDuration { nanos: 5 }
+        }) if latency == SimDuration { ticks: 1_000 }
+            && jitter == SimDuration { ticks: 1_000 }
             && minimum == MIN_LINK_LATENCY
     ));
     assert!(matches!(
         parsed_subfloor,
         Err(EngineError::WorldLinkLatencyBelowFloor { latency, minimum, .. })
-            if latency == SimDuration { nanos: 0 } && minimum == MIN_LINK_LATENCY
+            if latency == SimDuration { ticks: 0 } && minimum == MIN_LINK_LATENCY
     ));
-    assert!(material.contains("min_link_latency_ns=1"));
+    assert!(material.contains("min_link_latency_ticks=1000"));
     assert_eq!(
         floor_world.id(),
-        ContentHash::from_canonical_material("crucible.model.world.v4", &material)
+        ContentHash::from_canonical_material("crucible.model.world.v6", &material)
     );
     assert_ne!(floor_world.id(), raised_latency_world.id());
     assert_ne!(
@@ -1918,12 +2006,12 @@ fn world_static_topology_is_derived_from_world_only() {
             WorldLookaheadEdge {
                 from: node_id("a"),
                 to: node_id("b"),
-                minimum_latency: SimDuration { nanos: 8 },
+                minimum_latency: SimDuration { ticks: 8_000 },
             },
             WorldLookaheadEdge {
                 from: node_id("b"),
                 to: node_id("a"),
-                minimum_latency: SimDuration { nanos: 8 },
+                minimum_latency: SimDuration { ticks: 8_000 },
             },
         ]
     );

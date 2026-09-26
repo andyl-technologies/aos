@@ -219,7 +219,9 @@ in
       pname = "crucible-phase4-guest-host-virtual-memory-spike";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed];
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      buildDeps = [pkgs.coreutils pkgs.grep pkgs.pkg-config pkgs.rust pkgs.sed pkgs.sqlite];
+      runtimeDeps = [pkgs.sqlite];
       phases = [
         {
           name = "unpack";

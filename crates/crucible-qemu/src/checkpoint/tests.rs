@@ -2,7 +2,9 @@
 
 use super::*;
 use crucible::{Icount, IrqVector, PreemptionKind, VcpuId};
-use crucible_device::{BaseImage, BlockDevice, BlockLatency, IoCore};
+use crucible_device::{
+    BaseImage, BlockDevice, BlockLatency, FsTree, IoCore, NinepDevice, NinepLatency, Node,
+};
 use crucible_shmem::{RegionConfig, RegionHeader, RegionLayout};
 
 #[test]
@@ -33,11 +35,11 @@ fn host_io_checkpoint_codec_round_trips_device_free_state() {
             ..
         })
     ));
-    let mut old_version = bytes;
-    old_version[..b"crucible.qemu-host-io-checkpoint.v4\0".len()]
-        .copy_from_slice(b"crucible.qemu-host-io-checkpoint.v3\0");
+    let mut unsupported_version = bytes;
+    unsupported_version[..b"crucible.qemu-host-io-checkpoint.v5\0".len()]
+        .copy_from_slice(b"crucible.qemu-host-io-checkpoint.v4\0");
     assert_eq!(
-        QemuHostIoCheckpoint::from_canonical_bytes(&old_version, binding),
+        QemuHostIoCheckpoint::from_canonical_bytes(&unsupported_version, binding),
         Err(QemuHostIoCheckpointCodecError::Version)
     );
 }
@@ -45,11 +47,11 @@ fn host_io_checkpoint_codec_round_trips_device_free_state() {
 #[test]
 fn host_io_checkpoint_codec_round_trips_block_state() {
     let binding = ContentHash::from_bytes(b"host-io-block-binding");
-    let layout = RegionLayout::for_config(RegionConfig::new(1, 8, 0))
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 8))
         .unwrap_or_else(|error| panic!("valid test region: {error}"));
     let region_header = RegionHeader::new(layout).snapshot();
     let device = BlockDevice::new(
-        IoCore::new(8, crucible_shmem::SLOT_BLK_IO as u32, 8, 8)
+        IoCore::new(crucible_shmem::SLOT_BLK_IO as u32, 8, 8)
             .unwrap_or_else(|error| panic!("valid test core: {error}")),
         BaseImage::new(vec![0; 8_192]),
         BlockLatency::default(),
@@ -83,6 +85,98 @@ fn host_io_checkpoint_codec_round_trips_block_state() {
 }
 
 #[test]
+fn device_continuation_comparison_allows_only_coherent_owner_rebinding() {
+    let source_binding = ContentHash::from_bytes(b"source-device-binding");
+    let projected_binding = ContentHash::from_bytes(b"projected-device-binding");
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 8))
+        .unwrap_or_else(|error| panic!("valid test region: {error}"));
+    let region_header = RegionHeader::new(layout).snapshot();
+    let block = BlockDevice::new(
+        IoCore::new(crucible_shmem::SLOT_BLK_IO as u32, 8, 8)
+            .unwrap_or_else(|error| panic!("valid block core: {error}")),
+        BaseImage::new(vec![0; 8_192]),
+        BlockLatency::default(),
+    );
+    let tree = FsTree::try_new(Node::Directory {
+        children: std::collections::BTreeMap::new(),
+    })
+    .unwrap_or_else(|error| panic!("valid 9p tree: {error}"));
+    let ninep = NinepDevice::new(
+        IoCore::new(crucible_shmem::SLOT_9P_IO as u32, 8, 8)
+            .unwrap_or_else(|error| panic!("valid 9p core: {error}")),
+        tree,
+        NinepLatency::default(),
+    );
+    let source = QemuHostIoCheckpoint {
+        execution_binding: source_binding,
+        block: Some(QemuLiveBlockIoServicerCheckpoint {
+            execution_binding: source_binding,
+            storage_device: Some(ContentHash::from_bytes(b"storage identity")),
+            region_header,
+            vm_slot: 0,
+            size_bytes: 8_192,
+            device: block.snapshot(),
+            requests: SpscRingSnapshot { frames: Vec::new() },
+            responses: SpscRingSnapshot { frames: Vec::new() },
+            frames_processed: 4,
+            frames_delivered: 3,
+        }),
+        ninep: Some(QemuLive9pIoServicerCheckpoint {
+            execution_binding: source_binding,
+            tree: ContentHash::from_bytes(b"tree identity"),
+            region_header,
+            vm_slot: 0,
+            device: ninep.snapshot(),
+            requests: SpscRingSnapshot { frames: Vec::new() },
+            responses: SpscRingSnapshot { frames: Vec::new() },
+            pending_fault_opportunities: Vec::new(),
+            frames_processed: 6,
+            frames_delivered: 5,
+        }),
+        #[cfg(target_os = "linux")]
+        accelerator: None,
+    };
+    let mut projection = source.clone();
+    projection.execution_binding = projected_binding;
+    projection
+        .block
+        .as_mut()
+        .unwrap_or_else(|| panic!("block fixture"))
+        .execution_binding = projected_binding;
+    projection
+        .ninep
+        .as_mut()
+        .unwrap_or_else(|| panic!("9p fixture"))
+        .execution_binding = projected_binding;
+
+    assert!(source.same_device_continuation(&projection));
+
+    let mut changed_block = projection.clone();
+    changed_block
+        .block
+        .as_mut()
+        .unwrap_or_else(|| panic!("block fixture"))
+        .frames_processed += 1;
+    assert!(!source.same_device_continuation(&changed_block));
+
+    let mut changed_ninep = projection.clone();
+    changed_ninep
+        .ninep
+        .as_mut()
+        .unwrap_or_else(|| panic!("9p fixture"))
+        .frames_delivered += 1;
+    assert!(!source.same_device_continuation(&changed_ninep));
+
+    let mut inconsistent = projection;
+    inconsistent
+        .ninep
+        .as_mut()
+        .unwrap_or_else(|| panic!("9p fixture"))
+        .execution_binding = source_binding;
+    assert!(!source.same_device_continuation(&inconsistent));
+}
+
+#[test]
 fn node_continuation_codec_round_trips_complete_state() {
     let binding = ContentHash::from_bytes(b"node-continuation-binding");
     let retained_inbound = crucible_shmem::FrameEntry::new(72, 31, 5, &[4, 5])
@@ -98,14 +192,14 @@ fn node_continuation_codec_round_trips_complete_state() {
         last_observed_time: VirtualTime { ticks: 70 },
         logical_time_calibration: crate::QemuLogicalTimeCalibration {
             logical_icount: 70,
-            raw_icount: 65,
+            raw_icount: 1,
         },
         console_observation_boundary: VirtualTime { ticks: 69 },
         pending_preemption: Some(PreemptionDecision {
             node: NodeId {
                 name: String::from("vm-0"),
             },
-            at: Icount { retired: 71 },
+            at: crucible::SimInstant { ticks: 71 },
             kind: PreemptionKind::InterruptAt {
                 target_vcpu: VcpuId { index: 1 },
                 irq: IrqVector { vector: 32 },
@@ -337,7 +431,7 @@ fn node_continuation_codec_rejects_wrong_binding_and_trailing_bytes() {
         last_observed_time: VirtualTime { ticks: 1 },
         logical_time_calibration: crate::QemuLogicalTimeCalibration {
             logical_icount: 1,
-            raw_icount: 1,
+            raw_icount: 0,
         },
         console_observation_boundary: VirtualTime { ticks: 1 },
         pending_preemption: None,
@@ -356,11 +450,11 @@ fn node_continuation_codec_rejects_wrong_binding_and_trailing_bytes() {
         ),
         Err(QemuNodeCheckpointCodecError::ExecutionBinding)
     );
-    let mut old_version = bytes.clone();
-    old_version[..b"crucible.qemu-node-continuation.v7\0".len()]
-        .copy_from_slice(b"crucible.qemu-node-continuation.v6\0");
+    let mut unsupported_version = bytes.clone();
+    unsupported_version[..b"crucible.qemu-node-continuation.v7\0".len()]
+        .copy_from_slice(b"crucible.qemu-node-continuation.v?\0");
     assert_eq!(
-        QemuNodeContinuationCheckpoint::from_compact_binary(&old_version, binding),
+        QemuNodeContinuationCheckpoint::from_compact_binary(&unsupported_version, binding),
         Err(QemuNodeCheckpointCodecError::Unsupported)
     );
     bytes.push(0);
@@ -372,19 +466,18 @@ fn node_continuation_codec_rejects_wrong_binding_and_trailing_bytes() {
 
 #[test]
 fn node_continuation_round_trips_large_and_full_capacity_compact_rings() {
-    const FRAMES_ABOVE_OLD_LIMIT: usize = 16_384;
-    const PAYLOAD_ABOVE_OLD_LIMIT: usize = 4_066;
+    const LARGE_RING_FRAMES: usize = 16_384;
+    const LARGE_FRAME_PAYLOAD: usize = 4_066;
     const MAX_QUEUE_FRAMES: usize = 1_048_576;
 
     {
-        let checkpoint =
-            node_checkpoint_with_inbound_ring(FRAMES_ABOVE_OLD_LIMIT, PAYLOAD_ABOVE_OLD_LIMIT);
+        let checkpoint = node_checkpoint_with_inbound_ring(LARGE_RING_FRAMES, LARGE_FRAME_PAYLOAD);
         let bytes = checkpoint
             .to_compact_binary()
             .unwrap_or_else(|error| panic!("large ring should encode: {error}"));
         assert!(
             bytes.len() > 64 * 1024 * 1024,
-            "test must cross the obsolete 64 MiB decoder ceiling"
+            "test must exercise a checkpoint larger than 64 MiB"
         );
         let restored = QemuNodeContinuationCheckpoint::from_compact_binary(
             &bytes,
@@ -445,7 +538,7 @@ fn node_checkpoint_with_inbound_ring(
         last_observed_time: VirtualTime { ticks: 1 },
         logical_time_calibration: crate::QemuLogicalTimeCalibration {
             logical_icount: 1,
-            raw_icount: 1,
+            raw_icount: 0,
         },
         console_observation_boundary: VirtualTime { ticks: 1 },
         pending_preemption: None,

@@ -61,7 +61,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
         };
         let result_payload = vec![9_u8; 32];
         let result = DequeuedFaultResult::Valid {
-            header: FaultResultHeaderV1 {
+            header: Box::new(FaultResultHeaderV2 {
                 abi_major: FAULT_COMMAND_ABI_MAJOR,
                 abi_minor: FAULT_COMMAND_ABI_MINOR,
                 command_kind: FaultCommandKind::MemoryMutation as u16,
@@ -70,6 +70,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 command_sequence: 7,
                 observed_icount: 11,
                 applied_icount: 11,
+                emitted_tick: 91,
                 capability_version: 1,
                 phase: FaultBoundaryPhase::NodeBoundary,
                 before_hash: [4; 32],
@@ -78,9 +79,10 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 result_payload_hash: *blake3::hash(&result_payload).as_bytes(),
                 result_offset: 0,
                 result_length: u32::try_from(result_payload.len())?,
-            },
+            }),
             payload: result_payload,
         };
+        let child = Command::new("sleep").arg("60").spawn()?;
         let channels = QemuNodeChannels::new(
             ScriptedPluginControl {
                 log: Arc::clone(&log),
@@ -96,15 +98,35 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 stale_fault_results: Arc::new(Mutex::new(VecDeque::new())),
                 fault_events: Arc::new(Mutex::new(VecDeque::new())),
                 fingerprint_retry_countdown: Arc::new(Mutex::new(0)),
+                hot_fork_setup_identity: None,
+                hot_fork_ring_image: None,
             },
             ScriptedQmpMachineControl {
                 log: Arc::clone(&log),
+                track_process_endpoint_retirement: false,
                 fail_stop: false,
                 fail_snapshot: false,
                 timeout_snapshot: false,
+                plugin_resources: None,
+                plugin_barriers: None,
+                last_plugin_barrier: Arc::new(Mutex::new(None)),
+                private_ring_state: Arc::new(Mutex::new(None)),
+                diagnostic_state: Arc::new(Mutex::new(None)),
+                child_qmp_state: Arc::new(Mutex::new(None)),
+                child_console_state: Arc::new(Mutex::new(None)),
+                process_contract_state: Arc::new(Mutex::new(None)),
+                child_files_state: Arc::new(Mutex::new(None)),
+                fail_descriptor_install: false,
+                fail_descriptor_close: false,
+                fail_endpoint_install: false,
+                mismatch_endpoint_disposition: false,
+                request_basis_mismatch_after_queries: None,
+                serve_child_qmp: false,
+                template_query_count: Arc::new(Mutex::new(0)),
+                hot_fork_aborted: Arc::new(Mutex::new(false)),
+                hot_fork_script: HotForkScript::Rejected,
             },
         );
-        let child = Command::new("sleep").arg("60").spawn()?;
         let mut node = QemuNode::new(
             QemuNodeChild::new(child),
             channels,
@@ -117,6 +139,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 fault_results: VecDeque::from([result.clone()]),
                 staged_fault_events: Vec::new(),
                 fingerprint_fault_events: VecDeque::new(),
+                fail_hot_fork_clone: false,
             },
             2,
         )
@@ -159,7 +182,12 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
         }
 
         assert_eq!(
-            node.apply_fault_command_at_current_boundary(command.clone(), &payload)?,
+            node.apply_fault_command_at_current_boundary_with_limits(
+                command.clone(),
+                &payload,
+                Vec::with_capacity(32),
+                crucible_shmem::HARD_FAULT_EVENT_CAPACITY as usize,
+            )?,
             result
         );
         let expected_publications = if command_flags == 0 {

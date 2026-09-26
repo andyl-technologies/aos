@@ -11,7 +11,7 @@ use std::os::fd::AsFd;
 use std::sync::mpsc;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -21,11 +21,8 @@ use rustix::process::{
 };
 use thiserror::Error;
 
+use crate::QemuNodeChannelError;
 use crate::async_driver::QemuAsyncNodeStepTarget;
-use crate::{
-    QemuMappedQuantumShmemHotPath, QemuNodeChannelError, QemuNodePendingQuantum,
-    QemuShmemHotPathChannel,
-};
 
 pub(crate) const BOUNDED_PREEMPTION_COUNT: u32 = 6;
 pub(crate) const BOUNDED_PREEMPTION_PAUSE_MILLISECONDS: u64 = 15;
@@ -56,8 +53,159 @@ pub(crate) struct BoundedSchedulerPreemptionReport {
     pub(crate) requested_stopped_milliseconds: u64,
 }
 
+/// Shareable host-only evidence for one bounded scheduler-preemption flight.
+///
+/// This evidence is deliberately separate from the guest's canonical event
+/// stream. A caller can therefore prove that replay used a different host
+/// scheduling profile without changing the deterministic guest identity being
+/// compared.
+#[derive(Clone, Debug, Default)]
+pub struct BoundedSchedulerPreemptionEvidence {
+    inner: Arc<BoundedSchedulerPreemptionEvidenceInner>,
+}
+
+#[derive(Debug, Default)]
+struct BoundedSchedulerPreemptionEvidenceInner {
+    state: AtomicU8,
+    pending_quantum_certified: AtomicBool,
+    perturbations: AtomicU32,
+    requested_stopped_milliseconds: AtomicU64,
+}
+
+const EVIDENCE_FRESH: u8 = 0;
+const EVIDENCE_CLAIMED: u8 = 1;
+const EVIDENCE_COMPLETE: u8 = 2;
+const EVIDENCE_FAILED: u8 = 3;
+
+/// Failure to bind or publish a single-use preemption evidence handle.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum BoundedSchedulerPreemptionEvidenceError {
+    /// The handle has already been claimed by another lifecycle flight.
+    #[error("bounded scheduler-preemption evidence was already claimed")]
+    AlreadyClaimed,
+    /// The claim no longer owns this evidence handle.
+    #[error("bounded scheduler-preemption evidence claim lost ownership")]
+    ClaimLost,
+}
+
+/// Single-use authority to publish one lifecycle flight's preemption evidence.
+///
+/// Dropping an unpublished claim marks its handle failed. This prevents a
+/// later lifecycle from reusing the handle or mistaking an earlier flight's
+/// success for current evidence.
+pub struct BoundedSchedulerPreemptionEvidenceClaim {
+    evidence: BoundedSchedulerPreemptionEvidence,
+    armed: bool,
+}
+
+/// Immutable snapshot of bounded scheduler-preemption evidence.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+// crucible-lint: allow host-nondeterminism-state -- immutable host-only evidence never enters canonical guest state.
+pub struct BoundedSchedulerPreemptionEvidenceSnapshot {
+    /// Whether a complete bounded perturbation sequence was applied.
+    pub applied: bool,
+    /// Whether the first authenticated stop overlapped a pending QEMU quantum.
+    pub pending_quantum_certified: bool,
+    /// Number of authenticated stop/continue pairs applied to QEMU.
+    pub perturbations: u32,
+    /// Total requested stopped time across the bounded sequence.
+    pub requested_stopped_milliseconds: u64,
+}
+
+impl BoundedSchedulerPreemptionEvidence {
+    /// Claims this handle for exactly one lifecycle flight.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BoundedSchedulerPreemptionEvidenceError::AlreadyClaimed`] when
+    /// this handle was claimed previously, including by a failed flight.
+    pub fn claim(
+        &self,
+    ) -> Result<BoundedSchedulerPreemptionEvidenceClaim, BoundedSchedulerPreemptionEvidenceError>
+    {
+        self.inner
+            .state
+            .compare_exchange(
+                EVIDENCE_FRESH,
+                EVIDENCE_CLAIMED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|_| BoundedSchedulerPreemptionEvidenceError::AlreadyClaimed)?;
+        Ok(BoundedSchedulerPreemptionEvidenceClaim {
+            evidence: self.clone(),
+            armed: true,
+        })
+    }
+
+    /// Returns a consistent snapshot after a completed perturbation sequence.
+    #[must_use]
+    pub fn snapshot(&self) -> Option<BoundedSchedulerPreemptionEvidenceSnapshot> {
+        if self.inner.state.load(Ordering::Acquire) != EVIDENCE_COMPLETE {
+            return None;
+        }
+
+        Some(BoundedSchedulerPreemptionEvidenceSnapshot {
+            applied: true,
+            pending_quantum_certified: self.inner.pending_quantum_certified.load(Ordering::Relaxed),
+            perturbations: self.inner.perturbations.load(Ordering::Relaxed),
+            requested_stopped_milliseconds: self
+                .inner
+                .requested_stopped_milliseconds
+                .load(Ordering::Relaxed),
+        })
+    }
+}
+
+impl BoundedSchedulerPreemptionEvidenceClaim {
+    pub(crate) fn record(
+        mut self,
+        report: BoundedSchedulerPreemptionReport,
+        pending_quantum_certified: bool,
+    ) -> Result<(), BoundedSchedulerPreemptionEvidenceError> {
+        self.evidence
+            .inner
+            .pending_quantum_certified
+            .store(pending_quantum_certified, Ordering::Relaxed);
+        self.evidence
+            .inner
+            .perturbations
+            .store(report.perturbations, Ordering::Relaxed);
+        self.evidence
+            .inner
+            .requested_stopped_milliseconds
+            .store(report.requested_stopped_milliseconds, Ordering::Relaxed);
+        self.evidence
+            .inner
+            .state
+            .compare_exchange(
+                EVIDENCE_CLAIMED,
+                EVIDENCE_COMPLETE,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .map_err(|_| BoundedSchedulerPreemptionEvidenceError::ClaimLost)?;
+        self.armed = false;
+        Ok(())
+    }
+}
+
+impl Drop for BoundedSchedulerPreemptionEvidenceClaim {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.evidence.inner.state.compare_exchange(
+                EVIDENCE_CLAIMED,
+                EVIDENCE_FAILED,
+                Ordering::Release,
+                Ordering::Relaxed,
+            );
+        }
+    }
+}
+
 /// Failure while applying the bounded host-scheduling adversary.
 #[derive(Debug, Error)]
+// crucible-lint: allow host-nondeterminism-state -- typed operational failures cross only the lifecycle supervision boundary.
 pub enum BoundedSchedulerPreemptionError {
     /// The target process ID could not be represented by the kernel PID API.
     #[error("bounded scheduler preemption received invalid QEMU pid {pid}")]
@@ -88,12 +236,29 @@ pub enum BoundedSchedulerPreemptionError {
     /// The controller exited before the workload-pending barrier was released.
     #[error("bounded scheduler preemption controller exited before release")]
     ControllerExitedBeforeStart,
+    /// The controller and watchdog were not ready before the startup bound.
+    #[error("bounded scheduler preemption did not prepare its watchdog before timeout")]
+    ControllerPreparationTimeout,
     /// The caller tried to finish without proving that work was pending.
     #[error("bounded scheduler preemption was never released over pending work")]
     NotStarted,
     /// QEMU completed the published quantum before the first stop was observed.
     #[error("bounded scheduler preemption first stop did not overlap pending QEMU work")]
     QuantumCompletedBeforeFirstStop,
+    /// A shared-memory completion disproved overlap at the authenticated stop.
+    #[error(
+        "bounded scheduler preemption first stop observed a completed quantum: ceiling={ceiling_icount}, current={current_icount}, inbound_consumed={inbound_frames_consumed}, emitted_frames={emitted_frames}"
+    )]
+    CompletedQuantumAtFirstStop {
+        /// Effective ceiling after canonical inbound-delivery clamping.
+        ceiling_icount: u64,
+        /// Attested guest coordinate in the completion report.
+        current_icount: u64,
+        /// Inbound frames consumed during the completed quantum.
+        inbound_frames_consumed: usize,
+        /// Guest frames owned by this completion; the failed flight is aborted.
+        emitted_frames: usize,
+    },
     /// The controller did not publish its first-stop observation in time.
     #[error("bounded scheduler preemption did not observe its first stop before timeout")]
     FirstStopObservationTimeout,
@@ -148,6 +313,7 @@ pub enum BoundedSchedulerPreemptionError {
 /// one short-lived thread while the caller executes the workload being tested.
 /// Dropping it publishes cancellation and synchronously joins the controller,
 /// so early-return and error paths cannot leave QEMU stopped.
+// crucible-lint: allow host-nondeterminism-state -- crate-visible ownership remains inside QEMU supervision.
 pub(crate) struct BoundedSchedulerPreemption {
     cancel: Arc<AtomicBool>,
     start: Option<mpsc::Sender<()>>,
@@ -166,7 +332,8 @@ impl BoundedSchedulerPreemption {
     ///
     /// # Errors
     ///
-    /// Returns a typed error when the controller thread cannot be created.
+    /// Returns a typed error when either thread cannot be created or the
+    /// watchdog does not acknowledge preparation within the startup bound.
     pub(crate) fn start_if(
         enabled: bool,
         pid: u32,
@@ -193,31 +360,46 @@ impl BoundedSchedulerPreemption {
         let cancel = Arc::new(AtomicBool::new(false));
         let controller_cancel = Arc::clone(&cancel);
         let (start_tx, start_rx) = mpsc::channel();
+        let (prepared_tx, prepared_rx) = mpsc::channel();
         let (first_stop_tx, first_stop_rx) = mpsc::channel();
         let (release_first_stop_tx, release_first_stop_rx) = mpsc::channel();
         let controller = thread::Builder::new()
             .name(String::from("crucible-qemu-scheduler-preemption"))
             .spawn(move || {
-                if start_rx.recv().is_err() {
-                    return Err(BoundedSchedulerPreemptionError::ControllerExitedBeforeStart);
-                }
                 apply_bounded_scheduler_preemption_with_cancel(
                     pidfd,
                     &controller_cancel,
                     policy,
+                    PreemptionStartBarrier {
+                        start: start_rx,
+                        prepared: prepared_tx,
+                    },
                     first_stop_tx,
                     release_first_stop_rx,
                 )
             })
             .map_err(|source| BoundedSchedulerPreemptionError::ControllerSpawn { source })?;
-        Ok(Some(Self {
+        let mut adversary = Self {
             cancel,
             start: Some(start_tx),
             first_stop: Some(first_stop_rx),
             release_first_stop: Some(release_first_stop_tx),
             wall_timeout: policy.wall_timeout,
             controller: Some(controller),
-        }))
+        };
+        match prepared_rx.recv_timeout(policy.wall_timeout) {
+            Ok(()) => Ok(Some(adversary)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                Err(BoundedSchedulerPreemptionError::ControllerPreparationTimeout)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // A failed watchdog spawn closes readiness. Join to preserve
+                // the actual thread-creation failure rather than hiding it
+                // behind a later first-stop observation timeout.
+                adversary.join_controller()?;
+                Err(BoundedSchedulerPreemptionError::ControllerExitedBeforeStart)
+            }
+        }
     }
 
     /// Releases the controller only after the caller has published real QEMU work.
@@ -254,36 +436,11 @@ impl BoundedSchedulerPreemption {
         adversary.observe_first_stop().map(Some)
     }
 
-    /// Certifies that the first pidfd stop overlapped a mapped pending quantum.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed preemption or shared-memory inspection error, and rejects
-    /// a quantum that completed before the first stop was observed.
-    pub(crate) fn certify_mapped_quantum_pending(
-        adversary: &mut Option<Self>,
-        hot_path: &mut QemuMappedQuantumShmemHotPath,
-        pending: &mut QemuNodePendingQuantum,
-    ) -> Result<bool, BoundedSchedulerPreemptionError> {
-        let Some(observation) = Self::observe_first_stop_if_present(adversary)? else {
-            return Ok(false);
-        };
-        let pending_at_stop = match QemuShmemHotPathChannel::poll_quantum(hot_path, pending) {
-            Err(source) if source.retryable => true,
-            Ok(_completion) => false,
-            Err(source) => {
-                return Err(BoundedSchedulerPreemptionError::QuantumInspection { source });
-            }
-        };
-        observation.confirm_pending(pending_at_stop)?;
-        Ok(true)
-    }
-
     /// Certifies the first pidfd stop through an async-driver quantum target.
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`Self::certify_mapped_quantum_pending`].
+    /// Returns a typed preemption or target-inspection error.
     pub(crate) fn certify_async_quantum_pending<T>(
         adversary: &mut Option<Self>,
         target: &mut T,
@@ -297,7 +454,7 @@ impl BoundedSchedulerPreemption {
         };
         let pending_at_stop = match target.finish_quantum(pending) {
             Err(source) if source.retryable => true,
-            Ok(_completion) => false,
+            Ok(completion) => return Err(completed_quantum_at_first_stop(&completion)),
             Err(source) => {
                 return Err(BoundedSchedulerPreemptionError::QuantumInspection { source });
             }
@@ -332,12 +489,19 @@ impl BoundedSchedulerPreemption {
     ///
     /// Returns the controller's typed signaling/watchdog error, or reports that
     /// the controller panicked.
+    // crucible-lint: allow host-nondeterminism-state -- the report is consumed by the owning supervision path.
     pub(crate) fn finish(
         mut self,
     ) -> Result<BoundedSchedulerPreemptionReport, BoundedSchedulerPreemptionError> {
         if self.start.is_some() {
             return Err(BoundedSchedulerPreemptionError::NotStarted);
         }
+        self.join_controller()
+    }
+
+    fn join_controller(
+        &mut self,
+    ) -> Result<BoundedSchedulerPreemptionReport, BoundedSchedulerPreemptionError> {
         let Some(controller) = self.controller.take() else {
             return Err(BoundedSchedulerPreemptionError::ControllerPanicked);
         };
@@ -352,10 +516,23 @@ impl BoundedSchedulerPreemption {
     ///
     /// Returns the same typed failures as [`Self::finish`] for a present
     /// controller.
+    // crucible-lint: allow host-nondeterminism-state -- optional cleanup remains inside the owning supervision path.
     pub(crate) fn finish_if_present(
         adversary: &mut Option<Self>,
     ) -> Result<Option<BoundedSchedulerPreemptionReport>, BoundedSchedulerPreemptionError> {
         adversary.take().map(Self::finish).transpose()
+    }
+}
+
+/// Preserves boundary coordinates without logging guest frame contents.
+fn completed_quantum_at_first_stop(
+    completion: &crate::QemuAsyncQuantumCompletion,
+) -> BoundedSchedulerPreemptionError {
+    BoundedSchedulerPreemptionError::CompletedQuantumAtFirstStop {
+        ceiling_icount: completion.ceiling.retired,
+        current_icount: completion.final_state.current_icount.retired,
+        inbound_frames_consumed: completion.inbound_frames_consumed,
+        emitted_frames: completion.emitted_frames.len(),
     }
 }
 
@@ -364,6 +541,7 @@ impl BoundedSchedulerPreemption {
 /// Dropping the observation releases the controller, so an inspection error
 /// cannot strand QEMU stopped. Certification succeeds only when the caller
 /// explicitly confirms that its published quantum remained incomplete.
+// crucible-lint: allow host-nondeterminism-state -- this crate-visible guard cannot escape QEMU supervision.
 pub(crate) struct PendingQuantumStopObservation {
     release: Option<mpsc::Sender<()>>,
 }
@@ -375,6 +553,7 @@ impl PendingQuantumStopObservation {
     ///
     /// Returns [`BoundedSchedulerPreemptionError::QuantumCompletedBeforeFirstStop`]
     /// when QEMU had already completed the published work before inspection.
+    // crucible-lint: allow host-nondeterminism-state -- certification is consumed before deterministic state advances.
     pub(crate) fn confirm_pending(
         mut self,
         pending: bool,
@@ -491,34 +670,55 @@ fn observe_pidfd_stopped(
     Ok(())
 }
 
-// crucible-lint: allow clippy-disallowed-method -- wall time bounds only this noncanonical test adversary.
+/// Separates thread preparation from release over published guest work.
+struct PreemptionStartBarrier {
+    start: mpsc::Receiver<()>,
+    prepared: mpsc::Sender<()>,
+}
+
+// crucible-lint: allow clippy-disallowed-method -- wall time bounds only this noncanonical host adversary.
 #[allow(clippy::disallowed_methods)]
 fn apply_bounded_scheduler_preemption_with_cancel(
     pidfd: Arc<std::os::fd::OwnedFd>,
     cancel: &AtomicBool,
     policy: PreemptionPolicy,
+    barrier: PreemptionStartBarrier,
     first_stop: mpsc::Sender<()>,
     release_first_stop: mpsc::Receiver<()>,
 ) -> Result<BoundedSchedulerPreemptionReport, BoundedSchedulerPreemptionError> {
     let (finished_tx, finished_rx) = mpsc::channel();
+    let (watchdog_start_tx, watchdog_start_rx) = mpsc::channel::<Instant>();
     let timed_out = Arc::new(AtomicBool::new(false));
     let watchdog_timed_out = Arc::clone(&timed_out);
     let watchdog_pidfd = Arc::clone(&pidfd);
     let watchdog = thread::Builder::new()
         .name(String::from("crucible-qemu-resume-watchdog"))
-        .spawn(
-            move || match finished_rx.recv_timeout(policy.wall_timeout) {
-                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => Ok(false),
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    watchdog_timed_out.store(true, Ordering::Release);
-                    signal_pidfd(&watchdog_pidfd, Signal::CONT).map(|()| true)
-                }
-            },
-        )
+        .spawn(move || {
+            // Both threads are allocated before the caller publishes guest
+            // work. Preparation can span arbitrarily long guest priming; the
+            // safety deadline starts only at the workload-pending release.
+            let _ = barrier.prepared.send(());
+            let Ok(started_at) = watchdog_start_rx.recv() else {
+                return Ok(false);
+            };
+            resume_on_watchdog_expiry(
+                &watchdog_pidfd,
+                &watchdog_timed_out,
+                finished_rx,
+                policy.wall_timeout.saturating_sub(started_at.elapsed()),
+            )
+        })
         .map_err(|source| BoundedSchedulerPreemptionError::WatchdogSpawn { source })?;
 
     let mut perturbations = 0;
     let perturbation_result = (|| {
+        barrier
+            .start
+            .recv()
+            .map_err(|_error| BoundedSchedulerPreemptionError::ControllerExitedBeforeStart)?;
+        watchdog_start_tx
+            .send(Instant::now())
+            .map_err(|_error| BoundedSchedulerPreemptionError::WatchdogPanicked)?;
         for iteration in 0..policy.perturbations {
             if cancel.load(Ordering::Acquire) {
                 break;
@@ -565,6 +765,8 @@ fn apply_bounded_scheduler_preemption_with_cancel(
         Ok(())
     })();
 
+    // Also release an unarmed watchdog when startup was abandoned.
+    drop(watchdog_start_tx);
     let _ = finished_tx.send(());
     let watchdog_resumed = watchdog
         .join()
@@ -582,279 +784,22 @@ fn apply_bounded_scheduler_preemption_with_cancel(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use std::error::Error;
-    use std::path::PathBuf;
-    use std::process::{Child, Command, Stdio};
-    use std::sync::atomic::AtomicU64;
-    use std::time::Duration;
-
-    use super::*;
-
-    const TARGET_ENV: &str = "CRUCIBLE_BOUNDED_PREEMPTION_TARGET";
-    const TARGET_READY_PATH_ENV: &str = "CRUCIBLE_BOUNDED_PREEMPTION_READY_PATH";
-    static TARGET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-    struct TestTarget {
-        child: Child,
-        ready_path: PathBuf,
-    }
-
-    impl TestTarget {
-        fn spawn() -> Result<Self, Box<dyn Error>> {
-            let executable = std::env::current_exe()?;
-            let sequence = TARGET_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let ready_path = std::env::temp_dir().join(format!(
-                "crucible-bounded-preemption-{}-{sequence}.ready",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_file(&ready_path);
-            let mut child = Command::new(executable)
-                .arg("--exact")
-                .arg("supervision::bounded_scheduler_preemption::tests::preemption_target_process")
-                .arg("--ignored")
-                .arg("--nocapture")
-                .arg("--test-threads=1")
-                .env(TARGET_ENV, "1")
-                .env(TARGET_READY_PATH_ENV, &ready_path)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::inherit())
-                .spawn()?;
-            for attempt in 0..2_000 {
-                if ready_path.is_file() {
-                    break;
-                }
-                if child.try_wait()?.is_some() {
-                    return Err("target exited before its readiness marker".into());
-                }
-                if attempt + 1 == 2_000 {
-                    return Err("target did not publish its readiness marker".into());
-                }
-                thread::sleep(Duration::from_millis(1));
-            }
-            Ok(Self { child, ready_path })
+/// Resumes the exact child directly, without waiting for the controller to run.
+fn resume_on_watchdog_expiry(
+    pidfd: &std::os::fd::OwnedFd,
+    timed_out: &AtomicBool,
+    finished: mpsc::Receiver<()>,
+    timeout: Duration,
+) -> Result<bool, BoundedSchedulerPreemptionError> {
+    match finished.recv_timeout(timeout) {
+        Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => Ok(false),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            timed_out.store(true, Ordering::Release);
+            signal_pidfd(pidfd, Signal::CONT).map(|()| true)
         }
-
-        fn pid(&self) -> u32 {
-            self.child.id()
-        }
-
-        fn is_running(&mut self) -> Result<bool, Box<dyn Error>> {
-            Ok(self.child.try_wait()?.is_none())
-        }
-    }
-
-    impl Drop for TestTarget {
-        fn drop(&mut self) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-            let _ = std::fs::remove_file(&self.ready_path);
-        }
-    }
-
-    fn process_state(pid: u32) -> Result<Option<char>, Box<dyn Error>> {
-        let status = match std::fs::read_to_string(format!("/proc/{pid}/status")) {
-            Ok(status) => status,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        Ok(status
-            .lines()
-            .find_map(|line| line.strip_prefix("State:\t"))
-            .and_then(|state| state.chars().next()))
-    }
-
-    fn wait_for_state(pid: u32, expected: char) -> Result<(), Box<dyn Error>> {
-        for _ in 0..1_000 {
-            if process_state(pid)? == Some(expected) {
-                return Ok(());
-            }
-            thread::sleep(Duration::from_millis(1));
-        }
-        Err(format!("process {pid} never entered state {expected}").into())
-    }
-
-    #[test]
-    #[ignore = "spawned as the hermetic signal target by the parent tests"]
-    fn preemption_target_process() -> Result<(), Box<dyn Error>> {
-        if std::env::var_os(TARGET_ENV).is_none() {
-            return Ok(());
-        }
-        let ready_path = std::env::var_os(TARGET_READY_PATH_ENV)
-            .ok_or("target readiness path was not supplied")?;
-        std::fs::write(ready_path, b"ready\n")?;
-        thread::sleep(Duration::from_secs(10));
-        Ok(())
-    }
-
-    #[test]
-    fn asynchronous_preemption_completes_while_target_runs() -> Result<(), Box<dyn Error>> {
-        let mut target = TestTarget::spawn()?;
-        let mut adversary = BoundedSchedulerPreemption::start_if(true, target.pid())?
-            .ok_or("enabled adversary was not created")?;
-        let observation = adversary.observe_first_stop()?;
-        assert_eq!(process_state(target.pid())?, Some('T'));
-        observation.confirm_pending(true)?;
-        let report = adversary.finish()?;
-
-        assert_eq!(report.perturbations, BOUNDED_PREEMPTION_COUNT);
-        assert_eq!(report.requested_stopped_milliseconds, 90);
-        assert!(target.is_running()?);
-        Ok(())
-    }
-
-    #[test]
-    fn watchdog_expiry_directly_resumes_stopped_target() -> Result<(), Box<dyn Error>> {
-        let mut target = TestTarget::spawn()?;
-        let policy = PreemptionPolicy {
-            perturbations: 1,
-            pause: Duration::from_millis(250),
-            interval: Duration::ZERO,
-            wall_timeout: Duration::from_millis(20),
-        };
-        let mut adversary =
-            BoundedSchedulerPreemption::start_with_policy(true, target.pid(), policy)?
-                .ok_or("enabled adversary was not created")?;
-        let observation = adversary.observe_first_stop()?;
-        thread::sleep(Duration::from_millis(40));
-        observation.confirm_pending(true)?;
-        let error = adversary
-            .finish()
-            .err()
-            .ok_or("watchdog fixture unexpectedly succeeded")?;
-
-        assert!(matches!(
-            error,
-            BoundedSchedulerPreemptionError::WallTimeout
-        ));
-        assert_ne!(process_state(target.pid())?, Some('T'));
-        assert!(target.is_running()?);
-        Ok(())
-    }
-
-    #[test]
-    fn dropping_controller_resumes_and_joins_stopped_target() -> Result<(), Box<dyn Error>> {
-        let mut target = TestTarget::spawn()?;
-        let policy = PreemptionPolicy {
-            perturbations: 1,
-            pause: Duration::from_millis(250),
-            interval: Duration::ZERO,
-            wall_timeout: Duration::from_secs(2),
-        };
-        let mut adversary =
-            BoundedSchedulerPreemption::start_with_policy(true, target.pid(), policy)?
-                .ok_or("enabled adversary was not created")?;
-        let observation = adversary.observe_first_stop()?;
-        wait_for_state(target.pid(), 'T')?;
-        drop(observation);
-        drop(adversary);
-
-        assert_ne!(process_state(target.pid())?, Some('T'));
-        assert!(target.is_running()?);
-        Ok(())
-    }
-
-    #[test]
-    fn signal_failure_is_reported_and_joined() -> Result<(), Box<dyn Error>> {
-        let error = BoundedSchedulerPreemption::start_if(true, u32::MAX)
-            .err()
-            .ok_or("invalid target unexpectedly opened a pidfd")?;
-        assert!(matches!(
-            error,
-            BoundedSchedulerPreemptionError::InvalidPid { .. }
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn stop_observation_honors_timeout_without_a_state_change() -> Result<(), Box<dyn Error>> {
-        let target = TestTarget::spawn()?;
-        let raw_pid = i32::try_from(target.pid())
-            .ok()
-            .and_then(Pid::from_raw)
-            .ok_or("test target PID was not representable")?;
-        let pidfd = pidfd_open(raw_pid, PidfdFlags::empty())?;
-        let cancel = AtomicBool::new(false);
-        let timed_out = Arc::new(AtomicBool::new(false));
-        let watchdog_timed_out = Arc::clone(&timed_out);
-        let watchdog = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(20));
-            watchdog_timed_out.store(true, Ordering::Release);
-        });
-
-        let error = observe_pidfd_stopped(&pidfd, &cancel, &timed_out)
-            .err()
-            .ok_or("stop observation ignored an active timeout")?;
-        watchdog
-            .join()
-            .map_err(|_panic| "test timeout publisher panicked")?;
-
-        assert!(matches!(
-            error,
-            BoundedSchedulerPreemptionError::WallTimeout
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn disabled_adversary_spawns_no_controller() -> Result<(), Box<dyn Error>> {
-        assert!(BoundedSchedulerPreemption::start_if(false, u32::MAX)?.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn controller_waits_for_pending_work_release() -> Result<(), Box<dyn Error>> {
-        let mut target = TestTarget::spawn()?;
-        let mut adversary = BoundedSchedulerPreemption::start_if(true, target.pid())?
-            .ok_or("enabled adversary was not created")?;
-        thread::sleep(Duration::from_millis(25));
-        assert_ne!(process_state(target.pid())?, Some('T'));
-
-        adversary.observe_first_stop()?.confirm_pending(true)?;
-        let report = adversary.finish()?;
-        assert_eq!(report.perturbations, BOUNDED_PREEMPTION_COUNT);
-        assert!(target.is_running()?);
-        Ok(())
-    }
-
-    #[test]
-    fn first_stop_rejects_an_already_completed_quantum() -> Result<(), Box<dyn Error>> {
-        let mut target = TestTarget::spawn()?;
-        let mut adversary = BoundedSchedulerPreemption::start_if(true, target.pid())?
-            .ok_or("enabled adversary was not created")?;
-        let observation = adversary.observe_first_stop()?;
-        wait_for_state(target.pid(), 'T')?;
-        let error = observation
-            .confirm_pending(false)
-            .err()
-            .ok_or("completed quantum unexpectedly certified overlap")?;
-        assert!(matches!(
-            error,
-            BoundedSchedulerPreemptionError::QuantumCompletedBeforeFirstStop
-        ));
-        let _report = adversary.finish()?;
-        assert!(target.is_running()?);
-        Ok(())
-    }
-
-    #[test]
-    fn exited_target_fails_after_pending_work_release() -> Result<(), Box<dyn Error>> {
-        let mut target = TestTarget::spawn()?;
-        let mut adversary = BoundedSchedulerPreemption::start_if(true, target.pid())?
-            .ok_or("enabled adversary was not created")?;
-        target.child.kill()?;
-        let _status = target.child.wait()?;
-
-        let error = adversary
-            .observe_first_stop()
-            .err()
-            .ok_or("exited target unexpectedly accepted scheduler preemption")?;
-        assert!(matches!(
-            error,
-            BoundedSchedulerPreemptionError::FirstStopObservationTimeout
-        ));
-        Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "bounded_scheduler_preemption/tests.rs"]
+mod tests;

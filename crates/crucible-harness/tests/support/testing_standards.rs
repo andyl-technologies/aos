@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "testing_standards/source_inventory.rs"]
+mod source_inventory;
+pub(super) use source_inventory::*;
 pub(super) fn testing_standard_failures(
     targets: &[GateTargetSpec],
     source_overrides: &GateSourceOverrides,
@@ -163,9 +166,6 @@ pub(super) fn source_shape_failures(
     standard: &GateTestingStandard,
     content: &str,
 ) -> Vec<String> {
-    if target.placeholder {
-        return Vec::new();
-    }
     let code = scrub_comments_and_strings(content);
     let lower = code.to_ascii_lowercase();
     let mut failures = Vec::new();
@@ -234,6 +234,289 @@ pub(super) fn source_shape_failures(
         ));
     }
 
+    if standard.shape == TestShape::CampaignModel {
+        for required in [
+            "CampaignRepository::new",
+            "CampaignLineage::new",
+            "assert_eq!(lineage.id()?, reverse_lineage.id()?)",
+            "CampaignRepositoryError::Stale",
+            "derive_campaign",
+            "assert_eq!(rebuilt.snapshot_id(), derived.new_snapshot)",
+            "restarted.state",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove canonical identities, stale-command refusal, derivation, and restart through the public campaign repository",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::CampaignReplay {
+        let required = if target.package == "crucible-campaign" {
+            &[
+                "CampaignRepository::with_component_authorities",
+                "CanonicalFrontierPlanner",
+                "restarted_repository",
+                "assert_wrong_planner_authority_is_rejected",
+                "assert_eq!(reordered.steps, ordered.steps)",
+            ][..]
+        } else {
+            &[
+                "env_clear",
+                "offline_campaign_replay_consumer",
+                "FindingTriageReplayEvidence::from_canonical_bytes",
+                "FailureTriageReplayEvidence::from_compact_binary",
+                "InvalidExport::MissingEvidence",
+                "InvalidExport::CorruptEvidence",
+                "InvalidExport::WrongObservedSignature",
+            ][..]
+        };
+        if required.iter().any(|needle| !code.contains(needle)) {
+            failures.push(format!(
+                "{}:{} must prove every-step strict planner replay or separate-process rich finding reconstruction with fail-closed corruptions",
+                target.package, target.test_target,
+            ));
+        }
+    }
+
+    if standard.shape == TestShape::CampaignStatistics {
+        for required in [
+            "CampaignRepository::with_component_authorities",
+            "StatisticalDistribution::new",
+            "with_statistical_sampling_design",
+            "CanonicalFrontierPlanner",
+            "project_statistical_estimate",
+            "estimate_event",
+            "CampaignRepositoryError::Integrity",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove finite static P/Q support, exact estimation, refusal, and restart through the public campaign repository",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::BranchPointModel {
+        for required in [
+            "opportunity.branch_point_id(lineage.genesis())",
+            "CandidateSource::generated",
+            "submit_debugger_branch_request",
+            "AttemptAdmissionRole::AdditionalCause",
+            "ExplainCampaignAttemptRequest::new",
+            "collect_finite_statistical_evidence",
+            "assert_eq!(raw_visits.parent_visits(), 3)",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove parent scope, finite/generated convergence, retained causes, authenticated execution basis, restart, and statistical intervention exclusion",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::LazyFrontier {
+        for required in [
+            "measure_allocations",
+            "ContinuationState::Waiting",
+            "ContinuationState::Ready",
+            "CampaignRepository::with_component_authorities",
+            "CampaignMode::Strict",
+            "CampaignMode::Streaming",
+            "CandidateGeneratorAlgorithm::ProgressiveInteger",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove bounded lazy polling, feedback suspension, cold recovery, and strict/streaming ordering",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::ControlResponsiveness {
+        for required in [
+            "CampaignClient::new(RepositoryCampaignService::new(",
+            "CampaignControlAction::Pause(ActiveAttemptPolicy::Drain)",
+            ".get_campaign_status(",
+            ".pin_campaign(",
+            "const CONTROL_BOUND: Duration = Duration::from_millis(250);",
+            "assert_eq!(saturated.active(), 3);",
+            "assert_eq!(saturated.queued(), 1);",
+            "pool.request_shutdown();",
+            "Err(LocalExecutorPoolServiceError::ShuttingDown)",
+            "state.cancellations_observed, 2,",
+            ".operational_activity_snapshot();",
+            "assert!(activity.worker_in_flight);",
+            "assert!(activity.cancellation_requested);",
+            "assert_eq!(report.active(), 0);",
+            "assert_eq!(report.queued(), 0);",
+            "assert_eq!(report.executions(), 2,",
+            "assert_eq!(report.terminal_stops(), 3);",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove bounded pause, status, pin, shutdown, admission closure, executing cancellation retention, queued draining, and final accounting under saturation",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::WorldForkAtomicity {
+        for required in [
+            "QemuProductionHotForkWorldLifecycleFactory",
+            "production_factory_forks_complete_live_world_atomically",
+            "production_factory_exposes_no_world_when_second_real_fork_fails",
+            "production_factory_exposes_no_world_when_second_real_adoption_fails",
+            "production_factory_keeps_source_private_until_target_cleanup_retries",
+            "production_factory_keeps_source_private_across_repository_publication_retry",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove the production real-QEMU atomic-world success, rollback, cleanup-retry, and publication-retry matrix",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::CampaignComponentContract {
+        for required in [
+            "CampaignLoopbackServer::new",
+            "serve_loopback_executor_component_connection_with_limits",
+            "CampaignClient",
+            "ExecutorClient",
+            "kill_and_wait",
+            "SubmitAttemptDisposition::AlreadyCompleted",
+            "ExecutorRejection::Unauthorized",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} is missing `{required}` required to prove direct/loopback equivalence, independent component restart, idempotency, and authority refusal",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::CampaignColdContinuity {
+        for required in [
+            "fn campaign_cold_continuity_survives_pause_restart_archive_restore_and_resume(",
+            "fn continuity_process_helper()",
+            "Command::new(std::env::current_exe()",
+            ".arg(PROCESS_HELPER)",
+            "output.status.success()",
+            "DirectoryBlobBackend::new",
+            "DirectoryRefBackend::new",
+            "CampaignArchivePolicy::Executable",
+            "publish_transferred_campaign(",
+            "fn authenticate_checkpoint_closure(",
+            "query_campaign_graph",
+            "query_campaign_frontier",
+            "query_campaign_findings",
+            "assert_eq!(budget.spent_attempts, 2);",
+            "assert_eq!(claimable, vec![initial_attempt]);",
+            "assert!(replayed.replayed);",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove public graph/frontier/finding continuity, exact pin and checkpoint authentication, process restart, archive transfer, claim recovery, and single-charge resume accounting",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::AttemptIdempotence {
+        for required in [
+            "CampaignRepository::new",
+            "ExecutorClient::new",
+            "SubmitAttemptDisposition::AlreadyRunning",
+            "CampaignRepositoryError::RefConflict",
+            "publish_observation",
+            "project_branch_edge_visits",
+            "replayed",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove admission, executor, publication, restart, conflict, and credit idempotence through public seams",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::CampaignMutationScaling {
+        for required in [
+            "const MUTATIONS: u64 = 10_000;",
+            "ReadCountingBackend",
+            "validation_checkpoint_metrics",
+            "has_retained_validation_checkpoint",
+            "MAX_INCREMENTAL_READS",
+            "MAX_LOCATOR_REPLAY_READS",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must run 10,000 instrumented mutations and prove hot, cold, failure-atomic, deep-closure, and locator bounds",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::CampaignStoreEquivalence {
+        for required in [
+            "assert_blob_leaf_conformance",
+            "assert_blob_leaf_conformance_with_durability",
+            "assert_ref_leaf_conformance",
+            "MemoryBlobBackend",
+            "DirectoryBlobBackend",
+            "PackedBlobBackend",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must apply one shared immutable/ref semantic suite to every supported local leaf",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::CampaignStoreComposition {
+        let required = if target.package == "crucible-cas" {
+            &[
+                "ALLOWED_LAYER_ORDERS",
+                "StoreGraph",
+                "PackedBlobBackend",
+                "DurabilityRequirement",
+            ][..]
+        } else {
+            &["mod campaign_store_process;"][..]
+        };
+        if required.iter().any(|needle| !code.contains(needle)) {
+            failures.push(format!(
+                "{}:{} must exercise its owned store-graph or public-process composition surface",
+                target.package, target.test_target,
+            ));
+        }
+    }
+
     if standard.shape == TestShape::CampaignContinuity {
         for required in [
             "seed_next_run_for_provenance",
@@ -269,9 +552,12 @@ pub(super) fn package_layer(package: &str) -> Option<Layer> {
     match package {
         "crucible-sim" | "crucible-assert" => Some(Layer::L0),
         "crucible-shmem" | "crucible-protocol" | "crucible-device" => Some(Layer::L1),
-        "crucible-qemu" | "crucible-qemu-plugin" | "crucible-guest" => Some(Layer::L2),
-        "crucible" | "crucible-cas" => Some(Layer::L3),
-        "crucible-session" | "crucible-api" | "crucible-daemon" | "crucible-cli" => Some(Layer::L4),
+        "crucible-qemu" | "crucible-qemu-plugin" | "crucible-guest" | "crucible-linux-resource" => {
+            Some(Layer::L2)
+        }
+        "crucible" | "crucible-cas" | "crucible-campaign" => Some(Layer::L3),
+        "crucible-s3-store" | "crucible-session" | "crucible-api" | "crucible-daemon"
+        | "crucible-cli" => Some(Layer::L4),
         "crucible-harness" => Some(Layer::CrossCutting),
         _ => None,
     }
@@ -284,21 +570,18 @@ pub(super) fn testing_standard_regression_failures() -> Vec<String> {
             package: "crucible-qemu",
             test_target: "gate_replay_oracle",
             required_features: &[],
-            placeholder: true,
         },
         GateTargetSpec {
             gate: "gate:unknown",
             package: "crucible-harness",
             test_target: "unknown_gate",
             required_features: &[],
-            placeholder: true,
         },
         GateTargetSpec {
             gate: "gate:replay-oracle",
             package: "crucible",
             test_target: "gate_replay_oracle",
             required_features: &["test-double"],
-            placeholder: false,
         },
     ];
     let source_overrides = BTreeMap::from([(
@@ -358,7 +641,7 @@ pub(super) fn testing_standard_regression_failures() -> Vec<String> {
     }
     if !findings
         .iter()
-        .any(|finding| finding.contains("crucible-assert missing crate-owned layer gate"))
+        .any(|finding| finding.contains("crucible-qemu missing crate-owned layer gate"))
     {
         failures.push(
             "testing-standard regression failed to reject missing per-crate ownership".to_string(),
@@ -369,6 +652,7 @@ pub(super) fn testing_standard_regression_failures() -> Vec<String> {
 }
 
 pub(super) fn testing_source_regression_failures() -> Vec<String> {
+    let mut failures = Vec::new();
     let findings = flaky_escape_failures(
         "crucible",
         "gate_replay_oracle",
@@ -380,331 +664,48 @@ pub(super) fn testing_source_regression_failures() -> Vec<String> {
         "#,
     );
 
-    if findings.len() == 2 {
-        Vec::new()
-    } else {
-        vec!["testing-standard regression failed to reject flaky/retry escapes".to_string()]
-    }
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) struct TestingStandardsBaselineKey {
-    package: String,
-    test_target: String,
-    pattern: String,
-}
-
-#[derive(Default)]
-pub(super) struct TestingStandardsBaseline {
-    caps: BTreeMap<TestingStandardsBaselineKey, usize>,
-}
-
-impl TestingStandardsBaseline {
-    pub(super) fn load(root: &Path) -> Result<Self, Box<dyn Error>> {
-        let path = root.join("tests/crucible/testing-standards-baseline.txt");
-        let content = fs::read_to_string(path)?;
-        let mut caps = BTreeMap::new();
-
-        for (index, line) in content.lines().enumerate() {
-            let line = line.trim_end();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            let fields = line.split('\t').collect::<Vec<_>>();
-            if fields.len() != 4 {
-                return Err(format!(
-                    "invalid testing-standards baseline entry on line {}: {line}",
-                    index + 1
-                )
-                .into());
-            }
-
-            let count = fields[3].parse::<usize>().map_err(|error| {
-                format!(
-                    "invalid testing-standards baseline count on line {}: {error}",
-                    index + 1
-                )
-            })?;
-            caps.insert(
-                TestingStandardsBaselineKey {
-                    package: fields[0].to_string(),
-                    test_target: fields[1].to_string(),
-                    pattern: fields[2].to_string(),
-                },
-                count,
-            );
-        }
-
-        Ok(Self { caps })
+    if findings.len() != 2 {
+        failures
+            .push("testing-standard regression failed to reject flaky/retry escapes".to_string());
     }
 
-    pub(super) fn filter_flaky_findings(&self, findings: Vec<String>) -> Vec<String> {
-        let mut observed = BTreeMap::new();
-        let mut unbaselined = Vec::new();
-
-        for finding in findings {
-            let Some(key) = TestingStandardsBaselineKey::from_finding(&finding) else {
-                unbaselined.push(finding);
-                continue;
-            };
-            let observed_count = observed.entry(key.clone()).or_insert(0usize);
-            *observed_count += 1;
-
-            if self
-                .caps
-                .get(&key)
-                .is_some_and(|cap| *observed_count <= *cap)
-            {
-                continue;
-            }
-
-            unbaselined.push(finding);
-        }
-
-        for (key, cap) in &self.caps {
-            let actual = observed.get(key).copied().unwrap_or_default();
-            if actual < *cap {
-                unbaselined.push(format!(
-                    "tests/crucible/testing-standards-baseline.txt: stale flaky baseline `{}` expected {cap} observed {actual}",
-                    key.display()
-                ));
-            }
-        }
-
-        unbaselined
-    }
-}
-
-impl TestingStandardsBaselineKey {
-    fn from_finding(finding: &str) -> Option<Self> {
-        let (subject, pattern) = finding.split_once(" contains flaky-test escape pattern `")?;
-        let (package, test_target) = subject.split_once(':')?;
-        Some(Self {
-            package: package.to_string(),
-            test_target: test_target.to_string(),
-            pattern: pattern.strip_suffix('`')?.to_string(),
-        })
-    }
-
-    fn display(&self) -> String {
-        format!("{}\t{}\t{}", self.package, self.test_target, self.pattern)
-    }
-}
-
-pub(super) fn workspace_root() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    match manifest_dir.parent().and_then(|path| path.parent()) {
-        Some(root) => root.to_path_buf(),
-        None => panic!("crucible-harness manifest is not inside the workspace"),
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct TestSource {
-    pub(super) package: String,
-    pub(super) test_target: String,
-    pub(super) path: PathBuf,
-}
-
-pub(super) fn crucible_test_sources(root: &Path) -> Result<Vec<TestSource>, Box<dyn Error>> {
-    let crates_dir = root.join("crates");
-    let mut sources = Vec::new();
-
-    for entry in fs::read_dir(&crates_dir)? {
-        let entry = entry?;
-        let package = entry.file_name().to_string_lossy().into_owned();
-        if !package.starts_with("crucible") {
-            continue;
-        }
-
-        let mut paths = Vec::new();
-        collect_rust_sources(&entry.path().join("tests"), &mut paths)?;
-        collect_unit_test_sources(&entry.path().join("src"), &mut paths)?;
-
-        for path in paths {
-            let test_target = test_target_name(&entry.path(), &path);
-            if package == "crucible-harness"
-                && matches!(
-                    test_target.as_str(),
-                    "testing_standards"
-                        | "tests/testing_standards"
-                        | "tests/support/testing_standards"
-                )
-            {
-                continue;
-            }
-
-            sources.push(TestSource {
-                package: package.clone(),
-                test_target,
-                path,
-            });
-        }
-    }
-
-    sources.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(sources)
-}
-
-pub(super) fn gate_target_source_overrides(
-    root: &Path,
-) -> Result<GateSourceOverrides, Box<dyn Error>> {
-    let mut sources = BTreeMap::new();
-
-    for target in gate_targets() {
-        let path = root
-            .join("crates")
-            .join(target.package)
-            .join("tests")
-            .join(format!("{}.rs", target.test_target));
-        sources.insert(
-            (target.package, target.test_target),
-            fs::read_to_string(path)?,
+    let native_scenario_target = "src/qemu_hot_fork_world_factory/tests/native_acceptance/scenario";
+    let modeled_retry = flaky_escape_failures(
+        "crucible-daemon",
+        native_scenario_target,
+        "let retry_domain = modeled_guest_choice();",
+    );
+    let semantic_baseline = TestingStandardsBaseline {
+        caps: BTreeMap::from([(
+            TestingStandardsBaselineKey {
+                package: "crucible-daemon".to_string(),
+                test_target: native_scenario_target.to_string(),
+                pattern: "retry".to_string(),
+            },
+            1,
+        )]),
+    };
+    if !semantic_baseline
+        .filter_flaky_findings(modeled_retry)
+        .is_empty()
+    {
+        failures.push(
+            "testing-standard regression rejected the scoped modeled-retry baseline".to_string(),
         );
     }
 
-    Ok(sources)
-}
-
-pub(super) fn collect_rust_sources(
-    dir: &Path,
-    sources: &mut Vec<PathBuf>,
-) -> Result<(), Box<dyn Error>> {
-    if !dir.is_dir() {
-        return Ok(());
+    let unrelated_retry =
+        flaky_escape_failures("crucible-daemon", "tests/unrelated", "retry_failed_test();");
+    if !semantic_baseline
+        .filter_flaky_findings(unrelated_retry)
+        .iter()
+        .any(|finding| finding.starts_with("crucible-daemon:tests/unrelated "))
+    {
+        failures.push(
+            "testing-standard regression allowed retry behavior outside its exact baseline target"
+                .to_string(),
+        );
     }
 
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_rust_sources(&path, sources)?;
-        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
-            sources.push(path);
-        }
-    }
-
-    Ok(())
-}
-
-pub(super) fn collect_unit_test_sources(
-    dir: &Path,
-    sources: &mut Vec<PathBuf>,
-) -> Result<(), Box<dyn Error>> {
-    let mut candidates = Vec::new();
-    collect_rust_sources(dir, &mut candidates)?;
-
-    let has_unit_test_module = candidates.iter().any(|path| {
-        fs::read_to_string(path)
-            .is_ok_and(|content| content.contains("#[cfg(test") || content.contains("mod tests"))
-    });
-
-    if has_unit_test_module {
-        sources.extend(candidates);
-    }
-
-    Ok(())
-}
-
-pub(super) fn test_target_name(package_dir: &Path, path: &Path) -> String {
-    match path.strip_prefix(package_dir) {
-        Ok(relative) => relative
-            .with_extension("")
-            .components()
-            .map(|component| component.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/"),
-        Err(_) => path
-            .file_stem()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-    }
-}
-
-pub(super) fn scrub_comments_and_strings(content: &str) -> String {
-    let chars: Vec<char> = content.chars().collect();
-    let mut out = String::with_capacity(content.len());
-    let mut index = 0;
-    let mut state = ScannerState::Code;
-
-    while index < chars.len() {
-        let ch = chars[index];
-        let next = chars.get(index + 1).copied();
-        match state {
-            ScannerState::Code => {
-                if ch == '/' && next == Some('/') {
-                    out.push(' ');
-                    out.push(' ');
-                    index += 2;
-                    state = ScannerState::LineComment;
-                } else if ch == '/' && next == Some('*') {
-                    out.push(' ');
-                    out.push(' ');
-                    index += 2;
-                    state = ScannerState::BlockComment(1);
-                } else if ch == '"' {
-                    out.push(' ');
-                    index += 1;
-                    state = ScannerState::String;
-                } else {
-                    out.push(ch);
-                    index += 1;
-                }
-            }
-            ScannerState::LineComment => {
-                if ch == '\n' {
-                    out.push('\n');
-                    state = ScannerState::Code;
-                } else {
-                    out.push(' ');
-                }
-                index += 1;
-            }
-            ScannerState::BlockComment(depth) => {
-                if ch == '/' && next == Some('*') {
-                    out.push(' ');
-                    out.push(' ');
-                    index += 2;
-                    state = ScannerState::BlockComment(depth + 1);
-                } else if ch == '*' && next == Some('/') {
-                    out.push(' ');
-                    out.push(' ');
-                    index += 2;
-                    if depth == 1 {
-                        state = ScannerState::Code;
-                    } else {
-                        state = ScannerState::BlockComment(depth - 1);
-                    }
-                } else {
-                    out.push(if ch == '\n' { '\n' } else { ' ' });
-                    index += 1;
-                }
-            }
-            ScannerState::String => {
-                if ch == '\\' && next.is_some() {
-                    out.push(' ');
-                    out.push(if next == Some('\n') { '\n' } else { ' ' });
-                    index += 2;
-                } else if ch == '"' {
-                    out.push(' ');
-                    index += 1;
-                    state = ScannerState::Code;
-                } else {
-                    out.push(if ch == '\n' { '\n' } else { ' ' });
-                    index += 1;
-                }
-            }
-        }
-    }
-
-    out
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(super) enum ScannerState {
-    Code,
-    LineComment,
-    BlockComment(usize),
-    String,
+    failures
 }

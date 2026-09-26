@@ -52,12 +52,22 @@
       inVm = true;
     }
     {
+      package = "crucible-linux-resource";
+      layer = 2;
+      inVm = false;
+    }
+    {
       package = "crucible";
       layer = 3;
       inVm = false;
     }
     {
       package = "crucible-cas";
+      layer = 3;
+      inVm = false;
+    }
+    {
+      package = "crucible-campaign";
       layer = 3;
       inVm = false;
     }
@@ -78,6 +88,11 @@
     }
     {
       package = "crucible-cli";
+      layer = 4;
+      inVm = false;
+    }
+    {
+      package = "crucible-s3-store";
       layer = 4;
       inVm = false;
     }
@@ -270,7 +285,7 @@ in
             check=checks.crucible.phase1.crateLayerGraph
             gate=gate:harness-lint
             tasks=T-ARCH-2,T-CRATE-3
-            runtime_crates=14
+            runtime_crates=18
             test_only_crates=1
             upward_edges=0
             host_adapter_upward_edge_exceptions=1

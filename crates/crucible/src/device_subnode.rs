@@ -517,7 +517,7 @@ impl DeviceSchedulingSubNode {
                         node: node.id.clone(),
                     },
                 })?;
-        let core = world_io_core(node, runtime_layout).map_err(|source| {
+        let core = world_io_core(runtime_layout).map_err(|source| {
             DeviceSubNodeBindingError::RuntimeCore {
                 node: node.id.name.clone(),
                 source,
@@ -665,7 +665,7 @@ impl DeviceSchedulingSubNode {
                         node: node.id.clone(),
                     },
                 })?;
-        let core = world_io_core(node, runtime_layout).map_err(|source| {
+        let core = world_io_core(runtime_layout).map_err(|source| {
             DeviceSubNodeBindingError::RuntimeCore {
                 node: node.id.name.clone(),
                 source,
@@ -753,19 +753,6 @@ impl DeviceSchedulingSubNode {
             ScheduledDevice::Block(device) => Some(device),
             ScheduledDevice::Ninep(_) => None,
         }
-    }
-
-    /// Returns a shared view of the held block device, when this is a disk sub-node.
-    ///
-    /// This migration accessor is equivalent to
-    /// [`DeviceSchedulingSubNode::block_device`]. It returns `None` for a 9p
-    /// sub-node because [`DeviceSchedulingSubNode`] now owns either concrete
-    /// device kind. New code should use [`DeviceSchedulingSubNode::block_device`]
-    /// or [`DeviceSchedulingSubNode::ninep_device`] so the expected concrete
-    /// device kind is visible at the call site.
-    #[must_use]
-    pub fn device(&self) -> Option<&BlockDevice> {
-        self.block_device()
     }
 
     /// Returns a shared view of the held 9p device, when this is a filesystem sub-node.
@@ -921,8 +908,8 @@ impl DeviceSchedulingSubNode {
             let event = completion.payload.as_ref().map(|payload| IoCompletion {
                 sub_node: self.sub_node.clone(),
                 target: self.target.clone(),
-                delivery_icount: crate::Icount {
-                    retired: completion.delivery_icount,
+                delivery_tick: crate::SimInstant {
+                    ticks: completion.delivery_icount,
                 },
                 payload: payload.clone(),
             });
@@ -940,13 +927,9 @@ impl DeviceSchedulingSubNode {
     }
 }
 
-/// Builds the concrete uniform I/O core from one validated world I/O node.
-fn world_io_core(
-    node: &crate::WorldIoNode,
-    layout: WorldIoRuntimeLayout,
-) -> Result<IoCore, DeviceError> {
+/// Builds the concrete uniform I/O core for one validated world I/O node.
+fn world_io_core(layout: WorldIoRuntimeLayout) -> Result<IoCore, DeviceError> {
     IoCore::new(
-        node.core.shift_bits,
         layout.source_node,
         layout.inbox_capacity,
         layout.outbox_capacity,
@@ -956,8 +939,8 @@ fn world_io_core(
 /// The concrete device a scheduler sub-node owns.
 ///
 /// The scheduler bridge treats block and 9p uniformly after COMPUTE: each
-/// exposes modeled in-flight completions, an active fault table, and a fixed
-/// clock shift. The concrete request submission step remains device-specific.
+/// exposes modeled in-flight completions and an active fault table. The
+/// concrete request submission step remains device-specific.
 #[derive(Clone, Debug)]
 enum ScheduledDevice {
     /// A block device sub-node.
@@ -1044,7 +1027,7 @@ mod tests {
 
     /// Builds a fault-free disk sub-node over a small base image.
     fn fresh_disk(seed: Seed) -> DeviceSchedulingSubNode {
-        let core = match IoCore::new(0, 7, 16, 16) {
+        let core = match IoCore::new(7, 16, 16) {
             Ok(core) => core,
             Err(error) => panic!("io core should construct: {error}"),
         };
@@ -1061,7 +1044,7 @@ mod tests {
 
     /// Builds a 9p sub-node over a read-only tree.
     fn fresh_ninep(seed: Seed) -> DeviceSchedulingSubNode {
-        let core = match IoCore::new(0, 9, 16, 16) {
+        let core = match IoCore::new(9, 16, 16) {
             Ok(core) => core,
             Err(error) => panic!("io core should construct: {error}"),
         };
@@ -1150,7 +1133,7 @@ mod tests {
             .completion
             .as_ref()
             .unwrap_or_else(|| panic!("fault-free delivery should emit a completion"));
-        assert_eq!(event.delivery_icount.retired, delivery);
+        assert_eq!(event.delivery_tick.ticks, delivery);
         assert_eq!(event.target, node_id("vm-a"));
         assert!(disk.next_exact_local_event().is_none());
     }

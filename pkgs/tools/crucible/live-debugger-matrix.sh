@@ -50,7 +50,7 @@ architecture=$default_architecture
 output=
 base_port=${CRUCIBLE_MATRIX_BASE_PORT:-39870}
 stage_timeout_seconds=${CRUCIBLE_MATRIX_STAGE_TIMEOUT_SECONDS:-180}
-rendezvous_icount=${CRUCIBLE_MATRIX_RENDEZVOUS_ICOUNT:-5000000}
+rendezvous_ticks=${CRUCIBLE_MATRIX_RENDEZVOUS_TICKS:-5000000}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --architecture)
@@ -98,7 +98,7 @@ esac
 [[ "$base_port" =~ ^[0-9]+$ ]] || { printf 'base port must be numeric\n' >&2; exit 64; }
 [[ "$stage_timeout_seconds" =~ ^[1-9][0-9]*$ ]] \
   || { printf 'stage timeout must be a positive integer\n' >&2; exit 64; }
-[[ "$rendezvous_icount" =~ ^[1-9][0-9]*$ ]] \
+[[ "$rendezvous_ticks" =~ ^[1-9][0-9]*$ ]] \
   || { printf 'rendezvous icount must be a positive integer\n' >&2; exit 64; }
 
 if [[ -n "$output" && ! "$output" =~ ^[A-Za-z0-9_./-]+$ ]]; then
@@ -508,7 +508,7 @@ run_architecture() {
     --listen "127.0.0.1:$daemon_port" \
     --trusted-unauthenticated-bind \
     --production-qemu \
-    --qemu-rendezvous-icount "$rendezvous_icount" \
+    --qemu-rendezvous-ticks "$rendezvous_ticks" \
     >"$directory/daemon.out" 2>"$directory/daemon.err" &
   daemon_pid=$!
   wait_for_pattern "$directory/daemon.out" "serving API daemon at $endpoint" "$daemon_pid"

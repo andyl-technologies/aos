@@ -48,6 +48,7 @@ pub(crate) fn plan_verify_invocation(
     let reductions = verify_reduction_plans(args.runs, args.adversarial, &mode);
     let plan = VerifyInvocationPlan {
         mode,
+        store_root: store_root.to_path_buf(),
         requested_runs: args.runs,
         reductions,
         compare_canonical_logs: true,
@@ -114,7 +115,7 @@ pub(crate) fn verify_reduction_plans(
             reductions.push(VerifyReductionPlan {
                 index: reductions.len(),
                 run_index,
-                host_profile: *host_profile,
+                host_profile: host_profile.for_run(run_index),
             });
         }
     }
@@ -224,15 +225,13 @@ pub(crate) fn resolve_command_scenario(
 pub(crate) fn resolve_builtin_example_scenario(
     value: &str,
 ) -> Result<Option<RunScenarioRef>, CliError> {
-    let name = value.strip_prefix("builtin:").unwrap_or(value);
+    let Some(name) = value.strip_prefix("builtin:") else {
+        return Ok(None);
+    };
     let fixture = match name {
-        crucible::HAPPY_PATH_SCENARIO_NAME | "happy-path" => Some(crucible::happy_path_scenario()),
-        crucible::PARTITION_RECOVERY_SCENARIO_NAME | "partition-recovery" => {
-            Some(crucible::partition_recovery_scenario())
-        }
-        crucible::CRASH_RESTART_SCENARIO_NAME | "crash-restart" => {
-            Some(crucible::crash_restart_scenario())
-        }
+        crucible::HAPPY_PATH_SCENARIO_NAME => Some(crucible::happy_path_scenario()),
+        crucible::PARTITION_RECOVERY_SCENARIO_NAME => Some(crucible::partition_recovery_scenario()),
+        crucible::CRASH_RESTART_SCENARIO_NAME => Some(crucible::crash_restart_scenario()),
         _ => None,
     };
     if let Some(fixture) = fixture {
@@ -245,28 +244,6 @@ pub(crate) fn resolve_builtin_example_scenario(
         return Ok(Some(RunScenarioRef::BuiltInExample {
             name: fixture.name,
             form: fixture.scenario,
-            scenario,
-        }));
-    }
-    if matches!(
-        name,
-        crucible::FAULT_CAMPAIGN_FAMILY_NAME | "fault-campaign"
-    ) {
-        let family = crucible::fault_campaign_family().map_err(|error| {
-            invalid_scenario(format!(
-                "built-in example family `{value}` failed validation: {error}"
-            ))
-        })?;
-        let sample = family.instantiate_sample(0).map_err(|error| {
-            invalid_scenario(format!(
-                "built-in example family `{value}` sample 0 failed validation: {error}"
-            ))
-        })?;
-        let form = sample.into_form();
-        let scenario = form.scenario_def();
-        return Ok(Some(RunScenarioRef::BuiltInExample {
-            name: crucible::FAULT_CAMPAIGN_FAMILY_NAME.to_owned(),
-            form,
             scenario,
         }));
     }
@@ -447,11 +424,7 @@ pub(crate) fn plan_determinism_ergonomics(
     entropy: &mut impl SeedEntropySource,
 ) -> Result<Option<DeterminismErgonomicsPlan>, CliError> {
     validate_canonical_trace_format(cli)?;
-    let explicit_fork_seed = matches!(cli.command, Commands::Fork(_)) && cli.seed.is_some();
-    if matches!(cli.command, Commands::Fork(_)) && !explicit_fork_seed {
-        return Ok(None);
-    }
-    if !explicit_fork_seed && !subcommand_uses_seed_resolution(&cli.command) {
+    if !subcommand_uses_seed_resolution(&cli.command) {
         return Ok(None);
     }
     let seed = resolve_seed(cli, environment, entropy)?;
@@ -465,7 +438,6 @@ pub(crate) fn plan_determinism_ergonomics(
         failure_artifact_rule: FailureArtifactRule {
             self_contained_artifact: true,
             replay_command_copy_pasteable: true,
-            debug_command_copy_pasteable: true,
         },
         trace_formats: vec![OutputFormat::Jsonl, OutputFormat::Json, OutputFormat::Table],
         jsonl_streams_entries: true,
@@ -503,7 +475,7 @@ pub(crate) fn execute_determinism_ergonomics_plan(
     }
     if !BackendCommandStatus::non_passing_variants()
         .iter()
-        .all(|status| status.is_non_passing() && status.failure_slug() != "passed")
+        .all(|status| status.is_non_passing() && status.artifact_slug() != "passed")
     {
         return Err(CliError::Backend(
             "non-passing outcomes are not all artifact-producing statuses".to_string(),
@@ -543,13 +515,13 @@ pub(crate) fn seed_resolution_mode(command: &Commands) -> SeedResolutionMode {
         | Commands::Save(_)
         | Commands::Search(_)
         | Commands::Fuzz(_) => SeedResolutionMode::FreshRunIdentity,
-        Commands::Resume(_) | Commands::Fork(_) | Commands::Replay(_) => {
-            SeedResolutionMode::ArtifactOrSavepointOwned
-        }
+        Commands::Resume(_) | Commands::Replay(_) => SeedResolutionMode::ArtifactOrSavepointOwned,
         Commands::Selftest(_)
         | Commands::Triage(_)
         | Commands::Debug(_)
         | Commands::Serve(_)
+        | Commands::Campaign(_)
+        | Commands::Store(_)
         | Commands::Completions(_) => SeedResolutionMode::NotApplicable,
     }
 }
@@ -576,7 +548,6 @@ pub(crate) fn command_uses_event_trace(command: &Commands) -> bool {
             | Commands::Verify(_)
             | Commands::Save(_)
             | Commands::Resume(_)
-            | Commands::Fork(_)
             | Commands::Replay(_)
             | Commands::Search(_)
             | Commands::Fuzz(_)
@@ -690,7 +661,11 @@ pub(crate) fn render_canonical_event_log(
             false,
         ),
         OutputFormat::Table => (table_for_canonical_log_entries(entries).into_bytes(), false),
-        OutputFormat::Markdown => unreachable!("markdown rejected above"),
+        OutputFormat::Markdown => {
+            return Err(usage_error(
+                "--format markdown is reserved for triage reports, not canonical event-log traces",
+            ));
+        }
     };
     Ok(RenderedCanonicalLog {
         format,
@@ -799,10 +774,7 @@ pub(crate) fn canonical_state_wall_clock_guard() -> bool {
         ),
         ("crucible-cli-backend", include_str!("../backend.rs")),
         ("crucible-cli-run-save", include_str!("../run_save.rs")),
-        (
-            "crucible-cli-resume-fork",
-            include_str!("../resume_fork.rs"),
-        ),
+        ("crucible-cli-resume", include_str!("../resume.rs")),
         (
             "crucible-cli-verify-serve",
             include_str!("../verify_serve.rs"),
@@ -843,21 +815,19 @@ pub(crate) fn canonical_state_wall_clock_guard() -> bool {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FailureReproductionFooter {
+pub(crate) struct ReproductionFooter {
     pub(crate) artifact_path: PathBuf,
     pub(crate) replay_command: String,
     pub(crate) debug_command: String,
     pub(crate) self_contained_artifact: bool,
 }
 
-pub(crate) fn failure_reproduction_footer(path: PathBuf) -> FailureReproductionFooter {
-    let artifact = path.display().to_string();
-    FailureReproductionFooter {
-        replay_command: format!(
-            "crucible replay {}",
-            shell_quote_command_argument(&artifact)
-        ),
-        debug_command: crucible::DebugFailureFooterCommand::new(artifact).debug_command,
+pub(crate) fn reproduction_footer(path: PathBuf) -> ReproductionFooter {
+    let artifact_argument = shell_quote_command_argument(&path.display().to_string());
+
+    ReproductionFooter {
+        replay_command: format!("crucible replay {artifact_argument}"),
+        debug_command: format!("crucible debug {artifact_argument} --at-failure"),
         artifact_path: path,
         self_contained_artifact: true,
     }

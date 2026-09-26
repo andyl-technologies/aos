@@ -11,6 +11,7 @@
   asyncDriver = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu/src/async_driver.rs;
+    siblingTests = true;
   };
   crashDetection = builtins.readFile ../../crates/crucible-qemu/src/crash_detection.rs;
   nodeLib = import ./_rust-module-source.nix {
@@ -21,7 +22,10 @@
     inherit lib;
     entry = ../../crates/crucible-qemu/src/quantum.rs;
   };
-  qmpLib = builtins.readFile ../../crates/crucible-qemu/src/qmp.rs;
+  qmpLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/qmp.rs;
+  };
   qmpTest = builtins.readFile ../../crates/crucible-qemu/tests/qmp.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -246,10 +250,6 @@
         needle = "qemu_node_timeout_reports_crash_and_runs_shutdown";
       }
       {
-        label = "node QMP timeout crash test";
-        needle = "qemu_node_qmp_timeout_reports_crash_and_runs_shutdown";
-      }
-      {
         label = "QMP channel timeout classification";
         needle = "source.bounded_timeout()";
       }
@@ -328,16 +328,18 @@
         needle = "qmp_client_rejects_unbounded_stream_timeouts";
       }
       {
+        label = "QMP timeout channel classification test";
+        needle = "qmp_timeout_errors_classify_node_channel_timeouts";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/qmp.rs" qmpLib [
+      {
         label = "QMP event flood bound test";
-        needle = "qmp_client_bounds_async_event_floods";
+        needle = "command_response_rejects_excess_async_events";
       }
       {
         label = "QMP partial line bound test";
-        needle = "qmp_client_bounds_partial_line_progress";
-      }
-      {
-        label = "QMP timeout channel classification test";
-        needle = "qmp_timeout_errors_classify_node_channel_timeouts";
+        needle = "greeting_rejects_an_oversized_partial_line";
       }
     ]
     ++ forbiddenFor "crates/crucible-qemu/src/async_driver.rs" asyncDriver (

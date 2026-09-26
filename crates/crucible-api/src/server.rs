@@ -7,7 +7,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Extension, State};
-use axum::http::{Request, StatusCode, Version};
+use axum::http::{Request, StatusCode, Version, header::CONTENT_LENGTH};
 use axum::response::Response;
 use axum::routing::post;
 use bytes::Bytes;
@@ -41,8 +41,10 @@ use crate::event_log_stream::EventLogCursor;
 use crate::lifecycle::{
     CreateSessionRequest, CreateSessionResponse, DestroySessionRequest, DestroySessionResponse,
     GetReproductionRequest, GetReproductionResponse, LifecycleApiError, LifecycleControlPlane,
-    ListScenariosResponse, ListSessionsResponse, ReproductionCommandRecord,
-    ReproductionCommandResult, ResumeSessionRequest, ResumeSessionResponse, SessionId, SessionRef,
+    ListScenariosResponse, ListSessionsResponse, RESUME_OBSERVATION_SOURCE_MAX_BYTES,
+    RESUME_REPLAY_CLOSURE_MAX_BYTES, ReproductionCommandRecord, ReproductionCommandResult,
+    ResumeObservationSource, ResumeReplayClosure, ResumeSessionRequest, ResumeSessionResponse,
+    SessionId, SessionRef,
 };
 use crate::open_set::{
     OpenSetAttributeValue, OpenSetEventSource, open_set_command_kind,
@@ -63,6 +65,14 @@ use crate::{ControlClientError, DebugAuthorizationPolicy, HelloRequest};
 
 mod resource_limit;
 type SharedLifecycleControlPlane<L, F> = Arc<Mutex<LifecycleControlPlane<L, F>>>;
+
+// Resume carries hex-encoded model and checkpoint material. This retains a
+// fixed aggregate allowance for those existing fields and charges the replay
+// closure at its exact two-character-per-byte wire amplification.
+const RESUME_SESSION_RPC_MODEL_ENVELOPE_MAX_BYTES: usize = 512 * 1024 * 1024;
+const RESUME_SESSION_RPC_BODY_MAX_BYTES: usize = RESUME_SESSION_RPC_MODEL_ENVELOPE_MAX_BYTES
+    + RESUME_REPLAY_CLOSURE_MAX_BYTES * 2
+    + RESUME_OBSERVATION_SOURCE_MAX_BYTES * 2;
 
 /// Runtime policy for the HTTP/2 lifecycle server.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -264,9 +274,42 @@ where
         + 'static,
     S: Future<Output = ()> + Send + 'static,
 {
+    serve_shared_lifecycle_http2_with_debug_policy_until_shutdown(
+        listener,
+        Arc::new(Mutex::new(control_plane)),
+        mode,
+        debug_authorization,
+        shutdown,
+    )
+    .await
+}
+
+/// Serves cleartext HTTP/2 over an already shared lifecycle control plane.
+///
+/// This owner-composition entry point lets another daemon-local service admit
+/// sessions into the exact registry served by the debugger relay.
+///
+/// # Errors
+///
+/// Returns the underlying server I/O error if the listener fails while serving.
+pub async fn serve_shared_lifecycle_http2_with_debug_policy_until_shutdown<L, F, S>(
+    listener: TcpListener,
+    control_plane: SharedLifecycleControlPlane<L, F>,
+    mode: LifecycleServerMode,
+    debug_authorization: DebugAuthorizationPolicy,
+    shutdown: S,
+) -> Result<(), std::io::Error>
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+    S: Future<Output = ()> + Send + 'static,
+{
     let (shutdown_sender, shutdown_receiver) = watch::channel(false);
     let app = lifecycle_router(Http2LifecycleState {
-        control_plane: Arc::new(Mutex::new(control_plane)),
+        control_plane,
         mode,
         shutdown: shutdown_receiver.clone(),
         debug_authorization,
@@ -307,9 +350,41 @@ where
         + 'static,
     S: Future<Output = ()> + Send + 'static,
 {
+    serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown(
+        listener,
+        Arc::new(Mutex::new(control_plane)),
+        mode,
+        tls_acceptor,
+        debug_authorization,
+        shutdown,
+    )
+    .await
+}
+
+/// Serves mutual-TLS HTTP/2 over an already shared lifecycle control plane.
+///
+/// # Errors
+///
+/// Returns an I/O error when the listener cannot accept or serve connections.
+pub async fn serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown<L, F, S>(
+    listener: TcpListener,
+    control_plane: SharedLifecycleControlPlane<L, F>,
+    mode: LifecycleServerMode,
+    tls_acceptor: TlsAcceptor,
+    debug_authorization: DebugAuthorizationPolicy,
+    shutdown: S,
+) -> Result<(), std::io::Error>
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+    S: Future<Output = ()> + Send + 'static,
+{
     let (shutdown_sender, shutdown_receiver) = watch::channel(false);
     let app = lifecycle_router(Http2LifecycleState {
-        control_plane: Arc::new(Mutex::new(control_plane)),
+        control_plane,
         mode,
         shutdown: shutdown_receiver.clone(),
         debug_authorization,
@@ -470,725 +545,9 @@ where
         .with_state(state)
 }
 
-async fn handle_debug_guest_fork<L, F>(
-    State(state): State<Http2LifecycleState<L, F>>,
-    identity: Option<Extension<DebugTransportIdentity>>,
-    request: Request<Body>,
-) -> Response
-where
-    L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
-        + Send
-        + Sync
-        + 'static,
-{
-    if state.mode.is_read_only() {
-        return read_only_rejection_response("debug-guest-fork");
-    }
-    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
-        Ok(principal) => principal,
-        Err(response) => return *response,
-    };
-    let body = match read_debug_rpc_body(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let (session, generation, holder, node) = match parse_debug_guest_fork_request(&body) {
-        Ok(request) => request,
-        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
-    };
-    let operation_guard = debug_operation_guard(&state, session).await;
-    let lease = DebugControllerLease {
-        client: client.clone(),
-        generation,
-    };
-    if let Err(response) = authorize_debug_holder(&state, session, &lease, holder).await {
-        return response;
-    }
-    let dispatch = {
-        let control_plane = state.control_plane.lock().await;
-        for capability in [
-            DebugCapability::Control,
-            DebugCapability::Mutate,
-            DebugCapability::Shell,
-        ] {
-            if let Err(error) = control_plane
-                .authorize_debug_controller_operation(session, &lease, &role, capability)
-            {
-                return lifecycle_error_response(error);
-            }
-        }
-        match control_plane.guest_introspection_dispatch(session) {
-            Ok(dispatch) => dispatch,
-            Err(error) => return lifecycle_error_response(error),
-        }
-    };
-    let result =
-        match complete_debug_operation(operation_guard, async move { dispatch.fork(node).await })
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => return lifecycle_error_response(error),
-        };
-    match result {
-        Ok(report) => match (
-            report.guest_introspection_features,
-            report.guest_introspection_activation_failure,
-        ) {
-            (Some(features), None) => http2_response(
-                StatusCode::OK,
-                format!(
-                    "crucible.rpc/debug-guest-fork-response\nbranch={}\nstatus=ready\nfailure=\nargv-exec={}\npty={}\nresize={}\nssh-bridge={}\nmax-channels={}\n",
-                    hex_encode(&report.branch.id.bytes),
-                    features.argv_exec(),
-                    features.pty(),
-                    features.resize(),
-                    features.ssh_bridge(),
-                    features.max_channels(),
-                ),
-            ),
-            (None, Some(failure)) => http2_response(
-                StatusCode::OK,
-                format!(
-                    "crucible.rpc/debug-guest-fork-response\nbranch={}\nstatus=failed\nfailure={}\nargv-exec=false\npty=false\nresize=false\nssh-bridge=false\nmax-channels=0\n",
-                    hex_encode(&report.branch.id.bytes),
-                    hex_encode(failure.as_bytes()),
-                ),
-            ),
-            _ => lifecycle_error_response(LifecycleApiError::ActorFailed {
-                message: String::from("debug guest fork returned inconsistent activation state"),
-            }),
-        },
-        Err(error) => lifecycle_error_response(error),
-    }
-}
+mod debug_handlers;
 
-async fn handle_debug_guest_exchange<L, F>(
-    State(state): State<Http2LifecycleState<L, F>>,
-    identity: Option<Extension<DebugTransportIdentity>>,
-    request: Request<Body>,
-) -> Response
-where
-    L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
-        + Send
-        + Sync
-        + 'static,
-{
-    if state.mode.is_read_only() {
-        return read_only_rejection_response("debug-guest-exchange");
-    }
-    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
-        Ok(principal) => principal,
-        Err(response) => return *response,
-    };
-    let body = match read_debug_rpc_body(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let (session, generation, holder, node, channel_id, record) =
-        match parse_debug_guest_exchange_request(&body) {
-            Ok(request) => request,
-            Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
-        };
-    let operation_guard = debug_operation_guard(&state, session).await;
-    let lease = DebugControllerLease {
-        client: client.clone(),
-        generation,
-    };
-    if let Err(response) = authorize_debug_holder(&state, session, &lease, holder).await {
-        return response;
-    }
-    let dispatch = {
-        let control_plane = state.control_plane.lock().await;
-        if let Err(error) = control_plane.authorize_debug_controller_operation(
-            session,
-            &lease,
-            &role,
-            DebugCapability::Shell,
-        ) {
-            return lifecycle_error_response(error);
-        }
-        match control_plane.guest_introspection_dispatch(session) {
-            Ok(dispatch) => dispatch,
-            Err(error) => return lifecycle_error_response(error),
-        }
-    };
-    let response = match complete_debug_operation(operation_guard, async move {
-        dispatch.exchange(node, channel_id, record).await
-    })
-    .await
-    {
-        Ok(response) => response,
-        Err(error) => return lifecycle_error_response(error),
-    };
-    let response = match response {
-        Ok(response) => response,
-        Err(error) => return lifecycle_error_response(error),
-    };
-    let mut output = String::from("crucible.rpc/debug-guest-exchange-response\n");
-    match response {
-        Some(record) => match record.encode() {
-            Ok(bytes) => push_wire_line(&mut output, "record", &hex_encode(&bytes)),
-            Err(error) => {
-                return http2_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
-            }
-        },
-        None => push_wire_line(&mut output, "record", ""),
-    }
-    http2_response(StatusCode::OK, output)
-}
-
-async fn handle_debug_controller_acquire<L, F>(
-    State(state): State<Http2LifecycleState<L, F>>,
-    identity: Option<Extension<DebugTransportIdentity>>,
-    request: Request<Body>,
-) -> Response
-where
-    L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
-        + Send
-        + Sync
-        + 'static,
-{
-    if state.mode.is_read_only() {
-        return read_only_rejection_response("debug-controller-acquire");
-    }
-    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
-        Ok(principal) => principal,
-        Err(response) => return *response,
-    };
-    let body = match read_debug_rpc_body(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let (session, holder) = match parse_debug_controller_acquire_request(&body) {
-        Ok(request) => request,
-        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
-    };
-    let _operation_guard = debug_operation_guard(&state, session).await;
-    let stale = state.debug_relays.lock().await.remove_stale(session);
-    for (lease, holder) in stale {
-        if let Err(response) = release_debug_holder(&state, session, &lease, holder).await {
-            return response;
-        }
-    }
-    let mut control_plane = state.control_plane.lock().await;
-    let mut holders = state.debug_holders.lock().await;
-    if let Err(error) = holders.preflight_register(session, holder) {
-        return http2_response(StatusCode::CONFLICT, error.to_string());
-    }
-    let controller_preexisted = holders.has_active_session(session);
-    let lease = match control_plane.acquire_debug_controller(session, client, &role) {
-        Ok(lease) => lease,
-        Err(error) => return lifecycle_error_response(error),
-    };
-    if let Err(error) = holders.register(session, lease.clone(), holder) {
-        if !controller_preexisted {
-            let _ = control_plane.release_debug_controller(session, &lease);
-        }
-        return http2_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
-    }
-    let mut output = String::from("crucible.rpc/debug-controller-acquire-response\n");
-    push_wire_line(
-        &mut output,
-        "client",
-        &hex_encode(lease.client.as_str().as_bytes()),
-    );
-    push_wire_line(&mut output, "generation", &lease.generation.to_string());
-    http2_response(StatusCode::OK, output)
-}
-
-async fn handle_debug_attach<L, F>(
-    State(state): State<Http2LifecycleState<L, F>>,
-    identity: Option<Extension<DebugTransportIdentity>>,
-    request: Request<Body>,
-) -> Response
-where
-    L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
-        + Send
-        + Sync
-        + 'static,
-{
-    if state.mode.is_read_only() {
-        return read_only_rejection_response("debug-attach");
-    }
-    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
-        Ok(principal) => principal,
-        Err(response) => return *response,
-    };
-    let body = match read_debug_rpc_body(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let (session, generation, holder, node) = match parse_debug_attach_request(&body) {
-        Ok(request) => request,
-        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
-    };
-    let operation_guard = debug_operation_guard(&state, session).await;
-    let lease = DebugControllerLease { client, generation };
-    if let Err(response) = authorize_debug_holder(&state, session, &lease, holder).await {
-        return response;
-    }
-    let operation_state = state.clone();
-    let response = complete_debug_operation(operation_guard, async move {
-        let control_plane = operation_state.control_plane.lock().await;
-        if let Err(error) = control_plane.authorize_debug_controller_operation(
-            session,
-            &lease,
-            &role,
-            DebugCapability::Control,
-        ) {
-            return lifecycle_error_response(error);
-        }
-        if let Err(error) = control_plane.authorize_debug_controller_operation(
-            session,
-            &lease,
-            &role,
-            DebugCapability::Observe,
-        ) {
-            return lifecycle_error_response(error);
-        }
-        match control_plane.debug_operator_target(session).await {
-            Ok((active_node, _endpoint)) if active_node == node => {}
-            Ok((active_node, _endpoint)) => {
-                return typed_rpc_status_response(
-                    StatusCode::BAD_REQUEST,
-                    RpcStatusCode::InvalidArgument,
-                    "debug-node-conflict",
-                    &format!(
-                        "debugger is already attached to node `{}`; requested `{}`",
-                        active_node.name, node.name
-                    ),
-                );
-            }
-            Err(LifecycleApiError::DebugEndpointUnavailable) => {
-                let listen = match GdbListen::new("127.0.0.1:0") {
-                    Ok(listen) => listen,
-                    Err(error) => {
-                        return typed_rpc_status_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            RpcStatusCode::Internal,
-                            "internal",
-                            &error.to_string(),
-                        );
-                    }
-                };
-                match control_plane.attach_debugger(session, node, listen).await {
-                    Ok(_report) => {}
-                    Err(error) => return lifecycle_error_response(error),
-                }
-            }
-            Err(error) => return lifecycle_error_response(error),
-        }
-        http2_response(StatusCode::OK, "crucible.rpc/debug-attach-response\n")
-    })
-    .await;
-    match response {
-        Ok(response) => response,
-        Err(error) => lifecycle_error_response(error),
-    }
-}
-
-async fn handle_debug_controller_release<L, F>(
-    State(state): State<Http2LifecycleState<L, F>>,
-    identity: Option<Extension<DebugTransportIdentity>>,
-    request: Request<Body>,
-) -> Response
-where
-    L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
-        + Send
-        + Sync
-        + 'static,
-{
-    if state.mode.is_read_only() {
-        return read_only_rejection_response("debug-controller-release");
-    }
-    let (client, _role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
-        Ok(principal) => principal,
-        Err(response) => return *response,
-    };
-    let body = match read_debug_rpc_body(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let (session, generation, holder) = match parse_debug_controller_release_request(&body) {
-        Ok(request) => request,
-        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
-    };
-    let _operation_guard = debug_operation_guard(&state, session).await;
-    let lease = DebugControllerLease { client, generation };
-    let stale = state.debug_relays.lock().await.remove_stale(session);
-    for (stale_lease, stale_holder) in stale {
-        if let Err(response) =
-            release_debug_holder(&state, session, &stale_lease, stale_holder).await
-        {
-            return response;
-        }
-    }
-    if state
-        .debug_relays
-        .lock()
-        .await
-        .has_holder(session, &lease, holder)
-    {
-        return http2_response(
-            StatusCode::CONFLICT,
-            "debug controller holder is retained by a live relay; close the relay first",
-        );
-    }
-    if let Err(response) = release_debug_holder(&state, session, &lease, holder).await {
-        return response;
-    }
-    http2_response(
-        StatusCode::OK,
-        "crucible.rpc/debug-controller-release-response\n",
-    )
-}
-
-async fn handle_debug_relay_open<L, F>(
-    State(state): State<Http2LifecycleState<L, F>>,
-    identity: Option<Extension<DebugTransportIdentity>>,
-    request: Request<Body>,
-) -> Response
-where
-    L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
-        + Send
-        + Sync
-        + 'static,
-{
-    if state.mode.is_read_only() {
-        return read_only_rejection_response("debug-relay-open");
-    }
-    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
-        Ok(principal) => principal,
-        Err(response) => return *response,
-    };
-    let body = match read_debug_rpc_body(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let (session, generation, holder) = match parse_debug_relay_open_request(&body) {
-        Ok(request) => request,
-        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
-    };
-    let _operation_guard = debug_operation_guard(&state, session).await;
-    let lease = DebugControllerLease { client, generation };
-    if let Err(error) = state
-        .debug_holders
-        .lock()
-        .await
-        .authorize(session, &lease, holder)
-    {
-        return http2_response(StatusCode::FORBIDDEN, error.to_string());
-    }
-    let endpoint = {
-        let control_plane = state.control_plane.lock().await;
-        if let Err(error) = control_plane.authorize_debug_controller_operation(
-            session,
-            &lease,
-            &role,
-            DebugCapability::Control,
-        ) {
-            return lifecycle_error_response(error);
-        }
-        if let Err(error) = control_plane.authorize_debug_controller_operation(
-            session,
-            &lease,
-            &role,
-            DebugCapability::Observe,
-        ) {
-            return lifecycle_error_response(error);
-        }
-        match control_plane.debug_operator_target(session).await {
-            Ok((_node, endpoint)) => endpoint,
-            Err(error) => return lifecycle_error_response(error),
-        }
-    };
-    let existing = {
-        let mut relays = state.debug_relays.lock().await;
-        relays.existing(session, &lease, holder)
-    };
-    let id = if let Some(id) = existing {
-        id
-    } else {
-        let stream = match DebugRelayRegistry::connect(endpoint.as_str()).await {
-            Ok(stream) => stream,
-            Err(error) => return debug_relay_error_response(error),
-        };
-        match state
-            .debug_relays
-            .lock()
-            .await
-            .register(stream, session, lease, holder)
-        {
-            Ok(id) => id,
-            Err(error) => return debug_relay_error_response(error),
-        }
-    };
-    let mut output = String::from("crucible.rpc/debug-relay-open-response\n");
-    push_wire_line(&mut output, "relay-id", &id.0.to_string());
-    http2_response(StatusCode::OK, output)
-}
-
-async fn handle_debug_relay_write<L, F>(
-    State(state): State<Http2LifecycleState<L, F>>,
-    identity: Option<Extension<DebugTransportIdentity>>,
-    request: Request<Body>,
-) -> Response
-where
-    L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
-        + Send
-        + Sync
-        + 'static,
-{
-    if state.mode.is_read_only() {
-        return read_only_rejection_response("debug-relay-write");
-    }
-    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
-        Ok(principal) => principal,
-        Err(response) => return *response,
-    };
-    let body = match read_debug_rpc_body(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let (session, generation, holder, id, bytes) = match parse_debug_relay_write_request(&body) {
-        Ok(request) => request,
-        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
-    };
-    if let Err(response) = authorize_relay_role(&role) {
-        return *response;
-    }
-    if let Err(error) = state
-        .debug_relays
-        .lock()
-        .await
-        .touch(id, session, &client, generation, holder)
-    {
-        return debug_relay_error_response(error);
-    }
-    let _operation_guard = debug_operation_guard(&state, session).await;
-    let stream_result = {
-        let mut relays = state.debug_relays.lock().await;
-        relays.stream(id, session, &client, generation, holder)
-    };
-    let stream = match stream_result {
-        Ok(stream) => stream,
-        Err(error) => return debug_relay_error_response(error),
-    };
-    let written = match DebugRelayRegistry::write_stream(stream, &bytes).await {
-        Ok(written) => written,
-        Err(error) => {
-            close_failed_relay(&state, session, &client, generation, holder, id).await;
-            return debug_relay_error_response(error);
-        }
-    };
-    let mut output = String::from("crucible.rpc/debug-relay-write-response\n");
-    push_wire_line(&mut output, "written", &written.to_string());
-    http2_response(StatusCode::OK, output)
-}
-
-async fn handle_debug_relay_read<L, F>(
-    State(state): State<Http2LifecycleState<L, F>>,
-    identity: Option<Extension<DebugTransportIdentity>>,
-    request: Request<Body>,
-) -> Response
-where
-    L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
-        + Send
-        + Sync
-        + 'static,
-{
-    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
-        Ok(principal) => principal,
-        Err(response) => return *response,
-    };
-    let body = match read_debug_rpc_body(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let (session, generation, holder, id, maximum) = match parse_debug_relay_read_request(&body) {
-        Ok(request) => request,
-        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
-    };
-    if let Err(response) = authorize_relay_role(&role) {
-        return *response;
-    }
-    if let Err(error) = state
-        .debug_relays
-        .lock()
-        .await
-        .touch(id, session, &client, generation, holder)
-    {
-        return debug_relay_error_response(error);
-    }
-    let _operation_guard = debug_operation_guard(&state, session).await;
-    let chunk_result = {
-        let mut relays = state.debug_relays.lock().await;
-        relays.read(id, session, &client, generation, holder, maximum)
-    };
-    let chunk = match chunk_result {
-        Ok(chunk) => chunk,
-        Err(error) => return debug_relay_error_response(error),
-    };
-    if chunk.eof {
-        close_failed_relay(&state, session, &client, generation, holder, id).await;
-    }
-    let mut output = String::from("crucible.rpc/debug-relay-read-response\n");
-    push_wire_line(&mut output, "eof", if chunk.eof { "true" } else { "false" });
-    push_wire_line(&mut output, "data", &hex_encode(&chunk.bytes));
-    http2_response(StatusCode::OK, output)
-}
-
-async fn handle_debug_relay_close<L, F>(
-    State(state): State<Http2LifecycleState<L, F>>,
-    identity: Option<Extension<DebugTransportIdentity>>,
-    request: Request<Body>,
-) -> Response
-where
-    L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
-        + Send
-        + Sync
-        + 'static,
-{
-    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
-        Ok(principal) => principal,
-        Err(response) => return *response,
-    };
-    let body = match read_debug_rpc_body(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let (session, generation, holder, id) = match parse_debug_relay_close_request(&body) {
-        Ok(request) => request,
-        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
-    };
-    if let Err(response) = authorize_relay_role(&role) {
-        return *response;
-    }
-    let _operation_guard = debug_operation_guard(&state, session).await;
-    let close_result = {
-        let mut relays = state.debug_relays.lock().await;
-        relays.close(id, session, &client, generation, holder)
-    };
-    let closed = match close_result {
-        Ok(closed) => closed,
-        Err(error) => return debug_relay_error_response(error),
-    };
-    if let Err(response) = release_debug_holder(&state, session, &closed.lease, closed.holder).await
-    {
-        return response;
-    }
-    http2_response(StatusCode::OK, "crucible.rpc/debug-relay-close-response\n")
-}
-
-fn authorize_relay_role(role: &DebugRole) -> Result<(), Box<Response>> {
-    if role.allows(DebugCapability::Control) && role.allows(DebugCapability::Observe) {
-        return Ok(());
-    }
-    Err(Box::new(http2_response(
-        StatusCode::FORBIDDEN,
-        "debug relay requires observe and control capabilities",
-    )))
-}
-
-async fn release_debug_holder<L, F>(
-    state: &Http2LifecycleState<L, F>,
-    session: SessionRef,
-    lease: &DebugControllerLease,
-    holder: DebugControllerHolderId,
-) -> Result<(), Response>
-where
-    L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
-        + Send
-        + Sync
-        + 'static,
-{
-    let mut control_plane = state.control_plane.lock().await;
-    let mut holders = state.debug_holders.lock().await;
-    let release = holders
-        .release(session, lease, holder)
-        .map_err(|error| http2_response(StatusCode::FORBIDDEN, error.to_string()))?;
-    if release != DebugHolderRelease::Final {
-        return Ok(());
-    }
-    if let Err(error) = control_plane.release_debug_controller(session, lease) {
-        holders.restore(session, lease.clone(), holder);
-        return Err(lifecycle_error_response(error));
-    }
-    Ok(())
-}
-
-async fn authorize_debug_holder<L, F>(
-    state: &Http2LifecycleState<L, F>,
-    session: SessionRef,
-    lease: &DebugControllerLease,
-    holder: DebugControllerHolderId,
-) -> Result<(), Response>
-where
-    L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
-        + Send
-        + Sync
-        + 'static,
-{
-    state
-        .debug_holders
-        .lock()
-        .await
-        .authorize(session, lease, holder)
-        .map_err(|error| http2_response(StatusCode::FORBIDDEN, error.to_string()))
-}
-
-async fn close_failed_relay<L, F>(
-    state: &Http2LifecycleState<L, F>,
-    session: SessionRef,
-    client: &DebugClientId,
-    generation: u64,
-    holder: DebugControllerHolderId,
-    id: DebugRelayId,
-) where
-    L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
-        + Send
-        + Sync
-        + 'static,
-{
-    let closed = state
-        .debug_relays
-        .lock()
-        .await
-        .close(id, session, client, generation, holder);
-    if let Ok(closed) = closed {
-        let _ = release_debug_holder(state, session, &closed.lease, closed.holder).await;
-    }
-}
-
-fn debug_principal(
-    authorization: &DebugAuthorizationPolicy,
-    identity: Option<&Extension<DebugTransportIdentity>>,
-) -> Result<(DebugClientId, DebugRole), Box<Response>> {
-    let transport_identity = identity.map(|Extension(identity)| identity);
-    let role = authorization
-        .role_for(transport_identity)
-        .map_err(|error| Box::new(http2_response(StatusCode::FORBIDDEN, error.to_string())))?
-        .clone();
-    let name = transport_identity.map_or_else(
-        || String::from("trusted-unauthenticated"),
-        |identity| format!("x509-sha256:{}", identity.certificate_sha256()),
-    );
-    let client = DebugClientId::new(name)
-        .map_err(|error| Box::new(http2_response(StatusCode::FORBIDDEN, error.to_string())))?;
-    Ok((client, role))
-}
+use debug_handlers::*;
 
 async fn handle_rpc_hello<L, F>(
     State(state): State<Http2LifecycleState<L, F>>,
@@ -1203,7 +562,7 @@ where
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let hello = match parse_hello_request(&body) {
         Ok(hello) => hello,
@@ -1236,7 +595,7 @@ where
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     if body.as_slice() != b"crucible.rpc/list-scenarios-request\n" {
         return http2_response(StatusCode::BAD_REQUEST, "unexpected list scenarios request");
@@ -1258,7 +617,7 @@ where
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     if state.mode.is_read_only() {
         return read_only_rejection_response("create-session");
@@ -1291,9 +650,9 @@ where
         + Sync
         + 'static,
 {
-    let body = match read_rpc_body(request).await {
+    let body = match read_resume_session_rpc_body(request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     if state.mode.is_read_only() {
         return read_only_rejection_response("resume-session");
@@ -1302,16 +661,76 @@ where
         Ok(resume) => resume,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
-    let response = match state
+    let pending = match state
         .control_plane
         .lock()
         .await
-        .resume_session(resume)
-        .await
+        .prepare_observation_resume(resume)
     {
+        Ok(pending) => pending,
+        Err(error) => return lifecycle_error_response(error),
+    };
+    let deadline = pending.context().deadline();
+    let cancellation = pending.context().cancellation().clone();
+    let mut cancellation_guard =
+        crate::lifecycle::ResumeObservationCancellationGuard::new(cancellation);
+    let mut preparation = tokio::task::spawn_blocking(move || pending.authenticate());
+    let mut shutdown = state.shutdown.clone();
+    let prepared = tokio::select! {
+        biased;
+        _ = async move {
+            if !*shutdown.borrow() {
+                let _ = shutdown.changed().await;
+            }
+        } => {
+            cancellation_guard.cancel();
+            return lifecycle_error_response(LifecycleApiError::ResumeObservationSource {
+                message: String::from("portable observation preparation canceled by daemon shutdown"),
+            });
+        }
+        () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+            cancellation_guard.cancel();
+            return lifecycle_error_response(LifecycleApiError::ResumeObservationSource {
+                message: String::from("portable observation preparation deadline elapsed"),
+            });
+        }
+        result = &mut preparation => match result {
+            Ok(Ok(prepared)) => prepared,
+            Ok(Err(error)) => return lifecycle_error_response(error),
+            Err(error) => {
+                return lifecycle_error_response(LifecycleApiError::ResumeObservationSource {
+                    message: format!("portable observation preparation task failed: {error}"),
+                });
+            }
+        },
+    };
+    let commit_deadline = prepared.context().deadline();
+    let mut commit_shutdown = state.shutdown.clone();
+    let mut control_plane = tokio::select! {
+        biased;
+        _ = async move {
+            if !*commit_shutdown.borrow() {
+                let _ = commit_shutdown.changed().await;
+            }
+        } => {
+            cancellation_guard.cancel();
+            return lifecycle_error_response(LifecycleApiError::ResumeObservationSource {
+                message: String::from("portable observation publication canceled by daemon shutdown"),
+            });
+        }
+        () = tokio::time::sleep_until(tokio::time::Instant::from_std(commit_deadline)) => {
+            cancellation_guard.cancel();
+            return lifecycle_error_response(LifecycleApiError::ResumeObservationSource {
+                message: String::from("portable observation preparation deadline elapsed before publication"),
+            });
+        }
+        control_plane = state.control_plane.lock() => control_plane,
+    };
+    let response = match control_plane.commit_observation_resume(prepared).await {
         Ok(response) => response,
         Err(error) => return lifecycle_error_response(error),
     };
+    cancellation_guard.disarm();
     http2_response(StatusCode::OK, encode_resume_session_response(&response))
 }
 
@@ -1328,7 +747,7 @@ where
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     if body.as_slice() != b"crucible.rpc/list-sessions-request\n" {
         return http2_response(StatusCode::BAD_REQUEST, "unexpected list sessions request");
@@ -1350,7 +769,7 @@ where
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     if state.mode.is_read_only() {
         return read_only_rejection_response("destroy-session");
@@ -1395,7 +814,7 @@ where
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let get_reproduction = match parse_get_reproduction_request(&body) {
         Ok(get_reproduction) => get_reproduction,
@@ -1426,7 +845,7 @@ where
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let attach = match parse_attach_request(&body) {
         Ok(attach) => attach,
@@ -1478,7 +897,7 @@ where
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let attach = match parse_attach_request(&body) {
         Ok(attach) => attach,
@@ -1527,7 +946,7 @@ where
 {
     let body = match read_rpc_body(request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let send = match parse_send_request(&body) {
         Ok(send) => send,
@@ -1558,38 +977,80 @@ where
     http2_response(StatusCode::OK, encode_send_response(&response))
 }
 
-async fn read_rpc_body(request: Request<Body>) -> Result<Vec<u8>, Response> {
+async fn read_rpc_body(request: Request<Body>) -> Result<Vec<u8>, Box<Response>> {
     if request.version() != Version::HTTP_2 {
-        return Err(http2_response(
+        return Err(Box::new(http2_response(
             StatusCode::BAD_REQUEST,
             "Crucible RPC requires HTTP/2",
-        ));
+        )));
     }
     axum::body::to_bytes(request.into_body(), usize::MAX)
         .await
         .map(|body| body.to_vec())
-        .map_err(|error| http2_response(StatusCode::BAD_REQUEST, error.to_string()))
+        .map_err(|error| Box::new(http2_response(StatusCode::BAD_REQUEST, error.to_string())))
 }
 
-async fn read_debug_rpc_body(request: Request<Body>) -> Result<Vec<u8>, Response> {
+async fn read_resume_session_rpc_body(request: Request<Body>) -> Result<Vec<u8>, Box<Response>> {
+    read_bounded_resume_session_rpc_body(request, RESUME_SESSION_RPC_BODY_MAX_BYTES).await
+}
+
+async fn read_bounded_resume_session_rpc_body(
+    request: Request<Body>,
+    max_bytes: usize,
+) -> Result<Vec<u8>, Box<Response>> {
+    if request.version() != Version::HTTP_2 {
+        return Err(Box::new(http2_response(
+            StatusCode::BAD_REQUEST,
+            "Crucible RPC requires HTTP/2",
+        )));
+    }
+    let declared_too_large = request
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| length > u64::try_from(max_bytes).unwrap_or(u64::MAX));
+    if declared_too_large {
+        return Err(Box::new(typed_rpc_status_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            RpcStatusCode::InvalidArgument,
+            "resume-session-request-too-large",
+            "resume-session request exceeds its bounded wire envelope",
+        )));
+    }
+
+    axum::body::to_bytes(request.into_body(), max_bytes)
+        .await
+        .map(|body| body.to_vec())
+        .map_err(|error| {
+            Box::new(typed_rpc_status_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                RpcStatusCode::InvalidArgument,
+                "resume-session-request-too-large",
+                &error.to_string(),
+            ))
+        })
+}
+
+async fn read_debug_rpc_body(request: Request<Body>) -> Result<Vec<u8>, Box<Response>> {
     const DEBUG_RPC_BODY_MAX_BYTES: usize = DEBUG_RELAY_CHUNK_MAX_BYTES * 2 + 1024;
 
     if request.version() != Version::HTTP_2 {
-        return Err(http2_response(
+        return Err(Box::new(http2_response(
             StatusCode::BAD_REQUEST,
             "Crucible RPC requires HTTP/2",
-        ));
+        )));
     }
     axum::body::to_bytes(request.into_body(), DEBUG_RPC_BODY_MAX_BYTES)
         .await
         .map(|body| body.to_vec())
         .map_err(|error| {
-            typed_rpc_status_response(
+            Box::new(typed_rpc_status_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 RpcStatusCode::InvalidArgument,
                 "debug-request-too-large",
                 &error.to_string(),
-            )
+            ))
         })
 }
 
@@ -1619,53 +1080,33 @@ fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionRequest, Str
             let id = parse_content_hash_line(lines.next(), "scenario-id=")?;
             let scenario_seed = parse_seed_line(lines.next(), "scenario-seed=")?;
             let app_random_draw_cap = parse_u64_line(lines.next(), "app-random-draw-cap=")?;
-            let next = lines.next();
-            let (scenario_form, seed_line) = if let Some(line) = next {
-                if line.starts_with("scenario-payload=") {
-                    let scenario = parse_scenario_form_line(Some(line), "scenario-payload=")?;
-                    let scenario_def = scenario.scenario_def();
-                    if scenario_def.id() != id {
-                        return Err(format!(
-                            "scenario payload id {} did not match request scenario id {}",
-                            scenario_def.id().to_hex(),
-                            id.to_hex()
-                        ));
-                    }
-                    if scenario.seed() != scenario_seed {
-                        return Err(format!(
-                            "scenario payload seed {} did not match request scenario seed {}",
-                            scenario.seed().to_hex(),
-                            scenario_seed.to_hex()
-                        ));
-                    }
-                    if scenario.app_random_draw_cap() != app_random_draw_cap {
-                        return Err(format!(
-                            "scenario payload app-random draw cap {} did not match request cap {}",
-                            scenario.app_random_draw_cap(),
-                            app_random_draw_cap
-                        ));
-                    }
-                    (Some(scenario), lines.next())
-                } else {
-                    (None, Some(line))
-                }
-            } else {
-                (None, None)
-            };
-            let seed = parse_seed_line(seed_line, "seed=")?;
+            let scenario = parse_scenario_form_line(lines.next(), "scenario-payload=")?;
+            let scenario_def = scenario.scenario_def();
+            if scenario_def.id() != id {
+                return Err(format!(
+                    "scenario payload id {} did not match request scenario id {}",
+                    scenario_def.id().to_hex(),
+                    id.to_hex()
+                ));
+            }
+            if scenario.seed() != scenario_seed {
+                return Err(format!(
+                    "scenario payload seed {} did not match request scenario seed {}",
+                    scenario.seed().to_hex(),
+                    scenario_seed.to_hex()
+                ));
+            }
+            if scenario.app_random_draw_cap() != app_random_draw_cap {
+                return Err(format!(
+                    "scenario payload app-random draw cap {} did not match request cap {}",
+                    scenario.app_random_draw_cap(),
+                    app_random_draw_cap
+                ));
+            }
+            let seed = parse_seed_line(lines.next(), "seed=")?;
             let start_paused = parse_bool_line(lines.next(), "start-paused=")?;
             reject_extra_line(lines.next())?;
-            let scenario = ScenarioDef::from_content_hash_seed_and_app_random_draw_cap(
-                id,
-                scenario_seed,
-                app_random_draw_cap,
-            );
-            let request = if let Some(scenario_form) = scenario_form {
-                CreateSessionRequest::inline_form(scenario_form, seed)
-            } else {
-                CreateSessionRequest::inline(scenario, seed)
-            };
-            Ok(request.with_start_paused(start_paused))
+            Ok(CreateSessionRequest::inline(scenario, seed).with_start_paused(start_paused))
         }
         source => Err(format!("unexpected create-session source `{source}`")),
     }
@@ -1704,10 +1145,161 @@ fn parse_resume_session_request(body: &[u8]) -> Result<ResumeSessionRequest, Str
     let seed = parse_seed_line(lines.next(), "seed=")?;
     let schedule = parse_schedule_line(lines.next(), "schedule=")?;
     let checkpoint = parse_checkpoint_line(lines.next(), "checkpoint=")?;
+    let (replay_closure, first_observation_line) = parse_optional_resume_replay_closure(
+        &scenario,
+        &schedule,
+        &checkpoint,
+        lines.next(),
+        &mut lines,
+    )?;
+    let observation_source = parse_resume_observation_source(
+        &scenario,
+        &schedule,
+        &checkpoint,
+        first_observation_line,
+        &mut lines,
+    )?;
+    let mut request =
+        ResumeSessionRequest::new(scenario, schedule, checkpoint, seed, observation_source);
+    if let Some(replay_closure) = replay_closure {
+        request = request.with_replay_closure(replay_closure);
+    }
+    Ok(request)
+}
+
+fn parse_optional_resume_replay_closure<'a>(
+    scenario: &ScenarioDefForm,
+    schedule: &Schedule,
+    checkpoint: &Checkpoint,
+    first: Option<&'a str>,
+    lines: &mut impl Iterator<Item = &'a str>,
+) -> Result<(Option<ResumeReplayClosure>, Option<&'a str>), String> {
+    let Some(first) = first else {
+        return Ok((None, None));
+    };
+    if first.starts_with("campaign-observation-source-version=") {
+        return Ok((None, Some(first)));
+    }
+    let version = parse_u64_line(Some(first), "campaign-replay-closure-version=")?;
+    let version = u32::try_from(version)
+        .map_err(|_| String::from("campaign replay closure version exceeds u32"))?;
+    let expected_identity =
+        parse_content_hash_line(lines.next(), "campaign-replay-closure-identity=")?;
+    let expected_size = parse_u64_line(lines.next(), "campaign-replay-closure-size=")?;
+    let max_size = u64::try_from(RESUME_REPLAY_CLOSURE_MAX_BYTES)
+        .map_err(|_| String::from("campaign replay closure byte bound cannot be represented"))?;
+    if expected_size > max_size {
+        return Err(format!(
+            "campaign replay closure has {expected_size} bytes, maximum is {RESUME_REPLAY_CLOSURE_MAX_BYTES}"
+        ));
+    }
+    let payload_hex = parse_wire_line(lines.next(), "campaign-replay-closure-payload=")?;
+    let expected_hex_size = usize::try_from(expected_size)
+        .ok()
+        .and_then(|size| size.checked_mul(2))
+        .ok_or_else(|| String::from("campaign replay closure hex size overflowed"))?;
+    if payload_hex.len() != expected_hex_size {
+        return Err(format!(
+            "campaign replay closure payload has {} hex bytes, expected {expected_hex_size}",
+            payload_hex.len()
+        ));
+    }
+    let payload = parse_hex_bytes(payload_hex)?;
+
+    let actual_size = u64::try_from(payload.len())
+        .map_err(|_| String::from("campaign replay closure size cannot be represented"))?;
+    if actual_size != expected_size {
+        return Err(format!(
+            "campaign replay closure size {actual_size} did not match bound size {expected_size}"
+        ));
+    }
+    let closure = ResumeReplayClosure::new(scenario, schedule, checkpoint, version, payload)
+        .map_err(|error| error.to_string())?;
+    if closure.identity() != expected_identity {
+        return Err(format!(
+            "campaign replay closure identity {} did not match bound identity {}",
+            closure.identity().to_hex(),
+            expected_identity.to_hex(),
+        ));
+    }
+    Ok((Some(closure), lines.next()))
+}
+
+fn parse_resume_observation_source<'a>(
+    scenario: &ScenarioDefForm,
+    schedule: &Schedule,
+    checkpoint: &Checkpoint,
+    first: Option<&'a str>,
+    lines: &mut impl Iterator<Item = &'a str>,
+) -> Result<ResumeObservationSource, String> {
+    let first = first.ok_or_else(|| {
+        String::from("resume request is missing an authenticated campaign observation source")
+    })?;
+    let version = parse_u64_line(Some(first), "campaign-observation-source-version=")?;
+    let version = u32::try_from(version)
+        .map_err(|_| String::from("campaign observation source version exceeds u32"))?;
+    let expected_identity =
+        parse_content_hash_line(lines.next(), "campaign-observation-source-identity=")?;
+    let proof_size = parse_u64_line(lines.next(), "campaign-observation-source-proof-size=")?;
+    let proof_hex = parse_wire_line(lines.next(), "campaign-observation-source-proof=")?;
+    let evidence_size = parse_u64_line(lines.next(), "campaign-observation-source-evidence-size=")?;
+    let evidence_hex = parse_wire_line(lines.next(), "campaign-observation-source-evidence=")?;
     reject_extra_line(lines.next())?;
-    Ok(ResumeSessionRequest::new(
-        scenario, schedule, checkpoint, seed,
-    ))
+
+    let maximum = u64::try_from(RESUME_OBSERVATION_SOURCE_MAX_BYTES)
+        .map_err(|_| String::from("campaign observation source bound cannot be represented"))?;
+    let total = proof_size
+        .checked_add(evidence_size)
+        .ok_or_else(|| String::from("campaign observation source size overflowed"))?;
+    if total > maximum {
+        return Err(format!(
+            "campaign observation source has {total} bytes, maximum is {RESUME_OBSERVATION_SOURCE_MAX_BYTES}"
+        ));
+    }
+    let proof =
+        parse_sized_hex_payload(proof_hex, proof_size, "campaign observation source proof")?;
+    let evidence = parse_sized_hex_payload(
+        evidence_hex,
+        evidence_size,
+        "campaign observation source evidence",
+    )?;
+    let source =
+        ResumeObservationSource::new(scenario, schedule, checkpoint, version, proof, evidence)
+            .map_err(|error| error.to_string())?;
+    if source.identity() != expected_identity {
+        return Err(format!(
+            "campaign observation source identity {} did not match bound identity {}",
+            source.identity().to_hex(),
+            expected_identity.to_hex(),
+        ));
+    }
+    Ok(source)
+}
+
+fn parse_sized_hex_payload(
+    encoded: &str,
+    expected_size: u64,
+    name: &str,
+) -> Result<Vec<u8>, String> {
+    let expected_hex_size = usize::try_from(expected_size)
+        .ok()
+        .and_then(|size| size.checked_mul(2))
+        .ok_or_else(|| format!("{name} hex size overflowed"))?;
+    if encoded.len() != expected_hex_size {
+        return Err(format!(
+            "{name} has {} hex bytes, expected {expected_hex_size}",
+            encoded.len()
+        ));
+    }
+    let payload = parse_hex_bytes(encoded)?;
+    let actual_size =
+        u64::try_from(payload.len()).map_err(|_| format!("{name} size cannot be represented"))?;
+    if actual_size != expected_size {
+        return Err(format!(
+            "{name} size {actual_size} did not match bound size {expected_size}"
+        ));
+    }
+    Ok(payload)
 }
 
 fn parse_destroy_session_request(body: &[u8]) -> Result<DestroySessionRequest, String> {
@@ -1775,7 +1367,7 @@ fn parse_send_request(body: &[u8]) -> Result<SendRequest, String> {
             set_unique_payload_line(&mut query_line, line, "query")?;
         } else if line.starts_with("savepoint-label=") {
             set_unique_payload_line(&mut savepoint_label_line, line, "savepoint label")?;
-        } else if line.starts_with("step-duration-nanos=") {
+        } else if line.starts_with("step-duration-ticks=") {
             set_unique_payload_line(&mut step_duration_line, line, "step duration")?;
         } else if line.starts_with("breakpoint-predicate=") {
             set_unique_payload_line(&mut breakpoint_predicate_line, line, "breakpoint predicate")?;
@@ -1963,12 +1555,12 @@ fn parse_session_command(
             breakpoint_disposition_line,
             breakpoint_policy_line,
         )?;
-        let nanos = match step_duration_line {
-            Some(line) => parse_u64_line(Some(line), "step-duration-nanos=")?,
-            None => crucible_session::StepMode::DEFAULT_DURATION.nanos,
+        let ticks = match step_duration_line {
+            Some(line) => parse_u64_line(Some(line), "step-duration-ticks=")?,
+            None => crucible_session::StepMode::DEFAULT_DURATION.ticks,
         };
         return Ok(SessionCommand::Step {
-            mode: crucible_session::StepMode::Duration(crucible::SimDuration { nanos }),
+            mode: crucible_session::StepMode::Duration(crucible::SimDuration { ticks }),
         });
     } else if command_kind == SessionCommandKind::SetBreakpoint {
         if query_line.is_some() {
@@ -2180,6 +1772,7 @@ fn parse_bool_line(line: Option<&str>, prefix: &'static str) -> Result<bool, Str
     }
 }
 
+// crucible-lint: allow stringly-error -- this private wire parser returns bounded diagnostics that its typed transport boundary immediately encodes.
 fn expect_wire_header(line: Option<&str>, expected: &'static str) -> Result<(), String> {
     match line {
         Some(actual) if actual == expected => Ok(()),
@@ -2188,427 +1781,36 @@ fn expect_wire_header(line: Option<&str>, expected: &'static str) -> Result<(), 
     }
 }
 
+// crucible-lint: allow stringly-error -- this private wire parser returns bounded diagnostics that its typed transport boundary immediately encodes.
 fn parse_wire_line<'a>(line: Option<&'a str>, prefix: &'static str) -> Result<&'a str, String> {
     let line = line.ok_or_else(|| format!("missing `{prefix}` line"))?;
     line.strip_prefix(prefix)
         .ok_or_else(|| format!("expected `{prefix}` line, got `{line}`"))
 }
 
-fn reject_extra_line(line: Option<&str>) -> Result<(), String> {
+#[derive(Debug, thiserror::Error)]
+#[error("unexpected trailing RPC request field `{field}`")]
+struct UnexpectedRpcRequestField {
+    field: String,
+}
+
+impl From<UnexpectedRpcRequestField> for String {
+    fn from(error: UnexpectedRpcRequestField) -> Self {
+        error.to_string()
+    }
+}
+
+fn reject_extra_line(line: Option<&str>) -> Result<(), UnexpectedRpcRequestField> {
     if let Some(line) = line {
-        return Err(format!("unexpected trailing RPC request field `{line}`"));
+        return Err(UnexpectedRpcRequestField {
+            field: line.to_owned(),
+        });
     }
     Ok(())
 }
 
-fn encode_list_scenarios_response(response: &ListScenariosResponse) -> String {
-    let mut output = String::from("crucible.rpc/list-scenarios-response\n");
-    for scenario in &response.scenarios {
-        output.push_str("scenario=");
-        output.push_str(&scenario.name);
-        output.push('|');
-        output.push_str(&scenario.description);
-        output.push('|');
-        output.push_str(&scenario.source_id);
-        output.push('\n');
-    }
-    output
-}
-
-fn encode_create_session_response(response: &CreateSessionResponse) -> String {
-    let mut output = String::from("crucible.rpc/create-session-response\n");
-    push_session_ref(&mut output, response.session);
-    push_wire_line(&mut output, "state", state_wire_name(response.state));
-    output
-}
-
-fn encode_resume_session_response(response: &ResumeSessionResponse) -> String {
-    let mut output = String::from("crucible.rpc/resume-session-response\n");
-    push_session_ref(&mut output, response.session);
-    push_wire_line(&mut output, "state", state_wire_name(response.state));
-    push_wire_line(&mut output, "checkpoint", &response.checkpoint.to_hex());
-    push_wire_line(
-        &mut output,
-        "configuration",
-        &response.configuration.to_hex(),
-    );
-    output
-}
-
-fn encode_list_sessions_response(response: &ListSessionsResponse) -> String {
-    let mut output = String::from("crucible.rpc/list-sessions-response\n");
-    for session in &response.sessions {
-        output.push_str("session=");
-        output.push_str(&session.session.id.value.to_string());
-        output.push('|');
-        output.push_str(&session.session.epoch.to_string());
-        output.push('|');
-        output.push_str(&session.session.seed.to_hex());
-        output.push('|');
-        output.push_str(state_wire_name(session.state));
-        output.push('|');
-        output.push_str(&session.event_log_len.to_string());
-        output.push('|');
-        output.push_str(&session.frontier.ticks.to_string());
-        output.push('|');
-        output.push_str(&session.quanta_stepped.to_string());
-        output.push('|');
-        output.push_str(outcome_wire_name(session.outcome));
-        output.push('|');
-        output.push_str(&content_hash_option_wire(session.terminal_savepoint));
-        output.push('\n');
-    }
-    output
-}
-
-fn encode_destroy_session_response(response: &DestroySessionResponse) -> String {
-    let mut output = String::from("crucible.rpc/destroy-session-response\n");
-    push_session_ref(&mut output, response.session);
-    push_wire_line(
-        &mut output,
-        "already-absent",
-        if response.already_absent {
-            "true"
-        } else {
-            "false"
-        },
-    );
-    push_wire_line(
-        &mut output,
-        "stopped",
-        if response.stopped { "true" } else { "false" },
-    );
-    output
-}
-
-fn encode_get_reproduction_response(response: &GetReproductionResponse) -> String {
-    let mut output = String::from("crucible.rpc/get-reproduction-response\n");
-    push_session_ref(&mut output, response.session);
-    for command in &response.commands {
-        push_wire_line(&mut output, "command", &reproduction_record_wire(command));
-    }
-    output
-}
-
-fn encode_attached_response(attached: &Attached) -> String {
-    let mut output = String::from("crucible.rpc/attached-response\n");
-    push_session_ref(&mut output, attached.session);
-    push_wire_line(
-        &mut output,
-        "event-log-len",
-        &attached.event_log_len.to_string(),
-    );
-    push_wire_line(&mut output, "state", state_wire_name(attached.state));
-    push_wire_line(
-        &mut output,
-        "version",
-        &format!(
-            "{}.{}.{}+{}",
-            attached.version.major,
-            attached.version.minor,
-            attached.version.patch,
-            attached.version.build
-        ),
-    );
-    let commands = attached
-        .capabilities
-        .commands
-        .iter()
-        .map(|capability| {
-            open_set_command_kind(capability.command_kind)
-                .unwrap_or_else(|| format!("crucible.cmd.{}", capability.command_name))
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    push_wire_line(&mut output, "commands", &commands);
-    push_wire_line(&mut output, "snapshot", &snapshot_wire(attached));
-    let reproduction = attached
-        .snapshot
-        .as_ref()
-        .map(|snapshot| reproduction_records_wire(&snapshot.reproduction))
-        .unwrap_or_else(|| String::from("none"));
-    push_wire_line(&mut output, "reproduction", &reproduction);
-    output
-}
-
-fn encode_send_response(response: &SendResponse) -> String {
-    let mut output = String::from("crucible.rpc/send-response\n");
-    push_wire_line(
-        &mut output,
-        "command-id",
-        &response.result.command_id.to_string(),
-    );
-    push_wire_line(
-        &mut output,
-        "command",
-        &command_name(response.result.command_kind),
-    );
-    push_wire_line(
-        &mut output,
-        "status",
-        &command_status_wire(response.result.status),
-    );
-    match response.state_update {
-        Some(update) => push_wire_line(&mut output, "state-update", &state_update_wire(update)),
-        None => push_wire_line(&mut output, "state-update", "none"),
-    }
-    push_wire_line(
-        &mut output,
-        "query-result",
-        &query_result_wire(response.query_result.as_ref()),
-    );
-    push_wire_line(
-        &mut output,
-        "breakpoint-id",
-        &breakpoint_id_wire(response.breakpoint_id),
-    );
-    push_wire_line(
-        &mut output,
-        "savepoint-info",
-        &savepoint_info_wire(response.savepoint_info.as_ref()),
-    );
-    output
-}
-
-fn breakpoint_firings_wire(firings: &[crucible_session::BreakpointFiring]) -> String {
-    let mut output = format!("breakpoint-firings|{}", firings.len());
-    for firing in firings {
-        output.push('|');
-        output.push_str(&firing.sequence.to_string());
-        output.push('|');
-        output.push_str(&firing.id.to_string());
-        output.push('|');
-        output.push_str(&firing.frontier.ticks.to_string());
-        output.push('|');
-        output.push_str(&firing.quanta.to_string());
-        output.push('|');
-        output.push_str(&hex_encode(&firing.predicate.to_compact_binary()));
-        output.push('|');
-        output.push_str(&breakpoint_disposition_wire(&firing.disposition));
-        output.push('|');
-        output.push_str(&firing.scheduler_controls.len().to_string());
-        for control in &firing.scheduler_controls {
-            output.push('|');
-            output.push_str(&hex_encode(&control.to_compact_binary()));
-        }
-    }
-    output
-}
-
-fn breakpoint_disposition_wire(disposition: &BreakpointDisposition) -> String {
-    match disposition {
-        BreakpointDisposition::Suspend => String::from("suspend"),
-        BreakpointDisposition::Trace => String::from("trace"),
-        BreakpointDisposition::Action(action) => {
-            format!("action:{}", hex_encode(&action.to_compact_binary()))
-        }
-    }
-}
-
-fn breakpoint_id_wire(id: Option<crucible_session::BreakpointId>) -> String {
-    id.map(|id| id.to_string())
-        .unwrap_or_else(|| String::from("none"))
-}
-
-fn savepoint_info_wire(info: Option<&crucible_session::SavepointInfo>) -> String {
-    match info {
-        Some(info) => format!(
-            "savepoint|{}|{}|{}",
-            hex_encode(info.label.as_bytes()),
-            info.configuration.to_hex(),
-            hex_encode(&info.checkpoint.to_compact_binary())
-        ),
-        None => String::from("none"),
-    }
-}
-
-fn snapshot_engine_state_wire(state: &EngineState) -> String {
-    match state {
-        EngineState::Loaded => String::from("loaded"),
-        EngineState::Running => String::from("running"),
-        EngineState::Paused { reason } => format!("paused:{}", pause_reason_wire(reason)),
-        EngineState::Stopped { outcome } => format!("stopped:{}", snapshot_outcome_wire(outcome)),
-    }
-}
-
-fn pause_reason_wire(reason: &PauseReason) -> String {
-    match reason {
-        PauseReason::Instantiated => String::from("instantiated"),
-        PauseReason::UserRequested => String::from("user-requested"),
-        PauseReason::Breakpoint { id } => format!("breakpoint:{id}"),
-        PauseReason::StepComplete { mode } => format!("step:{}", step_mode_wire(*mode)),
-    }
-}
-
-fn step_mode_wire(mode: StepMode) -> String {
-    match mode {
-        StepMode::Quantum => String::from("quantum"),
-        StepMode::Event => String::from("event"),
-        StepMode::Assertion => String::from("assertion"),
-        StepMode::Timer => String::from("timer"),
-        StepMode::Duration(duration) => format!("duration:{}", duration.nanos),
-    }
-}
-
-fn snapshot_outcome_wire(outcome: &Outcome) -> String {
-    match outcome {
-        Outcome::Passed => String::from("passed"),
-        Outcome::Failed { violations } => {
-            let violations = violations
-                .iter()
-                .map(|violation| hex_encode(violation.as_bytes()))
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("failed:{violations}")
-        }
-        Outcome::Timeout => String::from("timeout"),
-        Outcome::Crashed { detail } => format!("crashed:{}", hex_encode(detail.as_bytes())),
-        Outcome::Stopped => String::from("stopped"),
-    }
-}
-
-fn control_event_body(
-    control: ControlStream,
-    shutdown: watch::Receiver<bool>,
-) -> impl futures_util::Stream<Item = Result<Bytes, Infallible>> {
-    let attached = framed_rpc_message(encode_attached_response(control.attached()));
-    stream::unfold(
-        (control, shutdown, Some(attached)),
-        |(mut control, mut shutdown, pending)| async move {
-            if let Some(message) = pending {
-                return Some((Ok(message), (control, shutdown, None)));
-            }
-            if *shutdown.borrow() {
-                return None;
-            }
-            // crucible-lint: allow unordered-select -- stream delivery may race with shutdown without affecting engine state.
-            let frame = tokio::select! {
-                frame = control.recv_frame() => match frame {
-                    Ok(Some(frame)) => frame,
-                    Ok(None) | Err(_) => return None,
-                },
-                changed = shutdown.changed() => {
-                    if changed.is_ok() && *shutdown.borrow() {
-                        return None;
-                    }
-                    return None;
-                }
-            };
-            Some((
-                Ok(framed_rpc_message(encode_streaming_frame(&frame))),
-                (control, shutdown, None),
-            ))
-        },
-    )
-}
-
-fn watch_event_body(
-    watch: WatchStream,
-    shutdown: watch::Receiver<bool>,
-) -> impl futures_util::Stream<Item = Result<Bytes, Infallible>> {
-    let attached = framed_rpc_message(encode_attached_response(watch.attached()));
-    stream::unfold(
-        (watch, shutdown, Some(attached)),
-        |(mut watch, mut shutdown, pending)| async move {
-            if let Some(message) = pending {
-                return Some((Ok(message), (watch, shutdown, None)));
-            }
-            if *shutdown.borrow() {
-                return None;
-            }
-            // crucible-lint: allow unordered-select -- watch delivery may race with shutdown without affecting engine state.
-            let frame = tokio::select! {
-                frame = watch.recv_frame() => match frame {
-                    Ok(Some(frame)) => frame,
-                    Ok(None) | Err(_) => return None,
-                },
-                changed = shutdown.changed() => {
-                    if changed.is_ok() && *shutdown.borrow() {
-                        return None;
-                    }
-                    return None;
-                }
-            };
-            Some((
-                Ok(framed_rpc_message(encode_streaming_frame(&frame))),
-                (watch, shutdown, None),
-            ))
-        },
-    )
-}
-
-fn encode_streaming_frame(frame: &StreamingFrame) -> String {
-    match frame {
-        StreamingFrame::Event(frame) => encode_streaming_event_frame(frame),
-        StreamingFrame::StateUpdate(frame) => encode_streaming_state_update_frame(*frame),
-    }
-}
-
-fn encode_streaming_event_frame(frame: &StreamingEventFrame) -> String {
-    let mut output = String::from("crucible.rpc/event-frame\n");
-    push_wire_line(&mut output, "generation", &frame.generation.to_string());
-    push_wire_line(
-        &mut output,
-        "cursor",
-        &frame.cursor.next_sequence.to_string(),
-    );
-    push_wire_line(
-        &mut output,
-        "next-cursor",
-        &frame.next_cursor.next_sequence.to_string(),
-    );
-    push_wire_line(&mut output, "sequence", &frame.event.sequence.to_string());
-    push_wire_line(
-        &mut output,
-        "virtual-time-ticks",
-        &frame.event.at.virtual_time_ticks.to_string(),
-    );
-    push_wire_line(
-        &mut output,
-        "icount-retired",
-        &frame.event.at.icount_retired.to_string(),
-    );
-    push_wire_line(
-        &mut output,
-        "icount-node",
-        &optional_string_wire(frame.event.at.icount_node.as_deref()),
-    );
-    push_wire_line(
-        &mut output,
-        "source",
-        &event_source_wire(&frame.event.source),
-    );
-    push_wire_line(&mut output, "level", event_level_wire(frame.event.level));
-    push_wire_line(
-        &mut output,
-        "observational",
-        if frame.event.observational {
-            "true"
-        } else {
-            "false"
-        },
-    );
-    push_wire_line(&mut output, "kind", &frame.event.payload.kind);
-    for (name, value) in &frame.event.payload.attributes {
-        push_wire_line(
-            &mut output,
-            "attribute",
-            &format!("{}|{}", hex_encode(name.as_bytes()), attribute_wire(value)),
-        );
-    }
-    output
-}
-
-fn encode_streaming_state_update_frame(frame: StreamingStateUpdateFrame) -> String {
-    let mut output = String::from("crucible.rpc/state-update-frame\n");
-    push_wire_line(&mut output, "sequence", &frame.sequence.to_string());
-    push_wire_line(
-        &mut output,
-        "state-update",
-        &state_update_wire(frame.update),
-    );
-    output
-}
+mod response_wire;
+use response_wire::*;
 
 fn lifecycle_error_response(error: LifecycleApiError) -> Response {
     match error {
@@ -2634,21 +1836,32 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
             &error.to_string(),
         ),
         LifecycleApiError::ScenarioSeedMismatch { .. }
-        | LifecycleApiError::InlineScenarioIdentityMismatch { .. }
         | LifecycleApiError::ResumeCheckpoint { .. } => typed_rpc_status_response(
             StatusCode::BAD_REQUEST,
             RpcStatusCode::InvalidArgument,
             "invalid-argument",
             &error.to_string(),
         ),
-        LifecycleApiError::DebugAccess { .. } | LifecycleApiError::DebugEndpointUnavailable => {
-            typed_rpc_status_response(
-                StatusCode::FORBIDDEN,
-                RpcStatusCode::InvalidState,
-                "debug-access-denied",
-                &error.to_string(),
-            )
-        }
+        LifecycleApiError::ResumeReplayClosure { .. } => typed_rpc_status_response(
+            StatusCode::BAD_REQUEST,
+            RpcStatusCode::InvalidArgument,
+            "resume-replay-closure",
+            &error.to_string(),
+        ),
+        LifecycleApiError::ResumeObservationSource { .. } => typed_rpc_status_response(
+            StatusCode::BAD_REQUEST,
+            RpcStatusCode::InvalidArgument,
+            "resume-observation-source",
+            &error.to_string(),
+        ),
+        LifecycleApiError::DebugAccess { .. }
+        | LifecycleApiError::DebugEndpointUnavailable
+        | LifecycleApiError::ReadOnlySession { .. } => typed_rpc_status_response(
+            StatusCode::FORBIDDEN,
+            RpcStatusCode::InvalidState,
+            "debug-access-denied",
+            &error.to_string(),
+        ),
         LifecycleApiError::SessionCommandRejected { .. } => typed_rpc_status_response(
             StatusCode::CONFLICT,
             RpcStatusCode::InvalidState,
@@ -2659,7 +1872,9 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
         LifecycleApiError::RpcAbi { .. }
         | LifecycleApiError::GenesisGraph { .. }
         | LifecycleApiError::LoopFactory { .. }
+        | LifecycleApiError::AttemptOperational { .. }
         | LifecycleApiError::CommandChannelClosed { .. }
+        | LifecycleApiError::SessionRetention { .. }
         | LifecycleApiError::StateDidNotAdvance { .. }
         | LifecycleApiError::ActorJoin { .. }
         | LifecycleApiError::ActorFailed { .. } => typed_rpc_status_response(
@@ -2676,9 +1891,10 @@ fn debug_relay_error_response(error: crate::DebugRelayError) -> Response {
         crate::DebugRelayError::NotFound => StatusCode::NOT_FOUND,
         crate::DebugRelayError::StaleOrForeignLease => StatusCode::FORBIDDEN,
         crate::DebugRelayError::InvalidGatewayEndpoint
-        | crate::DebugRelayError::GatewayEndpointNotLoopback
         | crate::DebugRelayError::ChunkTooLarge { .. }
-        | crate::DebugRelayError::InvalidReadMaximum { .. } => StatusCode::BAD_REQUEST,
+        | crate::DebugRelayError::InvalidReadMaximum { .. }
+        | crate::DebugRelayError::InvalidReadOnlyPacket => StatusCode::BAD_REQUEST,
+        crate::DebugRelayError::ReadOnlyCommand => StatusCode::FORBIDDEN,
         crate::DebugRelayError::CapacityExhausted => StatusCode::TOO_MANY_REQUESTS,
         crate::DebugRelayError::Busy => StatusCode::CONFLICT,
         crate::DebugRelayError::Connect { .. }
@@ -2705,9 +1921,9 @@ fn streaming_error_response(error: StreamingApiError) -> Response {
             &error.to_string(),
         ),
         StreamingApiError::CommandChannelClosed { .. }
+        | StreamingApiError::CommandResponseMissing { .. }
         | StreamingApiError::StateDidNotAdvance { .. }
-        | StreamingApiError::EventStreamLagged { .. }
-        | StreamingApiError::StateUpdateStreamLagged { .. } => typed_rpc_status_response(
+        | StreamingApiError::EventStreamLagged { .. } => typed_rpc_status_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             RpcStatusCode::Internal,
             "internal",

@@ -1,6 +1,7 @@
 //! Cached condition evaluation, runtime fact projection, and predicate matching.
 
 use super::*;
+use crate::SimInstant;
 pub(super) struct HostConditionEvaluation<'prefix, 'state, O: ?Sized> {
     observed: ObservedState<'prefix>,
     oracle: &'state mut O,
@@ -398,7 +399,7 @@ pub(super) fn push_observed_state_facts(
             Decision::RngDraw(_)
             | Decision::Override(_)
             | Decision::Preemption(_)
-            | Decision::AppRandom(_),
+            | Decision::Selection(_),
         )
         | SchedulerEventLogPayload::EvaluationBoundary(_)
         | SchedulerEventLogPayload::TriggerFired(_)
@@ -419,7 +420,7 @@ pub(super) fn push_condition_runtime_facts(
         }
         SchedulerEventLogPayload::TriggerActionApplied(application) => match &application.action {
             Action::ArmTimer { name, after } => {
-                if let Some(ticks) = application.at.ticks.checked_add(after.nanos) {
+                if let Some(ticks) = application.at.ticks.checked_add(after.ticks) {
                     timer_fires.insert(name.clone(), VirtualTime { ticks });
                 }
             }
@@ -466,12 +467,12 @@ pub(super) fn validate_black_box_observation_entry(
         });
     }
     let expected = black_box_observation_icount_stamp(event.at(), event.payload());
-    if entry.time().icount != expected {
+    if entry.time().stamp != expected {
         return Err(ConditionEvaluationError::InvalidBlackBoxObservationStamp {
             sequence: entry.sequence(),
             kind,
             expected,
-            actual: entry.time().icount.clone(),
+            actual: entry.time().stamp.clone(),
         });
     }
     Ok(())
@@ -480,7 +481,7 @@ pub(super) fn validate_black_box_observation_entry(
 pub(super) fn black_box_observation_icount_stamp(
     at: VirtualTime,
     payload: &ObservableEventPayload,
-) -> EventLogIcountStamp {
+) -> EventLogTickStamp {
     match payload {
         ObservableEventPayload::NetworkDelivered { .. } => black_box_boundary_icount(at),
         ObservableEventPayload::ConsoleOutput { node, .. }
@@ -501,17 +502,19 @@ pub(super) fn black_box_observation_icount_stamp(
             execution_icount,
             node,
             ..
-        } => EventLogIcountStamp {
+        } => EventLogTickStamp {
             node: Some(node.clone()),
-            icount: *execution_icount,
+            tick: SimInstant { ticks: at.ticks },
+            retired: Some(*execution_icount),
         },
         ObservableEventPayload::MemorySample {
             sample_icount,
             node,
             ..
-        } => EventLogIcountStamp {
+        } => EventLogTickStamp {
             node: Some(node.clone()),
-            icount: *sample_icount,
+            tick: SimInstant { ticks: at.ticks },
+            retired: Some(*sample_icount),
         },
         ObservableEventPayload::IoCompletion {
             kind: IoEventKind::Any,
@@ -522,24 +525,25 @@ pub(super) fn black_box_observation_icount_stamp(
         | ObservableEventPayload::AssertionStateChanged { .. }
         | ObservableEventPayload::AssertionEvaluated { .. }
         | ObservableEventPayload::GuestMarker { .. }
+        | ObservableEventPayload::GuestMeasurement { .. }
+        | ObservableEventPayload::GuestSemanticMarker { .. }
         | ObservableEventPayload::GuestAssertionMarker { .. } => black_box_boundary_icount(at),
     }
 }
 
-pub(super) fn black_box_boundary_icount(at: VirtualTime) -> EventLogIcountStamp {
-    EventLogIcountStamp {
+pub(super) fn black_box_boundary_icount(at: VirtualTime) -> EventLogTickStamp {
+    EventLogTickStamp {
         node: None,
-        icount: Icount { retired: at.ticks },
+        tick: SimInstant { ticks: at.ticks },
+        retired: None,
     }
 }
 
-pub(super) fn black_box_node_boundary_icount(
-    at: VirtualTime,
-    node: &NodeId,
-) -> EventLogIcountStamp {
-    EventLogIcountStamp {
+pub(super) fn black_box_node_boundary_icount(at: VirtualTime, node: &NodeId) -> EventLogTickStamp {
+    EventLogTickStamp {
         node: Some(node.clone()),
-        icount: Icount { retired: at.ticks },
+        tick: SimInstant { ticks: at.ticks },
+        retired: None,
     }
 }
 
@@ -577,7 +581,7 @@ where
         Condition::At { at } => evaluator.evaluation_point().at() == *at,
         Condition::After { duration, of } => evaluator
             .last_event_firing(of)
-            .and_then(|fired_at| fired_at.ticks.checked_add(duration.nanos))
+            .and_then(|fired_at| fired_at.ticks.checked_add(duration.ticks))
             .is_some_and(|fire_at| fire_at == evaluator.evaluation_point().at().ticks),
         Condition::Timer { name } => evaluator
             .timer_fire_time(name)
@@ -879,6 +883,10 @@ where
             marker == expected_marker
                 && evaluator.white_box_policy_for_node(node) == Some(WhiteBoxPolicy::Enabled)
         }
+        ObservableEventPayload::GuestSemanticMarker { node, marker, .. } => {
+            marker == &expected_marker.name
+                && evaluator.white_box_policy_for_node(node) == Some(WhiteBoxPolicy::Enabled)
+        }
         ObservableEventPayload::GuestAssertionMarker { .. } => false,
         ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::ConsoleOutput { .. }
@@ -889,6 +897,7 @@ where
         | ObservableEventPayload::NodeState { .. }
         | ObservableEventPayload::AssertionStateChanged { .. }
         | ObservableEventPayload::AssertionEvaluated { .. }
+        | ObservableEventPayload::GuestMeasurement { .. }
         | ObservableEventPayload::AssertionProximity { .. } => false,
     }
 }
@@ -1146,6 +1155,24 @@ impl<O> ConditionEvaluationPass<O> {
         O: ConditionLeafOracle,
     {
         state.evaluate(graph, &mut self.evaluation)
+    }
+
+    /// Evaluates triggers while deferring time predicates ahead of the shared frontier.
+    ///
+    /// A backend observation from one leading node may have a timestamp later
+    /// than the shared scheduler frontier. Time-conditioned events retain their
+    /// one-shot, edge, and latch state until the frontier reaches that prefix.
+    /// Pure observational triggers keep their ordinary causal evaluation points.
+    pub fn evaluate_event_graph_at_frontier(
+        &mut self,
+        graph: &EventGraph,
+        state: &mut EventGraphState,
+        frontier: VirtualTime,
+    ) -> EventFirings
+    where
+        O: ConditionLeafOracle,
+    {
+        state.evaluate_with_frontier(graph, &mut self.evaluation, Some(frontier))
     }
 }
 

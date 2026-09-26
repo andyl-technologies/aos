@@ -50,7 +50,10 @@ in
       {
         name = "check";
         # Cross-target test programs run during target qualification.
-        script = if stdenv.isCross then ":" else ''ninja -C build test'';
+        script =
+          if stdenv.isCross
+          then ":"
+          else ''ninja -C build test'';
       }
       {
         name = "install";

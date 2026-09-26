@@ -8,8 +8,8 @@ use crucible::{
     BackendInput, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop,
     QuantumOutcome, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerLivenessError, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind, Shift, SimDouble,
-    SimDoubleConfig, SimDuration, SimInstant, SimulationBackend, SingleScheduler, VirtualTime,
+    SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind, SimDouble, SimDoubleConfig,
+    SimDuration, SimInstant, SimulationBackend, SingleScheduler, VirtualTime,
     check_scheduler_liveness,
 };
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
@@ -38,7 +38,7 @@ impl SimDoubleLivenessHarness {
         SimulationBackend::step_to(
             &mut self.backend,
             VirtualTime {
-                ticks: scenario.time_limit.nanos,
+                ticks: scenario.time_limit.ticks,
             },
         )
         .unwrap_or_else(|error| panic!("SimDouble liveness backend should step: {error}"));
@@ -126,9 +126,8 @@ fn gate_scheduler_liveness_generated_scenarios_terminate() {
 fn gate_scheduler_liveness_reaches_time_limit_terminal() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "time-limit-negative-space",
-        shift(0),
         16,
-        SimInstant { nanos: 1 },
+        SimInstant { ticks: 1 },
         vec![scenario_node("node-a", 0, 8, ExactLocalEvent::NoArmedTimer)],
         Vec::new(),
     );
@@ -144,9 +143,8 @@ fn gate_scheduler_liveness_reaches_time_limit_terminal() {
 fn gate_scheduler_liveness_picks_global_minimum_horizon_before_current_time_order() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "global-minimum-horizon-before-current-time-order",
-        shift(0),
         8,
-        SimInstant { nanos: 16 },
+        SimInstant { ticks: 16 },
         vec![
             scenario_node("early-high-horizon", 0, 10, ExactLocalEvent::NoArmedTimer),
             scenario_node("late-low-horizon", 3, 1, ExactLocalEvent::NoArmedTimer),
@@ -166,9 +164,8 @@ fn gate_scheduler_liveness_picks_global_minimum_horizon_before_current_time_orde
 fn gate_scheduler_liveness_breaks_equal_horizon_ties_by_node_id() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "global-minimum-horizon-node-id-tie",
-        shift(0),
         8,
-        SimInstant { nanos: 16 },
+        SimInstant { ticks: 16 },
         vec![
             scenario_node("node-b", 0, 5, ExactLocalEvent::NoArmedTimer),
             scenario_node("node-a", 2, 3, ExactLocalEvent::NoArmedTimer),
@@ -190,15 +187,14 @@ fn gate_scheduler_liveness_rejects_due_event_deadlock() {
     let producer = scheduler_node("node-b", SchedulingNodeKind::Vm);
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "deadlock-due-event",
-        shift(0),
         8,
-        SimInstant { nanos: 8 },
+        SimInstant { ticks: 8 },
         vec![idle_scenario_node(
             "node-a",
             0,
             0,
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 0 },
+                virtual_time: SimInstant { ticks: 0 },
             },
         )],
         vec![backend_event(0, &consumer, &producer, 7, b"due")],
@@ -222,15 +218,14 @@ fn gate_scheduler_liveness_rejects_due_event_deadlock() {
 fn gate_scheduler_liveness_rejects_stalled_runnable_livelock() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "stalled-runnable-node",
-        shift(0),
         8,
-        SimInstant { nanos: 8 },
+        SimInstant { ticks: 8 },
         vec![scenario_node(
             "node-a",
             0,
             0,
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 0 },
+                virtual_time: SimInstant { ticks: 0 },
             },
         )],
         Vec::new(),
@@ -254,9 +249,11 @@ fn gate_scheduler_liveness_rejects_stalled_runnable_livelock() {
 fn generated_scheduler_liveness_scenarios() -> Vec<SchedulerLivenessScenario> {
     (0..48)
         .map(|seed| {
-            let shift_bits = (seed % 3) as u8;
-            let shift = shift(shift_bits);
-            let scale = 1_u64 << shift_bits;
+            let scale = match seed % 3 {
+                0 => 1_u64,
+                1 => 2,
+                _ => 4,
+            };
             let node_count = 2 + (seed % 4);
             let nodes = (0..node_count)
                 .map(|node_index| {
@@ -266,7 +263,7 @@ fn generated_scheduler_liveness_scenarios() -> Vec<SchedulerLivenessScenario> {
                     let exact_local_event = if (seed + node_index) % 5 == 0 {
                         ExactLocalEvent::TimerDeadline {
                             virtual_time: SimInstant {
-                                nanos: (start + 1 + span / 2) * scale,
+                                ticks: (start + 1 + span / 2) * scale,
                             },
                         }
                     } else {
@@ -282,15 +279,14 @@ fn generated_scheduler_liveness_scenarios() -> Vec<SchedulerLivenessScenario> {
                 })
                 .collect::<Vec<_>>();
             let time_limit = if seed % 7 == 0 {
-                SimInstant { nanos: 4 * scale }
+                SimInstant { ticks: 4 * scale }
             } else {
-                SimInstant { nanos: 24 * scale }
+                SimInstant { ticks: 24 * scale }
             };
             let pending_events = generated_events(seed, &nodes, scale);
 
             SchedulerLivenessScenario::from_canonical_material(
                 &format!("generated-seed-{seed}"),
-                shift,
                 96,
                 time_limit,
                 nodes,
@@ -308,16 +304,13 @@ fn generated_events(seed: u32, nodes: &[SchedulerScenarioNode], scale: u64) -> V
             let producer = &nodes[(index + 1) % nodes.len()].id;
             let due_tick = node.counter.ticks + 1 + u64::from((seed + index as u32) % 2);
             let due_time = due_tick * scale;
-            let current_time = node
-                .counter
-                .to_virtual(shift_for_scale(scale))
-                .expect("generated counter should project");
-            let horizon = current_time.nanos
+            let current_time = node.counter.to_virtual();
+            let horizon = current_time.ticks
                 + node
                     .network_lookahead
                     .finite_duration()
                     .expect("generated scenario uses finite lookahead")
-                    .nanos;
+                    .ticks;
 
             (due_time <= horizon).then(|| {
                 backend_event(
@@ -393,13 +386,18 @@ fn backend_event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    ticks: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             producer.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),
@@ -426,18 +424,6 @@ where
     first
 }
 
-fn shift(bits: u8) -> Shift {
-    match Shift::new(bits) {
-        Ok(shift) => shift,
-        Err(error) => panic!("test shift should be valid: {error}"),
-    }
-}
-
-fn shift_for_scale(scale: u64) -> Shift {
-    let bits = scale.trailing_zeros() as u8;
-    shift(bits)
-}
-
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }

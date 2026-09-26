@@ -77,7 +77,7 @@
       }
       {
         label = "patched qemu plugin header probe";
-        needle = "header=\"" + "$" + "{qemu-crucible}/include/qemu-plugin.h\"";
+        needle = "header=\"" + "$" + "{qemu-crucible}/include/qemu/qemu-plugin.h\"";
       }
       {
         label = "QEMU plugin API version probe";
@@ -85,7 +85,7 @@
       }
       {
         label = "plugin API version source";
-        needle = "done < crates/crucible-qemu-plugin/src/abi.rs";
+        needle = "done < crucible-qemu-plugin/src/abi.rs";
       }
       {
         label = "installed QEMU plugin path";
@@ -133,7 +133,7 @@
     ++ failuresFor "pkgs/emulation/qemu.nix" qemuPackageNix [
       {
         label = "QEMU plugin header installed";
-        needle = "install -m 644 include/plugins/qemu-plugin.h \"$out/include/qemu-plugin.h\"";
+        needle = "plugin_header=include/plugins/qemu-plugin.h";
       }
       {
         label = "QEMU output retains GPL-2.0-or-later text for its plugin header";
@@ -155,7 +155,7 @@
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePackageNix [
       {
         label = "suite carries the separate controller and matched QEMU/plugin runtime deps";
-        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures];";
+        needle = "runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux];";
       }
       {
         label = "suite wrapper configures QEMU at runtime";

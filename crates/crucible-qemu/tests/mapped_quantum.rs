@@ -18,12 +18,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(unix)]
 use crucible::{
     AdvanceOutcome, BasicBlockCoverageConfig, EventLog, EventLogCoverageObservation,
-    ExecutionHorizon, Icount, MarkerId, NodeId, SchedulerError, SchedulerNodeId,
-    SchedulerSendAuthorization, SchedulerSendAuthorizer, event_log_coverage_projection,
+    ExecutionHorizon, GuestMeasurementEvent, GuestMeasurementValue, Icount, MarkerId, NodeId,
+    ObservableEventPayload, SchedulerError, SchedulerNodeId, SchedulerSendAuthorization,
+    SchedulerSendAuthorizer, event_log_coverage_projection,
+};
+#[cfg(unix)]
+use crucible_protocol::selectable_catalog_plan::{
+    SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SelectablePlanPendingRequest,
 };
 #[cfg(unix)]
 use crucible_protocol::{
-    WhiteboxCoverageMarkerBody, WhiteboxMarkerPayload, WhiteboxRandomRequestBody,
+    SelectionReply, SelectionRequest, WhiteboxCoverageMarkerBody, WhiteboxMarkerPayload,
+    WhiteboxMeasurementValue, WhiteboxMetricSampleBody, WhiteboxRandomRequestBody,
     encode_whitebox_marker_payload_body,
 };
 #[cfg(unix)]
@@ -47,9 +53,9 @@ fn mapped_quantum_publishes_one_outstanding_preemption() -> Result<(), Box<dyn E
     let region = mapped_region(6, None, &[])?;
     let hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
     let command = SchedulerPreemptionCommand {
-        at_icount: 6,
-        deadline_icount: 6,
-        ceiling_icount: 6,
+        at_tick: 6,
+        deadline_tick: 6,
+        ceiling_tick: 6,
         kind: SchedulerPreemptionKind::InterruptAt {
             target_vcpu: 0,
             irq: 41,
@@ -66,14 +72,39 @@ fn mapped_quantum_publishes_one_outstanding_preemption() -> Result<(), Box<dyn E
 
 #[cfg(unix)]
 #[test]
-fn mapped_quantum_can_publish_shared_shutdown_without_marking_plugin_done()
--> Result<(), Box<dyn Error>> {
-    let region = mapped_region(6, None, &[])?;
-    let hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
+fn mapped_quantum_publishes_one_exact_selectable_reply() -> Result<(), Box<dyn Error>> {
+    let trap_icount = 6;
+    let stopped_icount = trap_icount + SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS;
+    let region = mapped_region(stopped_icount, None, &[])?;
+    let mut hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
+    let request = SelectionRequest::new(7, "packet-mode", "instance-a", None, 512)?;
+    let pending = SelectablePlanPendingRequest::new(request, trap_icount, 0, 0x40_0000);
+    let reply = SelectionReply::selected(7, [0x11; 32], [0x22; 32], b"fast".to_vec())?;
 
-    hot_path.request_plugin_shutdown()?;
+    QemuShmemHotPathChannel::enqueue_selectable_reply(&mut hot_path, &pending, &reply)?;
 
-    assert!(!hot_path.plugin_teardown_done()?);
+    let queued = QemuShmemHotPathChannel::enqueue_selectable_reply(&mut hot_path, &pending, &reply)
+        .expect_err("one-entry selectable reply ring must reject pipelining");
+    assert!(queued.to_string().contains("already queued"));
+
+    let region = mapped_region(stopped_icount, None, &[])?;
+    let mut hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
+    let wrong_sequence = SelectionReply::selected(8, [0x11; 32], [0x22; 32], b"fast".to_vec())?;
+    let mismatch =
+        QemuShmemHotPathChannel::enqueue_selectable_reply(&mut hot_path, &pending, &wrong_sequence)
+            .expect_err("reply sequence must bind the retained request");
+    assert!(mismatch.to_string().contains("sequence"));
+
+    let region = mapped_region(trap_icount, None, &[])?;
+    let mut hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
+    let wrong_boundary =
+        QemuShmemHotPathChannel::enqueue_selectable_reply(&mut hot_path, &pending, &reply)
+            .expect_err("reply admission must follow the native handoff instruction");
+    assert!(
+        wrong_boundary
+            .to_string()
+            .contains("requires stopped boundary 7, observed 6")
+    );
     Ok(())
 }
 
@@ -87,6 +118,7 @@ fn mapped_quantum_split_completion_keeps_full_operation_log() -> Result<(), Box<
     let pending = QemuShmemHotPathChannel::start_quantum(
         &mut hot_path,
         ExecutionHorizon { icount: icount(6) },
+        crucible_qemu::QemuQuantumStopCondition::Ceiling,
     )?;
     let completion = QemuShmemHotPathChannel::finish_quantum(&mut hot_path, pending)?;
 
@@ -160,6 +192,7 @@ fn mapped_quantum_drains_coverage_into_the_unified_event_log() -> Result<(), Box
     let pending = QemuShmemHotPathChannel::start_quantum(
         &mut hot_path,
         ExecutionHorizon { icount: icount(6) },
+        crucible_qemu::QemuQuantumStopCondition::Ceiling,
     )?;
     let completion = QemuShmemHotPathChannel::finish_quantum(&mut hot_path, pending)?;
     assert!(QemuShmemHotPathChannel::coverage_enabled(&hot_path));
@@ -180,8 +213,8 @@ fn mapped_quantum_drains_coverage_into_the_unified_event_log() -> Result<(), Box
         append.entries[0].class(),
         crucible::SchedulerEventLogClass::Observational
     );
-    assert_eq!(projection.entries()[0].at.icount, icount(5));
-    assert_eq!(projection.entries()[1].at.icount, icount(6));
+    assert_eq!(projection.entries()[0].at.retired, Some(icount(5)));
+    assert_eq!(projection.entries()[1].at.retired, Some(icount(6)));
     assert_eq!(
         projection.entries()[0].observation,
         EventLogCoverageObservation::BasicBlock {
@@ -248,7 +281,7 @@ fn mapped_quantum_merges_whitebox_markers_into_the_unified_event_log() -> Result
     let projection = event_log_coverage_projection(&append.entries);
 
     assert_eq!(projection.len(), 2);
-    assert_eq!(projection.entries()[0].at.icount, icount(5));
+    assert_eq!(projection.entries()[0].at.retired, Some(icount(5)));
     assert_eq!(
         projection.entries()[0].observation,
         EventLogCoverageObservation::Named {
@@ -256,8 +289,42 @@ fn mapped_quantum_merges_whitebox_markers_into_the_unified_event_log() -> Result
             marker: MarkerId::from_name("guest.ready"),
         }
     );
-    assert_eq!(projection.entries()[1].at.icount, icount(6));
+    assert_eq!(projection.entries()[1].at.retired, Some(icount(6)));
     assert!(QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)?.is_empty());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn mapped_quantum_decodes_typed_guest_measurement_samples() -> Result<(), Box<dyn Error>> {
+    let sample = WhiteboxMarkerPayload::MetricSample(WhiteboxMetricSampleBody {
+        measurement: String::from("recovery"),
+        instance: String::from("epoch-7"),
+        metric: String::from("healthy-peers"),
+        value: WhiteboxMeasurementValue::Unsigned(3),
+    });
+    let region = mapped_region_with_markers(6, None, &[], &[marker_entry(5, &sample)?])?;
+    let mut hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
+
+    let observations = QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)?;
+
+    assert_eq!(observations.len(), 1);
+    assert!(matches!(
+        observations[0].payload(),
+        ObservableEventPayload::GuestMeasurement {
+                node,
+                event: GuestMeasurementEvent::Sample {
+                    measurement,
+                    instance,
+                    metric,
+                    value: GuestMeasurementValue::Unsigned(3),
+                },
+                ..
+            } if node.name == "vm-a"
+            && measurement == "recovery"
+            && instance == "epoch-7"
+            && metric == "healthy-peers"
+    ));
     Ok(())
 }
 
@@ -335,12 +402,12 @@ fn mapped_region_with_markers(
     coverage: &[CoverageEntry],
     markers: &[WhiteboxMarkerEntry],
 ) -> Result<MappedSetupRegion, Box<dyn Error>> {
-    let mut allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+    let mut allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     {
         let slot = allocation.node_slot(0).ok_or("VM slot 0 should exist")?;
         let ceiling = authorize_advance_ceiling(0, current_icount, None)?;
-        slot.publish_scheduler_ceiling(ceiling)?;
-        slot.publish_reached_icount(current_icount, 0)?;
+        slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
+        slot.publish_reached_icount(current_icount)?;
     }
     if let Some(frame) = outbound {
         allocation.enqueue_directed_frame(0, SLOT_NET_ROUTER as u32, &frame)?;

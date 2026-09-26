@@ -2203,6 +2203,15 @@ async fn real_client_mounts_cancels_and_roundtrips_a_complete_multi_platform_gra
         .await
         .unwrap();
     assert_eq!(cancelled, 1);
+    assert!(
+        registry
+            .db
+            .oci_upload_cleanup_candidates(2)
+            .await
+            .unwrap()
+            .is_empty(),
+        "successful best-effort cancellation cleanup must leave no pending candidate"
+    );
 
     let amd64 = image_graph_for(
         "multi-amd64",

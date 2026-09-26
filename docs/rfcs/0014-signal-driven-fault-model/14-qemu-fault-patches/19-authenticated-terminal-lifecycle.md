@@ -1,4 +1,4 @@
-# Patch 0065 — `crucible-authenticated-terminal-lifecycle`
+# Capability task 0065 — `crucible-authenticated-terminal-lifecycle`
 
 ## Purpose
 
@@ -17,7 +17,7 @@ operation. Ordinary VM resume is never overloaded and cannot authorize exit.
 
 QEMU compares both digests with the single pending terminal decision and
 compares the request generation with the immutable value provisioned at process
-launch by patch 0066. A matching request schedules the transition-specific
+launch by capability task 0066. A matching request schedules the transition-specific
 process exit. An identical retry succeeds without scheduling another exit. A
 different generation or digest, malformed digest, absent decision, unsupported
 build, or second decision fails without resuming the VM.
@@ -28,7 +28,7 @@ owned child and verify status `70`, `71`, or `72` before committing supervision.
 
 ## State and recovery
 
-Patch 0067 serializes the pending decision, both digests, authorization state,
+Capability task 0067 serializes the pending decision, both digests, authorization state,
 and launch-provisioned process generation. Restore rejects a snapshot whose
 generation differs from the process launch contract. Restoring an unauthorized
 decision permits the same command. Restoring an authorized decision preserves
@@ -52,5 +52,5 @@ independently records the request and observed child status.
 
 The QAPI schema, dispatcher, and lifecycle state are QEMU/GPL-side changes. The
 Apache host sends only the documented versioned process command and does not
-link QEMU code or headers. The signed patch, bundle, corresponding source, and
+link QEMU code or headers. The DCO-signed atomic patch, bundle, corresponding source, and
 license-boundary gates ship together.

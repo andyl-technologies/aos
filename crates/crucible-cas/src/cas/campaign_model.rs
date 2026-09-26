@@ -42,7 +42,7 @@ impl CampaignManifest {
 pub struct CampaignProvenance {
     /// Crucible software version.
     pub crucible_version: String,
-    /// QEMU build identity plus applied series hash.
+    /// QEMU build identity plus atomic patch hash.
     pub qemu_build: String,
     /// Combined shmem, guest-host channel, and RPC ABI versions.
     pub abi_versions: String,

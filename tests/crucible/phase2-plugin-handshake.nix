@@ -73,7 +73,7 @@
     ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmem [
       {
         label = "shmem ABI version constant";
-        needle = "pub const ABI_VERSION: u32 = 17;";
+        needle = "pub const ABI_VERSION: u32 = 29;";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/args.rs" pluginArgs [
@@ -142,8 +142,8 @@
         needle = "plugin_handshake_rejects_launch_slot_disagreement";
       }
       {
-        label = "v2 plugin rejects v1 and future host ABI";
-        needle = "for host_abi in [1, ABI_VERSION + 1]";
+        label = "current plugin rejects an unsupported host ABI";
+        needle = "let host_abi = u32::MAX;";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/registration.rs" pluginRegistration [

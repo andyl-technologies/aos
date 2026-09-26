@@ -40,3 +40,24 @@ pub(super) fn trusted_debug_listener(
     }
     Ok(requested)
 }
+
+/// Accepts the internal ephemeral-listener sentinel for private Unix relay.
+///
+/// # Errors
+///
+/// Returns an error when a caller requests a concrete TCP address that the
+/// production gateway cannot expose.
+pub(super) fn private_gateway_listener_request(
+    configured: &ProductionVmDebugConfig,
+    listen: &GdbListen,
+) -> Result<(), SchedulerError> {
+    let requested = trusted_debug_listener(configured, listen)?;
+    if requested.port() != 0 {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "production debugger gateway uses a private Unix endpoint; explicit TCP listener {requested} is unsupported"
+            ),
+        });
+    }
+    Ok(())
+}

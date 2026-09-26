@@ -7,11 +7,17 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
-  catalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
+  catalog = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/event_catalog.rs;
+  };
   catalogTest = builtins.readFile ../../crates/crucible/tests/event_kind_catalog.rs;
   proximityTest = builtins.readFile ../../crates/crucible/tests/event_log_assertion_proximity.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
@@ -91,12 +97,8 @@
         needle = "String::from(\"quantifier\")";
       }
       {
-        label = "assertion proximity report append API";
-        needle = "pub fn append_assertion_proximity_events";
-      }
-      {
-        label = "report append reads report proximities";
-        needle = "report.proximities().iter()";
+        label = "generic observable event append API";
+        needle = "pub fn append_observable_events";
       }
       {
         label = "assertion proximity is observational";
@@ -113,11 +115,11 @@
         needle = "pub fn with_assertion_proximity_from_event_log";
       }
       {
-        label = "graph cache stamps proximity from event log";
-        needle = "pub fn cache_snapshot_with_event_log_assertion_proximity";
+        label = "graph cache accepts typed checkpoint feedback";
+        needle = "pub fn cache_snapshot(";
       }
       {
-        label = "graph cache uses proximity projection API";
+        label = "checkpoint derives proximity through projection API";
         needle = "crate::scheduler::assertion_proximity_fingerprint_from_event_log(entries)";
       }
       {
@@ -159,12 +161,8 @@
     ]
     ++ failuresFor "crates/crucible/tests/event_kind_catalog.rs" catalogTest [
       {
-        label = "assertion proximity catalog golden vector";
-        needle = "entry kind=assertion_proximity class=observational sources=engine attributes=distance,id,node,quantifier";
-      }
-      {
         label = "assertion proximity catalog class test";
-        needle = "(\"assertion_proximity\", EventClass::Observational)";
+        needle = "(\"assertion_proximity\", SchedulerEventLogClass::Observational)";
       }
     ]
     ++ failuresFor "crates/crucible/tests/event_log_assertion_proximity.rs" proximityTest [
@@ -193,6 +191,10 @@
         needle = "scheduler_appends_report_proximities_to_unified_event_log";
       }
       {
+        label = "report append reads report proximities";
+        needle = "report.proximities().iter()";
+      }
+      {
         label = "lossless distance serialization assertion";
         needle = "event_payload.attribute.distance.value.type=u128";
       }
@@ -218,11 +220,11 @@
       }
       {
         label = "observational class assertion";
-        needle = "EventClass::Observational";
+        needle = "SchedulerEventLogClass::Observational";
       }
       {
-        label = "event-log-only graph cache API";
-        needle = "cache_snapshot_with_event_log_assertion_proximity";
+        label = "typed checkpoint enters canonical graph cache";
+        needle = "checkpoint.with_assertion_proximity_from_event_log(&proximity_log)";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

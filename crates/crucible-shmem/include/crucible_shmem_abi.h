@@ -16,11 +16,16 @@
 #define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 
 #define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-#define CRUCIBLE_SHMEM_ABI_VERSION 17u
+#define CRUCIBLE_SHMEM_ABI_VERSION 29u
+#define CRUCIBLE_SHMEM_TICKS_PER_NS 1000u
+#define CRUCIBLE_SHMEM_TICKS_PER_INSTRUCTION 50u
+#define CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_CEILING 0u
+#define CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE 1u
 #define CRUCIBLE_SHMEM_MAX_FRAME_DATA 4608u
 #define CRUCIBLE_SHMEM_DEFAULT_QUEUE_CAPACITY 64u
 #define CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY 65536u
 #define CRUCIBLE_SHMEM_WHITEBOX_MARKER_QUEUE_CAPACITY 1024u
+#define CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY 1u
 #define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_QUEUE_CAPACITY 64u
 #define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM 2u
 #define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_REQUEST_RING_OFFSET 0u
@@ -64,7 +69,7 @@
 #define CRUCIBLE_SHMEM_REGION_HEADER_RING_DATA_OFF_OFFSET 32u
 #define CRUCIBLE_SHMEM_REGION_HEADER_ENTRY_STRIDE_OFFSET 40u
 #define CRUCIBLE_SHMEM_REGION_HEADER_REGION_SIZE_OFFSET 48u
-#define CRUCIBLE_SHMEM_REGION_HEADER_ICOUNT_SHIFT_OFFSET 56u
+#define CRUCIBLE_SHMEM_REGION_HEADER_TICKS_PER_NS_OFFSET 56u
 #define CRUCIBLE_SHMEM_REGION_HEADER_PAUSE_REQUESTED_OFFSET 60u
 #define CRUCIBLE_SHMEM_REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET 61u
 #define CRUCIBLE_SHMEM_REGION_HEADER_CONTROL_PADDING_OFFSET 62u
@@ -72,7 +77,7 @@
 #define CRUCIBLE_SHMEM_REGION_HEADER_RESERVED_OFFSET 68u
 #define CRUCIBLE_SHMEM_REGION_HEADER_RESERVED_LEN 188u
 
-#define CRUCIBLE_SHMEM_NODE_SLOT_SIZE 128u
+#define CRUCIBLE_SHMEM_NODE_SLOT_SIZE 256u
 #define CRUCIBLE_SHMEM_NODE_SLOT_ALIGN 128u
 #define CRUCIBLE_SHMEM_NODE_SLOT_CURRENT_ICOUNT_OFFSET 0u
 #define CRUCIBLE_SHMEM_NODE_SLOT_CURRENT_NS_OFFSET 8u
@@ -82,13 +87,13 @@
 #define CRUCIBLE_SHMEM_NODE_SLOT_STATUS_OFFSET 36u
 #define CRUCIBLE_SHMEM_NODE_SLOT_KIND_OFFSET 37u
 #define CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET 38u
-#define CRUCIBLE_SHMEM_NODE_SLOT_PAD0_OFFSET 39u
+#define CRUCIBLE_SHMEM_NODE_SLOT_ADVANCE_STOP_CONDITION_OFFSET 39u
 #define CRUCIBLE_SHMEM_NODE_SLOT_PUBLISH_GEN_OFFSET 40u
 #define CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET 44u
-#define CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET 48u
-#define CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET 56u
-#define CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET 64u
-#define CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET 72u
+#define CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_COMPLETION_DEADLINE_TICK_OFFSET 48u
+#define CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_AT_TICK_OFFSET 56u
+#define CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_DEADLINE_TICK_OFFSET 64u
+#define CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_CEILING_TICK_OFFSET 72u
 #define CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_PUBLISHED_SEQUENCE_OFFSET 80u
 #define CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_CONSUMED_SEQUENCE_OFFSET 84u
 #define CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_ARG0_OFFSET 88u
@@ -99,15 +104,31 @@
 #define CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET 112u
 #define CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET 120u
 #define CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET 124u
+#define CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET 128u
+#define CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET 136u
+#define CRUCIBLE_SHMEM_NODE_SLOT_PAD3_OFFSET 140u
+#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET 144u
+#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET 152u
+#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET 160u
+#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET 168u
+#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET 176u
+#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET 184u
+#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET 192u
+#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET 200u
+#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET 204u
+#define CRUCIBLE_SHMEM_NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET 208u
+#define CRUCIBLE_SHMEM_NODE_SLOT_PAD4_OFFSET 216u
 
 #define CRUCIBLE_SHMEM_RING_HEADER_SIZE 128u
 #define CRUCIBLE_SHMEM_RING_HEADER_ALIGN 128u
 #define CRUCIBLE_SHMEM_RING_HEADER_READ_IDX_OFFSET 0u
-#define CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_OFFSET 8u
+#define CRUCIBLE_SHMEM_RING_HEADER_CONSUMER_STATE_OFFSET 8u
+#define CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_OFFSET 16u
 #define CRUCIBLE_SHMEM_RING_HEADER_WRITE_IDX_OFFSET 64u
-#define CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_OFFSET 72u
-#define CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_LEN 56u
-#define CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_LEN 56u
+#define CRUCIBLE_SHMEM_RING_HEADER_PRODUCER_STATE_OFFSET 72u
+#define CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_OFFSET 80u
+#define CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_LEN 48u
+#define CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_LEN 48u
 
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE 4640u
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_ALIGN 8u
@@ -136,11 +157,11 @@
 
 #define CRUCIBLE_SHMEM_FINGERPRINT_DIGEST_BYTES 32u
 #define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_MAX_VCPUS 8u
-#define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_WORDS 68u
+#define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_WORDS 69u
 #define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_SIZE 640u
 #define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_ALIGN 128u
 #define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET 0u
-#define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET 4u
+#define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET 4u
 #define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET 8u
 
 #define CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE 4672u
@@ -173,7 +194,7 @@ typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_region_header {
     _Atomic uint64_t ring_data_off;
     _Atomic uint64_t entry_stride;
     _Atomic uint64_t region_size;
-    _Atomic uint32_t icount_shift;
+    _Atomic uint32_t ticks_per_ns;
     _Atomic uint8_t pause_requested;
     _Atomic uint8_t shutdown_requested;
     uint8_t control_padding[2];
@@ -192,7 +213,7 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, ring_hdr_off
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, ring_data_off) == CRUCIBLE_SHMEM_REGION_HEADER_RING_DATA_OFF_OFFSET, "crucible_shmem_region_header.ring_data_off offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, entry_stride) == CRUCIBLE_SHMEM_REGION_HEADER_ENTRY_STRIDE_OFFSET, "crucible_shmem_region_header.entry_stride offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, region_size) == CRUCIBLE_SHMEM_REGION_HEADER_REGION_SIZE_OFFSET, "crucible_shmem_region_header.region_size offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, icount_shift) == CRUCIBLE_SHMEM_REGION_HEADER_ICOUNT_SHIFT_OFFSET, "crucible_shmem_region_header.icount_shift offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, ticks_per_ns) == CRUCIBLE_SHMEM_REGION_HEADER_TICKS_PER_NS_OFFSET, "crucible_shmem_region_header.ticks_per_ns offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, pause_requested) == CRUCIBLE_SHMEM_REGION_HEADER_PAUSE_REQUESTED_OFFSET, "crucible_shmem_region_header.pause_requested offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, shutdown_requested) == CRUCIBLE_SHMEM_REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET, "crucible_shmem_region_header.shutdown_requested offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, control_padding) == CRUCIBLE_SHMEM_REGION_HEADER_CONTROL_PADDING_OFFSET, "crucible_shmem_region_header.control_padding offset");
@@ -208,13 +229,13 @@ typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_node_slot {
     _Atomic uint8_t status;
     _Atomic uint8_t kind;
     _Atomic uint8_t device_io_active;
-    uint8_t pad0;
+    _Atomic uint8_t advance_stop_condition;
     _Atomic uint32_t publish_gen;
     _Atomic uint32_t control_boundary_ack;
-    _Atomic uint64_t device_completion_deadline_icount;
-    _Atomic uint64_t preemption_at_icount;
-    _Atomic uint64_t preemption_deadline_icount;
-    _Atomic uint64_t preemption_ceiling_icount;
+    _Atomic uint64_t device_completion_deadline_tick;
+    _Atomic uint64_t preemption_at_tick;
+    _Atomic uint64_t preemption_deadline_tick;
+    _Atomic uint64_t preemption_ceiling_tick;
     _Atomic uint32_t preemption_published_sequence;
     _Atomic uint32_t preemption_consumed_sequence;
     _Atomic uint32_t preemption_arg0;
@@ -225,6 +246,20 @@ typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_node_slot {
     _Atomic uint64_t logical_time_restore_target;
     _Atomic uint32_t logical_time_restore_request;
     _Atomic uint32_t logical_time_restore_ack;
+    _Atomic uint64_t control_boundary_fault_command_frontier;
+    _Atomic uint32_t control_boundary_capture_request;
+    uint8_t pad3[4];
+    _Atomic uint64_t timer_witness_generation;
+    _Atomic uint64_t timer_witness_deadline_ps;
+    _Atomic uint64_t timer_witness_deadline_tick;
+    _Atomic uint64_t timer_witness_armed_raw_icount;
+    _Atomic uint64_t timer_witness_fired_expire_ps;
+    _Atomic uint64_t timer_witness_fired_virtual_ps;
+    _Atomic uint64_t timer_witness_fired_raw_icount;
+    _Atomic uint32_t timer_witness_completed;
+    _Atomic uint32_t timer_witness_reserved;
+    _Atomic uint64_t advance_publication_sequence;
+    uint8_t pad4[40];
 } crucible_shmem_node_slot;
 
 CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_node_slot) == CRUCIBLE_SHMEM_NODE_SLOT_SIZE, "crucible_shmem_node_slot size");
@@ -237,13 +272,13 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, wake_signal) == 
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, status) == CRUCIBLE_SHMEM_NODE_SLOT_STATUS_OFFSET, "crucible_shmem_node_slot.status offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, kind) == CRUCIBLE_SHMEM_NODE_SLOT_KIND_OFFSET, "crucible_shmem_node_slot.kind offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, device_io_active) == CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, "crucible_shmem_node_slot.device_io_active offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, pad0) == CRUCIBLE_SHMEM_NODE_SLOT_PAD0_OFFSET, "crucible_shmem_node_slot.pad0 offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, advance_stop_condition) == CRUCIBLE_SHMEM_NODE_SLOT_ADVANCE_STOP_CONDITION_OFFSET, "crucible_shmem_node_slot.advance_stop_condition offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, publish_gen) == CRUCIBLE_SHMEM_NODE_SLOT_PUBLISH_GEN_OFFSET, "crucible_shmem_node_slot.publish_gen offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, control_boundary_ack) == CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET, "crucible_shmem_node_slot.control_boundary_ack offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, device_completion_deadline_icount) == CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET, "crucible_shmem_node_slot.device_completion_deadline_icount offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, preemption_at_icount) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET, "crucible_shmem_node_slot.preemption_at_icount offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, preemption_deadline_icount) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET, "crucible_shmem_node_slot.preemption_deadline_icount offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, preemption_ceiling_icount) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET, "crucible_shmem_node_slot.preemption_ceiling_icount offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, device_completion_deadline_tick) == CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_COMPLETION_DEADLINE_TICK_OFFSET, "crucible_shmem_node_slot.device_completion_deadline_tick offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, preemption_at_tick) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_AT_TICK_OFFSET, "crucible_shmem_node_slot.preemption_at_tick offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, preemption_deadline_tick) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_DEADLINE_TICK_OFFSET, "crucible_shmem_node_slot.preemption_deadline_tick offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, preemption_ceiling_tick) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_CEILING_TICK_OFFSET, "crucible_shmem_node_slot.preemption_ceiling_tick offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, preemption_published_sequence) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_PUBLISHED_SEQUENCE_OFFSET, "crucible_shmem_node_slot.preemption_published_sequence offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, preemption_consumed_sequence) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_CONSUMED_SEQUENCE_OFFSET, "crucible_shmem_node_slot.preemption_consumed_sequence offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, preemption_arg0) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_ARG0_OFFSET, "crucible_shmem_node_slot.preemption_arg0 offset");
@@ -254,19 +289,37 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, logical_time_raw
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, logical_time_restore_target) == CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET, "crucible_shmem_node_slot.logical_time_restore_target offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, logical_time_restore_request) == CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET, "crucible_shmem_node_slot.logical_time_restore_request offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, logical_time_restore_ack) == CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET, "crucible_shmem_node_slot.logical_time_restore_ack offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, control_boundary_fault_command_frontier) == CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET, "crucible_shmem_node_slot.control_boundary_fault_command_frontier offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, control_boundary_capture_request) == CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET, "crucible_shmem_node_slot.control_boundary_capture_request offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, pad3) == CRUCIBLE_SHMEM_NODE_SLOT_PAD3_OFFSET, "crucible_shmem_node_slot.pad3 offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_generation) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET, "crucible_shmem_node_slot.timer_witness_generation offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_deadline_ps) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET, "crucible_shmem_node_slot.timer_witness_deadline_ps offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_deadline_tick) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET, "crucible_shmem_node_slot.timer_witness_deadline_tick offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_armed_raw_icount) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET, "crucible_shmem_node_slot.timer_witness_armed_raw_icount offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_fired_expire_ps) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET, "crucible_shmem_node_slot.timer_witness_fired_expire_ps offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_fired_virtual_ps) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET, "crucible_shmem_node_slot.timer_witness_fired_virtual_ps offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_fired_raw_icount) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET, "crucible_shmem_node_slot.timer_witness_fired_raw_icount offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_completed) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET, "crucible_shmem_node_slot.timer_witness_completed offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_reserved) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET, "crucible_shmem_node_slot.timer_witness_reserved offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, advance_publication_sequence) == CRUCIBLE_SHMEM_NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET, "crucible_shmem_node_slot.advance_publication_sequence offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, pad4) == CRUCIBLE_SHMEM_NODE_SLOT_PAD4_OFFSET, "crucible_shmem_node_slot.pad4 offset");
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_ring_header {
     _Atomic uint64_t read_idx;
+    _Atomic uint64_t consumer_state;
     uint8_t pad_read[CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_LEN];
     _Atomic uint64_t write_idx;
+    _Atomic uint64_t producer_state;
     uint8_t pad_write[CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_LEN];
 } crucible_shmem_ring_header;
 
 CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_ring_header) == CRUCIBLE_SHMEM_RING_HEADER_SIZE, "crucible_shmem_ring_header size");
 CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_ring_header) == CRUCIBLE_SHMEM_RING_HEADER_ALIGN, "crucible_shmem_ring_header alignment");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, read_idx) == CRUCIBLE_SHMEM_RING_HEADER_READ_IDX_OFFSET, "crucible_shmem_ring_header.read_idx offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, consumer_state) == CRUCIBLE_SHMEM_RING_HEADER_CONSUMER_STATE_OFFSET, "crucible_shmem_ring_header.consumer_state offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, pad_read) == CRUCIBLE_SHMEM_RING_HEADER_PAD_READ_OFFSET, "crucible_shmem_ring_header.pad_read offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, write_idx) == CRUCIBLE_SHMEM_RING_HEADER_WRITE_IDX_OFFSET, "crucible_shmem_ring_header.write_idx offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, producer_state) == CRUCIBLE_SHMEM_RING_HEADER_PRODUCER_STATE_OFFSET, "crucible_shmem_ring_header.producer_state offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_ring_header, pad_write) == CRUCIBLE_SHMEM_RING_HEADER_PAD_WRITE_OFFSET, "crucible_shmem_ring_header.pad_write offset");
 
 typedef struct crucible_shmem_frame_entry {
@@ -313,14 +366,14 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_coverage_entry, reserved) =
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_fingerprint_sample_slot {
     _Atomic uint32_t sample_gen;
-    uint32_t reserved;
+    _Atomic uint32_t capture_request;
     _Atomic uint64_t words[CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_WORDS];
 } crucible_shmem_fingerprint_sample_slot;
 
 CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_fingerprint_sample_slot) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_SIZE, "crucible_shmem_fingerprint_sample_slot size");
 CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_fingerprint_sample_slot) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_ALIGN, "crucible_shmem_fingerprint_sample_slot alignment");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_fingerprint_sample_slot, sample_gen) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET, "crucible_shmem_fingerprint_sample_slot.sample_gen offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_fingerprint_sample_slot, reserved) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET, "crucible_shmem_fingerprint_sample_slot.reserved offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_fingerprint_sample_slot, capture_request) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET, "crucible_shmem_fingerprint_sample_slot.capture_request offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_fingerprint_sample_slot, words) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET, "crucible_shmem_fingerprint_sample_slot.words offset");
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(64) crucible_shmem_whitebox_marker_entry {
@@ -344,7 +397,7 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_whitebox_marker_entry, rese
 
 /* Byte-encoded QEMU fault command/result ABI. */
 #define CRUCIBLE_FAULT_COMMAND_ABI_MAJOR 1
-#define CRUCIBLE_FAULT_COMMAND_ABI_MINOR 2
+#define CRUCIBLE_FAULT_COMMAND_ABI_MINOR 3
 #define CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION 1
 #define CRUCIBLE_FAULT_DEFAULT_PAYLOAD_BYTES 2106448
 #define CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES 33563728
@@ -353,10 +406,10 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_whitebox_marker_entry, rese
 #define CRUCIBLE_FAULT_DEFAULT_COMMAND_CAPACITY 4096
 #define CRUCIBLE_FAULT_HARD_COMMAND_CAPACITY 65536
 #define CRUCIBLE_FAULT_COMMAND_HEADER_V1_BYTES 216
-#define CRUCIBLE_FAULT_RESULT_HEADER_V1_BYTES 188
+#define CRUCIBLE_FAULT_RESULT_HEADER_V2_BYTES 196
 #define CRUCIBLE_FAULT_CAPABILITY_ROW_V1_BYTES 60
 #define CRUCIBLE_FAULT_COMMAND_SLOT_V1_BYTES 256
-#define CRUCIBLE_FAULT_RESULT_SLOT_V1_BYTES 256
+#define CRUCIBLE_FAULT_RESULT_SLOT_V2_BYTES 256
 #define CRUCIBLE_FAULT_PAYLOAD_ARENA_HEADER_BYTES 128
 #define CRUCIBLE_FAULT_CAPABILITY_SCOPE_ALL 1
 #define CRUCIBLE_FAULT_CAPABILITY_SCOPE_X86_64 2
@@ -402,16 +455,17 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_whitebox_marker_entry, rese
 #define CRUCIBLE_FAULT_RESULT_SEQUENCE_OFFSET 12
 #define CRUCIBLE_FAULT_RESULT_OBSERVED_ICOUNT_OFFSET 20
 #define CRUCIBLE_FAULT_RESULT_APPLIED_ICOUNT_OFFSET 28
-#define CRUCIBLE_FAULT_RESULT_CAPABILITY_VERSION_OFFSET 36
-#define CRUCIBLE_FAULT_RESULT_PHASE_OFFSET 40
-#define CRUCIBLE_FAULT_RESULT_RESERVED0_OFFSET 42
-#define CRUCIBLE_FAULT_RESULT_BEFORE_HASH_OFFSET 44
-#define CRUCIBLE_FAULT_RESULT_AFTER_HASH_OFFSET 76
-#define CRUCIBLE_FAULT_RESULT_EVIDENCE_HASH_OFFSET 108
-#define CRUCIBLE_FAULT_RESULT_PAYLOAD_HASH_OFFSET 140
-#define CRUCIBLE_FAULT_RESULT_PAYLOAD_OFFSET_OFFSET 172
-#define CRUCIBLE_FAULT_RESULT_PAYLOAD_LENGTH_OFFSET 180
-#define CRUCIBLE_FAULT_RESULT_RESERVED1_OFFSET 184
+#define CRUCIBLE_FAULT_RESULT_EMITTED_TICK_OFFSET 36
+#define CRUCIBLE_FAULT_RESULT_CAPABILITY_VERSION_OFFSET 44
+#define CRUCIBLE_FAULT_RESULT_PHASE_OFFSET 48
+#define CRUCIBLE_FAULT_RESULT_RESERVED0_OFFSET 50
+#define CRUCIBLE_FAULT_RESULT_BEFORE_HASH_OFFSET 52
+#define CRUCIBLE_FAULT_RESULT_AFTER_HASH_OFFSET 84
+#define CRUCIBLE_FAULT_RESULT_EVIDENCE_HASH_OFFSET 116
+#define CRUCIBLE_FAULT_RESULT_PAYLOAD_HASH_OFFSET 148
+#define CRUCIBLE_FAULT_RESULT_PAYLOAD_OFFSET_OFFSET 180
+#define CRUCIBLE_FAULT_RESULT_PAYLOAD_LENGTH_OFFSET 188
+#define CRUCIBLE_FAULT_RESULT_RESERVED1_OFFSET 192
 #define CRUCIBLE_FAULT_CAPABILITY_KIND_OFFSET 0
 #define CRUCIBLE_FAULT_CAPABILITY_SCOPE_OFFSET 2
 #define CRUCIBLE_FAULT_CAPABILITY_SEMANTIC_VERSION_OFFSET 4
@@ -491,20 +545,20 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_command_slot_v1, payload_st
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_command_slot_v1, reservation_end) == CRUCIBLE_FAULT_COMMAND_SLOT_RESERVATION_END_OFFSET, "crucible_fault_command_slot_v1.reservation_end offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_command_slot_v1, header) == CRUCIBLE_FAULT_COMMAND_SLOT_HEADER_OFFSET, "crucible_fault_command_slot_v1.header offset");
 
-typedef struct CRUCIBLE_SHMEM_ALIGNED(64) crucible_fault_result_slot_v1 {
+typedef struct CRUCIBLE_SHMEM_ALIGNED(64) crucible_fault_result_slot_v2 {
     uint64_t reservation_start;
     uint64_t payload_start;
     uint64_t reservation_end;
-    uint8_t header[CRUCIBLE_FAULT_RESULT_HEADER_V1_BYTES];
-    uint8_t reserved[44];
-} crucible_fault_result_slot_v1;
+    uint8_t header[CRUCIBLE_FAULT_RESULT_HEADER_V2_BYTES];
+    uint8_t reserved[36];
+} crucible_fault_result_slot_v2;
 
-CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_fault_result_slot_v1) == CRUCIBLE_FAULT_RESULT_SLOT_V1_BYTES, "crucible_fault_result_slot_v1 size");
-CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_fault_result_slot_v1) == 64, "crucible_fault_result_slot_v1 alignment");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_result_slot_v1, reservation_start) == CRUCIBLE_FAULT_RESULT_SLOT_RESERVATION_START_OFFSET, "crucible_fault_result_slot_v1.reservation_start offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_result_slot_v1, payload_start) == CRUCIBLE_FAULT_RESULT_SLOT_PAYLOAD_START_OFFSET, "crucible_fault_result_slot_v1.payload_start offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_result_slot_v1, reservation_end) == CRUCIBLE_FAULT_RESULT_SLOT_RESERVATION_END_OFFSET, "crucible_fault_result_slot_v1.reservation_end offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_result_slot_v1, header) == CRUCIBLE_FAULT_RESULT_SLOT_HEADER_OFFSET, "crucible_fault_result_slot_v1.header offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_fault_result_slot_v2) == CRUCIBLE_FAULT_RESULT_SLOT_V2_BYTES, "crucible_fault_result_slot_v2 size");
+CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_fault_result_slot_v2) == 64, "crucible_fault_result_slot_v2 alignment");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_result_slot_v2, reservation_start) == CRUCIBLE_FAULT_RESULT_SLOT_RESERVATION_START_OFFSET, "crucible_fault_result_slot_v2.reservation_start offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_result_slot_v2, payload_start) == CRUCIBLE_FAULT_RESULT_SLOT_PAYLOAD_START_OFFSET, "crucible_fault_result_slot_v2.payload_start offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_result_slot_v2, reservation_end) == CRUCIBLE_FAULT_RESULT_SLOT_RESERVATION_END_OFFSET, "crucible_fault_result_slot_v2.reservation_end offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_result_slot_v2, header) == CRUCIBLE_FAULT_RESULT_SLOT_HEADER_OFFSET, "crucible_fault_result_slot_v2.header offset");
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_fault_payload_arena_header {
     _Atomic uint64_t read_cursor;
@@ -671,7 +725,7 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_payload_arena_header, write
 #define CRUCIBLE_FAULT_TARGET_MANIFEST_QUERY_MAGIC_V1 "CRUCFTQ1"
 #define CRUCIBLE_FAULT_REGISTER_MANIFEST_MAGIC_V1 "CRUCRGM1"
 #define CRUCIBLE_FAULT_INTERRUPT_MANIFEST_MAGIC_V1 "CRUCIRM1"
-#define CRUCIBLE_FAULT_CLOCK_MANIFEST_MAGIC_V1 "CRUCCLM1"
+#define CRUCIBLE_FAULT_CLOCK_MANIFEST_MAGIC_V2 "CRUCCLM2"
 #define CRUCIBLE_FAULT_HARDWARE_ERROR_MANIFEST_MAGIC_V1 "CRUCHWM1"
 #define CRUCIBLE_FAULT_ACCELERATOR_MANIFEST_MAGIC_V1 "CRUCACM1"
 #define CRUCIBLE_FAULT_TARGET_MANIFEST_QUERY_V1_BYTES 16
@@ -688,9 +742,9 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_payload_arena_header, write
 #define CRUCIBLE_FAULT_TARGET_MANIFEST_QUERY_RESERVED_OFFSET 12
 #define CRUCIBLE_FAULT_TARGET_MANIFEST_QUERY_RESERVED_BYTES 4
 #define CRUCIBLE_FAULT_REGISTER_MANIFEST_VERSION_V1 1
-#define CRUCIBLE_FAULT_CLOCK_MANIFEST_VERSION_V1 1
-#define CRUCIBLE_FAULT_CLOCK_MANIFEST_HEADER_V1_BYTES 56
-#define CRUCIBLE_FAULT_CLOCK_ROW_HEADER_V1_BYTES 56
+#define CRUCIBLE_FAULT_CLOCK_MANIFEST_VERSION_V2 2
+#define CRUCIBLE_FAULT_CLOCK_MANIFEST_HEADER_V2_BYTES 56
+#define CRUCIBLE_FAULT_CLOCK_ROW_HEADER_V2_BYTES 64
 #define CRUCIBLE_FAULT_ACCELERATOR_MANIFEST_VERSION_V1 1
 #define CRUCIBLE_FAULT_ACCELERATOR_MANIFEST_HEADER_V1_BYTES 56
 #define CRUCIBLE_FAULT_ACCELERATOR_ROW_HEADER_V1_BYTES 64
@@ -735,6 +789,7 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_payload_arena_header, write
 #define CRUCIBLE_FAULT_CLOCK_ROW_ID_LENGTH_OFFSET 48
 #define CRUCIBLE_FAULT_CLOCK_ROW_IMPLEMENTATION_LENGTH_OFFSET 50
 #define CRUCIBLE_FAULT_CLOCK_ROW_LENGTH_OFFSET 52
+#define CRUCIBLE_FAULT_CLOCK_ROW_EPOCH_NS_OFFSET 56
 #define CRUCIBLE_FAULT_REGISTER_MANIFEST_HEADER_V1_BYTES 56
 #define CRUCIBLE_FAULT_REGISTER_ROW_HEADER_V1_BYTES 42
 #define CRUCIBLE_FAULT_HARDWARE_ERROR_MANIFEST_VERSION_V1 1
@@ -1167,6 +1222,11 @@ typedef struct crucible_shmem_guest_introspection_layout {
     uint64_t accelerator_ring_hdr_off;
     uint64_t accelerator_ring_data_off;
     uint64_t accelerator_entry_stride;
+    uint32_t selectable_reply_ring_count;
+    uint32_t selectable_reply_queue_capacity;
+    uint64_t selectable_reply_ring_hdr_off;
+    uint64_t selectable_reply_ring_data_off;
+    uint64_t selectable_reply_entry_stride;
     uint64_t region_size;
 } crucible_shmem_guest_introspection_layout;
 
@@ -1255,6 +1315,9 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
     uint64_t guest_data_end;
     uint64_t accelerator_hdr_off;
     uint64_t accelerator_data_off;
+    uint64_t accelerator_data_end;
+    uint64_t selectable_reply_hdr_off;
+    uint64_t selectable_reply_data_off;
     uint64_t computed_region_size;
     uint32_t guest_ring_count;
     uint32_t accelerator_ring_count;
@@ -1303,7 +1366,7 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
         || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_RING_HEADER_SIZE, &byte_len) != 0
         || crucible_shmem_u64_checked_add(fault_result_hdr_off, byte_len, &fault_result_slot_off) != 0
         || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_FAULT_DEFAULT_COMMAND_CAPACITY, &count) != 0
-        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_FAULT_RESULT_SLOT_V1_BYTES, &byte_len) != 0
+        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_FAULT_RESULT_SLOT_V2_BYTES, &byte_len) != 0
         || crucible_shmem_u64_checked_add(fault_result_slot_off, byte_len, &fault_result_slot_end) != 0
         || crucible_shmem_u64_checked_align_up(fault_result_slot_end, CRUCIBLE_FAULT_PAYLOAD_ARENA_HEADER_BYTES, &fault_result_arena_hdr_off) != 0
         || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_FAULT_PAYLOAD_ARENA_HEADER_BYTES, &byte_len) != 0
@@ -1340,7 +1403,13 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
         || crucible_shmem_u64_checked_add(accelerator_hdr_off, byte_len, &accelerator_data_off) != 0
         || crucible_shmem_u64_checked_mul(accelerator_ring_count, CRUCIBLE_SHMEM_ACCELERATOR_QUEUE_CAPACITY, &count) != 0
         || crucible_shmem_u64_checked_mul(count, CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_SIZE, &byte_len) != 0
-        || crucible_shmem_u64_checked_add(accelerator_data_off, byte_len, &computed_region_size) != 0
+        || crucible_shmem_u64_checked_add(accelerator_data_off, byte_len, &accelerator_data_end) != 0
+        || crucible_shmem_u64_checked_align_up(accelerator_data_end, CRUCIBLE_SHMEM_RING_HEADER_ALIGN, &selectable_reply_hdr_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_RING_HEADER_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(selectable_reply_hdr_off, byte_len, &selectable_reply_data_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY, &count) != 0
+        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(selectable_reply_data_off, byte_len, &computed_region_size) != 0
         || computed_region_size != advertised_region_size) {
         return -1;
     }
@@ -1355,6 +1424,11 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
     out->accelerator_ring_hdr_off = accelerator_hdr_off;
     out->accelerator_ring_data_off = accelerator_data_off;
     out->accelerator_entry_stride = CRUCIBLE_SHMEM_ACCELERATOR_ENTRY_SIZE;
+    out->selectable_reply_ring_count = vm_node_count;
+    out->selectable_reply_queue_capacity = CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY;
+    out->selectable_reply_ring_hdr_off = selectable_reply_hdr_off;
+    out->selectable_reply_ring_data_off = selectable_reply_data_off;
+    out->selectable_reply_entry_stride = CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE;
     out->region_size = computed_region_size;
     return 0;
 }

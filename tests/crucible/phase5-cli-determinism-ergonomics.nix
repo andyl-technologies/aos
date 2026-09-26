@@ -128,20 +128,16 @@
         needle = "struct FailureArtifactRule";
       }
       {
-        label = "failure footer";
-        needle = "struct FailureReproductionFooter";
+        label = "reproduction footer";
+        needle = "struct ReproductionFooter";
       }
       {
-        label = "failure footer builder";
-        needle = "fn failure_reproduction_footer";
+        label = "reproduction footer builder";
+        needle = "fn reproduction_footer";
       }
       {
         label = "replay command footer";
         needle = "crucible replay";
-      }
-      {
-        label = "debug at failure footer";
-        needle = "--at-failure";
       }
       {
         label = "self-contained artifact proof";
@@ -209,7 +205,7 @@
       }
       {
         label = "canonical log entry model";
-        needle = "struct CanonicalLogEntry";
+        needle = "struct CanonicalSchedulerEventLogEntry";
       }
       {
         label = "rendered canonical log model";
@@ -354,12 +350,17 @@ in
   pkgs.mkDerivation {
     pname = "crucible-phase5-cli-determinism-ergonomics";
     version = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+    runtimeDeps = [pkgs.sqlite];
     src = crucibleSrc;
 
     buildDeps = [
       pkgs.coreutils
       pkgs.rust
       pkgs.sed
+
+      pkgs.pkg-config
+      pkgs.sqlite
     ];
 
     CRUCIBLE_T_CLI_4_FAILURES = failureText;

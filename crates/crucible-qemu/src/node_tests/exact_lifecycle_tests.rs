@@ -3,6 +3,61 @@
 use super::*;
 
 #[test]
+fn exact_checkpoint_pause_orders_quiesce_stop_and_release() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    node.synchronize_observed_time()?;
+    log.lock().unwrap().clear();
+
+    node.pause_at_exact_checkpoint_boundary()?;
+
+    assert_eq!(
+        recorded(&log),
+        vec![
+            ChannelCall::ShmemCurrentIcount,
+            ChannelCall::HostCheckpointQuiesce,
+            ChannelCall::QmpStop,
+            ChannelCall::HostCheckpointClearWhileStopped,
+            ChannelCall::ShmemCurrentIcount,
+        ]
+    );
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+fn exact_checkpoint_pause_aborts_plugin_pause_when_qmp_stop_fails() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions {
+            fail_qmp_stop: true,
+            ..ScriptedNodeOptions::default()
+        },
+        std::iter::empty(),
+    )?;
+    node.synchronize_observed_time()?;
+    log.lock().unwrap().clear();
+
+    let error = node
+        .pause_at_exact_checkpoint_boundary()
+        .expect_err("QMP stop failure must reject exact pause");
+
+    assert!(error.to_string().contains("injected QMP stop failure"));
+    assert_eq!(
+        recorded(&log),
+        vec![
+            ChannelCall::ShmemCurrentIcount,
+            ChannelCall::HostCheckpointQuiesce,
+            ChannelCall::QmpStop,
+            ChannelCall::HostCheckpointAbort,
+        ]
+    );
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
 fn permanent_failure_retires_and_removes_the_authoritative_generation() -> Result<(), Box<dyn Error>>
 {
     let log = shared_log();
@@ -43,71 +98,6 @@ fn restored_replacement_requires_explicit_release_after_install() -> Result<(), 
     nodes.shutdown()?;
     Ok(())
 }
-
-#[test]
-fn exact_snapshot_rejects_staged_fault_event_ownership() -> Result<(), Box<dyn Error>> {
-    let log = shared_log();
-    let mut node =
-        scripted_node_with_fault_events(Arc::clone(&log), [fault_event_with_sequence(1)])?;
-    let mut checkpoint = checkpoint("pending-fault-event");
-    checkpoint.virtual_time = node.synchronize_observed_time()?;
-    let node_identity = node_id("vm-a");
-    checkpoint.node_icounts.insert(
-        node_identity.clone(),
-        Icount {
-            retired: checkpoint.virtual_time.ticks,
-        },
-    );
-
-    let error = node
-        .capture_exact_snapshot(&node_identity, checkpoint)
-        .expect_err("staged occurrence ownership must reject canonical capture");
-    assert!(error.to_string().contains("empty fault-event continuation"));
-    assert!(!recorded(&log).contains(&ChannelCall::QmpStop));
-    node.shutdown_child()?;
-    Ok(())
-}
-
-#[test]
-fn qemu_node_captures_one_identity_bound_vmstate_and_host_io_pair() -> Result<(), Box<dyn Error>> {
-    let log = shared_log();
-    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
-    let mut checkpoint = checkpoint("paired-exact");
-    checkpoint.virtual_time = node.synchronize_observed_time()?;
-    let node_identity = node_id("vm-a");
-    checkpoint.node_icounts.insert(
-        node_identity.clone(),
-        Icount {
-            retired: checkpoint.virtual_time.ticks,
-        },
-    );
-
-    let snapshot = node.capture_exact_snapshot(&node_identity, checkpoint.clone())?;
-
-    assert_eq!(snapshot.checkpoint(), &checkpoint);
-    assert_eq!(
-        snapshot.host_io().execution_binding(),
-        snapshot.checkpoint().id
-    );
-    assert_eq!(
-        snapshot.replay_oracle_validation(),
-        crate::QemuReplayOracleValidation::NotRun
-    );
-    assert_eq!(
-        recorded(&log),
-        vec![
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::QmpStop,
-            ChannelCall::HostCheckpointClearWhileStopped,
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::QmpExactSave(snapshot.checkpoint().id),
-            ChannelCall::QmpContinue,
-        ]
-    );
-    Ok(())
-}
-
 #[test]
 fn terminal_lifecycle_capture_uses_the_existing_qemu_stop_fence() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
@@ -122,7 +112,8 @@ fn terminal_lifecycle_capture_uses_the_existing_qemu_stop_fence() -> Result<(), 
         },
     );
 
-    let snapshot = node.capture_terminal_lifecycle_snapshot(&node_identity, checkpoint.clone())?;
+    let snapshot = node
+        .capture_terminal_lifecycle_snapshot_shared(&node_identity, Arc::new(checkpoint.clone()))?;
     let cloned = snapshot.clone();
 
     assert_eq!(snapshot.checkpoint(), &checkpoint);
@@ -136,80 +127,6 @@ fn terminal_lifecycle_capture_uses_the_existing_qemu_stop_fence() -> Result<(), 
             ChannelCall::ShmemCurrentIcount,
             ChannelCall::QmpExactSave(snapshot.checkpoint().id),
         ]
-    );
-    Ok(())
-}
-
-#[test]
-fn qemu_node_terminates_after_failed_exact_capture() -> Result<(), Box<dyn Error>> {
-    let log = shared_log();
-    let mut node = scripted_node(Arc::clone(&log), false, false, true)?;
-    let mut checkpoint = checkpoint("failed-exact");
-    checkpoint.virtual_time = node.synchronize_observed_time()?;
-    let node_identity = node_id("vm-a");
-    checkpoint.node_icounts.insert(
-        node_identity.clone(),
-        Icount {
-            retired: checkpoint.virtual_time.ticks,
-        },
-    );
-
-    let error = node
-        .capture_exact_snapshot(&node_identity, checkpoint.clone())
-        .expect_err("failed QMP save must reject the paired checkpoint");
-
-    assert!(error.to_string().contains("save_checkpoint_vmstate"));
-    assert_eq!(
-        recorded(&log),
-        vec![
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::QmpStop,
-            ChannelCall::HostCheckpointClearWhileStopped,
-            ChannelCall::ShmemCurrentIcount,
-            ChannelCall::QmpExactSave(checkpoint.id),
-            ChannelCall::PluginQuit,
-            ChannelCall::QmpQuit,
-        ]
-    );
-    assert!(node.child_reaped());
-    Ok(())
-}
-
-#[test]
-fn qemu_node_actively_aborts_plugin_pause_when_qmp_stop_fails() -> Result<(), Box<dyn Error>> {
-    let log = shared_log();
-    let mut node = scripted_node_with_options(
-        Arc::clone(&log),
-        ScriptedNodeOptions {
-            fail_qmp_stop: true,
-            ..ScriptedNodeOptions::default()
-        },
-        [QemuAsyncWaitOutcome::Completed],
-    )?;
-    let mut checkpoint = checkpoint("failed-stop");
-    checkpoint.virtual_time = node.synchronize_observed_time()?;
-    let node_identity = node_id("vm-a");
-    checkpoint.node_icounts.insert(
-        node_identity.clone(),
-        Icount {
-            retired: checkpoint.virtual_time.ticks,
-        },
-    );
-
-    let error = node
-        .capture_exact_snapshot(&node_identity, checkpoint)
-        .expect_err("failed QMP stop must reject the checkpoint");
-    let calls = recorded(&log);
-
-    assert!(error.to_string().contains("injected QMP stop failure"));
-    assert!(calls.contains(&ChannelCall::QmpStop));
-    assert!(calls.contains(&ChannelCall::HostCheckpointAbort));
-    assert!(!calls.contains(&ChannelCall::HostCheckpointClearWhileStopped));
-    assert!(
-        !calls
-            .iter()
-            .any(|call| matches!(call, ChannelCall::QmpExactSave(_)))
     );
     Ok(())
 }
@@ -234,7 +151,10 @@ fn qemu_node_appends_quantum_coverage_to_the_unified_event_log() -> Result<(), B
     assert_eq!(append.entries.len(), 1);
     let projection = event_log_coverage_projection(&append.entries);
     assert_eq!(projection.len(), 1);
-    assert_eq!(projection.entries()[0].at.icount, Icount { retired: 17 });
+    assert_eq!(
+        projection.entries()[0].at.retired,
+        Some(Icount { retired: 17 })
+    );
     assert_eq!(
         projection.entries()[0].observation,
         EventLogCoverageObservation::BasicBlock {
@@ -287,6 +207,28 @@ fn qemu_node_rejects_a_coverage_quantum_without_an_event_log() -> Result<(), Box
     let (shutdown, append) = node.shutdown_child_with_event_log(&mut event_log)?;
     assert!(shutdown.reaped);
     assert!(append.entries.is_empty());
+    Ok(())
+}
+
+#[test]
+fn qemu_node_discards_pre_authoritative_observations_after_coverage_generation_reset()
+-> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let setup_event =
+        ObservableEvent::coverage_block(Icount { retired: 3 }, node_id("vm-a"), 0x4010, 4);
+    let mut node = scripted_node_with_coverage(
+        Arc::clone(&log),
+        ScriptedNodeOptions::default(),
+        std::iter::empty(),
+        std::iter::empty::<Vec<ObservableEvent>>(),
+        [setup_event],
+    )?;
+
+    assert_eq!(node.prepare_authoritative_observation_stream()?, 1);
+
+    let mut event_log = EventLog::new();
+    let (shutdown, _) = node.shutdown_child_with_event_log(&mut event_log)?;
+    assert!(shutdown.reaped);
     Ok(())
 }
 
@@ -361,7 +303,10 @@ fn qemu_node_drains_final_coverage_before_teardown() -> Result<(), Box<dyn Error
     assert!(node.child_reaped());
     let projection = event_log_coverage_projection(&append.entries);
     assert_eq!(projection.len(), 1);
-    assert_eq!(projection.entries()[0].at.icount, Icount { retired: 17 });
+    assert_eq!(
+        projection.entries()[0].at.retired,
+        Some(Icount { retired: 17 })
+    );
     Ok(())
 }
 

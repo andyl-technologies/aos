@@ -291,7 +291,7 @@ in
             tasks=${taskList}
             open_tasks=${openTaskList}
             status=partial
-            rr_switch_quantum=fixed-node-icount
+            rr_switch_quantum=fixed-retired-instructions
             vcpu_rotation=fixed-ascending
             halt_tracking=per-vcpu-all-halted
             idle_wake_icount=min-armed-vcpu-deadline

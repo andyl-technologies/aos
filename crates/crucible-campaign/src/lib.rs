@@ -1,0 +1,324 @@
+//! Canonical campaign identities, facts, planning state, and component contracts.
+//!
+//! Campaign state is immutable, content addressed, and independent of executor
+//! placement. This module owns the portable semantic vocabulary shared by the
+//! coordinator, planner, API, and local executor. Native process handles,
+//! QEMU-private state, storage paths, and runtime closures are deliberately not
+//! representable here.
+//!
+//! Spec index: RFC-0020 files 01, 02, 04a, 06, 09.
+//!
+//! Module map: `artifact`, `choice`, `model`, and `objective` own the portable
+//! campaign vocabulary; `campaign_service`, `execution`, and `planner_service`
+//! own component contracts; `repository` owns authenticated persistence and
+//! transitions; `codec`, `identity`, `object`, and `merkle` own canonical
+//! encoding, typed identities, envelopes, and authenticated maps.
+
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
+
+mod archive;
+mod artifact;
+mod authority;
+mod campaign_service;
+mod choice;
+mod codec;
+mod execution;
+mod executor_capability;
+mod exploration;
+mod finding;
+mod finding_candidate;
+mod finding_triage_evidence;
+mod identity;
+mod merkle;
+mod model;
+mod object;
+mod object_profile;
+mod objective;
+mod observation;
+mod planner_service;
+mod policy;
+mod repository;
+mod statistics;
+
+pub use model::{CampaignBudgetError, CampaignBudgetLedger};
+
+pub use archive::{
+    ArchiveInventoryDisposition, ArchiveObjectEntry, CampaignArchiveCheckpointResolver,
+    CampaignArchiveCheckpointSelection, CampaignArchiveInspection, CampaignArchiveInventoryPage,
+    CampaignArchiveManifest, CampaignArchivePlan, CampaignArchivePolicy, CampaignArchiveReport,
+    CampaignArchiveTransferReport, MAX_ARCHIVE_INVENTORY_ENTRIES,
+    MAX_ARCHIVE_INVENTORY_PAGE_ENTRIES,
+};
+pub use artifact::{ConfigurationArtifact, ScenarioArtifact};
+pub use authority::{
+    DebuggerAuthorityKey, DebuggerSubmission, PlannerAuthorityKey, PlannerSubmission,
+};
+pub use campaign_service::{
+    ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, CampaignAttemptOrigin,
+    CampaignAttemptPhase, CampaignAttemptRuntime, CampaignAuthorizationError, CampaignChoiceEntry,
+    CampaignChoiceObject, CampaignChoiceObjectKind, CampaignClient, CampaignClientError,
+    CampaignContinuationStatus, CampaignEstimateLabel, CampaignEstimateSummary,
+    CampaignExecutionBasisCounts, CampaignFindingObject, CampaignFindingObjectKind,
+    CampaignFindingOccurrence, CampaignFindingOccurrenceObject,
+    CampaignFindingOccurrenceObjectKind, CampaignFindingOccurrenceService,
+    CampaignFindingTriageReplayProofs, CampaignFindingTriageReplayRole,
+    CampaignFindingTriageReplaySegment, CampaignFindingTriageReplaySelection, CampaignGraphEntry,
+    CampaignListEntry, CampaignName, CampaignOperationalEvidence, CampaignOperationalStatus,
+    CampaignOperationalStatusProvider, CampaignOutcomeCounts, CampaignPlannerEvidence,
+    CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignReportEndpoint, CampaignReportSummary,
+    CampaignRequestAdmissionEntry, CampaignSavepointAction, CampaignSavepointRequest,
+    CampaignSavepointResponse, CampaignSavepointResult, CampaignSemanticStatus, CampaignService,
+    CampaignServiceErrorResponse, CampaignServiceFailure, CampaignServiceFailureSource,
+    CampaignServiceOperation, CampaignServiceRetryDisposition, CampaignStatusSummary,
+    CampaignTraceKind, CampaignWorldStatus, CreateCampaignRequest, CreateCampaignResponse,
+    DeriveCampaignRequest, DeriveCampaignResponse, ExplainCampaignAttemptRequest,
+    ExplainCampaignAttemptResponse, GetCampaignChoiceObjectRequest,
+    GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
+    GetCampaignFindingObjectResponse, GetCampaignFindingOccurrenceObjectRequest,
+    GetCampaignFindingOccurrenceObjectResponse, GetCampaignFindingTriageReplaySegmentRequest,
+    GetCampaignFindingTriageReplaySegmentResponse, GetCampaignFrontierObjectRequest,
+    GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
+    GetCampaignGraphObjectResponse, GetCampaignPlannerRankingsRequest,
+    GetCampaignPlannerRankingsResponse, GetCampaignRequest, GetCampaignResponse,
+    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, GetCampaignStatusRequest,
+    GetCampaignStatusResponse, GetCampaignTraceChunkRequest, GetCampaignTraceChunkResponse,
+    ListCampaignsRequest, ListCampaignsResponse, MAX_CAMPAIGN_CHOICE_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_FINDING_OCCURRENCE_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_LIST_PAGE_ITEMS,
+    MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_REPORT_PAGE_ITEMS,
+    MAX_CAMPAIGN_REQUEST_ATTEMPT_PAGE_ITEMS, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
+    MAX_CAMPAIGN_STATUS_CONTINUATION_BYTES, MAX_CAMPAIGN_STATUS_CONTINUATIONS,
+    MAX_CAMPAIGN_TRACE_BYTES, MAX_CAMPAIGN_TRACE_CHUNK_BYTES, MAX_CREATE_CAMPAIGN_GENERATOR_BYTES,
+    MAX_CREATE_CAMPAIGN_GENERATORS, PUBLIC_EXACT_CAPTURE_REASON, PinCampaignRequest,
+    PinCampaignResponse, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
+    QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
+    QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
+    QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
+    QueryCampaignReportRequest, QueryCampaignReportResponse, QueryCampaignRequestAttemptsRequest,
+    QueryCampaignRequestAttemptsResponse, RepositoryCampaignService,
+    RepositoryCampaignServiceError, SubmitCampaignBranchRequest, SubmitCampaignBranchResponse,
+    SubmitCampaignDiscoveryRequest, SubmitCampaignDiscoveryResponse, WatchCampaignRequest,
+    WatchCampaignResponse,
+};
+pub use choice::{
+    BooleanDomain, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceGroup,
+    ChoiceGroupApplication, ChoiceGroupConstraintEvidence, ChoiceGroupConstraintResult,
+    ChoiceGroupDomain, ChoiceGroupValue, ChoiceOpportunity, ChoiceRelationalConstraint,
+    ChoiceSource, ChoiceTuple, ChoiceValue, DiscreteAlternative, DiscreteDomain, IntegerDomain,
+    IntegerRepresentation, IntegerValue, ModelSampleEvidence, ModelSampleVerifier,
+    SelectableDeclaration, Selection, SelectionOrigin, SelectionReplayMismatch,
+    SelectionReplayMismatchKind,
+};
+pub use codec::CampaignCodecError;
+pub use execution::{
+    AssignmentId, AttemptExecutionScope, AttemptResourceLimits, AttemptRetentionPolicyBasis,
+    AttemptRetentionPolicyDisposition, AttemptStartMode, CancelAttemptExecutionDisposition,
+    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
+    CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest,
+    CheckpointAttemptExecutionResponse, DaemonEpoch, ExecutionId, ExecutionRetentionIntent,
+    ExecutorClient, ExecutorClientError, ExecutorCompatibilityProfile, ExecutorControlService,
+    ExecutorRejection, ExecutorResumeService, ExecutorService, ExecutorStatusService,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
+    MAX_EXECUTOR_COMPONENT_MESSAGE_BYTES, ResumeAttemptExecutionDisposition,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, SubmitAttemptDisposition,
+    SubmitAttemptRequest, SubmitAttemptResponse, attempt_execution_basis_digest_for_start_mode,
+};
+pub use executor_capability::{
+    DescribeExecutorRequest, ExecutorCapabilityService, ExecutorCapabilitySet,
+    ExecutorCapacityReport, ExecutorDescription, ExecutorMaterializationCapability,
+    ExecutorMaterializationLocality, WatchExecutorCapacityRequest,
+};
+pub use exploration::{
+    Attempt, AttemptAdmission, AttemptAdmissionRole, AttemptContinuationInput, AttemptStart,
+    BranchAcceptanceCount, BranchAcceptanceRange, BranchAcceptanceSummary, BranchBudget,
+    BranchEdgeVisitStatistics, BranchPath, BranchPathSegment, BranchPuctProjection, BranchRequest,
+    BranchRequestCause, BranchRequestIdentity, CandidateSource, ContinuationProjection,
+    ContinuationState, ExpansionCredit, ExpansionState, ExpansionStatistics, FeedbackWait,
+    FiniteCandidateSource, GUIDANCE_MICROS_PER_UNIT, GuidanceEvidence,
+    MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES, MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS,
+    MAX_BRANCH_FINDING_OCCURRENCE_VISITS, MAX_BRANCH_FINDING_PROJECTION_BYTES,
+    MAX_BRANCH_FINDING_ROOT_ENTRIES, MAX_BRANCH_NOVELTY_IDENTITIES,
+    MAX_BRANCH_NOVELTY_IDENTITY_VISITS, MAX_BRANCH_NOVELTY_OBSERVATIONS,
+    MAX_BRANCH_NOVELTY_PROJECTION_BYTES, MAX_BRANCH_NOVELTY_ROOT_ENTRIES,
+    MAX_BRANCH_OBJECTIVE_EVALUATIONS, MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES,
+    MAX_BRANCH_PRIOR_NORMALIZATION_VISITS, MAX_PLANNER_GUIDANCE_DOMAIN_BYTES, ObservationCondition,
+    PlannerBeamBarrier, PlannerBeamCandidate, PlannerBeamClosureSummary, PlannerBeamCohortState,
+    PlannerCandidateBudget, PlannerCandidateGuidance, PlannerDisposition,
+    PlannerProposalDisposition, PlannerStep, PlannerStepProposal, PlanningAccounting,
+    PlanningScanCursor, PlanningScanPage, PlanningScanPosition, PlanningUsage,
+    ProgressiveWideningDecision, Proposal, PuctEdgeStatistics, PuctScore,
+    StatisticalFiniteCandidateSource, StatisticalProposalEvidence, StopCondition,
+};
+pub use finding::{
+    Finding, FindingCandidateOccurrenceSet, FindingExactPins, FindingKind,
+    FindingMinimizationAttempt, FindingMinimizationEvidence, FindingOccurrenceSet,
+    FindingRecordBasis, FindingSignature, FindingTarget, GUIDANCE_SIGNAL_FINDING_DIVERGENCE,
+    GUIDANCE_SIGNAL_FINDING_PROPERTY_VIOLATION, GUIDANCE_SIGNAL_FINDING_TIMEOUT,
+    MAX_FINDING_CAUSAL_EVIDENCE, MAX_FINDING_EXACT_PINS, MAX_FINDING_MINIMIZATION_ATTEMPTS,
+    MAX_FINDING_MINIMIZATION_POLICY_BYTES, MAX_FINDING_OCCURRENCES,
+    MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES, ReproductionArtifact, ReproductionArtifactBasis,
+};
+pub use finding_candidate::{
+    FindingAssertionFailureBoundary, FindingCandidateBundle, FindingCandidateCore,
+    FindingExactRetention, FindingExactRetentionCandidate, FindingExactRetentionDisposition,
+    FindingExactRetentionEvidence, FindingExactRetentionIncomplete, FindingReplayCaptureIncomplete,
+    FindingReplayCaptureReference, FindingReplayCaptureSet, FindingReplaySignature,
+    FindingReplayTargetKind, FindingSignatureMinimizationEvidence, FindingTriageEvidenceSet,
+    MAX_FINDING_EXACT_RETENTION_CANDIDATES,
+};
+pub use finding_triage_evidence::{
+    FindingTriageReplayEvidence, FindingTriageReplayStorageDescription,
+    FindingTriageReplayStorageObject, FindingTriageReplayStorageObjectRole,
+    MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES, MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
+};
+pub use identity::{
+    AlternativeId, AttemptAdmissionId, AttemptId, BranchEdgeId, BranchPathId, BranchPointId,
+    BranchRequestId, CampaignArchiveInventoryPageId, CampaignArchiveManifestId,
+    CampaignBudgetLedgerId, CampaignCommandId, CampaignFactId, CampaignHash, CampaignLineageId,
+    CampaignPolicyId, CampaignSnapshotId, CampaignViewId, CandidateGeneratorSpecId, ChoiceClassId,
+    ChoiceDomainId, ChoiceDomainSemanticId, ChoiceGroupId, ChoiceOpportunityId,
+    ChoiceOpportunitySemanticId, ChoiceRngStreamId, ConfigurationArtifactId, ConfigurationId,
+    ContinuationProjectionId, CoverageProjectionId, CreditId, DebugSessionId, ExactCheckpointId,
+    ExpansionStateId, FindingCandidateBundleId, FindingId, FindingReplayCaptureEvidenceId,
+    FindingTriageReplayEvidenceId, MeasurementSetId, ObjectiveEvaluationId, ObservationId,
+    PlannerBeamCandidateId, PlannerCandidateBudgetId, PlannerCandidateGuidanceId, PlannerEngineId,
+    PlannerInvocationId, PlannerSearchCandidateId, PlannerStateId, PlannerStepId, PolicyArtifactId,
+    ProbabilityModelId, PropertyVerdictSetId, ProposalId, RankingExplanationId,
+    ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId,
+    SelectableId, SelectableSemanticId, SelectionId, StatisticalGenerationId,
+    StatisticalParticleId, SurvivorSelectionId,
+};
+pub use merkle::{
+    CampaignStoreError, MAX_PROVEN_LOOKUP_KEYS, MAX_PROVEN_PAGE_ITEMS, MerkleMap,
+    MerkleMapLookupProof, MerkleMapMultiLookupProof, MerkleMapPage, MerkleMapPageProof,
+    MerkleMapRoot,
+};
+pub use model::{
+    ActiveAttemptPolicy, AdmissionOrdinal, BudgetGrant, CampaignControlAction, CampaignDerivation,
+    CampaignFact, CampaignLineage, CampaignPlanningView, CampaignRoots, CampaignSnapshot,
+    CampaignState, ControlRequest, DiscoveryRequest, NonModeledAttemptDisposition, PinChange,
+    PinRequest, PinRetention, PlannerEngine, PlannerInvocation, PlannerState, PlanningBudget,
+    PolicyActivation, PolicyArtifact, SavepointCaptureOutcome, SavepointCaptureRequest,
+    SavepointCaptureResolution, SavepointContinuationSelection,
+};
+pub use object::{CampaignRecordKind, ChildReference, ObjectEnvelope};
+pub use object_profile::{CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler};
+pub use objective::{
+    FixedReward, MAX_LEXICOGRAPHIC_COMPONENT_VISITS, MAX_PARETO_COMPONENT_VISITS,
+    MAX_SURVIVOR_CANDIDATES, MAX_SURVIVOR_EVIDENCE_BYTES, MAX_WEIGHTED_RANKING_BYTE_VISITS,
+    ObjectiveComponent, ObjectiveEvaluation, ObjectiveRejection, ObjectiveValue, RankingCandidate,
+    RankingDisposition, RankingExplanation, RankingMethod, SurvivorRule, SurvivorSelection,
+    SurvivorSelectionBundle, evaluate_objectives, rank_survivors,
+};
+pub use observation::{
+    AssertionViolationWitness, BoundedStopProof, CoverageProjection, MeasurementEvaluationPayload,
+    MeasurementSet, Observation, ObservationEventLogProof, ObservationOutcome,
+    ObservationQuantumBoundary, ObservationStopProof, ObservationStopSatisfaction,
+    PolicyTimeoutKind, PropertyEvidence, PropertyVerdict, PropertyVerdictSet, StopOutcome,
+};
+pub use planner_service::{
+    AuthorizedPlannerService, AuthorizedPlannerServiceError, CANONICAL_BEAM_SURVIVORS_CAPABILITY,
+    CANONICAL_FRONTIER_BUDGET_CAPABILITY, CANONICAL_FRONTIER_OFFERS_CAPABILITY,
+    CANONICAL_FRONTIER_PUCT_CAPABILITY, CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY,
+    CANONICAL_FRONTIER_SEARCH_ORDER_CAPABILITY, CampaignPlanningBundle, CanonicalBeamPlanner,
+    CanonicalBeamPlannerBasis, CanonicalFrontierPlanner, CanonicalFrontierPlannerBasis,
+    CanonicalPuctPlanner, CanonicalPuctPlannerBasis, CanonicalSearchPlanner,
+    CanonicalSearchPlannerBasis, CanonicalSearchStrategy, MAX_PLANNER_COMPONENT_MESSAGE_BYTES,
+    MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS, MAX_RETAINED_PLANNER_REQUEST_BYTES,
+    PlannerCandidateRanking, PlannerClient, PlannerClientError, PlannerEngineOutput,
+    PlannerExecutionSupervisor, PlannerRequest, PlannerResponse, PlannerSearchCandidate,
+    PlannerService, PurePlannerEngine, SmcRequestBasis, StatisticalRequestBasis,
+    SupervisedPlannerExecution,
+};
+pub use policy::{
+    BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, BOUNDARY_INTEGER_GENERATOR_MAX_LANDMARKS,
+    CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION, CORPUS_MUTATION_GENERATOR_MAX_CREDITS,
+    CORPUS_MUTATION_GENERATOR_MAX_DISTANCE, CORPUS_MUTATION_GENERATOR_MAX_INPUT_BYTES,
+    CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS, CORPUS_MUTATION_GENERATOR_MAX_WORK_ITEMS,
+    CampaignAttemptTimeoutPolicy, CampaignMode, CampaignPolicy, CampaignPolicyIdentity,
+    CampaignPolicyRules, CampaignSeed, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
+    ChoicePolicy, ExactRational, ExplorerPolicy, FairnessPolicy,
+    GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION, GROUP_PROGRESSIVE_GENERATOR_MAX_PROPOSALS,
+    GuidanceWeight, InterventionLearningPolicy, LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+    LOG_INTEGER_GENERATOR_MAX_CANDIDATES, MAX_SMC_TOTAL_PARTICLE_TRANSITIONS,
+    ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION, ORDERED_MIXTURE_GENERATOR_MAX_CANDIDATES,
+    ORDERED_MIXTURE_GENERATOR_MAX_DEPTH, ORDERED_MIXTURE_GENERATOR_MAX_WORK_ITEMS, Objective,
+    ObjectiveGoal, PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+    PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+    PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA, PROGRESSIVE_INTEGER_GENERATOR_MAX_PROPOSALS,
+    ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy,
+    STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+    STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION, STRATIFIED_INTEGER_GENERATOR_MAX_STRATA,
+    SequentialMonteCarloDesign, SmcOpportunitySelector, SmcResamplingAlgorithm,
+    SmcResamplingPolicy, SmcStagePlan, StatisticalDistribution, StatisticalDrawPlan,
+    StatisticalSamplingDesign, WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
+    WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES, WeightedGenerator,
+};
+#[cfg(feature = "test-support")]
+pub use repository::CampaignValidationCheckpointMetrics;
+pub use repository::{
+    AttemptAdmissionResult, AttemptQueue, AttemptQueueCursor, AttemptQueueError,
+    AttemptReservation, AuthenticatedFindingCandidateIncorporation,
+    AuthenticatedFindingExactCheckpoint, BranchRequestResult, CampaignBudgetProjection,
+    CampaignCommandResult, CampaignCompletionResult, CampaignDerivationResult,
+    CampaignDiscoveryResult, CampaignExecutorCancelOutcome, CampaignExecutorCheckpointOutcome,
+    CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignExecutorDriverError,
+    CampaignExecutorPublicationGuard, CampaignExecutorStepOutcome, CampaignExecutorStore,
+    CampaignHead, CampaignHeadPage, CampaignLifecycle, CampaignPinRetentionRecord,
+    CampaignPinRetentionSummary, CampaignPlannerDriver, CampaignPlannerDriverConfigError,
+    CampaignPlannerDriverError, CampaignPlannerStepOutcome, CampaignRepository,
+    CampaignRepositoryError, CampaignRepositoryGcExclusionGuard, CampaignSupervisor,
+    CampaignSupervisorConfigError, CampaignSupervisorError, CampaignSupervisorStepOutcome,
+    ChoiceDiscovery, ChoiceDiscoveryResult, ClaimableAttemptPage,
+    FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator,
+    FindingPublicationResult, MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_CLOSURE_OBJECTS,
+    MAX_CAMPAIGN_SNAPSHOT_ANCESTRY, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
+    MAX_OBJECTIVE_EVALUATION_SCAN_PAGE_ITEMS, MAX_OBSERVATION_CHOICE_DISCOVERIES,
+    MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, MAX_PLANNER_SCAN_PAGE_ITEMS,
+    MAX_SAVEPOINT_CAPTURE_SCAN_PAGE_ITEMS, NonModeledAttemptResult, ObjectiveEvaluationCursor,
+    ObjectiveEvaluationInput, ObjectiveEvaluationPublicationResult, ObjectiveEvaluationScanPage,
+    ObservationCandidate, ObservationDisposition, ObservationResult, PendingSavepointCapture,
+    PendingSavepointCapturePage, PlannerStepResult, ProposalResult, ResolvedSelection,
+    SavepointCaptureCursor, SavepointCaptureResolutionResult, SavepointCaptureResult,
+    SavepointContinuationResult, SavepointContinuationSource, WorkerSlotId,
+};
+pub use statistics::{
+    FiniteStatisticalEvidence, MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_ITEMS,
+    SequentialMonteCarloEstimateReport, SequentialMonteCarloEvidence, SmcEstimateLabel,
+    SmcSupportValidation, SmcTransitionEvidence, SmcUncertaintyStatement,
+    StatisticalChoiceEvidence, StatisticalDrawEvidence, StatisticalEndpointEstimate,
+    StatisticalEstimateReport, StatisticalExecutionBasisEvidence, StatisticalExecutionEvidence,
+    StatisticalGeneration, StatisticalOpportunityEvidence, StatisticalParticleOutcome,
+    StatisticalParticleSlot, StatisticalRational, StatisticalRoot, StatisticalRootLookup,
+    StatisticalWeightDiagnostics, verify_finite_statistical_evidence,
+    verify_sequential_monte_carlo_evidence,
+};
+
+#[cfg(test)]
+fn test_budget_ledger_id() -> CampaignBudgetLedgerId {
+    let root = match MerkleMap::empty_content_id() {
+        Ok(root) => root,
+        Err(error) => panic!("canonical empty Merkle root: {error}"),
+    };
+    let ledger = match CampaignBudgetLedger::empty(root) {
+        Ok(ledger) => ledger,
+        Err(error) => panic!("canonical empty budget ledger: {error}"),
+    };
+    let envelope = match ObjectEnvelope::for_budget_ledger(&ledger) {
+        Ok(envelope) => envelope,
+        Err(error) => panic!("canonical budget-ledger envelope: {error}"),
+    };
+    match CampaignBudgetLedgerId::from_content_id(envelope.content_id()) {
+        Ok(identity) => identity,
+        Err(error) => panic!("typed budget-ledger identity: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod extended_stop_tests;
+#[cfg(test)]
+mod observation_stop_tests;
+#[cfg(test)]
+mod tests;

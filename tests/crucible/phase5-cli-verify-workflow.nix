@@ -26,7 +26,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 T-CLI-7 completion note";
-        needle = "`T-CLI-7` is green through `checks.crucible.phase5.cliVerifyWorkflow`";
+        needle = "`T-CLI-7` is completed through `checks.crucible.phase5.cliVerifyWorkflow`";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -63,24 +63,40 @@
         needle = "writes_side_artifacts_on_divergence: bool";
       }
       {
-        label = "hostile condition flag";
+        label = "hostile condition matrix flag";
         needle = "applies_hostile_condition_matrix: bool";
       }
       {
-        label = "randomized host scheduler profile";
-        needle = "randomized-host-scheduler";
+        label = "loaded single-core profile";
+        needle = "loaded-single-core";
       }
       {
-        label = "wall clock jitter profile";
-        needle = "wall-clock-jitter";
+        label = "reordered two-core profile";
+        needle = "reordered-two-core";
       }
       {
-        label = "varied core count profile";
-        needle = "varied-core-count";
+        label = "loaded many-core profile";
+        needle = "loaded-many-core";
       }
       {
-        label = "live verify workflow";
-        needle = "fn run_control_client_verify_workflow_async";
+        label = "seeded scheduling pressure";
+        needle = "priority_pressure_iterations";
+      }
+      {
+        label = "non-monotonic wall-clock deadline perturbation";
+        needle = "wall_clock_backstep_every";
+      }
+      {
+        label = "host I/O stall";
+        needle = "host_io_stall_ms";
+      }
+      {
+        label = "profile-sized local runtime";
+        needle = "worker_threads(reduction.host_profile.logical_cores)";
+      }
+      {
+        label = "live verify reduction";
+        needle = "fn run_control_client_verify_reduction_async";
       }
       {
         label = "artifact compare workflow";
@@ -107,12 +123,24 @@
         needle = "fn run_local_qemu_verify_workflow";
       }
       {
-        label = "verify constructs production QEMU lifecycle";
-        needle = "production_qemu_control_plane(config, scenario.scenario_form())";
+        label = "verify executes the guarded campaign owner";
+        needle = "crate::cli_verify_serve::campaign_run::run_local_qemu_campaign_report(";
       }
       {
-        label = "verify local-QEMU no-double assertion";
-        needle = "assert!(!message.contains(\"double fallback\"))";
+        label = "verify records guarded campaign route proof";
+        needle = "verify-campaign-default-path";
+      }
+      {
+        label = "production host-worker profile";
+        needle = ".with_maximum_host_workers(profile.executor_workers)";
+      }
+      {
+        label = "authenticated scheduler-preemption profile";
+        needle = ".with_bounded_scheduler_preemption(evidence.clone())";
+      }
+      {
+        label = "missing scheduler-preemption evidence fails closed";
+        needle = "did not publish authenticated scheduler-preemption evidence";
       }
       {
         label = "adversarial planning test";
@@ -134,10 +162,6 @@
         label = "compare artifacts test";
         needle = "cli_verify_workflow_compares_existing_reproduction_artifacts";
       }
-      {
-        label = "local qemu verify production routing test";
-        needle = "cli_verify_workflow_routes_local_qemu_into_production_factory";
-      }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -154,12 +178,17 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase5-cli-verify-workflow";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
+
+        pkgs.pkg-config
+        pkgs.sqlite
       ];
 
       ATTR_PATH = attrPath;
@@ -224,9 +253,9 @@ in
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
             status=complete
-            evidence_scope=verify-live-qemu-model-and-production-api
+            evidence_scope=verify-full-hostile-matrix-and-guarded-qemu-route
             component=crucible-cli
-            contract=verify-workflow-complete
+            contract=verify-workflow-cli-17
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

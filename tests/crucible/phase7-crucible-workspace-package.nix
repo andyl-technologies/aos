@@ -12,7 +12,7 @@
   phaseTemplatesNix = builtins.readFile ../../stdenv/phases.nix;
   phaseTemplates = import ../../stdenv/phases.nix;
   cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  expectedCargoDepsHash = "sha256-wdfH6cGtVp6EUr8KEZp9DGir7+WQ7AlCPWuT+tOhWBo=";
+  expectedCargoDepsHash = "sha256-Rax7Te32Xr+wazk4vF63nEGuFDBKHxAJ+lCXkRo/bxw=";
   packageInventory = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.fromTOML (builtins.readFile ../../crates/Cargo.toml);
   defaultChecks = builtins.readFile ./default.nix;
@@ -105,6 +105,10 @@
         needle = "cargoNextestOpenFilesLimit = 4096;";
       }
       {
+        label = "bounded controller Nextest failure diagnostics";
+        needle = ''nextestFlags = "--show-progress=none --color=never --status-level=fail --final-status-level=fail --failure-output=final";'';
+      }
+      {
         label = "bounded Nextest ceiling recorded in build metadata";
         needle = "cargo_nextest_open_files_limit=4096";
       }
@@ -118,7 +122,7 @@
       }
       {
         label = "doctests run hermetically";
-        needle = "cargo test \\\n        --doc";
+        needle = "cargo test \\\n            --doc";
       }
       {
         label = "suite runtime closure co-retains controller/QEMU/plugin/source/kernel/fixtures";

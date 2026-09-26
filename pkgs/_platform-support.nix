@@ -30,6 +30,7 @@ let
     "aos-hub-worker-dist"
     "ca-certificates"
     "docbook-xml"
+    "docbook-xml-4_2"
     "docbook-xsl"
     "edk2"
     "firmware"
@@ -260,6 +261,7 @@ let
     "perl-moo"
     "perl-net-ssleay"
     "perl-parallel-forkmanager"
+    "perl-parse-yapp"
     "perl-readonly"
     "perl-regexp-common"
     "perl-role-tiny"
@@ -347,12 +349,17 @@ let
     "pip"
     "python3"
     "python3-3_12"
+    "python3-cffi"
+    "python3-cryptography"
+    "python3-dnspython"
     "python3-pefile"
     "python3-pyelftools"
     "python3-lxml"
+    "python3-pycparser"
     "python3-mako"
     "python3-markdown"
     "python3-markupsafe"
+    "python3-pygdbmi"
     "python3-pygments"
     "rust"
     "rust-1_74"
@@ -528,6 +535,7 @@ let
     "aos-var-policy-migrate"
     "aos-verity-root-guard"
     "attr"
+    "avahi-core"
     "audit"
     "btrfs-progs"
     "bridge-utils"
@@ -543,6 +551,7 @@ let
     "crucible-qemu-plugin"
     "crucible-qemu-trace-plugin"
     "cryptsetup"
+    "cups-full"
     "darling"
     "delve"
     "device-mapper"
@@ -563,7 +572,9 @@ let
     "fuse3"
     "fuse-overlayfs"
     "getent"
+    "glusterfs-client"
     "glibc"
+    "gperftools"
     "hdparm"
     "iproute2"
     "ipset"
@@ -583,6 +594,7 @@ let
     "libbsd"
     "libcap"
     "libcap-ng"
+    "libdaemon"
     "libmd"
     "libmnl"
     "libnetfilter_conntrack"
@@ -631,6 +643,8 @@ let
     "ripgrep"
     "rootlesskit"
     "runc"
+    "samba"
+    "samba-smbd"
     "semodule-utils"
     "setools"
     "slirp4netns"
@@ -832,7 +846,7 @@ let
     "darwin/_darwin-gcc.nix" = "cross-build-helper";
     "emulation/_darwin-signer.nix" = "linux-only-build-helper";
     "emulation/_darling-sources.nix" = "linux-only-source";
-    "emulation/qemu-patches/_series.nix" = "linux-only-source";
+    "emulation/qemu-patches/_atomic-patch.nix" = "linux-only-source";
     "kernel/_source.nix" = "linux-only-source";
     "kubernetes/_k3s-addon-entrypoints.nix" = "linux-only-build-helper";
     "kubernetes/_k3s-addon-images.nix" = "linux-only-build-helper";
@@ -864,6 +878,7 @@ let
     "tools/aos/_tests.nix" = "native-test-helper";
     "tools/aos/_workspace-source.nix" = "target-independent-source";
     "tools/crucible/_cargo-deps-hash.nix" = "target-independent-source";
+    "tools/crucible/_cargo-source.nix" = "mixed-source";
     "tools/crucible/_packages.nix" = "target-independent-source";
     "tools/crucible/_release-manifest.nix" = "linux-only-release-helper";
     "tools/crucible/_source.nix" = "mixed-source";

@@ -1762,12 +1762,12 @@ fn sha256(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-fn search_row<'a, const N: usize>(
+fn search_row<const N: usize>(
     kind: &str,
     key: &str,
     title: &str,
     summary: &str,
-    sources: [(&'a str, u16); N],
+    sources: [(&str, u16); N],
 ) -> SearchDocument {
     let mut terms: BTreeMap<String, u16> = BTreeMap::new();
     for (source, weight) in sources {
@@ -2309,9 +2309,11 @@ mod tests {
         let anchors = identities.map(|(kind, key)| documentation_anchor(kind, key));
         assert_eq!(anchors.iter().collect::<BTreeSet<_>>().len(), anchors.len());
         for anchor in anchors {
-            assert!(anchor
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b':'));
+            assert!(
+                anchor
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b':')
+            );
             assert!(validate_token("section id", &anchor).is_err());
         }
     }

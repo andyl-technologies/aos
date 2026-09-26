@@ -41,6 +41,7 @@ dependencies = [
  "ctr",
  "ghash",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -2210,6 +2211,8 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "ciborium",
+ "crucible-campaign",
+ "crucible-cas",
  "crucible-device",
  "crucible-harness",
  "crucible-protocol",
@@ -2232,6 +2235,7 @@ dependencies = [
  "bytes",
  "ciborium",
  "crucible",
+ "crucible-campaign",
  "crucible-device",
  "crucible-protocol",
  "crucible-qemu",
@@ -2240,6 +2244,7 @@ dependencies = [
  "futures-util",
  "hyper-util",
  "reqwest",
+ "rustix 1.1.4",
  "rustls",
  "rustls-pemfile",
  "rustls-pki-types",
@@ -2261,44 +2266,97 @@ dependencies = [
 ]
 
 [[package]]
-name = "crucible-cas"
+name = "crucible-campaign"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "crucible-cas",
+ "ed25519-dalek",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "crucible-cas"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "blake3",
+ "rusqlite",
  "rustix 1.1.4",
  "tempfile",
  "thiserror 2.0.18",
+ "zeroize",
+ "zstd",
 ]
 
 [[package]]
 name = "crucible-cli"
 version = "0.1.0"
 dependencies = [
+ "aws-credential-types",
+ "aws-sdk-s3",
  "clap",
  "clap_complete",
+ "crucible",
  "crucible-api",
+ "crucible-campaign",
+ "crucible-cas",
+ "crucible-daemon",
+ "crucible-device",
+ "crucible-guest",
  "crucible-harness",
+ "crucible-protocol",
+ "crucible-qemu",
  "crucible-session",
+ "crucible-shmem",
+ "hex",
  "libc",
+ "rcgen",
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-rustls",
  "toml 0.8.23",
+ "url",
+ "zeroize",
 ]
 
 [[package]]
 name = "crucible-daemon"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "ciborium",
  "crucible",
  "crucible-api",
+ "crucible-campaign",
+ "crucible-cas",
+ "crucible-guest",
+ "crucible-linux-resource",
  "crucible-protocol",
+ "crucible-qemu",
+ "crucible-s3-store",
  "crucible-session",
+ "crucible-shmem",
+ "ed25519-dalek",
+ "rand 0.9.4",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -2327,6 +2385,7 @@ dependencies = [
 name = "crucible-guest"
 version = "0.1.0"
 dependencies = [
+ "crucible-campaign",
  "crucible-protocol",
  "libc",
  "thiserror 2.0.18",
@@ -2336,16 +2395,31 @@ dependencies = [
 name = "crucible-harness"
 version = "0.1.0"
 dependencies = [
+ "rustix 1.1.4",
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
  "toml 0.8.23",
+]
+
+[[package]]
+name = "crucible-linux-resource"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rustix 1.1.4",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "crucible-protocol"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "libc",
  "thiserror 2.0.18",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -2356,6 +2430,7 @@ dependencies = [
  "ciborium",
  "crucible",
  "crucible-device",
+ "crucible-linux-resource",
  "crucible-protocol",
  "crucible-shmem",
  "libc",
@@ -2381,6 +2456,17 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-s3-store"
+version = "0.1.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-s3",
+ "crucible-cas",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

@@ -97,7 +97,7 @@ async fn trusted_http2_debug_controller_uses_server_side_identity_and_lease() {
         .unwrap_or_else(|error| panic!("happy-path scenario should build: {error}"))
         .scenario;
     let created = client
-        .create_session(CreateSessionRequest::inline_form(
+        .create_session(CreateSessionRequest::inline(
             scenario.clone(),
             scenario.seed(),
         ))

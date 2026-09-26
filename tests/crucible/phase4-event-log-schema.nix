@@ -8,8 +8,14 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  schemaTest = builtins.readFile ../../crates/crucible/tests/event_log_schema.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
+  schemaTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/event_log_schema.rs;
+  };
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -53,8 +59,8 @@
         needle = "pub enum EventLevel";
       }
       {
-        label = "event class compatibility alias";
-        needle = "pub type EventClass = SchedulerEventLogClass";
+        label = "canonical event class";
+        needle = "pub enum SchedulerEventLogClass";
       }
       {
         label = "entry stores full time";
@@ -94,7 +100,7 @@
       }
       {
         label = "control decision command id";
-        needle = "command_id: control.sequence";
+        needle = "command_id: operation.sequence";
       }
       {
         label = "entry hash material includes source level class";
@@ -110,7 +116,7 @@
       }
       {
         label = "segment material carries icount";
-        needle = "entry.at_icount_retired";
+        needle = "entry.at_tick";
       }
       {
         label = "segment material carries source";

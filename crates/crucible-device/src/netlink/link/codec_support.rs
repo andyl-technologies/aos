@@ -74,7 +74,7 @@ pub(super) fn link_snapshot_encoded_length(
 ) -> Result<usize, LinkSnapshotCodecError> {
     let configured = link_snapshot_configured(maximum);
     let mut length = 0;
-    for fixed in [LINK_SNAPSHOT_MAGIC.len(), 8, 1, 4, 8, 8, 1, 8, 8, 8, 4] {
+    for fixed in [LINK_SNAPSHOT_MAGIC.len(), 8, 4, 4, 8, 8, 1, 8, 8, 8, 4] {
         link_snapshot_add_length(&mut length, fixed, configured)?;
     }
     link_snapshot_add_repeated_length(

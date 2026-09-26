@@ -11,14 +11,23 @@ pub(super) const RESUME_WORKFLOW_OBSERVER_TIMEOUT: Duration = Duration::from_sec
 mod qemu_live;
 pub(super) use qemu_live::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RunExecutionOwner {
+    Session,
+    Campaign,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RunWorkflowReport {
     pub(super) status: BackendCommandStatus,
+    pub(super) execution_owner: RunExecutionOwner,
+    pub(super) campaign_replay_closure: Option<Vec<u8>>,
     pub(super) created_state: String,
     pub(super) final_state: String,
     pub(super) outcome: Option<OutcomeKind>,
     pub(super) terminal_savepoint: Option<crucible::ContentHash>,
     pub(super) terminal_configuration: Option<crucible::Configuration>,
+    pub(super) final_snapshot: Option<crucible_session::EngineSnapshot>,
     pub(super) final_frontier_ticks: u64,
     pub(super) final_quanta: u64,
     pub(super) budget_timed_out: bool,
@@ -29,6 +38,7 @@ pub(super) struct RunWorkflowReport {
     pub(super) execution_fingerprints: Vec<crucible::FingerprintSample>,
     pub(super) resolved_effect_trace: Option<Vec<u8>>,
     pub(super) acknowledged_commands: Vec<SessionCommandKind>,
+    pub(super) reproduction_commands: Vec<crucible_api::ReproductionCommandRecord>,
     pub(super) watch_statuses: Vec<String>,
 }
 
@@ -45,7 +55,29 @@ pub(crate) struct SaveBoundaryEvidence {
     pub(crate) selector: Option<SaveAtSelector>,
     pub(crate) frontier_ticks: u64,
     pub(crate) quanta: u64,
-    pub(crate) breakpoint_firing: Option<crucible_session::BreakpointFiring>,
+    pub(crate) proof: SaveBoundaryProof,
+}
+
+/// Identifies the authoritative event or coordinate that proved a save boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SaveBoundaryProof {
+    /// Uses the authenticated frontier and quantum coordinate for a non-event boundary.
+    Coordinate,
+    /// Uses a real breakpoint firing recorded by the interactive session owner.
+    Breakpoint(crucible_session::BreakpointFiring),
+    /// Uses a retained campaign event because campaign marker stops do not create breakpoints.
+    CampaignMarkerEvent {
+        sequence: u64,
+        content_hash: crucible::ContentHash,
+        node: crucible::NodeId,
+        retired_icount: u64,
+        marker: crucible::MarkerId,
+    },
+    /// Uses the campaign owner's authenticated post-quantum observation proof.
+    CampaignObservation {
+        proof: Box<crucible_campaign::ObservationStopProof>,
+        evidence: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,16 +135,44 @@ impl SaveBoundaryEvidence {
                 )
             })
             .unwrap_or_else(|| String::from("none"));
-        let proof = self
-            .breakpoint_firing
-            .as_ref()
-            .map(|firing| {
+        let proof = match &self.proof {
+            SaveBoundaryProof::Coordinate => String::from("breakpoint=none"),
+            SaveBoundaryProof::Breakpoint(firing) => {
                 format!(
                     "breakpoint={} disposition=suspend firing_frontier={} firing_quanta={}",
                     firing.id, firing.frontier.ticks, firing.quanta
                 )
-            })
-            .unwrap_or_else(|| String::from("breakpoint=none"));
+            }
+            SaveBoundaryProof::CampaignMarkerEvent {
+                sequence,
+                content_hash,
+                node,
+                retired_icount,
+                marker: _,
+            } => format!(
+                "campaign_marker_event={} event_hash={} node={} retired_icount={} firing_frontier={} firing_quanta={}",
+                sequence,
+                format_content_hash_ref(*content_hash),
+                encode_canonical_summary_value(&node.name),
+                retired_icount,
+                self.frontier_ticks,
+                self.quanta
+            ),
+            SaveBoundaryProof::CampaignObservation { proof, .. } => {
+                let witness = proof
+                    .assertion_witness()
+                    .map_or("none", |witness| witness.assertion());
+                format!(
+                    "campaign_observation={:?} satisfaction={:?} child={} firing_frontier={} firing_quanta={} assertion={}",
+                    proof.condition(),
+                    proof.satisfaction(),
+                    proof.child(),
+                    proof.boundary().frontier_picoseconds(),
+                    proof.boundary().completed_quanta(),
+                    encode_canonical_summary_value(witness),
+                )
+            }
+        };
         format!(
             "at={} selector={} frontier={} quanta={} {}",
             self.at.label(),
@@ -150,32 +210,6 @@ pub(super) struct ResumeWorkflowReport {
 }
 
 pub(super) type CliModelConfiguration = crucible::Configuration;
-#[cfg(any(test, feature = "test-double"))]
-pub(super) type CliModelScenarioDef = crucible::ScenarioDef;
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ForkWorkflowReport {
-    pub(super) run: RunWorkflowReport,
-    pub(super) source_checkpoint: crucible::ContentHash,
-    pub(super) branch_checkpoint: crucible::ContentHash,
-    pub(super) branch_configuration: crucible::ContentHash,
-    pub(super) terminal_configuration: crucible::Configuration,
-    pub(super) scenario_form: crucible::ScenarioDefForm,
-    pub(super) scenario_label: String,
-    pub(super) label: String,
-    pub(super) terminal_oracle: SavepointOracleProof,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ForkReproductionArtifactReport {
-    pub(super) path: PathBuf,
-    pub(super) digest: String,
-    pub(super) seed: u64,
-    pub(super) fork_seed: Option<u64>,
-    pub(super) model_artifact: crucible::ContentHash,
-    pub(super) replay_state: crucible::ContentHash,
-    pub(super) schedule: crucible::ContentHash,
-    pub(super) finding_fingerprint: crucible::ContentHash,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ResumeHandleEvidence {
@@ -184,6 +218,13 @@ pub(super) struct ResumeHandleEvidence {
     pub(super) schedule: Schedule,
     pub(super) configuration: crucible::Configuration,
     pub(super) checkpoint: Checkpoint,
+    pub(super) replay_closure:
+        crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+    /// Retains a v6 source claim until campaign-owned replay reproduces it.
+    pub(super) source_observation_proof: Option<Box<crucible_campaign::ObservationStopProof>>,
+    /// Retains the original raw boundary for exact comparison with source replay.
+    pub(super) source_observation_evidence:
+        Option<Box<crucible_daemon::CrucibleMeasurementReplayEvidence>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -199,8 +240,21 @@ pub(super) struct VerifyRunWitness {
     pub(super) canonical_log_bytes: Vec<u8>,
     pub(super) fingerprint_samples: Vec<VerifyFingerprintSample>,
     pub(super) fingerprint_stream: Vec<u8>,
+    pub(super) live_event_evidence: VerifyLiveEventEvidence,
+    pub(super) host_scheduler_preemption:
+        Option<crucible_api::BoundedSchedulerPreemptionEvidenceSnapshot>,
     pub(super) state_dump: String,
     pub(super) artifact: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct VerifyLiveEventEvidence {
+    pub(super) fault_effects_applied: usize,
+    pub(super) applied_fault_bindings: Vec<String>,
+    pub(super) assertions_evaluated: usize,
+    pub(super) evaluated_assertions: Vec<String>,
+    pub(super) assertion_state_changes: usize,
+    pub(super) assertion_transitions: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -264,59 +318,6 @@ mod test_double;
 #[cfg(any(test, feature = "test-double"))]
 pub(super) use test_double::*;
 
-pub(super) fn run_local_qemu_save_workflow(
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    save_plan: &SaveInvocationPlan,
-) -> Result<BackendCommandOutcome, CliError> {
-    let backend = backend_plan
-        .resolved_backend
-        .as_ref()
-        .ok_or_else(|| backend_error("local QEMU save requires a resolved backend"))?;
-    let config = production_qemu_lifecycle_config(backend)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let control_plane =
-        production_qemu_control_plane(config, save_plan.run_plan.scenario.scenario_form());
-    let client = InProcessLifecycleClient::new(control_plane);
-    let report = runtime.block_on(run_control_client_save_workflow_async(&client, save_plan))?;
-    let mut outcome =
-        finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)?;
-    append_qemu_control_plane_execution_proof(&mut outcome, backend, "save-live-checkpoint");
-    Ok(outcome)
-}
-
-#[cfg(any(test, feature = "test-double"))]
-pub(super) fn run_local_save_recording_workflow(
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    save_plan: &SaveInvocationPlan,
-) -> Result<BackendCommandOutcome, CliError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let scenario_form = save_plan.run_plan.scenario.scenario_form();
-    let sources = SaveRecordingSources::from_scenario_form(scenario_form);
-    let white_box_policies = scenario_form
-        .world()
-        .vm_nodes()
-        .iter()
-        .map(|node| (node.id.clone(), node.white_box))
-        .collect::<BTreeMap<_, _>>();
-    let control_plane = LifecycleControlPlane::new("crucible-cli-save", Vec::new(), {
-        move |_scenario: &CliModelScenarioDef, _seed| {
-            SaveRecordingLifecycleLoop::new(sources.clone())
-        }
-    })
-    .with_white_box_policy_provider(move |_scenario| white_box_policies.clone());
-    let client = InProcessLifecycleClient::new(control_plane);
-    let report = runtime.block_on(run_control_client_save_workflow_async(&client, save_plan))?;
-    finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)
-}
-
 #[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_double_resume_workflow(
     thin_plan: &CliThinWrapperPlan,
@@ -352,25 +353,29 @@ pub(super) fn run_local_qemu_resume_workflow(
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU resume requires a resolved backend"))?;
     let evidence = resume_handle_evidence(resume_plan)?;
-    let config = production_qemu_lifecycle_config(backend)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let control_plane = production_qemu_control_plane(config, &evidence.scenario_form);
-    let client = InProcessLifecycleClient::new(control_plane);
-    let report = runtime.block_on(run_remote_control_client_resume_workflow_async(
-        &client,
-        resume_plan,
-    ))?;
-    let mut outcome = finish_resume_workflow_outcome(
-        thin_plan,
-        backend_plan,
-        ergonomics_plan,
-        resume_plan,
-        report,
-    )?;
-    append_qemu_control_plane_execution_proof(&mut outcome, backend, "resume-exact-checkpoint");
-    Ok(outcome)
+    if guarded_campaign_resume_eligible(resume_plan, &evidence) {
+        let report = cli_verify_serve::campaign_run::run_local_qemu_campaign_resume_workflow(
+            backend,
+            resume_plan,
+            &evidence,
+        )?;
+        let mut outcome = finish_resume_workflow_outcome(
+            thin_plan,
+            backend_plan,
+            ergonomics_plan,
+            resume_plan,
+            report,
+        )?;
+        append_qemu_control_plane_execution_proof(
+            &mut outcome,
+            backend,
+            "resume-campaign-default-path",
+        );
+        return Ok(outcome);
+    }
+    Err(backend_error(
+        "local QEMU resume shape is unsupported by the guarded campaign execution path",
+    ))
 }
 
 #[cfg(any(test, feature = "test-double"))]
@@ -379,6 +384,7 @@ pub(super) fn run_local_resume_workflow_report_with_driver(
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
 ) -> Result<(ResumeHandleEvidence, ResumeWorkflowReport), CliError> {
     let evidence = resume_handle_evidence(resume_plan)?;
+    ensure_session_replay_evidence_supported("local test-double resume", &evidence)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -461,7 +467,6 @@ where
         resume_plan,
         evidence,
         interactive_driver,
-        false,
     )
     .await
 }
@@ -477,17 +482,59 @@ pub(super) async fn run_remote_control_client_resume_from_evidence_with_driver_a
     resume_plan: &ResumeInvocationPlan,
     evidence: ResumeHandleEvidence,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
-    reject_pending_branch_choices: bool,
 ) -> Result<ResumeWorkflowReport, CliError>
 where
     C: ControlClient + Sync,
 {
+    let replay_closure_payload = evidence
+        .replay_closure
+        .to_canonical_bytes()
+        .map_err(|error| artifact_error(format!("encode remote resume replay closure: {error}")))?;
+    let replay_closure = crucible_api::ResumeReplayClosure::new(
+        &evidence.scenario_form,
+        &evidence.schedule,
+        &evidence.checkpoint,
+        crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::SCHEMA_VERSION,
+        replay_closure_payload,
+    )
+    .map_err(|error| artifact_error(error.to_string()))?;
+    let observation_source = match (
+        evidence.source_observation_proof.as_deref(),
+        evidence.source_observation_evidence.as_deref(),
+    ) {
+        (Some(proof), Some(source_evidence)) => {
+            let raw_evidence = source_evidence.canonical_bytes().map_err(|error| {
+                artifact_error(format!("encode remote observation evidence: {error}"))
+            })?;
+            crucible_api::ResumeObservationSource::new(
+                &evidence.scenario_form,
+                &evidence.schedule,
+                &evidence.checkpoint,
+                crucible_daemon::qemu_campaign_lifecycle::RemoteObservationResumeFactory::SOURCE_SCHEMA_VERSION,
+                proof.canonical_bytes(),
+                raw_evidence,
+            )
+            .map_err(|error| artifact_error(error.to_string()))?
+        }
+        (None, None) => {
+            return Err(artifact_error(
+                "remote resume requires authenticated portable observation evidence; use the local campaign-owned QEMU resume path for an exact checkpoint",
+            ));
+        }
+        _ => {
+            return Err(artifact_error(
+                "portable observation resume requires both proof and raw evidence",
+            ));
+        }
+    };
     let request = ResumeSessionRequest::new(
         evidence.scenario_form.clone(),
         evidence.schedule.clone(),
         evidence.checkpoint.clone(),
         evidence.scenario.seed(),
-    );
+        observation_source,
+    )
+    .with_replay_closure(replay_closure);
     let resumed = client
         .resume_session(request)
         .await
@@ -587,7 +634,7 @@ where
                         resumed.session,
                         &mut command_id,
                         SessionCommand::step(StepMode::Duration(SimDuration {
-                            nanos: budget.saturating_sub(summary.frontier.ticks),
+                            ticks: budget.saturating_sub(summary.frontier.ticks),
                         })),
                         &mut acknowledged_commands,
                         &mut state_updates,
@@ -669,43 +716,6 @@ where
         boundary
     };
 
-    if reject_pending_branch_choices {
-        let response = send_resume_workflow_command(
-            client,
-            resumed.session,
-            &mut command_id,
-            SessionCommand::Query {
-                kind: QueryKind::SearchFrontier,
-                reply: CommandReply::discard(),
-            },
-            &mut acknowledged_commands,
-            &mut state_updates,
-        )
-        .await?;
-        let pending = match response.query_result {
-            Some(QueryResult::SearchFrontier {
-                pending_branch_choices,
-                ..
-            }) => pending_branch_choices,
-            Some(other) => {
-                return Err(backend_error(format!(
-                    "fork override validation returned unexpected query payload: {other:?}"
-                )));
-            }
-            None => {
-                return Err(backend_error(
-                    "fork override validation returned no search-frontier payload",
-                ));
-            }
-        };
-        if pending != 0 {
-            destroy_remote_resume_session_best_effort(client, resumed.session).await;
-            return Err(artifact_error(format!(
-                "fork stopped with {pending} unconsumed override choice(s); the recorded scheduling point was not reached"
-            )));
-        }
-    }
-
     if let Some(expected) = expected_virtual_boundary
         && boundary.frontier.ticks != expected
     {
@@ -769,6 +779,8 @@ where
             ));
         }
     };
+    validate_remote_resume_final_snapshot_boundary(&snapshot, &boundary)?;
+
     if !matches!(
         snapshot.state,
         crucible_session::EngineState::Stopped { .. }
@@ -905,13 +917,16 @@ where
     Ok(ResumeWorkflowReport {
         run: RunWorkflowReport {
             status: status_from_outcome(observed_outcome)?,
+            execution_owner: RunExecutionOwner::Session,
+            campaign_replay_closure: None,
             created_state: format!("{:?}", resumed.state).to_ascii_lowercase(),
             final_state,
             outcome: observed_outcome,
             terminal_savepoint: Some(terminal_oracle.fat_checkpoint),
             terminal_configuration: Some(snapshot.configuration.clone()),
-            final_frontier_ticks: snapshot.frontier.ticks.max(boundary.frontier.ticks),
-            final_quanta: snapshot.quanta.max(boundary.quanta_stepped),
+            final_snapshot: Some(snapshot.clone()),
+            final_frontier_ticks: snapshot.frontier.ticks,
+            final_quanta: snapshot.quanta,
             budget_timed_out: false,
             state_updates,
             streamed_events,
@@ -920,6 +935,7 @@ where
             execution_fingerprints,
             resolved_effect_trace: None,
             acknowledged_commands,
+            reproduction_commands: Vec::new(),
             watch_statuses,
         },
         source_checkpoint: evidence.checkpoint.id,
@@ -928,6 +944,25 @@ where
         scenario_label: resume_plan.savepoint.label(),
         terminal_oracle,
     })
+}
+
+pub(super) fn validate_remote_resume_final_snapshot_boundary(
+    snapshot: &crucible_session::EngineSnapshot,
+    boundary: &crucible_api::SessionSummary,
+) -> Result<(), CliError> {
+    if snapshot.frontier.ticks < boundary.frontier.ticks {
+        return Err(CliError::Identity(format!(
+            "remote resume final snapshot frontier {} regressed behind observed boundary {}",
+            snapshot.frontier.ticks, boundary.frontier.ticks
+        )));
+    }
+    if snapshot.quanta < boundary.quanta_stepped {
+        return Err(CliError::Identity(format!(
+            "remote resume final snapshot quantum {} regressed behind observed boundary {}",
+            snapshot.quanta, boundary.quanta_stepped
+        )));
+    }
+    Ok(())
 }
 
 pub(super) async fn destroy_remote_resume_session_best_effort<C>(client: &C, session: SessionRef)

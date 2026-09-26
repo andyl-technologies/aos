@@ -79,7 +79,7 @@ pub struct FaultEventHeaderV1 {
     pub event_sequence: u64,
     /// Command sequence that installed the active rule generation.
     pub rule_command_sequence: u64,
-    /// Exact aggregate retired-instruction coordinate.
+    /// Exact logical tick after the plugin applies the idle-time offset.
     pub observed_icount: u64,
     /// Original closed model phase tag.
     pub model_phase: u16,
@@ -322,6 +322,9 @@ pub fn enqueue_fault_event(
     mut header: FaultEventHeaderV1,
     payload: &[u8],
 ) -> Result<(), FaultTransportError> {
+    let _producer = ring
+        .enter_producer()
+        .ok_or(FaultTransportError::ProducerBarrierHeld)?;
     let (write, index) = producer_ring_slot(ring, slots.len())?;
     let reservation = reserve_arena(arena_header, arena.len(), payload.len())?;
     copy_payload(arena, reservation.payload_start, payload)?;
@@ -390,8 +393,9 @@ pub fn fault_event_pending(
 ///
 /// # Errors
 ///
-/// Returns [`FaultEventError`] for corrupt transport geometry, cursor state,
-/// slot framing, event headers, or payload authentication.
+/// Returns [`FaultEventError`] when consumer admission is held, or for corrupt
+/// transport geometry, cursor state, slot framing, event headers, or payload
+/// authentication.
 pub fn dequeue_fault_event(
     ring: &RingHeader,
     slots: &mut [FaultEventSlotV1],
@@ -399,6 +403,9 @@ pub fn dequeue_fault_event(
     arena: &[u8],
     arena_region_offset: u64,
 ) -> Result<Option<DequeuedFaultEvent>, FaultEventError> {
+    let _consumer = ring
+        .enter_consumer()
+        .ok_or(FaultTransportError::ConsumerBarrierHeld)?;
     let Some((read, index)) = consumer_ring_slot(ring, slots.len())? else {
         return Ok(None);
     };

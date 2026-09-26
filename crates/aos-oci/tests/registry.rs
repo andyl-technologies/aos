@@ -37,6 +37,8 @@ struct RegistryState {
     stall_blob_once: AtomicBool,
     fail_patch_once: AtomicBool,
     cancel_failures_remaining: AtomicU64,
+    delay_cancel_response_once: AtomicBool,
+    cancel_response_stalled: Notify,
     stall_patch_once: AtomicBool,
     invalid_ack_once: AtomicBool,
     delay_tag_once: AtomicBool,
@@ -935,6 +937,82 @@ async fn digest_delete_and_upload_cancellation_retries_transient_unavailability(
 }
 
 #[tokio::test]
+async fn upload_cancellation_retries_when_a_committed_response_stalls() {
+    let fixture = support::fixture();
+    let registry = spawn_registry(None, false, true, false).await;
+    let client = RegistryClient::new(&registry.reference, Some(&registry.origin), None)
+        .expect("registry client");
+    let state_directory = tempfile::tempdir().expect("upload state");
+    let upload_state = state_directory.path().join("uploads");
+    let options = PushOptions {
+        source: fixture.root().to_path_buf(),
+        platform: PlatformSelector::parse("linux/amd64").expect("platform"),
+        state_directory: upload_state.clone(),
+        chunk_bytes: 11,
+        cancellation: CancellationToken::new(),
+        events: None,
+    };
+    client
+        .push(&registry.reference, &options)
+        .await
+        .expect_err("interrupted upload fixture");
+
+    registry
+        .state
+        .delay_cancel_response_once
+        .store(true, Ordering::SeqCst);
+    let cancel_client = client.clone();
+    let cancel_reference = registry.reference.clone();
+    let cancel_state = upload_state.clone();
+    let cancellation = CancellationToken::new();
+    let cancel_task = tokio::spawn(async move {
+        cancel_client
+            .cancel_uploads(&cancel_reference, &cancel_state, &cancellation)
+            .await
+    });
+    registry.state.cancel_response_stalled.notified().await;
+    assert!(
+        fs::read_dir(&upload_state)
+            .expect("upload-state directory while response is stalled")
+            .any(|entry| entry
+                .expect("upload-state entry while response is stalled")
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")),
+        "an ambiguous committed request must retain its checkpoint"
+    );
+    assert_eq!(
+        cancel_task
+            .await
+            .expect("cancellation task")
+            .expect("retry cancellation after a stalled committed response"),
+        1
+    );
+    assert!(
+        !fs::read_dir(&upload_state)
+            .expect("upload-state directory after cancellation")
+            .any(|entry| entry
+                .expect("upload-state entry after cancellation")
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")),
+        "successful retry must remove the durable checkpoint"
+    );
+    assert_eq!(
+        registry
+            .state
+            .events
+            .lock()
+            .expect("events")
+            .iter()
+            .filter(|event| event.starts_with("DELETE:/v2/aos/blobs/uploads/"))
+            .count(),
+        2,
+        "a stalled first response must cause one idempotent retry"
+    );
+}
+
+#[tokio::test]
 async fn upload_cancellation_stops_at_the_retry_deadline_and_preserves_its_checkpoint() {
     let fixture = support::fixture();
     let registry = spawn_registry(None, false, true, false).await;
@@ -1591,6 +1669,8 @@ async fn spawn_registry(
         stall_blob_once: AtomicBool::new(false),
         fail_patch_once: AtomicBool::new(fail_patch_once),
         cancel_failures_remaining: AtomicU64::new(0),
+        delay_cancel_response_once: AtomicBool::new(false),
+        cancel_response_stalled: Notify::new(),
         stall_patch_once: AtomicBool::new(false),
         invalid_ack_once: AtomicBool::new(false),
         delay_tag_once: AtomicBool::new(false),
@@ -2050,12 +2130,27 @@ async fn upload_response(
         {
             return response(StatusCode::SERVICE_UNAVAILABLE, Body::empty());
         }
-        state
+        let removed = state
             .uploads
             .lock()
             .expect("upload lock")
-            .remove(identifier);
-        return response(StatusCode::NO_CONTENT, Body::empty());
+            .remove(identifier)
+            .is_some();
+        if state
+            .delay_cancel_response_once
+            .swap(false, Ordering::SeqCst)
+        {
+            state.cancel_response_stalled.notify_one();
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+        return response(
+            if removed {
+                StatusCode::NO_CONTENT
+            } else {
+                StatusCode::NOT_FOUND
+            },
+            Body::empty(),
+        );
     }
     response(StatusCode::METHOD_NOT_ALLOWED, Body::empty())
 }

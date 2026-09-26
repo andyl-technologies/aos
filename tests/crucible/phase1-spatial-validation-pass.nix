@@ -8,16 +8,19 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  worldValidationTests =
-    builtins.readFile ../../crates/crucible/src/tests/world_validation.rs;
+  coreTests = import ./_crucible-tests-source.nix {inherit lib;};
+  worldValidationTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/tests/world_validation.rs;
+  };
   qemuLaunch =
     builtins.readFile ../../crates/crucible-qemu/src/launch.rs
     + builtins.readFile ../../crates/crucible-qemu/src/launch/canonical.rs;
-  qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
   qemuLaunchTest =
     builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
     + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
   replayOracleTest = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
+  propertyTest = builtins.readFile ../../crates/crucible/tests/coverage_condition_leaf.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -35,7 +38,7 @@
       }
       {
         label = "T-SPAT-21 completion names model launch rows";
-        needle = "`WorldNode` now carries fixed `smp_vcpus` and `icount_shift`";
+        needle = "`WorldNode` carries fixed";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
@@ -65,7 +68,7 @@
       }
       {
         label = "TOML parser constructs validated scenario before id check";
-        needle = "let form = ScenarioDefForm::from_components_with_app_random_draw_cap(\n        &world,\n        &plan,\n        &properties,\n        seed,";
+        needle = "let form = ScenarioDefForm::from_components_with_measurements_and_app_random_draw_cap(";
       }
       {
         label = "TOML scenario id checked after validation";
@@ -73,7 +76,7 @@
       }
       {
         label = "binary parser validates world before plan";
-        needle = "let world = read_world_binary(reader, includes_devices)?;";
+        needle = "let world = read_world_binary(reader)?;";
       }
       {
         label = "binary parser validates plan against world";
@@ -92,12 +95,12 @@
         needle = "fn validate_world_links_for_node_defs(";
       }
       {
-        label = "plan validation";
-        needle = "fn validate_plan_entries_for_world(";
+        label = "signal plan validation";
+        needle = "pub fn validate_for_world(&self, world: &World)";
       }
       {
-        label = "serialized plan pre-validation";
-        needle = "fn validate_plan_entries_in_toml(";
+        label = "serialized plan requires current signal schema";
+        needle = "require_current_fault_schema(input)?;";
       }
       {
         label = "properties validation";
@@ -124,24 +127,24 @@
         needle = "LinkLossProbabilityOutOfRange";
       }
       {
-        label = "plan reference errors";
-        needle = "PlanFaultUnknownLink";
+        label = "missing fault program errors";
+        needle = "FaultSignalPlanError::MissingProgram";
       }
       {
-        label = "partition direction errors";
-        needle = "PlanFaultUnknownDirection";
+        label = "duplicate fault program errors";
+        needle = "FaultSignalPlanError::DuplicateProgram";
       }
       {
-        label = "fault param errors";
-        needle = "PlanFaultUnsupportedParam";
+        label = "duplicate fault binding errors";
+        needle = "FaultSignalPlanError::DuplicateBinding";
       }
       {
-        label = "heal tag errors";
-        needle = "PlanHealUnknownTag";
+        label = "fault resource ceiling errors";
+        needle = "FaultSignalPlanError::ResourceLimit";
       }
       {
-        label = "plan time errors";
-        needle = "PlanNegativeTime";
+        label = "fault selector world admission";
+        needle = "validate_for_world(world)";
       }
       {
         label = "property ref errors";
@@ -156,110 +159,86 @@
         needle = "pub smp_vcpus: u16";
       }
       {
-        label = "world node icount-shift field";
-        needle = "pub icount_shift: u8";
-      }
-      {
         label = "zero vCPU validation error";
         needle = "WorldNodeSmpVcpuCountZero";
-      }
-      {
-        label = "icount-shift validation error";
-        needle = "WorldNodeIcountShiftTooLarge";
       }
       {
         label = "zero vCPU validator";
         needle = "if node.smp_vcpus == 0";
       }
       {
-        label = "icount-shift validator";
-        needle = "if node.icount_shift > MAX_WORLD_ICOUNT_SHIFT";
-      }
-      {
         label = "world material hashes vCPU count";
         needle = "smp_vcpus={}";
       }
+    ]
+    ++ failuresFor "crates/crucible/src/lib.rs" coreTests [
       {
-        label = "world material hashes icount shift";
-        needle = "icount_shift={}";
+        label = "focused world topology validation test";
+        needle = "fn world_topology_rejects_invalid_links()";
+      }
+      {
+        label = "matrix covers duplicate node";
+        needle = "Err(EngineError::DuplicateWorldNodeId { .. })";
+      }
+      {
+        label = "matrix covers unknown link endpoint";
+        needle = "Err(EngineError::WorldLinkUnknownNode { node, .. })";
+      }
+      {
+        label = "matrix covers latency floor";
+        needle = "Err(EngineError::WorldLinkLatencyBelowFloor";
+      }
+      {
+        label = "matrix covers jitter floor";
+        needle = "Err(EngineError::WorldLinkJitterBelowLatencyFloor";
+      }
+      {
+        label = "matrix covers loss range";
+        needle = "Err(EngineError::LinkLossProbabilityOutOfRange";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/model.rs" model [
+      {
+        label = "matrix covers signal plan wire admission";
+        needle = "fn wire_admission_rejects_versions_missing_programs_and_duplicate_contracts()";
+      }
+      {
+        label = "matrix covers signal selector validation";
+        needle = "fn wire_decode_reenters_identity_scalar_and_selector_validation()";
+      }
+      {
+        label = "matrix covers world fault target validation";
+        needle = "fn compact_plan_rejects_resolved_targets_absent_from_decode_world()";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/coverage_condition_leaf.rs" propertyTest [
+      {
+        label = "matrix covers property references";
+        needle = "Err(EngineError::PropertyPredicateUnknownNode";
       }
     ]
     ++ failuresFor "crates/crucible/src/tests/world_validation.rs" worldValidationTests [
       {
-        label = "focused validation matrix test";
-        needle = "fn scenario_def_form_rejects_well_formedness_matrix_before_hashing()";
-      }
-      {
-        label = "matrix covers duplicate node";
-        needle = "duplicate_node_ids";
-      }
-      {
-        label = "matrix covers unknown link endpoint";
-        needle = "unknown_link_endpoint";
-      }
-      {
-        label = "matrix covers latency floor";
-        needle = "latency_below_floor";
-      }
-      {
-        label = "matrix covers jitter floor";
-        needle = "jitter_below_floor";
-      }
-      {
-        label = "matrix covers loss range";
-        needle = "loss_out_of_range";
-      }
-      {
-        label = "matrix covers plan refs";
-        needle = "plan_unknown_link";
-      }
-      {
-        label = "matrix covers fault params";
-        needle = "unsupported_fault_param_toml";
-      }
-      {
-        label = "matrix covers unknown partition directions";
-        needle = "unknown_direction_toml";
-      }
-      {
-        label = "matrix covers heal tags";
-        needle = "unknown_heal_tag";
-      }
-      {
-        label = "matrix covers plan time";
-        needle = "negative_plan_time_toml";
-      }
-      {
-        label = "matrix covers property refs";
-        needle = "unknown_property_ref";
-      }
-      {
-        label = "matrix covers empty compound properties";
-        needle = "empty_property_compound";
-      }
-      {
         label = "matrix covers ready point opt-in";
-        needle = "white_box_ready_point_without_opt_in";
+        needle = "fn world_ready_point_rejects_agent_signal_without_white_box_opt_in()";
       }
       {
-        label = "matrix covers zero vCPU count";
-        needle = "zero_vcpu_count";
+        label = "matrix asserts ready point opt-in error";
+        needle = "Err(EngineError::WhiteBoxReadyPointWithoutOptIn { .. })";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/lib.rs" coreTests [
+      {
+        label = "matrix covers portable launch inputs";
+        needle = "fn world_node_launch_inputs_are_portable_and_identity_bearing()";
       }
       {
-        label = "matrix covers vCPU identity sensitivity";
-        needle = "changed_vcpu_world";
+        label = "matrix covers launch-input identity sensitivity";
+        needle = "smp_vcpus: 3,";
       }
       {
-        label = "matrix covers icount-shift range";
-        needle = "icount_shift_too_large";
-      }
-      {
-        label = "matrix covers icount-shift identity sensitivity";
-        needle = "changed_shift_world";
-      }
-      {
-        label = "matrix covers full scenario parse validation";
-        needle = "scenario_negative_plan_time";
+        label = "matrix rejects removed authored icount shift";
+        needle = "authored worlds must reject the removed icount shift setting";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/launch.rs" qemuLaunch [
@@ -272,16 +251,8 @@
         needle = "LaunchProfileError::SmpVcpuCountZero";
       }
       {
-        label = "launch profile rejects auto icount shift";
-        needle = "IcountShiftSetting::Auto => return Err(LaunchProfileError::IcountShiftAuto),";
-      }
-      {
-        label = "launch profile validates shift range";
-        needle = "fn validate_icount_shift(shift: u8) -> Result<u8, LaunchProfileError>";
-      }
-      {
-        label = "launch profile rejects too-large shift";
-        needle = "LaunchProfileError::IcountShiftTooLarge";
+        label = "launch profile pins internal icount shift";
+        needle = "const ICOUNT_SHIFT: u8 = 0;";
       }
       {
         label = "launch profile hashes vCPU count";
@@ -289,7 +260,11 @@
       }
       {
         label = "launch profile hashes fixed icount shift";
-        needle = "format!(\"icount_shift={}\", self.icount_shift),";
+        needle = "format!(\"qemu_icount_shift={ICOUNT_SHIFT}\"),";
+      }
+      {
+        label = "launch profile hashes picosecond instruction step";
+        needle = "format!(\"sim_ticks_per_instruction={SIM_TICKS_PER_INSTRUCTION}\"),";
       }
       {
         label = "launch profile pins single-threaded TCG";
@@ -306,30 +281,16 @@
         needle = "Err(LaunchProfileError::SmpVcpuCountZero)";
       }
       {
-        label = "auto icount rejection test";
-        needle = "Err(LaunchProfileError::IcountShiftAuto)";
+        label = "pre-spawn auto icount rejection test";
+        needle = "Err(QemuPreSpawnLaunchValidationError::IcountShiftAuto)";
       }
       {
-        label = "too-large icount rejection test";
-        needle = "Err(LaunchProfileError::IcountShiftTooLarge { shift: 63 })";
+        label = "pre-spawn nonzero icount rejection test";
+        needle = "Err(QemuPreSpawnLaunchValidationError::IcountShiftInvalid {";
       }
       {
-        label = "node icount shift mismatch test";
-        needle = "fn launch_profile_rejects_per_node_icount_shift_mismatch()";
-      }
-    ]
-    ++ failuresFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
-      {
-        label = "qemu realization lib test target keeps WorldNode vCPU defaults";
-        needle = "smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS";
-      }
-      {
-        label = "qemu realization lib test target keeps WorldNode icount-shift defaults";
-        needle = "icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT";
-      }
-      {
-        label = "qemu realization baked-node test is compiled by gate";
-        needle = "fn qemu_bake_records_baked_node_blob_refs()";
+        label = "fixed node tick scale test";
+        needle = "fn launch_profile_pins_fixed_tick_scale_for_each_node()";
       }
     ]
     ++ failuresFor "crates/crucible/tests/gate_replay_oracle.rs" replayOracleTest [
@@ -342,12 +303,8 @@
         needle = "smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS";
       }
       {
-        label = "replay oracle feature test target keeps WorldNode icount-shift defaults";
-        needle = "icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT";
-      }
-      {
-        label = "replay oracle loadvm branch is compiled by gate";
-        needle = "fn gate_replay_oracle_materialized_state_loadvm_branch_captures_resume_components()";
+        label = "replay oracle exact-state branch is compiled by gate";
+        needle = "fn gate_replay_oracle_materialized_state_captures_exact_resume_components()";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -411,7 +368,34 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible \
               --lib \
-              scenario_def_form_rejects_well_formedness_matrix_before_hashing \
+              world_topology_rejects_invalid_links \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-spatial-validation-pass-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --lib \
+              world_link_transport_rejects_invalid_floor_and_loss \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-spatial-validation-pass-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --lib \
+              world_node_launch_inputs_are_portable_and_identity_bearing \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-spatial-validation-pass-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --lib \
+              fault_signal::plan_test \
               -- --test-threads=1
             cargo test \
               --frozen \
@@ -421,16 +405,7 @@ in
               -p crucible \
               --features test-double \
               --test gate_replay_oracle \
-              gate_replay_oracle_materialized_state_loadvm_branch_captures_resume_components \
-              -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-spatial-validation-pass-target" \
-              --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
-              --lib \
-              qemu_bake_records_baked_node_blob_refs \
+              gate_replay_oracle_materialized_state_captures_exact_resume_components \
               -- --test-threads=1
             cargo test \
               --frozen \
@@ -457,7 +432,7 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu \
               --test deterministic_launch \
-              launch_profile_rejects_per_node_icount_shift_mismatch \
+              launch_profile_pins_fixed_tick_scale_for_each_node \
               -- --test-threads=1
           '';
         }
@@ -471,7 +446,7 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             component=parse-build-validation-pass
-            spatial_rows=world,links,plan,properties,ready-point,vcpu-count,icount-shift
+            spatial_rows=world,links,plan,properties,ready-point,vcpu-count,fixed-tick-scale
             launch_rows=mirrored-by-crucible-qemu
             validation_before_hashing=true
             runtime_defense_required=false

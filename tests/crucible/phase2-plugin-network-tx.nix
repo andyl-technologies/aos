@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginNetworkTx",
-  taskIds ? ["T-PLUG-10"],
-  openTaskIds ? [],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-10"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -279,8 +279,8 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=complete
-            live_gate=checks.crucible.phase2.qemuLiveNetworkIo
+            status=partial
+            component_gate=checks.crucible.phase2.qemuPluginNetworkTx
             network_tx_ring=vm-slot-to-net-router
             emit_icount=stamped-in-delivery-icount
             sequence=per-ring-monotonic

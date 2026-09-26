@@ -46,19 +46,19 @@ fn assert_frozen_golden_vectors(boundary_abis: &[BoundaryAbi]) {
     let targets = gate_targets()
         .iter()
         .filter(|target| target.gate == "gate:abi-conformance")
-        .map(|target| (target.package, target.test_target, target.placeholder))
+        .map(|target| (target.package, target.test_target))
         .collect::<Vec<_>>();
 
     assert_eq!(
         targets,
         vec![
-            ("crucible-harness", "gate_abi_conformance", false),
-            ("crucible-shmem", "gate_abi_conformance", false),
-            ("crucible-protocol", "gate_abi_conformance", false),
-            ("crucible-api", "gate_abi_conformance", false),
-            ("crucible-qemu-plugin", "gate_abi_conformance", false),
-            ("crucible-guest", "gate_abi_conformance", false),
-            ("crucible", "gate_abi_conformance", false),
+            ("crucible-harness", "gate_abi_conformance"),
+            ("crucible-shmem", "gate_abi_conformance"),
+            ("crucible-protocol", "gate_abi_conformance"),
+            ("crucible-api", "gate_abi_conformance"),
+            ("crucible-qemu-plugin", "gate_abi_conformance"),
+            ("crucible-guest", "gate_abi_conformance"),
+            ("crucible", "gate_abi_conformance"),
         ],
     );
 }

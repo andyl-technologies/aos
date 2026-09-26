@@ -52,14 +52,14 @@ pub(in super::super) fn contact_traffic_bounds(
     action: &ResolvedBindingAction,
 ) -> Result<(u64, u64), SchedulerError> {
     let open = interval
-        .start_nanos
-        .checked_add(interval.acquisition_nanos)
+        .start_ticks
+        .checked_add(network_duration_ticks(interval.acquisition_nanos)?)
         .ok_or_else(|| {
             network_effect_application_error(action, "contact acquisition overflowed")
         })?;
     let end = interval
-        .end_nanos
-        .checked_sub(interval.teardown_nanos)
+        .end_ticks
+        .checked_sub(network_duration_ticks(interval.teardown_nanos)?)
         .ok_or_else(|| network_effect_application_error(action, "contact teardown underflowed"))?;
     Ok((open, end))
 }
@@ -104,15 +104,15 @@ pub(in super::super) fn reserve_network_contact_service(
         service_resource: interval.service_resource.clone(),
         source: producer.clone(),
         destination: destination.clone(),
-        start_nanos: interval.start_nanos,
-        end_nanos: interval.end_nanos,
+        start_ticks: interval.start_ticks,
+        end_ticks: interval.end_ticks,
     };
     let identity = network_contact_service_identity(&key);
     let start = state
         .contact_services
         .get(&key)
         .map_or(now.max(open), |service| {
-            now.max(open).max(service.service_cursor_nanos)
+            now.max(open).max(service.service_cursor_ticks)
         });
     if start >= traffic_end {
         return Ok(None);
@@ -125,7 +125,7 @@ pub(in super::super) fn reserve_network_contact_service(
         bits,
         None,
         &[NetworkServiceCurveState {
-            activation_nanos: interval.start_nanos,
+            activation_ticks: interval.start_ticks,
             segments: segments.as_slice().to_vec(),
         }],
         action,
@@ -149,30 +149,30 @@ pub(in super::super) fn reserve_network_contact_service(
                 "contact service counters overflow before direct reservation",
             )
         })?;
-    let key_start = key.start_nanos;
+    let key_start = key.start_ticks;
     let service = state
         .contact_services
         .entry(key)
         .or_insert_with(|| NetworkContactServiceState {
-            settled_cursor_nanos: key_start,
-            service_cursor_nanos: key_start,
+            settled_cursor_ticks: key_start,
+            service_cursor_ticks: key_start,
             ..NetworkContactServiceState::default()
         });
-    service.service_cursor_nanos = finish;
+    service.service_cursor_ticks = finish;
     service.served_bundles = next_served_bundles;
     service.served_bytes = next_served_bytes;
     service.reservations.push(NetworkContactServiceReservation {
         custody_owner: None,
         opportunity,
-        start_nanos: start,
-        finish_nanos: finish,
-        arrival_nanos: finish,
+        start_ticks: start,
+        finish_ticks: finish,
+        arrival_ticks: finish,
         bytes: payload_bytes,
     });
     service.reservations.sort_by(|left, right| {
-        (left.start_nanos, left.finish_nanos, left.opportunity).cmp(&(
-            right.start_nanos,
-            right.finish_nanos,
+        (left.start_ticks, left.finish_ticks, left.opportunity).cmp(&(
+            right.start_ticks,
+            right.finish_ticks,
             right.opportunity,
         ))
     });
@@ -182,7 +182,7 @@ pub(in super::super) fn reserve_network_contact_service(
 #[derive(Clone, Debug)]
 pub(super) struct NetworkContactRouteLabel {
     node: FaultObjectId,
-    arrival_nanos: u64,
+    arrival_ticks: u64,
     cost: u64,
     interval_indexes: Vec<usize>,
     contact_ids: Vec<FaultObjectId>,
@@ -191,8 +191,8 @@ pub(super) struct NetworkContactRouteLabel {
 
 #[derive(Clone, Debug)]
 pub(in super::super) struct NetworkContactRouteReservation {
-    first_start_nanos: u64,
-    finish_nanos: u64,
+    first_start_ticks: u64,
+    finish_ticks: u64,
     contacts: Vec<FaultObjectId>,
     identities: Vec<[u8; 32]>,
 }
@@ -204,7 +204,7 @@ pub(in super::super) fn preview_network_contact_service(
     topology: &crucible::model::WorldFaultTopology,
     plan: &FaultObjectId,
     interval: &crucible::model::NetworkPolicyContactInterval,
-    earliest_nanos: u64,
+    earliest_ticks: u64,
     payload_bytes: u64,
     action: &ResolvedBindingAction,
 ) -> Result<Option<NetworkContactServicePreview>, SchedulerError> {
@@ -215,14 +215,14 @@ pub(in super::super) fn preview_network_contact_service(
         service_resource: interval.service_resource.clone(),
         source: interval.source.clone(),
         destination: interval.destination.clone(),
-        start_nanos: interval.start_nanos,
-        end_nanos: interval.end_nanos,
+        start_ticks: interval.start_ticks,
+        end_ticks: interval.end_ticks,
     };
     let start = state
         .contact_services
         .get(&key)
-        .map_or(earliest_nanos.max(open), |service| {
-            earliest_nanos.max(open).max(service.service_cursor_nanos)
+        .map_or(earliest_ticks.max(open), |service| {
+            earliest_ticks.max(open).max(service.service_cursor_ticks)
         });
     if start >= traffic_end {
         return Ok(None);
@@ -245,7 +245,7 @@ pub(in super::super) fn preview_network_contact_service(
         bits,
         None,
         &[NetworkServiceCurveState {
-            activation_nanos: interval.start_nanos,
+            activation_ticks: interval.start_ticks,
             segments: segments.as_slice().to_vec(),
         }],
         action,
@@ -254,7 +254,7 @@ pub(in super::super) fn preview_network_contact_service(
         return Ok(None);
     }
     let arrival = finish
-        .checked_add(interval.routing_propagation_nanos)
+        .checked_add(network_duration_ticks(interval.routing_propagation_nanos)?)
         .ok_or_else(|| {
             network_effect_application_error(action, "contact propagation overflowed")
         })?;
@@ -272,7 +272,7 @@ pub(in super::super) fn reserve_network_contact_route(
     producer: &FaultObjectId,
     destination: &FaultObjectId,
     now: u64,
-    expiry_nanos: u64,
+    expiry_ticks: u64,
     payload_bytes: u64,
     max_visited_hops: u32,
     owner: &NetworkEffectStateKey,
@@ -286,7 +286,7 @@ pub(in super::super) fn reserve_network_contact_route(
     visited_nodes.insert(producer.clone());
     let mut frontier = vec![NetworkContactRouteLabel {
         node: producer.clone(),
-        arrival_nanos: now,
+        arrival_ticks: now,
         cost: 0,
         interval_indexes: Vec::new(),
         contact_ids: Vec::new(),
@@ -295,10 +295,10 @@ pub(in super::super) fn reserve_network_contact_route(
     let mut expanded = 0_usize;
     let selected = loop {
         frontier.sort_by(|left, right| {
-            (left.cost, &left.contact_ids, left.arrival_nanos, &left.node).cmp(&(
+            (left.cost, &left.contact_ids, left.arrival_ticks, &left.node).cmp(&(
                 right.cost,
                 &right.contact_ids,
-                right.arrival_nanos,
+                right.arrival_ticks,
                 &right.node,
             ))
         });
@@ -327,19 +327,19 @@ pub(in super::super) fn reserve_network_contact_route(
                     topology,
                     plan,
                     interval,
-                    label.arrival_nanos,
+                    label.arrival_ticks,
                     payload_bytes,
                     action,
                 )?
             else {
                 continue;
             };
-            if arrival > expiry_nanos {
+            if arrival > expiry_ticks {
                 continue;
             }
             let mut candidate = label.clone();
             candidate.node = interval.destination.clone();
-            candidate.arrival_nanos = arrival;
+            candidate.arrival_ticks = arrival;
             candidate.cost = candidate
                 .cost
                 .checked_add(interval.route_cost.get())
@@ -376,8 +376,8 @@ pub(in super::super) fn reserve_network_contact_route(
                     service_resource: interval.service_resource.clone(),
                     source: interval.source.clone(),
                     destination: interval.destination.clone(),
-                    start_nanos: interval.start_nanos,
-                    end_nanos: interval.end_nanos,
+                    start_ticks: interval.start_ticks,
+                    end_ticks: interval.end_ticks,
                 }
             })
             .collect::<BTreeSet<_>>();
@@ -397,8 +397,8 @@ pub(in super::super) fn reserve_network_contact_route(
                 service_resource: interval.service_resource.clone(),
                 source: interval.source.clone(),
                 destination: interval.destination.clone(),
-                start_nanos: interval.start_nanos,
-                end_nanos: interval.end_nanos,
+                start_ticks: interval.start_ticks,
+                end_ticks: interval.end_ticks,
             };
             if state.contact_services.get(&key).is_some_and(|service| {
                 service.served_bundles.checked_add(1).is_none()
@@ -412,7 +412,7 @@ pub(in super::super) fn reserve_network_contact_route(
         }
     }
     let mut cursor = now;
-    let mut first_start_nanos = None;
+    let mut first_start_ticks = None;
     let mut identities = Vec::with_capacity(selected.interval_indexes.len());
     for index in &selected.interval_indexes {
         let interval = &intervals[*index];
@@ -431,19 +431,19 @@ pub(in super::super) fn reserve_network_contact_route(
                 "selected contact route changed during atomic reservation",
             ));
         };
-        first_start_nanos.get_or_insert(start);
+        first_start_ticks.get_or_insert(start);
         if commit {
-            let key_start = key.start_nanos;
+            let key_start = key.start_ticks;
             let service =
                 state
                     .contact_services
                     .entry(key)
                     .or_insert_with(|| NetworkContactServiceState {
-                        settled_cursor_nanos: key_start,
-                        service_cursor_nanos: key_start,
+                        settled_cursor_ticks: key_start,
+                        service_cursor_ticks: key_start,
                         ..NetworkContactServiceState::default()
                     });
-            service.service_cursor_nanos = finish;
+            service.service_cursor_ticks = finish;
             service.served_bundles = service.served_bundles.checked_add(1).ok_or_else(|| {
                 network_effect_application_error(action, "contact served-bundle count overflowed")
             })?;
@@ -460,15 +460,15 @@ pub(in super::super) fn reserve_network_contact_route(
             service.reservations.push(NetworkContactServiceReservation {
                 custody_owner: Some(owner.clone()),
                 opportunity,
-                start_nanos: start,
-                finish_nanos: finish,
-                arrival_nanos: arrival,
+                start_ticks: start,
+                finish_ticks: finish,
+                arrival_ticks: arrival,
                 bytes: payload_bytes,
             });
             service.reservations.sort_by(|left, right| {
-                (left.start_nanos, left.finish_nanos, left.opportunity).cmp(&(
-                    right.start_nanos,
-                    right.finish_nanos,
+                (left.start_ticks, left.finish_ticks, left.opportunity).cmp(&(
+                    right.start_ticks,
+                    right.finish_ticks,
                     right.opportunity,
                 ))
             });
@@ -477,10 +477,10 @@ pub(in super::super) fn reserve_network_contact_route(
         cursor = arrival;
     }
     Ok(Some(NetworkContactRouteReservation {
-        first_start_nanos: first_start_nanos.ok_or_else(|| {
+        first_start_ticks: first_start_ticks.ok_or_else(|| {
             network_effect_application_error(action, "selected contact route is empty")
         })?,
-        finish_nanos: selected.arrival_nanos,
+        finish_ticks: selected.arrival_ticks,
         contacts: selected.contact_ids,
         identities,
     }))
@@ -571,7 +571,7 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
     typed_response: &mut Option<FaultObjectId>,
     resource_limits: FaultResourceLimits,
 ) -> Result<NetworkCustodyApplication, SchedulerError> {
-    let now = opportunity.coordinate().virtual_nanos;
+    let now = opportunity.coordinate().virtual_ticks;
     prune_network_contact_services(state, now);
     let bundle = network_bundle_identity(opportunity, action, priority)?;
     let payload_bytes = u64::try_from(payload.len()).map_err(|_error| {
@@ -619,7 +619,7 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
         owner: owner.clone(),
         capacity_bytes,
         capacity_bundles,
-        expiry_nanos: expiry_duration,
+        expiry_ticks: expiry_duration,
         custody_policy: custody_policy.clone(),
         route_contact_plan: route_contact_plan.clone(),
         priority,
@@ -643,7 +643,7 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
         .position(|timeout| timeout.bundle == bundle)
     {
         let timeout = queue.overflow_timeouts.remove(index);
-        if now < timeout.deadline_nanos {
+        if now < timeout.deadline_ticks {
             return Err(network_effect_application_error(
                 action,
                 "custody timeout resumed before its deadline",
@@ -662,25 +662,25 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
         .position(|reservation| reservation.bundle == bundle)
         .map(|index| queue.reservations.remove(index));
     let was_existing = existing.is_some();
-    let (enqueue_nanos, expiry_nanos, _prior_contact_path, prior_path_committed) =
+    let (enqueue_ticks, expiry_ticks, _prior_contact_path, prior_path_committed) =
         if let Some(existing) = existing {
-            if now < existing.release_nanos {
+            if now < existing.release_ticks {
                 return Err(network_effect_application_error(
                     action,
                     "custody bundle resumed before its release coordinate",
                 ));
             }
             (
-                existing.enqueue_nanos,
-                existing.expiry_nanos,
+                existing.enqueue_ticks,
+                existing.expiry_ticks,
                 existing.contact_path,
                 existing.contact_path_committed,
             )
         } else {
-            let expiry_nanos = now.checked_add(expiry_duration).ok_or_else(|| {
+            let expiry_ticks = now.checked_add(expiry_duration).ok_or_else(|| {
                 network_effect_application_error(action, "custody expiry overflowed")
             })?;
-            (now, expiry_nanos, Vec::new(), false)
+            (now, expiry_ticks, Vec::new(), false)
         };
     if was_existing && prior_path_committed {
         queue.released_bundles = queue.released_bundles.checked_add(1).ok_or_else(|| {
@@ -688,7 +688,7 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
         })?;
         return Ok(NetworkCustodyApplication::default());
     }
-    if now >= expiry_nanos {
+    if now >= expiry_ticks {
         queue.expired_bundles = queue.expired_bundles.checked_add(1).ok_or_else(|| {
             network_effect_application_error(action, "custody expiry count overflowed")
         })?;
@@ -741,8 +741,8 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
                             .iter()
                             .enumerate()
                             .min_by(|(_left_index, left), (_right_index, right)| {
-                                (left.enqueue_nanos, &left.bundle)
-                                    .cmp(&(right.enqueue_nanos, &right.bundle))
+                                (left.enqueue_ticks, &left.bundle)
+                                    .cmp(&(right.enqueue_ticks, &right.bundle))
                             })
                             .map(|(index, reservation)| (index, reservation.clone()))
                         else {
@@ -817,11 +817,11 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
                         )
                     })?;
                     let deadline = now
-                        .checked_add(timeout.get())
+                        .checked_add(network_duration_ticks(timeout.get())?)
                         .ok_or_else(|| {
                             network_effect_application_error(action, "custody timeout overflowed")
                         })?
-                        .min(expiry_nanos);
+                        .min(expiry_ticks);
                     reserve_custody_slot(
                         initial_queue_usage,
                         initial_custody_entries,
@@ -831,13 +831,13 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
                     queue.overflow_timeouts.push(NetworkCustodyTimeout {
                         bundle,
                         opportunity: opportunity.id(),
-                        enqueue_nanos: now,
-                        expiry_nanos,
-                        deadline_nanos: deadline,
+                        enqueue_ticks: now,
+                        expiry_ticks,
+                        deadline_ticks: deadline,
                     });
                     queue.overflow_timeouts.sort_by(|left, right| {
-                        (left.deadline_nanos, &left.bundle)
-                            .cmp(&(right.deadline_nanos, &right.bundle))
+                        (left.deadline_ticks, &left.bundle)
+                            .cmp(&(right.deadline_ticks, &right.bundle))
                     });
                     return Ok(NetworkCustodyApplication {
                         defer_until: Some(deadline),
@@ -866,7 +866,7 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
         &bundle.producer,
         &bundle.destination,
         now,
-        expiry_nanos,
+        expiry_ticks,
         payload_bytes,
         max_visited_hops,
         &owner,
@@ -878,7 +878,7 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
     if !was_existing
         && reservation
             .as_ref()
-            .is_some_and(|reservation| reservation.first_start_nanos <= now)
+            .is_some_and(|reservation| reservation.first_start_ticks <= now)
     {
         reservation = reserve_network_contact_route(
             state,
@@ -888,7 +888,7 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
             &bundle.producer,
             &bundle.destination,
             now,
-            expiry_nanos,
+            expiry_ticks,
             payload_bytes,
             max_visited_hops,
             &owner,
@@ -898,9 +898,9 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
             resource_limits,
         )?;
     }
-    let (release_nanos, contact_path, contact_path_committed) =
+    let (release_ticks, contact_path, contact_path_committed) =
         if let Some(reservation) = reservation {
-            let committed = was_existing || reservation.first_start_nanos <= now;
+            let committed = was_existing || reservation.first_start_ticks <= now;
             if committed {
                 for identity in reservation.identities {
                     effects
@@ -912,9 +912,9 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
             }
             (
                 if committed {
-                    reservation.finish_nanos
+                    reservation.finish_ticks
                 } else {
-                    reservation.first_start_nanos
+                    reservation.first_start_ticks
                 },
                 reservation.contacts,
                 committed,
@@ -939,7 +939,7 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
                         network_effect_application_error(action, "stale-plan count overflowed")
                     })?;
             }
-            (expiry_nanos, Vec::new(), false)
+            (expiry_ticks, Vec::new(), false)
         };
     let queue = state
         .custody_queues
@@ -948,9 +948,9 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
     queue.reservations.push(NetworkCustodyReservation {
         bundle,
         opportunity: opportunity.id(),
-        enqueue_nanos,
-        expiry_nanos,
-        release_nanos,
+        enqueue_ticks,
+        expiry_ticks,
+        release_ticks,
         bytes: payload_bytes,
         contact_path,
         contact_path_committed,
@@ -958,17 +958,17 @@ pub(in super::super) fn apply_network_custody_queue_with_limits(
     queue.reservations.sort_by(|left, right| {
         (
             left.bundle.priority.rank(),
-            left.enqueue_nanos,
+            left.enqueue_ticks,
             &left.bundle,
         )
             .cmp(&(
                 right.bundle.priority.rank(),
-                right.enqueue_nanos,
+                right.enqueue_ticks,
                 &right.bundle,
             ))
     });
     Ok(NetworkCustodyApplication {
-        defer_until: Some(release_nanos),
+        defer_until: Some(release_ticks),
         repeat_phase_on_resume: true,
     })
 }
@@ -1048,7 +1048,7 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
         } => {
             if let Some(latency_nanos) = latency_nanos {
                 effects
-                    .add_latency_delta(*latency_nanos)
+                    .add_latency_delta(network_signed_duration_ticks(*latency_nanos)?)
                     .map_err(map_effect_error)?;
             }
             if let Some(rate_cap_bps) = rate_cap_bps {
@@ -1108,7 +1108,7 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
                     })?,
                 )?;
                 effects
-                    .add_latency_delta(latency)
+                    .add_latency_delta(network_signed_duration_ticks(latency)?)
                     .map_err(map_effect_error)?;
             }
         }
@@ -1117,7 +1117,7 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
             distance_velocity_lookup: None,
         }
         | NetworkEffectSpecification::AccessDelay { delay_nanos, .. } => effects
-            .add_delay(delay_nanos.get())
+            .add_delay(network_duration_ticks(delay_nanos.get())?)
             .map_err(map_effect_error)?,
         NetworkEffectSpecification::PropagationDelay {
             delay_nanos: None,
@@ -1131,7 +1131,9 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
                     "propagation lookup returned a negative delay",
                 )
             })?;
-            effects.add_delay(delay).map_err(map_effect_error)?;
+            effects
+                .add_delay(network_duration_ticks(delay)?)
+                .map_err(map_effect_error)?;
         }
         NetworkEffectSpecification::Jitter {
             maximum_nanos,
@@ -1140,7 +1142,10 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
         } => {
             let draw = network_effect_draw(scenario_seed, opportunity, action, "jitter", 0);
             effects
-                .add_delay(uniform_inclusive(draw, maximum_nanos.get()))
+                .add_delay(network_duration_ticks(uniform_inclusive(
+                    draw,
+                    maximum_nanos.get(),
+                ))?)
                 .map_err(map_effect_error)?;
         }
         NetworkEffectSpecification::Jitter {
@@ -1159,7 +1164,7 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
                 network_effect_application_error(action, "jitter lookup returned a negative delay")
             })?;
             effects
-                .add_delay(sampled.min(maximum_nanos.get()))
+                .add_delay(network_duration_ticks(sampled.min(maximum_nanos.get()))?)
                 .map_err(map_effect_error)?;
         }
         NetworkEffectSpecification::FrameLoss {
@@ -1195,7 +1200,7 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
             ) {
                 reserve_network_resource(
                     "network_duplicates_per_frame_per_hop",
-                    effects.duplicate_gaps_nanos().len(),
+                    effects.duplicate_gaps_ticks().len(),
                     usize::try_from(copies.get()).map_err(|_| {
                         map_network_resource_limit(
                             FaultResourceLimitError::Representation {
@@ -1211,7 +1216,9 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
                     let gap = gap_nanos.checked_mul(u64::from(copy)).ok_or_else(|| {
                         network_effect_application_error(action, "duplicate gap overflowed")
                     })?;
-                    effects.add_duplicate_gap(gap).map_err(map_effect_error)?;
+                    effects
+                        .add_duplicate_gap(network_duration_ticks(gap)?)
+                        .map_err(map_effect_error)?;
                 }
             }
         }
@@ -1228,7 +1235,9 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
                     window_nanos.get(),
                 ),
             };
-            effects.add_delay(delay).map_err(map_effect_error)?;
+            effects
+                .add_delay(network_duration_ticks(delay)?)
+                .map_err(map_effect_error)?;
         }
         NetworkEffectSpecification::PayloadTransform { mutation } => match mutation {
             crucible::model::NetworkPayloadMutation::BitFlip {
@@ -1307,7 +1316,9 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
                 .ok_or_else(|| {
                     network_effect_application_error(action, "detected-error retries overflowed")
                 })?;
-            effects.add_delay(retry_delay).map_err(map_effect_error)?;
+            effects
+                .add_delay(network_duration_ticks(retry_delay)?)
+                .map_err(map_effect_error)?;
             if !retry_succeeds {
                 effects.mark_drop();
             }
@@ -1319,7 +1330,7 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
         } => {
             state.boundary.activate_timed_outage(
                 action,
-                opportunity.coordinate().virtual_nanos,
+                opportunity.coordinate().virtual_ticks,
                 reset_nanos.get(),
             )?;
             effects.mark_drop();
@@ -1386,7 +1397,7 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
                     "contact plan changed type after admission",
                 ));
             };
-            let now = opportunity.coordinate().virtual_nanos;
+            let now = opportunity.coordinate().virtual_ticks;
             let OpportunityPayload::NetworkFrame {
                 producer,
                 destination,
@@ -1406,16 +1417,22 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
                         service_resource: interval.service_resource.clone(),
                         source: interval.source.clone(),
                         destination: interval.destination.clone(),
-                        start_nanos: interval.start_nanos,
-                        end_nanos: interval.end_nanos,
+                        start_ticks: interval.start_ticks,
+                        end_ticks: interval.end_ticks,
                     },
                 ))
             }) {
                 return Ok(());
             }
             let interval = contact_intervals.iter().find(|interval| {
-                let open = interval.start_nanos.checked_add(interval.acquisition_nanos);
-                let teardown = interval.end_nanos.checked_sub(interval.teardown_nanos);
+                let open = interval
+                    .acquisition_nanos
+                    .checked_mul(crucible::model::SIM_TICKS_PER_NS)
+                    .and_then(|duration| interval.start_ticks.checked_add(duration));
+                let teardown = interval
+                    .teardown_nanos
+                    .checked_mul(crucible::model::SIM_TICKS_PER_NS)
+                    .and_then(|duration| interval.end_ticks.checked_sub(duration));
                 &interval.source == producer
                     && &interval.destination == destination
                     && open.is_some_and(|open| {
@@ -1452,9 +1469,9 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
                 })?,
             )?;
             effects
-                .add_delay(u64::try_from(delay).map_err(|_error| {
-                    network_effect_application_error(action, "contact delay is negative")
-                })?)
+                .add_delay(network_duration_ticks(u64::try_from(delay).map_err(
+                    |_error| network_effect_application_error(action, "contact delay is negative"),
+                )?)?)
                 .map_err(map_effect_error)?;
             let contact_key = NetworkContactServiceKey {
                 plan: contact_plan.clone(),
@@ -1462,8 +1479,8 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
                 service_resource: interval.service_resource.clone(),
                 source: producer.clone(),
                 destination: destination.clone(),
-                start_nanos: interval.start_nanos,
-                end_nanos: interval.end_nanos,
+                start_ticks: interval.start_ticks,
+                end_ticks: interval.end_ticks,
             };
             let contact_identity = network_contact_service_identity(&contact_key);
             debug_assert!(!effects.contact_service_is_accounted(&contact_identity));
@@ -1635,7 +1652,7 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
                         break;
                     }
                     effects
-                        .add_delay(profile.retry_delay_nanos)
+                        .add_delay(network_duration_ticks(profile.retry_delay_nanos)?)
                         .map_err(map_effect_error)?;
                     continue;
                 }
@@ -1673,7 +1690,7 @@ pub(in super::super) fn apply_network_frame_action_with_limits(
                             break;
                         }
                         effects
-                            .add_delay(profile.retry_delay_nanos)
+                            .add_delay(network_duration_ticks(profile.retry_delay_nanos)?)
                             .map_err(map_effect_error)?;
                     }
                 }

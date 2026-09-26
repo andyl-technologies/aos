@@ -1,22 +1,13 @@
 //! Deterministic launch-profile mode enums and their canonical renderings.
 //!
 //! These small value enums name the determinism-relevant policy choices a
-//! launch profile pins (icount shift, machine reset, disk image, guest backing
+//! launch profile pins (machine reset, disk image, guest backing
 //! state, guest core content, and host input), and their [`fmt::Display`]
 //! implementations render the stable tokens that appear in a profile's
 //! canonical hash material. They are re-exported from the `launch` module, so
 //! callers refer to them at their original paths.
 
 use std::fmt;
-
-/// The requested icount shift setting.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IcountShiftSetting {
-    /// A fixed integer shift used in `ns = icount << shift`.
-    Fixed(u8),
-    /// QEMU's host-speed-adaptive icount mode.
-    Auto,
-}
 
 /// The reset discipline for RAM and emulated device state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

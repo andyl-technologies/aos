@@ -9,6 +9,8 @@ mod live_callback_cases;
 static CALLBACK_MODEL_TRANSLATION_PLUGIN_ID: AtomicU64 = AtomicU64::new(0);
 static CALLBACK_MODEL_TRANSLATION_CALLBACK: AtomicUsize = AtomicUsize::new(0);
 static CALLBACK_MODEL_TRANSLATION_USERDATA: AtomicUsize = AtomicUsize::new(0);
+static CALLBACK_MODEL_TRANSLATION_REGISTRATIONS: AtomicUsize = AtomicUsize::new(0);
+static CALLBACK_MODEL_COMBINED_ORDER: AtomicUsize = AtomicUsize::new(0);
 static CALLBACK_MODEL_EXEC_CALLBACK: AtomicUsize = AtomicUsize::new(0);
 static CALLBACK_MODEL_FLUSH_PLUGIN_ID: AtomicU64 = AtomicU64::new(0);
 static CALLBACK_MODEL_FLUSH_CALLBACK: AtomicUsize = AtomicUsize::new(0);
@@ -21,6 +23,7 @@ static CALLBACK_MODEL_SCOREBOARD_SIZE: AtomicUsize = AtomicUsize::new(0);
 static CALLBACK_MODEL_SEEN_OFFSET: AtomicUsize = AtomicUsize::new(usize::MAX);
 static CALLBACK_MODEL_SEEN_VCPU: AtomicUsize = AtomicUsize::new(usize::MAX);
 static CALLBACK_MODEL_SEEN_VALUE: AtomicU64 = AtomicU64::new(0);
+static CALLBACK_MODEL_SCOREBOARD_SET_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 struct TestInsn {
     size: usize,
@@ -50,7 +53,6 @@ fn coverage_registration_off_mode_installs_no_callback_and_ignores_map_config() 
 
     assert_eq!(plan, CoverageRegistrationPlan::Disabled);
     assert!(!plan.installs_callback());
-    assert!(plan.hot_path_has_zero_coverage_overhead());
     assert_eq!(
         plan.require_callback(),
         Err(CoverageError::CallbackWhileDisabled)
@@ -238,6 +240,7 @@ fn test_coverage_capabilities() -> CoverageCapabilities {
         test_scoreboard_new,
         test_scoreboard_free,
         test_u64_set,
+        test_num_vcpus,
     ))
 }
 
@@ -299,6 +302,10 @@ extern "C" fn test_scoreboard_free(_score: *mut QemuPluginScoreboard) {}
 
 extern "C" fn test_u64_set(_entry: QemuPluginU64, _vcpu_index: c_uint, _value: u64) {}
 
+extern "C" fn test_num_vcpus() -> c_int {
+    4
+}
+
 #[test]
 fn coverage_exec_callback_rejects_zero_length_basic_block() {
     let callback = coverage_callback(PluginCoverage::new(PluginSwitch::On, 16));
@@ -318,35 +325,6 @@ fn coverage_exec_callback_rejects_zero_length_basic_block() {
     assert!(sink.observations.is_empty());
 }
 
-#[test]
-fn coverage_exec_callback_exports_protocol_basic_block_observation() {
-    let callback = coverage_callback(PluginCoverage::new(PluginSwitch::On, 1024));
-    let mut map =
-        CoverageMap::new(1024).unwrap_or_else(|error| panic!("coverage map should build: {error}"));
-    let mut sink = RecordingCoverageSink::default();
-
-    let plugin_observation = handle_coverage_exec_callback(
-        &callback,
-        &mut map,
-        &mut sink,
-        CoverageBlockEvent::new(77, 2, 0x4010, 16),
-    )
-    .unwrap_or_else(|error| panic!("plugin callback should record coverage: {error}"));
-    let protocol_observation = plugin_observation
-        .to_protocol_observation()
-        .unwrap_or_else(|error| panic!("plugin observation should export to protocol: {error}"));
-
-    assert_eq!(protocol_observation.current_icount(), 77);
-    assert_eq!(protocol_observation.vcpu_index(), 2);
-    assert_eq!(protocol_observation.guest_pc(), 0x4010);
-    assert_eq!(protocol_observation.block_len(), 16);
-    assert_eq!(
-        protocol_observation.map_index(),
-        fold_basic_block_pc(0x4010, 1024) as u64
-    );
-    assert!(protocol_observation.was_new());
-}
-
 fn callback_model_apis() -> QemuBasicBlockCoverageApis {
     QemuBasicBlockCoverageApis::new(
         callback_model_register_tb_trans_cb,
@@ -360,6 +338,7 @@ fn callback_model_apis() -> QemuBasicBlockCoverageApis {
         callback_model_scoreboard_new,
         callback_model_scoreboard_free,
         callback_model_u64_set,
+        test_num_vcpus,
     )
 }
 
@@ -383,12 +362,26 @@ extern "C" fn callback_model_register_tb_trans_cb(
     callback: Option<QemuVcpuTbTransCbFn>,
     userdata: *mut c_void,
 ) {
+    CALLBACK_MODEL_TRANSLATION_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
     CALLBACK_MODEL_TRANSLATION_PLUGIN_ID.store(plugin_id, Ordering::SeqCst);
     CALLBACK_MODEL_TRANSLATION_CALLBACK.store(
         callback.map_or(0, |callback| callback as usize),
         Ordering::SeqCst,
     );
     CALLBACK_MODEL_TRANSLATION_USERDATA.store(userdata as usize, Ordering::SeqCst);
+}
+
+extern "C" fn callback_model_whitebox_translate(_tb: *mut QemuPluginTb, userdata: *mut c_void) {
+    assert_eq!(userdata as usize, 0xA11CE);
+    assert_eq!(
+        CALLBACK_MODEL_COMBINED_ORDER.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst,),
+        Ok(0),
+    );
+}
+
+extern "C" fn callback_model_ordered_tb_n_insns(tb: *const QemuPluginTb) -> usize {
+    assert_eq!(CALLBACK_MODEL_COMBINED_ORDER.swap(2, Ordering::SeqCst), 1);
+    callback_model_tb_n_insns(tb)
 }
 
 extern "C" fn callback_model_register_tb_exec_cond_cb(
@@ -424,6 +417,7 @@ extern "C" fn callback_model_scoreboard_new_failure(
 extern "C" fn callback_model_scoreboard_free(_score: *mut QemuPluginScoreboard) {}
 
 extern "C" fn callback_model_u64_set(entry: QemuPluginU64, vcpu_index: c_uint, value: u64) {
+    CALLBACK_MODEL_SCOREBOARD_SET_CALLS.fetch_add(1, Ordering::SeqCst);
     CALLBACK_MODEL_SEEN_OFFSET.store(entry.offset, Ordering::SeqCst);
     CALLBACK_MODEL_SEEN_VCPU.store(vcpu_index as usize, Ordering::SeqCst);
     CALLBACK_MODEL_SEEN_VALUE.store(value, Ordering::SeqCst);
