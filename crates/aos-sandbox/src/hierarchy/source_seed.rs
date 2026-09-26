@@ -412,15 +412,17 @@ pub fn verify_controller_source_tree_seed_v1(
 
 /// Verifies a proposal using the Controller's fixed privileged issuer pin.
 ///
-/// The caller still must derive `expected` from protected current Controller
-/// state. This check does not retain a packet, spend an epoch, or append Source.
+/// The Controller must derive `expected` under protected current custody.
+/// Even then, the verified packet is nonauthorizing until a future owner
+/// retains the Controller writer through the Source append and durably spends
+/// the issuer epoch. This check performs none of those effects.
 ///
 /// # Errors
 ///
 /// Rejects absent, malformed, or replaced credential custody, malformed or
 /// stale packet claims, and invalid signatures.
 #[cfg(target_os = "linux")]
-pub fn verify_controller_source_tree_seed_from_fixed_issuer_v1(
+pub(crate) fn verify_controller_source_tree_seed_from_fixed_issuer_v1(
     bytes: &[u8],
     expected: ControllerSourceTreeSeedExpectedV1,
 ) -> Result<VerifiedControllerSourceTreeSeedV1, ControllerSourceTreeSeedErrorV1> {
