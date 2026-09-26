@@ -38,7 +38,7 @@
       }
       {
         label = "T-SPAT-21 completion names model launch rows";
-        needle = "`WorldNode` now carries fixed `smp_vcpus` and `icount_shift`";
+        needle = "`WorldNode` carries fixed";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
@@ -159,32 +159,16 @@
         needle = "pub smp_vcpus: u16";
       }
       {
-        label = "world node icount-shift field";
-        needle = "pub icount_shift: u8";
-      }
-      {
         label = "zero vCPU validation error";
         needle = "WorldNodeSmpVcpuCountZero";
-      }
-      {
-        label = "icount-shift validation error";
-        needle = "WorldNodeIcountShiftNotZero";
       }
       {
         label = "zero vCPU validator";
         needle = "if node.smp_vcpus == 0";
       }
       {
-        label = "icount-shift validator";
-        needle = "if node.icount_shift != 0";
-      }
-      {
         label = "world material hashes vCPU count";
         needle = "smp_vcpus={}";
-      }
-      {
-        label = "world material hashes icount shift";
-        needle = "icount_shift={}";
       }
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" coreTests [
@@ -253,8 +237,8 @@
         needle = "smp_vcpus: 3,";
       }
       {
-        label = "matrix rejects nonzero icount shift";
-        needle = "fn world_rejects_nonzero_icount_shift()";
+        label = "matrix rejects removed authored icount shift";
+        needle = "authored worlds must reject the removed icount shift setting";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/launch.rs" qemuLaunch [
@@ -267,16 +251,8 @@
         needle = "LaunchProfileError::SmpVcpuCountZero";
       }
       {
-        label = "launch profile pins zero icount shift";
-        needle = "let icount_shift = ICOUNT_SHIFT;";
-      }
-      {
-        label = "launch profile validates shift range";
-        needle = "fn validate_icount_shift(shift: u8) -> Result<u8, LaunchProfileError>";
-      }
-      {
-        label = "launch profile rejects nonzero shift";
-        needle = "LaunchProfileError::IcountShiftNotZero";
+        label = "launch profile pins internal icount shift";
+        needle = "const ICOUNT_SHIFT: u8 = 0;";
       }
       {
         label = "launch profile hashes vCPU count";
@@ -284,7 +260,11 @@
       }
       {
         label = "launch profile hashes fixed icount shift";
-        needle = "format!(\"icount_shift={}\", self.icount_shift),";
+        needle = "format!(\"qemu_icount_shift={ICOUNT_SHIFT}\"),";
+      }
+      {
+        label = "launch profile hashes picosecond instruction step";
+        needle = "format!(\"sim_ticks_per_instruction={SIM_TICKS_PER_INSTRUCTION}\"),";
       }
       {
         label = "launch profile pins single-threaded TCG";
@@ -305,12 +285,12 @@
         needle = "Err(QemuPreSpawnLaunchValidationError::IcountShiftAuto)";
       }
       {
-        label = "too-large icount rejection test";
-        needle = "Err(LaunchProfileError::IcountShiftNotZero { shift: 63 })";
+        label = "pre-spawn nonzero icount rejection test";
+        needle = "Err(QemuPreSpawnLaunchValidationError::IcountShiftInvalid {";
       }
       {
-        label = "node icount shift mismatch test";
-        needle = "fn launch_profile_rejects_nonzero_node_icount_shift()";
+        label = "fixed node tick scale test";
+        needle = "fn launch_profile_pins_fixed_tick_scale_for_each_node()";
       }
     ]
     ++ failuresFor "crates/crucible/tests/gate_replay_oracle.rs" replayOracleTest [
@@ -321,10 +301,6 @@
       {
         label = "replay oracle feature test target keeps WorldNode vCPU defaults";
         needle = "smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS";
-      }
-      {
-        label = "replay oracle feature test target keeps WorldNode icount-shift defaults";
-        needle = "icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT";
       }
       {
         label = "replay oracle exact-state branch is compiled by gate";
@@ -456,7 +432,7 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu \
               --test deterministic_launch \
-              launch_profile_rejects_nonzero_node_icount_shift \
+              launch_profile_pins_fixed_tick_scale_for_each_node \
               -- --test-threads=1
           '';
         }
@@ -470,7 +446,7 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             component=parse-build-validation-pass
-            spatial_rows=world,links,plan,properties,ready-point,vcpu-count,icount-shift
+            spatial_rows=world,links,plan,properties,ready-point,vcpu-count,fixed-tick-scale
             launch_rows=mirrored-by-crucible-qemu
             validation_before_hashing=true
             runtime_defense_required=false

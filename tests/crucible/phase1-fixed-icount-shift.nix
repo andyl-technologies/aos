@@ -29,7 +29,6 @@
     builtins.concatStringsSep "\n"
     (map (relative: builtins.readFile (root + "/${relative}"))
       (["crates/crucible-qemu/src/launch.rs"] ++ rustFilesUnder "crates/crucible-qemu/src/launch"));
-  launchLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   launchTest =
     builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
     + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
@@ -46,132 +45,102 @@
         needle = "const ICOUNT_SHIFT: u8 = 0;";
       }
       {
-        label = "candidate uses pinned shift";
-        needle = "let icount_shift = ICOUNT_SHIFT;";
-      }
-      {
         label = "pre-spawn auto shift is rejected";
         needle = "QemuPreSpawnLaunchValidationError::IcountShiftAuto";
       }
       {
-        label = "fixed shift validator";
-        needle = "fn validate_icount_shift(shift: u8) -> Result<u8, LaunchProfileError>";
+        label = "pre-spawn nonzero shift is rejected";
+        needle = "if shift != 0 {";
       }
       {
         label = "QEMU launch argument pins fixed shift";
-        needle = "\"shift={},sleep=off,align=off,rr_switch_quantum={}\",";
+        needle = "\"shift={ICOUNT_SHIFT},sleep=off,align=off,rr_switch_quantum={}\",";
       }
       {
         label = "scenario hash records shift";
-        needle = "format!(\"icount_shift={}\", self.icount_shift),";
+        needle = "format!(\"qemu_icount_shift={ICOUNT_SHIFT}\"),";
       }
       {
-        label = "scenario hash records derived virtual time";
-        needle = "\"virtual_time_ns=icount<<shift\".to_owned(),";
+        label = "scenario hash records picosecond ticks";
+        needle = "\"sim_tick=picosecond\".to_owned(),";
       }
       {
-        label = "node shift declaration type";
-        needle = "pub struct NodeIcountShift";
+        label = "scenario hash records ticks per nanosecond";
+        needle = "format!(\"sim_ticks_per_ns={SIM_TICKS_PER_NS}\"),";
       }
       {
-        label = "node shift validation API";
-        needle = "pub fn validate_node_icount_shifts(";
+        label = "scenario hash records ticks per instruction";
+        needle = "format!(\"sim_ticks_per_instruction={SIM_TICKS_PER_INSTRUCTION}\"),";
       }
       {
-        label = "validated node-shift scenario material API";
+        label = "scenario hash floors guest nanoseconds only at projection";
+        needle = "format!(\"virtual_time_ns=floor(sim_tick/{SIM_TICKS_PER_NS})\"),";
+      }
+      {
+        label = "validated node-scale scenario material API";
         needle = "pub fn scenario_hash_material_for_nodes(";
       }
       {
-        label = "validated material calls canonical node shift validation";
-        needle = "canonical_node_icount_shift_lines(self.icount_shift, node_shifts)?";
+        label = "validated material calls canonical node scale validation";
+        needle = "canonical_node_tick_scale_lines(node_ids)?";
       }
       {
-        label = "canonical node shift material helper";
-        needle = "fn canonical_node_icount_shift_lines(";
+        label = "canonical node scale material helper";
+        needle = "pub(super) fn canonical_node_tick_scale_lines(";
       }
       {
-        label = "node shift material sorted by node id";
-        needle = "ordered.sort_by(|left, right| left.0.cmp(&right.0));";
+        label = "node scale material sorted by node id";
+        needle = "ordered.sort();";
       }
       {
-        label = "duplicate node shift declaration rejection";
-        needle = "DuplicateNodeIcountShift";
+        label = "node scale material records fixed scale";
+        needle = "format!(\"node_sim_ticks_per_ns[{node_id}]={SIM_TICKS_PER_NS}\")";
       }
       {
-        label = "nonzero node shift error";
-        needle = "IcountShiftNotZero";
-      }
-      {
-        label = "node shift validation checks unsupported shifts";
-        needle = "validate_icount_shift(node_shift.shift)?;";
-      }
-      {
-        label = "node shift validation requires zero";
-        needle = "if shift == 0";
-      }
-      {
-        label = "node shift declarations enter scenario material";
-        needle = "format!(\"node_icount_shift[{node_id}]={shift}\")";
-      }
-    ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" launchLib [
-      {
-        label = "node shift type exported";
-        needle = "NodeIcountShift";
+        label = "duplicate node id is rejected";
+        needle = "DuplicateNodeId";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest [
       {
-        label = "per-node nonzero shift regression test";
-        needle = "launch_profile_rejects_nonzero_node_icount_shift";
+        label = "per-node fixed tick scale regression test";
+        needle = "launch_profile_pins_fixed_tick_scale_for_each_node";
       }
       {
-        label = "default shift assertion";
-        needle = "assert_eq!(profile.icount_shift(), 0);";
+        label = "default shift enters launch identity";
+        needle = "\"qemu_icount_shift=0\"";
       }
       {
-        label = "matching node shifts pass";
-        needle = "NodeIcountShift::new(\"vm-b\", 0)";
+        label = "picosecond scale enters launch identity";
+        needle = "\"sim_ticks_per_instruction=50\"";
       }
       {
-        label = "validated material path is tested";
-        needle = "scenario_hash_material_for_nodes";
+        label = "nanosecond projection enters launch identity";
+        needle = "\"virtual_time_ns=floor(sim_tick/1000)\"";
       }
       {
-        label = "node shift material records node declaration";
-        needle = "node_icount_shift[vm-a]=0";
+        label = "node scale material records node declaration";
+        needle = "node_sim_ticks_per_ns[vm-a]=1000";
       }
       {
-        label = "node shift material canonical order assertion";
-        needle = "node shift material must be sorted by node id";
+        label = "node scale material canonical order assertion";
+        needle = "node scale material must be sorted by node id";
       }
       {
-        label = "mismatching node shift is rejected";
-        needle = "NodeIcountShift::new(\"vm-b\", 1)";
-      }
-      {
-        label = "nonzero shift is rejected";
-        needle = "LaunchProfileError::IcountShiftNotZero { shift: 1 }";
-      }
-      {
-        label = "unsupported shift rejection regression";
-        needle = "LaunchProfileError::IcountShiftNotZero { shift: 63 }";
-      }
-      {
-        label = "duplicate node shift rejection regression";
-        needle = "LaunchProfileError::DuplicateNodeIcountShift";
+        label = "duplicate node id rejection regression";
+        needle = "LaunchProfileError::DuplicateNodeId";
       }
       {
         label = "pre-spawn nonzero rejection regression";
         needle = "QemuPreSpawnLaunchValidationError::IcountShiftInvalid";
       }
       {
-        label = "launch arguments pin default shift";
-        needle = "shift=0,sleep=off,align=off";
+        label = "pre-spawn auto rejection regression";
+        needle = "QemuPreSpawnLaunchValidationError::IcountShiftAuto";
       }
       {
-        label = "hash material records default shift";
-        needle = "icount_shift=0";
+        label = "launch arguments pin default shift";
+        needle = "shift=0,sleep=off,align=off";
       }
       {
         label = "shift participates in scenario identity";
@@ -183,6 +152,14 @@
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
+      {
+        label = "picosecond retirement step documented";
+        needle = "50 ticks per retired instruction";
+      }
+      {
+        label = "internal shift is not a nanosecond clock";
+        needle = "not a selectable nanosecond time scale in `sim` mode";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/31-decision-register.md" decisionRegister [
       {
@@ -190,20 +167,20 @@
         needle = "D-2";
       }
       {
-        label = "auto shift forbidden";
-        needle = "Shift 0 makes one retired";
+        label = "picosecond retirement step decided";
+        needle = "per retired instruction; an authorized idle jump";
       }
       {
-        label = "shift is content addressed";
-        needle = "recorded in the scenario's content hash";
+        label = "fixed scale is content addressed";
+        needle = "The fixed scale is bound into scenario, launch,";
       }
       {
         label = "default shift documented";
         needle = "`-icount shift=0`";
       }
       {
-        label = "default shift rationale";
-        needle = "the finest rate";
+        label = "nanosecond projection is derived";
+        needle = "floor(logical_ticks / 1000)";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -280,9 +257,11 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             default_shift=0
+            sim_ticks_per_ns=1000
+            sim_ticks_per_instruction=50
             auto_shift=forbidden
-            scenario_hash=icount_shift
-            per_node_shift=must_match_scenario
+            scenario_hash=icount_shift,sim_tick_scale
+            per_node_tick_scale=fixed
             decision_register=D-2
             RESULT
           '';

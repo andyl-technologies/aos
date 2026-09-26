@@ -190,8 +190,8 @@
       needle = "if self.memory_mib == 0";
     }
     {
-      label = "pinned icount launch";
-      needle = "let icount_shift = ICOUNT_SHIFT;";
+      label = "pinned internal icount launch";
+      needle = "const ICOUNT_SHIFT: u8 = 0;";
     }
     {
       label = "host RTC rejection";
@@ -235,7 +235,7 @@
     }
     {
       label = "fixed icount launch flag";
-      needle = "\"shift={},sleep=off,align=off,rr_switch_quantum={}\",";
+      needle = "\"shift={ICOUNT_SHIFT},sleep=off,align=off,rr_switch_quantum={}\",";
     }
     {
       label = "VM-clock RTC launch flag";
@@ -271,7 +271,7 @@
     }
     {
       label = "launch hash version";
-      needle = "\"crucible.launch.v1\".to_owned(),";
+      needle = "\"crucible.launch.v3\".to_owned(),";
     }
     {
       label = "CPU in hash material";
@@ -294,8 +294,12 @@
       needle = "format!(\"accelerator={DEFAULT_ACCEL}\"),";
     }
     {
-      label = "icount shift in hash material";
-      needle = "format!(\"icount_shift={}\", self.icount_shift),";
+      label = "internal icount shift in hash material";
+      needle = "format!(\"qemu_icount_shift={ICOUNT_SHIFT}\"),";
+    }
+    {
+      label = "picosecond instruction step in hash material";
+      needle = "format!(\"sim_ticks_per_instruction={SIM_TICKS_PER_INSTRUCTION}\"),";
     }
     {
       label = "RR switch quantum in hash material";
@@ -310,8 +314,8 @@
       needle = "\"rr_vcpu_rotation=ascending-vcpu-id\".to_owned(),";
     }
     {
-      label = "icount-derived time in hash material";
-      needle = "\"virtual_time_ns=icount<<shift\".to_owned(),";
+      label = "guest nanoseconds derive from exact ticks";
+      needle = "format!(\"virtual_time_ns=floor(sim_tick/{SIM_TICKS_PER_NS})\"),";
     }
     {
       label = "guest-visible time source policy in hash material";
@@ -390,8 +394,8 @@
       needle = "\"guest_entropy_host_sources=disabled\".to_owned(),";
     }
     {
-      label = "shift-zero virtual time conversion";
-      needle = "pub const fn virtual_ns_from_icount(&self, icount: u64) -> u64";
+      label = "guest nanosecond projection from exact ticks";
+      needle = "pub const fn virtual_ns_from_tick(&self, tick: u64) -> u64";
     }
     {
       label = "guest entropy seed derivation";
@@ -434,7 +438,7 @@
     }
     {
       label = "virtual-time mapping test";
-      needle = "virtual_time_uses_shift_zero_mapping";
+      needle = "virtual_time_floors_only_at_the_guest_nanosecond_boundary";
     }
     {
       label = "CPU argument assertion";
@@ -513,8 +517,8 @@
       needle = "QemuPreSpawnLaunchValidationError::IcountShiftAuto";
     }
     {
-      label = "shift-zero virtual-time mapping assertion";
-      needle = "virtual_time_uses_shift_zero_mapping";
+      label = "picosecond boundary mapping assertion";
+      needle = "profile.virtual_ns_from_tick(999), 0";
     }
     {
       label = "run seed hash material assertion";
@@ -684,6 +688,9 @@ in
             smp=1
             smp_vcpus=1
             icount=shift=0,sleep=off,align=off,rr_switch_quantum=4096
+            sim_tick=picosecond
+            sim_ticks_per_ns=1000
+            sim_ticks_per_instruction=50
             rr_switch_quantum=4096
             rr_switch_quantum_units=node-icount
             rr_vcpu_rotation=ascending-vcpu-id
@@ -698,7 +705,7 @@ in
             guest_entropy_rng_object=rng-builtin,id=crucible-rng0
             guest_entropy_rng_device=virtio-rng-pci,rng=crucible-rng0,bus=pcie.0,addr=0x1
             guest_entropy_host_sources=disabled
-            virtual_time_ns=icount<<shift
+            virtual_time_ns=floor(sim_tick/1000)
             tsc_source=icount
             guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time
             guest_time_epoch=fixed-rtc-epoch
