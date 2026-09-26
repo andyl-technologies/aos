@@ -75,9 +75,16 @@ def fixtures(gcc, clang, rustc):
             yield Fixture("gcc-tree-dump", compiler,
                           base + ["-fdump-tree-original"], c_sources,
                           {"value.h": "#define VALUE 73\n"}, cacheable=False)
+            yield Fixture("gcc-explicit-tree-dump", compiler,
+                          base + ["-fdump-tree-original=report.txt"], c_sources,
+                          {"value.h": "#define VALUE 73\n"})
             yield Fixture("gcc-opt-report", compiler,
-                          base + ["-O2", "-fopt-info-optimized=report.txt"], c_sources,
-                          {"value.h": "#define VALUE 73\n"}, cacheable=False)
+                          base + ["-O2", "-fopt-info-optimized=report.txt"],
+                          {"source.c": ('#include "value.h"\n'
+                                        'static inline int square(int x) { return x * x; }\n'
+                                        'int answer(void) { return square(VALUE); }\n'),
+                           "value.h": "#define VALUE 42\n"},
+                          {"value.h": "#define VALUE 73\n"})
             yield Fixture("gcc-sarif-report", compiler,
                           base + ["-fdiagnostics-format=sarif-file"], c_sources,
                           cacheable=False,
@@ -645,6 +652,7 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     assert "source.d" not in actual[3], "oracle defect changed; remove this exception"
                 missing_oracle_side_files = {
                     "gcc-aux-info": "source.aux",
+                    "gcc-explicit-tree-dump": "report.txt",
                     "gcc-opt-report": "report.txt",
                     "gcc-sarif-report": "source.c.sarif",
                     "clang-serialized-diagnostics": "source.dia",
@@ -693,6 +701,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                     for name, contents in fixture.changes.items():
                         (work / name).write_text(contents)
                 direct = invoke([])
+                if fixture.name == "gcc-opt-report":
+                    assert direct[3]["report.txt"][0], "GCC optimization report is empty"
                 oracle_cold = invoke([sccache])
                 if fixture.direct_exit_code is None:
                     compare(direct, oracle_cold, "sccache cold vs direct")
@@ -711,7 +721,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                         assert oracle_warm[3][path] == oracle_cold[3][path], (
                             fixture.name, "sccache did not replay the cold PCH")
                 oracle_hit = hits() > before_hits
-                if fixture.name in {"gcc-tree-dump", "gcc-opt-report", "gcc-sarif-report"}:
+                if fixture.name in {"gcc-tree-dump", "gcc-explicit-tree-dump",
+                                    "gcc-opt-report", "gcc-sarif-report"}:
                     assert oracle_hit, (fixture.name, "sccache report omission was not a hit")
 
                 accache_cold = invoke([accache])

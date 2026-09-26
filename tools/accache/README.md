@@ -117,8 +117,10 @@ named metadata files. In a shared target directory, a directory snapshot cannot
 safely attribute those files to one action when compilers run concurrently.
 Pinned sccache accepts this flag but its warm hit drops those files. Accache
 preserves them by running rustc for each invocation. `-Csave-temps=no` remains
-cacheable. GCC dump, optimization report, and SARIF file options also bypass
+cacheable. GCC dumps with implicit filenames and SARIF file options also bypass
 because they write side files outside the pinned frontend's output list.
+Explicitly named GCC dumps and optimization reports are cached with their
+requested output files.
 
 ## Storage and concurrency
 
