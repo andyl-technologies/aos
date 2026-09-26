@@ -1,7 +1,7 @@
 # RFC-0023: AOS Hub hybrid runtime topology
 
-- **Status:** Proposed (design-only). Hybrid serving, storage-work execution,
-  and portable whole-Hub snapshots are not implemented.
+- **Status:** Proposed (implementation in progress). Portable whole-Hub
+  snapshots remain a later phase.
 - **Date:** 2026-09-24.
 - **Audience:** AOS Hub, Cloudflare Worker, GCP application platform, storage,
   security, and operations implementers.

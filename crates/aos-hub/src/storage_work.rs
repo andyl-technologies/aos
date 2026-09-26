@@ -33,9 +33,14 @@ use aos_registry_surface::{object, object_bundle};
 use async_trait::async_trait;
 use base64::Engine as _;
 use futures_util::{StreamExt as _, TryStreamExt as _};
+use tokio::sync::Semaphore;
 
 // Limit each index walk's simultaneous cross-cloud inspection requests.
 const MAX_PARALLEL_GIT_INSPECTION_BATCHES: usize = 8;
+// Indexing, inventory, and replication can run together. Bound their combined
+// Worker load, including response reads, so one Native replica cannot flood a
+// storage executor with thousands of simultaneous object inspections.
+const MAX_IN_FLIGHT_STORAGE_PLANS: usize = 16;
 
 /// Authenticated Native-to-Worker executor client.
 pub struct RemoteStorageWorkClient {
@@ -44,6 +49,7 @@ pub struct RemoteStorageWorkClient {
     deployment_id: String,
     key: StorageWorkKey,
     http: reqwest::Client,
+    in_flight: Semaphore,
 }
 
 impl RemoteStorageWorkClient {
@@ -85,6 +91,7 @@ impl RemoteStorageWorkClient {
             deployment_id,
             key: StorageWorkKey::new(key)?,
             http,
+            in_flight: Semaphore::new(MAX_IN_FLIGHT_STORAGE_PLANS),
         })
     }
 
@@ -164,6 +171,11 @@ impl RemoteStorageWorkClient {
     /// Returns an error for a stale plan, Worker failure, oversized response,
     /// malformed result, or mismatched placement and object identity.
     pub async fn execute(&self, plan: &StorageWorkPlan) -> Result<StorageWorkResult> {
+        let _permit = self
+            .in_flight
+            .acquire()
+            .await
+            .context("hybrid storage work executor closed")?;
         let now = aos_hub_core::clock::now_unix_secs();
         plan.validate(&self.deployment_id, now)?;
         let body = serde_json::to_vec(plan).context("encoding storage work plan")?;
