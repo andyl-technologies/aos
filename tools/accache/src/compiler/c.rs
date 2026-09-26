@@ -182,6 +182,23 @@ pub(super) fn configure(
     invocation
         .extra_inputs
         .extend(parsed.extra_hash_files.iter().cloned());
+    if clang
+        && expanded.iter().any(|arg| {
+            arg.starts_with("-foptimization-record-passes=")
+                || arg == "-fsave-optimization-record"
+        })
+    {
+        // Clang writes this file beside the object even when the selected
+        // pass emits no remarks. -fno-save-optimization-record may suppress
+        // it, so absence is valid for the same output contract.
+        let object = parsed
+            .outputs
+            .get("obj")
+            .ok_or_else(|| anyhow::anyhow!("Clang optimization record has no object output"))?;
+        let mut record = object.path.clone();
+        record.set_extension("opt.yaml");
+        invocation.output(&record, true)?;
+    }
     // GCC accepts report options through sccache's generic argument path.
     // The pinned frontend omits their files, so discover those destinations
     // before allowing an action to be stored.
@@ -633,6 +650,14 @@ pub(super) fn configure(
         {
             // A dependency probe must not create or append to a caller's
             // report before the actual compilation or a cache restoration.
+            index += 1;
+            continue;
+        }
+        if clang
+            && (arg.starts_with("-foptimization-record-passes=")
+                || arg == "-fsave-optimization-record")
+        {
+            // The dependency probe must not create the caller's record.
             index += 1;
             continue;
         }
