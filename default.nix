@@ -1900,6 +1900,10 @@ in {
       abilities-package-services = ability-suites.package-services;
       abilities-provider-realization = ability-suites.provider-realization;
       abilities-native-resources = ability-suites.native-resources;
+      abilities-source-stage-host = import ./tests/abilities/host-source-fixed-point.nix {
+        inherit lib pkgs;
+        system = serverSystem;
+      };
       abilities-system-selection = ability-suites.system-selection;
       abilities-system-packages = ability-suites.system-packages;
     };
