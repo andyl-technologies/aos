@@ -412,7 +412,6 @@ let
     "pnpm"
     "postgresql"
     "pyrefly"
-    "sccache"
     "test-http-server"
     "test-static-cache-server"
     "uv"
