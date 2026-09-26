@@ -11,6 +11,7 @@ Commands:
   list [packages|images|containers|checks|builds|evals] [filter]
   build <package|image|container|check|build|eval> <name> [Nix flags]
   run <package|image|container> <name> [arguments]
+  cargo <arguments>         Run Cargo in the current AOS-built dev shell
   all <packages|checks|builds|format|ci> [Nix flags]
   fmt [nix|rust|all] [--check]
   release <arguments>       Run the existing release CLI without shared caches
@@ -29,6 +30,8 @@ accepts ordinary nix-build flags after the target, such as --no-out-link or
 --dry-run. 'all packages' builds the package aggregate; 'all builds' also
 includes images, containers, and system roots. 'all ci' runs formatting,
 evaluation, broad builds, and checks, and can take a long time.
+Use 'cargo test --manifest-path crates/Cargo.toml ...' for incremental Rust
+checks without evaluating unrelated flake package outputs.
 
 Development builds enable all four options by default:
   --[no-]go-cache           Share Go compilation artifacts
