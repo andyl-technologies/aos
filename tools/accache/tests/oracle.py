@@ -1369,6 +1369,81 @@ def check_inline_assembler_inputs(root, env, accache, sccache, gcc, clang, hits)
     return results
 
 
+def check_clang_vfs_overlays(root, env, accache, sccache, clang, hits):
+    """Track Clang overlay mappings, including edits invisible to depfiles."""
+    results = []
+    for fixture, option in [
+        ("clang-ivfs-overlay", ["-ivfsoverlay", "overlay.json"]),
+        ("clang-ivfs-overlay-joined", ["-ivfsoverlayoverlay.json"]),
+        ("clang-vfs-overlay", ["-vfsoverlay", "overlay.json"]),
+        ("clang-long-vfs-overlay", ["--vfsoverlay", "overlay.json"]),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "source.c").write_text(
+            "#include <value.h>\nint answer(void) { return VALUE; }\n")
+        (work / "first.h").write_text("#define VALUE 42\n")
+        (work / "second.h").write_text("#define VALUE 73\n")
+        overlay = work / "overlay.json"
+        object_file = work / "source.o"
+        virtual = work / "virtual"
+        args = [clang, "-c", "source.c", "-o", "source.o", "-I" + str(virtual),
+                *option]
+
+        def compile_object(wrapper):
+            object_file.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            return completed.stdout, completed.stderr, object_file.read_bytes()
+
+        previous_object = None
+        previous_objects = []
+        for revision, header in enumerate(["first.h", "second.h", "second.h"]):
+            data = {"version": 0, "roots": [{
+                "type": "directory", "name": str(virtual),
+                "contents": [{"type": "file", "name": "value.h",
+                              "external-contents": str(work / header)}],
+            }]}
+            # The final edit leaves the selected header and preprocessed C
+            # unchanged, but the overlay file remains a compiler input.
+            overlay.write_text(json.dumps(data, indent=2 if revision == 2 else None))
+            direct = compile_object([])
+            if revision == 1:
+                assert direct[2] != previous_object, (fixture, "mapping changed no object bytes")
+            if revision == 2:
+                assert direct[2] == previous_object, (fixture, "formatting changed the object")
+            previous_object = direct[2]
+
+            before_hits = hits()
+            oracle_cold = compile_object([sccache])
+            oracle_hit = hits() > before_hits
+            if oracle_cold != direct:
+                assert (revision > 0 and oracle_hit
+                        and oracle_cold[2] != direct[2]
+                        and oracle_cold[2] in previous_objects), (
+                    fixture, revision, "unexpected sccache difference")
+            before_hits = hits()
+            assert compile_object([sccache]) == oracle_cold
+            assert hits() > before_hits, (fixture, revision, "sccache did not warm-hit")
+
+            assert compile_object([accache]) == direct
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert cold["outcome"] == "miss", (fixture, revision, cold)
+            if revision:
+                assert any("overlay.json" in item for item in cold["changes"]), cold
+            assert compile_object([accache]) == direct
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert warm["outcome"] == "hit", (fixture, revision, warm)
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": True, "oracle_stale_artifact": oracle_cold != direct,
+                            "accache": "hit", "artifacts": ["source.o"]})
+            previous_objects.append(direct[2])
+
+        print("PASS oracle", fixture, "overlay invalidation", flush=True)
+    return results
+
+
 def check_clang_profile_use(root, env, accache, sccache, clang, hits):
     """Track the profile data consumed by a cacheable Clang action."""
     source = (
@@ -2041,6 +2116,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                               sccache, gcc, hits))
         results.extend(check_inline_assembler_inputs(root, env, accache,
                                                      sccache, gcc, clang, hits))
+        results.extend(check_clang_vfs_overlays(root, env, accache,
+                                                sccache, clang, hits))
         results.extend(check_clang_profile_use(root, env, accache, sccache,
                                                clang, hits))
         results.extend(check_rust_profile_use(root, env, accache, sccache,

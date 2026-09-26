@@ -91,6 +91,11 @@ directories in the manifest.
 GCC AutoFDO reads `-fauto-profile=path`, or `fbdata.afdo` for the bare flag.
 Accache fingerprints that profile even though it is absent from the ordinary
 preprocessor depfile.
+Clang VFS overlay files are fingerprinted for `-ivfsoverlay`, `-vfsoverlay`,
+and `--vfsoverlay`, including Clang's joined `-ivfsoverlay` spelling. The
+oracle changes a mapped header and then edits only the overlay formatting;
+both changes cause an accache miss. Pinned sccache replays the earlier object
+after the mapping changes.
 The package author must declare every extension-readable mutable input and
 must not cache compiler extensions with undeclared side effects. This is an
 input contract, not an additional filesystem sandbox. Full tree hashing can
