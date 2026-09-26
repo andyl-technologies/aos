@@ -111,6 +111,20 @@ enum BrokerMethod {
   BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1 = 44;
 }
 
+// FUSE 3.0 Controller intent candidate. These fields become authority only
+// after a distinct signed FUSE grant, protected desired-state currentness, and
+// independent Host scope/current namespace proof. No FD or worker is conveyed.
+message ReserveFuseWorkerIntentRequestV1 {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  bytes attachment_intent_v2 = 3; // Exact canonical v2 CBOR; FUSE presentation.
+  bytes desired_record_digest = 4; // Exact protected AOSATD02 record digest.
+  uint64 namespace_target_generation = 5;
+  bytes namespace_allocation_digest = 6; // Exact Controller allocation digest.
+  bytes runtime_handle = 7; // Deterministic from the assignment fence.
+  bytes payload_scope_handle = 8; // Host-origin retained scope identifier.
+}
+
 // Carries only a dedicated-key signed controller pending-grant receipt.
 // Endpoint, CA, and server-key pins come from Host systemd credentials.
 message InstallHostAttachGateRequestV1 {

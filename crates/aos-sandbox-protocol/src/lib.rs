@@ -31,6 +31,7 @@ pub mod host_output;
 pub mod inventory;
 pub mod mount_catalog;
 pub mod mount_destination_slot;
+pub mod mount_fuse_reserve_intent;
 pub mod mount_manager_startup;
 mod mount_result;
 pub mod mount_scope;

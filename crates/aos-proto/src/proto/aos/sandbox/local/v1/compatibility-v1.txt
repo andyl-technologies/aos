@@ -55,6 +55,15 @@ BROKER_METHOD_HOST_QUERY_NO_APPLY = 40;
 BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 = 42;
 BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 = 43;
 BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1 = 44;
+message ReserveFuseWorkerIntentRequestV1 {
+RequestHeader header = 1;
+AssignmentFence fence = 2;
+bytes attachment_intent_v2 = 3;
+bytes desired_record_digest = 4;
+uint64 namespace_target_generation = 5;
+bytes namespace_allocation_digest = 6;
+bytes runtime_handle = 7;
+bytes payload_scope_handle = 8;
 message ObserveHostExecutionArgumentRequestV1 {
 RequestHeader header = 1;
 bytes canonical_attempt = 2;
