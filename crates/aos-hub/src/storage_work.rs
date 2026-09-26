@@ -34,6 +34,7 @@ use aos_registry_surface::{object, object_bundle};
 use async_trait::async_trait;
 use base64::Engine as _;
 use futures_util::{StreamExt as _, TryStreamExt as _};
+use sha2::Digest as _;
 use tokio::sync::Semaphore;
 
 // Limit each index walk's simultaneous cross-cloud inspection requests.
@@ -297,6 +298,7 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "compose_oci_blob",
                 "delete_oci_staging",
                 "delete_if_matches",
+                "put_metadata",
                 "put_probe",
                 "delete_probe",
                 "create_multipart",
@@ -438,6 +440,7 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
             StorageWorkOperation::DeleteIfMatches { .. },
             StorageWorkOutcome::NotFound | StorageWorkOutcome::DeletePreconditionFailed,
         )
+        | (StorageWorkOperation::PutMetadata { .. }, StorageWorkOutcome::MetadataWritten)
         | (
             StorageWorkOperation::PutProbe { .. } | StorageWorkOperation::DeleteProbe { .. },
             StorageWorkOutcome::ProbeAcknowledged,
@@ -1626,6 +1629,10 @@ impl SurfaceWrite for HybridR2MultipartWriter {
     }
 
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
+        if aos_hub_core::storage_work::admitted_narinfo_path(path) {
+            return write_hybrid_metadata(&self.work, &self.placement, &self.binding, path, bytes)
+                .await;
+        }
         write_hybrid_probe(&self.work, &self.placement, &self.binding, path, bytes).await
     }
 
@@ -1773,6 +1780,35 @@ impl SurfaceWrite for HybridOciStagingWriter {
     }
 }
 
+async fn write_hybrid_metadata(
+    work: &RemoteStorageWorkClient,
+    placement: &SurfacePlacementRecord,
+    binding: &BindingRecord,
+    path: &str,
+    bytes: &[u8],
+) -> Result<()> {
+    anyhow::ensure!(
+        bytes.len() <= aos_hub_core::storage_work::MAX_METADATA_BYTES,
+        "hybrid metadata body is too large"
+    );
+    let plan = work.plan_for_placement(
+        placement,
+        binding,
+        StorageWorkOperation::PutMetadata {
+            path: path.into(),
+            content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            sha256: hex::encode(sha2::Sha256::digest(bytes)),
+        },
+        aos_hub_core::clock::now_unix_secs(),
+    )?;
+    let result = work.execute(&plan).await?;
+    anyhow::ensure!(
+        matches!(result.outcome, StorageWorkOutcome::MetadataWritten),
+        "storage Worker did not acknowledge metadata write"
+    );
+    Ok(())
+}
+
 async fn write_hybrid_probe(
     work: &RemoteStorageWorkClient,
     placement: &SurfacePlacementRecord,
@@ -1900,6 +1936,7 @@ mod tests {
                 "compose_oci_blob".into(),
                 "delete_oci_staging".into(),
                 "delete_if_matches".into(),
+                "put_metadata".into(),
                 "put_probe".into(),
                 "delete_probe".into(),
                 "create_multipart".into(),

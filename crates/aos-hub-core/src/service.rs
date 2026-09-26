@@ -23839,6 +23839,13 @@ impl RpcService {
                 "cache narinfo store hashes must be unique",
             ));
         }
+        if narinfos.iter().any(|narinfo| {
+            !crate::storage_work::admitted_narinfo_path(&format!("{}.narinfo", narinfo.store_hash))
+        }) {
+            return Err(RpcError::invalid(
+                "cache narinfo store hashes must use Nix base32",
+            ));
+        }
         let now = clock::now_unix_secs();
         let registered = futures_util::stream::iter(narinfos.iter().cloned())
             .map(|narinfo| async move {
@@ -37712,6 +37719,33 @@ mod cache_upload_tests {
             .unwrap_err();
 
         assert!(matches!(error, RpcError::InvalidArgument(_)));
+    }
+
+    #[tokio::test]
+    async fn narinfo_batch_rejects_uninspectable_hash_before_writing() {
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let cache = db
+            .binary_cache_by_slug("failure/cache")
+            .await
+            .unwrap()
+            .unwrap();
+        let narinfo = pb::CacheNarinfo {
+            store_hash: "fleetgc".into(),
+            narinfo: "StorePath: /nix/store/fleetgc-payload\nURL: nar/payload.nar\n".into(),
+            nar_upload_ticket_id: String::new(),
+        };
+
+        let error = service
+            .register_cache_narinfos_authorized(&cache, &[narinfo])
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RpcError::InvalidArgument(_)));
+        assert!(db
+            .surface_object_named(SurfaceTarget::BinaryCache(cache.id), "fleetgc.narinfo")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

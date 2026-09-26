@@ -1547,7 +1547,7 @@ in {
 
       # Publish a real NAR/narinfo pair so cache GC has a logical object and
       # placement evidence to delete, rather than only an orphan surface file.
-      gc_store_hash = "fleetgc000000000000000000000000"
+      gc_store_hash = "f1gc0000000000000000000000000000"
       gc_nar_path = f"nar/{gc_store_hash}-payload.nar"
       gc_nar_bytes = b"hybrid-cache-gc-nar"
       gc_nar_digest = hashlib.sha256(gc_nar_bytes).hexdigest()

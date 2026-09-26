@@ -7,7 +7,7 @@
 
 use hmac::{Hmac, Mac as _};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest as _, Sha256};
 
 /// Internal Worker route for Native-issued storage work.
 pub const STORAGE_WORK_PATH: &str = "/_internal/storage/v1/execute";
@@ -201,6 +201,15 @@ pub enum StorageWorkOperation {
         /// Reviewed content hash, when the inventory records one.
         expected_hash: Option<String>,
     },
+    /// Writes one bounded cache narinfo beside storage.
+    PutMetadata {
+        /// Surface-relative Nix base32 narinfo path.
+        path: String,
+        /// Standard-base64 document bytes, bounded by the metadata limit.
+        content_base64: String,
+        /// Lowercase SHA-256 of the decoded document bytes.
+        sha256: String,
+    },
     /// Writes a bounded service-owned conditional-delete probe object.
     PutProbe {
         /// Reserved surface-relative probe key.
@@ -254,6 +263,7 @@ impl StorageWorkOperation {
             Self::ComposeOciBlob { .. } => "compose_oci_blob",
             Self::DeleteOciStaging { .. } => "delete_oci_staging",
             Self::DeleteIfMatches { .. } => "delete_if_matches",
+            Self::PutMetadata { .. } => "put_metadata",
             Self::PutProbe { .. } => "put_probe",
             Self::DeleteProbe { .. } => "delete_probe",
             Self::CreateMultipart { .. } => "create_multipart",
@@ -491,6 +501,8 @@ pub enum StorageWorkOutcome {
     },
     /// The object guard observed an object different from the reviewed one.
     DeletePreconditionFailed,
+    /// The object guard acknowledged one bounded narinfo write.
+    MetadataWritten,
     /// Reserved capability probe write or cleanup completed.
     ProbeAcknowledged,
     /// R2 accepted a new multipart upload and returned its opaque identity.
@@ -861,6 +873,23 @@ impl StorageWorkPlan {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }
+            StorageWorkOperation::PutMetadata {
+                path,
+                content_base64,
+                sha256,
+            } => {
+                use base64::Engine as _;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(content_base64)
+                    .map_err(|_| StorageWorkError::InvalidPlan)?;
+                if !admitted_narinfo_path(path)
+                    || bytes.len() > MAX_METADATA_BYTES
+                    || !valid_sha256_hex(sha256)
+                    || hex::encode(Sha256::digest(&bytes)) != *sha256
+                {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
             StorageWorkOperation::PutProbe {
                 path,
                 content_base64,
@@ -932,13 +961,19 @@ pub fn admitted_metadata_path(path: &str) -> bool {
     matches!(path, "HEAD" | "info/refs" | "objects/info/packs")
         || path.starts_with("channels/")
         || path.starts_with("releases/")
-        || path.strip_suffix(".narinfo").is_some_and(|hash| {
-            hash.len() >= 2
-                && hash
-                    .bytes()
-                    .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
-        })
+        || admitted_narinfo_path(path)
         || admitted_oci_blob_path(path)
+}
+
+/// Reports whether a cache narinfo key has a Nix base32 store hash.
+#[must_use]
+pub fn admitted_narinfo_path(path: &str) -> bool {
+    path.strip_suffix(".narinfo").is_some_and(|hash| {
+        hash.len() >= 2
+            && hash
+                .bytes()
+                .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
+    })
 }
 
 /// Reports whether a path is one canonical SHA-256 OCI blob key.
@@ -1067,6 +1102,63 @@ mod tests {
         for invalid in ["/absolute", "../sibling", "a/../b", "a//b", "a%2fb", "a\\b"] {
             assert!(!valid_relative_path(invalid, false), "{invalid}");
         }
+    }
+
+    #[test]
+    fn metadata_write_requires_an_admitted_path_and_exact_bounded_digest() {
+        use base64::Engine as _;
+
+        let mut work = plan(100);
+        let bytes = b"StorePath: /nix/store/abc123-payload\n";
+        let content_base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let sha256 = hex::encode(Sha256::digest(bytes));
+        work.operation = StorageWorkOperation::PutMetadata {
+            path: "abc123.narinfo".into(),
+            content_base64: content_base64.clone(),
+            sha256: sha256.clone(),
+        };
+        assert!(work.validate("deployment-1", 101).is_ok());
+
+        work.operation = StorageWorkOperation::PutMetadata {
+            path: "nar/bulk.nar".into(),
+            content_base64: content_base64.clone(),
+            sha256: sha256.clone(),
+        };
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
+
+        work.operation = StorageWorkOperation::PutMetadata {
+            path: "releases/1/pack/metadata.json".into(),
+            content_base64: content_base64.clone(),
+            sha256: sha256.clone(),
+        };
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
+
+        work.operation = StorageWorkOperation::PutMetadata {
+            path: "abc123.narinfo".into(),
+            content_base64,
+            sha256: "0".repeat(64),
+        };
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
+
+        let large = vec![0; MAX_METADATA_BYTES + 1];
+        work.operation = StorageWorkOperation::PutMetadata {
+            path: "abc123.narinfo".into(),
+            content_base64: base64::engine::general_purpose::STANDARD.encode(&large),
+            sha256: hex::encode(Sha256::digest(&large)),
+        };
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
     }
 
     #[test]

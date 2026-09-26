@@ -122,6 +122,7 @@ idempotency rule.
 | `filter_object` | Apply an admitted schema-specific predicate and field projection to one verified object | Matching records or an ordered page, not source bytes |
 | `verify_object` | Stream source bytes locally while hashing and checking expected identity | Digest, size, version, and placement evidence |
 | `copy_object` | Stream from a selected source placement to an authorized destination | Destination identity and verification receipt |
+| `put_metadata` | Write a Native-authored Nix base32 narinfo of at most 128 KiB through the object-scoped storage guard after checking its exact SHA-256 | Bounded acknowledgment; Native verifies the stored object before committing its write ticket |
 | `delete_if_matches` | Use the reviewed conditional-delete capability and exact object condition | Provider acknowledgment and independently observed evidence |
 
 Client upload bodies enter through Worker upload routes or narrowly scoped

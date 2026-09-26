@@ -832,6 +832,7 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
             "compose_oci_blob".into(),
             "delete_oci_staging".into(),
             "delete_if_matches".into(),
+            "put_metadata".into(),
             "put_probe".into(),
             "delete_probe".into(),
             "create_multipart".into(),

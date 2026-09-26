@@ -449,6 +449,17 @@ pub(crate) async fn execute_r2_storage_work(
             };
             (outcome, 0)
         }
+        StorageWorkOperation::PutMetadata {
+            path,
+            content_base64,
+            ..
+        } => {
+            use base64::Engine as _;
+            let object_key = plan.object_key(path)?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(content_base64)?;
+            crate::hybrid_object::put(env, &object_key, &bytes).await?;
+            (StorageWorkOutcome::MetadataWritten, 0)
+        }
         StorageWorkOperation::PutProbe {
             path,
             content_base64,
