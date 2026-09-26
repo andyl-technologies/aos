@@ -136,6 +136,7 @@ POSITIVE_ACCESS = (
     Access("kernel_t", "init_exec_t", "file", "execute"),
     Access("init_t", "init_exec_t", "file", "entrypoint"),
     *execution_access(),
+    Access(PROVISIONER_DOMAIN, PROVISIONER_EXECUTABLE, "file", "map"),
     Access(PROVISIONER_DOMAIN, PROVISIONER_DOMAIN, "process", "setfscreate"),
     *accesses(
         PROVISIONER_DOMAIN,
@@ -512,6 +513,7 @@ def negative_access() -> tuple[Access, ...]:
     # inspect tasks, or write any record payload.
     checks.extend(
         (
+            Access(PROVISIONER_DOMAIN, "init_t", "fd", "use"),
             Access(PROVISIONER_DOMAIN, "*", "capability", "sys_admin"),
             Access(PROVISIONER_DOMAIN, "*", "cap_userns", "sys_admin"),
             Access(PROVISIONER_DOMAIN, "*", "capability", "sys_ptrace"),
