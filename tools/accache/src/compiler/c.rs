@@ -46,6 +46,30 @@ pub(super) fn configure(
         !expanded.iter().any(|arg| arg == "-ftime-report"),
         "compiler timing output is not a replayable artifact"
     );
+    let mut cc1_depfile = None;
+    if clang {
+        for (index, arg) in expanded.iter().enumerate() {
+            if arg != "-dependency-file" {
+                continue;
+            }
+            if index == 0 || expanded[index - 1] != "-Xclang" {
+                // The driver accepts this spelling but does not forward it to
+                // cc1, leaving the pinned frontend with a nonexistent output.
+                ensure!(false, "Clang driver ignores -dependency-file");
+            }
+            ensure!(
+                expanded.get(index + 1).is_some_and(|next| next == "-Xclang"),
+                "Clang cc1 -dependency-file has no forwarded path"
+            );
+            let path = expanded
+                .get(index + 2)
+                .ok_or_else(|| anyhow::anyhow!("Clang cc1 -dependency-file has no path"))?;
+            ensure!(!path.is_empty(), "Clang cc1 -dependency-file path is empty");
+            // cc1 writes this path instead of the driver's -MF destination.
+            // The latter can be absent even when the compilation succeeds.
+            cc1_depfile = Some(PathBuf::from(path));
+        }
+    }
     let profile_note = (!clang)
         .then(|| {
             expanded
@@ -55,9 +79,14 @@ pub(super) fn configure(
         })
         .flatten();
     for (name, output) in &parsed.outputs {
-        if *name != "gcno" || profile_note.is_none() {
+        if (*name != "gcno" || profile_note.is_none())
+            && (*name != "d" || cc1_depfile.is_none())
+        {
             invocation.output(&output.path, output.optional)?;
         }
+    }
+    if let Some(path) = &cc1_depfile {
+        invocation.output(path, false)?;
     }
     if parsed.outputs.contains_key("gcno")
         && let Some(path) = profile_note
@@ -70,15 +99,6 @@ pub(super) fn configure(
     invocation
         .extra_inputs
         .extend(parsed.extra_hash_files.iter().cloned());
-    if clang
-        && expanded.iter().enumerate().any(|(index, argument)| {
-            argument == "-dependency-file" && (index == 0 || expanded[index - 1] != "-Xclang")
-        })
-    {
-        // Clang's driver warns that this cc1 option is unused. The pinned
-        // frontend nevertheless expects its named file and fails on publish.
-        ensure!(false, "Clang driver ignores -dependency-file");
-    }
     // GCC accepts report options through sccache's generic argument path.
     // The pinned frontend omits their files, so discover those destinations
     // before allowing an action to be stored.
@@ -531,6 +551,7 @@ pub(super) fn configure(
         && parsed.language.needs_c_preprocessing()
         && !forwarded_depfile
         && !parsed.outputs.contains_key("d")
+        && cc1_depfile.is_none()
         && let Some(object) = parsed.outputs.get("obj")
     {
         invocation.output(&object.path.with_extension("d"), false)?;
