@@ -5,24 +5,122 @@
   operationCount = 32;
   ninepWarmupCount = 8;
   idleThresholdPpm = 900000;
-  # The sim fixture exposes a fixed 4 GHz TSC. Provide its known frequency
-  # before Linux's PIT calibration loops at 50 ps per retired instruction.
-  s2Kernel = pkgs.linux.overrideAttrs (previous: {
-    pname = "linux-crucible-s2";
-    phases =
-      map
-      (phase:
-        if phase.name == "patch"
-        then
-          phase
-          // {
-            script = phase.script + ''
-              patch -p1 < ${./linux-tsc-known-frequency.patch}
-            '';
-          }
-        else phase)
-      previous.phases;
-  });
+  # Keep the block and 9p drivers, but skip unrelated deployment drivers whose
+  # initialization exceeds the gate's wall budget at 50 ps per instruction.
+  s2Kernel = pkgs.mkDerivation {
+    pname = "crucible-phase0-s2-linux";
+    inherit (pkgs.linux) version src;
+
+    buildDeps = [
+      pkgs.bc
+      pkgs.bison
+      pkgs.elfutils
+      pkgs.flex
+      pkgs.gawk
+      pkgs.gnumake
+      pkgs.llvm
+      pkgs.openssl
+      pkgs.patch
+      pkgs.perl
+      pkgs.python3
+      pkgs.zlib
+    ];
+    hardeningDisable = ["all"];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          tar xf "$src"
+          cd linux-${pkgs.linux.version}
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          patch -p1 < ${../../pkgs/kernel/linux-gawk-array-argument.patch}
+          patch -p1 < ${./linux-tsc-known-frequency.patch}
+          patch -p1 < ${./phase0-s5-apic-known-period.patch}
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          make ARCH=x86_64 LLVM=1 HOSTCC=cc HOSTCXX=c++ tinyconfig
+          cat > .s2.config <<'KCONFIG'
+          CONFIG_64BIT=y
+          CONFIG_X86_64=y
+          CONFIG_PRINTK=y
+          CONFIG_BINFMT_ELF=y
+          CONFIG_BINFMT_SCRIPT=y
+          CONFIG_BLK_DEV_INITRD=y
+          CONFIG_RD_GZIP=y
+          CONFIG_MMU=y
+          CONFIG_TTY=y
+          CONFIG_SERIAL_8250=y
+          CONFIG_SERIAL_8250_CONSOLE=y
+          CONFIG_BLOCK=y
+          CONFIG_PCI=y
+          CONFIG_PCI_MSI=y
+          CONFIG_ACPI=y
+          CONFIG_VIRTIO_MENU=y
+          CONFIG_VIRTIO=y
+          CONFIG_VIRTIO_PCI=y
+          CONFIG_VIRTIO_BLK=y
+          CONFIG_NET=y
+          CONFIG_NET_9P=y
+          CONFIG_NET_9P_VIRTIO=y
+          CONFIG_9P_FS=y
+          CONFIG_PROC_FS=y
+          CONFIG_SYSFS=y
+          CONFIG_DEVTMPFS=y
+          CONFIG_SHMEM=y
+          CONFIG_TMPFS=y
+          CONFIG_SMP=n
+          CONFIG_MODULES=n
+          CONFIG_DEBUG_INFO_NONE=y
+          CONFIG_DEBUG_INFO_BTF=n
+          KCONFIG
+          scripts/kconfig/merge_config.sh -m .config .s2.config
+          make ARCH=x86_64 LLVM=1 HOSTCC=cc HOSTCXX=c++ olddefconfig
+
+          for option in \
+            CONFIG_BINFMT_ELF=y \
+            CONFIG_BINFMT_SCRIPT=y \
+            CONFIG_BLK_DEV_INITRD=y \
+            CONFIG_SERIAL_8250_CONSOLE=y \
+            CONFIG_ACPI=y \
+            CONFIG_PCI_MSI=y \
+            CONFIG_VIRTIO_BLK=y \
+            CONFIG_NET_9P_VIRTIO=y \
+            CONFIG_9P_FS=y \
+            CONFIG_DEVTMPFS=y \
+            CONFIG_TMPFS=y; do
+            grep -Fxq "$option" .config || {
+              echo "S2 kernel option did not resolve: $option" >&2
+              exit 1
+            }
+          done
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          export LD_LIBRARY_PATH="${pkgs.elfutils}/lib:${pkgs.openssl}/lib:${pkgs.zlib}/lib"
+          make -j"$NIX_BUILD_CORES" ARCH=x86_64 LLVM=1 HOSTCC=cc HOSTCXX=c++ bzImage
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/boot"
+          cp arch/x86/boot/bzImage "$out/boot/vmlinuz-${pkgs.linux.version}"
+          cp System.map "$out/boot/System.map-${pkgs.linux.version}"
+          cp .config "$out/boot/config-${pkgs.linux.version}"
+        '';
+      }
+    ];
+  };
   # Linux's 100 ms LAPIC calibration costs about two billion instructions at
   # 50 ps/instruction. The focused companion below covers LAPIC exactness.
   kernelCommandLine = lib.concatStringsSep " " [
@@ -365,6 +463,7 @@
           POWEROFF_C
 
           cc poweroff.c -o "$out/bin/s2-poweroff"
+
         '';
       }
     ];
@@ -374,8 +473,6 @@
     initramfsDeps = [
       pkgs.bash
       pkgs.coreutils
-      pkgs.kmod
-      s2Kernel
       pkgs.util-linux
       workload
       poweroffHelper
@@ -429,7 +526,6 @@
 
             ln -sfn ${pkgs.bash}/bin/bash root/bin/sh
             ln -sfn ${pkgs.bash}/bin/bash root/bin/bash
-            ln -sfn ${s2Kernel}/lib/modules root/lib/modules
             ln -sfn ${poweroffHelper}/bin/s2-poweroff root/sbin/poweroff
 
             cat > root/init <<'INIT'
@@ -445,10 +541,6 @@
 
             echo "CRUCIBLE_S2_READY"
             test_result=0
-
-            for module in 9pnet 9pnet_virtio 9p; do
-              modprobe "$module" || test_result=1
-            done
 
             i=0
             while [ "$i" -lt 100 ] && [ ! -b /dev/vda ]; do
@@ -637,7 +729,13 @@ in
           done
 
           if ! grep -q "TEST_RESULT:PASS" "$serial"; then
-            wait "$qemu_pid" || true
+            qemu_status=0
+            wait "$qemu_pid" || qemu_status=$?
+            echo "S2 QEMU exit status: $qemu_status" >&2
+            echo "--- S2 serial tail ---" >&2
+            tail -c 16384 "$serial" >&2 || true
+            echo "--- S2 plugin state ---" >&2
+            cat "$plugin_out" >&2 || true
             echo "FAIL: S2 guest exited before PASS" >&2
             exit 1
           fi
@@ -754,7 +852,7 @@ in
             echo PASS
             echo spike=hlt-vs-busy-poll-io-idle
             echo check=checks.crucible.phase0.s2HltBusyPoll
-            echo target_guest=stock_linux_initramfs
+            echo target_guest=fixture_linux_initramfs
             echo guest_irq_mode=legacy_pic_noapic_single_vcpu
             echo default_lapic_companion=${lapicExactness}
             echo observation_activation=guest_marker_then_plugin_reset

@@ -172,11 +172,11 @@ target guests actually idle. It is a **performance** spike, not a correctness on
 
 ### Assumption under test
 
-For the guest configurations Crucible targets (a Linux guest issuing synchronous
-block and 9p reads through the standard virtio/9p drivers), the requesting vCPU
-goes idle (`HLT`, no runnable work) for the duration of the wait, rather than
-busy-polling a status register — so the scheduler's idle fast-forward
-([SCHED-28]) collapses the wait at zero wall-clock cost. (§15.8, [IO-29],
+For a Linux guest issuing synchronous reads through the standard virtio block
+and 9p drivers, a delayed device completion makes the requesting vCPU idle
+(`HLT`, no runnable work), rather than busy-poll a status register. A read that
+completes inline after bounded device I/O has no outstanding wait to collapse;
+it is measured separately from both idle and busy polling. (§15.8, [IO-29],
 [IO-30].)
 
 ### What to build / measure
@@ -203,13 +203,14 @@ S2 procedure:
 
 ### Pass / fail criterion
 
-**Pass:** at least the great majority of synchronous block/9p reads in the
-representative workload idle (HLT), so idle fast-forward applies; the *busy-polled
-fraction* and its instruction cost are small enough that overall fuzzing/interactive
-throughput stays within the [`25-performance-targets.md`](25-performance-targets.md)
-budget. The concrete metric is: **fraction-idled ≥ a stated threshold** (target:
-the common synchronous-read path idles) **and** the wall-clock spent on
-busy-polled waits is within the performance budget.
+**Pass:** at least the great majority of reads with an outstanding device wait
+idle (HLT), so idle fast-forward applies. Reads that complete inline after
+device I/O must stay below a stated instruction bound; they are not counted as
+busy polling. The *busy-polled fraction* and its instruction cost must be small
+enough that overall fuzzing/interactive throughput stays within the
+[`25-performance-targets.md`](25-performance-targets.md) budget. The measured
+S2 gate requires at least 90% of delayed 9p reads to idle and each non-HLT
+block read to complete within 40,000 instructions.
 
 **Fail:** a large fraction of target-workload I/O busy-polls, so idle
 fast-forward rarely fires and waits cost real wall-clock proportional to the spin
@@ -217,11 +218,12 @@ fast-forward rarely fires and waits cost real wall-clock proportional to the spi
 
 - **[RISK-6]** Spike **S2** MUST characterize, for the target guest
   configurations, the fraction of synchronous block/9p reads during which the
-  requesting vCPU **idles (HLT)** versus **busy-polls**, and the instruction cost
-  of busy-polled waits. Crucible's correctness MUST NOT depend on the result
-  ([IO-29]); S2 measures only whether idle fast-forward ([SCHED-28]) applies often
-  enough to meet the performance budget. *Gate:* `gate:single-vm-fingerprint`,
-  `gate:e2e-determinism`. *Spec:* §30.3; satisfies [IO-30]; back-ref §15.8.
+  requesting vCPU **idles (HLT)**, **completes bounded inline**, or **busy-polls**,
+  and the instruction cost of busy-polled waits. Crucible's correctness MUST NOT
+  depend on the result ([IO-29]); S2 measures only whether idle fast-forward
+  ([SCHED-28]) applies often enough to meet the performance budget. *Gate:*
+  `gate:single-vm-fingerprint`, `gate:e2e-determinism`. *Spec:* §30.3;
+  satisfies [IO-30]; back-ref §15.8.
 
 ### What it could invalidate
 
@@ -1338,11 +1340,14 @@ current schema-v4 provider manifest. T-DET-8 and T-QEMU-11 are complete; the
 removed Phase-0 S1 trace is not current evidence.
 
 **RISK-6 / RISK-7** are retired by `T-RISK-2`:
-`checks.crucible.phase0.s2HltBusyPoll` booted the target stock Linux kernel plus
-initramfs under `-accel sim,thread=single` and
-`-icount shift=0,sleep=off,align=off`, attached a deterministic-inline virtio
-block read device, attached a virtio-9p tree with
-`throttling.iops-read=20`, and bracketed 32 reads from each path with
+`checks.crucible.phase0.s2HltBusyPoll` boots a focused Linux 7.2.3 fixture
+with built-in serial, virtio block, and 9p support plus an initramfs. The
+fixture supplies sim's known 4 GHz TSC and LAPIC period to bypass unrelated
+boot calibration; QEMU still exposes the TSC and accounts for 50 ps per
+retired instruction. The gate runs with `-accel sim,thread=single` and
+`-icount shift=0,sleep=off,align=off`. It attaches a deterministic-inline
+virtio block read device and a virtio-9p tree with
+`throttling.iops-read=20`, then brackets 32 reads from each path with
 observation-only guest markers. The plugin counted retired instructions, `HLT`
 opcodes, and MMIO events inside each bracket, and the gate requires every
 bracketed operation to include device I/O events. The run reported
@@ -1352,7 +1357,7 @@ bracketed operation to include device I/O events. The run reported
 `block_idled_operations+block_inline_operations=32`,
 `block_busy_polled_operations=0`,
 `block_operations_with_io_events=32`, `block_operations_without_io_events=0`,
-`block_inline_max_instructions=33022`,
+`block_inline_max_instructions=11485`,
 `block_busy_poll_instruction_distribution=empty`,
 `block_hlt_required=false_but_permitted`,
 `block_io_events_observed_per_operation=true`,
@@ -1365,10 +1370,11 @@ bracketed operation to include device I/O events. The run reported
 `ninep_io_events_observed_per_operation=true`,
 `ninep_idle_threshold_met=true`, `fallback_adopted=false`, and
 `busy_poll_mitigation_decision=not_needed_for_measured_inline_block_and_delayed_9p_paths`.
-The guest workload completed all 64 reads and printed `TEST_RESULT:PASS`. This
+The guest workload completed all 64 reads and printed `TEST_RESULT:PASS` in
+about 52 seconds of wall time under the unchanged 300-second gate bound. This
 retires the S2 performance risk for delayed synchronous virtio-9p reads and
-bounded deterministic-inline virtio-block reads on the target Linux guest. The
-classifier accepts a non-HLT operation as inline only when it contains device
+bounded deterministic-inline virtio-block reads on the measured Linux fixture.
+The classifier accepts a non-HLT operation as inline only when it contains device
 I/O and returns within 40,000 guest instructions; longer non-HLT operations
 remain busy-poll failures. Idle fast-forward is valid for the measured delayed
 9p path, and the exactness-preserving busy-poll fallback remains specified by
