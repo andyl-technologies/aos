@@ -7,6 +7,7 @@
     bash = "@bash@";
     "c-compiler" = "@cc@";
     "cxx-compiler" = "@cxx@";
+    perl = "@perl@";
     python = "@python@";
   };
   renderFragment = fragment:

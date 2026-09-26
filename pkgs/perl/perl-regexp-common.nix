@@ -27,16 +27,15 @@ in
         "steps" = [
           {
             "argv" = [
-              "@python@"
-              "-c"
-              "import json, os, pathlib, subprocess\n\nclosure = json.loads(os.environ[\"AOS_QUALIFICATION_PACKAGE_CLOSURE\"])\ninterpreters = sorted({str(pathlib.Path(path) / \"bin/perl\") for path in closure if (pathlib.Path(path) / \"bin/perl\").is_file()})\nlibraries = sorted(str(pathlib.Path(path) / \"lib/perl5\") for path in closure if (pathlib.Path(path) / \"lib/perl5\").is_dir())\nassert interpreters and libraries\nenvironment = os.environ.copy()\nenvironment[\"PERL5LIB\"] = \":\".join(libraries)\nresult = subprocess.run([interpreters[0], \"probe.pl\"], env=environment, capture_output=True, text=True)\nassert result.returncode == 0, result.stderr\nassert result.stdout == \"\" and result.stderr == \"\"\nprint(\"perl-regexp-common operation passed\")\n"
+              "@perl@"
+              "probe.pl"
             ];
             "exit_code" = 0;
             "stderr" = {
               "exact" = "";
             };
             "stdout" = {
-              "exact" = "perl-regexp-common operation passed\n";
+              "exact" = "";
             };
           }
         ];
@@ -52,9 +51,8 @@ in
         "steps" = [
           {
             "argv" = [
-              "@python@"
-              "-c"
-              "import json, os, pathlib, subprocess\n\nclosure = json.loads(os.environ[\"AOS_QUALIFICATION_PACKAGE_CLOSURE\"])\ninterpreters = sorted({str(pathlib.Path(path) / \"bin/perl\") for path in closure if (pathlib.Path(path) / \"bin/perl\").is_file()})\nlibraries = sorted(str(pathlib.Path(path) / \"lib/perl5\") for path in closure if (pathlib.Path(path) / \"lib/perl5\").is_dir())\nassert interpreters and libraries\nenvironment = os.environ.copy()\nenvironment[\"PERL5LIB\"] = \":\".join(libraries)\nresult = subprocess.run([interpreters[0], \"probe.pl\"], env=environment, capture_output=True, text=True)\nassert result.returncode == 0, result.stderr\nassert result.stdout == \"\" and result.stderr == \"\"\nprint(\"perl-regexp-common operation passed\")\n"
+              "@perl@"
+              "probe.pl"
             ];
             "exit_code" = 0;
             "observes_rejection" = true;
@@ -62,7 +60,7 @@ in
               "exact" = "";
             };
             "stdout" = {
-              "exact" = "perl-regexp-common operation passed\n";
+              "exact" = "";
             };
           }
         ];

@@ -130,6 +130,7 @@ def placeholders(work: pathlib.Path, outputs: dict[str, str]) -> dict[str, str]:
         "@bash@": os.environ["AOS_QUALIFICATION_BASH"],
         "@cc@": os.environ["AOS_QUALIFICATION_CC"],
         "@cxx@": os.environ["AOS_QUALIFICATION_CXX"],
+        "@perl@": os.environ["AOS_QUALIFICATION_PERL"],
         "@python@": os.environ["AOS_QUALIFICATION_PYTHON"],
     }
     for name, path in outputs.items():
@@ -382,7 +383,7 @@ def main() -> None:
     )
     allowed_harness_commands = {
         pathlib.Path(substitutions[marker])
-        for marker in ("@bash@", "@cc@", "@cxx@", "@python@")
+        for marker in ("@bash@", "@cc@", "@cxx@", "@perl@", "@python@")
     }
     primary_root = work / "primary"
     bad_input_root = work / "bad-input"
