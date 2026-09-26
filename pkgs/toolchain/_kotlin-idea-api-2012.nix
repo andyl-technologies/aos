@@ -120,6 +120,19 @@ in
           idea/platform/util/src/com/intellij/openapi/util/Ref.java
           idea/platform/util/src/com/intellij/openapi/util/NullableLazyValue.java
           idea/platform/util/src/com/intellij/util/containers/OrderedSet.java
+          idea/platform/core-api/src/com/intellij/psi/stubs/Stub.java
+          idea/platform/core-api/src/com/intellij/psi/stubs/StubElement.java
+          idea/platform/core-api/src/com/intellij/psi/stubs/ObjectStubBase.java
+          idea/platform/core-api/src/com/intellij/psi/stubs/ObjectStubSerializer.java
+          idea/platform/core-api/src/com/intellij/psi/stubs/StubSerializer.java
+          idea/platform/core-api/src/com/intellij/psi/stubs/StubSerializationUtil.java
+          idea/platform/core-api/src/com/intellij/psi/tree/IStubFileElementType.java
+          idea/platform/core-api/src/com/intellij/lang/Commenter.java
+          idea/platform/core-api/src/com/intellij/lang/CodeDocumentationAwareCommenter.java
+          idea/platform/core-api/src/com/intellij/lang/CodeDocumentationAwareCommenterEx.java
+          idea/platform/core-api/src/com/intellij/lang/LanguageCommenters.java
+          idea/platform/core-impl/src/com/intellij/psi/stubs/ObjectStubTree.java
+          idea/platform/core-impl/src/com/intellij/util/codeInsight/CommentUtilCore.java
           idea/platform/annotations/src/org/intellij/lang/annotations/MagicConstant.java
           idea/java/java-psi-impl/src/com/intellij/psi/impl/java/stubs/PsiNameValuePairStub.java
           idea/java/java-psi-impl/src/com/intellij/psi/impl/java/stubs/PsiAnnotationParameterListStub.java
