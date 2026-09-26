@@ -94,7 +94,7 @@ type_transition init_t aos_sandbox_network_lifecycle_worker_exec_t:process aos_s
 # cannot execute the entry point without it.
 allow init_t aos_sandbox_runtime_roots_exec_t:file { execute getattr map open read };
 allow init_t aos_sandbox_runtime_roots_t:process transition;
-allow aos_sandbox_runtime_roots_t aos_sandbox_runtime_roots_exec_t:file entrypoint;
+allow aos_sandbox_runtime_roots_t aos_sandbox_runtime_roots_exec_t:file { entrypoint map };
 type_transition init_t aos_sandbox_runtime_roots_exec_t:process aos_sandbox_runtime_roots_t;
 allow aos_sandbox_runtime_roots_t self:process setfscreate;
 
