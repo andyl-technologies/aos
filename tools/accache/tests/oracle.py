@@ -1523,6 +1523,80 @@ def check_clang_profile_use(root, env, accache, sccache, clang, hits):
     return results
 
 
+def check_rust_native_archives(root, env, accache, sccache, gcc, rustc, hits):
+    """Hash native archives for joined and separated Rust library flags."""
+    results = []
+    ar = str(Path(gcc).with_name("ar"))
+    for fixture, flags in [
+        ("rust-native-archive", ["-Lnative=.", "-lstatic=native"]),
+        ("rust-native-archive-split-search", ["-L", "native=.", "-lstatic=native"]),
+        ("rust-native-archive-split-library", ["-Lnative=.", "-l", "static=native"]),
+        ("rust-native-archive-split-both", ["-L", "native=.", "-l", "static=native"]),
+    ]:
+        work = root / fixture
+        work.mkdir()
+        (work / "target").mkdir()
+        (work / "native.rs").write_text(
+            'unsafe extern "C" { pub fn native() -> i32; }\n')
+        archive = work / "libnative.a"
+        library = work / "target/libnative_example.rlib"
+        depfile = work / "target/native_example.d"
+        args = [rustc, "--crate-name", "native_example", "--crate-type", "rlib",
+                "--emit=link,dep-info", "--out-dir", "target", *flags, "native.rs"]
+
+        def compile_library(wrapper):
+            library.unlink(missing_ok=True)
+            depfile.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+            return (completed.stdout, completed.stderr,
+                    library.read_bytes(), depfile.read_bytes())
+
+        initial_library = None
+        for revision, value in enumerate([23, 31]):
+            (work / "native.c").write_text(
+                f"int native(void) {{ return {value}; }}\n")
+            subprocess.run([gcc, "-c", "native.c", "-o", "native.o"], cwd=work,
+                           env=env, check=True, capture_output=True)
+            subprocess.run([ar, "crs", str(archive), "native.o"], cwd=work,
+                           env=env, check=True, capture_output=True)
+
+            direct = compile_library([])
+            if initial_library is None:
+                initial_library = direct[2]
+            else:
+                assert direct[2] != initial_library, (fixture, "archive had no effect")
+
+            before_hits = hits()
+            oracle_cold = compile_library([sccache])
+            oracle_hit = hits() > before_hits
+            if oracle_cold != direct:
+                assert (revision == 1 and oracle_hit
+                        and oracle_cold[2] == initial_library), (
+                    fixture, "unexpected sccache difference")
+            before_hits = hits()
+            assert compile_library([sccache]) == oracle_cold
+            assert hits() > before_hits, (fixture, "sccache did not warm-hit")
+
+            assert compile_library([accache]) == direct
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert cold["outcome"] == "miss", (fixture, revision, cold)
+            if revision:
+                assert any("libnative.a" in item for item in cold["changes"]), cold
+            assert compile_library([accache]) == direct
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert warm["outcome"] == "hit", (fixture, revision, warm)
+            results.append({"fixture": fixture, "revision": revision,
+                            "oracle_hit": True, "oracle_stale_artifact": oracle_cold != direct,
+                            "accache": "hit",
+                            "artifacts": ["target/libnative_example.rlib",
+                                          "target/native_example.d"]})
+
+        print("PASS oracle", fixture, "archive invalidation", flush=True)
+    return results
+
+
 def check_rust_profile_use(root, env, accache, sccache, rustc, clang, hits):
     """Track rustc's profile input across cold and warm library actions."""
     work = root / "rust-profile-use"
@@ -2120,6 +2194,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                 sccache, clang, hits))
         results.extend(check_clang_profile_use(root, env, accache, sccache,
                                                clang, hits))
+        results.extend(check_rust_native_archives(root, env, accache, sccache,
+                                                  gcc, rustc, hits))
         results.extend(check_rust_profile_use(root, env, accache, sccache,
                                               rustc, clang, hits))
         results.extend(check_rust_sample_profile_use(root, env, accache,
