@@ -709,12 +709,12 @@ pub enum ObservationCondition {
 pub enum StopCondition {
     NextChoice,
     NamedBoundary(String),
-    VirtualTimeNanoseconds(u64),
+    VirtualTimePicoseconds(u64),
     EventCount(u64),
     Terminal,
     ExecutionQuanta(u64),
     VirtualTimeOrExecutionQuanta {
-        virtual_time_nanoseconds: u64,
+        virtual_time_picoseconds: u64,
         execution_quanta: u64,
     },
     NextChoiceOrExecutionQuanta {

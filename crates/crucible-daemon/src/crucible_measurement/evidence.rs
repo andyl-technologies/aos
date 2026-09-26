@@ -242,7 +242,7 @@ impl CrucibleMeasurementReplayEvidence {
             return Err(mismatch("observation-stop-execution-boundary"));
         };
         let retained_offset = retained_boundary.event_log_offset();
-        if retained_boundary.frontier().ticks != boundary.frontier_nanoseconds()
+        if retained_boundary.frontier().ticks != boundary.frontier_picoseconds()
             || retained_boundary.quantum_start_completed_quanta()
                 != boundary.start_completed_quanta()
             || retained_boundary.completed_quanta() != boundary.completed_quanta()
@@ -270,8 +270,8 @@ impl CrucibleMeasurementReplayEvidence {
             || observation_event_prefix_digest(prefix) != event_log.digest()
             || prefix
                 .iter()
-                .any(|entry| entry.at().ticks > boundary.frontier_nanoseconds())
-            || self.terminal.at.ticks < boundary.frontier_nanoseconds()
+                .any(|entry| entry.at().ticks > boundary.frontier_picoseconds())
+            || self.terminal.at.ticks < boundary.frontier_picoseconds()
         {
             return Err(mismatch("observation-stop-event-prefix"));
         }

@@ -171,7 +171,7 @@ pub(super) fn assert_campaign_save_exports_closure(
                 .error_or_panic("v6 source node must belong to the embedded scenario");
             assert!(error.to_string().contains("not declared"));
         }
-        StopCondition::VirtualTimeNanoseconds(_) => {
+        StopCondition::VirtualTimePicoseconds(_) => {
             assert_eq!(
                 outcome
                     .save_boundary_evidence
@@ -200,7 +200,7 @@ pub(super) fn assert_campaign_save_exports_closure(
             assert_eq!(proof.condition(), condition);
             assert_eq!(proof.child(), campaign.terminal().observation().child());
             assert_eq!(
-                proof.boundary().frontier_nanoseconds(),
+                proof.boundary().frontier_picoseconds(),
                 campaign.evidence().frontier().ticks
             );
             assert_eq!(
@@ -316,7 +316,7 @@ pub(super) fn assert_campaign_save_exports_closure(
         let replay = resume_campaign_fixture(
             &temporary,
             &handle_evidence,
-            StopCondition::VirtualTimeNanoseconds(terminal_frontier),
+            StopCondition::VirtualTimePicoseconds(terminal_frontier),
             true,
         );
         let source = replay
@@ -484,7 +484,7 @@ pub(super) fn assert_campaign_save_exports_closure(
         let error = match try_resume_campaign_fixture(
             &temporary,
             &forged_evidence,
-            StopCondition::VirtualTimeNanoseconds(terminal_frontier),
+            StopCondition::VirtualTimePicoseconds(terminal_frontier),
             true,
         ) {
             Err(error) => error,

@@ -265,7 +265,7 @@ pub(super) fn recomputed_observation_proof_forgeries(
 
     let boundary = source.boundary();
     let shifted_boundary = ObservationQuantumBoundary::new(
-        boundary.frontier_nanoseconds(),
+        boundary.frontier_picoseconds(),
         boundary.start_completed_quanta() + 1,
         boundary.completed_quanta() + 1,
         boundary.start_events(),
@@ -285,7 +285,7 @@ pub(super) fn recomputed_observation_proof_forgeries(
         let wrong_state = crucible::SchedulerEventLogEntry::assertion_state_observation(
             witness.sequence(),
             VirtualTime {
-                ticks: boundary.frontier_nanoseconds(),
+                ticks: boundary.frontier_picoseconds(),
             },
             crucible::AssertionId::from_name(witness.assertion()),
             crucible::AssertionPhase::Satisfied,

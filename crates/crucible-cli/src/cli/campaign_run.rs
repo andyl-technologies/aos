@@ -195,7 +195,7 @@ fn guarded_continuation_stop(
             ObservationCondition::SchedulerQuiescent,
         )),
         RunTerminalCondition::VirtualTime => max_virtual_time_ticks
-            .map(StopCondition::VirtualTimeNanoseconds)
+            .map(StopCondition::VirtualTimePicoseconds)
             .ok_or_else(|| usage_error("resume --until virtual-time requires --max-virtual-time")),
         RunTerminalCondition::Stopped => Ok(StopCondition::Terminal),
         RunTerminalCondition::Property if scenario.properties().assertions().is_empty() => {
@@ -582,7 +582,7 @@ fn campaign_resume_status(
             (BackendCommandStatus::Failed, OutcomeKind::Failed)
         }
         StopOutcome::Reached(stop) | StopOutcome::BoundedPrimaryReached { stop, .. }
-            if matches!(stop.primary(), StopCondition::VirtualTimeNanoseconds(deadline)
+            if matches!(stop.primary(), StopCondition::VirtualTimePicoseconds(deadline)
                 if plan.terminal_condition == RunTerminalCondition::VirtualTime
                     && plan.max_virtual_time_ticks == Some(*deadline)) =>
         {
@@ -630,10 +630,10 @@ fn campaign_resume_final_state(
         }
         (
             RunTerminalCondition::VirtualTime,
-            StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(_)),
+            StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(_)),
         ) => String::from("virtual-time"),
         (RunTerminalCondition::VirtualTime, StopOutcome::BoundedPrimaryReached { stop, .. })
-            if matches!(stop.primary(), StopCondition::VirtualTimeNanoseconds(_)) =>
+            if matches!(stop.primary(), StopCondition::VirtualTimePicoseconds(_)) =>
         {
             String::from("virtual-time")
         }
@@ -658,7 +658,7 @@ fn validate_campaign_resume_frontier(
     }
 
     if let StopOutcome::ObservationReached(proof) = stop {
-        let proof_frontier = proof.boundary().frontier_nanoseconds();
+        let proof_frontier = proof.boundary().frontier_picoseconds();
         if proof_frontier != frontier.ticks {
             return Err(CliError::Identity(format!(
                 "campaign resume observation proof frontier {proof_frontier} differs from terminal frontier {}",
@@ -671,19 +671,19 @@ fn validate_campaign_resume_frontier(
     if let StopOutcome::BoundedPrimaryReached { proof, .. }
     | StopOutcome::BoundedPrimaryTimeout { proof, .. }
     | StopOutcome::PolicyTimeout { proof, .. } = stop
-        && proof.frontier_nanoseconds() != frontier.ticks
+        && proof.frontier_picoseconds() != frontier.ticks
     {
         return Err(CliError::Identity(format!(
             "campaign resume bounded proof frontier {} differs from terminal frontier {}",
-            proof.frontier_nanoseconds(),
+            proof.frontier_picoseconds(),
             frontier.ticks
         )));
     }
 
     let deadline = match stop {
-        StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(deadline)) => *deadline,
+        StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(deadline)) => *deadline,
         StopOutcome::BoundedPrimaryReached { stop, .. } => {
-            let StopCondition::VirtualTimeNanoseconds(deadline) = stop.primary() else {
+            let StopCondition::VirtualTimePicoseconds(deadline) = stop.primary() else {
                 return Ok(());
             };
             *deadline
@@ -714,7 +714,7 @@ fn guarded_campaign_save_stop(plan: &SaveInvocationPlan) -> Result<StopCondition
         (SaveAtArg::VirtualTime, None) => plan
             .run_plan
             .max_virtual_time_ticks
-            .map(StopCondition::VirtualTimeNanoseconds)
+            .map(StopCondition::VirtualTimePicoseconds)
             .ok_or_else(|| usage_error("save --at virtual-time requires --max-virtual-time <dur>")),
         (SaveAtArg::Marker, Some(SaveAtSelector::Marker { name })) => {
             Ok(StopCondition::NamedBoundary(name.clone()))
@@ -994,14 +994,14 @@ fn guarded_discovery_stop(plan: &RunInvocationPlan) -> Result<StopCondition, Cli
     };
 
     match (virtual_time_deadline, plan.max_quanta) {
-        (Some(virtual_time_nanoseconds), Some(execution_quanta)) => {
+        (Some(virtual_time_picoseconds), Some(execution_quanta)) => {
             return Ok(StopCondition::VirtualTimeOrExecutionQuanta {
-                virtual_time_nanoseconds,
+                virtual_time_picoseconds,
                 execution_quanta,
             });
         }
         (Some(deadline), None) => {
-            return Ok(StopCondition::VirtualTimeNanoseconds(deadline));
+            return Ok(StopCondition::VirtualTimePicoseconds(deadline));
         }
         (None, Some(bound)) => {
             return Ok(StopCondition::ExecutionQuanta(bound));
@@ -1145,15 +1145,15 @@ fn campaign_run_primary_boundary_matches(
     stop: &StopCondition,
 ) -> bool {
     match stop {
-        StopCondition::VirtualTimeNanoseconds(deadline) => {
+        StopCondition::VirtualTimePicoseconds(deadline) => {
             run_plan.max_virtual_time_ticks == Some(*deadline)
         }
         StopCondition::ExecutionQuanta(bound) => run_plan.max_quanta == Some(*bound),
         StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_nanoseconds,
+            virtual_time_picoseconds,
             execution_quanta,
         } => {
-            run_plan.max_virtual_time_ticks == Some(*virtual_time_nanoseconds)
+            run_plan.max_virtual_time_ticks == Some(*virtual_time_picoseconds)
                 && run_plan.max_quanta == Some(*execution_quanta)
         }
         _ => false,
@@ -1291,21 +1291,21 @@ fn campaign_stop_label(stop: &StopOutcome) -> String {
     match stop {
         StopOutcome::Reached(boundary) => format!("reached:{boundary:?}"),
         StopOutcome::BoundedPrimaryReached { stop, proof } => format!(
-            "bounded-primary-reached:{:?}:frontier-ns={}:quanta={}",
+            "bounded-primary-reached:{:?}:frontier-ps={}:quanta={}",
             stop.primary(),
-            proof.frontier_nanoseconds(),
+            proof.frontier_picoseconds(),
             proof.completed_quanta()
         ),
         StopOutcome::BoundedPrimaryTimeout { stop, proof } => format!(
-            "bounded-primary-timeout:{:?}:frontier-ns={}:quanta={}",
+            "bounded-primary-timeout:{:?}:frontier-ps={}:quanta={}",
             stop.primary(),
-            proof.frontier_nanoseconds(),
+            proof.frontier_picoseconds(),
             proof.completed_quanta()
         ),
         StopOutcome::PolicyTimeout { stop, kind, proof } => format!(
-            "policy-timeout:{kind:?}:{:?}:frontier-ns={}:quanta={}",
+            "policy-timeout:{kind:?}:{:?}:frontier-ps={}:quanta={}",
             stop.primary(),
-            proof.frontier_nanoseconds(),
+            proof.frontier_picoseconds(),
             proof.completed_quanta()
         ),
         StopOutcome::TerminalSuccess => String::from("terminal-success"),

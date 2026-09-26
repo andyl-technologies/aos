@@ -78,7 +78,7 @@ fn fresh_runner_rejects_continuation_without_exact_virtual_time_source() {
 
 #[test]
 fn fresh_runner_rejects_continuation_at_a_different_virtual_time() {
-    assert_invalid_continuation_source(StopCondition::VirtualTimeNanoseconds(2));
+    assert_invalid_continuation_source(StopCondition::VirtualTimePicoseconds(2));
 }
 
 #[test]
@@ -129,7 +129,7 @@ fn continuation_rejects_a_terminally_preempted_source_stop() {
     );
     let (input, _, _) = selected_after_genesis_input_with_continuation_source_evidence(
         continuation,
-        StopCondition::VirtualTimeNanoseconds(1),
+        StopCondition::VirtualTimePicoseconds(1),
         StopOutcome::TerminalSuccess,
     );
 

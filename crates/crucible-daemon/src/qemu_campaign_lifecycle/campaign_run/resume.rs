@@ -113,7 +113,7 @@ where
         source.final_stop,
         StopCondition::NextChoice
             | StopCondition::Terminal
-            | StopCondition::VirtualTimeNanoseconds(_)
+            | StopCondition::VirtualTimePicoseconds(_)
             | StopCondition::Observation(_)
     ) {
         return Err(GuardedDefaultCampaignInvariantError::UnsupportedResumeStop.into());
@@ -121,12 +121,12 @@ where
     let source_stop_matches = source.source_observation_proof.as_ref().map_or_else(
         || {
             request.discovery_stop
-                == StopCondition::VirtualTimeNanoseconds(source.checkpoint.virtual_time.ticks)
+                == StopCondition::VirtualTimePicoseconds(source.checkpoint.virtual_time.ticks)
         },
         |proof| {
             request.discovery_stop == StopCondition::Observation(proof.condition().clone())
                 && proof.child().as_hash().as_bytes() == source.checkpoint.configuration.bytes
-                && proof.boundary().frontier_nanoseconds() == source.checkpoint.virtual_time.ticks
+                && proof.boundary().frontier_picoseconds() == source.checkpoint.virtual_time.ticks
         },
     );
     if !source_stop_matches {

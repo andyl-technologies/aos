@@ -489,24 +489,24 @@ fn validated_attempt_continuation<'a>(
 ) -> Result<QemuAttemptContinuation<'a>, ()> {
     let source_frontier_ticks = match (source.attempt().stop(), source.source_stop()) {
         (
-            StopCondition::VirtualTimeNanoseconds(requested),
-            Some(crucible_campaign::StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(
+            StopCondition::VirtualTimePicoseconds(requested),
+            Some(crucible_campaign::StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(
                 reached,
             ))),
         ) if requested == reached => *reached,
         (
             StopCondition::Observation(condition),
             Some(crucible_campaign::StopOutcome::ObservationReached(proof)),
-        ) if proof.condition() == condition => proof.boundary().frontier_nanoseconds(),
+        ) if proof.condition() == condition => proof.boundary().frontier_picoseconds(),
         (
             requested @ StopCondition::Bounded { .. },
             Some(crucible_campaign::StopOutcome::BoundedPrimaryReached { stop, proof }),
-        ) if requested == stop => proof.frontier_nanoseconds(),
+        ) if requested == stop => proof.frontier_picoseconds(),
         (
             StopCondition::Bounded { primary, .. },
             Some(crucible_campaign::StopOutcome::ObservationReached(proof)),
         ) if matches!(primary.as_ref(), StopCondition::Observation(condition) if proof.condition() == condition) => {
-            proof.boundary().frontier_nanoseconds()
+            proof.boundary().frontier_picoseconds()
         }
         _ => return Err(()),
     };

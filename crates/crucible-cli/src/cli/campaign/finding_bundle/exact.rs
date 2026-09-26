@@ -124,7 +124,7 @@ pub(super) fn replay_exact_finding(
         )
         .with_initial_replay(model.schedule().clone(), Some(closure.clone()))
         .with_discovery_stop(StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_nanoseconds: side.frontier().ticks,
+            virtual_time_picoseconds: side.frontier().ticks,
             execution_quanta: side.completed_quanta(),
         });
         let replay = run_guarded_default_campaign(request)

@@ -99,7 +99,7 @@ fn descendant_input_fixture() -> DescendantInputFixture {
         campaign_command("discover"),
         running.new_snapshot,
         lineage.genesis_content(),
-        StopCondition::VirtualTimeNanoseconds(1),
+        StopCondition::VirtualTimePicoseconds(1),
     )
     .expect("discovery request");
     let first_admission = repository
@@ -124,7 +124,7 @@ fn descendant_input_fixture() -> DescendantInputFixture {
     let first_source_result = failed_result_with_stop(
         &first_input,
         &property,
-        StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(1)),
+        StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(1)),
     );
     let first_source_observation = store
         .publish_observation_candidate(first_source_result.observation())
@@ -137,14 +137,14 @@ fn descendant_input_fixture() -> DescendantInputFixture {
         origin: &first,
         source_observation: first_source_observation,
         source_frontier_ticks: 1,
-        stop: StopCondition::VirtualTimeNanoseconds(2),
+        stop: StopCondition::VirtualTimePicoseconds(2),
         marker: 0x29,
     });
     let first_origin = CrucibleAttemptOrigin::new_with_source_stop(
         first.clone(),
         genesis.clone(),
         crucible::SignalFaultCampaignReplayPlan::empty(genesis.clone()),
-        StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(1)),
+        StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(1)),
     );
     let second_input = CrucibleAttemptExecution::from_test_parts(
         lineage.clone(),
@@ -167,7 +167,7 @@ fn descendant_input_fixture() -> DescendantInputFixture {
     let second_source_result = failed_result_with_stop(
         &second_input,
         &property,
-        StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(2)),
+        StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(2)),
     );
     let second_source_observation = store
         .publish_observation_candidate(second_source_result.observation())
@@ -187,7 +187,7 @@ fn descendant_input_fixture() -> DescendantInputFixture {
         second,
         genesis.clone(),
         crucible::SignalFaultCampaignReplayPlan::empty(genesis.clone()),
-        StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(2)),
+        StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(2)),
     );
     let input = CrucibleAttemptExecution::from_test_parts(
         lineage,

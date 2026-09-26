@@ -1783,14 +1783,14 @@ fn parse_campaign_stop_condition(value: &str) -> Result<StopCondition, CliError>
         _ => {
             let (kind, body) = value.split_once(':').ok_or_else(|| {
                 usage_error(
-                    "campaign stop must be next-choice, terminal, boundary:NAME, virtual-time-ns:N, events:N, execution-quanta:N, or virtual-time-or-execution-quanta:TIME:QUANTA",
+                    "campaign stop must be next-choice, terminal, boundary:NAME, virtual-time-ps:N, events:N, execution-quanta:N, or virtual-time-or-execution-quanta:TIME:QUANTA",
                 )
             })?;
             match kind {
                 "boundary" => Ok(StopCondition::NamedBoundary(body.to_owned())),
-                "virtual-time-ns" => body
+                "virtual-time-ps" => body
                     .parse::<u64>()
-                    .map(StopCondition::VirtualTimeNanoseconds)
+                    .map(StopCondition::VirtualTimePicoseconds)
                     .map_err(|error| usage_error(format!("invalid virtual-time stop: {error}"))),
                 "events" => body
                     .parse::<u64>()
@@ -1809,7 +1809,7 @@ fn parse_campaign_stop_condition(value: &str) -> Result<StopCondition, CliError>
                         )
                     })?;
                     Ok(StopCondition::VirtualTimeOrExecutionQuanta {
-                        virtual_time_nanoseconds: virtual_time.parse::<u64>().map_err(|error| {
+                        virtual_time_picoseconds: virtual_time.parse::<u64>().map_err(|error| {
                             usage_error(format!("invalid combined virtual-time stop: {error}"))
                         })?,
                         execution_quanta: execution_quanta.parse::<u64>().map_err(|error| {

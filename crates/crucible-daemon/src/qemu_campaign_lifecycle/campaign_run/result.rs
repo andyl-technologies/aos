@@ -309,7 +309,7 @@ where
     if evidence.quanta() < *execution_quanta
         || bounded_proof.is_some_and(|proof| {
             proof.completed_quanta() != evidence.quanta()
-                || proof.frontier_nanoseconds() != evidence.frontier().ticks
+                || proof.frontier_picoseconds() != evidence.frontier().ticks
         })
     {
         return Err(GuardedDefaultCampaignInvariantError::TimeoutEvidenceMismatch.into());
@@ -329,20 +329,20 @@ pub(super) fn capture_evidence_reaches_stop(
     match stop {
         StopCondition::Bounded {
             primary,
-            virtual_time_nanoseconds,
+            virtual_time_picoseconds,
             execution_quanta,
         } => {
-            virtual_time_nanoseconds.is_some_and(|deadline| evidence.frontier().ticks >= deadline)
+            virtual_time_picoseconds.is_some_and(|deadline| evidence.frontier().ticks >= deadline)
                 || execution_quanta.is_some_and(|deadline| evidence.quanta() >= deadline)
                 || capture_evidence_reaches_stop(evidence, primary)
         }
-        StopCondition::VirtualTimeNanoseconds(deadline) => evidence.frontier().ticks >= *deadline,
+        StopCondition::VirtualTimePicoseconds(deadline) => evidence.frontier().ticks >= *deadline,
         StopCondition::ExecutionQuanta(bound) => evidence.quanta() >= *bound,
         StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_nanoseconds,
+            virtual_time_picoseconds,
             execution_quanta,
         } => {
-            evidence.frontier().ticks >= *virtual_time_nanoseconds
+            evidence.frontier().ticks >= *virtual_time_picoseconds
                 || evidence.quanta() >= *execution_quanta
         }
         StopCondition::NextChoice

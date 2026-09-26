@@ -252,7 +252,7 @@ exact_user_pins = true
 "#,
             json_string(&compiled, "scenario")?,
             if mode == PackagedFlight::PolicyTimeout {
-                "[attempt_timeout]\nvirtual_time_nanoseconds = 2000000"
+                "[attempt_timeout]\nvirtual_time_picoseconds = 2000000"
             } else {
                 ""
             }
@@ -440,7 +440,7 @@ fn begin_initial_discovery(
     let stop = if mode == PackagedFlight::PolicyTimeout {
         crucible_campaign::StopCondition::Bounded {
             primary: Box::new(crucible_campaign::StopCondition::NextChoice),
-            virtual_time_nanoseconds: Some(2_000_000),
+            virtual_time_picoseconds: Some(2_000_000),
             execution_quanta: None,
         }
     } else {

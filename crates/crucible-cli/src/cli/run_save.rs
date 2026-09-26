@@ -167,7 +167,7 @@ impl SaveBoundaryEvidence {
                     proof.condition(),
                     proof.satisfaction(),
                     proof.child(),
-                    proof.boundary().frontier_nanoseconds(),
+                    proof.boundary().frontier_picoseconds(),
                     proof.boundary().completed_quanta(),
                     encode_canonical_summary_value(witness),
                 )
