@@ -70,7 +70,7 @@ mod producer;
 mod proof;
 mod source_terminal;
 
-use held_proof::{RootHeldProofV2, cas_key as held_cas_proof_key};
+use held_proof::{KEY as HELD_PROOF_KEY, RootHeldProofV2, cas_key as held_cas_proof_key};
 use hold::{HOLD_KEY, RootBindingHoldV1, current_hold, release_hold};
 use proof::{PROOF_KEY_PREFIX, RootQualifiedProofV1, proof_key};
 
@@ -2371,8 +2371,15 @@ fn root_hold_has_handoff_proof(
     authority: &ProtectedJournalAuthority<'_>,
     binding: ObjectDigest,
 ) -> Result<bool, PolicyCompilerJournalErrorV1> {
+    // The fixed AOSPCP02 precedes CAS; the per-binding key is consumed at CAS.
+    // Neither phase may fall back to the older inert release route.
+    let fixed = authority
+        .get(HELD_PROOF_KEY)?
+        .map(RootHeldProofV2::decode)
+        .transpose()?;
     Ok(authority.get(&proof_key(binding))?.is_some()
-        || authority.get(&held_cas_proof_key(binding))?.is_some())
+        || authority.get(&held_cas_proof_key(binding))?.is_some()
+        || fixed.is_some_and(|proof| proof.binding == binding))
 }
 
 /// Releases one Controller freeze only after exact root cold readback.
@@ -2420,18 +2427,22 @@ fn require_source_domain_released_for_controller_release(
 ///
 /// The caller retains the Controller writer before the source-domain writer;
 /// this function opens root last. A matching released root hold or a strictly
-/// absent commit at the proposed epoch is required. This is only cold custody
-/// recovery for inert Q04, not Create publication or effect authority.
+/// absent commit at the proposed epoch is required. A retained signer or V8
+/// held proof excludes this older recovery route even if Root was marked
+/// released. This is only cold custody recovery for inert Q04.
 ///
 /// # Errors
 ///
-/// Rejects missing or mismatched Controller custody, unresolved or ambiguous
+/// Rejects missing or mismatched Controller custody, unresolved or proven
 /// root history, a mismatched source hold, or failed durable release.
 pub fn release_fixed_closed_policy_source_domain_hold_v1(
     controller: &mut Journal,
     source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
     expected: SourceDomainPolicyHoldV1,
 ) -> Result<(), PolicyCompilerJournalErrorV1> {
+    if controller.controller_policy_v8_attempt_v1()?.is_some() {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
     let controller_hold = controller
         .controller_policy_hold_v1()?
         .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
@@ -2477,7 +2488,9 @@ fn release_source_hold_against_root_authority(
     }
     let (head, next_epoch, count) = current_root_binding_chain(authority)?;
     let root_hold = current_hold(authority, head, next_epoch, count)?;
-    if !controller_hold_can_retire_at_root_cut(controller_hold, next_epoch, root_hold) {
+    if root_hold_has_handoff_proof(authority, expected.binding())?
+        || !controller_hold_can_retire_at_root_cut(controller_hold, next_epoch, root_hold)
+    {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
 
@@ -2492,7 +2505,7 @@ fn release_source_hold_against_root_authority(
 /// immutable history even after Replay authority expires; it cannot mint a
 /// live Cache owner or authorize normal mutation. Root must show that the
 /// proposal did not commit at this epoch, or that its exact inert hold was
-/// durably retired.
+/// durably retired without a retained handoff proof.
 /// No current daemon has both writable Cache custody and root journal access;
 /// this helper is not a live Q04 recovery exchange. It does not release
 /// Controller or source-domain custody or authorize an effect. `owner_uid`
@@ -2520,7 +2533,10 @@ pub fn release_fixed_closed_policy_cache_hold_v1(
             .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
         let root_hold = current_hold(&authority, head, next_epoch, count)
             .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-        if !cache_hold_can_retire_at_root_cut(expected, next_epoch, root_hold) {
+        if root_hold_has_handoff_proof(&authority, expected.binding())
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?
+            || !cache_hold_can_retire_at_root_cut(expected, next_epoch, root_hold)
+        {
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
         }
         Ok(())
@@ -4392,6 +4408,161 @@ mod tests {
             current_hold(&authority, head, next_epoch, count)
                 .expect("Root hold")
                 .is_some_and(|hold| hold.held)
+        );
+    }
+
+    #[test]
+    fn fixed_terminal_proof_alone_fences_legacy_root_release() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let binding = cas_fixture();
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("Root writer");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        let committed = session
+            .commit_closed_binding(&binding.encode().expect("binding proposal"))
+            .expect("held Root decision");
+        drop(session);
+
+        let proof = RootHeldProofV2 {
+            terminal: ObjectDigest::from_bytes([41; 32]),
+            binding: committed.binding(),
+            epoch: committed.handoff_epoch(),
+            stage_nonce: [42; 16],
+            stage_issue: 1,
+            source_nonce: [43; 16],
+            source_issue: 1,
+            names: ProtectedJournalNamesV1::from_bytes(&[1; 48]).expect("Source names"),
+            source_packet: ObjectDigest::from_bytes([44; 32]),
+            cache_packet: ObjectDigest::from_bytes([45; 32]),
+            source_pin: ObjectDigest::from_bytes([46; 32]),
+            cache_pin: ObjectDigest::from_bytes([47; 32]),
+            controller_pin: ObjectDigest::from_bytes([48; 32]),
+            source_generation: 1,
+            cache_generation: 1,
+            controller_generation: 1,
+            project: binding.project,
+            partition: binding.physical_partition,
+            cache_head: binding.physical_cache_head,
+            quota: ObjectDigest::from_bytes([49; 32]),
+        };
+        let mut authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("terminal writer");
+        authority
+            .commit(
+                &JournalTransaction::new(
+                    [72; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        HELD_PROOF_KEY.to_vec(),
+                        proof.encode().expect("canonical held proof").to_vec(),
+                    )],
+                )
+                .expect("fixed proof transaction"),
+            )
+            .expect("protected fixed proof");
+        assert!(
+            release_inert_hold_after_exact_root_readback(
+                &mut authority,
+                committed.binding(),
+                committed.handoff_epoch(),
+            )
+            .is_err(),
+            "a fixed terminal proof cannot use inert Root release"
+        );
+        let (head, next_epoch, count) =
+            current_root_binding_chain(&authority).expect("Root chain after refusal");
+        assert!(
+            current_hold(&authority, head, next_epoch, count)
+                .expect("Root hold")
+                .is_some_and(|hold| hold.held)
+        );
+    }
+
+    #[test]
+    fn v8_controller_attempt_fences_legacy_source_release_before_root_read() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let uid = fs::metadata(directory.path())
+            .expect("directory owner")
+            .uid();
+        let mut controller = Journal::open_protected_at_uid(
+            directory.path(),
+            "controller.journal",
+            crate::journal::JournalLimits::default(),
+            uid,
+        )
+        .expect("Controller journal")
+        .0;
+        let source_journal = Journal::open_protected_at_uid(
+            directory.path(),
+            "source-domains-v1.journal",
+            crate::journal::JournalLimits::default(),
+            uid,
+        )
+        .expect("Source journal")
+        .0;
+        let mut source = ProtectedSourceDomainJournalOwnerV1::from_test_journal(source_journal);
+        let binding = cas_fixture();
+        let binding_head = closed_policy_binding_digest_v2(&binding.encode().expect("proposal"))
+            .expect("binding digest");
+        let controller_hold = ControllerPolicyHoldV1::new(
+            binding.operation,
+            binding.sandbox,
+            binding.operation_revision,
+            binding_head,
+            binding.handoff_epoch,
+        )
+        .expect("Controller hold");
+        let source_hold = SourceDomainPolicyHoldV1::new(
+            binding.operation,
+            binding.sandbox,
+            binding.operation_revision,
+            binding.ancestry_head,
+            binding_head,
+            binding.handoff_epoch,
+        )
+        .expect("Source hold");
+        controller
+            .acquire_controller_policy_hold_v1(controller_hold)
+            .expect("held Controller");
+        source
+            .acquire_closed_policy_source_hold_v1(source_hold)
+            .expect("held Source");
+        controller
+            .record_controller_policy_v8_attempt_v1(
+                crate::journal::ControllerPolicyV8AttemptV1::new(
+                    controller_hold,
+                    ObjectDigest::from_bytes([50; 32]),
+                )
+                .expect("V8 attempt"),
+            )
+            .expect("durable V8 attempt");
+
+        assert!(
+            release_fixed_closed_policy_source_domain_hold_v1(
+                &mut controller,
+                &mut source,
+                source_hold,
+            )
+            .is_err(),
+            "unresolved V8 attempt cannot release Source even before Root CAS"
+        );
+        assert!(
+            source
+                .closed_policy_source_hold_v1()
+                .unwrap()
+                .unwrap()
+                .is_held()
         );
     }
 

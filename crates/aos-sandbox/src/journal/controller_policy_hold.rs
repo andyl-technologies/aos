@@ -7,6 +7,9 @@
 //! AOSQ8A01 | version=1 | state=terminal-prepared | reserved[5]=0 |
 //! operation[16] | sandbox[16] | source[32] | binding[32] | epoch[8] |
 //! exact-Root-terminal-digest[32] | SHA-256[32]
+//! AOSQ8K01 | version=1 | state=acknowledged-no-Apply | reserved[5]=0 |
+//! AOSQ8A01[184] | accepted-generation[8] | effect-transaction[16] |
+//! consumed-AOSPCP02-digest[32] | Cache-quota-digest[32] | SHA-256[32]
 //! AOSCTA01 | version=1 | state=acknowledged-no-Apply | reserved[5]=0 |
 //! operation[16] | sandbox[16] | source[32] | binding[32] | epoch[8] |
 //! accepted-generation[8] | effect-transaction[16] | Root-proof-digest[32] |
@@ -41,6 +44,12 @@ const V8_ATTEMPT_CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.controller-policy-v8-att
 const V8_ATTEMPT_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.controller-policy-v8-attempt-transaction.v1\0";
 const V8_ATTEMPT_RECORD_BYTES: usize = 184;
+const V8_ACK_KEY: &[u8] = b"\0aos-controller-policy-v8-effect-ack-v1\0";
+const V8_ACK_MAGIC: &[u8; 8] = b"AOSQ8K01";
+const V8_ACK_CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.controller-policy-v8-effect-ack.v1\0";
+const V8_ACK_TRANSACTION_DOMAIN: &[u8] =
+    b"aos.sandbox.controller-policy-v8-effect-ack-transaction.v1\0";
+const V8_ACK_RECORD_BYTES: usize = 16 + V8_ATTEMPT_RECORD_BYTES + 8 + 16 + 32 + 32 + 32;
 
 /// Retains the exact V8 terminal digest before sending it to held Root.
 ///
@@ -134,6 +143,140 @@ fn take_attempt<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], 
     bytes[offset..offset + N]
         .try_into()
         .map_err(|_| JournalError::ProtectedBoundary)
+}
+
+/// Retains an exact V8 Root-held CAS observation without authorizing Apply.
+///
+/// The prepared terminal, accepted Create, consumed AOSPCP02, and complete
+/// Cache quota envelope stay bound under Controller custody. This record is
+/// not an ordered-release grant; Root must separately acknowledge it under a
+/// qualified live all-owner barrier before any owner can be released.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ControllerPolicyV8EffectAckV1 {
+    attempt: ControllerPolicyV8AttemptV1,
+    accepted_generation: u64,
+    effect_transaction: [u8; 16],
+    root_proof: ObjectDigest,
+    cache_quota: ObjectDigest,
+}
+
+impl ControllerPolicyV8EffectAckV1 {
+    /// Constructs a no-Apply ACK for one exact protected V8 attempt.
+    ///
+    /// # Errors
+    ///
+    /// Rejects released custody or absent generation, transaction, proof, or quota.
+    pub fn new(
+        attempt: ControllerPolicyV8AttemptV1,
+        accepted_generation: u64,
+        effect_transaction: [u8; 16],
+        root_proof: ObjectDigest,
+        cache_quota: ObjectDigest,
+    ) -> Result<Self, JournalError> {
+        let ack = Self {
+            attempt,
+            accepted_generation,
+            effect_transaction,
+            root_proof,
+            cache_quota,
+        };
+        ack.validate()?;
+        Ok(ack)
+    }
+
+    /// Returns the pre-send attempt and held Create identity.
+    #[must_use]
+    pub const fn attempt(self) -> ControllerPolicyV8AttemptV1 {
+        self.attempt
+    }
+
+    /// Returns the accepted Create generation.
+    #[must_use]
+    pub const fn accepted_generation(self) -> u64 {
+        self.accepted_generation
+    }
+
+    /// Returns the exact reserved effect transaction identity.
+    #[must_use]
+    pub const fn effect_transaction(self) -> [u8; 16] {
+        self.effect_transaction
+    }
+
+    /// Returns the digest of Root's consumed AOSPCP02 proof.
+    #[must_use]
+    pub const fn root_proof(self) -> ObjectDigest {
+        self.root_proof
+    }
+
+    /// Returns the complete Cache quota envelope retained by Root.
+    #[must_use]
+    pub const fn cache_quota(self) -> ObjectDigest {
+        self.cache_quota
+    }
+
+    /// Returns the digest a future versioned Root ACK must bind.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed protected ACK fields.
+    pub fn record_digest(self) -> Result<ObjectDigest, JournalError> {
+        Ok(ObjectDigest::from_bytes(
+            Sha256::digest(self.encode()?).into(),
+        ))
+    }
+
+    fn validate(self) -> Result<(), JournalError> {
+        self.attempt.validate()?;
+        if self.accepted_generation == 0
+            || self.effect_transaction == [0; 16]
+            || self.root_proof.as_bytes() == &[0; 32]
+            || self.cache_quota.as_bytes() == &[0; 32]
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
+    fn encode(self) -> Result<[u8; V8_ACK_RECORD_BYTES], JournalError> {
+        self.validate()?;
+        let mut bytes = [0; V8_ACK_RECORD_BYTES];
+        bytes[..8].copy_from_slice(V8_ACK_MAGIC);
+        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        bytes[10] = 1;
+        bytes[16..200].copy_from_slice(&self.attempt.encode()?);
+        bytes[200..208].copy_from_slice(&self.accepted_generation.to_be_bytes());
+        bytes[208..224].copy_from_slice(&self.effect_transaction);
+        bytes[224..256].copy_from_slice(self.root_proof.as_bytes());
+        bytes[256..288].copy_from_slice(self.cache_quota.as_bytes());
+        let checksum = Sha256::new()
+            .chain_update(V8_ACK_CHECKSUM_DOMAIN)
+            .chain_update(&bytes[..288])
+            .finalize();
+        bytes[288..].copy_from_slice(&checksum);
+        Ok(bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
+        if bytes.len() != V8_ACK_RECORD_BYTES
+            || bytes.get(..8) != Some(V8_ACK_MAGIC.as_slice())
+            || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
+            || bytes[10] != 1
+            || bytes[11..16] != [0; 5]
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let ack = Self::new(
+            ControllerPolicyV8AttemptV1::decode(&bytes[16..200])?,
+            u64::from_be_bytes(take_attempt::<8>(bytes, 200)?),
+            take_attempt::<16>(bytes, 208)?,
+            ObjectDigest::from_bytes(take_attempt::<32>(bytes, 224)?),
+            ObjectDigest::from_bytes(take_attempt::<32>(bytes, 256)?),
+        )?;
+        if ack.encode()?.as_slice() != bytes {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(ack)
+    }
 }
 
 /// Records that Controller durably received one exact qualified Root decision.
@@ -452,6 +595,7 @@ fn current(
     let mut hold = None;
     let mut ack = None;
     let mut attempt = None;
+    let mut v8_ack = None;
     for ((_, key), value) in state
         .range((RecordNamespace::ControllerPolicyHold, Vec::new())..)
         .take_while(|((namespace, _), _)| *namespace == RecordNamespace::ControllerPolicyHold)
@@ -462,6 +606,9 @@ fn current(
             V8_ATTEMPT_KEY if attempt.is_none() => {
                 attempt = Some(ControllerPolicyV8AttemptV1::decode(value)?)
             }
+            V8_ACK_KEY if v8_ack.is_none() => {
+                v8_ack = Some(ControllerPolicyV8EffectAckV1::decode(value)?)
+            }
             _ => return Err(JournalError::ProtectedBoundary),
         }
     }
@@ -471,6 +618,9 @@ fn current(
     if attempt.is_some_and(|attempt| {
         hold != Some(attempt.hold) || ack.is_some() || !attempt.hold.is_held()
     }) {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    if v8_ack.is_some_and(|ack| attempt != Some(ack.attempt)) {
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(hold)
@@ -496,6 +646,16 @@ fn current_v8_attempt(
             V8_ATTEMPT_KEY.to_vec(),
         ))
         .map(|bytes| ControllerPolicyV8AttemptV1::decode(bytes))
+        .transpose()
+}
+
+fn current_v8_ack(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+) -> Result<Option<ControllerPolicyV8EffectAckV1>, JournalError> {
+    current(state)?;
+    state
+        .get(&(RecordNamespace::ControllerPolicyHold, V8_ACK_KEY.to_vec()))
+        .map(|bytes| ControllerPolicyV8EffectAckV1::decode(bytes))
         .transpose()
 }
 
@@ -582,6 +742,27 @@ fn v8_attempt_transaction(
     )
 }
 
+fn v8_ack_transaction(
+    ack: ControllerPolicyV8EffectAckV1,
+) -> Result<JournalTransaction, JournalError> {
+    let bytes = ack.encode()?;
+    let digest = Sha256::new()
+        .chain_update(V8_ACK_TRANSACTION_DOMAIN)
+        .chain_update(bytes)
+        .finalize();
+    let id = digest[..16]
+        .try_into()
+        .map_err(|_| JournalError::ProtectedBoundary)?;
+    JournalTransaction::new(
+        id,
+        vec![JournalRecord::put(
+            RecordNamespace::ControllerPolicyHold,
+            V8_ACK_KEY.to_vec(),
+            bytes.to_vec(),
+        )],
+    )
+}
+
 fn ensure_controller(journal: &Journal) -> Result<(), JournalError> {
     journal.ensure_protected_authority()?;
     if journal
@@ -628,6 +809,13 @@ impl Journal {
             hold,
             ObjectDigest::from_bytes([1; 32]),
         )?)?;
+        let v8_ack = v8_ack_transaction(ControllerPolicyV8EffectAckV1::new(
+            ControllerPolicyV8AttemptV1::new(hold, ObjectDigest::from_bytes([1; 32]))?,
+            1,
+            [1; 16],
+            ObjectDigest::from_bytes([1; 32]),
+            ObjectDigest::from_bytes([1; 32]),
+        )?)?;
         let release = transaction(ControllerPolicyHoldV1 {
             held: false,
             ..hold
@@ -635,7 +823,7 @@ impl Journal {
         // All later Controller commits are fenced, so this reserves the
         // bounded journal room for one effect ACK and exact cold release.
         self.preflight_transactions_with_capacity_scope(
-            &[acquire.clone(), ack, attempt, release],
+            &[acquire.clone(), ack, attempt, v8_ack, release],
             None,
             false,
             true,
@@ -719,6 +907,63 @@ impl Journal {
             false,
         )?;
         if current_v8_attempt(&self.state)? != Some(attempt) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
+    /// Reads the exact, still-held V8 no-Apply effect acknowledgment.
+    ///
+    /// This protected local replay does not reauthenticate Root or Cache and
+    /// cannot be used as a release or effect capability on its own.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected, malformed, mixed, or released Controller custody.
+    pub fn controller_policy_v8_effect_ack_v1(
+        &self,
+    ) -> Result<Option<ControllerPolicyV8EffectAckV1>, JournalError> {
+        ensure_controller(self)?;
+        current_v8_ack(&self.state)
+    }
+
+    /// Durably advances one exact V8 attempt to a no-Apply effect ACK.
+    ///
+    /// The caller must first join Root's authenticated AOSPCP02 replay to the
+    /// still-held Controller, Source, and protected/physical Cache writer cut.
+    /// An identical cold replay is idempotent; this does not permit release.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed attempt, released hold, mixed V1 acknowledgment,
+    /// conflicting replay, or failed protected commit/readback.
+    pub fn acknowledge_controller_policy_v8_effect_v1(
+        &mut self,
+        ack: ControllerPolicyV8EffectAckV1,
+    ) -> Result<(), JournalError> {
+        ensure_controller(self)?;
+        ack.validate()?;
+        if current(&self.state)? != Some(ack.attempt.hold)
+            || current_v8_attempt(&self.state)? != Some(ack.attempt)
+            || current_ack(&self.state)?.is_some()
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        match current_v8_ack(&self.state)? {
+            Some(prior) if prior == ack => return Ok(()),
+            Some(_) => return Err(JournalError::ProtectedBoundary),
+            None => {}
+        }
+        self.commit_with_capacity_scope(
+            &v8_ack_transaction(ack)?,
+            None,
+            false,
+            true,
+            false,
+            false,
+            false,
+        )?;
+        if current_v8_ack(&self.state)? != Some(ack) {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
@@ -1053,6 +1298,207 @@ mod tests {
         assert!(
             current(&state).is_err(),
             "released hold cannot replay with attempt"
+        );
+    }
+
+    #[test]
+    fn v8_effect_ack_replays_exact_attempt_and_cannot_release() {
+        let directory = TestDirectory::new();
+        let hold = hold();
+        let attempt = ControllerPolicyV8AttemptV1::new(hold, ObjectDigest::from_bytes([28; 32]))
+            .expect("V8 attempt");
+        let ack = ControllerPolicyV8EffectAckV1::new(
+            attempt,
+            13,
+            [14; 16],
+            ObjectDigest::from_bytes([15; 32]),
+            ObjectDigest::from_bytes([16; 32]),
+        )
+        .expect("V8 no-Apply ACK");
+        assert!(
+            ControllerPolicyV8EffectAckV1::new(
+                attempt,
+                13,
+                [14; 16],
+                ObjectDigest::from_bytes([0; 32]),
+                ack.cache_quota(),
+            )
+            .is_err()
+        );
+        assert!(
+            ControllerPolicyV8EffectAckV1::new(
+                attempt,
+                13,
+                [14; 16],
+                ack.root_proof(),
+                ObjectDigest::from_bytes([0; 32]),
+            )
+            .is_err()
+        );
+        let mut controller = directory.open();
+        assert!(
+            controller
+                .acknowledge_controller_policy_v8_effect_v1(ack)
+                .is_err()
+        );
+        controller.acquire_controller_policy_hold_v1(hold).unwrap();
+        assert!(
+            controller
+                .acknowledge_controller_policy_v8_effect_v1(ack)
+                .is_err()
+        );
+        controller
+            .record_controller_policy_v8_attempt_v1(attempt)
+            .unwrap();
+        controller
+            .acknowledge_controller_policy_v8_effect_v1(ack)
+            .unwrap();
+        controller
+            .acknowledge_controller_policy_v8_effect_v1(ack)
+            .unwrap();
+        assert_eq!(
+            controller.controller_policy_v8_effect_ack_v1().unwrap(),
+            Some(ack)
+        );
+        assert_ne!(ack.record_digest().unwrap().as_bytes(), &[0; 32]);
+        assert!(
+            controller
+                .acknowledge_controller_policy_effect_v1(acknowledgement(hold))
+                .is_err()
+        );
+        assert!(
+            controller
+                .release_controller_policy_hold_after_root_readback_v1(hold)
+                .is_err()
+        );
+        assert!(controller.commit(&ordinary_transaction()).is_err());
+        drop(controller);
+
+        let mut reopened = directory.open();
+        assert_eq!(
+            reopened.controller_policy_v8_effect_ack_v1().unwrap(),
+            Some(ack)
+        );
+        for changed in [
+            ControllerPolicyV8EffectAckV1::new(
+                attempt,
+                14,
+                [14; 16],
+                ack.root_proof(),
+                ack.cache_quota(),
+            )
+            .unwrap(),
+            ControllerPolicyV8EffectAckV1::new(
+                attempt,
+                13,
+                [17; 16],
+                ack.root_proof(),
+                ack.cache_quota(),
+            )
+            .unwrap(),
+            ControllerPolicyV8EffectAckV1::new(
+                attempt,
+                13,
+                [14; 16],
+                ObjectDigest::from_bytes([18; 32]),
+                ack.cache_quota(),
+            )
+            .unwrap(),
+            ControllerPolicyV8EffectAckV1::new(
+                attempt,
+                13,
+                [14; 16],
+                ack.root_proof(),
+                ObjectDigest::from_bytes([19; 32]),
+            )
+            .unwrap(),
+            ControllerPolicyV8EffectAckV1::new(
+                ControllerPolicyV8AttemptV1::new(hold, ObjectDigest::from_bytes([20; 32])).unwrap(),
+                13,
+                [14; 16],
+                ack.root_proof(),
+                ack.cache_quota(),
+            )
+            .unwrap(),
+        ] {
+            assert!(
+                reopened
+                    .acknowledge_controller_policy_v8_effect_v1(changed)
+                    .is_err()
+            );
+        }
+        reopened
+            .acknowledge_controller_policy_v8_effect_v1(ack)
+            .unwrap();
+
+        let mut malformed = ack.encode().unwrap();
+        malformed[224] ^= 1;
+        assert!(ControllerPolicyV8EffectAckV1::decode(&malformed).is_err());
+        let mut state = BTreeMap::new();
+        state.insert(
+            (RecordNamespace::ControllerPolicyHold, KEY.to_vec()),
+            hold.encode().unwrap().to_vec(),
+        );
+        state.insert(
+            (RecordNamespace::ControllerPolicyHold, V8_ACK_KEY.to_vec()),
+            ack.encode().unwrap().to_vec(),
+        );
+        assert!(
+            current(&state).is_err(),
+            "ACK without attempt is not recoverable"
+        );
+        state.insert(
+            (
+                RecordNamespace::ControllerPolicyHold,
+                V8_ATTEMPT_KEY.to_vec(),
+            ),
+            attempt.encode().unwrap().to_vec(),
+        );
+        assert_eq!(current_v8_ack(&state).unwrap(), Some(ack));
+        state.insert(
+            (
+                RecordNamespace::ControllerPolicyHold,
+                V8_ATTEMPT_KEY.to_vec(),
+            ),
+            ControllerPolicyV8AttemptV1::new(hold, ObjectDigest::from_bytes([20; 32]))
+                .unwrap()
+                .encode()
+                .unwrap()
+                .to_vec(),
+        );
+        assert!(
+            current(&state).is_err(),
+            "substituted attempt fails cold replay"
+        );
+        state.insert(
+            (
+                RecordNamespace::ControllerPolicyHold,
+                V8_ATTEMPT_KEY.to_vec(),
+            ),
+            attempt.encode().unwrap().to_vec(),
+        );
+        state.insert(
+            (RecordNamespace::ControllerPolicyHold, ACK_KEY.to_vec()),
+            acknowledgement(hold).encode().unwrap().to_vec(),
+        );
+        assert!(
+            current(&state).is_err(),
+            "mixed V1 and V8 ACKs fail cold replay"
+        );
+        state.remove(&(RecordNamespace::ControllerPolicyHold, ACK_KEY.to_vec()));
+        state.insert(
+            (RecordNamespace::ControllerPolicyHold, KEY.to_vec()),
+            ControllerPolicyHoldV1 {
+                held: false,
+                ..hold
+            }
+            .encode()
+            .unwrap()
+            .to_vec(),
+        );
+        assert!(
+            current(&state).is_err(),
+            "released hold plus ACK fails cold replay"
         );
     }
 

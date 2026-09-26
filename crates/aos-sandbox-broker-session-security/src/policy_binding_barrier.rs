@@ -34,7 +34,10 @@ use aos_sandbox::policy_compiler::{
 };
 use aos_sandbox::{
     ControllerPolicyEffectAckV1, ControllerPolicyHoldV1, Journal,
-    journal::{CachePolicyHoldV1, SourceDomainPolicyHoldV1},
+    journal::{
+        CachePolicyHoldV1, ControllerPolicyV8AttemptV1, ControllerPolicyV8EffectAckV1,
+        SourceDomainPolicyHoldV1,
+    },
 };
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
 use ed25519_dalek::VerifyingKey;
@@ -638,33 +641,116 @@ pub fn recover_fixed_parentless_create_source_writer_held_cas_v8(
             {
                 return Err(invalid_cut());
             }
-            let (decision, proposed, _) = recover_closed_policy_binding_decision_v5(
-                controller_hold.binding(),
-                controller_hold.epoch(),
-            )?;
-            if !matches!(decision, ClosedPolicyBindingDecisionV2::CommittedHeld(_)) {
-                return Err(invalid_cut());
-            }
-            let proposed = proposed.ok_or_else(invalid_cut)?;
-            compare_closed_policy_binding_hold_claims_v2(
-                &proposed,
-                controller_hold,
-                source_hold,
-                held.hold(),
-            )
-            .map_err(io::Error::other)?;
-            let replay = recover_committed_source_held_binding_v8(
-                controller_hold.binding(),
-                controller_hold.epoch(),
-                attempt.terminal(),
-            )?;
-            if replay.quota() != held.quota_digest() {
-                return Err(invalid_cut());
-            }
+            let (_, replay) =
+                replay_exact_held_v8_cut(controller_hold, source_hold, held, attempt)?;
             Ok(replay)
         },
     )
     .map_err(io::Error::other)?
+}
+
+/// Durably acknowledges an exact committed V8 attempt without releasing owners.
+///
+/// Controller, Source, protected Cache, and physical Cache writers remain held
+/// while Root's historical CAS and AOSPCP02 are replayed last. The accepted
+/// Create generation and effect transaction come from Root's exact proposal;
+/// the complete quota envelope must still match Cache's retained writer.
+/// This ACK is neither an Apply grant nor a Root/Source/Cache release token.
+///
+/// # Errors
+///
+/// Rejects missing or changed attempt custody, stale Create or owner heads,
+/// absent/mismatched Root CAS, changed quota, or failed Controller durability.
+pub fn acknowledge_fixed_parentless_create_v8_effect_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<ControllerPolicyV8EffectAckV1> {
+    let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
+    let attempt = controller
+        .controller_policy_v8_attempt_v1()
+        .map_err(io::Error::other)?
+        .filter(|attempt| attempt.hold() == controller_hold)
+        .ok_or_else(invalid_cut)?;
+
+    with_current_create_cache_signer_barrier_v5(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |controller, _, source, _, held| -> io::Result<_> {
+            if controller
+                .controller_policy_v8_attempt_v1()
+                .map_err(io::Error::other)?
+                != Some(attempt)
+            {
+                return Err(invalid_cut());
+            }
+            let (proposed, replay) =
+                replay_exact_held_v8_cut(controller_hold, source_hold, held, attempt)?;
+            let handoff = closed_policy_effect_handoff_v2(&proposed).map_err(io::Error::other)?;
+            if handoff.operation != operation
+                || handoff.sandbox != sandbox
+                || handoff.accepted_generation != source.accepted_generation()
+                || handoff.epoch != controller_hold.epoch()
+            {
+                return Err(invalid_cut());
+            }
+            let ack = ControllerPolicyV8EffectAckV1::new(
+                attempt,
+                handoff.accepted_generation,
+                handoff.effect_transaction,
+                replay.proof(),
+                replay.quota(),
+            )
+            .map_err(io::Error::other)?;
+            controller
+                .acknowledge_controller_policy_v8_effect_v1(ack)
+                .map_err(io::Error::other)?;
+            Ok(ack)
+        },
+    )
+    .map_err(io::Error::other)?
+}
+
+fn replay_exact_held_v8_cut(
+    controller_hold: ControllerPolicyHoldV1,
+    source_hold: SourceDomainPolicyHoldV1,
+    held: &CacheResidencyWriterReadbackV2,
+    attempt: ControllerPolicyV8AttemptV1,
+) -> io::Result<(Vec<u8>, ClosedPolicyHeldCasReplayV8)> {
+    if attempt.hold() != controller_hold || !controller_hold.is_held() {
+        return Err(invalid_cut());
+    }
+    let (decision, proposed, _) = recover_closed_policy_binding_decision_v5(
+        controller_hold.binding(),
+        controller_hold.epoch(),
+    )?;
+    if !matches!(decision, ClosedPolicyBindingDecisionV2::CommittedHeld(_)) {
+        return Err(invalid_cut());
+    }
+    let proposed = proposed.ok_or_else(invalid_cut)?;
+    compare_closed_policy_binding_hold_claims_v2(
+        &proposed,
+        controller_hold,
+        source_hold,
+        held.hold(),
+    )
+    .map_err(io::Error::other)?;
+    let replay = recover_committed_source_held_binding_v8(
+        controller_hold.binding(),
+        controller_hold.epoch(),
+        attempt.terminal(),
+    )?;
+    if replay.quota() != held.quota_digest() {
+        return Err(invalid_cut());
+    }
+    Ok((proposed, replay))
 }
 
 enum PendingSignedFlight {
