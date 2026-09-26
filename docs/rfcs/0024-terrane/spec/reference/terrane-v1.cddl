@@ -31,7 +31,9 @@ key-bytes  = bstr .size (0..4096)       ; tree key or key suffix (TREE-6)
 name       = tstr .size (1..255)        ; registered attribute/property name
 timestamp  = uint                       ; seconds since the Unix epoch
 duration   = uint                       ; seconds
-epoch      = uint
+epoch      = uint                       ; writer or collector fencing epoch
+generation = uint                       ; merged-index generation (PACK-17)
+cycle      = uint                       ; garbage-collection cycle (GC-15)
 
 ; A descriptor carries an identity outside a store (04-content-model.md
 ; OBJ-6, OBJ-7). algorithm is "blake3" for terrane-v1.
@@ -119,7 +121,7 @@ commit = {
   3 => provenance,                      ; PROV-1
   4 => timestamp,                       ; advisory (REF-11)
   5 => tstr,                            ; message, MAY be empty
-  6 => commit-profile,                  ; REF-9
+  6 => profile-pair,                    ; REF-9
   ? 7 => [ + pack-location ],           ; packs this commit first wrote (REF-10)
   ? 8 => bstr .size 64,                 ; Ed25519 signature (PROV-2)
 }
@@ -140,7 +142,7 @@ principal-kind = 1 / 2 / 3              ; human, workload, service
 commit-source  = 1 / 2 / 3 / 4 / 5 / 6  ; built, uploaded, imported, merged,
                                         ; derived, migrated
 
-commit-profile = {
+profile-pair = {
   1 => uint,                            ; tree-format version, 1
   2 => tstr,                            ; chunk profile name (e.g. "cdc-1m")
   ? 3 => recipe,                        ; when materialized from a composite
@@ -161,9 +163,9 @@ RefRecord = {
   2 => uint,                            ; seq, 1 for the first write (REF-5)
   3 => epoch,                           ; writer_epoch (REF-6)
   4 => locality,                        ; home (REF-7)
-  ? 5 => ref-profile,
+  ? 5 => ref-policy,
 }
-ref-profile = {
+ref-policy = {
   ? 1 => bool,                          ; multi_writer (REF-17)
   ? 2 => [ + merge-policy ],            ; merge policy list (ALG-17)
   ? 3 => retain,                        ; retention override
@@ -242,12 +244,12 @@ filter = {
   6 => bstr,                            ; filter body, kind-specific
 }
 
-; objects/index/<epoch>/MANIFEST (13-bucket-layout.md BKT-4).
-IndexEpochManifest = {
-  1 => epoch,
+; objects/index/<generation>/MANIFEST (13-bucket-layout.md BKT-4).
+IndexGenerationManifest = {
+  1 => generation,
   2 => [ * shard-entry ],
   3 => timestamp,                       ; written at
-  4 => epoch,                           ; collector epoch that produced it
+  4 => cycle,                           ; collection cycle that produced it
 }
 shard-entry = [ shard: uint, idx-hash: digest32, idx-size: uint,
                 flt-hash: digest32, flt-size: uint ]
@@ -268,7 +270,7 @@ Capabilities = {
   ? 8 => store-profile,                 ; OBJ-8
 }
 store-profile = {
-  1 => tstr,                            ; profile name, "terrane-v1"
+  1 => tstr,                            ; identity profile name, "terrane-v1"
   2 => tstr,                            ; digest algorithm, "blake3"
   3 => tstr,                            ; chunk profile name
   4 => bstr .size 32,                   ; chunk seed (CDC-2)
@@ -281,10 +283,10 @@ GcLease = {
   3 => timestamp,                       ; expiry
 }
 
-; trash/<epoch>/<pack-id> (GC-15).
+; trash/<cycle>/<pack-id> (GC-15).
 Tombstone = {
   1 => pack-id,
-  2 => epoch,
+  2 => cycle,
   3 => timestamp,                       ; tombstoned at
   4 => uint,                            ; index entries removed
 }
@@ -402,7 +404,7 @@ selector = [ "issuer", tstr ]
          / [ "all", [ + selector ] ]
          / [ "any", [ + selector ] ]
          / [ "not", selector ]
-         / [ "profile", "any" / "signed-baseline" / "strict" / "attested" ]
+         / [ "preset", "any" / "signed-baseline" / "strict" / "attested" ]
 
 ; ---------------------------------------------------------------------------
 ; Limits (TREE-27, TREE-29). A decoder enforces these before allocation.

@@ -18,7 +18,7 @@ records, never git objects.
 Everything under `objects/` is immutable and content- or id-addressed.
 Everything under `refs/heads/` is mutable and changes only by
 compare-and-swap. Everything under `logs/` and `refs/tags/` is written once
-with create-if-absent. `gc/` holds the garbage collector's lease and epoch
+with create-if-absent. `gc/` holds the garbage collector's lease and cycle
 markers. `trash/` holds tombstoned packs awaiting deletion. There is
 nothing else.
 
@@ -29,9 +29,9 @@ nothing else.
   objects/
     pack/<aa>/<pack-id>.pack             sealed pack           immutable
     pack/<aa>/<pack-id>.idx              per-pack index        immutable
-    index/<epoch>/<shard>.idx            merged index shard    immutable
-    index/<epoch>/<shard>.flt            shard filter          immutable
-    index/<epoch>/MANIFEST               epoch manifest        immutable
+    index/<generation>/<shard>.idx            merged index shard    immutable
+    index/<generation>/<shard>.flt            shard filter          immutable
+    index/<generation>/MANIFEST               generation manifest        immutable
   refs/
     heads/<tenant>/<name>                branch ref record     CAS
     tags/<tenant>/<name>                 tag ref record        create-once
@@ -43,9 +43,9 @@ nothing else.
     refs/heads/<tenant>/<name>/<seq>     commit log record     create-once
   gc/
     lease                                collector lease       CAS
-    epoch/<n>                            epoch marker          create-once
+    cycle/<n>                            cycle marker          create-once
   trash/
-    <epoch>/<pack-id>                    tombstone             create-once
+    <cycle>/<pack-id>                    tombstone             create-once
   CAPABILITIES                           probe record          CAS
 ```
 
@@ -79,16 +79,17 @@ Packs and per-pack indexes as defined in
 the `.pack` object and before any ref that references the pack's contents
 ([PACK-14]).
 
-### `objects/index/<epoch>/`
+### `objects/index/<generation>/`
 
-Merged index shards and filters for one compaction epoch, plus a `MANIFEST`
-listing every shard and filter in the epoch with its hash and size, so a
-reader can fetch an epoch atomically and detect a partial one.
+Merged index shards and filters for one compaction generation, plus a `MANIFEST`
+listing every shard and filter in the generation with its hash and size,
+so a reader can fetch a generation atomically and detect a partial one.
 
-- **[BKT-4]** An epoch's `MANIFEST` MUST be written last, after every shard
-  and filter it lists. A reader MUST NOT use any shard from an epoch whose
+- **[BKT-4]** A generation's `MANIFEST` MUST be written last, after every
+  shard and filter it lists. A reader MUST NOT use any shard from a
+  generation whose
   `MANIFEST` is absent or lists a shard the reader cannot fetch or verify.
-  *Gate:* `gate:index-epoch-manifest`.
+  *Gate:* `gate:index-generation-manifest`.
 
 ### `refs/heads/`
 
@@ -123,12 +124,12 @@ garbage-collection root set for the branch.
 
 ### `gc/`
 
-The collector lease record (holder, epoch, expiry) and one marker per
-completed epoch. See [`17-garbage-collection.md`](17-garbage-collection.md).
+The collector lease record (holder, fencing epoch, expiry) and one marker
+per completed cycle. See [`17-garbage-collection.md`](17-garbage-collection.md).
 
 ### `trash/`
 
-One tombstone per pack removed from service, keyed by the epoch that
+One tombstone per pack removed from service, keyed by the cycle that
 removed it. Bytes remain at `objects/pack/` until the deletion window
 passes.
 
@@ -239,7 +240,7 @@ A `bucket(file://<root>)` is the same layout on a local filesystem.
 - [`14-host-tier.md`](14-host-tier.md) extends the filesystem form with
   host-only prefixes.
 - [`17-garbage-collection.md`](17-garbage-collection.md) owns `gc/` and
-  `trash/` and produces index epochs.
+  `trash/` and produces index generations.
 - [`38-wasm-and-edge.md`](38-wasm-and-edge.md) relies on the R2 row of the
   conditional-write table.
 

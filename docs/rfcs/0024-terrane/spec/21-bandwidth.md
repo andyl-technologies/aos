@@ -57,9 +57,9 @@ data, which is what allows it to be stateless and small.
   the filter is corrected by the `has` result; a false negative is
   impossible for a filter that is current, and a stale filter costs only an
   unnecessary `has`.
-- **[BW-6]** Filters MUST be fetched as deltas keyed by index epoch: a
-  receiver advertises its current epoch, and a sender holding an older
-  epoch fetches only the shards that changed.
+- **[BW-6]** Filters MUST be fetched as deltas keyed by index generation: a
+  receiver advertises its current generation, and a sender holding an
+  older generation fetches only the shards that changed.
 - **[BW-7]** A `has` request MUST carry at most a bounded number of hashes
   (`reference/protocol.md` fixes the bound) and a sender MUST pipeline
   batches rather than await each.
@@ -135,8 +135,9 @@ data, which is what allows it to be stateless and small.
   reader reports it does not hold, determined by the negotiation of §Trees.
   A reader that already holds the previous commit of a branch receives a
   bundle proportional to the diff.
-- **[BW-21]** Merged index shards MUST be published as append-only epochs
-  with tombstone lists so that an index refresh transfers one epoch's delta.
+- **[BW-21]** Merged index shards MUST be published as append-only generations
+  with tombstone lists so that an index refresh transfers one generation's
+  delta.
 - **[BW-22]** Small control messages (`has`, ref operations, presigned URL
   requests, watch events) MUST be multiplexed over one connection and MAY be
   micro-batched within a window of a few milliseconds to amortize round
@@ -161,9 +162,9 @@ are small relative to one pack and are cached across sessions.
 - [`10-derived-data.md`](10-derived-data.md) supplies the classification
   attribute that selects dictionaries.
 - [`11-store-trait.md`](11-store-trait.md) defines `shared-dir` and
-  `tiered`, whose behaviour [BW-15] through [BW-17] constrain.
+  `routed`, whose behaviour [BW-15] through [BW-17] constrain.
 - [`12-pack-format.md`](12-pack-format.md) defines filters, bundles, and
-  index epochs.
+  index generations.
 - [`18-protocol.md`](18-protocol.md) carries every negotiation message,
   `has` batching, watch streams, and presigned reads.
 - [`19-tiering-and-topology.md`](19-tiering-and-topology.md) supplies the

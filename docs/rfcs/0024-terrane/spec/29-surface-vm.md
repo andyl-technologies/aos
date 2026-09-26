@@ -87,7 +87,7 @@ serve endpoint:
 
 ```toml
 [store]
-expression = "tiered[shared-dir(/terrane/objects), remote(vsock://2:7777)]"
+expression = "routed[shared-dir(/terrane/objects), remote(vsock://2:7777)]"
 
 [[expose]]
 id      = "workspace"

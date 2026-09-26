@@ -105,12 +105,12 @@ commit, the commit's ancestry, and the entry's attribute provenance.
   `attr-by(name, selector)` (true if attribute `name` was produced under a
   commit matching the inner selector). Combinators are `all`, `any`, `not`.
 - **[PROV-12]** An implementation MUST provide the following named
-  profiles, and MAY register more: `any` (every entry), `signed-baseline`
+  **trust presets**, and MAY register more: `any` (every entry), `signed-baseline`
   (introduced by, or accepted by, a principal in the root's configured
   baseline group), `strict` (introduced directly by a principal in the
   baseline group; acceptance does not suffice), and `attested` (the
   introducing workload carries a registered attestation). *Gate:*
-  `gate:prov-selector-profiles`.
+  `gate:prov-selector-presets`.
 - **[PROV-13]** A selector MUST be evaluable from data reachable from the
   view's commit without contacting an issuer or external service. If a
   required commit is unavailable, the selector MUST evaluate to false for

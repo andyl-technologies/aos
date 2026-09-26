@@ -205,9 +205,10 @@ operations above.
 - **[ALG-29]** An implementation MUST be able to materialize any composite
   into a single root and MUST record the recipe on the resulting commit's
   profile so the root can be verified by recomputation.
-- **[ALG-30]** An implementation SHOULD memoize materialized roots by recipe
-  hash in the derived-data store ([`10-derived-data.md`](10-derived-data.md)),
-  so that re-deriving a composite with the same inputs costs one lookup.
+- **[ALG-30]** A materialized composite is a derivation
+  ([`10-derived-data.md`](10-derived-data.md) DRV-21). An implementation
+  SHOULD memoize it by recipe hash in the derivation memo table, so that
+  re-deriving a composite with the same inputs costs one lookup.
 - **[ALG-31]** A virtual composite MUST NOT be sealed, indexed, or exposed
   through a surface that requires a single root hash in its schema. Such
   surfaces MUST request materialization.
@@ -244,7 +245,7 @@ The flow that motivated fork and fold:
 
 1. A job forks the baseline branch at sequence N. Its token can commit only
    its own ref. Its view already contains everything the baseline had.
-2. The job uploads new chunks and manifests and commits to its own ref,
+2. The job uploads new chunks and objects and commits to its own ref,
    possibly many times.
 3. On acceptance, a trusted principal folds the job's ref into the baseline:
    `merge(baseline@N, baseline@now, job@head)`. Only differing subtrees are

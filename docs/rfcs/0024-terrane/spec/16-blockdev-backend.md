@@ -141,7 +141,7 @@ cache keyed by file that many consumers share.
   maps block ranges to pack extents and benefits from the block-layer page
   cache.
 - **[BLK-18]** The RECOMMENDED deployment on a host with raw devices is
-  `tiered[disk(small, filesystem-backed), blockdev(large), ...]`: the
+  `routed[disk(small, filesystem-backed), blockdev(large), ...]`: the
   filesystem tier holds the hot set as sealed objects for passthrough and
   shared page cache, the block-device tier holds capacity. This is the
   inverse of a special allocation class: capacity on raw devices, hot files

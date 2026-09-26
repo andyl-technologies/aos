@@ -53,9 +53,9 @@ zero-padded 20-digit decimal.
 | --- | --- | --- | --- | --- |
 | `objects/pack/<aa>/<pack-id>.pack` | pack file | immutable | any committing writer, compaction | 12, 13 |
 | `objects/pack/<aa>/<pack-id>.idx` | per-pack index object | immutable | the pack's writer | 12, 13 |
-| `objects/index/<epoch>/<shard>.idx` | merged index shard | immutable | collector | 12, 13, 17 |
-| `objects/index/<epoch>/<shard>.flt` | shard filter | immutable | collector | 12, 13 |
-| `objects/index/<epoch>/MANIFEST` | `IndexEpochManifest`, written last | immutable | collector | 13 |
+| `objects/index/<generation>/<shard>.idx` | merged index shard | immutable | collector | 12, 13, 17 |
+| `objects/index/<generation>/<shard>.flt` | shard filter | immutable | collector | 12, 13 |
+| `objects/index/<generation>/MANIFEST` | `IndexGenerationManifest`, written last | immutable | collector | 13 |
 | `refs/heads/<tenant>/<name>` | `RefRecord` of a branch | CAS | holders of `commit` | 09, 13 |
 | `refs/tags/<tenant>/<name>` | `RefRecord` of a tag | create-once | holders of `tag` | 09, 13 |
 | `refs/notes/<kind>/<tenant>/<name>` | advisory sidecar record | CAS | any authorized writer | 09, 13 |
@@ -64,10 +64,10 @@ zero-padded 20-digit decimal.
 | `refs/derived/<tenant>/<name>` | `RefRecord` of a ruleset-derived root | CAS | realizing instances | 09, 31 |
 | `logs/refs/heads/<tenant>/<name>/<seq>` | `RefLogRecord` | create-once | the advancing writer | 09, 13 |
 | `gc/lease` | `GcLease` | CAS | collector | 17 |
-| `gc/epoch/<n>` | epoch completion marker | create-once | collector | 13, 17 |
-| `gc/<epoch>/roots` | root-set snapshot of a collection (GC-4) | create-once | collector | 17 |
-| `gc/<epoch>/mark/<shard>` | mark-set checkpoint (GC-8) | create-once | collector | 17 |
-| `trash/<epoch>/<pack-id>` | `Tombstone` | create-once | collector | 13, 17 |
+| `gc/cycle/<n>` | cycle completion marker | create-once | collector | 13, 17 |
+| `gc/<cycle>/roots` | root-set snapshot of a collection (GC-4) | create-once | collector | 17 |
+| `gc/<cycle>/mark/<shard>` | mark-set checkpoint (GC-8) | create-once | collector | 17 |
+| `trash/<cycle>/<pack-id>` | `Tombstone` | create-once | collector | 13, 17 |
 | `CAPABILITIES` | `Capabilities`, including the store profile | CAS | the opening store | 13, 04 |
 
 Registered sidecar kinds under `refs/notes/`: `profiles` (learned access

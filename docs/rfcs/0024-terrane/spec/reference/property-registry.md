@@ -40,7 +40,7 @@ encoded as `property-value` in
 | `whole_pack_threshold` | storage | `uint`: basis points of a pack needed to fetch it whole | 5000 | 21 |
 | `gap_merge_bytes` | storage | `uint` | 262144 | 21 |
 | `span_max_bytes` | storage | `uint` | 16777216 | 21 |
-| `trust` | trust | `selector` in the CDDL, or `tstr` profile name (§trust selectors) | `any` | 23 |
+| `trust` | trust | `selector` in the CDDL, or `tstr` preset name (§trust selectors) | `any` | 23 |
 | `baseline` | trust | `tstr`: group name for `signed-baseline` and `strict` | none | 23 |
 | `merge` | trust | `[+ merge-policy]` (§merge policies) | `["prefer-trusted", "keep-conflict"]` | 07 |
 | `writers` | trust | `tstr`: `one` \| `many` | `one` | 20 |
@@ -62,7 +62,8 @@ PROP-17).
 
 ## Chunk profiles
 
-Named by the `chunk` property and recorded in the store profile
+Named by the `chunk` property and recorded beside the identity profile in
+the store profile record
 ([`terrane-v1.cddl`](terrane-v1.cddl) `store-profile`). Parameters are
 fixed for the life of any chunk cut with the profile
 ([`../05-chunking.md`](../05-chunking.md) CDC-3).
@@ -179,7 +180,7 @@ AUTH-9 registers; the policy media type is the one
 | `application/vnd.terrane.memo.v1+cbor` | recipe memo | `memo` |
 | `application/vnd.terrane.bundle.v1+cbor` | bundle | `bundle` |
 | `application/vnd.terrane.filter.v1+cbor` | filter | `filter` |
-| `application/vnd.terrane.index-manifest.v1+cbor` | index epoch manifest | `IndexEpochManifest` |
+| `application/vnd.terrane.index-manifest.v1+cbor` | index generation manifest | `IndexGenerationManifest` |
 | `application/vnd.terrane.capabilities.v1+cbor` | capabilities record | `Capabilities` |
 | `application/vnd.terrane.token.v1+cbor` | capability token | `token` |
 | `application/vnd.terrane.policy.v1+cbor` | ruleset or policy object | `ruleset` |
@@ -230,11 +231,11 @@ PROV-11, encoded as `selector` in the CDDL.
 | `attested` | claim | the workload identity claim carries the registered attestation |
 | `attr-by` | name, selector | attribute `name` was produced under a commit matching |
 | `all`, `any`, `not` | selectors | boolean combinators |
-| `profile` | name | the named profile below |
+| `preset` | name | the named trust preset below |
 
-Registered profiles (PROV-12):
+Registered trust presets (PROV-12):
 
-| Profile | Meaning |
+| Preset | Meaning |
 | --- | --- |
 | `any` | every entry |
 | `signed-baseline` | introduced by, or accepted by, a principal in the root's `baseline` group |
@@ -245,7 +246,7 @@ Registered attestation claims: none in this version.
 
 ## Merge policies
 
-Values of the `merge` property and of `ref-profile` key 2
+Values of the `merge` property and of `ref-policy` key 2
 ([`../07-tree-algebra.md`](../07-tree-algebra.md) ALG-17): `prefer-ours`,
 `prefer-theirs`, `prefer-trusted`, `prefer-newer`, `keep-conflict`,
 `error`. Policies are tried in order; the first that resolves a conflict

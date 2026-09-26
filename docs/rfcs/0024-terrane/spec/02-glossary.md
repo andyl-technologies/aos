@@ -21,7 +21,16 @@ owns them.
   identity, or a `tree` reference to another root, with metadata, attributes,
   and provenance. (06)
 - **Commit** — an immutable record binding a tree root to zero or more parent
-  commits, provenance, a message, and a profile. (09)
+  commits, provenance, a message, and its profile pair. (09)
+- **Identity profile** — a digest algorithm, its output length, and its
+  registered domain strings; every identity in a store belongs to exactly
+  one. (04)
+- **Chunk profile** — a named set of content-defined chunking parameters
+  and seed; fixed for every chunk cut with it. (05)
+- **Profile pair** — the identity profile and chunk profile a commit
+  records as in effect. (09)
+- **Trust preset** — a named trust selector such as `any`,
+  `signed-baseline`, `strict`, or `attested`. (23)
 - **Ref** — a name for a commit. The only mutable state in a store; changed
   only by conditional write. (09)
 
@@ -46,10 +55,13 @@ owns them.
   fraction of entries under a root that satisfy it. (08, 10)
 - **Attribute** — a named value on an entry. Some are supplied by the writer,
   some derived from content and keyed by object hash. (06, 10)
-- **Index tree** — a derived tree keyed by an attribute value, maintained as a
-  materialized view of a root. (10)
-- **Recipe** — the expression that produced a derived or composite root,
-  recorded so it can be verified or recomputed. (07)
+- **Index tree** — the derivation `index(root, attribute)`: a tree keyed by
+  an attribute value, maintained as a materialized view of a root. (10)
+- **Recipe** — the canonical encoding of a tree-algebra operation and its
+  input roots. Its hash identifies the result. (07)
+- **Derivation** — a root computed by evaluating a recipe, memoized by the
+  recipe hash and verifiable by re-evaluation. Index trees, realization
+  roots, and materialized composites are its named kinds. (10)
 - **Branch** — a ref under `refs/heads/` that advances by commit. (09)
 - **Tag** — a ref under `refs/tags/` that is written once and never changed.
   A **snapshot** is a tag. (09)
@@ -59,8 +71,8 @@ owns them.
   (09, 32)
 - **Conflict ref** — a ref under `refs/conflicts/` holding an unresolved
   multi-writer merge that advances only by resolution. (09, 20)
-- **Derived ref** — a ref under `refs/derived/` holding a memoized
-  realization root produced by a ruleset. (09, 31)
+- **Derived ref** — a ref under `refs/derived/` naming a derivation worth
+  sharing by name, such as a ruleset's realization root. (09, 10, 31)
 - **Fork** — creating a branch whose first commit is another branch's
   current commit. (07, 09)
 - **Fold** — merging a branch into the branch it was forked from and retiring
@@ -81,6 +93,9 @@ owns them.
 - **Endpoint** — where a surface appears: a mount path, socket, URL prefix,
   or device node. (26)
 - **Realizer** — a surface whose endpoint is a kernel object. (26, 27, 28, 29)
+- **`realize` role** — the process that runs realizer exposures: builds
+  tree indexes, requests sealed objects, requests mounts from the broker.
+  (03)
 - **Upper** — the private writable layer of a writable exposure. (20, 27)
 - **Attachment** — an adopting system's word for an exposure into a sandbox.
   Not used in this specification except in this definition.
@@ -91,16 +106,21 @@ owns them.
 
 ## Storage vocabulary
 
-- **Store** — anything implementing the store interface: put and get of
-  immutable content, has, and ref operations. (11)
+- **Store** — anything implementing the store interface. `ContentStore`
+  is put, get, and has over immutable content; `RefStore` is get,
+  compare-and-swap, log, and watch over refs; a `Store` is both. (11)
+- **ContentStore** — the immutable-content half of the store interface.
+  Every backend implements it. (11)
+- **RefStore** — the ref half of the store interface. Implementing it is
+  what makes a store an authority. (11)
 - **Backend** — a store that owns bytes: `bucket`, `disk`, `shared-dir`,
   `blockdev`, `remote`. (11)
-- **Combinator** — a store built from other stores: `tiered`, `guard`,
+- **Combinator** — a store built from other stores: `routed`, `guard`,
   `replicated`, `striped`. (11, 15)
 - **Store expression** — the configuration tree of backends and combinators
   an instance runs. (11)
-- **Tier** — one store in a `tiered` list. The **authority** is the tier that
-  owns refs; caches are the tiers before it. (11, 19)
+- **Tier** — one store in a `routed` list. The **authority** is the tier
+  that implements `RefStore`; caches implement only `ContentStore`. (11, 19)
 - **Pack** — an immutable, self-describing container of chunks or meta objects
   with a trailing index. (12)
 - **Meta pack** — a pack holding tree nodes, manifests, commits, and bundles
@@ -121,9 +141,12 @@ owns them.
   garbage collection may remove it. (17)
 - **Tombstone** — the marker that removes a pack from service before its
   bytes are deleted. (17)
-- **Epoch** — a monotonically increasing number used to fence writers of a
-  ref, to version merged indexes, and to sequence garbage collection. (09, 12,
-  17)
+- **Epoch** — a monotonically increasing number that fences writers: a
+  ref's current writer, or the collector holding the GC lease. (09, 17, 20)
+- **Generation** — the number of a merged-index publication; readers fetch
+  index and filter deltas by generation. (12, 13, 21)
+- **Cycle** — one run of the garbage collector; tombstones, root-set
+  snapshots, and mark checkpoints are keyed by cycle. (13, 17)
 
 ## Distribution vocabulary
 

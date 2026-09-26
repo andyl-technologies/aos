@@ -16,11 +16,13 @@ and content-addressed; the fifth is the only mutable thing and changes only
 by conditional write ([`01-goals-nongoals-invariants.md`](01-goals-nongoals-invariants.md)
 INV-1, INV-2).
 
-The one trait is the **store**: put and get of immutable content by
-identity, batched existence checks, and get, compare-and-swap, and log
-operations on refs. Every backend implements it, every combinator takes
-stores and returns a store, and every boundary between tiers speaks it over
-the wire. It is defined in [`11-store-trait.md`](11-store-trait.md).
+The one interface is the **store**, in two halves: `ContentStore` (put and
+get of immutable content by identity, batched existence checks) and
+`RefStore` (get, compare-and-swap, and log operations on refs). Every
+backend implements one or both, every combinator takes stores and returns a
+store, and every boundary between tiers speaks the same interface over the
+wire. Which half a child implements is what makes it a cache or an
+authority. It is defined in [`11-store-trait.md`](11-store-trait.md).
 
 The one protocol is the wire form of that trait plus presigned bulk reads
 so that bytes bypass any service. It is defined in [`18-protocol.md`](18-protocol.md).
@@ -37,10 +39,10 @@ so that bytes bypass any service. It is defined in [`18-protocol.md`](18-protoco
  repository    refs · commits · diff · merge · transform · GC · jobs
       │        version-control verbs over a store
       │
-  surfaces     mount · fuse · virtiofs · block · protocols · API
+  surfaces     erofs · fuse · virtiofs · block · protocols · API
       │        a view becomes a filesystem or a service
       │
-    roles      serve · mount · fuse-worker · publish · gc
+    roles      serve · realize · fuse-worker · publish · gc
                processes composing the layers, selected by configuration
 ```
 
@@ -88,14 +90,14 @@ the examples below show the shape.
 
 ```text
 warehouse:  guard(bucket(s3://…))
-host:       tiered[disk(/var/lib/terrane), remote(warehouse-a), remote(warehouse-b)]
-nested:     tiered[shared-dir(/objects), remote(host)]
+host:       routed[disk(/var/lib/terrane), remote(warehouse-a), remote(warehouse-b)]
+nested:     routed[shared-dir(/objects), remote(host)]
 edge:       guard(bucket(r2://…))
 ```
 
-Reads walk a tiered list in cost order; batched existence checks let a tier
-answer for many identities at once; writes go to the authority tier and
-write through to caches by policy. A `shared-dir` backend answers reads from
+Reads walk a routed list in cost order; batched existence checks let a tier
+answer for many identities at once; writes go to the authority, the one
+child that implements `RefStore`, and write through to caches by policy. A `shared-dir` backend answers reads from
 a directory another tier owns and never admits content of its own, which is
 how INV-4 is realized in the common case.
 
@@ -111,7 +113,7 @@ open("/lib/libfoo.so") on a FUSE exposure
   surface:     index lookup in the mapped tree index      local memory
                → entry → object id, chunk list
   repository:  resolve content through the view's policy  local
-  store:       tiered.get(chunk ranges)                    shared-dir? disk? peer? bucket?
+  store:       routed.get(chunk ranges)                    shared-dir? disk? peer? bucket?
                first tier that has them wins; ranges coalesced per pack
   surface:     assemble into a sealed object, register     one inode
                passthrough; the kernel serves pages
@@ -148,8 +150,8 @@ its service manager.
 
 | Role | Authority | Network | Owns |
 | --- | --- | --- | --- |
-| `serve` | unprivileged | yes | the tiered store, the repository, protocol and API exposures, filters, bundles |
-| `mount` | unprivileged | no | realizer exposures: builds tree indexes, requests sealed objects, requests mounts from the broker |
+| `serve` | unprivileged | yes | the routed store, the repository, protocol and API exposures, presigned reads, filters, bundles |
+| `realize` | unprivileged | no | realizer exposures: builds tree indexes, requests sealed objects, requests mounts from the broker |
 | `fuse-worker` | unprivileged, one per exposure | no | one FUSE connection; asks `serve` for backing handles; never fetches |
 | `publish` | unprivileged, distinct identity | no | the sealed object directory; the only writer to it |
 | `gc` | unprivileged | yes | marking, sweeping, compaction, scrubbing, under a singleton lease |
@@ -182,10 +184,10 @@ The same binary and the same configuration grammar produce every
 deployment. Nothing above the store layer changes between them.
 
 - **Warehouse.** `serve` in front of a bucket, stateless, scaled by adding
-  replicas. Adds authentication, upload validation, presigned reads, index
-  caching, and the `gc` role under a lease. Zero bytes of data pass through
+  replicas. Adds authorization through `guard`, upload validation at the
+  store, presigned reads, index caching, and the `gc` role under a lease. Zero bytes of data pass through
   it on the read path.
-- **Host.** `serve`, `mount`, workers, and `publish` over a tiered store of
+- **Host.** `serve`, `realize`, workers, and `publish` over a routed store of
   local disk plus one or more warehouses in priority order.
 - **Nested.** The same inside a sandbox or guest, with a `shared-dir` or
   mapped-device tier over the host's sealed object directory and a `remote`
@@ -193,7 +195,7 @@ deployment. Nothing above the store layer changes between them.
   when the shared tier is present.
 - **Edge.** `serve` compiled to WebAssembly with a bucket backend and
   protocol surfaces only; reads and small commits.
-- **Warehouse and host on one machine.** `tiered[disk, bucket]` with no
+- **Warehouse and host on one machine.** `routed[disk, bucket]` with no
   network hop; the `serve` role exposes the protocol for nested instances.
 
 ## Interactions

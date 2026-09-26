@@ -181,7 +181,7 @@ parameters as starting points:
 ### New in Terrane
 
 Views as branches with merge, fold, set operations, and snapshots as tags;
-tiered stores with `shared-dir`, nested hosts, and virtual-machine surfaces;
+routed stores with `shared-dir`, nested hosts, and virtual-machine surfaces;
 bucket-native metadata with mark-and-sweep collection; cost-routed topology;
 capability tokens and one enforcement point; surfaces as the single
 exposure abstraction; tree jobs for backfill and maintenance; a `no_std`

@@ -2,7 +2,8 @@
 
 This file owns every kind of change that moves data or identity from one
 shape to another: importing content from a foreign cache, changing a
-namespace's layout, changing an encoding or chunking profile, moving between
+namespace's layout, changing the tree-format version or the chunk profile,
+moving between
 buckets, regions, or providers, and splitting or joining tenants. Each is
 expressed as "produce a new root, merge it against whatever landed meanwhile,
 update one ref", executed by a [tree job](32-tree-jobs.md). Every migration
@@ -24,7 +25,7 @@ references.
 | --- | --- | --- | --- |
 | import | adapter `transform` job | imported bytes chunked once | fold into target |
 | layout | `map` over paths | none | ref CAS |
-| profile (encoding) | re-encode nodes | none | ref CAS + profile bump |
+| tree-format version | re-encode nodes | none | ref CAS + version bump |
 | chunk parameters | lazy re-chunk job | yes, per file, lazily | per-file merge |
 | bucket / region / provider | idempotent object copy | none (copied) | ref CAS in new store |
 | tenant split / join | `split` / `graft` / set ops | none | ref CAS per root |
@@ -102,30 +103,32 @@ attributes is a `map` or `graft`/`split` over the tree.
   surfaces with fixed schemas depend on the old layout; the surface registry
   names which surfaces require this.
 
-## Encoding profile changes
+## Tree-format version changes
 
 Node encoding, entry attribute schema, and commit format are versioned by
 media type ([`04-content-model.md`](04-content-model.md)). A new version is
-a new profile.
+a new tree-format version, recorded in every commit's profile pair
+([`09-refs-and-commits.md`](09-refs-and-commits.md) REF-9).
 
-- **[MIG-13]** The profile of a root MUST be recorded in the ref's commit
-  ([`09-refs-and-commits.md`](09-refs-and-commits.md)) and MUST be one of
-  the registered profiles. Readers MUST accept every profile they claim
-  conformance to for the duration of the migration window declared in the
-  profile registry. *Gate:* `gate:mig-profile-read`.
-- **[MIG-14]** A profile migration MUST re-encode nodes on a job branch and
-  cut over by ref CAS with the profile field bumped in the same commit. It
-  MUST NOT change entry keys, object hashes, or attributes; a profile
-  migration whose output tree differs from its input in anything but node
-  bytes is a conformance error. *Gate:* `gate:mig-profile-identity`.
+- **[MIG-13]** The tree-format version of a root MUST be recorded in the
+  ref's commit ([`09-refs-and-commits.md`](09-refs-and-commits.md)) and
+  MUST be a registered media-type version. Readers MUST accept every
+  version they claim conformance to for the duration of the migration
+  window declared in the media-type registry. *Gate:*
+  `gate:mig-encoding-read`.
+- **[MIG-14]** A tree-format migration MUST re-encode nodes on a job branch
+  and cut over by ref CAS with the version bumped in the same commit. It
+  MUST NOT change entry keys, object hashes, or attributes; a migration
+  whose output tree differs from its input in anything but node bytes is a
+  conformance error. *Gate:* `gate:mig-encoding-identity`.
 - **[MIG-15]** Because tree node identity is the hash of node bytes, a
-  profile migration changes root hashes. The cutover commit MUST record the
-  pre-migration root as a parent so that history, merge bases, and
+  tree-format migration changes root hashes. The cutover commit MUST record
+  the pre-migration root as a parent so that history, merge bases, and
   provenance are preserved across the encoding change.
-- **[MIG-16]** Mixed-profile trees (a `tree` entry under one profile pointing
-  at a root under another) MUST be readable during the migration window and
-  MUST be reported as incomplete by [completeness](08-properties.md) on the
-  `profile` property.
+- **[MIG-16]** Mixed-version trees (a `tree` entry under one tree-format
+  version pointing at a root under another) MUST be readable during the
+  migration window and MUST be reported as incomplete by
+  [completeness](08-properties.md) for the target tree-format version.
 
 ## Chunk-parameter changes
 
@@ -140,7 +143,7 @@ does not change if the object's content hash is unchanged
   of the currently effective parameters. *Gate:* `gate:mig-chunk-read`.
 - **[MIG-18]** A chunk-parameter migration MUST be a lazy `transform` job
   that, per file, re-chunks content, uploads new chunks, writes a new
-  manifest, and replaces the entry's manifest reference, committing in
+  manifest, and replaces the entry's object reference, committing in
   batches and folding by merge. The file content hash MUST be recomputed and
   MUST equal the old value, otherwise the entry is marked failed and not
   replaced. *Gate:* `gate:mig-rechunk`.
@@ -163,8 +166,8 @@ move is a copy followed by a ref cutover.
 
 - **[MIG-22]** A store move MUST proceed in this order: (1) copy packs and
   indexes to the destination with idempotent puts or bucket-native
-  replication; (2) run the destination in a `tiered` list ahead of the source
-  for readers (`tiered[new, old]`), so misses fall through; (3) verify the
+  replication; (2) run the destination in a `routed` list ahead of the source
+  for readers (`routed[new, old]`), so misses fall through; (3) verify the
   destination holds every pack referenced by every ref's reachable set; (4)
   cut over each ref by conditional write in the destination with the source
   ref's commit and epoch; (5) mark the source read-only; (6) drain the source
@@ -222,7 +225,7 @@ move is a copy followed by a ref cutover.
   | --- | --- |
   | import | delete or discard the import branch; folded imports are reverted by a commit that removes the imported subtree, recorded in the reflog |
   | layout | conditional write of the ref back to the pre-migration commit; concurrent commits since cutover are re-merged onto the old layout by the inverse recipe |
-  | profile | conditional write back; old nodes remain until garbage collection |
+  | tree-format version | conditional write back; old nodes remain until garbage collection |
   | chunk parameters | none needed: old and new manifests are both valid; halt the job and optionally revert the property |
   | store move | conditional write of refs back in the source; the source was read-only, not deleted, until drain |
   | split / join | reverse operation with the recorded recipe |
@@ -239,8 +242,8 @@ move is a copy followed by a ref cutover.
 - [`05-chunking.md`](05-chunking.md) defines the chunk profile and the rule
   that compression is not identity.
 - [`07-tree-algebra.md`](07-tree-algebra.md) supplies the transforms.
-- [`09-refs-and-commits.md`](09-refs-and-commits.md) supplies profiles on
-  commits and conditional writes.
+- [`09-refs-and-commits.md`](09-refs-and-commits.md) supplies the profile
+  pair and tree-format version on commits, and conditional writes.
 - [`13-bucket-layout.md`](13-bucket-layout.md) supplies the conditional-write
   probe.
 - [`17-garbage-collection.md`](17-garbage-collection.md) reclaims what

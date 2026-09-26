@@ -193,23 +193,23 @@ message MetaObject {
 }
 
 message GetFilterRequest {
-  uint64 since_epoch = 1;
+  uint64 since_generation = 1;
 }
 
 message FilterShard {
   uint32 shard = 1;
-  uint64 epoch = 2;
+  uint64 generation = 2;
   float false_positive_rate = 3;
   bytes filter = 4;
 }
 
 message GetIndexRequest {
-  uint64 since_epoch = 1;
+  uint64 since_generation = 1;
 }
 
 message IndexShard {
   uint32 shard = 1;
-  uint64 epoch = 2;
+  uint64 generation = 2;
   bytes index = 3;                  // merged-index shard including tombstones
 }
 ```
@@ -316,7 +316,7 @@ message BackendProbe {
 message ResidencyRequest {}
 
 message ResidencyResponse {
-  uint64 epoch = 1;
+  uint64 generation = 1;
   bytes filter = 2;
   Locality locality = 3;
   uint64 capacity_bytes = 4;
@@ -332,7 +332,7 @@ message WhereRequest {
 
 message WhereResponse {
   repeated LocalityFraction fractions = 1;
-  uint64 oldest_epoch = 2;
+  uint64 oldest_generation = 2;
 }
 
 message LocalityFraction {

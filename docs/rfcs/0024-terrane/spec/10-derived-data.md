@@ -2,8 +2,9 @@
 
 This file owns everything computed from content rather than supplied by a
 writer: per-object attributes such as additional content hashes and
-classifications, index trees that make attribute values addressable, and
-memoized recipes. Derived data is always recomputable from the tree and the
+classifications, and **derivations**, roots computed from a recipe and
+memoized by the recipe's hash. Index trees and realization roots are the
+two named kinds of derivation. Derived data is always recomputable from the tree and the
 chunks; it is stored so that it is computed once per distinct object rather
 than once per entry, per view, or per reader. Which attributes a root
 requires is governed by [`08-properties.md`](08-properties.md); how gaps are
@@ -21,11 +22,19 @@ referenced from ten thousand entries in a thousand views has its SHA-256
 computed once, and a view forked from a complete parent is complete at
 birth.
 
-An **index tree** inverts an attribute: it is a tree keyed by attribute
-value whose entries point at object hashes (and optionally at the paths that
-reference them). An index tree is a materialized view of a root, carries a
-recipe, and can be verified or rebuilt from the root at any time. Lookup by
-a secondary hash is a range lookup in the index tree.
+A **derivation** is a root computed by evaluating a recipe
+([`07-tree-algebra.md`](07-tree-algebra.md) ALG-28) over one or more input
+roots. Its identity is the recipe hash; its value is the resulting root
+hash; it is memoized in the side table so that the same recipe over the
+same inputs is evaluated once, and it can always be verified or rebuilt by
+re-evaluating the recipe. Everything derived from a tree is a derivation:
+an **index tree** is the derivation `index(root, attribute)`, a tree keyed
+by attribute value whose entries point at object hashes; a **realization
+root** is the derivation a ruleset produces when a view is realized
+([`31-routing-rulesets.md`](31-routing-rulesets.md)); a materialized
+composite is the derivation of its `overlay`, `graft`, `filter`, `map`, or
+`merge` recipe. There is one memo table and one verification rule for all
+of them. Lookup by a secondary hash is a range lookup in an index tree.
 
 ## Side table
 
@@ -117,7 +126,26 @@ recomputation.
   100% when the job completes with no concurrent commits that omit the
   attribute, which PROP-21 forbids.
 
-## Index trees
+## Derivations
+
+- **[DRV-21]** A derivation MUST be identified by the hash of its recipe
+  and MUST be memoized, when memoized at all, as a meta object in the
+  `terrane-memo-v1` identity domain keyed by that hash and holding the
+  resulting root hash. Index trees, realization roots, and materialized
+  composites MUST all use this one memo form; an implementation MUST NOT
+  keep a second memoization mechanism for any of them.
+  *Gate:* `gate:derivation-memo`.
+- **[DRV-22]** Every derivation MUST be verifiable by re-evaluating its
+  recipe and comparing root hashes, and rebuildable by the same evaluation.
+  A derivation whose stored root disagrees with re-evaluation MUST be
+  reported and MUST NOT be served until rebuilt. DRV-16 is the index-tree
+  instance of this rule; RULE-21 is the realization-root instance.
+- **[DRV-23]** A derivation MAY be published under a ref in `refs/derived/`
+  ([`09-refs-and-commits.md`](09-refs-and-commits.md) REF-3) so that other
+  hosts can find it by name; the ref is a convenience and its loss MUST NOT
+  affect correctness.
+
+### Index trees
 
 - **[DRV-12]** For each attribute named in a root's effective `index`
   property the implementation MUST maintain an **index tree**: a tree in the
@@ -143,7 +171,7 @@ recomputation.
   truth for any decision that the root itself can answer, and their loss
   MUST be recoverable by rebuild.
 
-### Lookup by secondary hash
+#### Lookup by secondary hash
 
 The motivating index is lookup of an object by a hash other than its primary
 content hash: a client that knows only the SHA-256 of a file asks the store
@@ -155,13 +183,11 @@ for it.
   the result. The answer MUST be filtered by the reader's authority and the
   root's trust selector before it is returned.
 
-## Recipe memos
+### Memos
 
-- **[DRV-19]** A materialized composite ([`07-tree-algebra.md`](07-tree-algebra.md))
-  MAY be memoized as a meta object keyed by recipe hash in the
-  `terrane-memo-v1` identity domain, holding the resulting root hash. A memo MUST be
-  garbage-collected with the root it names and MUST be verifiable by
-  re-evaluating the recipe.
+- **[DRV-19]** A derivation memo (DRV-21) MUST be garbage-collected with the
+  root it names and MUST be verifiable by re-evaluating the recipe
+  (DRV-22).
 - **[DRV-20]** Memos are advisory. An implementation MUST produce identical
   results with memoization disabled.
 

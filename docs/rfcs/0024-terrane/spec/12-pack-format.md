@@ -190,12 +190,12 @@ pack holds this hash." They are periodically compacted by the garbage
 collector's compaction phase and cached on local storage by every tier.
 
 ```text
-objects/index/<epoch>/<shard>.idx
+objects/index/<generation>/<shard>.idx
 ```
 
-`epoch` is the compaction epoch that produced the shard
+`generation` is the compaction generation that produced the shard
 ([`17-garbage-collection.md`](17-garbage-collection.md)). `shard` is the first
-byte of the content hash, so there are at most 256 shards per epoch and a
+byte of the content hash, so there are at most 256 shards per generation and a
 lookup touches exactly one.
 
 Each shard has the same preamble as a pack index and entries of this shape:
@@ -213,17 +213,17 @@ Each shard has the same preamble as a pack index and entries of this shape:
 | 67 | 5 | reserved | zero |
 
 - **[PACK-17]** Merged shards MUST be sorted by hash, MUST be immutable once
-  written, and MUST be superseded only by a shard for a later epoch. A
-  reader consults the newest epoch it holds and falls back to per-pack
-  indexes for packs newer than that epoch.
-  *Gate:* `gate:index-shard-epochs`.
+  written, and MUST be superseded only by a shard for a later generation. A
+  reader consults the newest generation it holds and falls back to per-pack
+  indexes for packs newer than that generation.
+  *Gate:* `gate:index-shard-generations`.
 - **[PACK-18]** A tombstone entry MUST be written for every hash whose pack
   was tombstoned by garbage collection, and MUST persist until the following
-  compaction epoch confirms the pack's bytes were deleted. A reader MUST NOT
+  compaction generation confirms the pack's bytes were deleted. A reader MUST NOT
   serve a hash whose newest entry is a tombstone.
   *Gate:* `gate:index-tombstones`.
 - **[PACK-19]** An index refresh MUST be expressible as the set of shards
-  whose epoch is newer than the reader's, so that refreshing costs bytes
+  whose generation is newer than the reader's, so that refreshing costs bytes
   proportional to change rather than to the index
   ([`21-bandwidth.md`](21-bandwidth.md)).
 - **[PACK-20]** The merged index is a cache. An implementation MUST be able
@@ -235,10 +235,10 @@ Each shard has the same preamble as a pack index and entries of this shape:
 
 A filter is an approximate-membership structure over one merged shard. It
 lets a writer skip `has` for chunks the authority almost certainly holds,
-and lets a `tiered` store order children before asking them.
+and lets a `routed` store order children before asking them.
 
 - **[PACK-21]** Each merged shard MUST have a filter object at
-  `objects/index/<epoch>/<shard>.flt`. The filter MUST be a ribbon or
+  `objects/index/<generation>/<shard>.flt`. The filter MUST be a ribbon or
   cuckoo filter over the shard's live hashes with a false-positive rate at
   or below 1% and a size of about one byte per entry.
   *Gate:* `gate:index-filter`.
@@ -246,7 +246,7 @@ and lets a `tiered` store order children before asking them.
   result MUST be confirmed by `has` before a writer omits an upload; a
   negative result is definitive and MAY skip `has`.
   *Gate:* `gate:index-filter-hint-only`.
-- **[PACK-23]** Filters MUST be fetched by epoch delta like the shards they
+- **[PACK-23]** Filters MUST be fetched by generation delta like the shards they
   cover.
 
 ## Bundles
@@ -289,11 +289,11 @@ holds. It exists so that a mount never waits on per-node fetches.
 - [`13-bucket-layout.md`](13-bucket-layout.md) names where packs, indexes,
   and filters live.
 - [`17-garbage-collection.md`](17-garbage-collection.md) tombstones packs,
-  compacts under-utilized ones, and produces merged index epochs.
+  compacts under-utilized ones, and produces merged index generations.
 - [`18-protocol.md`](18-protocol.md) carries bundles and filters over the
   wire.
 - [`21-bandwidth.md`](21-bandwidth.md) relies on tree-order locality,
-  filters, and epoch deltas.
+  filters, and generation deltas.
 
 ## Informative: what the format deliberately omits
 

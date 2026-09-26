@@ -35,7 +35,7 @@ The block surface goes one step further. EROFS's on-disk layout is a
 deterministic function of the tree and a small set of layout parameters, so
 an implementation can compute, without materializing an image, which byte
 range of the device corresponds to which file extent and therefore to which
-chunk range. Serving the device is then the same tiered read as any other,
+chunk range. Serving the device is then the same routed read as any other,
 addressed by block instead of by path.
 
 ## EROFS surface
@@ -108,7 +108,7 @@ the mount can serve.
 - **[EROFS-12]** An exposure MUST declare `lazy = false` (the default) or
   `lazy = true`. With `lazy = false`, the implementation MUST fetch and seal
   every referenced object before announcing the mount ready, honoring the
-  tiered store's priorities and the exposure's `ready_deadline`.
+  routed store's priorities and the exposure's `ready_deadline`.
 - **[EROFS-13]** With `lazy = true`, the implementation MUST place the FUSE
   realizer's object-directory view beneath the image: the data-only lower
   layer is a FUSE mount presenting the object directory by hash, which
@@ -116,12 +116,12 @@ the mount can serve.
   passthrough. Once an object is sealed on the host filesystem, the FUSE
   view MUST serve it from the sealed inode so the page cache is shared with
   non-lazy exposures.
-- **[EROFS-14]** An implementation SHOULD select the EROFS surface for a
-  view whose objects are wholly resident or whose residency exceeds the
-  `resident_threshold` option (default 90 percent by bytes), and the FUSE
-  surface otherwise, when the exposure's surface is `mount` (the
-  realizer-agnostic name). The chosen realizer MUST be reported in status
-  (SURF-27).
+- **[EROFS-14]** For an `erofs` exposure, an implementation SHOULD serve
+  the EROFS image once the view's objects are wholly resident or residency
+  exceeds the `resident_threshold` option (default 90 percent by bytes),
+  and MAY serve the same view through the FUSE realizer
+  ([`27-surface-fuse.md`](27-surface-fuse.md)) until then. The realizer in
+  use MUST be reported in status (SURF-27).
 - **[EROFS-15]** A view's identity MUST NOT depend on which realizer served
   it. The same commit served by FUSE and by EROFS MUST present identical
   names, sizes, modes, symlink targets, and content.
@@ -131,7 +131,7 @@ the mount can serve.
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `lazy` | bool | `false` | fault objects through a FUSE object view |
-| `resident_threshold` | percent | `90` | residency above which `mount` prefers EROFS |
+| `resident_threshold` | percent | `90` | residency above which the EROFS image replaces FUSE serving |
 | `ready_deadline` | duration | `10m` | bound on pre-sealing for non-lazy mounts |
 | `upper` | `none` \| `private-cow` | `none` | writable overlay upper |
 | `xattrs` | bool | `false` | include extended attributes in the image |
@@ -145,7 +145,7 @@ The block surface presents a view as a read-only block device containing an
 EROFS filesystem with data included. Nothing is materialized: the surface
 computes, from the tree and the layout parameters, a map from device block
 ranges to file extents, and from file extents to chunk ranges of the
-underlying objects. A read of blocks `[a, b)` becomes a tiered read of the
+underlying objects. A read of blocks `[a, b)` becomes a routed read of the
 chunk ranges those blocks cover, plus deterministic metadata blocks generated
 on demand.
 
@@ -170,7 +170,7 @@ device blocks
   ranges to `(object hash, offset, length)` and MUST resolve reads to chunk
   ranges through the object's manifest. The extent map is derived and MAY be
   cached in the host tier keyed as EROFS-5.
-- **[VBLK-5]** Reads of data blocks MUST be served from the tiered store with
+- **[VBLK-5]** Reads of data blocks MUST be served from the routed store with
   the same verification as any other read: no unverified chunk bytes reach
   the device. A read spanning several files MUST be split at extent
   boundaries and served in parallel.

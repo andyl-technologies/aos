@@ -3,7 +3,8 @@
 This file defines how file bytes are cut into chunks, how chunks are
 compressed at rest and on the wire, and what a receiver checks before it
 admits a chunk. Chunk boundaries determine deduplication; they are part of a
-store's profile and fixed for its lifetime.
+**chunk profile**, and a chunk profile is fixed for the lifetime of every
+chunk cut with it. In this file "profile" always means chunk profile.
 
 ## Overview
 
@@ -23,7 +24,7 @@ stream without recompression.
   the procedure in [`reference/golden-vectors.md`](reference/golden-vectors.md)
   §gear-table so that every implementation of a profile cuts identical
   boundaries. *Gate:* `gate:cdc-boundaries`.
-- **[CDC-2]** The `terrane-v1` profile's chunking parameters are:
+- **[CDC-2]** The default chunk profile, `cdc-1m`, has these parameters:
 
   | Parameter | Value |
   | --- | --- |
@@ -34,8 +35,8 @@ stream without recompression.
   | normalization level | 2 |
   | seed | the 32-byte value in the profile record |
 
-- **[CDC-3]** Chunking parameters are part of the store profile and MUST NOT
-  change while any chunk exists in the store. Changing them is a migration
+- **[CDC-3]** Chunking parameters are part of the chunk profile and MUST NOT
+  change while any chunk cut with that profile exists in the store. Changing them is a migration
   that produces new chunk identities ([`33-migrations.md`](33-migrations.md)).
   Compression level and dictionary set are not part of the profile and MAY
   change at any time, because they do not affect identity (OBJ-3).

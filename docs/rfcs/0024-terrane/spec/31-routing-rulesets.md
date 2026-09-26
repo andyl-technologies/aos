@@ -6,9 +6,12 @@ policy author substitute a blessed program at every compiler entry point,
 inject a file or socket at a path, prefetch a closure's children when its
 root is opened, tag entries by content class, or deny access to entries whose
 provenance fails a selector, without shipping code to the node that serves
-the tree. Because Terrane trees are first-class values, most rule families
-are tree transforms evaluated once at realization and committed as a derived
-root; only prefetch and lazy content classification remain runtime behavior.
+the tree. Because Terrane trees are first-class values, a ruleset is not an
+engine: at realization it compiles to a recipe over the tree algebra
+([`07-tree-algebra.md`](07-tree-algebra.md)), and the realized root is a
+derivation of that recipe ([`10-derived-data.md`](10-derived-data.md)
+DRV-21), memoized and verified like every other derivation. Only prefetch
+and lazy content classification remain runtime behavior.
 Rulesets are referenced from views by policy name ([`26-surfaces.md`](26-surfaces.md)
 SURF-8) and encoded as portable policy objects.
 
@@ -179,17 +182,18 @@ At `on_realize`, the effect of a ruleset on a view is a derived root:
 realized_root = map(filter(root, ¬guard_deny), remap ∪ bind ∪ tag)
 ```
 
-- **[RULE-21]** An implementation MUST produce the `on_realize` result as a
-  derived root using the tree algebra of
+- **[RULE-21]** An implementation MUST compile the `on_realize` rules of a
+  ruleset to a recipe over the tree algebra of
   [`07-tree-algebra.md`](07-tree-algebra.md): `filter` for guards, `map`
-  for remap, bind, and tag. The derived root MUST be recorded with its
-  recipe `(root hash, ruleset hash, blessed target hashes)` and memoized so
-  that realizing the same view under the same ruleset never re-evaluates
+  for remap, bind, and tag. The realized root is the derivation of the
+  recipe `(root hash, ruleset hash, blessed target hashes)`
+  ([`10-derived-data.md`](10-derived-data.md) DRV-21) and MUST be memoized
+  so that realizing the same view under the same ruleset never re-evaluates
   rules. *Gate:* `gate:ruleset-derived-root`.
-- **[RULE-22]** The derived root MUST NOT be committed to the view's ref; it
-  is a realization artifact keyed by recipe, and the view's served commit
-  (SURF-27) remains the source commit. An implementation MAY commit derived
-  roots to a `refs/derived/…` namespace for sharing across hosts.
+- **[RULE-22]** The realization root MUST NOT be committed to the view's
+  ref; it is a derivation keyed by recipe, and the view's served commit
+  (SURF-27) remains the source commit. An implementation MAY publish it
+  under `refs/derived/…` (DRV-23) for sharing across hosts.
 - **[RULE-23]** Only `prefetch` and `content_magic`-from-bytes MAY execute
   at `on_access`. An implementation MUST NOT perform remap, bind, or tag at
   access time; if such a rule depends on a `content_magic` result that was

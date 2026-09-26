@@ -34,10 +34,12 @@ token for a surface from its own broader token, all without a token service
 on the request path.
 
 Authorization runs in exactly one place: the `guard` store combinator
-([`11-store-trait.md`](11-store-trait.md)). Bulk byte reads are delegated to
-the bucket through [presigned reads](02-glossary.md#distribution-vocabulary)
-that `guard` mints only after it has authorized the request, so the bucket
-enforces what `guard` decided. Surfaces never see tokens; a host process
+([`11-store-trait.md`](11-store-trait.md)), and it does nothing else. Bulk
+byte reads are delegated to the bucket through
+[presigned reads](02-glossary.md#distribution-vocabulary) that the `serve`
+role mints only after `guard` has authorized the request
+([`18-protocol.md`](18-protocol.md) PROTO-55), so the bucket enforces what
+`guard` decided. Surfaces never see tokens; a host process
 holds them and a realized mount is itself the capability.
 
 ## Principals and authentication
@@ -213,11 +215,11 @@ the token must satisfy. Caveats are how a token is bound to a context.
   `guard`. *Gate:* `gate:auth-single-enforcement`.
 - **[AUTH-32]** `guard` MUST fail closed: any error in token parsing,
   verification, `acl` resolution, or clock lookup MUST result in denial.
-- **[AUTH-33]** A `guard` that authorizes a bulk read MUST mint presigned
-  reads ([`18-protocol.md`](18-protocol.md)) scoped to the exact byte ranges
-  authorized, with a lifetime no longer than the token's remaining validity
-  and no longer than a configured maximum that SHOULD be measured in
-  minutes. It MUST NOT mint a presigned write.
+- **[AUTH-33]** A presigned read minted after `guard` authorizes a bulk
+  read ([`18-protocol.md`](18-protocol.md) PROTO-55) MUST be scoped to the
+  exact byte ranges authorized, with a lifetime no longer than the token's
+  remaining validity and no longer than a configured maximum that SHOULD be
+  measured in minutes. An implementation MUST NOT mint a presigned write.
 - **[AUTH-34]** Presigned reads are bearer capabilities. An implementation
   MUST NOT log presigned URLs in full, MUST NOT place them in shared caches,
   and MUST bind them to a single pack key. Leakage is bounded by lifetime

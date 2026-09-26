@@ -208,8 +208,8 @@ unregistered (CONV-3).
 | `whole_pack_threshold` | storage | fraction of a pack needed to fetch it whole | `0.5` | 21 |
 | `gap_merge_bytes` | storage | bytes | 256 KiB | 21 |
 | `span_max_bytes` | storage | bytes | 16 MiB | 21 |
-| `trust` | trust | trust selector or profile name | `any` | 23 |
-| `baseline` | trust | group name the `signed-baseline` and `strict` profiles refer to | none | 23 |
+| `trust` | trust | trust selector or preset name | `any` | 23 |
+| `baseline` | trust | group name the `signed-baseline` and `strict` presets refer to | none | 23 |
 | `merge` | trust | ordered merge policy list | `[prefer-trusted, keep-conflict]` | 07 |
 | `writers` | trust | `one` \| `many` | `one` | 20 |
 | `reflog_retain` | trust | duration or count | 90 days | 09 |

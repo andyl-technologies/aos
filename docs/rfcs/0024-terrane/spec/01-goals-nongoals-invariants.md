@@ -155,7 +155,7 @@ Each later file cites the invariant it depends on rather than restating it.
   window. *Gate:* `gate:commit-order`, `gate:gc-grace`. *See:*
   [`17-garbage-collection.md`](17-garbage-collection.md).
 - **[INV-4] A tier never stores what a tier it can see already serves.** If
-  a store in a tiered list can read content from another store in the same
+  a store in a routed list can read content from another store in the same
   list that it is configured to consider shared (a shared directory, a
   mapped device, or a peer with a residency guarantee), it MUST NOT admit a
   second copy of that content. New content a tier produces is staged

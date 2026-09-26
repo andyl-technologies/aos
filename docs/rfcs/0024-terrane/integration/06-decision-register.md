@@ -88,7 +88,7 @@ the requirement IDs each decision affects.
 - **[AD-5] Bridge RFC-0021 descriptors with a second profile, not a rewrite**
   - **Status:** Decided
   - **Decision:** Register `aos-sandbox-v1` (SHA-256 over
-    `aos-sandbox-object-v1`) as a second Terrane descriptor profile in
+    `aos-sandbox-object-v1`) as a second Terrane identity profile in
     `aos-terrane`, require `hashes = [blake3, sha256]` and an SHA-256 index
     on sandbox roots, and treat the RFC-0021 portable tree as an adapter.
     Terrane's primary identity stays BLAKE3.

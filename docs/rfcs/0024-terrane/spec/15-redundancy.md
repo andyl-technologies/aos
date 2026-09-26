@@ -24,7 +24,7 @@ striped(k, parity=m)[children...]   pack cut into k contiguous stripes plus
 ```
 
 Both implement the store interface of [`11-store-trait.md`](11-store-trait.md)
-and can be nested inside `tiered`, wrapped by `guard`, or used as a child of
+and can be nested inside `routed`, wrapped by `guard`, or used as a child of
 another redundant combinator. A redundant store is selected for a subtree by
 the `redundancy` property ([`08-properties.md`](08-properties.md)) on its
 root, so one tree can hold public content replicated three ways and private

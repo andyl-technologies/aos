@@ -59,7 +59,7 @@ Exit gate: `checks.terrane.gates.golden-vectors`,
   PKG-1, PKG-2, CRATE-1, CRATE-30, CRATE-34 to CRATE-36;
   `checks.terrane.gates.crate-graph`.
 - [ ] **T-OBJ-1** Identity domains, descriptors, and the `terrane-v1`
-  profile; second-profile registration hook. — satisfies OBJ-1 to OBJ-10;
+  profile; second-identity-profile registration hook. — satisfies OBJ-1 to OBJ-10;
   `checks.terrane.gates.identity-idempotence`,
   `checks.terrane.gates.descriptor-strict`.
 - [ ] **T-CDC-1** FastCDC chunker with the seeded gear table, codec bytes,
@@ -127,7 +127,7 @@ one S3-compatible bucket.
   `checks.terrane.gates.pack-single-writer`.
 - [ ] **T-PACK-2** Merged index shards by epoch, tombstones, filters,
   bundles. — satisfies PACK-17 to PACK-28;
-  `checks.terrane.gates.index-shard-epochs`,
+  `checks.terrane.gates.index-shard-generations`,
   `checks.terrane.gates.index-filter-hint-only`,
   `checks.terrane.gates.bundle-verify`.
 - [ ] **T-BKT-1** `bucket` backend over `file://` and S3-compatible APIs
@@ -140,11 +140,12 @@ one S3-compatible bucket.
   single-writer default, tags, reflog, rollback, watch. — satisfies REF-12
   to REF-23, REF-27 to REF-31; `checks.terrane.gates.ref-advance-ordering`,
   `checks.terrane.gates.ref-epoch-fencing`, `checks.terrane.gates.ref-watch`.
-- [ ] **T-STORE-2** `tiered`, `guard`, `cache`, `remote` combinators and the
+- [ ] **T-STORE-2** `routed`, `guard`, `cache`, `remote` combinators and the
   store expression parser and validator. — satisfies STORE-13 to STORE-29;
-  `checks.terrane.gates.tiered-read-order`,
+  `checks.terrane.gates.routed-read-order`,
   `checks.terrane.gates.store-expression-validate`,
-  `checks.terrane.gates.guard-validates-uploads`.
+  `checks.terrane.gates.store-validates-uploads`,
+  `checks.terrane.gates.store-trait-split`.
 - [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
   sweep, compaction, singleton lease, resumability. — satisfies GC-1 to
   GC-24, GC-28; `checks.terrane.gates.gc-roots-complete`,
@@ -152,9 +153,9 @@ one S3-compatible bucket.
   `checks.terrane.gates.gc-two-phase-delete`,
   `checks.terrane.gates.gc-singleton-lease`.
 - [ ] **T-PROV-1** Commit signing and verification, entry provenance,
-  selector language and profiles. — satisfies PROV-1 to PROV-25;
+  selector language and trust presets. — satisfies PROV-1 to PROV-25;
   `checks.terrane.gates.prov-commit-signature`,
-  `checks.terrane.gates.prov-selector-profiles`.
+  `checks.terrane.gates.prov-selector-presets`.
 - [ ] **T-DOM-1** Domain property semantics, cross-domain reference checks,
   dedup scoping, existence-oracle rules. — satisfies DOM-1 to DOM-11,
   DOM-16, DOM-17, DOM-20; `checks.terrane.gates.dom-reference-order`,
@@ -225,10 +226,10 @@ conformance tests passing over Terrane.
   `checks.terrane.integration.follow-replace`.
 - [ ] **T-SBX-3** Disclosure-domain mapping and strict placement. —
   satisfies SBX-9, SBX-10; `checks.terrane.integration.domain-map`.
-- [ ] **T-SBX-4** `aos-sandbox-v1` descriptor profile, SHA-256 index on
+- [ ] **T-SBX-4** `aos-sandbox-v1` identity profile, SHA-256 index on
   sandbox roots, portable-tree adapter, `ObjectSource` and
   `ImmutableFetchTransport` implementations. — satisfies SBX-11 to SBX-17;
-  `checks.terrane.integration.descriptor-profile`,
+  `checks.terrane.integration.identity-profile`,
   `checks.terrane.integration.object-source`,
   `checks.terrane.integration.fetch-transport`.
 - [ ] **T-SBX-5** Nix store union views and nested `shared-dir` sandboxes;
@@ -239,7 +240,7 @@ conformance tests passing over Terrane.
   evaluation check. — satisfies PKG-8, PKG-10;
   `checks.terrane.module-eval`.
 
-## Phase 4 — Protocol, tiering, guard, tokens
+## Phase 4 — Protocol, routing, guard, tokens
 
 Exit gate: `checks.terrane.gates.proto-conformance`,
 `checks.terrane.gates.tier-chaos`,
@@ -371,8 +372,8 @@ Exit gate: `checks.terrane.gates.job-resume`,
   `checks.terrane.gates.job-resume`, `checks.terrane.gates.job-fold`,
   `checks.terrane.gates.job-follow`.
 - [ ] **T-MIG-1** Import adapters (Nix binary cache, REAPI, GHA, OCI, git,
-  `terrane-compatible`, `aos-portable-tree`), layout and profile migrations,
-  chunk-parameter migrations, store moves, splits and joins, digest-profile
+  `terrane-compatible`, `aos-portable-tree`), layout and tree-format migrations,
+  chunk-parameter migrations, store moves, splits and joins, identity-profile
   coexistence. — satisfies MIG-8 to MIG-33; `checks.terrane.gates.mig-layout-merge`,
   `checks.terrane.gates.mig-store-move`,
   `checks.terrane.gates.mig-digest-coexist`.

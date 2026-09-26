@@ -121,7 +121,7 @@ Nothing in this set depends on a glue crate.
 ### `terrane-cli`
 
 - **[CRATE-15]** `terrane-cli` MUST produce one binary named `terrane` and
-  MUST implement the roles `serve`, `mount`, `fuse-worker`, `publish`, `gc`,
+  MUST implement the roles `serve`, `realize`, `fuse-worker`, `publish`, `gc`,
   and `job`. Each role is a separate process invocation; a role MUST NOT
   acquire the privileges or the network access of another role by being in
   the same binary.

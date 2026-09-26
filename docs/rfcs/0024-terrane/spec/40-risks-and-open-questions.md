@@ -113,13 +113,13 @@ Each entry has a fixed shape:
 - **[RISK-7] Index filter size at billions of chunks.**
   - **Assumption:** A compact approximate-membership filter at roughly one
     byte per chunk is small enough to hold on every host tier and refresh by
-    epoch delta ([`12-pack-format.md`](12-pack-format.md),
+    generation delta ([`12-pack-format.md`](12-pack-format.md),
     [`21-bandwidth.md`](21-bandwidth.md)).
   - **If wrong:** At several billion chunks the filter is several gigabytes
     per host, and refresh traffic dominates. `BW` negotiation would need a
-    tiered filter or server-side negotiation for cold hosts.
+    layered filter or server-side negotiation for cold hosts.
   - **Spike:** Compute filter sizes for the largest expected store and
-    measure epoch-delta refresh cost; run `gate:negotiation-bytes` at that
+    measure generation delta refresh cost; run `gate:negotiation-bytes` at that
     scale.
   - **Fallback:** Per-root or per-shard filters fetched on demand, with
     server-side batched `has` as the path for hosts that hold no filter.

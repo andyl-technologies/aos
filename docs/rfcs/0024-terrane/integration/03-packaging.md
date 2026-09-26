@@ -19,7 +19,7 @@ dependency. AOS adds one glue crate.
 | `terrane-fs` | `crates/terrane-fs` | Linux surfaces; the only `unsafe` crate (CRATE-10 to CRATE-12) |
 | `terrane-edge` | `crates/terrane-edge` | wasm32 bindings (CRATE-13, CRATE-14) |
 | `terrane-cli` | `crates/terrane-cli` | the `terrane` binary and roles (CRATE-15 to CRATE-17) |
-| `aos-terrane` | `crates/aos-terrane` | AOS glue: RFC-0021 trait impls, descriptor profile `aos-sandbox-v1`, domain map, Hub token issuer adapter, systemd wiring via `aos-systemd`, Crucible adapter (CRATE-18) |
+| `aos-terrane` | `crates/aos-terrane` | AOS glue: RFC-0021 trait impls, identity profile `aos-sandbox-v1`, domain map, Hub token issuer adapter, systemd wiring via `aos-systemd`, Crucible adapter (CRATE-18) |
 
 - **[PKG-1]** The five specification crates MUST NOT depend on any `aos-*`
   or `crucible-*` crate (spec CRATE-18, CRATE-19). `aos-terrane` is the only
@@ -104,7 +104,7 @@ server (spec ARCH-11, FUSE-4).
 | `terrane-fuse-worker@.service` | `fuse-worker` | `aos-view-services.slice` | `PrivateNetwork=yes`, `/dev/fuse` device access, memory, tasks, and descriptor limits per spec FUSE-5 |
 | `terrane-gc.service` + `.timer` | `gc` | `aos-view-services.slice` | host-local collector (spec GC-25); the bucket collector runs where the authority runs |
 | `terrane-job@.service` | `job` | `aos-view-services.slice` | tree jobs started through exposures (spec JOB-33) |
-| `terrane-block@.service` | `mount` (block surface) | `aos-view-services.slice` | vhost-user-blk socket owner for Crucible and VMs |
+| `terrane-block@.service` | `realize` (block surface) | `aos-view-services.slice` | vhost-user-blk socket owner for Crucible and VMs |
 
 - **[PKG-8]** Units MUST be declared through the `modules/` feature
   directory `modules/terrane/` with options, configuration, and checks kept
@@ -125,7 +125,7 @@ options.aos.terrane = {
   store = lib.mkOption {
     # A store expression (spec 11-store-trait.md §Store expressions).
     type = lib.types.str;
-    example = "tiered[disk(/var/lib/terrane), remote(https://hub.example/api/terrane)]";
+    example = "routed[disk(/var/lib/terrane), remote(https://hub.example/api/terrane)]";
   };
 
   locality = lib.mkOption {

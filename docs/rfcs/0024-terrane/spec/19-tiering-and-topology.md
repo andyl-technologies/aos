@@ -9,7 +9,7 @@ behavior, and cross-region garbage-collection coordination.
 
 ## Overview
 
-A `tiered` store is written as an ordered list, and for a single machine the
+A `routed` store is written as an ordered list, and for a single machine the
 order is a fine routing rule: page cache, then disk, then the parent. Across
 a fleet the order is not enough. Two hosts in the same zone are closer to
 each other than either is to the regional bucket; a bucket in another
@@ -75,7 +75,7 @@ A cost vector describes one edge from the local tier to a candidate store.
 
 ## Candidate selection
 
-- **[TOPO-8]** For a content read, a `tiered` store MUST select among
+- **[TOPO-8]** For a content read, a `routed` store MUST select among
   candidates by expected cost, where expected cost combines the cost vector
   with the probability that the candidate holds the content as estimated
   from its residency filter. A candidate whose filter is negative MUST be
@@ -84,10 +84,10 @@ A cost vector describes one edge from the local tier to a candidate store.
 - **[TOPO-9]** The local tiers `page-cache`, `disk`, and `shared-dir` MUST
   always be consulted before any remote candidate, in that order, regardless
   of measured cost. *Gate:* `gate:topo-selection`.
-- **[TOPO-10]** A `tiered` store MUST record which candidate served each
+- **[TOPO-10]** A `routed` store MUST record which candidate served each
   read and MUST expose the distribution per candidate through
   [`34-observability.md`](34-observability.md).
-- **[TOPO-11]** For a content write, a `tiered` store MUST write to the
+- **[TOPO-11]** For a content write, a `routed` store MUST write to the
   authority tier named by the root's `store` property, MUST write through
   to any tier whose `write-through` policy names the root, and MUST NOT
   write to any other tier. Selection by cost applies to reads only.
@@ -129,7 +129,7 @@ residency filter that makes it cheap to know when to ask.
 ## Residency
 
 - **[TOPO-18]** Every tier that holds content MUST maintain a residency
-  filter over the pack ids it holds, MUST version it by epoch, and MUST
+  filter over the pack ids it holds, MUST version it by generation, and MUST
   serve it through `TierService.Residency`. The filter MUST be rebuilt when
   packs are admitted or evicted and MUST be republished at a bounded
   interval (default 30 seconds). *Gate:* `gate:topo-residency`.
@@ -142,7 +142,7 @@ residency filter that makes it cheap to know when to ask.
   authorization.
 - **[TOPO-21]** `TierService.Where` MUST compute its histogram from the
   residency filters the server holds for tiers whose locality is known and
-  MUST report the epoch of the oldest filter it used. *Gate:*
+  MUST report the generation of the oldest filter it used. *Gate:*
   `gate:topo-residency`.
 
 Residency filters also serve placement. A scheduler that decides where to
@@ -263,7 +263,7 @@ resolve the reference. The commit carries enough to find the bytes.
 
 ## Interactions
 
-- [`11-store-trait.md`](11-store-trait.md) defines `tiered`, whose ordering
+- [`11-store-trait.md`](11-store-trait.md) defines `routed`, whose ordering
   this file replaces with cost-based selection for remote candidates.
 - [`18-protocol.md`](18-protocol.md) carries residency, warming, cost
   exchange, and the hop headers.
@@ -283,8 +283,8 @@ resolve the reference. The commit carries enough to find the bytes.
 ```text
 region eu                                region us
   zone eu-a                                zone us-a
-    host h1: tiered[disk, peers(eu-a), gw-eu, gw-us]
-    host h2: tiered[disk, peers(eu-a), gw-eu, gw-us]
+    host h1: routed[disk, peers(eu-a), gw-eu, gw-us]
+    host h2: routed[disk, peers(eu-a), gw-eu, gw-us]
   gw-eu: guard(bucket(eu))  home for refs/heads/master
                                            gw-us: guard(bucket(us))
 ```

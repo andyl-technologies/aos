@@ -19,9 +19,9 @@ can be reached this way.
 
 The protocol carries control and metadata. It does not carry bulk data
 except as a fallback. Chunks travel between a client and a bucket by
-**presigned read** (for downloads) or by pack upload to the tier that owns
-the bytes; the control channel mints the credentials, batches the questions,
-and moves refs. This is the single design choice that lets a gateway be
+**presigned read** (for downloads) or by pack upload to the authority; the
+`serve` role mints the credentials after `guard` has authorized the
+request, batches the questions, and moves refs. This is the single design choice that lets a gateway be
 stateless and cheap: its bandwidth is proportional to the number of
 requests, never to the number of bytes served.
 
@@ -85,8 +85,8 @@ are in the `terrane.v1` package.
 | `GetRange` | server stream | Read a byte range of a pack through the server |
 | `PresignRead` | unary | Mint presigned URLs for ranges of packs |
 | `GetBundle` | server stream | Fetch the tree nodes, manifests, and commits a reader lacks for a root |
-| `GetFilter` | server stream | Fetch the merged-index filter shards changed since an epoch |
-| `GetIndex` | server stream | Fetch merged-index shards changed since an epoch |
+| `GetFilter` | server stream | Fetch the merged-index filter shards changed since a generation |
+| `GetIndex` | server stream | Fetch merged-index shards changed since a generation |
 
 ### `RefService`
 
@@ -103,7 +103,7 @@ are in the `terrane.v1` package.
 | Method | Kind | Purpose |
 | --- | --- | --- |
 | `Capabilities` | unary | Report protocol version, locality, supported features, and backend probe results |
-| `Residency` | unary | Return the tier's residency filter and its epoch |
+| `Residency` | unary | Return the tier's residency filter and its generation |
 | `Where` | unary | Return a locality histogram for a view's packs |
 | `Warm` | unary | Request that a tier fetch a view or pack set ahead of demand |
 | `Costs` | unary | Exchange measured cost vectors between peers |
@@ -179,6 +179,12 @@ ranges itself. Clients discover which applies from `Capabilities`.
 - **[PROTO-19]** A presigned URL MUST expire within 15 minutes of minting
   and MUST be scoped to a single object key and, where the backend supports
   it, to a byte range. *Gate:* `gate:proto-presign`.
+- **[PROTO-55]** Presigned reads are minted by the `serve` role, not by
+  the `guard` combinator: `serve` MUST call `PresignRead` on a child that
+  reports `presign: yes` only after `guard` has authorized the read, MUST
+  scope every URL to the exact byte ranges authorized, and MUST prefer a
+  presigned read to proxying when the request exceeds the configured size
+  threshold. *Gate:* `gate:proto-presign`.
 - **[PROTO-20]** `GetRange` MUST stream the requested bytes in frames of at
   most 4 MiB and MUST be available on every tier as a fallback, including
   tiers that also offer `PresignRead`. *Gate:* `gate:proto-reads`.
@@ -260,13 +266,14 @@ compare-and-swap.
 
 Filters and merged-index shards are how a client avoids negotiation round
 trips and how a tier learns what its peers hold. Both are versioned by
-epoch and fetched as deltas.
+generation and fetched as deltas.
 
-- **[PROTO-33]** `GetFilter` MUST accept a `since_epoch` and stream only the
-  filter shards whose epoch is greater, each tagged with its shard id, epoch,
+- **[PROTO-33]** `GetFilter` MUST accept a `since_generation` and stream only the
+  filter shards whose generation is greater, each tagged with its shard id,
+  generation,
   and false-positive rate. A client MUST treat a filter as advisory and MUST
   confirm with `Has` before assuming presence. *Gate:* `gate:proto-filter`.
-- **[PROTO-34]** `GetIndex` MUST accept a `since_epoch` and stream the
+- **[PROTO-34]** `GetIndex` MUST accept a `since_generation` and stream the
   merged-index shards changed since, including tombstone records, per
   [`12-pack-format.md`](12-pack-format.md). *Gate:* `gate:proto-index`.
 - **[PROTO-35]** A server MUST NOT expose through `GetFilter`, `GetIndex`,
@@ -279,7 +286,7 @@ epoch and fetched as deltas.
 ## Residency, warming, and cost
 
 - **[PROTO-36]** `Residency` MUST return a filter over the pack ids the tier
-  holds, its epoch, and the tier's locality label. The filter MUST be small
+  holds, its generation, and the tier's locality label. The filter MUST be small
   enough to embed in a heartbeat; 16 KiB is RECOMMENDED. *Gate:*
   `gate:topo-residency`.
 - **[PROTO-37]** `Where` MUST return, for a view, a histogram of the

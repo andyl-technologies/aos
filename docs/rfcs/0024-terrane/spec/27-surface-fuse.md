@@ -15,7 +15,7 @@ behavior the surface relies on is in [`14-host-tier.md`](14-host-tier.md).
 ## Model
 
 The FUSE surface is split across two processes on purpose. The **serve**
-process holds the tiered store, the repository, and the exposure's token; it
+process holds the routed store, the repository, and the exposure's token; it
 has network access and talks to remote tiers. A **worker** process holds one
 FUSE connection for one exposure; it has no network access, no store
 credentials, and no path to a bucket. When a consumer opens a file whose
@@ -102,9 +102,10 @@ Index file layout (little-endian):
   eviction with a separate size cap. An index in use by a live exposure MUST
   be pinned for the exposure's lease.
 - **[FUSE-11]** For an entry whose content is an inline chunk hash, the index
-  MUST record that hash; for an entry whose content is a manifest, the index
-  MUST record the manifest hash and the logical size. Chunk ranges for a file
-  are resolved from the manifest by the serve process at open time, not
+  MUST record that hash; for an entry whose content is an object, the index
+  MUST record the object id and the logical size. Chunk ranges for a file
+  are resolved from the object's manifest by the serve process at open time,
+  not
   stored in the index.
 - **[FUSE-12]** A `tree` entry ([`06-tree-format.md`](06-tree-format.md))
   MUST be compiled inline into the index as if its root's entries were
@@ -175,7 +176,7 @@ The sequence for `open` of a regular file whose content is not resident:
 2. The worker requests a backing handle from the serve process with the
    exposure id, object hash, and lease.
 3. The serve process verifies scope, resolves the manifest, and requests the
-   file's chunk ranges from the tiered store at the exposure's priority.
+   file's chunk ranges from the routed store at the exposure's priority.
 4. The serve process assembles the object into a temporary file in the host
    tier, verifies the whole-file hash against the object's recorded content
    hash, fsyncs, seals it, and links it under the object directory.

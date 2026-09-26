@@ -3,7 +3,7 @@
 This file maps Terrane onto the slots RFC-0021 leaves open in the sandbox
 runtime: the unprivileged view service, the networkless publisher, per-view
 FUSE workers, the privileged mount broker, attachments, disclosure domains,
-and the portable-object descriptor profile. It names what Terrane satisfies
+and the portable-object identity profile. It names what Terrane satisfies
 unchanged, what it changes, and what RFC-0021 keeps owning. The RFC-0021
 text referenced here is the version on branch
 `dplecki/sandbox-filesystem-views-rfc` (PR #232).
@@ -42,7 +42,7 @@ Terrane fills every one of these slots with one program and its SDK.
 
 | RFC-0021 component | Terrane | Notes |
 | --- | --- | --- |
-| `aos-viewd` | `terrane serve` role (spec `03-architecture-overview.md`, ARCH-7 to ARCH-10) | Unprivileged, holds network credentials and host-tier tokens, runs the `tiered` store and repository, compiles indexes, supervises workers |
+| `aos-viewd` | `terrane serve` role (spec `03-architecture-overview.md`, ARCH-7 to ARCH-10) | Unprivileged, holds network credentials and host-tier tokens, runs the `routed` store and repository, compiles indexes, supervises workers |
 | `aos-view-publisher` | `terrane publish` role (spec `14-host-tier.md`, HOST-6 to HOST-9) | Networkless, sole owner of `sealed/`, fs-verity seal before no-replace publication |
 | Per-view FUSE workers | `terrane fuse-worker` role (spec `27-surface-fuse.md`, FUSE-1 to FUSE-6) | One process per exposure, no network, backing handles from `serve`, passthrough registration through the broker |
 | `aos-mountd` | Unchanged; the privileged mount broker Terrane never replaces (ARCH-9) | Performs `open_tree_attr`, `move_mount`, `MOVE_MOUNT_BENEATH`, and passthrough registration on behalf of workers |
@@ -153,11 +153,11 @@ Two facts make the bridge cheap: an RFC-0021 descriptor is a function of
 bytes Terrane already holds, and Terrane carries SHA-256 as a per-object
 derived attribute (spec DRV-6) that index trees can look up (DRV-12).
 
-- **[SBX-11]** AOS MUST register a second Terrane descriptor profile,
+- **[SBX-11]** AOS MUST register a second Terrane identity profile,
   `aos-sandbox-v1`, whose algorithm is SHA-256 and whose single domain string
   is `aos-sandbox-object-v1`, following spec OBJ-9. The profile is
   registered in the AOS glue crate, not in the specification. *Gate:*
-  `checks.terrane.integration.descriptor-profile`.
+  `checks.terrane.integration.identity-profile`.
 - **[SBX-12]** Every root that RFC-0021 consumers read MUST carry the
   requirement properties `hashes = [blake3, sha256]` and
   `index = [hash.sha256]` (spec PROP-18, PROP-20) so that an RFC-0021
@@ -166,7 +166,7 @@ derived attribute (spec DRV-6) that index trees can look up (DRV-12).
 - **[SBX-13]** The RFC-0021 media types (`application/vnd.aos.sandbox.*`) are
   carried as the manifest's advisory media type (spec OBJ-18) and as the
   entry attribute `aos.media_type`. The Terrane object identity never
-  includes them. *Gate:* `checks.terrane.integration.descriptor-profile`.
+  includes them. *Gate:* `checks.terrane.integration.identity-profile`.
 - **[SBX-14]** The RFC-0021 portable tree encoding (deterministic CBOR under
   `portable-v1.cddl`) MUST be an import and export adapter over Terrane
   trees, registered as `aos-portable-tree` alongside the NAR, git, and OCI
@@ -231,7 +231,7 @@ Terrane does not replace the sandbox controller, `aos-sandboxd`, the host,
 network, and storage brokers, the broker session protocol, lease guards,
 policy compilation, or the guest agent. It replaces the unwritten view
 service, publisher, worker, compiler, and cache, and it changes the
-descriptor profile from a single SHA-256 domain to a registered pair of
+identity profile from a single SHA-256 domain to a registered pair of
 profiles.
 
 ## Interactions

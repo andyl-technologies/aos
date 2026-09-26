@@ -70,7 +70,7 @@ bucket.
   | `where <view>` | residency by tier and locality as a histogram of bytes |
   | `tiers` | the store expression with per-tier health, hit ratio, residency, capacity |
   | `jobs` | every job branch with cursors, counts, and completeness ([`32-tree-jobs.md`](32-tree-jobs.md)) |
-  | `gc` | current epoch, roots counted, marked bytes, sweep candidates, tombstones pending |
+  | `gc` | current cycle, roots counted, marked bytes, sweep candidates, tombstones pending |
   | `exposures` | every running exposure with surface, endpoint, view, mode, and lag |
 
   *Gate:* `gate:obs-status-surface`.
@@ -104,7 +104,7 @@ bucket.
   | `terrane_commit_latency_seconds` | histogram | ref, durability |
   | `terrane_merge_latency_seconds` | histogram | kind |
   | `terrane_merge_entries_visited` | histogram | kind |
-  | `terrane_gc_epoch` | gauge | store |
+  | `terrane_gc_cycle` | gauge | store |
   | `terrane_gc_swept_bytes_total` | counter | store |
   | `terrane_gc_marked_bytes` | gauge | store |
   | `terrane_backend_health` | gauge | backend |

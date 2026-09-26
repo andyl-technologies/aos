@@ -15,7 +15,7 @@ otherwise:
 | Component | Reference |
 | --- | --- |
 | Host | one NVMe device, 8 cores, kernel with FUSE passthrough support |
-| Host tier | `tiered[disk(NVMe), remote(gateway)]`, disk tier warm unless "cold" is stated |
+| Host tier | `routed[disk(NVMe), remote(gateway)]`, disk tier warm unless "cold" is stated |
 | Gateway | `guard(bucket)` in the same region, presigned direct reads enabled |
 | Bucket | an S3-compatible object store in the same region as the host |
 | Chunking | the default profile of [`05-chunking.md`](05-chunking.md) (256 KiB min, 1 MiB target, 4 MiB max), zstd level 3 |

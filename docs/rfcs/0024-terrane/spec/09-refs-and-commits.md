@@ -39,13 +39,14 @@ has pointed. The object encoding is not git's, for the reasons in
   put-if-absent and MUST NOT be changed or deleted except by a principal
   holding `admin` on it and never by an ordinary commit. A snapshot is a tag.
 - **[REF-3]** `refs/notes/<path>` holds advisory sidecar refs (access
-  profiles, memoized recipes, completeness caches) whose loss MUST NOT affect
+  profiles, derivation memos, completeness caches) whose loss MUST NOT affect
   correctness. `refs/jobs/<id>` holds tree-job checkpoints
   ([`32-tree-jobs.md`](32-tree-jobs.md)). `refs/conflicts/<ref>/<seq>`
   holds a commit whose merge into `<ref>` produced an unresolvable conflict
   value ([`20-consistency.md`](20-consistency.md)); it is a branch that
-  advances only by resolution. `refs/derived/<path>` holds realization
-  artifacts such as ruleset-derived roots
+  advances only by resolution. `refs/derived/<path>` holds derivations
+  ([`10-derived-data.md`](10-derived-data.md)) that are worth sharing by
+  name, such as ruleset-derived realization roots
   ([`31-routing-rulesets.md`](31-routing-rulesets.md)); like `notes`, its
   loss MUST NOT affect correctness.
 - **[REF-4]** `logs/refs/heads/<path>/<seq>` is the **reflog** of a branch:
@@ -62,7 +63,7 @@ commit        hash of the commit this ref names
 seq           unsigned, strictly increasing per ref, 1 for the first write
 writer_epoch  unsigned, fencing token for the current writer
 home          locality label of the authority that owns this ref
-profile       optional map: multi-writer policy, retention, conflicted flag
+policy        optional map: multi-writer policy, retention, conflicted flag
 ```
 
 - **[REF-5]** `seq` MUST increase by exactly 1 on every successful advance of
@@ -88,8 +89,8 @@ parents     ordered list of commit hashes; empty for a root commit
 provenance  principal, token id, issuer, process identity (23)
 timestamp   unsigned seconds since epoch as asserted by the committer
 message     UTF-8 text, MAY be empty
-profile     map: format versions, chunk profile, recipe, conflicted flag,
-            lease, required-property snapshot
+profile-pair  map: identity profile, chunk profile, tree-format version,
+            recipe, conflicted flag, lease, required-property snapshot
 packs       optional list of (pack id, locality) for packs first written by
             this commit
 signature   detached signature over the preceding fields (23)
@@ -98,10 +99,13 @@ signature   detached signature over the preceding fields (23)
 - **[REF-8]** A commit MUST name exactly one tree root. A commit produced by
   a merge MUST list `ours` first and `theirs` second in `parents`. A fold
   MUST record both ([`07-tree-algebra.md`](07-tree-algebra.md)).
-- **[REF-9]** `profile` MUST record the tree-format version and chunk
-  profile in effect at the commit and MUST set `conflicted=true` when the
-  tree contains a conflict value. `profile` MUST record the recipe when the
-  tree was produced by materializing a composite.
+- **[REF-9]** `profile-pair` MUST record the identity profile
+  ([`04-content-model.md`](04-content-model.md) OBJ-8), the chunk profile
+  ([`05-chunking.md`](05-chunking.md)), and the tree-format version in
+  effect at the commit, and MUST set `conflicted=true` when the tree
+  contains a conflict value. It MUST record the recipe when the tree was
+  produced by materializing a composite (a derivation,
+  [`10-derived-data.md`](10-derived-data.md)).
 - **[REF-10]** `packs` SHOULD list every pack that this commit was the first
   to reference, with the locality where it was written. Readers in another
   locality use this list to fetch across regions before replication has
@@ -139,7 +143,7 @@ under concurrent garbage collection ([`17-garbage-collection.md`](17-garbage-col
   branch's current `writer_epoch`, increments it on its first write, and
   uses the incremented value for the lifetime of its session. Any later
   write with a lower epoch is fenced by REF-6.
-- **[REF-17]** A branch MAY be marked `multi_writer=true` in its ref profile
+- **[REF-17]** A branch MAY be marked `multi_writer=true` in its ref policy
   with a merge policy list ([`07-tree-algebra.md`](07-tree-algebra.md)). In
   this mode a losing writer MUST rebase by
   `merge(base=read commit, ours=current head, theirs=own commit)` and retry.
@@ -152,7 +156,7 @@ under concurrent garbage collection ([`17-garbage-collection.md`](17-garbage-col
 - **[REF-19]** A tag MUST be written with put-if-absent. A second write to
   an existing tag name MUST fail. A tag record MUST have `seq=1` and its
   `writer_epoch` MUST be the writing principal's current epoch.
-- **[REF-20]** An **annotated tag** MAY carry, in its record's `profile`, a
+- **[REF-20]** An **annotated tag** MAY carry, in its record's `policy`, a
   snapshot envelope: a signed statement binding the tag name, the commit, and
   arbitrary attestation data. The envelope format is `SnapshotEnvelope` in
   `reference/terrane-v1.cddl`.

@@ -14,14 +14,13 @@ change ([`../README.md`](../README.md) § versioning).
 | --- | --- | --- | --- | --- | --- |
 | `fuse` | [`27-surface-fuse.md`](../27-surface-fuse.md) | `mount-path` | yes (`upper = private-cow`) | none | Surface: `fuse` |
 | `erofs` | [`28-surface-erofs-and-block.md`](../28-surface-erofs-and-block.md) | `mount-path` | yes (`upper = private-cow`) | none | Surface: `erofs` |
-| `mount` | [`28-surface-erofs-and-block.md`](../28-surface-erofs-and-block.md) EROFS-14 | `mount-path` | yes | none | Surface: `fuse` and Surface: `erofs` |
 | `block` | [`28-surface-erofs-and-block.md`](../28-surface-erofs-and-block.md) | `device-node`, `vhost-user-socket`, `nbd-socket` | no | none | Surface: `block` |
 | `virtiofs` | [`29-surface-vm.md`](../29-surface-vm.md) | `vhost-user-socket` | no (guest stages and pushes) | none | Surface: `virtiofs` |
 | `virtio-pmem` | [`29-surface-vm.md`](../29-surface-vm.md) | `device-file` | no | none | Surface: `virtio-pmem` |
 
-`mount` is the realizer-agnostic name: an exposure that asks for `mount`
-lets the instance choose `erofs` when the view is resident and `fuse`
-otherwise, and reports the choice in status.
+`erofs` is the composefs-style realizer. An `erofs` exposure whose view is
+not yet resident MAY be served through the FUSE realizer until residency
+reaches the threshold (EROFS-14); the choice is reported in status.
 
 ## Protocol surfaces
 
@@ -92,14 +91,14 @@ No path requirements. The root's `hashes` property lists `git-blob-sha1`
 every regular file entry carries `hash.git-blob-sha1` and, where enabled,
 `hash.git-blob-sha256`.
 
-### `fuse`, `erofs`, `mount`, `block`, `virtiofs`, `virtio-pmem`, `browse`, `api`
+### `fuse`, `erofs`, `block`, `virtiofs`, `virtio-pmem`, `browse`, `api`
 
 No schema. Where a view's policy declares canonical attributes, realizers
 serve them (FUSE-22, EROFS-6).
 
 ## Reserved names
 
-The names `mount`, `fuse`, `erofs`, `block`, `virtiofs`, `virtio-pmem`,
+The names `fuse`, `erofs`, `block`, `virtiofs`, `virtio-pmem`,
 `nix-cache`, `reapi`, `gha-cache`, `git`, `oci`, `browse`, and `api` are
 reserved by this registry. Implementation-specific experimental surfaces
 MUST use a name beginning with `x-` and MUST NOT be claimed as conformant.

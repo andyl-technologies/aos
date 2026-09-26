@@ -40,7 +40,8 @@ where `H` is the profile's digest algorithm and `domain(kind)` is the
 registered ASCII domain string for the kind, without a terminator other than
 the single zero byte shown.
 
-- **[OBJ-1]** The digest algorithm of the initial profile, `terrane-v1`, is
+- **[OBJ-1]** The digest algorithm of the initial identity profile,
+  `terrane-v1`, is
   BLAKE3 with a 32-byte output. Every identity in a `terrane-v1` store is 32
   bytes. *Gate:* `gate:identity-idempotence`.
 - **[OBJ-2]** The domain strings of `terrane-v1` are:
@@ -98,20 +99,23 @@ descriptor = [ algorithm: tstr, domain: tstr, digest: bstr, size: uint ]
   `<algorithm>:<domain>:<lowercase hex digest>`. Size is omitted from the
   display form and is not part of identity.
 
-### Profiles and digest agility
+### Identity profiles and digest agility
 
 - **[OBJ-8]** A digest algorithm, its output length, and its set of domain
-  strings together form a **profile**. A store has exactly one profile,
-  recorded as the `store-profile` field of its `CAPABILITIES` record
-  ([`13-bucket-layout.md`](13-bucket-layout.md)), and every identity in the
-  store belongs to it.
+  strings together form an **identity profile**. A store has exactly one
+  identity profile, recorded with its default chunk profile
+  ([`05-chunking.md`](05-chunking.md)) in the `store-profile` field of its
+  `CAPABILITIES` record ([`13-bucket-layout.md`](13-bucket-layout.md)), and
+  every identity in the store belongs to it. The word "profile" alone is
+  not used; a profile is an identity profile, a chunk profile, or the
+  `profile-pair` a commit records ([`09-refs-and-commits.md`](09-refs-and-commits.md)).
 - **[OBJ-9]** Introducing a new digest algorithm MUST be done by registering
-  a new profile. A new profile coexists with the old one in separate stores
+  a new identity profile. A new profile coexists with the old one in separate stores
   and is bridged by import ([`33-migrations.md`](33-migrations.md)); it is
   never a rewrite of identities in place. This is what makes every identity
   in this specification permanent.
-- **[OBJ-10]** An implementation MUST NOT accept an identity under a profile
-  it was not configured for, even if it can compute that algorithm.
+- **[OBJ-10]** An implementation MUST NOT accept an identity under an
+  identity profile it was not configured for, even if it can compute that algorithm.
 
 ## Chunks
 

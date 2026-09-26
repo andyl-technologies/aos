@@ -38,7 +38,7 @@ ref model described in a different vocabulary.
   adapter MUST NOT change any Crucible ABI or determinism contract. *Gate:*
   `checks.terrane.integration.crucible-dagstore`.
 - **[CRU-2]** `SharedDagStore` (the fleet-visible store) MUST be a Terrane
-  `tiered` expression whose authority is a bucket or a `blockdev` pool, with
+  `routed` expression whose authority is a bucket or a `blockdev` pool, with
   the campaign namespace's single mutable ref backend (RFC-0020 §06) provided
   by Terrane refs (spec REF-1 to REF-18). *Gate:*
   `checks.terrane.integration.crucible-shared-store`.

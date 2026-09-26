@@ -156,8 +156,8 @@ to corrupt shared state or exhaust a store.
   authority is always reachable as the last tier.
 - Harvesting presigned URLs: a tier that mints presigned reads holds
   bucket credentials by design; a tier that merely forwards requests does
-  not, and MUST NOT be given them ([`11-store-trait.md`](11-store-trait.md)
-  `guard` placement). Compromise of a minting tier is compromise of its
+  not, and MUST NOT be given them ([`18-protocol.md`](18-protocol.md)
+  PROTO-55: only the `serve` role mints). Compromise of a minting tier is compromise of its
   bucket credential and is out of scope beyond credential rotation.
 - Poisoning derived attributes: attribute provenance (PROV-9) lets a
   reader require that classifications and hashes were produced by a
@@ -178,8 +178,9 @@ to corrupt shared state or exhaust a store.
 
 ### Denial of service
 
-- Ref CAS storms: per-principal and per-ref rate limits at `guard`
-  ([`18-protocol.md`](18-protocol.md)).
+- Ref CAS storms: per-principal and per-ref rate limits in the `serve`
+  role ([`18-protocol.md`](18-protocol.md)); `guard` decides only whether a
+  request is authorized, not how many are accepted.
 - Negotiation amplification: `has` batches are size-bounded and
   filters are served, not computed, per request
   ([`21-bandwidth.md`](21-bandwidth.md)).

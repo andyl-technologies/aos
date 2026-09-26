@@ -109,7 +109,7 @@ data.
   candidate, not a sweep candidate.
 - **[GC-15]** Sweep MUST be two-phase. First the pack is tombstoned: its
   index entries are removed from the merged index, a tombstone object is
-  written under `trash/<epoch>/<pack-id>` naming the pack, and readers stop
+  written under `trash/<cycle>/<pack-id>` naming the pack, and readers stop
   resolving to it. Second, after a deletion window `D` has elapsed since the
   tombstone, the pack bytes are deleted. During `D` a tombstoned pack MUST
   be restorable by a single operation that re-adds its index entries.
@@ -132,9 +132,9 @@ data.
 - **[GC-19]** Compaction MUST write the new pack and index before removing
   any old index entry, so that every chunk is resolvable at every instant.
 - **[GC-20]** Merged index shards MUST be rebuilt by compaction at least
-  once per index epoch, dropping entries for tombstoned packs and folding in
-  per-pack indexes written since the previous epoch. Readers MAY continue to
-  use the previous epoch until the new one is published.
+  once per index generation, dropping entries for tombstoned packs and folding in
+  per-pack indexes written since the previous generation. Readers MAY
+  continue to use the previous generation until the new one is published.
 - **[GC-21]** Compaction MUST honour the same bytes-per-second limit as a
   scrub ([`15-redundancy.md`](15-redundancy.md)) and MUST be preemptible by
   foreground writes for space.
@@ -143,16 +143,19 @@ data.
 
 - **[GC-22]** At most one collector MUST run against a store at a time. The
   collector MUST hold a lease object at `gc/lease` obtained by conditional
-  create-if-absent, carrying an epoch and an expiry, and MUST renew it by
+  create-if-absent, carrying a fencing epoch and an expiry, and MUST renew
+  it by
   conditional write before expiry. A collector whose renewal fails MUST stop
   immediately. *Gate:* `gate:gc-singleton-lease`.
-- **[GC-23]** A new collector MUST use an epoch greater than the one in the
+- **[GC-23]** A new collector MUST use a fencing epoch greater than the one
+  in the
   expired lease it replaces, and every checkpoint and tombstone it writes
   MUST carry its epoch, so that a stalled collector resuming after losing
   its lease cannot tombstone with a stale mark set.
 - **[GC-24]** A collector MUST be resumable: each phase records progress as
-  checkpoints keyed by epoch, and a fresh collector with a higher epoch MUST
-  discard checkpoints from a lower epoch except the root-set snapshot it
+  checkpoints keyed by cycle, and a fresh collector with a higher epoch MUST
+  discard checkpoints from a cycle it did not start except the root-set
+  snapshot it
   chooses to reuse, which it MAY do only if that snapshot is younger than
   `G`.
 - **[GC-25]** Every host tier MUST run its own collector over its local

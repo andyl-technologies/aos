@@ -209,7 +209,7 @@ is added rather than editing history.
 - **[D-11] Tier lists are cost-routed, not fixed-order.**
   - **Status:** Decided
   - **Decision:** Every store carries a locality label and a learned cost
-    vector. The `tiered` combinator orders candidates per request by expected
+    vector. The `routed` combinator orders candidates per request by expected
     cost, with hysteresis. Configuration expresses membership, not order.
   - **Rationale:** A fixed order is right on one host and wrong in every
     other zone. Learning costs from real requests handles regions, zones,
@@ -380,6 +380,40 @@ is added rather than editing history.
     into one program; a host-system-prefixed binary name, abandoned with
     [D-19].
   - **Affects:** `CRATE-15`, [`37-crate-structure.md`](37-crate-structure.md).
+
+- **[D-23] Single-responsibility interfaces and unambiguous vocabulary,
+  fixed before code exists.**
+  - **Status:** Decided
+  - **Decision:** The store interface is split into `ContentStore` and
+    `RefStore`, and "authority" is defined as the child that implements
+    `RefStore` rather than by a prose rule. `guard` performs authorization
+    only; upload validation is an invariant of every `put` (STORE-33) and
+    presigned reads belong to the `serve` role (PROTO-55). Everything
+    computed from a tree is a **derivation** with one memo table and one
+    verification rule; index trees and realization roots are its named
+    kinds, and a ruleset compiles to a recipe rather than running as an
+    engine. Overloaded words were split: "profile" is now identity profile,
+    chunk profile, profile pair, or trust preset; "epoch" fences writers
+    only, merged indexes have generations, and garbage collection has
+    cycles. The realizer process role is `realize`, the `mount` surface is
+    folded into `erofs`, and the routing combinator is `routed`.
+  - **Rationale:** Each of these was a place where the specification said
+    two things with one word or asked one component to do two jobs. Fixing
+    them costs nothing before implementation and grows expensive after,
+    because names become module boundaries and type names. A reader who
+    can tell a cache from an authority by its type, and a fencing epoch
+    from an index generation by its name, needs fewer rules to remember.
+  - **Alternatives considered:** Keeping one `Store` trait with an
+    "authority" flag (rejected: the flag is a rule, the split is a type);
+    keeping `guard` as the place that also validates and presigns
+    (rejected: the single enforcement point should enforce exactly one
+    thing, and the threat model gets simpler); three separate memo
+    mechanisms (rejected: identical semantics under three names).
+  - **Affects:** `STORE-10`, `STORE-16`, `STORE-22` to `STORE-24`,
+    `STORE-32`, `STORE-33`, `PROTO-55`, `AUTH-31`, `AUTH-33`, `DRV-21` to
+    `DRV-23`, `ALG-30`, `RULE-21`, `RULE-22`, `REF-9`, `OBJ-8`, `CDC-2`,
+    `CDC-3`, `PROV-12`, `PACK-17`, `BKT-4`, `GC-15`, `GC-22`, `GC-23`,
+    `EROFS-14`, `CRATE-15`, and the glossary.
 
 ## Open decisions
 

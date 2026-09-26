@@ -144,6 +144,7 @@ here is a conformance error of this document.
 | `gate:chunk-codec` | 05 | CDC-7 |
 | `gate:containers-not-in-identity` | 04 | OBJ-23 |
 | `gate:derived-attr-record` | 10 | DRV-1 |
+| `gate:derivation-memo` | 10 | DRV-21 |
 | `gate:descriptor-strict` | 04 | OBJ-6 |
 | `gate:formats-no-std` | 03 | ARCH-1 |
 | `gate:gc-grace` | 01 | prose in 01 |
@@ -201,7 +202,8 @@ here is a conformance error of this document.
 | `gate:gc-singleton-lease` | 17 | GC-22 |
 | `gate:gc-two-phase-delete` | 17 | GC-15 |
 | `gate:guard-single-enforcement` | 11 | STORE-22 |
-| `gate:guard-validates-uploads` | 11 | STORE-23 |
+| `gate:store-validates-uploads` | 11 | STORE-33 |
+| `gate:store-trait-split` | 11 | STORE-32 |
 | `gate:host-chunk-layout` | 14 | HOST-2 |
 | `gate:host-eviction-s3fifo` | 14 | HOST-17 |
 | `gate:host-layout` | 14 | HOST-1 |
@@ -223,11 +225,11 @@ here is a conformance error of this document.
 | `gate:host-two-phase-delete` | 14 | HOST-28 |
 | `gate:host-verify-before-admit` | 14 | HOST-14 |
 | `gate:host-wipe-on-release` | 14 | HOST-25 |
-| `gate:index-epoch-manifest` | 13 | BKT-4 |
+| `gate:index-generation-manifest` | 13 | BKT-4 |
 | `gate:index-filter` | 12 | PACK-21 |
 | `gate:index-filter-hint-only` | 12 | PACK-22 |
 | `gate:index-rebuild` | 12 | PACK-20 |
-| `gate:index-shard-epochs` | 12 | PACK-17 |
+| `gate:index-shard-generations` | 12 | PACK-17 |
 | `gate:index-tombstones` | 12 | PACK-18 |
 | `gate:pack-footer-crc` | 12 | PACK-7 |
 | `gate:pack-header` | 12 | PACK-1 |
@@ -259,8 +261,8 @@ here is a conformance error of this document.
 | `gate:store-ref-log-append-once` | 11 | STORE-8 |
 | `gate:store-verify-on-get` | 11 | STORE-3 |
 | `gate:store-verify-on-put` | 11 | STORE-2 |
-| `gate:tiered-read-order` | 11 | STORE-17 |
-| `gate:tiered-write-authority` | 11 | STORE-18 |
+| `gate:routed-read-order` | 11 | STORE-17 |
+| `gate:routed-write-authority` | 11 | STORE-18 |
 
 ### Distribution
 
@@ -296,7 +298,7 @@ here is a conformance error of this document.
 | `gate:proto-idempotent` | 18 | PROTO-15, PROTO-43 |
 | `gate:proto-index` | 18 | PROTO-34 |
 | `gate:proto-negotiate` | 18 | PROTO-10, PROTO-11, PROTO-7, PROTO-8, PROTO-9 |
-| `gate:proto-presign` | 18 | PROTO-18, PROTO-19 |
+| `gate:proto-presign` | 18 | PROTO-18, PROTO-19, PROTO-55 |
 | `gate:proto-reads` | 18 | PROTO-20 |
 | `gate:proto-schema` | 18 | PROTO-3, PROTO-48, PROTO-49, PROTO-50 |
 | `gate:proto-transport` | 18 | PROTO-1, PROTO-2, PROTO-4 |
@@ -341,7 +343,7 @@ here is a conformance error of this document.
 | `gate:prov-commit-verify` | 23 | PROV-4 |
 | `gate:prov-entry-preserve` | 23 | PROV-8 |
 | `gate:prov-fold-acceptance` | 23 | PROV-17 |
-| `gate:prov-selector-profiles` | 23 | PROV-12 |
+| `gate:prov-selector-presets` | 23 | PROV-12 |
 
 ### Surfaces
 
@@ -394,8 +396,8 @@ here is a conformance error of this document.
 | `gate:mig-import-verify` | 33 | MIG-2 |
 | `gate:mig-layout` | 33 | MIG-8 |
 | `gate:mig-layout-merge` | 33 | MIG-10 |
-| `gate:mig-profile-identity` | 33 | MIG-14 |
-| `gate:mig-profile-read` | 33 | MIG-13 |
+| `gate:mig-encoding-identity` | 33 | MIG-14 |
+| `gate:mig-encoding-read` | 33 | MIG-13 |
 | `gate:mig-rechunk` | 33 | MIG-18 |
 | `gate:mig-reindex` | 33 | MIG-6 |
 | `gate:mig-split-join` | 33 | MIG-27 |
@@ -474,7 +476,7 @@ reason.
 | PROP-2 to PROP-6, PROP-8, PROP-10, PROP-12, PROP-14 to PROP-20, PROP-22 to PROP-25, PROP-27, PROP-28 | property semantics exercised by `gate:property-resolution` and `gate:property-required-attrs` as scenarios |
 | REF-2, REF-3, REF-5, REF-7 to REF-9, REF-11, REF-13 to REF-15, REF-17 to REF-19, REF-21, REF-23 to REF-30 | ref and commit rules exercised by `gate:ref-cas`, `gate:ref-epoch-fencing`, and `gate:ref-advance-ordering` as scenarios |
 | DRV-2, DRV-4 to DRV-6, DRV-8 to DRV-11, DRV-13 to DRV-20 | derived-data rules exercised by `gate:derived-attr-record` and `gate:index-tree-maintenance` as scenarios |
-| STORE-6, STORE-15, STORE-16, STORE-19, STORE-20, STORE-24 to STORE-26, STORE-29, STORE-31 | store semantics exercised by the `gate:store-*` conformance suite as scenarios |
+| STORE-6, STORE-15, STORE-16, STORE-19, STORE-20, STORE-25, STORE-26, STORE-29, STORE-31 | store semantics exercised by the `gate:store-*` conformance suite as scenarios |
 | PACK-11, PACK-16, PACK-19, PACK-23, PACK-25, PACK-27, PACK-28 | pack and index rules exercised by the `gate:pack-*` and `gate:index-*` checks as scenarios |
 | BKT-8, BKT-11, BKT-12, BKT-15, BKT-16 | bucket rules exercised by `gate:bucket-probe`, `gate:bucket-ref-cas`, and `gate:bucket-file-layout` as scenarios |
 | HOST-12, HOST-16, HOST-20, HOST-21, HOST-24, HOST-26, HOST-27, HOST-30, HOST-31, HOST-33, HOST-35 to HOST-37 | host-tier behavior exercised by the `gate:host-*` checks and `gate:host-crash-recovery` as scenarios |

@@ -33,7 +33,7 @@ registered prefixes:
 <root>/
   objects/pack/<aa>/<pack-id>.pack     cached packs (whole-pack fetches)
   objects/pack/<aa>/<pack-id>.idx
-  objects/index/<epoch>/...            cached merged shards and filters
+  objects/index/<generation>/...            cached merged shards and filters
   chunks/<aa>/<hash>.<codec>           cached individual chunk bodies
   sealed/<aa>/<object-hash>            sealed whole files, verity-enabled
   staging/<publisher-id>/...           publisher-private, never served
@@ -278,7 +278,7 @@ A `blockdev` tier ([`16-blockdev-backend.md`](16-blockdev-backend.md)) has
 no inodes and cannot hand out sealed files. The RECOMMENDED shape is:
 
 ```text
-tiered[
+routed[
   disk(/var/lib/terrane/hot, capacity=small),
   blockdev(/dev/nvme0n1, /dev/nvme1n1),
   remote(...),
