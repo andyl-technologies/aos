@@ -109,7 +109,8 @@ Covered output families include ordinary C/C++ objects, depfiles, split debug
 files, coverage notes, preprocessed source, assembly, PCH, explicit Clang
 modules, serialized Clang diagnostics, GCC SARIF and plain HTML diagnostic
 reports with default or explicit file names, numbered GCC tree, RTL, IPA, and
-language dumps (including joined `-d` debug dumps), and nonincremental Rust
+language dumps (including joined `-d` debug dumps), GCC analyzer text, graph,
+and compressed JSON dumps, and nonincremental Rust
 rlib/staticlib, metadata, dep-info, unpacked split debug `.dwo` files, and
 `-Csave-temps=yes` bitcode, object, and saved metadata files.
 Rust extern/native dependencies and proc macro consumers are covered by the
@@ -135,9 +136,11 @@ tracked. GCC 16's documented
 `-fdiagnostics-add-output` and `-fdiagnostics-set-output` SARIF sinks are cached
 with their report files. Parameterized text and plain HTML sinks are cached;
 HTML diagram modes and unknown sink specifications bypass.
-Specialized GCC dump families outside tree, RTL, IPA, language, and statistics
-still bypass when they select implicit filenames. Explicitly named GCC dumps
-and optimization reports are cached with their requested output files.
+Specialized GCC dump families outside tree, RTL, IPA, language, statistics,
+and analyzer still bypass when they select implicit filenames. Explicitly named
+GCC dumps and optimization reports are cached with their requested output files.
+GCC Ada spec generation remains passthrough because transitive headers can
+create arbitrarily named `.ads` files outside the selected object's directory.
 
 ## Storage and concurrency
 

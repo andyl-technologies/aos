@@ -88,11 +88,14 @@ pub(super) fn configure(
                         invocation.output(Path::new(destination), false)?;
                     }
                 } else if arg.starts_with("-fdump-") {
+                    // GCC's analyzer dumps use the same object-adjacent dump
+                    // base for textual, graph, and compressed JSON outputs.
                     ensure!(
                         arg.starts_with("-fdump-tree-")
                             || arg.starts_with("-fdump-rtl-")
                             || arg.starts_with("-fdump-ipa-")
                             || arg.starts_with("-fdump-lang-")
+                            || arg.starts_with("-fdump-analyzer")
                             || arg.starts_with("-fdump-statistics"),
                         "GCC dump option has an untracked side output"
                     );
