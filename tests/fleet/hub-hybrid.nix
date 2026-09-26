@@ -303,11 +303,22 @@ in {
             --https-cert-path ${serverCertificate}/value \\
             --https-key-path ${serverPrivateKey}/value \\
             > /var/lib/hybrid-worker/wrangler.log 2>&1 < /dev/null &
+          echo $! > /var/lib/hybrid-worker/wrangler.pid
       """), timeout=30)
       worker.wait_until_succeeds(
           f"{CURL} -s -o /dev/null -w '%{{http_code}}' -X POST https://aos.andyl.org/_internal/storage/v1/capabilities | {GREP} -qx 401",
           timeout=180,
       )
+
+      def worker_runtime_status():
+          return worker.succeed(textwrap.dedent("""
+              pid=$(cat /var/lib/hybrid-worker/wrangler.pid)
+              if kill -0 "$pid" 2>/dev/null; then
+                cat "/proc/$pid/status" | head -n 12
+              else
+                echo "Wrangler process $pid exited"
+              fi
+          """))
 
       def sign_storage_plan(plan):
           body = json.dumps(plan, separators=(",", ":")).encode()
@@ -916,9 +927,8 @@ in {
           print("hybrid Worker memory after parallel upload failure:", worker.succeed(
               "cat /proc/meminfo | head -n 8"
           ))
-          print("hybrid Worker processes after parallel upload failure:", worker.succeed(
-              "ps -eo pid,rss,comm,args | tail -n 25 || true"
-          ))
+          print("hybrid Worker process after parallel upload failure:",
+                worker_runtime_status())
           print("hybrid Worker logs after parallel upload failure:", worker.succeed(
               "tail -n 120 /var/lib/hybrid-worker/wrangler.log"
           ))
@@ -1121,6 +1131,8 @@ in {
               timeout=180,
           )
       except Exception:
+          print("hybrid Worker process after large OCI part failure:",
+                worker_runtime_status())
           print("hybrid Worker logs after large OCI part failure:", worker.succeed(
               "tail -n 120 /var/lib/hybrid-worker/wrangler.log"
           ))

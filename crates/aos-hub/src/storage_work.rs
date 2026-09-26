@@ -38,10 +38,10 @@ use tokio::sync::Semaphore;
 
 // Limit each index walk's simultaneous cross-cloud inspection requests.
 const MAX_PARALLEL_GIT_INSPECTION_BATCHES: usize = 8;
-// Indexing, inventory, and replication can run together. Bound their combined
-// Worker load, including response reads, so one Native replica cannot flood a
-// storage executor with thousands of simultaneous object inspections.
-const MAX_IN_FLIGHT_STORAGE_PLANS: usize = 16;
+// Indexing, inventory, and replication can run together while uploads use the
+// same Worker. Keep their combined request pressure below the executor's
+// capacity, including time spent reading each response.
+const MAX_IN_FLIGHT_STORAGE_PLANS: usize = 4;
 
 /// Authenticated Native-to-Worker executor client.
 pub struct RemoteStorageWorkClient {
