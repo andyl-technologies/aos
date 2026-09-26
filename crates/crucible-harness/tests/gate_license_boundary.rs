@@ -113,15 +113,15 @@ fn qemu_patch_created_files_match_license_inventory() -> Result<(), Box<dyn Erro
         let license = fields
             .next()
             .ok_or("license inventory row lacks a license")?;
+        // The imported Xtensa timer header retains its explicit upstream BSD
+        // license; a new BSD file still needs a separate boundary review.
+        let recognized_license = matches!(
+            license,
+            "GPL-2.0-only" | "GPL-2.0-or-later" | "LGPL-2.1-or-later" | "MIT" | "MIT OR Apache-2.0"
+        ) || (path == "target/xtensa/timer.h"
+            && license == "BSD-3-Clause");
         assert!(
-            matches!(
-                license,
-                "GPL-2.0-only"
-                    | "GPL-2.0-or-later"
-                    | "LGPL-2.1-or-later"
-                    | "MIT"
-                    | "MIT OR Apache-2.0"
-            ),
+            recognized_license,
             "QEMU patch-created file uses an unrecognized license: {license}"
         );
         inventoried.insert(path.to_owned());
