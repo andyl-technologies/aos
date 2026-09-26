@@ -248,13 +248,15 @@ impl ClosedPolicyRootSessionV2<'_> {
     /// Consumes the exact V7 held proof in a closed Root CAS while writers stay held.
     ///
     /// The caller must retain Controller, Source, protected Cache, and physical
-    /// Cache writers and repeat the signer/owner postflight before this call.
+    /// Cache writers and repeat their postflight before this call. Root uses the
+    /// independently signed physical Cache observation already joined under
+    /// those locks; reacquiring Cache after Root would invert lock order.
     /// The committed binding and held proof remain nonauthorizing; no owner
     /// release, Create, Apply, or effect handoff follows from this result.
     ///
     /// # Errors
     ///
-    /// Rejects a changed terminal/proof, pins, Cache replay, Root stage, Source
+    /// Rejects a changed terminal/proof, pins, signed Cache claim, Root stage, Source
     /// challenge, session snapshot, or failed Root CAS/readback.
     pub fn commit_staged_source_held_binding_v2(
         &mut self,
@@ -262,20 +264,13 @@ impl ClosedPolicyRootSessionV2<'_> {
         joined: ClosedPolicyRootSignerJoinV2,
         controller_uid: u32,
     ) -> Result<ClosedPolicyRootCasObservationV2, PolicyCompilerJournalErrorV1> {
-        let before = read_fixed_policy_cache_hold_v1()
-            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-        let committed = self.commit_staged_source_held_binding_with_observation(
+        let physical = joined.physical_cache();
+        self.commit_staged_source_held_binding_with_observation(
             claim,
             joined,
             controller_uid,
-            (before.hold, before.replay.quota_digest),
-        )?;
-        let after = read_fixed_policy_cache_hold_v1()
-            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-        if after.hold != before.hold || after.replay.quota_digest != before.replay.quota_digest {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
-        Ok(committed)
+            (physical.hold(), physical.quota_digest()),
+        )
     }
 
     fn commit_staged_source_held_binding_with_observation(
@@ -353,7 +348,7 @@ impl ClosedPolicyRootSessionV2<'_> {
     ///
     /// # Errors
     ///
-    /// Rejects a changed fixed Cache replay, stale Root or signer cut, changed
+    /// Rejects a changed signed Cache claim, stale Root or signer cut, changed
     /// current pin, or incomplete protected transaction/readback.
     pub fn record_staged_source_terminal_with_held_proof_v2(
         &mut self,
@@ -363,22 +358,15 @@ impl ClosedPolicyRootSessionV2<'_> {
         current_controller_credential: &[u8],
         controller_packet: &[u8],
     ) -> Result<ClosedSourceTerminalRecordV1, PolicyCompilerJournalErrorV1> {
-        let before = read_fixed_policy_cache_hold_v1()
-            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-        let record = self.record_terminal(
+        let physical = joined.physical_cache();
+        self.record_terminal(
             claim,
             joined,
             controller_uid,
             current_controller_credential,
             controller_packet,
-            Some((before.hold, before.replay.quota_digest)),
-        )?;
-        let after = read_fixed_policy_cache_hold_v1()
-            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-        if after.hold != before.hold || after.replay.quota_digest != before.replay.quota_digest {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
-        Ok(record)
+            Some((physical.hold(), physical.quota_digest())),
+        )
     }
 
     fn record_terminal(
@@ -500,9 +488,10 @@ impl ClosedPolicyRootSessionV2<'_> {
 
     /// Cold-replays the exact terminal and its protected Cache/Source companion.
     ///
-    /// Root replays the current fixed Cache hold and quota envelope. Source
-    /// writer continuity still requires a fresh held-owner barrier before CAS;
-    /// this historical comparison alone is nonauthorizing.
+    /// Root compares the fixed Cache hold and quota envelope. This method
+    /// must not run under a Controller-retained Cache writer: that caller uses
+    /// the historical Root-only variant below and independently verifies
+    /// current Cache under its earlier-acquired writer barrier.
     ///
     /// # Errors
     ///
@@ -520,6 +509,34 @@ impl ClosedPolicyRootSessionV2<'_> {
             controller_uid,
             (observed.hold, observed.replay.quota_digest),
         )
+    }
+
+    fn recover_staged_source_terminal_historical_v2(
+        &self,
+        claim: ClosedSourceTerminalClaimV1,
+        controller_uid: u32,
+    ) -> Result<Option<ClosedSourceTerminalRecordV1>, PolicyCompilerJournalErrorV1> {
+        let observation = self.historical_cache_observation()?;
+        self.recover_terminal_with_held_proof_observation(claim, controller_uid, observation)
+    }
+
+    fn historical_cache_observation(
+        &self,
+    ) -> Result<(CachePolicyHoldV1, ObjectDigest), PolicyCompilerJournalErrorV1> {
+        let proof = self
+            .authority
+            .get(HELD_PROOF_KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let proof = RootHeldProofV2::decode(proof)?;
+        let hold = CachePolicyHoldV1::new(
+            proof.project,
+            proof.partition,
+            proof.cache_head,
+            proof.binding,
+            proof.epoch,
+        )
+        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        Ok((hold, proof.quota))
     }
 
     fn recover_terminal_with_held_proof_observation(
@@ -638,8 +655,9 @@ impl ClosedPolicyRootSessionV2<'_> {
     ///
     /// # Errors
     ///
-    /// Rejects absent or changed protected Cache/Source proof and all V1
-    /// terminal replay failures. This does not admit a new CAS or effect.
+    /// Rejects absent or changed Root-retained Cache/Source proof and all V1
+    /// terminal replay failures. The Controller must separately recheck the
+    /// current Cache under its held writer. This admits no new CAS or effect.
     pub fn recover_current_source_terminal_digest_with_held_proof_v2(
         &mut self,
         digest: ObjectDigest,
@@ -657,7 +675,7 @@ impl ClosedPolicyRootSessionV2<'_> {
         let claim =
             ClosedSourceTerminalClaimV1::decode(&row[16..16 + CLAIM_BYTES], self.current_base()?)?;
         let joined = self
-            .recover_staged_source_terminal_with_held_proof_v2(claim, controller_uid)?
+            .recover_staged_source_terminal_historical_v2(claim, controller_uid)?
             .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
         if joined.digest() != terminal.digest() {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
@@ -686,6 +704,30 @@ impl ClosedPolicyRootSessionV2<'_> {
             terminal_digest,
             controller_uid,
             (observed.hold, observed.replay.quota_digest),
+        )
+    }
+
+    /// Replays the committed Root decision without acquiring Cache after Root.
+    ///
+    /// This checks the protected Root head, terminal, pins, challenge rows,
+    /// and exact consumed AOSPCP02 against its own historical Cache claim. It
+    /// does not attest current Cache state: the authenticated Controller must
+    /// retain and recheck Cache under its own earlier-acquired writer barrier.
+    /// The result remains nonauthorizing even after successful replay.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a missing, forged, released, or mismatched Root decision.
+    pub fn recover_committed_source_held_binding_historical_v2(
+        &mut self,
+        terminal_digest: ObjectDigest,
+        controller_uid: u32,
+    ) -> Result<Option<ClosedPolicyRootCasObservationV2>, PolicyCompilerJournalErrorV1> {
+        let observation = self.historical_cache_observation()?;
+        self.recover_committed_source_held_binding_with_observation(
+            terminal_digest,
+            controller_uid,
+            observation,
         )
     }
 
@@ -1144,10 +1186,19 @@ mod tests {
             "Root must reject a Cache quota not signed by the physical owner"
         );
         let joined_record = session
-            .record_terminal(claim, joined, 1234, &pin, &packet, Some(held_observation))
+            .record_staged_source_terminal_with_held_proof_v2(claim, joined, 1234, &pin, &packet)
             .expect("atomic terminal and AOSPCP02 join");
         assert_eq!(joined_record.digest(), expected.digest());
         assert!(joined_record.held_proof_digest().is_some());
+        assert_eq!(
+            session
+                .recover_current_source_terminal_digest_with_held_proof_v2(
+                    joined_record.digest(),
+                    1234,
+                )
+                .expect("Root-only terminal replay under a held Cache writer"),
+            Some(joined_record)
+        );
         assert!(
             session
                 .recover_terminal_with_held_proof_observation(
@@ -1443,12 +1494,7 @@ mod tests {
         );
         assert_eq!(current_root_binding_chain(&session.authority).unwrap().2, 0);
         let committed = session
-            .commit_staged_source_held_binding_with_observation(
-                next_claim,
-                joined,
-                1234,
-                held_observation,
-            )
+            .commit_staged_source_held_binding_v2(next_claim, joined, 1234)
             .expect("closed AOSPCP02 Root CAS");
         assert_eq!(committed.binding(), binding_digest);
         assert_eq!(current_root_binding_chain(&session.authority).unwrap().2, 1);
@@ -1488,6 +1534,12 @@ mod tests {
                 .expect("exact cold CAS replay"),
             Some(committed)
         );
+        assert_eq!(
+            session
+                .recover_committed_source_held_binding_historical_v2(next_terminal.digest(), 1234)
+                .expect("historical Root-only cold replay"),
+            Some(committed)
+        );
         assert!(
             session
                 .recover_committed_source_held_binding_with_observation(
@@ -1523,6 +1575,12 @@ mod tests {
                 )
                 .is_err(),
             "a mismatched consumed proof must fail closed"
+        );
+        assert!(
+            session
+                .recover_committed_source_held_binding_historical_v2(next_terminal.digest(), 1234)
+                .is_err(),
+            "Root-only replay must reject the forged consumed proof"
         );
     }
 }
