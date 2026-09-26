@@ -8,6 +8,7 @@
   glib,
   pkg-config,
   qemu-crucible,
+  sqlite,
 }: let
   version = "0.1.0";
   src = import ../tools/crucible/_source.nix {inherit lib;};
@@ -19,12 +20,13 @@
   };
   cargoArtifactContract = {
     family = "crucible-gpl-qemu-plugin-release-and-test";
-    nativeInputs = map toString [glib glib.dev glib.tools pkg-config qemu-crucible];
+    nativeInputs = map toString [glib glib.dev glib.tools pkg-config qemu-crucible sqlite];
     licenseScope = "GPL-2.0-only";
   };
+  cargoEnv = {LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";};
   cargoArtifacts = mkCargoArtifacts {
     pname = "crucible-qemu-plugin-artifacts";
-    inherit version cargoDeps cargoArtifactContract;
+    inherit version cargoDeps cargoArtifactContract cargoEnv;
     src = mkCargoDummySource {
       srcRoot = ../../crates;
       name = "crucible-qemu-plugin-dummy-source";
@@ -35,15 +37,15 @@
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin"
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin"
     ];
-    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible];
-    runtimeDeps = [glib qemu-crucible];
+    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible sqlite];
+    runtimeDeps = [glib qemu-crucible sqlite];
   };
 in
   mkCargoPackage {
     pname = "crucible-qemu-plugin";
     inherit version src;
 
-    inherit cargoDeps cargoArtifacts cargoArtifactContract;
+    inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
 
@@ -53,8 +55,8 @@ in
     installLibs = false;
     doCheck = true;
 
-    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible];
-    runtimeDeps = [glib qemu-crucible];
+    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible sqlite];
+    runtimeDeps = [glib qemu-crucible sqlite];
 
     preBuild = ''
       export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
