@@ -119,6 +119,9 @@ enum AuthoredStoreNodeSpec {
     Directory {
         root: PathBuf,
     },
+    Sqlite {
+        root: PathBuf,
+    },
     CompressedDirectory {
         root: PathBuf,
         maximum_logical_object_bytes: u64,
@@ -687,6 +690,10 @@ impl AuthoredStoreNodeSpec {
                 validate_secure_directory(&root, user_id, group_id, "directory leaf")?;
                 Ok(StoreNodeSpec::Directory { root })
             }
+            Self::Sqlite { root } => {
+                validate_secure_directory(&root, user_id, group_id, "SQLite leaf")?;
+                Ok(StoreNodeSpec::Sqlite { root })
+            }
             Self::CompressedDirectory {
                 root,
                 maximum_logical_object_bytes,
@@ -1117,6 +1124,61 @@ mod tests {
                 .to_string()
                 .contains("physical store authentication failed")
         );
+    }
+
+    #[test]
+    fn strict_sqlite_store_loads_and_reopens_with_physical_admin() {
+        let fixture = StoreDeploymentFixture::new();
+        let sqlite_root = fixture.root.join("sqlite-objects");
+        fs::create_dir(&sqlite_root).expect("secure SQLite root");
+        fs::set_permissions(&sqlite_root, fs::Permissions::from_mode(0o700))
+            .expect("secure SQLite root mode");
+        let deployment = fixture.root.join("sqlite-store.toml");
+        fs::write(
+            &deployment,
+            format!(
+                r#"schema = "crucible.campaign-repository-store"
+version = 2
+root = "sqlite"
+admitted_kinds = {}
+ref_directory = {:?}
+
+[[nodes]]
+id = "sqlite"
+[nodes.spec]
+kind = "sqlite"
+root = {:?}
+"#,
+                all_object_kinds_toml(),
+                fixture.refs,
+                sqlite_root,
+            ),
+        )
+        .expect("authored SQLite deployment");
+        fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))
+            .expect("secure deployment mode");
+
+        let loaded = load_campaign_repository_graph(&deployment).expect("strict SQLite graph");
+        assert_eq!(loaded.graph.describe()[0].kind, StoreNodeKind::Sqlite);
+        assert_eq!(loaded.maintenance.physical().len(), 1);
+        let bytes = b"authored SQLite campaign object";
+        let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
+        loaded
+            .graph
+            .put_if_absent(id, &BlobHandle::from_bytes(bytes))
+            .expect("durable authored store put");
+        drop(loaded);
+
+        let reopened = load_campaign_repository_graph(&deployment).expect("reopened SQLite graph");
+        assert!(
+            reopened
+                .graph
+                .contains(id)
+                .expect("cold authenticated object")
+        );
+        reopened
+            .into_store()
+            .expect("maintained SQLite repository store");
     }
 
     #[test]

@@ -358,6 +358,79 @@ fn logical_and_physical_quotas_compose_without_an_admin_bypass() {
 }
 
 #[test]
+fn sqlite_physical_quota_binds_the_database_and_wal_root() {
+    let temp = TempDir::new().expect("temporary directory");
+    let physical = node_id("physical-quota");
+    let sqlite = node_id("sqlite");
+    let object_root = temp.path().join("sqlite-objects");
+    let policy =
+        StorePhysicalQuotaPolicyId::new("host/ext4/sqlite").expect("SQLite physical quota policy");
+    let binder = Arc::new(RecordingPhysicalQuotaBinder::new(true));
+    let mut binders = StoreGraphPhysicalQuotaBinders::new();
+    binders
+        .insert(policy.clone(), binder.clone())
+        .expect("physical quota capability");
+    let (graph, admin) = StoreGraph::build_with_admin_and_all_capabilities(
+        StoreGraphConfig {
+            root: physical.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+            nodes: BTreeMap::from([
+                (
+                    physical.clone(),
+                    StoreNodeSpec::PhysicalQuota {
+                        child: sqlite.clone(),
+                        policy,
+                        project_id: 43,
+                        maximum_physical_bytes: 128 * 1024,
+                        maximum_inodes: 64,
+                    },
+                ),
+                (
+                    sqlite,
+                    StoreNodeSpec::Sqlite {
+                        root: object_root.clone(),
+                    },
+                ),
+            ]),
+        },
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &StoreGraphObjectProfilers::new(),
+        &binders,
+        &StoreGraphS3Clients::new(),
+    )
+    .expect("quota-owned SQLite graph");
+    assert_eq!(admin.physical().len(), 1);
+    assert_eq!(admin.physical()[0].node(), &physical);
+    assert_eq!(
+        binder.bindings(),
+        vec![RecordedPhysicalQuotaBinding {
+            root: object_root,
+            project_id: 43,
+            maximum_physical_bytes: 128 * 1024,
+            maximum_inodes: 64,
+        }]
+    );
+
+    let bytes = b"quota-owned SQLite fact";
+    let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
+    put_bytes(&graph, id, bytes).expect("SQLite quota put");
+    binder.guard.set_allowed(false);
+    let rejected_bytes = b"rejected SQLite fact";
+    let rejected = ContentId::for_bytes(ObjectKind::CampaignFact, 1, rejected_bytes);
+    assert!(matches!(
+        put_bytes(&graph, rejected, rejected_bytes),
+        Err(StoreError::Quota)
+    ));
+    binder.guard.set_allowed(true);
+    assert!(
+        !graph
+            .contains(rejected)
+            .expect("rejected object remains absent")
+    );
+}
+
+#[test]
 fn logical_quota_reclaims_accounting_through_graph_admin_and_survives_restart() {
     let temp = TempDir::new().expect("temporary directory");
     let quota = node_id("quota");

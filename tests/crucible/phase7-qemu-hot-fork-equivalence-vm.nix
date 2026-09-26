@@ -21,6 +21,7 @@
   flight = pkgs.mkDerivation {
     pname = "crucible-qemu-hot-fork-equivalence-flight";
     version = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     src = source;
     buildDeps = [
       pkgs.coreutils
@@ -30,8 +31,10 @@
       pkgs.protobuf
       pkgs.rust
       pkgs.sed
+
+      pkgs.sqlite
     ];
-    runtimeDeps = [pkgs.openssl];
+    runtimeDeps = [pkgs.openssl pkgs.sqlite];
     phases = [
       {
         name = "unpack";

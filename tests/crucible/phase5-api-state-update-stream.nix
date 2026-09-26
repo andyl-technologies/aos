@@ -165,12 +165,17 @@ in
   pkgs.mkDerivation {
     pname = "crucible-phase5-api-state-update-stream";
     version = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+    runtimeDeps = [pkgs.sqlite];
     src = crucibleSrc;
 
     buildDeps = [
       pkgs.coreutils
       pkgs.rust
       pkgs.sed
+
+      pkgs.pkg-config
+      pkgs.sqlite
     ];
 
     CRUCIBLE_T_API_7_FAILURES = failureText;

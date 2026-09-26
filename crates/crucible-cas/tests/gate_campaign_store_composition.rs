@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crucible_cas::content_store::{
     BlobHandle, ByteRange, DurabilityRequirement, ImmutableBlobBackend, ObjectKind,
-    PackedBlobBackend, StoreError, StoreGraph, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
-    StoreTierPolicy,
+    PackedBlobBackend, PlannedDeleteDisposition, StoreError, StoreGraph, StoreGraphConfig,
+    StoreNodeId, StoreNodeSpec, StoreTierPolicy,
 };
 use tempfile::TempDir;
 
@@ -66,6 +66,93 @@ fn allowed_layer_orders_preserve_ids_errors_durability_and_restart() {
     for (ordinal, order) in ALLOWED_LAYER_ORDERS.into_iter().enumerate() {
         assert_composition(temporary.path().join(ordinal.to_string()), order);
     }
+}
+
+#[test]
+fn sqlite_leaf_preserves_authenticated_objects_and_physical_gc_after_restart() {
+    let temporary = TempDir::new().expect("SQLite graph root");
+    let leaf = node("sqlite");
+    let config = StoreGraphConfig {
+        root: leaf.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+        nodes: BTreeMap::from([(
+            leaf,
+            StoreNodeSpec::Sqlite {
+                root: temporary.path().join("objects"),
+            },
+        )]),
+    };
+    let bytes = b"durable campaign fact";
+    let id = crucible_cas::content_store::ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
+
+    let (graph, admin) = StoreGraph::build_with_admin(config.clone()).expect("SQLite graph");
+    let sqlite_configuration = graph.configuration_id();
+    let directory = StoreGraph::build(StoreGraphConfig {
+        root: node("sqlite"),
+        admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+        nodes: BTreeMap::from([(
+            node("sqlite"),
+            StoreNodeSpec::Directory {
+                root: temporary.path().join("objects"),
+            },
+        )]),
+    })
+    .expect("same path with a different leaf kind");
+    assert_ne!(sqlite_configuration, directory.configuration_id());
+    drop(directory);
+    assert!(
+        graph
+            .put_if_absent(id, &BlobHandle::from_bytes(bytes))
+            .expect("durable put")
+            .is_durable()
+    );
+    assert_eq!(read_all(&graph, id), bytes);
+    assert_eq!(admin.physical().len(), 1);
+    drop(admin);
+    drop(graph);
+
+    let (restarted, admin) = StoreGraph::build_with_admin(config.clone()).expect("restarted graph");
+    assert_eq!(restarted.configuration_id(), sqlite_configuration);
+    assert_eq!(read_all(&restarted, id), bytes);
+    let physical = admin.physical();
+    let mut fence = physical[0]
+        .admin()
+        .acquire_inventory_fence()
+        .expect("SQLite inventory fence");
+    assert_eq!(
+        fence
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("complete physical inventory")
+            .objects(),
+        1
+    );
+    assert_eq!(
+        fence.delete_candidate(id).expect("planned GC deletion"),
+        PlannedDeleteDisposition::Deleted
+    );
+    drop(fence);
+    drop(physical);
+    drop(admin);
+    drop(restarted);
+
+    let (reopened, admin) = StoreGraph::build_with_admin(config).expect("reopen after GC");
+    assert!(
+        !reopened
+            .contains(id)
+            .expect("deleted object remains absent")
+    );
+    let physical = admin.physical();
+    let mut fence = physical[0]
+        .admin()
+        .acquire_inventory_fence()
+        .expect("reopened inventory fence");
+    assert_eq!(
+        fence
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("reopened physical inventory")
+            .objects(),
+        0
+    );
 }
 
 fn assert_composition(root: std::path::PathBuf, order: [TransparentLayer; 3]) {

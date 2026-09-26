@@ -1,7 +1,7 @@
 //! Durable single-host bootstrap for the local campaign service.
 //!
 //! This module composes the managed Unix endpoint, strict peer policy, fixed
-//! listener, and directory-backed campaign repository behind one lifecycle.
+//! listener, and SQLite-backed campaign repository behind one lifecycle.
 //! The state root is an operator-owned namespace with a lifetime exclusive
 //! lock, preventing two cooperating daemon incarnations from claiming the sole
 //! writer repository through different socket paths. Startup may install a
@@ -378,17 +378,22 @@ impl CampaignLocalServiceConfig {
             self.endpoint.owner_group_id(),
             true,
         )?;
+        let object_root = self.state_directory.join(OBJECT_DIRECTORY);
+        // A prior directory leaf can contain objects or only inventory state.
+        // Reject either layout before opening a new database beside it.
+        for marker in ["objects", ".inventory-admin"] {
+            match fs::symlink_metadata(object_root.join(marker)) {
+                Ok(_) => return Err(CampaignLocalServiceError::InvalidRepositoryStore),
+                Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+                Err(_) => return Err(CampaignLocalServiceError::InvalidRepositoryStore),
+            }
+        }
         let root = StoreNodeId::new("campaign-primary")
             .map_err(|_| CampaignLocalServiceError::InvalidRepositoryStore)?;
         let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
             root: root.clone(),
             admitted_kinds: BTreeSet::from(CAMPAIGN_REPOSITORY_OBJECT_KINDS),
-            nodes: BTreeMap::from([(
-                root,
-                StoreNodeSpec::Directory {
-                    root: self.state_directory.join(OBJECT_DIRECTORY),
-                },
-            )]),
+            nodes: BTreeMap::from([(root, StoreNodeSpec::Sqlite { root: object_root })]),
         })
         .map_err(|_| CampaignLocalServiceError::InvalidRepositoryStore)?;
         let store = CampaignLocalRepositoryStore::new_with_maintenance(
@@ -406,7 +411,7 @@ impl CampaignLocalServiceConfig {
     /// Policy and component-authority authentication complete before the local
     /// state namespace is locked, and the supplied backends are not accessed by
     /// preparation. The state root retains the same exact-owner lifetime lock
-    /// as the directory profile but does not create `objects` or `refs`
+    /// as the built-in profile but does not create `objects` or `refs`
     /// subdirectories. The prepared service retains the consumed store
     /// capability and does not expose its repository through the public API.
     ///
@@ -1691,7 +1696,7 @@ impl CampaignStateOwner {
         path: &Path,
         user_id: u32,
         group_id: u32,
-        prepare_directory_repository: bool,
+        prepare_local_repository: bool,
     ) -> Result<Self, CampaignLocalServiceError> {
         let metadata = fs::symlink_metadata(path)
             .map_err(|source| io_error("stat-state-directory", path, source))?;
@@ -1756,7 +1761,7 @@ impl CampaignStateOwner {
         let transfer_identity = load_or_create_state_identity(path, user_id, group_id)?;
         revalidate_state_path(&root, &metadata, path, user_id, group_id)?;
 
-        if prepare_directory_repository {
+        if prepare_local_repository {
             prepare_subdirectory(path, OBJECT_DIRECTORY, user_id, group_id)?;
             prepare_subdirectory(path, REF_DIRECTORY, user_id, group_id)?;
             revalidate_state_path(&root, &metadata, path, user_id, group_id)?;

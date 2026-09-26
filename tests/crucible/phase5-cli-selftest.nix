@@ -206,13 +206,17 @@ in
     sourceChecks = pkgs.mkDerivation {
       pname = "crucible-phase5-cli-selftest-source";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
       src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
+        pkgs.pkg-config
+        pkgs.sqlite
       ];
+      runtimeDeps = [pkgs.sqlite];
 
       ATTR_PATH = attrPath;
       TASK_IDS = builtins.concatStringsSep "," taskIds;

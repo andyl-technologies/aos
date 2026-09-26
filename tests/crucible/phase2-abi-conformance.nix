@@ -377,6 +377,8 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase2-abi-conformance";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
 
       buildDeps =
@@ -384,6 +386,9 @@ in
           pkgs.grep
           pkgs.rust
           pkgs.sed
+
+          pkgs.pkg-config
+          pkgs.sqlite
         ]
         ++ dependencies
         ++ lib.optionals (campaignComposition != null) [pkgs.nix campaignToplevel];

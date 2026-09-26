@@ -62,8 +62,10 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase1-execution-lifecycle-routes";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
-      buildDeps = [pkgs.rust pkgs.sed];
+      buildDeps = [pkgs.rust pkgs.sed pkgs.pkg-config pkgs.sqlite];
 
       phases = [
         {

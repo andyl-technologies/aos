@@ -11,6 +11,8 @@ in
   pkgs.mkDerivation {
     pname = "crucible-phase5-campaign-store-composition";
     version = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+    runtimeDeps = [pkgs.sqlite];
     src = crucibleSrc;
 
     buildDeps =
@@ -19,6 +21,9 @@ in
         pkgs.grep
         pkgs.rust
         pkgs.sed
+
+        pkgs.pkg-config
+        pkgs.sqlite
       ]
       ++ dependencies;
 
@@ -88,6 +93,18 @@ in
             --features test-double \
             --test gate_campaign_store_composition \
             -- --test-threads=1
+          sqlite_deployment_test=cli_campaign_store::tests::strict_sqlite_store_loads_and_reopens_with_physical_admin
+          sqlite_deployment_listing=$(cargo test \
+            --frozen --offline --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-cli --bin crucible "$sqlite_deployment_test" -- --exact --list)
+          printf '%s\n' "$sqlite_deployment_listing" \
+            | grep -Fqx "$sqlite_deployment_test: test"
+          cargo test \
+            --frozen --offline --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-cli --bin crucible "$sqlite_deployment_test" \
+            -- --exact --test-threads=1
           cargo test \
             --frozen \
             --offline \
@@ -129,6 +146,7 @@ in
             content_store::tests::encrypted_directory_graph_identity_excludes_secret_key_material \
             content_store::tests::compressed_encrypted_directory_is_a_versioned_graph_leaf \
             content_store::tests::quotas::logical_and_physical_quotas_compose_without_an_admin_bypass \
+            content_store::tests::quotas::sqlite_physical_quota_binds_the_database_and_wal_root \
             content_store::tests::write_back::durable_write_back_survives_restart_and_exposes_exact_retention_roots \
             content_store::tests::write_back::write_back_journal_recovers_torn_tail_and_rejects_corruption \
             content_store::tests::packed::packed_store_graph_is_admitted_and_requires_an_isolated_persistent_root \
@@ -140,6 +158,7 @@ in
           # Exercise the daemon owner's restart, interrupted journal, quota,
           # cache, write-back-root, packed, and S3 global-GC paths.
           for daemon_test in \
+            campaign_bootstrap::tests::deployment_contracts::default_sqlite_store_reopens_and_rejects_a_loose_object_layout \
             campaign_gc::tests::policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy \
             campaign_gc::tests::write_back_roots_retain_exact_pending_objects_and_refs_retain_closures \
             campaign_gc::tests::direct_transfer_root_promoted_to_hot_root_revalidates_its_closure \
@@ -217,7 +236,8 @@ in
           s3_faults_preserve_multiple_refs_and_transfer_gc=true
           paused_derived_s3_write_back_fault_recovery_gc=true
           packed_restart_and_repack=true
-          specialized_layers=compressed,encrypted,compressed-encrypted,logical-quota,physical-quota,namespaced,profile-validated,s3
+          sqlite_restart_and_gc=true
+          specialized_layers=sqlite,compressed,encrypted,compressed-encrypted,logical-quota,physical-quota,namespaced,profile-validated,s3
           RESULT
         '';
       }
