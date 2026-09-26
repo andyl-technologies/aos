@@ -76,7 +76,7 @@ impl ClosedTreeLineageRecordV1 {
             || tree_commitment.as_bytes() == &[0; 32]
             || prior_tree_head.is_none() != genesis
             || prior_lineage_head.is_none() != genesis
-            || initial_seed_packet.is_none() != genesis
+            || initial_seed_packet.is_some() != genesis
             || prior_tree_head.is_some_and(|head| head.as_bytes() == &[0; 32])
             || prior_lineage_head.is_some_and(|head| head.as_bytes() == &[0; 32])
             || initial_seed_packet.as_ref().is_some_and(|packet| {
@@ -614,6 +614,35 @@ mod tests {
             replay_closed_tree_lineage_v1(source.journal())
                 .expect("replay")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn genesis_link_roundtrips_only_with_its_exact_seed_packet() {
+        let project = ProjectId::from_bytes([1; 16]);
+        let link = ClosedTreeLineageRecordV1::new(
+            project,
+            1,
+            None,
+            ObjectDigest::from_bytes([2; 32]),
+            None,
+            ObjectDigest::from_bytes([3; 32]),
+            Some(packet(project)),
+        )
+        .expect("seed-bearing genesis link");
+
+        assert_eq!(decode_closed_tree_lineage_v1(&link.encode()), Some(link));
+        assert!(
+            ClosedTreeLineageRecordV1::new(
+                project,
+                1,
+                None,
+                ObjectDigest::from_bytes([2; 32]),
+                None,
+                ObjectDigest::from_bytes([3; 32]),
+                None,
+            )
+            .is_none()
         );
     }
 
