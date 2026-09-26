@@ -260,6 +260,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-icount-ceiling-target" \
               -p crucible \
+              --features test-double \
               --test scheduler_run_ceiling \
               -- --test-threads=1
           '';
@@ -277,6 +278,7 @@ in
             horizon_arithmetic=virtual-time
             ceiling_units=exact-ticks-in-max_advance_icount
             conversion=anchored-exact-tick-ceil-and-floor
+            shmem_publication_tests=test-double-enabled
             RESULT
           '';
         }
