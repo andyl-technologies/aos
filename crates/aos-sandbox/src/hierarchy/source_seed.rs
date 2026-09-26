@@ -35,6 +35,8 @@ const MAGIC: &[u8; 8] = b"AOSCSE01";
 const KEY_MAGIC: &[u8; 8] = b"AOSCSK01";
 const VERSION: u16 = 1;
 const BODY_BYTES: usize = 160;
+/// Bounds the signed body retained inside the exact seed packet.
+pub(super) const CONTROLLER_SOURCE_TREE_SEED_BODY_BYTES_V1: usize = BODY_BYTES;
 const CREDENTIAL_BYTES: usize = 80;
 const SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.controller-source-tree-seed.signature.v1\0/var/lib/aos/sandbox/source-domains/source-domains-v1.journal\0";
 const KEY_DOMAIN: &[u8] = b"aos.sandbox.controller-source-tree-seed.verifier.v1\0";
@@ -376,25 +378,7 @@ pub fn verify_controller_source_tree_seed_v1(
         return Err(ControllerSourceTreeSeedErrorV1::Stale);
     }
 
-    let limits = TreeLimitsV1::new(
-        read_limit(body, 132)?,
-        read_limit(body, 136)?,
-        read_limit(body, 140)?,
-        read_limit(body, 144)?,
-        read_limit(body, 148)?,
-        read_limit(body, 152)?,
-        read_limit(body, 156)?,
-    )
-    .map_err(|_| ControllerSourceTreeSeedErrorV1::NonCanonical)?;
-    let seed = ControllerSourceTreeSeedV1::new(
-        ProjectId::from_bytes(take::<16>(body, 20)?),
-        limits,
-        u64::from_be_bytes(take::<8>(body, 36)?),
-        ObjectDigest::from_bytes(take::<32>(body, 44)?),
-        ObjectDigest::from_bytes(take::<32>(body, 76)?),
-        take::<16>(body, 108)?,
-        u64::from_be_bytes(take::<8>(body, 124)?),
-    )?;
+    let seed = decode_source_tree_seed_body_v1(body)?;
     let signature = Signature::from_bytes(&take::<64>(bytes, BODY_BYTES)?);
     issuer
         .key
@@ -414,6 +398,36 @@ pub fn verify_controller_source_tree_seed_v1(
         seed,
         packet_digest,
     })
+}
+
+// Decodes already-framed seed body fields without signature or currentness
+// checks. The verifier checks issuer generation before calling this helper so
+// its existing Stale-versus-NonCanonical error order stays unchanged.
+pub(super) fn decode_source_tree_seed_body_v1(
+    body: &[u8],
+) -> Result<ControllerSourceTreeSeedV1, ControllerSourceTreeSeedErrorV1> {
+    if body.len() != BODY_BYTES {
+        return Err(ControllerSourceTreeSeedErrorV1::NonCanonical);
+    }
+    let limits = TreeLimitsV1::new(
+        read_limit(body, 132)?,
+        read_limit(body, 136)?,
+        read_limit(body, 140)?,
+        read_limit(body, 144)?,
+        read_limit(body, 148)?,
+        read_limit(body, 152)?,
+        read_limit(body, 156)?,
+    )
+    .map_err(|_| ControllerSourceTreeSeedErrorV1::NonCanonical)?;
+    ControllerSourceTreeSeedV1::new(
+        ProjectId::from_bytes(take::<16>(body, 20)?),
+        limits,
+        u64::from_be_bytes(take::<8>(body, 36)?),
+        ObjectDigest::from_bytes(take::<32>(body, 44)?),
+        ObjectDigest::from_bytes(take::<32>(body, 76)?),
+        take::<16>(body, 108)?,
+        u64::from_be_bytes(take::<8>(body, 124)?),
+    )
 }
 
 /// Verifies a proposal using the Controller's fixed privileged issuer pin.
@@ -563,6 +577,19 @@ mod tests {
         assert!(matches!(
             verify_controller_source_tree_seed_v1(&wrong_domain, &pin, expected),
             Err(ControllerSourceTreeSeedErrorV1::Signature)
+        ));
+    }
+
+    #[test]
+    fn issuer_mismatch_precedes_malformed_seed_body() {
+        let (key, pin, seed, expected) = fixture();
+        let mut packet = sign_controller_source_tree_seed_v1(seed, 7, &key).unwrap();
+        packet[12] ^= 1;
+        packet[132..136].copy_from_slice(&u32::MAX.to_be_bytes());
+
+        assert!(matches!(
+            verify_controller_source_tree_seed_v1(&packet, &pin, expected),
+            Err(ControllerSourceTreeSeedErrorV1::Stale)
         ));
     }
 

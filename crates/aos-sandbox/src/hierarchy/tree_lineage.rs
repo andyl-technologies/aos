@@ -13,12 +13,18 @@
 //! contents after overwrite. The current Tree body is always revalidated.
 
 use std::collections::BTreeMap;
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 use aos_sandbox_core::{ObjectDigest, ProjectId, Revision};
 
-use crate::journal::Journal;
+use crate::journal::{Journal, JournalLimits};
 use crate::lifecycle::protected_journal_adapter::decode_reducer_payload_with_validator;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::lifecycle::protected_journal_join::{
+    PROTECTED_SOURCE_DOMAIN_JOURNAL, PROTECTED_SOURCE_DOMAIN_ROOT, source_domain_journal_limits,
+};
 
 use super::codec::{decode_tree_v1, tree_commitment_v1};
 use super::graph::SandboxTreeV1;
@@ -32,7 +38,10 @@ use super::protected_journal::{
     claim_hierarchy_protected_journal_v1, hierarchy_reducer_envelope_v1,
     recover_hierarchy_replay_validator_for_closed_lineage_v1,
 };
-use super::source_seed::{CONTROLLER_SOURCE_TREE_SEED_BYTES_V1, ControllerSourceTreeSeedV1};
+use super::source_seed::{
+    CONTROLLER_SOURCE_TREE_SEED_BODY_BYTES_V1, CONTROLLER_SOURCE_TREE_SEED_BYTES_V1,
+    ControllerSourceTreeSeedV1, decode_source_tree_seed_body_v1,
+};
 
 const MAGIC: &[u8; 8] = b"AOSHTL01";
 const HEADER_BYTES: usize = 168;
@@ -180,29 +189,7 @@ fn seed_claims(
     if issuer_generation == 0 {
         return None;
     }
-    let mut limits = [0_usize; 7];
-    for (index, limit) in limits.iter_mut().enumerate() {
-        let offset = 132 + index * 4;
-        *limit = usize::try_from(u32::from_be_bytes(
-            packet[offset..offset + 4].try_into().ok()?,
-        ))
-        .ok()?;
-    }
-    let limits = TreeLimitsV1::new(
-        limits[0], limits[1], limits[2], limits[3], limits[4], limits[5], limits[6],
-    )
-    .ok()?;
-    let seed = ControllerSourceTreeSeedV1::new(
-        ProjectId::from_bytes(packet[20..36].try_into().ok()?),
-        limits,
-        u64::from_be_bytes(packet[36..44].try_into().ok()?),
-        ObjectDigest::from_bytes(packet[44..76].try_into().ok()?),
-        ObjectDigest::from_bytes(packet[76..108].try_into().ok()?),
-        packet[108..124].try_into().ok()?,
-        u64::from_be_bytes(packet[124..132].try_into().ok()?),
-    )
-    .ok()?;
-    Some(seed)
+    decode_source_tree_seed_body_v1(&packet[..CONTROLLER_SOURCE_TREE_SEED_BODY_BYTES_V1]).ok()
 }
 
 /// A structurally replayed current Tree and its immutable link head.
@@ -340,15 +327,23 @@ fn verify_closed_tree_lineage_projection_v1(
 ///
 /// A future admission path must construct this only while it retains the
 /// Controller writer and an independent epoch floor across the Source commit.
+/// The expected Source UID must come from privileged configuration, never
+/// from the held journal whose name is being checked.
 pub(super) struct ClosedSourceTreeAppendAuthorityV1 {
-    _private: (),
+    expected_source_uid: u32,
+}
+
+struct HeldSourceLocationV1 {
+    directory: PathBuf,
+    limits: JournalLimits,
 }
 
 /// Holds the Source writer for an atomic Tree-plus-lineage append.
 pub(super) struct ClosedSourceTreeLineageWriterV1<'owner> {
     journal: HierarchyProtectedJournalV1<'owner>,
     validator: HierarchyProtectedReplayValidatorV1,
-    _authority: &'owner ClosedSourceTreeAppendAuthorityV1,
+    authority: &'owner ClosedSourceTreeAppendAuthorityV1,
+    location: HeldSourceLocationV1,
 }
 
 impl<'owner> ClosedSourceTreeLineageWriterV1<'owner> {
@@ -360,21 +355,32 @@ impl<'owner> ClosedSourceTreeLineageWriterV1<'owner> {
         source: &'owner mut ProtectedSourceDomainJournalOwnerV1,
         authority: &'owner ClosedSourceTreeAppendAuthorityV1,
     ) -> Result<Self, HierarchyProtectedJournalErrorV1> {
-        source.require_fixed_named_writer_v1()?;
-        Self::claim_journal(source.journal(), authority)
+        let location = HeldSourceLocationV1 {
+            directory: PathBuf::from(PROTECTED_SOURCE_DOMAIN_ROOT),
+            limits: source_domain_journal_limits(),
+        };
+        Self::claim_journal(source.journal(), authority, location)
     }
 
     fn claim_journal(
         journal: &'owner mut Journal,
         authority: &'owner ClosedSourceTreeAppendAuthorityV1,
+        location: HeldSourceLocationV1,
     ) -> Result<Self, HierarchyProtectedJournalErrorV1> {
+        journal.require_protected_named_location(
+            &location.directory,
+            PROTECTED_SOURCE_DOMAIN_JOURNAL,
+            authority.expected_source_uid,
+            location.limits,
+        )?;
         let validator = recover_hierarchy_replay_validator_for_closed_lineage_v1(journal)?;
         let claimed = claim_hierarchy_protected_journal_v1(journal, validator.clone())?;
         verify_closed_tree_lineage_projection_v1(&claimed.replay()?, &validator)?;
         Ok(Self {
             journal: claimed,
             validator,
-            _authority: authority,
+            authority,
+            location,
         })
     }
 
@@ -382,8 +388,13 @@ impl<'owner> ClosedSourceTreeLineageWriterV1<'owner> {
     fn claim_for_test(
         source: &'owner mut ProtectedSourceDomainJournalOwnerV1,
         authority: &'owner ClosedSourceTreeAppendAuthorityV1,
+        directory: &Path,
     ) -> Result<Self, HierarchyProtectedJournalErrorV1> {
-        Self::claim_journal(source.journal(), authority)
+        let location = HeldSourceLocationV1 {
+            directory: directory.to_path_buf(),
+            limits: JournalLimits::default(),
+        };
+        Self::claim_journal(source.journal(), authority, location)
     }
 
     /// Appends an empty initial Tree and its exact seed-bearing link together.
@@ -486,7 +497,13 @@ impl<'owner> ClosedSourceTreeLineageWriterV1<'owner> {
         let prepared = self
             .journal
             .plan(transaction_id, vec![tree_envelope, lineage_envelope])?;
-        self.journal.commit(prepared)
+        self.journal.commit_at_named_location(
+            prepared,
+            &self.location.directory,
+            PROTECTED_SOURCE_DOMAIN_JOURNAL,
+            self.authority.expected_source_uid,
+            self.location.limits,
+        )
     }
 }
 
@@ -511,26 +528,28 @@ mod tests {
     use super::*;
     use crate::JournalLimits;
     use crate::hierarchy::source_seed::sign_controller_source_tree_seed_v1;
-    use crate::journal::Journal;
+    use crate::journal::{Journal, JournalError};
     use crate::lifecycle::protected_journal_adapter::DomainCommitOutcomeV1;
 
-    fn fixture() -> (tempfile::TempDir, ProtectedSourceDomainJournalOwnerV1) {
-        let directory = tempfile::tempdir().expect("private directory");
-        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-            .expect("private mode");
-        let uid = fs::metadata(directory.path()).expect("metadata").uid();
+    fn open_source(directory: &Path) -> ProtectedSourceDomainJournalOwnerV1 {
+        let uid = fs::metadata(directory).expect("metadata").uid();
         let journal = Journal::open_protected_at_uid(
-            directory.path(),
-            "source-domains.journal",
+            directory,
+            PROTECTED_SOURCE_DOMAIN_JOURNAL,
             JournalLimits::default(),
             uid,
         )
         .expect("protected journal")
         .0;
-        (
-            directory,
-            ProtectedSourceDomainJournalOwnerV1::from_test_journal(journal),
-        )
+        ProtectedSourceDomainJournalOwnerV1::from_test_journal(journal)
+    }
+
+    fn fixture() -> (tempfile::TempDir, ProtectedSourceDomainJournalOwnerV1) {
+        let directory = tempfile::tempdir().expect("private directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private mode");
+        let source = open_source(directory.path());
+        (directory, source)
     }
 
     fn packet(project: ProjectId) -> [u8; CONTROLLER_SOURCE_TREE_SEED_BYTES_V1] {
@@ -548,8 +567,10 @@ mod tests {
             .expect("packet")
     }
 
-    fn test_authority() -> ClosedSourceTreeAppendAuthorityV1 {
-        ClosedSourceTreeAppendAuthorityV1 { _private: () }
+    fn test_authority(directory: &Path) -> ClosedSourceTreeAppendAuthorityV1 {
+        ClosedSourceTreeAppendAuthorityV1 {
+            expected_source_uid: fs::metadata(directory).expect("metadata").uid(),
+        }
     }
 
     fn limits() -> TreeLimitsV1 {
@@ -597,16 +618,80 @@ mod tests {
     }
 
     #[test]
+    fn closed_writer_rejects_substituted_expected_source_uid() {
+        let (directory, mut source) = fixture();
+        let authority = ClosedSourceTreeAppendAuthorityV1 {
+            expected_source_uid: fs::metadata(directory.path()).expect("metadata").uid() ^ 1,
+        };
+
+        assert!(
+            ClosedSourceTreeLineageWriterV1::claim_for_test(
+                &mut source,
+                &authority,
+                directory.path(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn post_commit_name_check_failure_retains_unknown_outcome() {
+        let (directory, mut source) = fixture();
+        let project = ProjectId::from_bytes([1; 16]);
+        let tree = empty_tree(project, 1);
+        let validator = recover_hierarchy_replay_validator_for_closed_lineage_v1(source.journal())
+            .expect("validator");
+        let mut journal = claim_hierarchy_protected_journal_v1(source.journal(), validator.clone())
+            .expect("claim");
+        let envelope = hierarchy_reducer_envelope_v1(
+            tree_key(project).expect("tree key"),
+            1,
+            None,
+            HierarchyReducerRecordV1::Tree(&tree),
+            &validator,
+        )
+        .expect("tree envelope");
+        let plan = journal.plan([9; 16], vec![envelope]).expect("plan");
+        let mut checks = 0;
+        let outcome = journal
+            .commit_with_test_check(plan, |_| {
+                checks += 1;
+                if checks == 2 {
+                    Err(JournalError::StaleAuthoritySnapshot)
+                } else {
+                    Ok(())
+                }
+            })
+            .expect("commit classification");
+        assert_eq!(checks, 2);
+        assert!(matches!(
+            outcome,
+            DomainCommitOutcomeV1::OutcomeUnknown {
+                cause: JournalError::StaleAuthoritySnapshot,
+                ..
+            }
+        ));
+        drop(journal);
+
+        drop(source);
+        let mut recovered = open_source(directory.path());
+        assert!(replay_closed_tree_lineage_v1(recovered.journal()).is_err());
+    }
+
+    #[test]
     fn atomic_genesis_and_transition_retain_exact_contiguous_heads() {
-        let (_directory, mut source) = fixture();
-        let authority = test_authority();
+        let (directory, mut source) = fixture();
+        let authority = test_authority(directory.path());
         let project = ProjectId::from_bytes([1; 16]);
         let seed_packet = packet(project);
 
         {
-            let mut writer =
-                ClosedSourceTreeLineageWriterV1::claim_for_test(&mut source, &authority)
-                    .expect("closed writer");
+            let mut writer = ClosedSourceTreeLineageWriterV1::claim_for_test(
+                &mut source,
+                &authority,
+                directory.path(),
+            )
+            .expect("closed writer");
             assert!(matches!(
                 writer.append_genesis(seed_packet).expect("genesis"),
                 DomainCommitOutcomeV1::Applied(_)
@@ -620,7 +705,9 @@ mod tests {
             ));
         }
 
-        let heads = replay_closed_tree_lineage_v1(source.journal()).expect("closed replay");
+        drop(source);
+        let mut source = open_source(directory.path());
+        let heads = replay_closed_tree_lineage_v1(source.journal()).expect("cold replay");
         assert_eq!(
             heads.get(&project).expect("project").tree.tree_generation(),
             Revision::new(2)
@@ -640,16 +727,18 @@ mod tests {
 
     #[test]
     fn tree_without_matching_lineage_fails_cold_replay() {
-        let (_directory, mut source) = fixture();
+        let (directory, mut source) = fixture();
         let project = ProjectId::from_bytes([1; 16]);
         commit_tree_only(&mut source, &empty_tree(project, 1), None, [6; 16]);
 
-        assert!(replay_closed_tree_lineage_v1(source.journal()).is_err());
+        drop(source);
+        let mut recovered = open_source(directory.path());
+        assert!(replay_closed_tree_lineage_v1(recovered.journal()).is_err());
     }
 
     #[test]
     fn lineage_without_tree_fails_cold_replay() {
-        let (_directory, mut source) = fixture();
+        let (directory, mut source) = fixture();
         let project = ProjectId::from_bytes([1; 16]);
         let tree = empty_tree(project, 1);
         let validator = recover_hierarchy_replay_validator_for_closed_lineage_v1(source.journal())
@@ -693,18 +782,23 @@ mod tests {
         ));
         drop(journal);
 
-        assert!(replay_closed_tree_lineage_v1(source.journal()).is_err());
+        drop(source);
+        let mut recovered = open_source(directory.path());
+        assert!(replay_closed_tree_lineage_v1(recovered.journal()).is_err());
     }
 
     #[test]
     fn superseded_tree_without_new_link_fails_cold_replay() {
-        let (_directory, mut source) = fixture();
-        let authority = test_authority();
+        let (directory, mut source) = fixture();
+        let authority = test_authority(directory.path());
         let project = ProjectId::from_bytes([1; 16]);
         {
-            let mut writer =
-                ClosedSourceTreeLineageWriterV1::claim_for_test(&mut source, &authority)
-                    .expect("closed writer");
+            let mut writer = ClosedSourceTreeLineageWriterV1::claim_for_test(
+                &mut source,
+                &authority,
+                directory.path(),
+            )
+            .expect("closed writer");
             assert!(matches!(
                 writer.append_genesis(packet(project)).expect("genesis"),
                 DomainCommitOutcomeV1::Applied(_)
@@ -722,6 +816,8 @@ mod tests {
             [7; 16],
         );
 
-        assert!(replay_closed_tree_lineage_v1(source.journal()).is_err());
+        drop(source);
+        let mut recovered = open_source(directory.path());
+        assert!(replay_closed_tree_lineage_v1(recovered.journal()).is_err());
     }
 }
