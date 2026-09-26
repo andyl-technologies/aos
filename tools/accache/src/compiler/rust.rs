@@ -145,7 +145,7 @@ pub(super) fn configure(
                 }
                 continue;
             }
-            for prefix in [
+            let file_input = [
                 "cgscc-inline-replay=",
                 "codegen-data-use-path=",
                 "extract-blocks-file=",
@@ -163,12 +163,18 @@ pub(super) fn configure(
                 "sample-profile-file=",
                 "sample-profile-inline-replay=",
                 "summary-file=",
-            ] {
-                if let Some(path) = argument.strip_prefix(prefix) {
-                    ensure!(!path.is_empty(), "LLVM file input is empty");
-                    invocation.extra_inputs.insert(path.into());
-                }
+            ]
+            .into_iter()
+            .find_map(|prefix| argument.strip_prefix(prefix));
+            if let Some(path) = file_input {
+                ensure!(!path.is_empty(), "LLVM file input is empty");
+                invocation.extra_inputs.insert(path.into());
+                continue;
             }
+            // LLVM's internal flags include both implicit file reads and
+            // generated side files. Unknown options stay usable through a
+            // direct rustc call until their effects have an audited contract.
+            anyhow::bail!("Rust LLVM option {argument} has no audited cache contract");
         }
     }
 

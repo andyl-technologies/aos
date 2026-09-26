@@ -2701,6 +2701,47 @@ def check_rust_llvm_report_passthrough(root, env, accache, sccache, rustc, hits)
             "artifacts": sorted(expected)}
 
 
+def check_rust_llvm_unknown_passthrough(root, env, accache, sccache, rustc, hits):
+    """Preserve a live LLVM pass report without an audited cache contract."""
+    work = root / "rust-llvm-unknown-report"
+    work.mkdir()
+    (work / "target").mkdir()
+    (work / "source.rs").write_text("pub fn answer(x: u32) -> u32 { x + 1 }\n")
+    library = work / "target/libexample.rlib"
+    depfile = work / "target/example.d"
+    args = [rustc, "--crate-name=example", "--crate-type=rlib",
+            "--emit=link,dep-info", "--out-dir=target", "-Copt-level=2",
+            "-Cllvm-args=--debug-pass=Structure", "source.rs"]
+
+    def compile_library(wrapper):
+        library.unlink(missing_ok=True)
+        depfile.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (wrapper, completed.stderr)
+        return (completed.stdout, completed.stderr,
+                library.read_bytes(), depfile.read_bytes())
+
+    direct = compile_library([])
+    assert b"Pass Arguments:" in direct[1], "LLVM emitted no live pass report"
+    assert compile_library([sccache])[2:] == direct[2:]
+    before_hits = hits()
+    assert compile_library([sccache])[2:] == direct[2:]
+    oracle_hit = hits() > before_hits
+
+    for attempt in range(2):
+        assert compile_library([accache]) == direct, (
+            attempt, "accache changed a direct LLVM report")
+        event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+        assert (event["outcome"] == "bypass"
+                and "no audited cache contract" in event["reason"]), event
+
+    print("PASS oracle rust-llvm-unknown-report passthrough", flush=True)
+    return {"fixture": "rust-llvm-unknown-report", "revision": 0,
+            "oracle_hit": oracle_hit, "accache": "bypass",
+            "artifacts": ["target/libexample.rlib", "target/example.d"]}
+
+
 def check_rust_profile_use(root, env, accache, sccache, rustc, clang, hits):
     """Track rustc's profile input across cold and warm library actions."""
     work = root / "rust-profile-use"
@@ -3330,6 +3371,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
                                                    sccache, rustc, hits))
         results.append(check_rust_llvm_report_passthrough(root, env, accache,
                                                           sccache, rustc, hits))
+        results.append(check_rust_llvm_unknown_passthrough(root, env, accache,
+                                                           sccache, rustc, hits))
         results.extend(check_rust_profile_use(root, env, accache, sccache,
                                               rustc, clang, hits))
         results.extend(check_rust_sample_profile_use(root, env, accache,
