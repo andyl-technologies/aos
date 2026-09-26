@@ -1555,28 +1555,31 @@ The spike records `whitebox_on_trap_tested=true`,
 `fallback_adopted=none`.
 
 **RISK-25** is retired by `T-RISK-17`.
-The earlier `checks.crucible.phase0.s11MultiVcpuFingerprint` artifact booted a
-stock Linux diskless initramfs twice under the normative
-`-accel sim,thread=single` path, including a bounded-scheduler-preemption run,
-with `vcpus=4`, `rr_switch_quantum=4096`,
-`cadence=100000000`, and an exact `horizon_icount=4000000000`. The sustained
-pthread spinlock workload reported affinity on vCPUs `0,1,2,3`; both runs
-produced 40 periodic samples plus a final aggregate at the exact observer
-boundary, `rr_switch_events=731765`, identical aggregate/per-vCPU/RR traces
-through the exact horizon, four nonempty 3868-byte register files with 66
-descriptors each, and a nonzero 256 MiB RAM digest. The final aggregate at
-`observed_icount=4000000000` is authoritative and precedes the native exact
-VMStop request. The run reported `aggregate_fingerprint_match=true`,
-`final_sample_exact_horizon=true`,
-`final_sample_fingerprint_compared=authoritative`,
-and `register_read_failures=0`. The four-vCPU sim execution is the sole S11
-validation path for that artifact. The current 50 ps/instruction fixture uses a
+`checks.crucible.phase0.s11MultiVcpuFingerprint` passed twice under
+`-accel sim,thread=single`, including a bounded-scheduler-preemption run, with
+`vcpus=4`, `rr_switch_quantum=4096`, `cadence=100000000`, and an exact
+`horizon_icount=4000000000`. The current 50 ps/instruction fixture uses a
 test-only Linux SMP configuration, direct reset, and a guest-visible four-CPU MP
-table. It supplies the fixed 4 GHz TSC and APIC calibration values and skips
-Linux's legacy IRQ0 wiring self-check with `no_timer_check`; local APIC, IOAPIC,
-and SMP execution remain enabled. Its exact four-billion-instruction result
-must be requalified on the current QEMU and plugin artifacts before the
-historical hashes and counts can be cited as current release evidence.
+table. It supplies fixed 4 GHz TSC and APIC calibration values and skips Linux's
+legacy IRQ0 wiring self-check with `no_timer_check`; local APIC, IOAPIC, and SMP
+execution remain enabled. Both guests reported all four processors and the
+sustained pthread spinlock workload on vCPUs `0,1,2,3`. The runs produced 40
+periodic samples plus a final aggregate at the exact observer boundary,
+`rr_switch_events=2530767`, identical aggregate/per-vCPU/RR traces through the
+exact horizon, and nonempty register files on every vCPU. Final per-vCPU retired
+counts were `[1600257447,790965440,819153696,789611181]`; the register hash was
+`6a5f028fe7460bc8569475d46546ca217da9425d28b31f4c5867640135ce67ce`,
+and the 256 MiB RAM hash was
+`e1642590a2fec027bd2fc520f96a6f25164e6ab7fadf5a6b8d7c592409c96dc5`.
+The final aggregate at `observed_icount=4000000000` is authoritative and
+precedes the native exact VMStop request. The result reports
+`aggregate_fingerprint_match=true`, `final_sample_exact_horizon=true`,
+`all_vcpus_retired=true`, and `register_read_failures=0`. The exact current
+artifact is `/nix/store/gab60s1mvmvqm78c48dshg1643plb6jb-crucible-phase0-s11-multi-vcpu-fingerprint-0`;
+its two trace files have identical SHA-256
+`9860975acf234eee0529165c3525c1acdbd78a48a65aa54b3cef1dfbd9f352b3`.
+The four-vCPU sim execution is the S11 validation path; this diskless proof
+does not claim full device-event determinism.
 
 **RISK-26** is retired by `T-RISK-18` with live preemption:
 `checks.crucible.phase0.s12PreemptionDecision` scanned the current QEMU Nix
@@ -1833,7 +1836,7 @@ never tolerated). Results live in the decision register (31).
   mismatch to the first differing node-icount + component. Block multi-vCPU
   foundation work until the exact four-vCPU path is green. Phase 0
   completed the two sim-mode runs through 4 billion aggregate instructions,
-  observed all four affinity-pinned workload vCPUs and 731765 RR switches, and
+  observed all four affinity-pinned workload vCPUs and 2530767 RR switches, and
   matched the complete horizon fingerprint under bounded scheduler preemption. —
   satisfies [RISK-25], [G-10], [DET-23], [SCHED-45], [PLUG-3]; spec §30.11a.
 - [x] **T-RISK-18** Run **S12**: force a `Decision::Preemption` (vCPU switch for
