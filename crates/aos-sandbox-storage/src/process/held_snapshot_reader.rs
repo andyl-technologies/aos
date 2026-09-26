@@ -15,12 +15,14 @@
 //!                    mounted-snapshot-guid:u64
 //! ```
 
-use std::os::fd::{AsFd as _, OwnedFd};
+use std::fs;
+use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 use std::time::Duration;
 
 use aos_sandbox_core::ObjectDigest;
-use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
+use aos_sandbox_linux::cgroup::{CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketSocket};
 use rustix::fs::{Mode, OFlags, StatVfsMountFlags};
@@ -46,7 +48,9 @@ const NAMESPACE_MARKER: &str = "/run/aos-held-reader-namespace";
 const TMPFS_MAGIC: u64 = 0x0102_1994;
 const STORAGED_CGROUP: &str = "aos.slice/aos-control.slice/aos-storaged.service";
 const READER_CGROUP_PREFIX: &str = "aos.slice/aos-control.slice/aos-sandbox-held-snapshot-reader@";
+const READER_UNIT_PREFIX: &str = "aos-sandbox-held-snapshot-reader@";
 const READER_CGROUP_SUFFIX: &str = ".service";
+const MAXIMUM_RECOVERED_READERS: usize = 128;
 const RESULT_BYTES: usize = 158;
 const MAXIMUM_REQUEST_BYTES: usize = 1024;
 const MAXIMUM_READY_BYTES: usize = 512;
@@ -95,6 +99,9 @@ impl SystemdHeldSnapshotReaderV1 {
                 "held snapshot reader is fail-stopped".to_owned(),
             ));
         }
+        if let Err(error) = self.prove_prior_readers_empty() {
+            return fail_stop_unproved_setup(&mut self.fail_stopped, error, None);
+        }
         let request = encode_request(snapshot, expected_pool_guid, protected_cut_digest, nonce)?;
         let request_digest = digest_request(&request);
         let deadline = Deadline::after(EXCHANGE_TIMEOUT);
@@ -106,8 +113,24 @@ impl SystemdHeldSnapshotReaderV1 {
 
         let ready = receive_before(&mut socket, MAXIMUM_READY_BYTES, deadline)?;
         let (ready_payload, reader_subject) = ready.into_parts();
-        let reader_cgroup = self.verify_reader(&reader_subject, decode_ready(&ready_payload)?)?;
-        let population = reader_cgroup.population_monitor()?;
+        let reader_setup =
+            decode_ready(&ready_payload).and_then(|path| self.verify_reader(&reader_subject, path));
+        let reader_cgroup = reader_setup
+            .or_else(|error| fail_stop_unproved_setup(&mut self.fail_stopped, error, None))?;
+        let population = match reader_cgroup.population_monitor() {
+            Ok(population) => population,
+            Err(error) => {
+                // This cgroup was authenticated, so cancellation can target it.
+                // Without its population monitor, cancellation cannot prove
+                // whole-unit exit and Storage must stop admitting attempts.
+                let cancellation = reader_cgroup.kill_all();
+                return fail_stop_unproved_setup(
+                    &mut self.fail_stopped,
+                    error.into(),
+                    cancellation.err(),
+                );
+            }
+        };
         let exchange = (|| {
             send_before(&mut socket, &request, deadline)?;
             let response = receive_before(&mut socket, RESULT_BYTES, deadline)?;
@@ -144,21 +167,43 @@ impl SystemdHeldSnapshotReaderV1 {
         }
     }
 
+    fn prove_prior_readers_empty(&self) -> Result<(), ZfsWorkerError> {
+        // The client is about to create a new Accept=yes instance. Scan the
+        // reserved service scope first, including after a Storage restart,
+        // so an earlier indeterminate exchange cannot overlap this attempt.
+        let directory = format!("/proc/self/fd/{}", self.worker_parent.as_fd().as_raw_fd());
+        let mut reader_count = 0;
+        for entry in fs::read_dir(directory)? {
+            let name = entry?.file_name();
+            if !name.as_bytes().starts_with(READER_UNIT_PREFIX.as_bytes()) {
+                continue;
+            }
+            let name = name.to_str().ok_or(ZfsWorkerError::PeerMismatch)?;
+            validate_reader_unit_name(name)?;
+            reader_count += 1;
+            if reader_count > MAXIMUM_RECOVERED_READERS {
+                return Err(ZfsWorkerError::Quiescence(
+                    "held snapshot reader recovery count exceeded ceiling".to_owned(),
+                ));
+            }
+
+            let cgroup = self.worker_parent.resolve_descendant(Path::new(name))?;
+            let population = cgroup.population_monitor()?;
+            require_prior_reader_empty(population.state()?)?;
+        }
+        self.worker_parent.validate_current()?;
+        Ok(())
+    }
+
     fn verify_reader(
         &self,
         subject: &KernelAuthorizedRecordSubject,
         path: &str,
     ) -> Result<RetainedCgroupAnchor, ZfsWorkerError> {
-        let instance = path
-            .strip_prefix(READER_CGROUP_PREFIX)
-            .and_then(|suffix| suffix.strip_suffix(READER_CGROUP_SUFFIX))
-            .ok_or(ZfsWorkerError::PeerMismatch)?;
-        if instance.is_empty() || instance.len() > 255 || instance.contains('/') {
-            return Err(ZfsWorkerError::PeerMismatch);
-        }
         let relative = path
             .strip_prefix("aos.slice/aos-control.slice/")
             .ok_or(ZfsWorkerError::PeerMismatch)?;
+        validate_reader_unit_name(relative)?;
         let cgroup = self.worker_parent.resolve_descendant(Path::new(relative))?;
         let observed = cgroup.verify_exact_membership(subject.pidfd())?;
         let credentials = subject.credentials();
@@ -172,6 +217,41 @@ impl SystemdHeldSnapshotReaderV1 {
         self.worker_parent.validate_current()?;
         Ok(cgroup)
     }
+}
+
+fn validate_reader_unit_name(name: &str) -> Result<(), ZfsWorkerError> {
+    let instance = name
+        .strip_prefix(READER_UNIT_PREFIX)
+        .and_then(|suffix| suffix.strip_suffix(READER_CGROUP_SUFFIX))
+        .ok_or(ZfsWorkerError::PeerMismatch)?;
+    if instance.is_empty() || instance.len() > 255 || instance.contains('/') {
+        return Err(ZfsWorkerError::PeerMismatch);
+    }
+    Ok(())
+}
+
+fn require_prior_reader_empty(state: CgroupPopulationState) -> Result<(), ZfsWorkerError> {
+    match state {
+        CgroupPopulationState::Empty | CgroupPopulationState::Retired => Ok(()),
+        CgroupPopulationState::Populated => Err(ZfsWorkerError::Quiescence(
+            "a prior held snapshot reader is still populated".to_owned(),
+        )),
+    }
+}
+
+fn fail_stop_unproved_setup<T>(
+    fail_stopped: &mut bool,
+    error: ZfsWorkerError,
+    cancellation_error: Option<aos_sandbox_linux::Error>,
+) -> Result<T, ZfsWorkerError> {
+    *fail_stopped = true;
+    let detail = match cancellation_error {
+        Some(cancellation_error) => format!(
+            "held snapshot reader setup failed before quiescence was proved: {error}; cancellation: {cancellation_error}"
+        ),
+        None => format!("held snapshot reader setup failed before quiescence was proved: {error}"),
+    };
+    Err(ZfsWorkerError::Quiescence(detail))
 }
 
 /// Runs one Storage-only reader on its inherited systemd socket.
@@ -468,6 +548,75 @@ mod tests {
         assert!(super::super::decode_ready(&frame).is_err());
         assert!(decode_ready(&frame[..frame.len() - 1]).is_err());
         assert!(decode_ready(&[frame.as_slice(), &[0]].concat()).is_err());
+    }
+
+    #[test]
+    fn prior_reader_scan_accepts_only_reserved_unit_names() {
+        assert!(validate_reader_unit_name("aos-sandbox-held-snapshot-reader@1.service").is_ok());
+        for name in [
+            "aos-sandbox-held-snapshot-reader@.service",
+            "aos-sandbox-held-snapshot-reader@1.scope",
+            "aos-sandbox-held-snapshot-reader@1/other.service",
+            "aos-sandbox-zfs-worker@1.service",
+        ] {
+            assert!(validate_reader_unit_name(name).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn prior_reader_scan_requires_empty_or_retired_cgroups() {
+        assert!(require_prior_reader_empty(CgroupPopulationState::Empty).is_ok());
+        assert!(require_prior_reader_empty(CgroupPopulationState::Retired).is_ok());
+        assert!(matches!(
+            require_prior_reader_empty(CgroupPopulationState::Populated),
+            Err(ZfsWorkerError::Quiescence(_))
+        ));
+    }
+
+    #[test]
+    fn unproved_ready_setup_fail_stops_and_reports_quiescence() {
+        let cases = [
+            ZfsWorkerError::Protocol("invalid READY frame"),
+            ZfsWorkerError::PeerMismatch,
+            ZfsWorkerError::Linux(aos_sandbox_linux::Error::WrongDescriptorType {
+                expected: "cgroup.events",
+            }),
+        ];
+
+        for error in cases {
+            let expected = error.to_string();
+            let mut fail_stopped = false;
+            let result: Result<(), ZfsWorkerError> =
+                fail_stop_unproved_setup(&mut fail_stopped, error, None);
+
+            assert!(fail_stopped);
+            let Err(ZfsWorkerError::Quiescence(detail)) = result else {
+                panic!("unproved reader setup did not report quiescence");
+            };
+            assert!(detail.contains(&expected));
+        }
+    }
+
+    #[test]
+    fn failed_cancellation_keeps_reader_fail_stopped() {
+        let mut fail_stopped = false;
+        let cancellation_error = aos_sandbox_linux::Error::WrongDescriptorType {
+            expected: "cgroup.kill",
+        };
+        let result: Result<(), ZfsWorkerError> = fail_stop_unproved_setup(
+            &mut fail_stopped,
+            ZfsWorkerError::Linux(aos_sandbox_linux::Error::WrongDescriptorType {
+                expected: "cgroup.events",
+            }),
+            Some(cancellation_error),
+        );
+
+        assert!(fail_stopped);
+        let Err(ZfsWorkerError::Quiescence(detail)) = result else {
+            panic!("failed cancellation did not report quiescence");
+        };
+        assert!(detail.contains("cgroup.events"));
+        assert!(detail.contains("cgroup.kill"));
     }
 
     #[test]
