@@ -888,7 +888,9 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             .snapshot()
             .map_err(|_| JournalRuntimeExecutionError::ObservationOutcomeUnknown)?
             .sequence();
-        if committed_sequence != next_sequence {
+        // The journal snapshot names the next frame, one past this transaction's
+        // Commit frame retained in the correlation receipt.
+        if next_sequence.checked_add(1) != Some(committed_sequence) {
             return Err(JournalRuntimeExecutionError::ObservationOutcomeUnknown);
         }
         host_output_receipt(correlation)

@@ -41,6 +41,10 @@ const ERRORS: RetainedExchangeErrorsV1 = RetainedExchangeErrorsV1 {
     unusable: "Host output session is unusable; query original attempt after recovery",
 };
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "controller_output_exchange/method35_custody_tests.rs"]
+mod method35_custody_tests;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OutputMethodV1 {
     Reserve,

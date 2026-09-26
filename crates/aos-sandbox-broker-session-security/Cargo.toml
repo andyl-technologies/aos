@@ -98,6 +98,7 @@ path = "src/bin/aos-source-providerd.rs"
 
 [dev-dependencies]
 aos-sandbox = { workspace = true, features = ["test-fixtures"] }
+async-trait.workspace = true
 hex.workspace = true
 rcgen.workspace = true
 reqwest = { workspace = true, features = ["http2"] }
