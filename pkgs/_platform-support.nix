@@ -427,6 +427,7 @@ let
     "bazel-8"
     "bazel-9"
     "envoy"
+    "icu4j"
     "openjdk"
     "openjdk-10"
     "openjdk-11"
