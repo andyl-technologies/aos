@@ -7,6 +7,10 @@
 }: let
   version = "1.4.0";
   needsAssembler = stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isx86_64;
+  testingFlag =
+    if stdenv.isCross
+    then "OFF"
+    else "ON";
   assembler = import ./_highway-assembler.nix {inherit buildPackages fetchurl;};
   src = fetchurl {
     urls = ["https://github.com/google/highway/archive/${version}.tar.gz"];
@@ -15,8 +19,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -76,7 +96,7 @@ in
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
               -DBUILD_SHARED_LIBS=ON \
-              -DBUILD_TESTING=${if stdenv.isCross then "OFF" else "ON"} \
+              -DBUILD_TESTING=${testingFlag} \
               -DHWY_TEST_STANDALONE=ON
           '';
         }
