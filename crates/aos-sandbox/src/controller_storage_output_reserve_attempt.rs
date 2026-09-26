@@ -422,7 +422,7 @@ fn digest_record(bytes: &[u8]) -> ObjectDigest {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::fs::{self, Permissions};
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
@@ -447,7 +447,22 @@ mod tests {
         bytes[content_len..content_len + 32].copy_from_slice(&digest);
     }
 
-    fn original_body() -> Vec<u8> {
+    pub(crate) fn original_body() -> Vec<u8> {
+        original_body_with_host_receipt([15; 32], 1)
+    }
+
+    pub(crate) fn original_body_with_host_receipt(
+        correlation_digest: [u8; 32],
+        original_host_sequence: u64,
+    ) -> Vec<u8> {
+        original_body_with_host_plan(correlation_digest, original_host_sequence, [13; 32])
+    }
+
+    pub(crate) fn original_body_with_host_plan(
+        correlation_digest: [u8; 32],
+        original_host_sequence: u64,
+        host_plan_digest: [u8; 32],
+    ) -> Vec<u8> {
         let mut source = [0_u8; 688];
         source[..8].copy_from_slice(b"AOSCIR01");
         source[8..16].copy_from_slice(b"AOSCIP01");
@@ -501,7 +516,7 @@ mod tests {
         attempt[..8].copy_from_slice(b"AOSCIA01");
         attempt[8..696].copy_from_slice(&source);
         attempt[696..712].fill(12);
-        attempt[712..744].fill(13);
+        attempt[712..744].copy_from_slice(&host_plan_digest);
         attempt[744..776].copy_from_slice(host_grant.commitment().digest().as_bytes());
         attempt[776..784].copy_from_slice(&900_u64.to_be_bytes());
         seal(
@@ -515,8 +530,8 @@ mod tests {
         settlement[8..24].fill(1);
         settlement[24..40].fill(2);
         settlement[40..72].copy_from_slice(&attempt[784..816]);
-        settlement[72..104].fill(15);
-        settlement[104..112].copy_from_slice(&1_u64.to_be_bytes());
+        settlement[72..104].copy_from_slice(&correlation_digest);
+        settlement[104..112].copy_from_slice(&original_host_sequence.to_be_bytes());
         settlement[112..144].fill(16);
         settlement[144..176].fill(17);
         seal(
@@ -540,6 +555,41 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec()
+    }
+
+    pub(crate) fn readback_request(
+        original_body: &[u8],
+    ) -> ValidatedHostStorageOutputReadbackRequestV1 {
+        let original = ControllerStorageOutputReserveAttemptV1::from_original(
+            original_body,
+            ObjectDigest::from_bytes([20; 32]),
+        )
+        .unwrap();
+        let readback_body = original
+            .host_readback_body(RequestHeader {
+                protocol_major: 1,
+                request_id: vec![20; 16],
+                audience: Audience::AUDIENCE_STORAGE_BROKER.into(),
+                deadline_boottime_nanoseconds: 1_100,
+                maximum_response_bytes: 4_096,
+                ..Default::default()
+            })
+            .unwrap();
+        decode_host_storage_output_readback_request_v1(
+            &readback_body,
+            PeerCredentials {
+                uid: 1,
+                gid: 2,
+                pid: None,
+            },
+            PeerPolicy {
+                uid: 1,
+                gid: Some(2),
+                audience: Audience::AUDIENCE_STORAGE_BROKER,
+            },
+            1_000,
+        )
+        .unwrap()
     }
 
     #[test]

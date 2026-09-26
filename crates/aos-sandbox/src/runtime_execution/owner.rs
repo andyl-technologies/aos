@@ -66,9 +66,10 @@ use aos_sandbox_core::runtime_backend::{
     backend_evidence_authority_binding_v1, backend_execution_inspection_binding_v1,
 };
 use aos_sandbox_core::{
-    AssignmentEpoch, DecodeLimits, DesiredGeneration, ExecutionId, ExecutionRuntimeArgumentLimitV1,
-    IncarnationId, NamespaceGeneration, NodeId, ObjectDigest, ObservationSequence, OperationId,
-    PayloadBootId, Revision, SandboxId, decode_execution_spec_v1, execution_spec_digest_v1,
+    AssignmentEpoch, BrokerAssignment, DecodeLimits, DesiredGeneration, ExecutionId,
+    ExecutionRuntimeArgumentLimitV1, IncarnationId, NamespaceGeneration, NodeId, ObjectDigest,
+    ObservationSequence, OperationId, PayloadBootId, Revision, SandboxId, decode_execution_spec_v1,
+    execution_spec_digest_v1,
 };
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodRequestV1, AuthenticatedBrokerRequestDirectionV1,
@@ -76,6 +77,7 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
 use aos_sandbox_protocol::host_execution_no_apply::{
     HostExecutionNoApplyRecordV1, HostNoApplySettlementPhaseV2,
 };
+use aos_sandbox_protocol::host_storage_output_readback::ValidatedHostStorageOutputReadbackRequestV1;
 use ed25519_dalek::{Signature, VerifyingKey};
 use rand::{TryRngCore as _, rngs::OsRng};
 use sha2::{Digest as _, Sha256};
@@ -127,7 +129,8 @@ use super::route_record::{
 use super::store::{
     AuthenticatedJournalExecutionRecoveryV1 as JournalRecoveryV1, ExecutionJournalRecoveryTokenV1,
     HostNoApplyIdentityV1, JournalRuntimeExecutionError, JournalRuntimeExecutionStoreV1,
-    ProtectedExecutionAdmissionStateV1, ProtectedHostOutputReservationV1,
+    ProtectedExecutionAdmissionStateV1, ProtectedHostOutputReadbackV1,
+    ProtectedHostOutputReservationV1,
 };
 
 pub(crate) mod host_currentness_fence;
@@ -1727,6 +1730,40 @@ impl DormantRuntimeExecutionClaimV1<'_> {
                 host_boot_id,
             )
             .map_err(Into::into)
+    }
+
+    /// Reads the exact protected Host output pair for a Storage-audience query.
+    ///
+    /// The parsed Controller records are structural, not an issuance proof.
+    /// A future Host responder must separately verify its Controller Host plan
+    /// and sign this observation in the Storage-owned authenticated session.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale Host owner, assignment or boot, absent original pair, or
+    /// any difference from AOSCIA01/AOSCIS01 plan and correlation fields.
+    pub fn read_host_output_for_storage_v1(
+        &self,
+        request: &ValidatedHostStorageOutputReadbackRequestV1,
+    ) -> Result<ProtectedHostOutputReadbackV1, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        let current = self.currentness().runtime().currentness();
+        let assignment = BrokerAssignment::new(
+            current.sandbox(),
+            current.incarnation(),
+            current.assignment_epoch(),
+            current.desired_generation(),
+            current.assignment_digest(),
+        )
+        .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        if assignment != request.records().assignment()
+            || self.host_verifier().boot_id() != request.records().host_locator().host_boot_id()
+        {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::AcceptedOutputClaimMismatch);
+        }
+        let readback = self.execution.read_host_output_for_storage_v1(request)?;
+        self.validate_current()?;
+        Ok(readback)
     }
 
     /// Resolves the exact Host-held AOSEOR02/AOSHOP01 pair for one argument attempt.

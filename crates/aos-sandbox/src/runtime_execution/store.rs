@@ -31,6 +31,7 @@ use aos_sandbox_core::{ExecutionId, ObjectDigest, ObservationSequence, Operation
 use aos_sandbox_protocol::host_execution_no_apply::{
     HostExecutionNoApplyRecordFieldsV1, HostExecutionNoApplyRecordV1,
 };
+use aos_sandbox_protocol::host_storage_output_readback::ValidatedHostStorageOutputReadbackRequestV1;
 use sha2::{Digest as _, Sha256};
 
 use crate::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
@@ -121,6 +122,38 @@ pub struct ProtectedHostOutputReservationV1 {
     semantic_request_digest: ObjectDigest,
     correlation_digest: ObjectDigest,
     original_journal_sequence: u64,
+}
+
+/// Retains the exact protected Host reservation and its readback journal head.
+///
+/// The scalars are nonauthorizing outside a separately verified signed Host
+/// response and current Storage session. No Storage or execution effect can
+/// be obtained from this read-only observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProtectedHostOutputReadbackV1 {
+    reservation: ProtectedHostOutputReservationV1,
+    journal_head_sequence: u64,
+    journal_head_digest: ObjectDigest,
+}
+
+impl ProtectedHostOutputReadbackV1 {
+    /// Returns the exact AOSEOR02/AOSHOP01 receipt read under Host custody.
+    #[must_use]
+    pub const fn reservation(self) -> ProtectedHostOutputReservationV1 {
+        self.reservation
+    }
+
+    /// Returns the protected Host journal sequence at readback.
+    #[must_use]
+    pub const fn journal_head_sequence(self) -> u64 {
+        self.journal_head_sequence
+    }
+
+    /// Returns the protected Host journal-head commitment at readback.
+    #[must_use]
+    pub const fn journal_head_digest(self) -> ObjectDigest {
+        self.journal_head_digest
+    }
 }
 
 impl ProtectedHostOutputReservationV1 {
@@ -906,6 +939,52 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             return Err(JournalRuntimeExecutionError::RecordConflict);
         }
         host_output_receipt(correlation).map(Some)
+    }
+
+    /// Reads the exact original Host pair named by one structural AOSCST01.
+    ///
+    /// This checks the original AOSCIA01 plan and semantic digests and the
+    /// AOSCIS01 Host correlation/sequence against protected Host bytes. It
+    /// cannot authenticate Controller custody or sign a response by itself.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absence, foreign original identity, changed Host records, or
+    /// an unstable protected journal snapshot.
+    pub(crate) fn read_host_output_for_storage_v1(
+        &self,
+        request: &ValidatedHostStorageOutputReadbackRequestV1,
+    ) -> Result<ProtectedHostOutputReadbackV1, JournalRuntimeExecutionError> {
+        let snapshot = self.authority.snapshot()?;
+        let locator = request.records().host_locator();
+        let reservation = self
+            .query_host_output_v1(
+                locator.execution(),
+                locator.create_operation(),
+                locator.preissue_digest(),
+                locator.claim_digest(),
+                locator.carrier_digest(),
+                locator.original_request_id(),
+                locator.assignment_digest(),
+                locator.host_boot_id(),
+            )?
+            .ok_or(JournalRuntimeExecutionError::MissingRecord)?;
+        let attempt = request.records().attempt();
+        let settlement = request.records().settlement();
+        if reservation.plan_digest().as_bytes() != &attempt[712..744]
+            || reservation.semantic_request_digest().as_bytes() != &attempt[744..776]
+            || reservation.correlation_digest().as_bytes() != &settlement[72..104]
+            || reservation.original_journal_sequence().to_be_bytes() != settlement[104..112]
+            || snapshot.sequence() < reservation.original_journal_sequence()
+        {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+        self.authority.validate_snapshot_for_effect(&snapshot)?;
+        Ok(ProtectedHostOutputReadbackV1 {
+            reservation,
+            journal_head_sequence: snapshot.sequence(),
+            journal_head_digest: snapshot_commitment(self.store_binding, snapshot.sequence()),
+        })
     }
 
     /// Joins a Controller argument attempt to the exact protected Host output record.
@@ -3231,6 +3310,7 @@ pub enum JournalRuntimeExecutionError {
 mod output_v2_tests {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
+    use aos_proto::aos::sandbox::local::v1::ReserveStorageExecutionOutputRequestV1;
     use aos_sandbox_agent::{
         AgentFeatureSetV1, AgentFeatureV1, AgentHandshakeRequestV1, AgentHandshakeResponseV1,
         AgentNonceV1, AgentRuntimeBindingV1, AgentSessionBindingV1, AgentSessionIdV1,
@@ -3240,10 +3320,15 @@ mod output_v2_tests {
         AssignmentEpoch, DesiredGeneration, FeatureRef, IncarnationId, NamespaceGeneration,
         SandboxId,
     };
+    use buffa::Message as _;
     use ed25519_dalek::SigningKey;
     use tempfile::TempDir;
 
     use super::*;
+    use crate::controller_storage_output_reserve_attempt::tests::{
+        original_body, original_body_with_host_plan, original_body_with_host_receipt,
+        readback_request,
+    };
     use crate::journal::JournalLimits;
     use crate::runtime_execution::no_apply_settlement::{
         ControllerAssertedSettlementArchivesV1, HostObservedSettlementIdentityV1,
@@ -3541,6 +3626,146 @@ mod output_v2_tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn protected_storage_readback_binds_original_attempt_to_host_pair() {
+        let directory = TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = directory.path().metadata().unwrap().uid();
+        let binding = ObjectDigest::from_bytes([4; 32]);
+        let admission_state = ProtectedExecutionAdmissionStateV1 {
+            authority_binding: ObjectDigest::from_bytes([6; 32]),
+            resource_ledger: ObjectDigest::from_bytes([7; 32]),
+        };
+        let original =
+            ReserveStorageExecutionOutputRequestV1::decode_from_slice(&original_body()).unwrap();
+        let records = aos_sandbox_protocol::storage_output_reserve::StorageOutputReserveRecordsV1::from_canonical_records(
+            &original.canonical_controller_attempt,
+            &original.canonical_controller_settlement,
+        )
+        .unwrap();
+        let locator = records.host_locator();
+        let source = &records.attempt()[8..696];
+        let claim_bytes = source[192..520].to_vec();
+        let parent_output_bytes = u64::from_be_bytes(source[432..440].try_into().unwrap());
+
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+        let mut store = JournalRuntimeExecutionStoreV1::initialize(
+            &mut journal,
+            binding,
+            admission_state,
+            peer(),
+        )
+        .unwrap();
+        let original_sequence =
+            predicted_commit_sequence(store.authority.snapshot().unwrap().sequence(), 4).unwrap();
+        let correlation = HostOutputCorrelationV1 {
+            execution: locator.execution(),
+            create_operation: locator.create_operation(),
+            preissue_digest: locator.preissue_digest(),
+            claim_digest: locator.claim_digest(),
+            carrier_digest: locator.carrier_digest(),
+            original_request_id: locator.original_request_id(),
+            assignment_digest: locator.assignment_digest(),
+            host_boot_id: locator.host_boot_id(),
+            plan_digest: ObjectDigest::from_bytes(records.attempt()[712..744].try_into().unwrap()),
+            semantic_request_digest: ObjectDigest::from_bytes(
+                records.attempt()[744..776].try_into().unwrap(),
+            ),
+            deadline_boottime_nanoseconds: 900,
+            original_journal_sequence: original_sequence,
+        };
+        let correlation_bytes = correlation.encode().unwrap();
+        let correlation_digest: [u8; 32] = Sha256::digest(correlation_bytes).into();
+        let matched_body = original_body_with_host_receipt(correlation_digest, original_sequence);
+        let request = readback_request(&matched_body);
+        assert!(matches!(
+            store.read_host_output_for_storage_v1(&request),
+            Err(JournalRuntimeExecutionError::MissingRecord),
+        ));
+
+        let transaction = JournalTransaction::new(
+            [2; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    OUTPUT_FORMAT_KEY.to_vec(),
+                    output_format_bytes(binding).to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    OUTPUT_MARKER_KEY.to_vec(),
+                    marker_bytes(locator.assignment_digest(), parent_output_bytes).to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    claim_key(locator.execution()),
+                    claim_bytes,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    host_output_key(locator.execution()),
+                    correlation_bytes.to_vec(),
+                ),
+            ],
+        )
+        .unwrap();
+        store.authority.commit(&transaction).unwrap();
+        drop(store);
+        drop(journal);
+
+        let (mut reopened, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+        let store = JournalRuntimeExecutionStoreV1::claim(&mut reopened, binding, peer()).unwrap();
+        let observed = store.read_host_output_for_storage_v1(&request).unwrap();
+        assert_eq!(
+            observed.reservation().correlation_digest().as_bytes(),
+            &correlation_digest
+        );
+        assert!(observed.journal_head_sequence() >= original_sequence);
+        assert_ne!(observed.journal_head_digest().as_bytes(), &[0; 32]);
+        assert_eq!(
+            store.read_host_output_for_storage_v1(&request).unwrap(),
+            observed
+        );
+
+        let foreign_sequence = readback_request(&original_body_with_host_receipt(
+            correlation_digest,
+            original_sequence + 1,
+        ));
+        assert!(matches!(
+            store.read_host_output_for_storage_v1(&foreign_sequence),
+            Err(JournalRuntimeExecutionError::RecordConflict),
+        ));
+        let foreign_correlation = readback_request(&original_body_with_host_receipt(
+            [99; 32],
+            original_sequence,
+        ));
+        assert!(matches!(
+            store.read_host_output_for_storage_v1(&foreign_correlation),
+            Err(JournalRuntimeExecutionError::RecordConflict),
+        ));
+        let foreign_plan = readback_request(&original_body_with_host_plan(
+            correlation_digest,
+            original_sequence,
+            [98; 32],
+        ));
+        assert!(matches!(
+            store.read_host_output_for_storage_v1(&foreign_plan),
+            Err(JournalRuntimeExecutionError::RecordConflict),
+        ));
     }
 
     fn argument_source(

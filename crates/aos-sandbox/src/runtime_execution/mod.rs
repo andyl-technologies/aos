@@ -80,5 +80,5 @@ pub use spec_producer::{
 };
 pub use store::{
     AuthenticatedJournalExecutionRecoveryV1, ExecutionJournalRecoveryTokenV1,
-    JournalRuntimeExecutionError, ProtectedHostOutputReservationV1,
+    JournalRuntimeExecutionError, ProtectedHostOutputReadbackV1, ProtectedHostOutputReservationV1,
 };
