@@ -36,6 +36,8 @@ in
           require_serial_line gate=gate:campaign-envoy-network-five-vm
           require_serial_line envoy_five_node_failover_and_recovery_authenticated=true
           require_serial_line envoy_five_node_hot_fork_authenticated=true
+          require_serial_line envoy_five_node_hot_fork_resource_isolation_authenticated=true
+          require_serial_line envoy_five_node_hot_fork_resource_rejection_authenticated=true
           require_serial_line envoy_five_node_thin_replay_authenticated=true
           require_serial_line envoy_five_node_exact_restore_authenticated=true
           require_serial_line envoy_five_node_retention_authenticated=true
@@ -50,6 +52,8 @@ in
           gate=gate:campaign-envoy-network-five-vm
           envoy_five_node_failover_and_recovery_authenticated=true
           envoy_five_node_hot_fork_authenticated=true
+          envoy_five_node_hot_fork_resource_isolation_authenticated=true
+          envoy_five_node_hot_fork_resource_rejection_authenticated=true
           envoy_five_node_thin_replay_authenticated=true
           envoy_five_node_exact_restore_authenticated=true
           envoy_five_node_retention_authenticated=true
