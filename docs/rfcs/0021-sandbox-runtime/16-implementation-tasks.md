@@ -367,10 +367,11 @@ Public Create and production methods 39/40 therefore remain closed.
   No production CreateExecution effect establishes the required Host admission
   or RUNNING public projection. The packaged `aos-sandbox-guest-agent` already
   claims a fixed inherited protected channel and runs concrete guest-local
-  process effects with a durable ledger. Host has a retained authenticated
-  agent-session type, but production activation does not install one or connect
-  it to a launch, so this does not complete the execution path. Attach requires
-  its separately authorized OpenSSH data route; it is not an agent control effect.
+  process effects with a durable ledger. Host production activation can launch
+  and retain an authenticated agent session through Guardian, but the deployed
+  CreateExecution effect does not yet use it to establish Host admission or a
+  RUNNING public projection. Attach requires its separately authorized OpenSSH
+  data route; it is not an agent control effect.
   `ExecutionControlRequest` now carries attach-only holder key and possession
   proof fields under a required semantic feature, and `ExecutionControlResult`
   can carry a checked holder-bound endpoint. The public Controller service
@@ -380,8 +381,8 @@ Public Create and production methods 39/40 therefore remain closed.
   gate readback match the current execution and assignment. Accepted replay
   requires a fresh Host route query. This route is fail-closed without the
   separately provisioned attach credentials, a retained authenticated guest
-  agent session, and a RUNNING execution projection; production activation
-  currently supplies neither the guest session nor that projection.
+  agent session, and a RUNNING execution projection; the launch-session wiring
+  exists, but no qualified CreateExecution path supplies that projection.
 - Grouped Storage snapshots now have authenticated Method 25 in the broker
   profile and production Storage dispatch. The controller advances Snapshot
   and Hibernate Storage effects from a signed predecessor inventory, reserves
