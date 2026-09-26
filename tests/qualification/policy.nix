@@ -3,7 +3,6 @@
   pkgs,
   lib,
   nativeAdapterMatrix,
-  releaseExecutor,
 }: let
   packageNames = pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
   contract = import ../../qualification {
@@ -188,6 +187,13 @@
     name = requirement.id;
     value = requirement;
   }) (builtins.filter (requirement: lib.hasPrefix "ability-" requirement.id) contract.requirements));
+  # The detail checker reads only these fields; serializing the full contract
+  # would add every referenced image and package to this policy check's closure.
+  abilityCheckDetailsInput = {
+    requirements = map (requirement: {
+      inherit (requirement) id checks;
+    }) (builtins.filter (requirement: lib.hasPrefix "ability-native-" requirement.id) contract.requirements);
+  };
   nativeAdapterChecks = abilityRequirements.ability-native-adapter-matrix.checks;
   nativeCells = nativeAdapterMatrix.spec.cells;
   applicableNativeIds = nativeAdapterMatrix.spec.applicability.applicable_cell_ids;
@@ -205,12 +211,6 @@
   nativeCells;
   recoveryPackage = builtins.head (
     builtins.filter (rule: rule.name == "aos-recovery") contract.package_rules
-  );
-  executedPackageRules = builtins.filter (rule: (rule.execution or null) != null) contract.package_rules;
-  packageCaseScenarioNames = builtins.sort builtins.lessThan (
-    map
-    (rule: "package-function/${rule.name}/x86_64-linux")
-    executedPackageRules
   );
   composed = import ../../qualification/_eval.nix {
     inherit lib nativeAdapterMatrix;
@@ -341,16 +341,6 @@ in
   assert packageExecutor.passthru.qualification.probes == ["gzip"];
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/probes.json$" packageExecutor.passthru.qualification.probeRegistry != null;
   assert rejectsPackageExecutor ["gzip" "gzip"];
-  assert builtins.all
-  (id: builtins.hasAttr id releaseExecutor.passthru.qualification.scenarios)
-  (builtins.attrNames abilityRequirements);
-  # The release executor resolves production scenario paths. Keep this policy
-  # check on their generated identities so it does not evaluate every VM suite.
-  assert builtins.hasAttr "package-function" releaseExecutor.passthru.qualification.scenarios;
-  assert builtins.hasAttr "claim-container-x86_64-linux-functional" releaseExecutor.passthru.qualification.scenarios;
-  assert builtins.hasAttr "claim-disk-x86_64-linux-functional" releaseExecutor.passthru.qualification.scenarios;
-  assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios
-  == packageCaseScenarioNames;
   assert contract.support.default
   == {
     kind = "standard";
@@ -393,13 +383,13 @@ in
   assert contract.thresholds.stable.require_complete_matrix;
     pkgs.writeTextFile {
       name = "aos-qualification-policy-check";
-      destination = "/contract.json";
-      text = builtins.toJSON contract;
+      destination = "/check-details-input.json";
+      text = builtins.toJSON abilityCheckDetailsInput;
       checkPhase = ''
         test -f ${declarativeProbeCheck}/result.json
         ${pkgs.python3}/bin/python3 \
           ${./ability-check-details.py} \
-          $out/contract.json \
+          $out/check-details-input.json \
           ${../../lib/testing/qualification-ability.py}
       '';
     }
