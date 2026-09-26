@@ -1062,15 +1062,36 @@ def check_gcc_profile_note_outputs(root, env, accache, sccache, gcc, hits):
 
 def check_gcc_auto_profile_inputs(root, env, accache, sccache, gcc, hits):
     """Hash GCC AutoFDO profiles that do not appear in preprocessor depfiles."""
-    def empty_profile(total_count):
-        # GCC 16's gcov AutoFDO reader accepts an empty function table. The
-        # summary count can change while both revisions remain valid profiles.
+    def profile_with_count(hot_count):
+        # GCC 16's gcov AutoFDO reader accepts an empty function table. Adding
+        # a sampled function makes GCC place its code in .text.hot instead of
+        # .text.unlikely, so a stale cache hit changes the object bytes.
         data = struct.pack("<III", 0x67636461, 3, 0)
-        data += struct.pack("<I6Q", 0xa8000000, total_count, 0, 0, 0, 0, 16)
+        data += struct.pack("<I6Q", 0xa8000000, hot_count, hot_count,
+                            hot_count, int(bool(hot_count)),
+                            int(bool(hot_count)), 16)
         for percentile in range(16):
-            data += struct.pack("<IQQ", (percentile + 1) * 62500, 0, 0)
-        data += struct.pack("<IIII", 0xaa000000, 2, 0, 0)
-        data += struct.pack("<III", 0xac000000, 1, 0)
+            data += struct.pack("<IQQ", (percentile + 1) * 62500,
+                                hot_count, int(bool(hot_count)))
+
+        if hot_count:
+            def gcov_string(value):
+                encoded = value.encode() + b"\0"
+                return struct.pack("<I", len(encoded)) + encoded
+
+            # Symbol index zero is reserved by GCC's reader. The second
+            # symbol names the sampled function and points at source.c.
+            data += struct.pack("<III", 0xaa000000, 0, 1)
+            data += gcov_string("source.c")
+            data += struct.pack("<I", 2)
+            data += gcov_string("unused") + struct.pack("<I", 0)
+            data += gcov_string("answer") + struct.pack("<I", 0)
+            data += struct.pack("<IIIQQIII", 0xac000000, 0, 1,
+                                hot_count, 0, 1, 0, 0)
+        else:
+            data += struct.pack("<IIII", 0xaa000000, 2, 0, 0)
+            data += struct.pack("<III", 0xac000000, 1, 0)
+
         data += struct.pack("<III", 0xae000000, 1, 0)
         return data
 
@@ -1094,19 +1115,25 @@ def check_gcc_auto_profile_inputs(root, env, accache, sccache, gcc, hits):
             assert completed.returncode == 0, (spelling, wrapper, completed.stderr)
             return completed.stdout, completed.stderr, object_file.read_bytes()
 
-        for revision, total_count in enumerate([0, 100]):
-            profile.write_bytes(empty_profile(total_count))
+        initial_object = None
+        for revision, hot_count in enumerate([0, 100]):
+            profile.write_bytes(profile_with_count(hot_count))
             direct = compile_object([])
+            if initial_object is None:
+                initial_object = direct[2]
+            else:
+                assert direct[2] != initial_object, (spelling, "profile had no effect")
 
             before_hits = hits()
             oracle_cold = compile_object([sccache])
-            assert oracle_cold == direct, (spelling, revision, "sccache output")
+            expected_oracle = direct if revision == 0 else (direct[0], direct[1], initial_object)
+            assert oracle_cold == expected_oracle, (spelling, revision, "sccache output")
             if revision:
                 assert hits() > before_hits, (spelling, "sccache tracked the AutoFDO file")
             else:
                 assert hits() == before_hits, (spelling, "unexpected initial sccache hit")
             before_hits = hits()
-            assert compile_object([sccache]) == direct
+            assert compile_object([sccache]) == expected_oracle
             assert hits() > before_hits, (spelling, "sccache did not warm-hit")
 
             assert compile_object([accache]) == direct
@@ -1121,6 +1148,7 @@ def check_gcc_auto_profile_inputs(root, env, accache, sccache, gcc, hits):
             results.append({"fixture": "gcc-auto-profile-" + spelling,
                             "revision": revision, "oracle_hit": True,
                             "oracle_profile_input_tracked": False,
+                            "oracle_stale_object": bool(revision),
                             "accache": "hit", "artifacts": ["source.o"]})
         print("PASS oracle GCC AutoFDO", spelling, "input invalidation", flush=True)
 
