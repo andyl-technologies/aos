@@ -52,13 +52,6 @@ struct DeleteReceipt {
     outcome: DeleteOutcome,
 }
 
-#[derive(Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DeleteLedger {
-    pending: Option<DeleteClaim>,
-    completed: Vec<DeleteReceipt>,
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum GuardReply {
@@ -98,8 +91,7 @@ impl DurableObject for HybridObjectGuard {
             .bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
         let result = match request.url()?.path() {
             "/put" if request.method() == Method::Put => {
-                let ledger = self.ledger().await?;
-                if ledger.pending.is_some() {
+                if self.pending_delete().await?.is_some() {
                     return Response::error("object deletion is pending", 503);
                 }
                 let bytes = request.bytes().await?;
@@ -115,8 +107,7 @@ impl DurableObject for HybridObjectGuard {
                 GuardReply::Acknowledged
             }
             "/complete" if request.method() == Method::Post => {
-                let ledger = self.ledger().await?;
-                if ledger.pending.is_some() {
+                if self.pending_delete().await?.is_some() {
                     return Response::error("object deletion is pending", 503);
                 }
                 let completion: CompleteRequest = request.json().await?;
@@ -136,8 +127,7 @@ impl DurableObject for HybridObjectGuard {
                 GuardReply::Delete { outcome }
             }
             "/delete-staging" if request.method() == Method::Delete => {
-                let ledger = self.ledger().await?;
-                if ledger.pending.is_some() {
+                if self.pending_delete().await?.is_some() {
                     return Response::error("object deletion is pending", 503);
                 }
                 crate::surface::hybrid_r2_delete(bucket, &key)
@@ -158,13 +148,8 @@ impl HybridObjectGuard {
         Ok(expected.to_string() == self.state.id().to_string())
     }
 
-    async fn ledger(&self) -> worker::Result<DeleteLedger> {
-        Ok(self
-            .state
-            .storage()
-            .get("ledger")
-            .await?
-            .unwrap_or_default())
+    async fn pending_delete(&self) -> worker::Result<Option<DeleteClaim>> {
+        self.state.storage().get("pending-delete").await
     }
 
     async fn delete_if_matches(
@@ -177,24 +162,27 @@ impl HybridObjectGuard {
             return Err(worker::Error::RustError("invalid delete claim".into()));
         }
 
-        let mut ledger = self.ledger().await?;
-        if let Some(receipt) = ledger
-            .completed
-            .iter()
-            .find(|receipt| receipt.claim.claim_id == claim.claim_id)
+        // Keep receipts per claim so a frequently reused object key never
+        // grows one storage value past Durable Object limits.
+        let receipt_key = format!("delete-receipt:{}", claim.claim_id);
+        if let Some(receipt) = self
+            .state
+            .storage()
+            .get::<DeleteReceipt>(&receipt_key)
+            .await?
         {
             if receipt.claim != claim {
                 return Err(worker::Error::RustError(
                     "delete claim changed identity".into(),
                 ));
             }
-            return Ok(receipt.outcome.clone());
+            if self.pending_delete().await?.as_ref() == Some(&claim) {
+                self.state.storage().delete("pending-delete").await?;
+            }
+            return Ok(receipt.outcome);
         }
-        if ledger
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending != &claim)
-        {
+        let pending = self.pending_delete().await?;
+        if pending.as_ref().is_some_and(|previous| previous != &claim) {
             return Err(worker::Error::RustError(
                 "another object deletion is pending".into(),
             ));
@@ -209,9 +197,8 @@ impl HybridObjectGuard {
                 DeleteOutcome::PreconditionFailed
             }
             Some(_) => {
-                if ledger.pending.is_none() {
-                    ledger.pending = Some(claim.clone());
-                    self.state.storage().put("ledger", &ledger).await?;
+                if pending.is_none() {
+                    self.state.storage().put("pending-delete", &claim).await?;
                 }
                 crate::surface::hybrid_r2_delete(bucket, key)
                     .await
@@ -222,12 +209,19 @@ impl HybridObjectGuard {
             }
         };
 
-        ledger.pending = None;
-        ledger.completed.push(DeleteReceipt {
-            claim,
-            outcome: outcome.clone(),
-        });
-        self.state.storage().put("ledger", ledger).await?;
+        self.state
+            .storage()
+            .put(
+                &receipt_key,
+                DeleteReceipt {
+                    claim,
+                    outcome: outcome.clone(),
+                },
+            )
+            .await?;
+        if pending.is_some() || matches!(outcome, DeleteOutcome::Deleted { .. }) {
+            self.state.storage().delete("pending-delete").await?;
+        }
         Ok(outcome)
     }
 }
@@ -320,7 +314,7 @@ pub(crate) async fn put(env: &Env, key: &str, bytes: &[u8]) -> Result<()> {
         return Ok(());
     }
     anyhow::ensure!(
-        bytes.len() <= aos_hub_core::connect::CONNECT_REQUEST_BODY_LIMIT_BYTES,
+        bytes.len() <= aos_hub_core::hybrid_ingress::MAX_HYBRID_OCI_CHUNK_BYTES,
         "hybrid object body exceeds the upload limit"
     );
     let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;

@@ -1106,12 +1106,24 @@ in {
       large_upload_id = large_location.rsplit("/", 1)[-1]
       assert re.fullmatch(r"[0-9a-f-]{32,36}", large_upload_id), large_upload_id
       large_upload_url = f"https://aos.andyl.org/v2/aos/blobs/uploads/{large_upload_id}"
-      client.succeed(
-          f"{CURL} -fsS -X PATCH -H 'Authorization: Bearer {oci_token}' "
-          f"--data-binary @/tmp/hybrid-publication-surface/{publication_path} "
-          f"{shlex.quote(large_upload_url)} -o /dev/null",
-          timeout=180,
-      )
+      try:
+          client.succeed(
+              f"{CURL} -fsS -X PATCH -H 'Authorization: Bearer {oci_token}' "
+              f"--data-binary @/tmp/hybrid-publication-surface/{publication_path} "
+              f"{shlex.quote(large_upload_url)} -o /dev/null",
+              timeout=180,
+          )
+      except Exception:
+          print("hybrid Worker logs after large OCI part failure:", worker.succeed(
+              "tail -n 120 /var/lib/hybrid-worker/wrangler.log"
+          ))
+          print("hybrid Native logs after large OCI part failure:", native.succeed(
+              "journalctl -u aos-hub --no-pager -n 100"
+          ))
+          print("hybrid Worker memory after large OCI part failure:", worker.succeed(
+              "cat /proc/meminfo | head -n 8"
+          ))
+          raise
       client.succeed(
           f"{CURL} -fsS -X PUT -H 'Authorization: Bearer {oci_token}' "
           f"-H 'Content-Length: 0' "
