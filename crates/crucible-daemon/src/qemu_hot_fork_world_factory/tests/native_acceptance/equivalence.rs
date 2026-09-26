@@ -928,7 +928,7 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
     );
     println!("\ncampaign_guest_cpu_affinity={allowed_cpus}");
     println!("campaign_planner_supervisor=packaged-process");
-    println!("campaign_blob_backend=directory");
+    println!("campaign_blob_backend=sqlite-store-graph");
     println!("campaign_short_branch_boundary=two-node-pending-selectable");
 
     let paths = NativeGatePaths::from_environment();
