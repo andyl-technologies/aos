@@ -571,13 +571,28 @@ impl CampaignRepository {
         &self,
         id: ContentId,
     ) -> Result<CampaignFact, CampaignRepositoryError> {
+        self.read_fact_with_planner_step(id).map(|(fact, _)| fact)
+    }
+
+    pub(in crate::repository) fn read_fact_with_planner_step(
+        &self,
+        id: ContentId,
+    ) -> Result<(CampaignFact, Option<(PlannerStep, PlannerRequest)>), CampaignRepositoryError>
+    {
         let envelope = self.read_envelope(id)?;
         if envelope.record_kind() != crate::CampaignRecordKind::Fact {
             return Err(integrity("fact-envelope-shape"));
         }
         let fact = CampaignFact::from_canonical_bytes(envelope.body())?;
-        self.validate_fact_references(&fact)?;
-        Ok(fact)
+        // Return the fully checked planner records to an ancestry caller so it
+        // can check the owner transition without reprojecting the same request.
+        let planner_step = if let CampaignFact::PlannerAdvanced(step) = &fact {
+            Some(self.read_planner_step_with_request(step.content_id())?)
+        } else {
+            self.validate_fact_references(&fact)?;
+            None
+        };
+        Ok((fact, planner_step))
     }
 
     pub(in crate::repository) fn validate_fact_references(
