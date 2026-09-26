@@ -17,8 +17,8 @@ use crate::uapi::{self, OpenHow, RESOLVE_BENEATH, RESOLVE_NO_MAGICLINKS, RESOLVE
 use crate::{Error, Result};
 
 use super::model::{
-    build_identity, RetainedStartupProcessV1, StartupExecutableObservationV1,
-    StartupProcessObservationV1,
+    RetainedStartupProcessV1, StartupExecutableObservationV1, StartupProcessObservationV1,
+    build_identity,
 };
 
 const MAXIMUM_CGROUP_RECORD_BYTES: usize = 4_096;

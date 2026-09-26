@@ -1108,9 +1108,11 @@ mod tests {
                 HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE,
             ]
         );
-        assert!(features
-            .iter()
-            .all(|feature| feature.major == 1 && feature.minor == 0));
+        assert!(
+            features
+                .iter()
+                .all(|feature| feature.major == 1 && feature.minor == 0)
+        );
     }
 
     #[test]
