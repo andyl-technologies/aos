@@ -65,6 +65,8 @@ in
             ${pkgs.accache}/bin/accache ${sccacheOracle}/bin/sccache \
             ${pkgs.cc}/bin/gcc ${pkgs.llvm}/bin/clang ${pkgs.rust}/bin/rustc \
             ${pkgs.gccUnwrapped}/bin/gcc
+          ${pkgs.python3}/bin/python3 ${../../tools/accache/tests/frontend_runtime_coverage.py} \
+            ${../../tools/accache/frontend} "$out/oracle.json"
           mkdir -p "$out"
           printf 'passed\n' > "$out/result"
         '';

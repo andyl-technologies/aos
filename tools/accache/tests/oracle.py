@@ -38,6 +38,7 @@ class Fixture:
     direct_exit_code: int | None = None
     oracle_input_invalidation: bool = False
     oracle_bypass: bool = False
+    stdin: bytes | None = None
 
 
 def fixtures(gcc, clang, rustc):
@@ -103,6 +104,11 @@ def fixtures(gcc, clang, rustc):
                 ("imultilib", ["-imultilib", "."]),
                 ("xlinker", ["-Xlinker", "-z"]),
                 ("linker-option", ["-z", "now"]),
+                ("long-sysroot", ["--sysroot", "."]),
+                ("separated-assertion", ["-A", "FOO=BAR"]),
+                ("framework-search", ["-F", "."]),
+                ("library-search", ["-L", "."]),
+                ("remap", ["-remap"]),
             ]
         else:
             frontend_options = [
@@ -125,6 +131,10 @@ def fixtures(gcc, clang, rustc):
                 ("mlir", ["-mmlir", "test"]),
                 ("external-assembler-spelling", ["-no-integrated-as"]),
                 ("xlinker", ["-Xlinker", "-z"]),
+                ("unused-parameter-warning", ["-Wno-unused-parameter"]),
+                ("separated-debug-compilation-dir", ["-fdebug-compilation-dir", "."]),
+                ("integrated-assembler-spelling", ["-integrated-as"]),
+                ("separated-target", ["-target", "x86_64-unknown-linux-gnu"]),
             ]
         for suffix, flags in frontend_options:
             fixture = name + "-frontend-" + suffix
@@ -452,18 +462,32 @@ def fixtures(gcc, clang, rustc):
             yield Fixture("gcc-frontend-unsupported-vfs-stat-cache", compiler,
                           base + ["-ivfsstatcache", "."], c_sources,
                           cacheable=False, exit_code=1)
+            yield Fixture("gcc-stdin-source", compiler,
+                          ["-x", "c", "-c", "-", "-o", "source.o"], {},
+                          cacheable=False, oracle_bypass=True,
+                          stdin=b"int answer(void) { return 42; }\n")
             for suffix, flags, exit_code in [
                 ("long-save-temps-cwd", ["--save-temps=cwd"], 1),
                 ("short-save-temps-cwd", ["-save-temps=cwd"], 0),
                 ("no-line-markers", ["-P"], 0),
                 ("modules-ts", ["-fmodules-ts"], 0),
+                ("modules", ["-fmodules"], 0),
                 ("no-profile-generate", ["-fno-profile-generate"], 0),
                 ("no-profile-use", ["-fno-profile-use"], 0),
                 ("repository", ["-frepo"], 0),
                 ("index-store-path", ["-index-store-path", "index"], 1),
+                ("separated-g", ["-G", "0"], 1),
+                ("separated-version", ["-V", "16"], 1),
+                ("arch", ["-arch", "x86_64"], 1),
+                ("binary-format", ["-b", "x86_64"], 1),
+                ("long-save-temps", ["--save-temps"], 0),
+                ("short-save-temps", ["-save-temps"], 0),
+                ("make-dependencies", ["-MM"], 0),
+                ("make-all-dependencies", ["-M"], 0),
             ]:
                 yield Fixture("gcc-frontend-bypass-" + suffix, compiler,
-                              base + flags + ["-fdiagnostics-color=always"], c_sources,
+                              base + flags + (["-fdiagnostics-color=always"]
+                                              if exit_code == 0 else []), c_sources,
                               {"value.h": "#define VALUE 73\n"},
                               cacheable=False, exit_code=exit_code,
                               oracle_bypass=True)
@@ -481,6 +505,8 @@ def fixtures(gcc, clang, rustc):
                 ("plugin-arg", ["-plugin-arg-test=unused"]),
                 ("verify-pch", ["-verify-pch"]),
                 ("winsysroot", ["/winsysroot", "."]),
+                ("long-target", ["--target", "x86_64-unknown-linux-gnu"]),
+                ("arch", ["-arch", "x86_64"]),
             ]:
                 yield Fixture("clang-frontend-unsupported-" + suffix, compiler,
                               base + flags, c_sources, cacheable=False, exit_code=1)
@@ -494,6 +520,7 @@ def fixtures(gcc, clang, rustc):
                 ("cxx-modules", ["-fcxx-modules"]),
                 ("implicit-modules", ["-fimplicit-modules"]),
                 ("memory-profile", ["-fmemory-profile=out"]),
+                ("memory-profile-default", ["-fmemory-profile"]),
                 ("modules-cache-path", ["-fmodules-cache-path=out"]),
                 ("modules-user-build-path", ["-fmodules-user-build-path", "out"]),
                 ("no-profile-instr-generate", ["-fno-profile-instr-generate"]),
@@ -502,6 +529,10 @@ def fixtures(gcc, clang, rustc):
                 ("prebuilt-module-path", ["-fprebuilt-module-path=out"]),
                 ("thin-link-bitcode", ["-fthin-link-bitcode=out"]),
                 ("module-dependency-dir", ["-module-dependency-dir", "out"]),
+                ("dumpdir", ["-dumpdir", "out"]),
+                ("working-directory", ["-working-directory", "."]),
+                ("save-stats-joined", ["--save-stats=obj"]),
+                ("optimization-record-format", ["-fsave-optimization-record=yaml"]),
             ]:
                 yield Fixture("clang-frontend-bypass-" + suffix, compiler,
                               base + flags + ["-fdiagnostics-color=always"], c_sources,
@@ -739,6 +770,20 @@ def fixtures(gcc, clang, rustc):
                   precompile=["--crate-name=numbers", "--crate-type=proc-macro", "macro.rs",
                               "-o", "libnumbers.so"])
     yield Fixture("rust-query", rustc, ["--version", "--verbose"], {}, cacheable=False)
+    yield Fixture("rust-frontend-sysroot", rustc,
+                  ["--crate-name=example", "--crate-type=rlib", "--emit=link",
+                   "--out-dir=target", "--sysroot", str(Path(rustc).parent.parent),
+                   "library.rs"], rust_sources, {"value.txt": "second"},
+                  cacheable=False, oracle_bypass=True)
+    yield Fixture("rust-frontend-output", rustc,
+                  ["--crate-name=example", "--crate-type=rlib", "--emit=link",
+                   "-o", "target/custom.rlib", "library.rs"], rust_sources,
+                  {"value.txt": "second"}, cacheable=False, oracle_bypass=True)
+    yield Fixture("rust-stdin-source", rustc,
+                  ["--crate-name=stdin", "--crate-type=rlib", "--emit=link",
+                   "-o", "target/libstdin.rlib", "-"], {},
+                  cacheable=False, oracle_bypass=True,
+                  stdin=b"pub fn answer() -> u32 { 42 }\n")
     for name, arguments in [
         ("help", ["--help"]),
         ("short-version", ["-V"]),
@@ -5303,6 +5348,18 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
 
     results = []
     subprocess.run([sccache, "--start-server"], env=env | {"SCCACHE_LOG": "debug"}, check=True, capture_output=True)
+    accache_commands = set()
+    original_popen = subprocess.Popen
+
+    def record_popen(*args, **kwargs):
+        command = args[0] if args else kwargs.get("args")
+        if (isinstance(command, (list, tuple)) and len(command) > 2
+                and str(command[0]) == accache
+                and Path(str(command[1])).name in {"gcc", "g++", "clang", "clang++", "rustc"}):
+            accache_commands.add(tuple(map(str, command[1:])))
+        return original_popen(*args, **kwargs)
+
+    subprocess.Popen = record_popen
     try:
         for fixture in fixtures(gcc, clang, rustc):
             work = root / fixture.name
@@ -5329,7 +5386,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                 clean()
                 before = snapshot(work)
                 completed = subprocess.run([*wrapper, fixture.compiler, *fixture.arguments],
-                                           cwd=work, env=env, capture_output=True, timeout=120)
+                                           cwd=work, env=env, input=fixture.stdin,
+                                           capture_output=True, timeout=120)
                 expected_exit = fixture.direct_exit_code if not wrapper and fixture.direct_exit_code is not None else fixture.exit_code
                 assert completed.returncode == expected_exit, (
                     fixture.name, wrapper, completed.returncode, completed.stderr.decode(errors="replace"))
@@ -5748,11 +5806,15 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
             results.extend(check_unpacked_split_debug(root, env, accache, sccache,
                                                       rustc, hits, crate_type))
 
-        report = json.dumps({"fixtures": results, "sccache_stats": stats()}, sort_keys=True)
+        report = json.dumps({"fixtures": results,
+                             "accache_commands": [list(command) for command in sorted(accache_commands)],
+                             "sccache_stats": stats()}, sort_keys=True)
         if destination := os.environ.get("ACCACHE_ORACLE_REPORT"):
             Path(destination).write_text(report + "\n")
-        print(report)
+        print(f"PASS oracle {len({item['fixture'] for item in results})} fixture families, "
+              f"{len(results)} revisions, {len(accache_commands)} compiler commands", flush=True)
     finally:
+        subprocess.Popen = original_popen
         subprocess.run([sccache, "--stop-server"], env=env, capture_output=True, timeout=30)
 
 
