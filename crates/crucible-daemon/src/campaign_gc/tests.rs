@@ -2798,7 +2798,11 @@ fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
         Err(CampaignGcApplyError::RefBasisChanged)
     ));
     assert_eq!(stale_journal.phase(), CampaignGcJournalPhase::Planned);
-    assert!(staging_leaf.contains(orphan_id).expect("orphan retained after stale plan"));
+    assert!(
+        staging_leaf
+            .contains(orphan_id)
+            .expect("orphan retained after stale plan")
+    );
 
     let fresh = plan_single_host_campaign_gc_with_physical_and_hot_checkpoints(
         &repository,
@@ -2838,8 +2842,16 @@ fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
             .expect("read second ref"),
         Some(retained_child_id)
     );
-    assert!(staging_leaf.contains(pending_parent_id).expect("pending parent retained"));
-    assert!(staging_leaf.contains(transfer_id).expect("transfer root retained"));
+    assert!(
+        staging_leaf
+            .contains(pending_parent_id)
+            .expect("pending parent retained")
+    );
+    assert!(
+        staging_leaf
+            .contains(transfer_id)
+            .expect("transfer root retained")
+    );
 }
 
 #[test]

@@ -822,7 +822,10 @@ fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
     .expect("plan healthy S3 recovery GC");
     assert!(prepared.roots().iter().any(|id| id == transfer_id));
     assert_eq!(prepared.candidates().len(), 1);
-    assert_eq!(prepared.candidates().iter().next().expect("orphan").id(), orphan_id);
+    assert_eq!(
+        prepared.candidates().iter().next().expect("orphan").id(),
+        orphan_id
+    );
 
     let (mut interrupted, _) =
         DirectoryCampaignGcJournal::create(temp.path().join("interrupted"), &prepared)
@@ -876,7 +879,9 @@ fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
             Some(id)
         );
         assert_eq!(
-            graph.read(id, None).expect("read retained S3 object")
+            graph
+                .read(id, None)
+                .expect("read retained S3 object")
                 .read_all(1024 * 1024)
                 .expect("authenticate retained S3 object"),
             bytes
@@ -972,8 +977,14 @@ fn publish_paused_s3_campaign(repository: &CampaignRepository) -> [CampaignSnaps
     let west = repository
         .derive_campaign("s3-east", east.new_snapshot, "s3-west", None)
         .expect("derive west from paused east");
-    assert_eq!(repository.state("s3-east").expect("east state"), CampaignState::Paused);
-    assert_eq!(repository.state("s3-west").expect("west state"), CampaignState::Paused);
+    assert_eq!(
+        repository.state("s3-east").expect("east state"),
+        CampaignState::Paused
+    );
+    assert_eq!(
+        repository.state("s3-west").expect("west state"),
+        CampaignState::Paused
+    );
     [paused.new_snapshot, east.new_snapshot, west.new_snapshot]
 }
 
@@ -1001,13 +1012,17 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
     graph
         .put_if_absent(orphan_id, &BlobHandle::from_bytes(orphan.canonical_bytes()))
         .expect("stage S3 recovery orphan");
-    let flushed = graph.flush_write_back(1024).expect("flush paused campaign to S3");
+    let flushed = graph
+        .flush_write_back(1024)
+        .expect("flush paused campaign to S3");
     assert_eq!(flushed.pending(), 0);
 
     // Evict the completed staging copy so the paused head must authenticate
     // through S3 while another transfer remains pending in write-back.
     let staging = DirectoryBlobBackend::new("staging", temp.path().join("staging"));
-    let mut stage_fence = staging.acquire_inventory_fence().expect("fence staging tier");
+    let mut stage_fence = staging
+        .acquire_inventory_fence()
+        .expect("fence staging tier");
     assert_eq!(
         stage_fence
             .delete_candidate(west.content_id())
@@ -1037,8 +1052,14 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
 
     for fault in [S3_UNAVAILABLE, S3_CREDENTIALS_EXPIRED] {
         service.set_fault(fault);
-        assert!(repository.head("s3-west").is_err(), "paused head survived fault {fault}");
-        assert!(graph.flush_write_back(1).is_err(), "write-back ignored fault {fault}");
+        assert!(
+            repository.head("s3-west").is_err(),
+            "paused head survived fault {fault}"
+        );
+        assert!(
+            graph.flush_write_back(1).is_err(),
+            "write-back ignored fault {fault}"
+        );
         assert!(
             super::super::plan_single_host_campaign_gc_with_hot_checkpoints(
                 &repository,
@@ -1106,7 +1127,12 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
     )
     .expect("plan recovered paused campaign GC");
     assert!(prepared.roots().iter().any(|id| id == transfer_id));
-    assert!(prepared.candidates().iter().any(|candidate| candidate.id() == orphan_id));
+    assert!(
+        prepared
+            .candidates()
+            .iter()
+            .any(|candidate| candidate.id() == orphan_id)
+    );
     let (mut stale, _) = DirectoryCampaignGcJournal::create(temp.path().join("stale"), &prepared)
         .expect("journal pre-publication GC");
     let north = repository
@@ -1125,7 +1151,11 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
         Err(CampaignGcApplyError::PhysicalBasisChanged { .. })
             | Err(CampaignGcApplyError::RefBasisChanged)
     ));
-    assert!(graph.contains(orphan_id).expect("orphan survived stale plan"));
+    assert!(
+        graph
+            .contains(orphan_id)
+            .expect("orphan survived stale plan")
+    );
 
     let recovered = super::super::plan_single_host_campaign_gc_with_hot_checkpoints(
         &repository,
@@ -1136,8 +1166,9 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
         &admin,
     )
     .expect("replan after third derived publication");
-    let (mut journal, _) = DirectoryCampaignGcJournal::create(temp.path().join("recovered"), &recovered)
-        .expect("journal recovered paused campaign GC");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("recovered"), &recovered)
+            .expect("journal recovered paused campaign GC");
     let report = super::super::apply_single_host_campaign_gc_with_hot_checkpoints(
         &mut journal,
         &repository,
@@ -1150,7 +1181,11 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
     .expect("apply recovered paused campaign GC");
     assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
     assert!(!graph.contains(orphan_id).expect("orphan reclaimed"));
-    assert!(graph.contains(transfer_id).expect("pending transfer retained"));
+    assert!(
+        graph
+            .contains(transfer_id)
+            .expect("pending transfer retained")
+    );
     for (name, expected) in [
         ("s3-source", paused),
         ("s3-east", east),
@@ -1182,7 +1217,10 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
     let (reopened_graph, _) = build_graph_with_config(service, reopened_config);
     let reopened_refs = Arc::new(DirectoryRefBackend::new(temp.path().join("refs")));
     let reopened = CampaignRepository::new(Arc::new(reopened_graph), reopened_refs);
-    assert_eq!(reopened.state("s3-west").expect("reopen paused west"), CampaignState::Paused);
+    assert_eq!(
+        reopened.state("s3-west").expect("reopen paused west"),
+        CampaignState::Paused
+    );
     let resumed = reopened
         .apply_control(
             "s3-west",
@@ -1197,5 +1235,8 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
         )
         .expect("resume west after backend recovery and graph restart");
     assert_ne!(resumed.new_snapshot, west);
-    assert_eq!(reopened.state("s3-west").expect("resumed west"), CampaignState::Running);
+    assert_eq!(
+        reopened.state("s3-west").expect("resumed west"),
+        CampaignState::Running
+    );
 }
