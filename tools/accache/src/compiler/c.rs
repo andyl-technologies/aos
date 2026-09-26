@@ -1,7 +1,7 @@
 //! GCC and Clang discovery using the complete pinned argument tables.
 
 use super::{Invocation, llvm, parsed, strings};
-use crate::model::{DynamicOutputs, Manifest};
+use crate::model::{self, DynamicOutputs, Manifest};
 use accache_frontend::compiler::{Language, c::CCompilerKind, clang, gcc};
 use anyhow::{Result, ensure};
 use std::{
@@ -374,14 +374,10 @@ pub(super) fn configure(
         }
     }
     if !clang && let Some(prefix) = environment.get("GCC_EXEC_PREFIX") {
-        // GCC searches this prefix for as and other compiler subprograms
-        // before COMPILER_PATH. GCC also derives libexec search paths two
-        // levels above the prefix, so the prefix itself is insufficient.
+        // GCC derives both libexec and target-specific bin directories from
+        // this prefix. Ask its driver for the actual subprogram search list.
         compiler_prefix_inputs(invocation, prefix)?;
-        let libexec = Path::new(prefix).join("../../libexec/gcc");
-        if libexec.is_dir() {
-            invocation.recursive_dirs.insert(libexec.canonicalize()?);
-        }
+        gcc_program_search_dirs(invocation, compiler, environment)?;
     }
     for pair in preprocessing.windows(2) {
         if matches!(
@@ -685,6 +681,32 @@ fn compiler_prefix_inputs(invocation: &mut Invocation, prefix: &str) -> Result<(
             invocation.recursive_dirs.insert(candidate);
         } else if candidate.is_file() {
             invocation.extra_inputs.insert(candidate);
+        }
+    }
+    Ok(())
+}
+
+fn gcc_program_search_dirs(
+    invocation: &mut Invocation,
+    compiler: &str,
+    environment: &BTreeMap<String, String>,
+) -> Result<()> {
+    let args = ["-print-search-dirs".to_owned()];
+    let output = model::command(compiler, &args, environment).output()?;
+    ensure!(output.status.success(), "GCC subprogram search probe failed");
+
+    let listing = String::from_utf8(output.stdout)?;
+    let directories = listing
+        .lines()
+        .find_map(|line| line.strip_prefix("programs:"))
+        .ok_or_else(|| anyhow::anyhow!("GCC did not report program search directories"))?;
+    for directory in directories.trim().split(':') {
+        // GCC marks sysroot-relative search entries with a leading '='.
+        let directory = directory.strip_prefix('=').unwrap_or(directory);
+        if Path::new(directory).is_dir() {
+            invocation
+                .read_dirs
+                .insert(Path::new(directory).canonicalize()?);
         }
     }
     Ok(())
