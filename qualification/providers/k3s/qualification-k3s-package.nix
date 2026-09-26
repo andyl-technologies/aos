@@ -5,6 +5,7 @@
 }: {
   name,
   identity,
+  packageChecks,
   packageExecutable,
   systemVariant,
   topology,
@@ -13,6 +14,8 @@
   fleet = import ../../../lib/testing/qualification-image.nix {inherit pkgs lib;} {
     name = fleetName;
     inherit identity;
+    checks = packageChecks;
+    inherit packageChecks;
     scenarioSource = ./qualification_k3s_fleet.py;
     scenarioModules = {
       qualification_image = ../../../lib/testing/qualification-image.py;

@@ -53,6 +53,7 @@ OPENSSL = os.environ["AOS_QUALIFICATION_OPENSSL"]
 OBJCOPY = os.environ["AOS_QUALIFICATION_OBJCOPY"]
 NIX_STORE = os.environ["AOS_QUALIFICATION_NIX_STORE"]
 BOUND_IMAGE_VARIANT = os.environ.get("AOS_QUALIFICATION_BOUND_IMAGE_VARIANT")
+PACKAGE_CHECKS = frozenset(json.loads(os.environ["AOS_QUALIFICATION_PACKAGE_CHECKS"]))
 
 MAX_RECOVERY_INITRD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_RECOVERY_EXECUTABLE_BYTES = 128 * 1024 * 1024
@@ -596,9 +597,7 @@ class Scenario:
         self.expected_checks = set(
             json.loads(os.environ["AOS_QUALIFICATION_CHECKS"])
         )
-        self.package_checks = set(
-            json.loads(os.environ["AOS_QUALIFICATION_PACKAGE_CHECKS"])
-        )
+        self.package_checks = PACKAGE_CHECKS
         self.package_mode = self.case["id"] == f"package-function/aos-recovery/{PLATFORM}"
         self.image_variant = BOUND_IMAGE_VARIANT if self.package_mode else None
         self.objects: dict[str, str] = read_json(OBJECTS)

@@ -839,6 +839,7 @@
         scenario = mkQualificationK3sPackageScenario {
           inherit name;
           identity = qualificationExecutorIdentity;
+          packageChecks = qualificationRequirementChecks "package-function";
           packageExecutable = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
           systemVariant = rule.execution.system_variant;
           topology = rule.execution.topology;
