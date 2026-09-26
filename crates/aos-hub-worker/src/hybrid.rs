@@ -6,6 +6,7 @@
 
 use std::cell::Cell;
 use std::sync::Arc;
+use std::time::Duration;
 
 use aos_hub_core::hybrid_ingress::{
     oci_chunk_range_matches, HybridCachePartAdmission, HybridCachePartAdmissionRequest,
@@ -54,7 +55,14 @@ async fn acquire_upload_permit() -> OwnedMutexGuard<()> {
             Arc::clone(&gates[index])
         })
     });
-    gate.lock_owned().await
+    loop {
+        if let Some(permit) = gate.try_lock_owned() {
+            return permit;
+        }
+        // Workerd cancels a request that only waits on an in-isolate future.
+        // A runtime timer keeps the queued request alive until a slot opens.
+        worker::Delay::from(Duration::from_millis(50)).await;
+    }
 }
 
 /// Dispatches hybrid control and authenticated storage-work requests.
