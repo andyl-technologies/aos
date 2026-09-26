@@ -7,25 +7,31 @@
   bazelNettyBase,
   bazelNettyCodec,
   bazelMavenBootstrap,
+  version ? "4.1.93.Final",
+  archiveHashes ? {
+    codec-socks = "sha256-7Jtdxq7u3x5D5nwV7E7xJFq+Hx6oPMbbKP6Kmz6r7O4=";
+    transport-native-unix-common = "sha256-tnZVKIyyOvJkkOmuuJ94sR0N1fY/BJDlbN18Ak9M0Ww=";
+    transport-classes-epoll = "sha256-gXtRi/JZlkaxm+5slSknXK/tCbOVWgJm6KMx6n/qNtA=";
+    transport-classes-kqueue = "sha256-Dljddzma1lcinvyAYxIev7rqKQ5Vidfm4+rnFKQBmvU=";
+  },
 }: let
-  version = "4.1.93.Final";
   buildJdk = buildPackages.openjdk-17;
   archives = [
     {
       name = "codec-socks";
-      hash = "sha256-7Jtdxq7u3x5D5nwV7E7xJFq+Hx6oPMbbKP6Kmz6r7O4=";
+      hash = archiveHashes.codec-socks;
     }
     {
       name = "transport-native-unix-common";
-      hash = "sha256-tnZVKIyyOvJkkOmuuJ94sR0N1fY/BJDlbN18Ak9M0Ww=";
+      hash = archiveHashes.transport-native-unix-common;
     }
     {
       name = "transport-classes-epoll";
-      hash = "sha256-gXtRi/JZlkaxm+5slSknXK/tCbOVWgJm6KMx6n/qNtA=";
+      hash = archiveHashes.transport-classes-epoll;
     }
     {
       name = "transport-classes-kqueue";
-      hash = "sha256-Dljddzma1lcinvyAYxIev7rqKQ5Vidfm4+rnFKQBmvU=";
+      hash = archiveHashes.transport-classes-kqueue;
     }
   ];
   sources =
