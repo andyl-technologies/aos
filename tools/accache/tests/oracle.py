@@ -82,6 +82,12 @@ def fixtures(gcc, clang, rustc):
             "arguments.rsp": '-c source.c @nested.rsp -o "source output.o"\n',
             "nested.rsp": '-O2 -D"UNUSED=7"\n',
         }, {"nested.rsp": "-O3 -DUNUSED=8\n"})
+        yield Fixture(name + "-spaced-dependencies", compiler,
+                      ["-c", "source with space.c", "-MMD", "-MF", "source.d",
+                       "-o", "source.o"],
+                      {"source with space.c": '#include "header with space.h"\nint answer(void) { return VALUE; }\n',
+                       "header with space.h": "#define VALUE 42\n"},
+                      {"header with space.h": "#define VALUE 73\n"})
         yield Fixture(name + "-cplusplus", compiler,
                       ["-c", "source.cc", "-std=c++20", "-O2", "-o", "source.o"],
                       {"source.cc": "template<int N> struct V { static constexpr int value = N; }; int answer() { return V<42>::value; }\n"})
