@@ -1,0 +1,964 @@
+##! Source-built Java libraries used by Bazel's bootstrap classpath.
+{
+  mkDerivation,
+  fetchurl,
+  buildPackages,
+  bazelZstdJni155,
+  includeModernLibraries ? false,
+}: let
+  bazelAsm = import ./_bazel-asm.nix {
+    inherit mkDerivation fetchurl buildPackages;
+  };
+  protobufJava = import ./_bazel-protobuf-java.nix {
+    inherit mkDerivation buildPackages;
+    protobuf = buildPackages.protobuf;
+  };
+  protobufJavaClasspath = "$protobuf_java_classpath";
+
+  cglibBuildClasspath = builtins.concatStringsSep ":" [
+    "${bazelAsm}/share/java/asm-9.2.jar"
+    "${bazelAsm}/share/java/asm-tree-9.2.jar"
+    "${bazelAsm}/share/java/asm-analysis-9.2.jar"
+    "${bazelAsm}/share/java/asm-commons-9.2.jar"
+    "${bazelAsm}/share/java/asm-util-9.2.jar"
+    "${buildPackages.ant}/lib/ant.jar"
+  ];
+
+  extraClasspath = source:
+    if source ? extraClasspath
+    then ":${source.extraClasspath}"
+    else "";
+
+  processorNames = source:
+    builtins.concatStringsSep "," (
+      (
+        if source.autoValueProcessor or false
+        then ["com.google.auto.value.processor.AutoValueProcessor"]
+        else []
+      )
+      ++ (
+        if source.autoServiceProcessor or false
+        then ["com.google.auto.service.processor.AutoServiceProcessor"]
+        else []
+      )
+    );
+
+  processorFlags = source:
+    if processorNames source == ""
+    then "-proc:none"
+    else "-processor ${processorNames source} -processorpath \".\${classpath:+:$classpath}\"";
+
+  archives = [
+    {
+      target = "com/beust/jcommander/1.82/jcommander-1.82.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/beust/jcommander/1.82/jcommander-1.82-sources.jar";
+      hash = "sha256-zDnSLzzynCAz+1JuVgCuj+w24xYnSwwH+hTBpKOOyjs=";
+    }
+    {
+      target = "com/github/stephenc/jcip/jcip-annotations/1.0-1/jcip-annotations-1.0-1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/github/stephenc/jcip/jcip-annotations/1.0-1/jcip-annotations-1.0-1-sources.jar";
+      hash = "sha256-1guzv04DpeQF+bFvTCYl3oYInWzk+Zm8wlSNysCQrhk=";
+    }
+    {
+      target = "com/google/android/annotations/4.1.1.4/annotations-4.1.1.4.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/android/annotations/4.1.1.4/annotations-4.1.1.4-sources.jar";
+      hash = "sha256-6bZnqpWN946hrRFfe7rBilhpwxKLHVBD/rNgsM/OnUA=";
+    }
+    {
+      target = "com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2-sources.jar";
+      hash = "sha256-HJ6F4nLQcIxqWR3HSCjHFgMFO0jMda6DzOVpEqKqBjs=";
+    }
+    {
+      target = "com/google/errorprone/error_prone_annotations/2.36.0/error_prone_annotations-2.36.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/errorprone/error_prone_annotations/2.36.0/error_prone_annotations-2.36.0-sources.jar";
+      hash = "sha256-fhF+CTHLLLQiY3KvM2GJtJ7beZadEg7JWKbfC+rLBhI=";
+    }
+    {
+      target = "com/google/guava/failureaccess/1.0.1/failureaccess-1.0.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/guava/failureaccess/1.0.1/failureaccess-1.0.1-sources.jar";
+      hash = "sha256-CSNG7ruxZXtRqnSFoka/YCu0ZMwLDi4cfnIB+tzh6Y8=";
+    }
+    {
+      target = "com/google/j2objc/j2objc-annotations/2.8/j2objc-annotations-2.8.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/j2objc/j2objc-annotations/2.8/j2objc-annotations-2.8-sources.jar";
+      hash = "sha256-dBPu1B8RFFOgiDf1rGgO3e1/rtRmy9NXReQC4T9Mw/U=";
+    }
+    {
+      target = "org/checkerframework/checker-qual/3.37.0/checker-qual-3.37.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/checkerframework/checker-qual/3.37.0/checker-qual-3.37.0-sources.jar";
+      hash = "sha256-LKMcfpWa2C/icLK6rBGlnFcPh3gZEjPFSSfpStq3tkA=";
+    }
+    {
+      target = "org/checkerframework/checker-compat-qual/2.5.3/checker-compat-qual-2.5.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/checkerframework/checker-compat-qual/2.5.3/checker-compat-qual-2.5.3-sources.jar";
+      hash = "sha256-aAEXc/1gz8d3JQgTQIZ4chC6KhRD4/nD9dQjOiJsM0Y=";
+    }
+    {
+      target = "com/google/guava/guava/32.1.3-jre/guava-32.1.3-jre.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/guava/guava/32.1.3-jre/guava-32.1.3-jre-sources.jar";
+      hash = "sha256-n28zOy3q82ZE0U3e7X5rMRUbDCRLqx5NWO5EOt6aCfM=";
+    }
+    {
+      target = "com/google/errorprone/error_prone_annotation/2.36.0/error_prone_annotation-2.36.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/errorprone/error_prone_annotation/2.36.0/error_prone_annotation-2.36.0-sources.jar";
+      hash = "sha256-+KJhtX9nGhGRBh4QfMJRdbaJwXKrkdMREF3AD6eMrKI=";
+    }
+    {
+      target = "com/google/code/gson/gson/2.9.0/gson-2.9.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/code/gson/gson/2.9.0/gson-2.9.0-sources.jar";
+      hash = "sha256-dUKURunZ6QxbaoSqBtjSd4PynHCz3mWmwtUNJ87OZNw=";
+    }
+    {
+      target = "com/google/auto/service/auto-service-annotations/1.0.1/auto-service-annotations-1.0.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auto/service/auto-service-annotations/1.0.1/auto-service-annotations-1.0.1-sources.jar";
+      hash = "sha256-sBPKFZsP6joAQdPV+7O35JqBnagKFyoB+xfdKP2Y5ys=";
+    }
+    {
+      target = "com/squareup/javapoet/1.12.0/javapoet-1.12.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/squareup/javapoet/1.12.0/javapoet-1.12.0-sources.jar";
+      hash = "sha256-qjS+tZiJcPKAXi+RUR3TeBzMPUAV8Q6euU952PcTUwI=";
+    }
+    {
+      target = "commons-codec/commons-codec/1.16.1/commons-codec-1.16.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/commons-codec/commons-codec/1.16.1/commons-codec-1.16.1-sources.jar";
+      hash = "sha256-G51zNr75UM1F2+/VNRIi7ojk794JqUVOhRpFjDT4E74=";
+    }
+    {
+      target = "commons-collections/commons-collections/3.2.2/commons-collections-3.2.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/commons-collections/commons-collections/3.2.2/commons-collections-3.2.2-sources.jar";
+      hash = "sha256-pbXuFqAu2t9/5jfyUCF8GYeLxhNPFetVY1xImW9v7R0=";
+      # Map.remove(Object, Object) gained an incompatible Java 8 default method.
+      javaRelease = 7;
+    }
+    {
+      target = "commons-io/commons-io/2.15.1/commons-io-2.15.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/commons-io/commons-io/2.15.1/commons-io-2.15.1-sources.jar";
+      hash = "sha256-UMsku4PB7cscEAektsfqAkxxrA+gGLgKVzkdfHtbgkY=";
+    }
+    {
+      target = "commons-lang/commons-lang/2.6/commons-lang-2.6.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/commons-lang/commons-lang/2.6/commons-lang-2.6-sources.jar";
+      hash = "sha256-ZsJ2CUXOwibyYobd8/b/44VExKaareiXAKmmicm5I4A=";
+      javaRelease = 7;
+      sourceEncoding = "ISO-8859-1";
+      legacyEnumPackage = true;
+    }
+    {
+      target = "io/github/java-diff-utils/java-diff-utils/4.12/java-diff-utils-4.12.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/github/java-diff-utils/java-diff-utils/4.12/java-diff-utils-4.12-sources.jar";
+      hash = "sha256-+iQhe26qEVoF1KjwAD/pE8YnFsohhNLk8X3kp9QqiCI=";
+    }
+    {
+      target = "org/apache/commons/commons-lang3/3.14.0/commons-lang3-3.14.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/commons/commons-lang3/3.14.0/commons-lang3-3.14.0-sources.jar";
+      hash = "sha256-qzuGr7iY8QJtvkOq9x6cHXGexS1uQYh7Ni2Gd3wpm28=";
+    }
+    {
+      target = "org/apache/commons/commons-math3/3.6.1/commons-math3-3.6.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/commons/commons-math3/3.6.1/commons-math3-3.6.1-sources.jar";
+      hash = "sha256-4v+Fo8Ng1WxRpwIWFKGU8/uvIkBUZCrFNQFvEYMik00=";
+    }
+    {
+      target = "com/google/errorprone/error_prone_type_annotations/2.36.0/error_prone_type_annotations-2.36.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/errorprone/error_prone_type_annotations/2.36.0/error_prone_type_annotations-2.36.0-sources.jar";
+      hash = "sha256-y46Yv+vDM/W2KUgno5jFw/Je+i0y8iNA067xNBGtrw0=";
+    }
+    {
+      target = "com/google/auto/value/auto-value-annotations/1.11.0/auto-value-annotations-1.11.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auto/value/auto-value-annotations/1.11.0/auto-value-annotations-1.11.0-sources.jar";
+      hash = "sha256-15QeXxm7OK/PqFNQ1X5SRYVsI8mMK74y9tMbVXfyvDM=";
+      # The source classifier also carries the separately packaged processor.
+      javaRoot = "com/google/auto/value";
+      javaMaxDepth = 1;
+      copyResources = false;
+    }
+    {
+      target = "com/google/flogger/flogger/0.5.1/flogger-0.5.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/flogger/flogger/0.5.1/flogger-0.5.1-sources.jar";
+      hash = "sha256-jfRkg0oz1MJw4OdoEMeTqoGsp8PIhGMDIARxs3E4bwk=";
+      compileOnlyPlatformProvider = true;
+    }
+    {
+      target = "com/google/flogger/flogger-system-backend/0.5.1/flogger-system-backend-0.5.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/flogger/flogger-system-backend/0.5.1/flogger-system-backend-0.5.1-sources.jar";
+      hash = "sha256-vWwRKMAz+of493O6Ae6F7fmiIQEIIttiVF7W7A4l87E=";
+    }
+    {
+      target = "com/google/flogger/google-extensions/0.5.1/google-extensions-0.5.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/flogger/google-extensions/0.5.1/google-extensions-0.5.1-sources.jar";
+      hash = "sha256-9ueEHdrrdQcWHStz15saRog+Lv8AEfUlxgCCUD9RTb8=";
+    }
+    {
+      target = "com/github/ben-manes/caffeine/caffeine/3.0.5/caffeine-3.0.5.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/github/ben-manes/caffeine/caffeine/3.0.5/caffeine-3.0.5-sources.jar";
+      hash = "sha256-LMqNHN/fM8HQ7sAhTNxtk/+KlRNr95hGWxClkkppvGU=";
+    }
+    {
+      target = "org/jspecify/jspecify/1.0.0/jspecify-1.0.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/jspecify/jspecify/1.0.0/jspecify-1.0.0-sources.jar";
+      hash = "sha256-rfCJgZHVWTf7MZK6lxgm9PKUKSxKlgdA88JzEOe3ApY=";
+    }
+    {
+      target = "org/jetbrains/annotations/24.0.0/annotations-24.0.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/jetbrains/annotations/24.0.0/annotations-24.0.0-sources.jar";
+      hash = "sha256-AHE2gb+W3YVXkCc1IPesGDzPeOyKmOuviRuiy9FK/uw=";
+    }
+    {
+      target = "org/codehaus/mojo/animal-sniffer-annotations/1.21/animal-sniffer-annotations-1.21.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/codehaus/mojo/animal-sniffer-annotations/1.21/animal-sniffer-annotations-1.21-sources.jar";
+      hash = "sha256-uWwOPpZobkrOkfQW/y98WlOlPyW+bkBPxxv88g6cJT4=";
+    }
+    {
+      target = "org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3-sources.jar";
+      hash = "sha256-4iPS2Puv1mBXqISMyUIi1jw87dZSzEjt3Aq1w5wPhN8=";
+      javaRelease = 8;
+      repairHamcrestGenerics = true;
+    }
+    {
+      target = "junit/junit/4.13.2/junit-4.13.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/junit/junit/4.13.2/junit-4.13.2-sources.jar";
+      hash = "sha256-NBgd9kgtQOpMBGsGPLU8f/rpS98bHWJpW986353qfjo=";
+    }
+    {
+      target = "javax/inject/javax.inject/1/javax.inject-1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/javax/inject/javax.inject/1/javax.inject-1-sources.jar";
+      hash = "sha256-xLh+4pEcE5w9r0mKeBln8esudbwahSmi57MooV0OQz4=";
+    }
+    {
+      target = "javax/annotation/javax.annotation-api/1.3.2/javax.annotation-api-1.3.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/javax/annotation/javax.annotation-api/1.3.2/javax.annotation-api-1.3.2-sources.jar";
+      hash = "sha256-Eolx5S4NhKZuO24EnauK17LFi34a03+i3r09QMKUe5U=";
+    }
+    {
+      target = "javax/activation/javax.activation-api/1.2.0/javax.activation-api-1.2.0.jar";
+      # The API source archive omits its com.sun.activation.registries
+      # implementation. The matching implementation source includes both.
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/sun/activation/javax.activation/1.2.0/javax.activation-1.2.0-sources.jar";
+      hash = "sha256-flrtDMNUaE8clqHSRRPJXwlxVBue0Dv5CngroYlXECI=";
+    }
+    {
+      target = "org/apache/tomcat/tomcat-annotations-api/8.0.5/tomcat-annotations-api-8.0.5.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/tomcat/tomcat-annotations-api/8.0.5/tomcat-annotations-api-8.0.5-sources.jar";
+      hash = "sha256-2zec4n56T9VpoajiY0xtXw8WxTYq67MIa/DmGUW/aCU=";
+    }
+    {
+      target = "org/pcollections/pcollections/3.1.4/pcollections-3.1.4.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/pcollections/pcollections/3.1.4/pcollections-3.1.4-sources.jar";
+      hash = "sha256-ONkbkUZ97c7f02trX1dwCP1RdIznQVDr4R7BInrM4hg=";
+    }
+    {
+      target = "org/tukaani/xz/1.9/xz-1.9.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/tukaani/xz/1.9/xz-1.9-sources.jar";
+      hash = "sha256-W++kfwa5DnUvA1GR3efy3rWfNgAPHKbMd9I2KoK29GI=";
+    }
+    {
+      target = "org/yaml/snakeyaml/1.28/snakeyaml-1.28.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/yaml/snakeyaml/1.28/snakeyaml-1.28-sources.jar";
+      hash = "sha256-cMo8et/pHjWdZs5kVt39eaf1Biutgzr3+Qo8w6LtIO0=";
+    }
+    {
+      target = "cglib/cglib/3.3.0/cglib-3.3.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/cglib/cglib/3.3.0/cglib-3.3.0-sources.jar";
+      hash = "sha256-ePx4qw1nvRmHVEPT4ZfgWeu+8q///YmMq4Er4m/28XY=";
+      javaRelease = 8;
+      extraClasspath = "$cglib_classpath";
+    }
+    {
+      target = "org/apache/commons/commons-pool2/2.8.0/commons-pool2-2.8.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/commons/commons-pool2/2.8.0/commons-pool2-2.8.0-sources.jar";
+      hash = "sha256-ZunMz3RYJWx2Y6JE3t3R09Q7JEXqgmccwxSlD/78oKo=";
+    }
+    {
+      target = "org/joda/joda-convert/2.2.0/joda-convert-2.2.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/joda/joda-convert/2.2.0/joda-convert-2.2.0-sources.jar";
+      hash = "sha256-o5tNdUBsTUWZfI1ckIJykqWNpRp/scyAnpwDRCojPtw=";
+    }
+    {
+      target = "org/threeten/threeten-extra/1.5.0/threeten-extra-1.5.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/threeten/threeten-extra/1.5.0/threeten-extra-1.5.0-sources.jar";
+      hash = "sha256-jnK4dBt8oq1PZT19tOrEf9XnBzULYsNZ9wjdSpQrJJ8=";
+    }
+    {
+      target = "org/checkerframework/checker-qual/3.19.0/checker-qual-3.19.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/checkerframework/checker-qual/3.19.0/checker-qual-3.19.0-sources.jar";
+      hash = "sha256-HyJuKQEWJHXKoBUVMElt0BBwGr1BSX689qd7VXvcNjs=";
+    }
+    {
+      target = "org/reactivestreams/reactive-streams/1.0.3/reactive-streams-1.0.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/reactivestreams/reactive-streams/1.0.3/reactive-streams-1.0.3-sources.jar";
+      hash = "sha256-1bQHCiLJscpbm1qmaEZrzKOR2+XV/oMRwwB2XBYh/ro=";
+    }
+    {
+      target = "io/reactivex/rxjava3/rxjava/3.1.2/rxjava-3.1.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/reactivex/rxjava3/rxjava/3.1.2/rxjava-3.1.2-sources.jar";
+      hash = "sha256-Rovglf/rppmeF84KIfbgf8ccMglPRIrZELUnUT1o6Nk=";
+    }
+    {
+      target = "com/google/j2objc/j2objc-annotations/1.3/j2objc-annotations-1.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/j2objc/j2objc-annotations/1.3/j2objc-annotations-1.3-sources.jar";
+      hash = "sha256-uk32af7BU/pM0O+NAsbT7wcCt6xMq+CA+s87bkkLuXI=";
+    }
+    {
+      target = "com/google/guava/guava/31.1-jre/guava-31.1-jre.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/guava/guava/31.1-jre/guava-31.1-jre-sources.jar";
+      hash = "sha256-irGFPNr5NuyIvoDBcwK3wgq6+9T1TU+1TXARxSnjpEo=";
+    }
+    {
+      target = "com/google/auto/auto-common/1.2.1/auto-common-1.2.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auto/auto-common/1.2.1/auto-common-1.2.1-sources.jar";
+      hash = "sha256-aAL8bkj4TKytq5QYvI66cy9MakGJ/IVpsfYZy4gRKyU=";
+    }
+    {
+      target = "com/google/auto/service/auto-service/1.0/auto-service-1.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auto/service/auto-service/1.0/auto-service-1.0-sources.jar";
+      hash = "sha256-C/t7Mf8n/lPHFjN+H43Ekpdj+FeMfz5rFI+2AGYiKU4=";
+    }
+    {
+      target = "com/google/escapevelocity/escapevelocity/1.1/escapevelocity-1.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/escapevelocity/escapevelocity/1.1/escapevelocity-1.1-sources.jar";
+      hash = "sha256-7t9mItSdwWz577AjwhuSMF+MZF8XISo/2HS6UHNy4hM=";
+    }
+    {
+      target = "net/ltgt/gradle/incap/incap/1.0.0/incap-1.0.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/net/ltgt/gradle/incap/incap/1.0.0/incap-1.0.0-sources.jar";
+      hash = "sha256-8z0VSZxq290YlEcyAxCGniUJ7/xrs75IXA5Tw9EVf3c=";
+    }
+    {
+      target = "org/ow2/asm/asm/9.7/asm-9.7.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/ow2/asm/asm/9.7/asm-9.7-sources.jar";
+      hash = "sha256-Ed/YgSkgS+GMD1kvjgZtDAfYprwAH2x7LM5f8FiNXXE=";
+    }
+    {
+      target = "org/ow2/asm/asm-tree/9.7/asm-tree-9.7.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-tree/9.7/asm-tree-9.7-sources.jar";
+      hash = "sha256-RC0yvmEGpBthwu3wX4rklsTFTMpuc9nVnTjpy1SCDEQ=";
+    }
+    {
+      target = "org/ow2/asm/asm-commons/9.7/asm-commons-9.7.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-commons/9.7/asm-commons-9.7-sources.jar";
+      hash = "sha256-awCSte54XCQGx1+8Q8C57EvuMHK0vR2Rm4TPQLclQHU=";
+    }
+    {
+      target = "com/google/auto/value/auto-value/1.11.0/auto-value-1.11.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auto/value/auto-value/1.11.0/auto-value-1.11.0-sources.jar";
+      hash = "sha256-S/8G/gd9aPlkvV4F8CDteP14cHMEQeQDouswY2DEiQo=";
+    }
+    {
+      target = "com/ryanharter/auto/value/auto-value-gson-runtime/1.3.1/auto-value-gson-runtime-1.3.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/ryanharter/auto/value/auto-value-gson-runtime/1.3.1/auto-value-gson-runtime-1.3.1-sources.jar";
+      hash = "sha256-N/dQZsJ5kSoQwJHjiua/u/3KIXB26uZFYalMw1ut3hc=";
+    }
+    {
+      target = "io/sweers/autotransient/autotransient/1.0.0/autotransient-1.0.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/sweers/autotransient/autotransient/1.0.0/autotransient-1.0.0-sources.jar";
+      hash = "sha256-Uu6UV/E858+QLd6BZRtihn0P+pR2sqwqZUlrDk3XpTk=";
+    }
+    {
+      target = "com/ryanharter/auto/value/auto-value-gson-extension/1.3.1/auto-value-gson-extension-1.3.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/ryanharter/auto/value/auto-value-gson-extension/1.3.1/auto-value-gson-extension-1.3.1-sources.jar";
+      hash = "sha256-q+enfJOu7zE5hOCeBpbL+4weMO8Iph+xXItb3x7sAmw=";
+      autoValueProcessor = true;
+      autoServiceProcessor = true;
+    }
+    {
+      target = "com/ryanharter/auto/value/auto-value-gson-factory/1.3.1/auto-value-gson-factory-1.3.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/ryanharter/auto/value/auto-value-gson-factory/1.3.1/auto-value-gson-factory-1.3.1-sources.jar";
+      hash = "sha256-bkw3FzcDSLYYD7wYgycLZ8M0NEFLrDkqt4ZLTnH3/3E=";
+      autoServiceProcessor = true;
+    }
+    {
+      target = "io/grpc/grpc-context/1.48.1/grpc-context-1.48.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/grpc/grpc-context/1.48.1/grpc-context-1.48.1-sources.jar";
+      hash = "sha256-xuY5WNDYBQ/4wmaboZUW9Lvo+ajPeMnaCsr3HI1x6Qg=";
+    }
+    {
+      target = "io/grpc/grpc-api/1.48.1/grpc-api-1.48.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/grpc/grpc-api/1.48.1/grpc-api-1.48.1-sources.jar";
+      hash = "sha256-9sjuiup2PitMnT45Lk0FQ44NjWQSMGZ6TlUbTk9M6Vk=";
+    }
+    {
+      target = "io/grpc/grpc-stub/1.48.1/grpc-stub-1.48.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/grpc/grpc-stub/1.48.1/grpc-stub-1.48.1-sources.jar";
+      hash = "sha256-0qtIZFaPYwWZQqkUgCgIp8mqmfTRBxJn6YF8TGNocFc=";
+    }
+    {
+      target = "io/grpc/grpc-protobuf-lite/1.48.1/grpc-protobuf-lite-1.48.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/grpc/grpc-protobuf-lite/1.48.1/grpc-protobuf-lite-1.48.1-sources.jar";
+      hash = "sha256-2TpswQic9l0Fmka/mGzjJu3EcnPkYu6JglrOsglzXy8=";
+      extraClasspath = protobufJavaClasspath;
+    }
+    {
+      target = "com/google/api/grpc/proto-google-common-protos/2.9.0/proto-google-common-protos-2.9.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/api/grpc/proto-google-common-protos/2.9.0/proto-google-common-protos-2.9.0-sources.jar";
+      hash = "sha256-6lT+e5WF9p+BnGPexg2DNGVOzjjjMfqNbtEeEaav+6I=";
+      extraClasspath = protobufJavaClasspath;
+    }
+    {
+      target = "io/grpc/grpc-protobuf/1.48.1/grpc-protobuf-1.48.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/grpc/grpc-protobuf/1.48.1/grpc-protobuf-1.48.1-sources.jar";
+      hash = "sha256-dwcQHaH/KoiBSrc8LItj6Z1EfaUHobeJBtXrWiRLRrI=";
+      extraClasspath = protobufJavaClasspath;
+    }
+    {
+      target = "io/perfmark/perfmark-api/0.25.0/perfmark-api-0.25.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/perfmark/perfmark-api/0.25.0/perfmark-api-0.25.0-sources.jar";
+      hash = "sha256-AHtra+q6Efq7Al15uHdLanWDWWqOwKKBV1cDBGQrDnI=";
+    }
+    {
+      target = "io/grpc/grpc-core/1.48.1/grpc-core-1.48.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/grpc/grpc-core/1.48.1/grpc-core-1.48.1-sources.jar";
+      hash = "sha256-AKdpFeO8q0v6UzKyCH4rWRtdwYkjBcqUY9ouAqbgrTg=";
+    }
+    {
+      target = "com/google/auth/google-auth-library-credentials/1.6.0/google-auth-library-credentials-1.6.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auth/google-auth-library-credentials/1.6.0/google-auth-library-credentials-1.6.0-sources.jar";
+      hash = "sha256-GbnDNOuDM+akL1Qc+bvLo8shEbIhhmQ9Xi6/tLONyKg=";
+    }
+    {
+      target = "io/grpc/grpc-auth/1.48.1/grpc-auth-1.48.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/grpc/grpc-auth/1.48.1/grpc-auth-1.48.1-sources.jar";
+      hash = "sha256-M6GC27Fm8jlzBvugbh8iVKtyJPF2UiOrg5EYQA1KAE0=";
+    }
+    {
+      target = "com/google/code/java-allocation-instrumenter/java-allocation-instrumenter/3.3.4/java-allocation-instrumenter-3.3.4.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/code/java-allocation-instrumenter/java-allocation-instrumenter/3.3.4/java-allocation-instrumenter-3.3.4-sources.jar";
+      hash = "sha256-o4IeKMH60QbXPNyxfroXTGbY0G0kBw7oOhW+y9JTqZQ=";
+      agentPremainClass = "com.google.monitoring.runtime.instrumentation.AllocationInstrumenter";
+    }
+    {
+      target = "org/apache/httpcomponents/httpcore/4.4.15/httpcore-4.4.15.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/httpcomponents/httpcore/4.4.15/httpcore-4.4.15-sources.jar";
+      hash = "sha256-FRD8cs8oWCRL3rDX9dJm/lhOy9L/4NkbEKbYBkHNGYU=";
+    }
+    {
+      target = "javax/servlet/javax.servlet-api/3.1.0/javax.servlet-api-3.1.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/javax/servlet/javax.servlet-api/3.1.0/javax.servlet-api-3.1.0-sources.jar";
+      hash = "sha256-XG1kDwHo5//bohsrdcD2Twww/R/DNyEjdQwDTLNjASo=";
+    }
+    {
+      target = "io/opencensus/opencensus-api/0.31.1/opencensus-api-0.31.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/opencensus/opencensus-api/0.31.1/opencensus-api-0.31.1-sources.jar";
+      hash = "sha256-Z0jVeqroGZVRStPi+xGpWqiOFYs/k0UCiAGOrM8x6Gs=";
+      autoValueProcessor = true;
+    }
+    {
+      target = "io/opencensus/opencensus-contrib-http-util/0.31.1/opencensus-contrib-http-util-0.31.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/opencensus/opencensus-contrib-http-util/0.31.1/opencensus-contrib-http-util-0.31.1-sources.jar";
+      hash = "sha256-1Vr9X5bcckvZA6d6OLCjRNDlnwKmS5qy8yYYvFguqSQ=";
+    }
+    {
+      target = "javax/jms/javax.jms-api/2.0.1/javax.jms-api-2.0.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/javax/jms/javax.jms-api/2.0.1/javax.jms-api-2.0.1-sources.jar";
+      hash = "sha256-3mG+kjwzIXw66jvfaWISA5o770lKZ0iuGP4ZDgHIpcs=";
+    }
+    {
+      target = "it/unimi/dsi/fastutil/7.2.1/fastutil-7.2.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/it/unimi/dsi/fastutil/7.2.1/fastutil-7.2.1-sources.jar";
+      hash = "sha256-TcWqnsalUZkOujYP3jRhmdHLcZ4Lwcy4GymJKoa0U4A=";
+    }
+    {
+      target = "org/brotli/dec/0.1.2/dec-0.1.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/brotli/dec/0.1.2/dec-0.1.2-sources.jar";
+      hash = "sha256-BkrB5B9HXB/QR5tlBfRLbjuwRLlIvdx11WpJbruF+8M=";
+    }
+    {
+      target = "org/apache/commons/commons-compress/1.26.1/commons-compress-1.26.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/commons/commons-compress/1.26.1/commons-compress-1.26.1-sources.jar";
+      hash = "sha256-dnxeOeuT98RgkmJ4oqp6fOwUaqHzL4tmZKVqz9zC6BI=";
+      sourceEncoding = "ISO-8859-1";
+      extraClasspath = "$zstd_jni_classpath";
+    }
+    {
+      target = "org/slf4j/slf4j-api/1.7.30/slf4j-api-1.7.30.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-api/1.7.30/slf4j-api-1.7.30-sources.jar";
+      hash = "sha256-nuRZZEV3WQ/tfqlK+ueB+jzJMR1FU/ruijIZ/718w4Y=";
+      dropSourceOnlyBinders = true;
+    }
+    {
+      target = "com/google/code/findbugs/findbugs-annotations/3.0.1/findbugs-annotations-3.0.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/code/findbugs/findbugs-annotations/3.0.1/findbugs-annotations-3.0.1-sources.jar";
+      hash = "sha256-M8+8YmaF7jvNb8scTnTyus+U2eRqnUlLtZTqwIBUmSw=";
+    }
+    {
+      target = "org/osgi/org.osgi.core/4.3.1/org.osgi.core-4.3.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/osgi/org.osgi.core/4.3.1/org.osgi.core-4.3.1-sources.jar";
+      hash = "sha256-+1HggjpBlDzzarUuVuegH0Exst6xOntkSUFrpl/EVzY=";
+    }
+    {
+      target = "org/apache/logging/log4j/log4j-api/2.17.2/log4j-api-2.17.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/logging/log4j/log4j-api/2.17.2/log4j-api-2.17.2-sources.jar";
+      hash = "sha256-Q1Hv7quRTvV0gI73A/lbE0lULZi4ryI9apdLemaLwTs=";
+    }
+    {
+      target = "org/json/json/20231013/json-20231013.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/json/json/20231013/json-20231013-sources.jar";
+      hash = "sha256-/GXLU66VXQf2JHhIVEalRKCroeCrhSJojuh1278Rdm4=";
+    }
+    {
+      target = "net/sf/jopt-simple/jopt-simple/5.0.4/jopt-simple-5.0.4.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/net/sf/jopt-simple/jopt-simple/5.0.4/jopt-simple-5.0.4-sources.jar";
+      hash = "sha256-BrKDgBpalO9pe38seaBIxOL4SLPa3dphyrdNiCvdl6U=";
+    }
+    {
+      target = "com/github/kevinstern/software-and-algorithms/1.0/software-and-algorithms-1.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/github/kevinstern/software-and-algorithms/1.0/software-and-algorithms-1.0-sources.jar";
+      hash = "sha256-N6Rsf49sUGTOs5i+RywXUHsefnv8cjmcV++1+lMQqK4=";
+      # Java 8 predates Collection.toArray(IntFunction), which makes the
+      # source's existing toArray(null) call ambiguous on newer JDK APIs.
+      javaRelease = 8;
+    }
+    {
+      target = "org/objenesis/objenesis/3.3/objenesis-3.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/objenesis/objenesis/3.3/objenesis-3.3-sources.jar";
+      hash = "sha256-0GFk+MoALI7xk87y1oKCIBTdMwUFYWr5Oj+2Qib8Ex0=";
+    }
+    {
+      target = "org/apache/logging/log4j/log4j-api/2.19.0/log4j-api-2.19.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/logging/log4j/log4j-api/2.19.0/log4j-api-2.19.0-sources.jar";
+      hash = "sha256-sGjPyNfZdcbYkQwKBlCHSuZEXsd7LhUR85EDhN7in38=";
+    }
+    {
+      target = "com/google/auto/auto-common/1.2.2/auto-common-1.2.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auto/auto-common/1.2.2/auto-common-1.2.2-sources.jar";
+      hash = "sha256-Fz8KibWeIKMhkHShPRZW1+IHORQ4RZUh0RsK3LgUdp4=";
+    }
+    {
+      target = "com/google/guava/guava-testlib/31.1-jre/guava-testlib-31.1-jre.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/guava/guava-testlib/31.1-jre/guava-testlib-31.1-jre-sources.jar";
+      hash = "sha256-cUlln4lmGX3NkaQhgzSfhi05c/jmXv5tA+Z4Rk+hO/0=";
+    }
+    {
+      target = "org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37-sources.jar";
+      hash = "sha256-/UvtoHs7lM0OMhmUAbuy2e0zcadwyMMgdhuUQv8+jgU=";
+    }
+    {
+      target = "org/openjdk/jmh/jmh-generator-annprocess/1.37/jmh-generator-annprocess-1.37.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/openjdk/jmh/jmh-generator-annprocess/1.37/jmh-generator-annprocess-1.37-sources.jar";
+      hash = "sha256-zBtmH7IJrhpDPjMejni6toBnQVOwpqxp1H0Rxg+15H4=";
+    }
+    {
+      target = "com/google/testparameterinjector/test-parameter-injector/1.0/test-parameter-injector-1.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/testparameterinjector/test-parameter-injector/1.0/test-parameter-injector-1.0-sources.jar";
+      hash = "sha256-rHvqFLdXwFVTD0YkINELTbkMkvFF3VcJ+OpUKR3DdsA=";
+      extraClasspath = protobufJavaClasspath;
+    }
+    {
+      target = "com/google/truth/truth/1.1.3/truth-1.1.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/truth/truth/1.1.3/truth-1.1.3-sources.jar";
+      hash = "sha256-bDXj1wh80iKTi0G721QEEjm3ndoHz5bEAnwRjVZt9UU=";
+    }
+    {
+      target = "com/google/truth/extensions/truth-java8-extension/1.1.3/truth-java8-extension-1.1.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/truth/extensions/truth-java8-extension/1.1.3/truth-java8-extension-1.1.3-sources.jar";
+      hash = "sha256-HuttKWKqH5uqMMuQw2cagbYLsKdwWtTYc/YsNEuTWho=";
+    }
+    {
+      target = "com/google/truth/extensions/truth-liteproto-extension/1.1.3/truth-liteproto-extension-1.1.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/truth/extensions/truth-liteproto-extension/1.1.3/truth-liteproto-extension-1.1.3-sources.jar";
+      hash = "sha256-/TwmsiMpZqP/JeW5xkL5rp8ZyGsp3+tucq62fkXjYTA=";
+      extraClasspath = protobufJavaClasspath;
+    }
+    {
+      target = "com/google/truth/extensions/truth-proto-extension/1.1.3/truth-proto-extension-1.1.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/truth/extensions/truth-proto-extension/1.1.3/truth-proto-extension-1.1.3-sources.jar";
+      hash = "sha256-zlaw2WyVmhL0JstyeerPruHWVHZxNvDh0FS1b89WSEk=";
+      extraClasspath = protobufJavaClasspath;
+      repairProtobufSyntax = true;
+    }
+    {
+      target = "io/netty/netty-tcnative-classes/2.0.56.Final/netty-tcnative-classes-2.0.56.Final.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/netty/netty-tcnative-classes/2.0.56.Final/netty-tcnative-classes-2.0.56.Final-sources.jar";
+      hash = "sha256-/xhG7p+1fTCRbi8VL1j8/vjLAL51BeLUTdgrLAqSQ2Q=";
+    }
+    {
+      target = "com/google/turbine/turbine/0.6.0/turbine-0.6.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/turbine/turbine/0.6.0/turbine-0.6.0-sources.jar";
+      hash = "sha256-p3lasvMLgIXDXTK78QvaV1y7OAqTOKvAOM7sNbLbPBw=";
+      extraClasspath = protobufJavaClasspath;
+    }
+    {
+      target = "com/google/testing/compile/compile-testing/0.18/compile-testing-0.18.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/testing/compile/compile-testing/0.18/compile-testing-0.18-sources.jar";
+      hash = "sha256-K7S3zRQQ7+h00ZHYMvXmgPTsUKO4WoYLVwdTcskE/vc=";
+      repairTruthSubjectGenerics = true;
+      javacApiExport = true;
+    }
+    {
+      target = "oro/oro/2.0.8/oro-2.0.8.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/oro/oro/2.0.8/oro-2.0.8-sources.jar";
+      hash = "sha256-tMSSnpN9BGSAf0oX46D0b2kUhRTtswOYGkGz5bKoFdI=";
+    }
+    {
+      target = "com/lmax/disruptor/3.4.4/disruptor-3.4.4.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/lmax/disruptor/3.4.4/disruptor-3.4.4-sources.jar";
+      hash = "sha256-8bAHn8jI3PyE9sMyWaDwkxbykB5++z62AfY1UFjTUjw=";
+    }
+    {
+      target = "com/conversantmedia/disruptor/1.2.15/disruptor-1.2.15.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/conversantmedia/disruptor/1.2.15/disruptor-1.2.15-sources.jar";
+      hash = "sha256-t4IZqwIqrrLtAOGFbuG4ZLzNQ3yaDG9xUinCfLrFfPI=";
+    }
+    {
+      target = "org/jctools/jctools-core/3.3.0/jctools-core-3.3.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/jctools/jctools-core/3.3.0/jctools-core-3.3.0-sources.jar";
+      hash = "sha256-R51NwF2/ifRpE1S9aEuqJ+evbhn8YvMl/RHLxhCUAvw=";
+    }
+  ] ++ (if includeModernLibraries then [
+    {
+      target = "com/google/code/gson/gson/2.11.0/gson-2.11.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/code/gson/gson/2.11.0/gson-2.11.0-sources.jar";
+      hash = "sha256-SahT9xvIdO4YmKStUAm1fQxTblqZiziQJT/79LcnatM=";
+    }
+    {
+      target = "org/commonmark/commonmark/0.25.0/commonmark-0.25.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/commonmark/commonmark/0.25.0/commonmark-0.25.0-sources.jar";
+      hash = "sha256-5naJrhUSG51OLWK+lFfR86YZH9SHxrnoKKQIgFnobQU=";
+    }
+  ] else []);
+
+  sources = builtins.genList (
+    index: let
+      archive = builtins.elemAt archives index;
+    in
+      archive
+      // {
+        inherit index;
+        src = fetchurl {
+          urls = [archive.sourceUrl];
+          inherit (archive) hash;
+        };
+      }
+  ) (builtins.length archives);
+
+  auditSourceScript = builtins.toFile "bazel-maven-audit-source.py" ''
+    from pathlib import Path
+    import sys
+
+    compiled_signatures = {
+        bytes.fromhex(value)
+        for value in (
+            "7f454c46",  # ELF
+            "cafebabe",  # Java class or Mach-O universal binary
+            "feedface", "cefaedfe", "feedfacf", "cffaedfe",  # Mach-O
+            "0061736d",  # WebAssembly
+            "213c617263683e0a",  # ar archive
+            "4d5a",  # PE executable
+            "504b0304", "504b0506",  # nested ZIP archives
+        )
+    }
+    for path in Path(sys.argv[1]).rglob("*"):
+        if not path.is_file():
+            continue
+        with path.open("rb") as input_file:
+            header = input_file.read(8)
+        if any(header.startswith(signature) for signature in compiled_signatures):
+            raise SystemExit(f"Compiled payload in source archive: {path}")
+  '';
+
+  unpackSources = builtins.concatStringsSep "\n" (builtins.map (source: ''
+      mkdir -p source-${toString source.index}
+      unzip -q ${source.src} -d source-${toString source.index}
+      if test -n "$(find source-${toString source.index} -type f \
+          \( -name '*.class' -o -name '*.so' -o -name '*.dylib' \
+          -o -name '*.dll' -o -name '*.a' -o -name '*.o' \
+          -o -name '*.jar' -o -name '*.wasm' -o -name '*.exe' \
+          -o -name '*.bin' -o -name '*.zip' -o -name '*.tar' \
+          -o -name '*.gz' -o -name '*.xz' \) -print -quit)"; then
+        echo "Compiled payload in ${source.target} source archive" >&2
+        exit 1
+      fi
+      python3 ${auditSourceScript} source-${toString source.index}
+      ${
+        if source.legacyEnumPackage or false
+        then ''
+          # Java 5 reserved "enum" as a keyword. Compile under an equal-length
+          # temporary package name, then restore the original class identity.
+          python3 - source-${toString source.index} <<'PY'
+          from pathlib import Path
+          import sys
+
+          for path in Path(sys.argv[1]).rglob("*.java"):
+              original = path.read_bytes()
+              updated = original.replace(
+                  b"org.apache.commons.lang.enum",
+                  b"org.apache.commons.lang.en_m",
+              )
+              if updated != original:
+                  path.write_bytes(updated)
+          PY
+        ''
+        else ""
+      }
+    '')
+    sources);
+
+  buildJars = builtins.concatStringsSep "\n" (builtins.map (source: ''
+      mkdir -p classes-${toString source.index}
+      ${
+        if source.repairProtobufSyntax or false
+        then ''
+          # Protobuf 36 removed FileDescriptor.Syntax; its serialized syntax
+          # field retains the same proto2/proto3 distinction used by Truth.
+          python3 - source-${toString source.index} <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1]) / "com/google/common/truth/extensions/proto"
+          changes = {
+              "FieldDescriptorValidator.java": (
+                  "fieldDescriptor.getContainingType().getFile().getSyntax() != Syntax.PROTO3",
+                  '!"proto3".equals(fieldDescriptor.getContainingType().getFile().toProto().getSyntax())',
+              ),
+              "ProtoTruthMessageDifferencer.java": (
+                  "fieldDescriptor.getFile().getSyntax() == Syntax.PROTO3",
+                  '"proto3".equals(fieldDescriptor.getFile().toProto().getSyntax())',
+              ),
+          }
+          old_import = "import com.google.protobuf.Descriptors.FileDescriptor.Syntax;\n"
+          for name, (old, new) in changes.items():
+              path = root / name
+              source = path.read_text()
+              if source.count(old_import) != 1 or source.count(old) != 1:
+                  raise SystemExit(f"Unexpected Truth Protobuf source: {path}")
+              path.write_text(source.replace(old_import, "").replace(old, new))
+          PY
+        ''
+        else ""
+      }
+      ${
+        if source.repairHamcrestGenerics or false
+        then ''
+          # Hamcrest 1.3 predates modern javac's wildcard inference. Spell
+          # out the existing generic types without changing matcher behavior.
+          python3 - source-${toString source.index} <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1]) / "org/hamcrest/core"
+          for name, method in (("AnyOf.java", "anyOf"), ("AllOf.java", "allOf")):
+              path = root / name
+              original = f"return {method}(Arrays.asList(matchers));"
+              replacement = (
+                  f"return {name[:-5]}.<T>{method}("
+                  "Arrays.<Matcher<? super T>>asList(matchers));"
+              )
+              source = path.read_text()
+              if source.count(original) != 1:
+                  raise SystemExit(f"Unexpected Hamcrest source: {path}")
+              path.write_text(source.replace(original, replacement))
+          PY
+        ''
+        else ""
+      }
+      ${
+        if source.repairTruthSubjectGenerics or false
+        then ''
+          # Compile Testing 0.18 predates Truth's non-generic Subject API.
+          # Upstream made these same four declaration changes in 0.19.
+          python3 - source-${toString source.index} <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1]) / "com/google/testing/compile"
+          changes = {
+              "CompilationSubject.java": [
+                  ("extends Subject<CompilationSubject, Compilation>", "extends Subject"),
+              ],
+              "JavaFileObjectSubject.java": [
+                  ("extends Subject<JavaFileObjectSubject, JavaFileObject>", "extends Subject"),
+              ],
+              "JavaSourcesSubject.java": [
+                  ("extends Subject<JavaSourcesSubject, Iterable<? extends JavaFileObject>>", "extends Subject"),
+                  ("extends Subject<SingleSourceAdapter, JavaFileObject>", "extends Subject"),
+              ],
+          }
+          for name, replacements in changes.items():
+              path = root / name
+              contents = path.read_text()
+              for old, new in replacements:
+                  if contents.count(old) != 1:
+                      raise SystemExit(f"Unexpected Compile Testing source: {path}")
+                  contents = contents.replace(old, new)
+              path.write_text(contents)
+          PY
+        ''
+        else ""
+      }
+      ${
+        if source.compileOnlyPlatformProvider or false
+        then ''
+          # Upstream generates this optional hook only inside Google. Keep
+          # its compile-time declaration out of the JAR so the documented
+          # NoClassDefFoundError fallback and external provider still work.
+          provider=source-${toString source.index}/com/google/common/flogger/backend/PlatformProvider.java
+          test ! -e "$provider"
+          cat > "$provider" <<'JAVA'
+          package com.google.common.flogger.backend;
+
+          final class PlatformProvider {
+              static Platform getPlatform() {
+                  return null;
+              }
+          }
+          JAVA
+        ''
+        else ""
+      }
+      find source-${toString source.index}${
+        if source ? javaRoot
+        then "/${source.javaRoot}"
+        else ""
+      } ${
+        if source ? javaMaxDepth
+        then "-maxdepth ${toString source.javaMaxDepth}"
+        else ""
+      } -type f -name '*.java' \
+        ! -name module-info.java -print > sources-${toString source.index}.list
+      test -s sources-${toString source.index}.list
+      javac ${
+        if source.javacApiExport or false
+        then "-source 17 -target 17 --add-exports jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED"
+        else "--release ${toString (source.javaRelease or 17)}"
+      } \
+        -encoding ${source.sourceEncoding or "UTF-8"} ${processorFlags source} \
+        -cp ".''${classpath:+:$classpath}${extraClasspath source}" -d classes-${toString source.index} \
+        @sources-${toString source.index}.list
+      ${
+        if source.compileOnlyPlatformProvider or false
+        then ''
+          provider_class=classes-${toString source.index}/com/google/common/flogger/backend/PlatformProvider.class
+          test -f "$provider_class"
+          rm "$provider_class"
+        ''
+        else ""
+      }
+      ${
+        if source.legacyEnumPackage or false
+        then ''
+          python3 - classes-${toString source.index} <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1])
+          for path in root.rglob("*.class"):
+              original = path.read_bytes()
+              updated = original.replace(
+                  b"org/apache/commons/lang/en_m",
+                  b"org/apache/commons/lang/enum",
+              ).replace(
+                  b"org.apache.commons.lang.en_m",
+                  b"org.apache.commons.lang.enum",
+              )
+              if updated != original:
+                  path.write_bytes(updated)
+
+          temporary = root / "org/apache/commons/lang/en_m"
+          temporary.rename(root / "org/apache/commons/lang/enum")
+          PY
+        ''
+        else ""
+      }
+      ${
+        if source.copyResources or true
+        then ''
+          # Runtime data and service descriptors live beside Java sources in
+          # several upstream archives, including Commons Math's Sobol table.
+          find source-${toString source.index} -type f ! -name '*.java' \
+            ! -path '*/META-INF/MANIFEST.MF' -print | while IFS= read -r resource; do
+              relative=''${resource#source-${toString source.index}/}
+              destination="classes-${toString source.index}/$relative"
+              mkdir -p "$(dirname "$destination")"
+              cp "$resource" "$destination"
+            done
+        ''
+        else ""
+      }
+      ${
+        if source.dropSourceOnlyBinders or false
+        then ''
+          # Upstream deletes its dummy bindings from the slf4j-api JAR after
+          # compilation so applications can select a real logger binding.
+          rm -rf classes-${toString source.index}/org/slf4j/impl
+        ''
+        else ""
+      }
+      ${
+        if source ? agentPremainClass
+        then ''
+          printf 'Premain-Class: %s\n' '${source.agentPremainClass}' \
+            > manifest-${toString source.index}.mf
+          jar --create --file jar-${toString source.index}.jar \
+            --manifest manifest-${toString source.index}.mf \
+            --date=1980-01-01T00:00:02Z -C classes-${toString source.index} .
+        ''
+        else ''
+          jar --create --file jar-${toString source.index}.jar --no-manifest \
+            --date=1980-01-01T00:00:02Z -C classes-${toString source.index} .
+        ''
+      }
+      classpath="classes-${toString source.index}''${classpath:+:$classpath}"
+    '')
+    sources);
+
+  # Keep the generated per-archive commands out of the phase argument. Bash
+  # rejects one command string above its per-argument size limit.
+  buildJarsScript = builtins.toFile "bazel-maven-build-jars.sh" buildJars;
+
+  installJars = builtins.concatStringsSep "\n" (builtins.map (source: ''
+      install -Dm644 jar-${toString source.index}.jar \
+        "$out/maven/${source.target}"
+    '')
+    sources);
+
+  installJarsScript = builtins.toFile "bazel-maven-install-jars.sh" installJars;
+
+  buildJdk = buildPackages.openjdk-17;
+in
+  mkDerivation {
+    pname = "bazel-maven-bootstrap";
+    version = "7.7.1";
+    src = (builtins.head sources).src;
+
+    buildDeps = [
+      buildJdk
+      bazelAsm
+      protobufJava
+      bazelZstdJni155
+      buildPackages.ant
+      buildPackages.unzip
+      buildPackages.findutils
+      buildPackages.python3
+    ];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = unpackSources;
+      }
+      {
+        name = "build";
+        script = ''
+          export JAVA_HOME="${buildJdk}"
+          export PATH="${buildJdk}/bin:$PATH"
+          classpath=
+          cglib_classpath="${cglibBuildClasspath}"
+          protobuf_java_classpath="${protobufJava}/share/java/protobuf-java-${protobufJava.version}.jar"
+          zstd_jni_classpath="${bazelZstdJni155}/maven/com/github/luben/zstd-jni/1.5.5-11/zstd-jni-1.5.5-11.jar"
+          . ${buildJarsScript}
+        '';
+      }
+      {
+        name = "install";
+        script = ''. ${installJarsScript}'';
+      }
+    ];
+
+    meta = {
+      description = "Bazel bootstrap Maven libraries built from Java source";
+      license = "mixed";
+    };
+  }

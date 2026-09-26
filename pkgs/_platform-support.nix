@@ -45,6 +45,7 @@ let
 
   targetWave1 = [
     "abseil-cpp"
+    "apr"
     "autoconf"
     "autoconf-archive"
     "automake"
@@ -434,6 +435,7 @@ let
     "bazel-8"
     "bazel-9"
     "envoy"
+    "icu4j"
     "openjdk"
     "openjdk-10"
     "openjdk-11"
@@ -826,6 +828,7 @@ let
     "tools/workerd/_rust-repository.nix" = "native-build-helper";
     "_platform-support.nix" = "platform-policy";
     "build-support/_cargo-artifacts.nix" = "native-build-helper";
+    "build-support/_cargo-source-vendor.nix" = "native-build-helper";
     "build-support/_config-module-renderer.nix" = "native-build-helper";
     "build-support/_expose-module.nix" = "target-independent-source";
     "build-support/_expose-renderer.nix" = "native-build-helper";

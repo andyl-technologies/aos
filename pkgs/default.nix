@@ -535,6 +535,7 @@
           stdenv.coreutils
           stdenv.tar
           stdenv.gzip
+          stdenv.sed
           resolvedBuildPackages.xz
           stdenv.bash
         ];
