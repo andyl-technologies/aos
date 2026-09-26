@@ -307,6 +307,9 @@
   networkPolicyCore = import ./network-policy-core.nix {
     inherit lib;
   };
+  networkRulesetProvider = import ./network-ruleset-provider.nix {
+    inherit lib;
+  };
   selectedPackageProviderDiscovery = import ./selected-package-provider-discovery.nix {
     inherit lib pkgs;
   };
@@ -825,6 +828,7 @@ in {
   assert filesystemEntryProvider;
   assert aosControllerTerminal;
   assert networkPolicyCore;
+  assert networkRulesetProvider;
   assert selectedPackageProviderDiscovery;
   assert kernelTunables;
   assert blockStorage;

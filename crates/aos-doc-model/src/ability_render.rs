@@ -39,7 +39,7 @@ pub(crate) fn plain(reference: &PackageAbilityReference) -> String {
             interface.abi,
             interface.description,
         );
-        output.push_str("  declared request or contribution schema\n");
+        output.push_str("  declared request schema\n");
         indented_schema(&mut output, &interface.request, "    ");
         for (name, declared_output) in &interface.outputs {
             let _ = writeln!(
@@ -126,7 +126,7 @@ pub(crate) fn plain(reference: &PackageAbilityReference) -> String {
             "  implementation identity\t{}",
             export.implementation
         );
-        output.push_str("  declared request or contribution schema\n");
+        output.push_str("  declared request schema\n");
         indented_schema(&mut output, &interface.request, "    ");
         if let Some(configuration) = &interface.configuration {
             output.push_str("  declared operator-owned provider instance configuration schema\n");
@@ -190,7 +190,7 @@ pub(crate) fn plain(reference: &PackageAbilityReference) -> String {
         let aggregation = &interface.aggregation;
         let _ = writeln!(
             output,
-            "  declared contribution aggregation\tkey {}\tcontroller group {}\tslot collisions {}",
+            "  declared request aggregation\tkey {}\tcontroller group {}\tslot collisions {}",
             aggregation.key.as_str(),
             aggregation.controller_group.as_str(),
             if aggregation.reject_slot_collisions {
@@ -262,7 +262,7 @@ pub(crate) fn html(reference: &PackageAbilityReference) -> String {
         escape_html_into(interface.name.as_str(), &mut output);
         let _ = write!(output, "</code> ABI {}</h4><p>", interface.abi);
         escape_html_into(&interface.description, &mut output);
-        output.push_str("</p><h5>Request or contribution schema</h5>");
+        output.push_str("</p><h5>Request schema</h5>");
         schema_html(&mut output, &interface.request);
         if !interface.outputs.is_empty() {
             output.push_str("<h5>Aggregate outputs</h5><ul>");
@@ -349,7 +349,7 @@ pub(crate) fn html(reference: &PackageAbilityReference) -> String {
         escape_html_into(&descriptor.to_string(), &mut output);
         output.push_str("</code></dd><dt>Implementation identity</dt><dd><code>");
         escape_html_into(&export.implementation.to_string(), &mut output);
-        output.push_str("</code></dd></dl><h5>Declared request or contribution schema</h5>");
+        output.push_str("</code></dd></dl><h5>Declared request schema</h5>");
         schema_html(&mut output, &interface.request);
         if let Some(configuration) = &interface.configuration {
             output.push_str(
@@ -431,7 +431,7 @@ pub(crate) fn html(reference: &PackageAbilityReference) -> String {
         output.push_str("</ul>");
 
         let aggregation = &interface.aggregation;
-        output.push_str("<h5>Declared contribution aggregation</h5><p>Key <code>");
+        output.push_str("<h5>Declared request aggregation</h5><p>Key <code>");
         escape_html_into(aggregation.key.as_str(), &mut output);
         output.push_str("</code>; controller group <code>");
         escape_html_into(aggregation.controller_group.as_str(), &mut output);
