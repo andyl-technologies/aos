@@ -10,6 +10,7 @@ The private sccache server is bounded by this process and stopped in finally.
 from dataclasses import dataclass, field
 import fnmatch
 import hashlib
+from itertools import product
 import json
 import os
 from pathlib import Path
@@ -3582,11 +3583,19 @@ def check_clang_llvm_file_inputs(root, env, accache, sccache, clang, hits):
     return results
 
 
-def check_llvm_inline_threshold(root, env, accache, sccache, clang, rustc, hits):
+def check_llvm_scalar_tuning(root, env, accache, sccache, clang, rustc, hits):
     """Cache pure LLVM tuning flags in both supported compiler frontends."""
     results = []
-    for language, compiler in [("clang", clang), ("rust", rustc)]:
-        fixture = language + "-llvm-inline-threshold"
+    for (language, compiler), (option, values, changes_object) in product(
+        [("clang", clang), ("rust", rustc)],
+        [
+            ("inline-threshold", ["0", "225"], True),
+            ("preinline-threshold", ["0", "225"], False),
+            ("unroll-count", ["1", "4"], True),
+            ("unroll-threshold", ["1", "1000"], True),
+        ],
+    ):
+        fixture = language + "-llvm-" + option
         work = root / fixture
         work.mkdir()
         object_file = work / ("source.o" if language == "clang" else "target/libexample.rlib")
@@ -3609,35 +3618,35 @@ def check_llvm_inline_threshold(root, env, accache, sccache, clang, rustc, hits)
             base = [compiler, "--crate-name=example", "--crate-type=rlib",
                     "--emit=link,dep-info", "--out-dir=target", "-Copt-level=2", "source.rs"]
 
-        def compile_object(wrapper, threshold):
+        def compile_object(wrapper, value):
             object_file.unlink(missing_ok=True)
             depfile.unlink(missing_ok=True)
-            option = "-mllvm=-inline-threshold=" + threshold if language == "clang" \
-                else "-Cllvm-args=-inline-threshold=" + threshold
-            completed = subprocess.run([*wrapper, *base, option], cwd=work, env=env,
+            flag = f"-mllvm=-{option}={value}" if language == "clang" \
+                else f"-Cllvm-args=-{option}={value}"
+            completed = subprocess.run([*wrapper, *base, flag], cwd=work, env=env,
                                        capture_output=True, timeout=120)
             assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
             return (completed.stdout, completed.stderr,
                     object_file.read_bytes(), depfile.read_bytes())
 
         first_object = None
-        for revision, threshold in enumerate(["0", "225"]):
-            direct = compile_object([], threshold)
+        for revision, value in enumerate(values):
+            direct = compile_object([], value)
             if first_object is None:
                 first_object = direct[2]
-            else:
-                assert direct[2] != first_object, (fixture, "threshold had no object effect")
+            elif changes_object:
+                assert direct[2] != first_object, (fixture, "option had no object effect")
 
             before_hits = hits()
-            assert compile_object([sccache], threshold) == direct
+            assert compile_object([sccache], value) == direct
             assert hits() == before_hits, (fixture, revision, "sccache reused another setting")
-            assert compile_object([sccache], threshold) == direct
+            assert compile_object([sccache], value) == direct
             assert hits() > before_hits, (fixture, revision, "sccache did not hit")
 
-            assert compile_object([accache], threshold) == direct
+            assert compile_object([accache], value) == direct
             cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
             assert cold["outcome"] == "miss", (fixture, revision, cold)
-            assert compile_object([accache], threshold) == direct
+            assert compile_object([accache], value) == direct
             warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
             assert warm["outcome"] == "hit", (fixture, revision, warm)
             results.append({"fixture": fixture, "revision": revision,
@@ -5001,8 +5010,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
             root, env, accache, sccache, clang, hits))
         results.extend(check_clang_llvm_file_inputs(root, env, accache,
                                                     sccache, clang, hits))
-        results.extend(check_llvm_inline_threshold(root, env, accache,
-                                                   sccache, clang, rustc, hits))
+        results.extend(check_llvm_scalar_tuning(root, env, accache,
+                                                sccache, clang, rustc, hits))
         results.extend(check_clang_llvm_path_lists(root, env, accache,
                                                   sccache, clang, hits))
         results.extend(check_clang_llvm_dfsan_abilist(root, env, accache,
