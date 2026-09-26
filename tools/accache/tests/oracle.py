@@ -1631,6 +1631,125 @@ def check_gcc_auto_profile_inputs(root, env, accache, sccache, gcc, hits):
     return results
 
 
+def check_gcc_branch_profile_inputs(root, env, accache, sccache, gcc, hits):
+    """Track gcda inputs for GCC's cacheable branch-probabilities mode."""
+    fixture = "gcc-branch-probabilities-profile-input"
+    work = root / fixture
+    work.mkdir()
+    (work / "source.c").write_text(
+        "__attribute__((noinline)) int hot(int x) {\n"
+        "  if (x > 0) return x * 3 + 1;\n"
+        "  return x * 7 - 1;\n"
+        "}\n"
+        "int main(int argc, char **argv) {\n"
+        "  volatile int sum = 0;\n"
+        "  for (int i = 0; i < 10000; ++i)\n"
+        "    sum += hot(argc > 1 ? i + 1 : -i - 1);\n"
+        "  return sum == 0;\n"
+        "}\n")
+
+    profiles = []
+    for name, run_args in [("negative", []), ("positive", ["positive"])]:
+        generated = work / ("generated-" + name)
+        generated.mkdir()
+        generation_flag = "-fprofile-generate=" + str(generated)
+        for command in [
+            [gcc, "-O2", generation_flag, "-c", "source.c", "-o", "source.o"],
+            [gcc, generation_flag, "source.o", "-o", "train"],
+            [str(work / "train"), *run_args],
+        ]:
+            completed = subprocess.run(command, cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (fixture, name, command,
+                                               completed.stderr)
+        files = list(generated.rglob("*.gcda"))
+        assert len(files) == 1, (fixture, name, files)
+        profiles.append((files[0].name, files[0].read_bytes()))
+
+    assert profiles[0][0] == profiles[1][0], (fixture, "profile names differ")
+    active = work / "profile"
+    active.mkdir()
+    object_file = work / "source.o"
+    args = []
+
+    def compile_object(wrapper):
+        object_file.unlink(missing_ok=True)
+        completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                   capture_output=True, timeout=120)
+        assert completed.returncode == 0, (fixture, wrapper, completed.stderr)
+        return completed.stdout, completed.stderr, object_file.read_bytes()
+
+    results = []
+    cases = [
+        ("directory", active / profiles[0][0],
+         ["-fbranch-probabilities", "-fprofile-dir=" + str(active)]),
+        ("default", work / "source.gcda", ["-fbranch-probabilities"]),
+    ]
+    for name, profile, flags in cases:
+        case = fixture + "-" + name
+        args = [gcc, "-O2", *flags, "-c", "source.c", "-o", "source.o"]
+        first_object = None
+        for revision, (_, contents) in enumerate(profiles):
+            profile.write_bytes(contents)
+            direct = compile_object([])
+            if first_object is None:
+                first_object = direct[2]
+                assert compile_object([sccache]) == direct, (case, "oracle cold")
+            else:
+                assert direct[2] != first_object, (case, "profile had no effect")
+                before_hits = hits()
+                oracle = compile_object([sccache])
+                assert hits() > before_hits, (case, "oracle did not reuse stale object")
+                assert oracle[2] == first_object, (case, "oracle defect changed")
+
+            before_hits = hits()
+            assert compile_object([sccache])[2] == first_object, (case, "oracle warm")
+            assert hits() > before_hits, (case, "oracle did not hit")
+
+            assert compile_object([accache]) == direct, (case, revision, "cold")
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert cold["outcome"] == "miss", (case, revision, cold)
+            if revision:
+                assert any(item.endswith(str(profile)) or
+                           item.endswith("/" + profile.name)
+                           for item in cold["changes"]), cold
+            assert compile_object([accache]) == direct, (case, revision, "warm")
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert warm["outcome"] == "hit", (case, revision, warm)
+
+            results.append({"fixture": case, "revision": revision,
+                            "oracle_hit": True, "oracle_stale_object": revision == 1,
+                            "accache": "hit", "artifacts": ["source.o"]})
+        print("PASS oracle", case, "profile invalidation", flush=True)
+
+    # The pinned GCC frontend explicitly rejects -fprofile-use. Confirm both
+    # wrappers invoke GCC on every call.
+    case = "gcc-profile-use-passthrough"
+    args = [gcc, "-O2", "-fprofile-use=" + str(active), "-c", "source.c",
+            "-o", "source.o"]
+    first_object = None
+    for revision, (_, contents) in enumerate(profiles):
+        (active / profiles[0][0]).write_bytes(contents)
+        direct = compile_object([])
+        if first_object is None:
+            first_object = direct[2]
+        else:
+            assert direct[2] != first_object, (case, "profile had no effect")
+        for repeat in range(2):
+            before_hits = hits()
+            assert compile_object([sccache]) == direct, (case, revision, repeat, "oracle")
+            assert hits() == before_hits, (case, "oracle unexpectedly cached")
+            assert compile_object([accache]) == direct, (case, revision, repeat, "accache")
+            event = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert event["outcome"] == "bypass" and "-fprofile-use" in event["reason"], event
+        results.append({"fixture": case, "revision": revision,
+                        "oracle_hit": False, "accache": "bypass",
+                        "artifacts": ["source.o"]})
+    print("PASS oracle", case, "profile passthrough", flush=True)
+
+    return results
+
+
 def check_field_named_include(root, env, accache, sccache, gcc, clang, hits):
     """A C field named include must not trigger an assembler dependency probe."""
     results = []
@@ -4150,6 +4269,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                                                       sccache, gcc, hits))
         results.extend(check_gcc_auto_profile_inputs(root, env, accache,
                                                      sccache, gcc, hits))
+        results.extend(check_gcc_branch_profile_inputs(root, env, accache,
+                                                       sccache, gcc, hits))
         results.extend(check_field_named_include(root, env, accache, sccache,
                                                  gcc, clang, hits))
         results.append(check_absolute_inline_assembler_input(root, env, accache,

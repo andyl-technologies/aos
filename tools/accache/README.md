@@ -439,6 +439,12 @@ the named note on a warm hit. The flag without coverage remains cacheable.
 Two GCC AutoFDO oracle families change valid, empty-function profiles under
 both option spellings. Pinned sccache reuses its action after a profile edit;
 accache misses and names the changed profile before warming again.
+GCC `-fbranch-probabilities` reads `.gcda` feedback outside the preprocessor
+depfile. Oracles cover both `-fprofile-dir=path` and GCC's default object
+directory: pinned sccache replays a stale object after the profile changes,
+while accache names the changed file in a miss and then warm-hits. The pinned
+frontend rejects `-fprofile-use`; a separate oracle confirms that both wrappers
+run GCC directly for that flag on repeated invocations.
 
 The suite asserts several pinned sccache output omissions: implicit `.d` files
 on warm `-MMD` hits without `-MF`, GCC `-aux-info` files, Clang serialized

@@ -358,6 +358,34 @@ pub(super) fn configure(
             invocation.extra_inputs.insert("fbdata.afdo".into());
         }
     }
+    if !clang && expanded.iter().any(|arg| arg == "-fbranch-probabilities") {
+        // GCC omits gcda feedback files from its preprocessor depfile. The
+        // object directory is the default profile search location.
+        let profile_directory = expanded
+            .iter()
+            .filter_map(|arg| arg.strip_prefix("-fprofile-dir="))
+            .last();
+        if let Some(path) = profile_directory {
+            ensure!(
+                !path.is_empty() && !path.contains('%'),
+                "GCC profile path is empty or contains runtime substitutions"
+            );
+        }
+        let directory = profile_directory
+            .map(PathBuf::from)
+            .or_else(|| {
+                parsed
+                    .outputs
+                    .get("obj")
+                    .and_then(|output| output.path.parent())
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .map(Path::to_path_buf)
+            })
+            .unwrap_or_else(|| PathBuf::from("."));
+        if directory.is_dir() {
+            invocation.read_dirs.insert(directory);
+        }
+    }
     if !clang && let Some(path) = environment.get("COMPILER_PATH") {
         // GCC may select as, cc1, or another subprogram from these directories.
         // The environment value alone does not identify a replaced executable.
