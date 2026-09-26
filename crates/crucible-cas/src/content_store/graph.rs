@@ -1527,6 +1527,16 @@ impl ImmutableBlobBackend for StoreGraph {
         self.require_admitted(id)?;
         self.root.put_if_absent(id, source)
     }
+
+    fn put_many_if_absent(
+        &self,
+        objects: &[(ContentId, BlobHandle)],
+    ) -> Result<Vec<PutReceipt>, StoreError> {
+        for (id, _) in objects {
+            self.require_admitted(*id)?;
+        }
+        self.root.put_many_if_absent(objects)
+    }
 }
 
 impl StoreGraph {
