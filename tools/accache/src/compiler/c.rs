@@ -246,6 +246,9 @@ pub(super) fn configure(
             invocation.extra_inputs.insert(pair[1].clone().into());
         }
     }
+    let parsed_depfile = parsed.outputs.get("d").map(|output| output.path.as_path());
+    let (preprocessing, forwarded_depfile) =
+        probe_preprocessor_args(&preprocessing, invocation, clang, parsed_depfile)?;
     let mut scan = Vec::new();
     if let Some(language) = if clang {
         parsed.language.to_clang_arg()
@@ -372,6 +375,7 @@ pub(super) fn configure(
         .iter()
         .any(|arg| matches!(arg.as_str(), "-MD" | "-MMD"))
         && parsed.language.needs_c_preprocessing()
+        && !forwarded_depfile
         && !parsed.outputs.contains_key("d")
         && let Some(object) = parsed.outputs.get("obj")
     {
@@ -390,6 +394,93 @@ fn default_dump_base(input: &Path, object: &Path) -> Result<OsString> {
         base.push(suffix);
     }
     Ok(base)
+}
+
+fn probe_preprocessor_args(
+    arguments: &[String],
+    invocation: &mut Invocation,
+    clang: bool,
+    parsed_depfile: Option<&Path>,
+) -> Result<(Vec<String>, bool)> {
+    let mut probe = Vec::new();
+    let mut forwarded_depfile = None;
+    let mut index = 0;
+
+    while index < arguments.len() {
+        let argument = &arguments[index];
+        if let Some(payload) = argument.strip_prefix("-Wp,") {
+            let mut fields = payload.split(',');
+            let mut preserved = Vec::new();
+            while let Some(field) = fields.next() {
+                match field {
+                    "-MD" | "-MMD" => {
+                        let filename = fields.next().ok_or_else(|| {
+                            anyhow::anyhow!("-Wp dependency output has no filename")
+                        })?;
+                        ensure!(
+                            !filename.is_empty(),
+                            "-Wp dependency output has no filename"
+                        );
+                        forwarded_depfile = Some(filename);
+                    }
+                    "-M" | "-MM" | "-MF" | "-MG" => {
+                        anyhow::bail!("untracked -Wp dependency output option")
+                    }
+                    _ => preserved.push(field),
+                }
+            }
+            if !preserved.is_empty() {
+                // Other forwarded CPP options still affect dependency
+                // discovery. Remove only the caller-visible depfile request.
+                probe.push(format!("-Wp,{}", preserved.join(",")));
+            }
+            index += 1;
+            continue;
+        }
+        if argument == "-Xpreprocessor" {
+            match arguments.get(index + 1).map(String::as_str) {
+                Some("-MD" | "-MMD") => {
+                    ensure!(
+                        !clang,
+                        "Clang direct preprocessor depfile option is unsupported"
+                    );
+                    ensure!(
+                        arguments
+                            .get(index + 2)
+                            .is_some_and(|next| next == "-Xpreprocessor"),
+                        "direct preprocessor dependency output has no filename"
+                    );
+                    let filename = arguments.get(index + 3).ok_or_else(|| {
+                        anyhow::anyhow!("direct preprocessor dependency output has no filename")
+                    })?;
+                    forwarded_depfile = Some(filename);
+                    index += 4;
+                    continue;
+                }
+                Some("-M" | "-MM" | "-MF" | "-MG") => {
+                    anyhow::bail!("untracked direct preprocessor dependency output option")
+                }
+                _ => {}
+            }
+        }
+        probe.push(argument.clone());
+        index += 1;
+    }
+
+    let has_forwarded_depfile = forwarded_depfile.is_some();
+    if let Some(filename) = forwarded_depfile {
+        // The frontend can infer source.d from a forwarded -MD, but GCC
+        // writes only the destination consumed by CPP. Replace that inferred
+        // output so publication never expects a file the compiler did not make.
+        if let Some(path) = parsed_depfile {
+            let path = super::output_name(path)?;
+            invocation.outputs.retain(|output| output != &path);
+            invocation.optional_outputs.remove(&path);
+        }
+        invocation.output(Path::new(filename), false)?;
+    }
+
+    Ok((probe, has_forwarded_depfile))
 }
 
 enum DiagnosticSink {

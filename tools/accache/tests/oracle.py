@@ -66,6 +66,18 @@ def fixtures(gcc, clang, rustc):
                           base + flags + ["-frandom-seed=" + name + "-" + suffix], c_sources,
                           {"value.h": "#define VALUE 73\n"})
 
+        # A dependency request forwarded directly to CPP writes a second
+        # output. The cache's own dependency probe must not write that output
+        # before the compile, and a warm hit must restore it with the object.
+        for suffix, flag in [("wp-md", "-Wp,-MD,forwarded.d"),
+                             ("wp-mmd", "-Wp,-MMD,forwarded.d")]:
+            yield Fixture(name + "-" + suffix, compiler, base + [flag], c_sources,
+                          {"value.h": "#define VALUE 73\n"})
+        if name == "gcc":
+            yield Fixture("gcc-xpreprocessor-md", compiler,
+                          base + ["-Xpreprocessor", "-MD", "-Xpreprocessor", "forwarded.d"],
+                          c_sources, {"value.h": "#define VALUE 73\n"})
+
         yield Fixture(name + "-stack-usage", compiler,
                       base + ["-fstack-usage"], c_sources,
                       {"value.h": "#define VALUE 73\n"}, cacheable=False)

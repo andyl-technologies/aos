@@ -105,7 +105,8 @@ response file is fingerprinted so an inner edit invalidates the action.
 Other compiler arguments are passed unchanged. Unsupported invocations run
 the compiler and record a bypass reason. Non-UTF-8 arguments also run unchanged.
 
-Covered output families include ordinary C/C++ objects, depfiles, split debug
+Covered output families include ordinary C/C++ objects, depfiles (including
+GCC/Clang `-Wp,-MD` and `-Wp,-MMD` and GCC `-Xpreprocessor -MD`), split debug
 files, coverage notes, preprocessed source, assembly, PCH, explicit Clang
 modules, and serialized Clang diagnostics. GCC coverage includes SARIF and
 plain HTML diagnostic reports, numbered tree, RTL, IPA, language, debug,
