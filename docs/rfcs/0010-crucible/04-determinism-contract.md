@@ -568,9 +568,10 @@ disposition, and (where unresolved) flagged as a spike forward-referencing
   `gate:qemu-inert`. *Spec:* §4.10, forward-ref 11.
 
 - **[DET-37]** Each patch-class capability MUST have a component microtest that
-  demonstrates its sim-mode effect. The atomic patch MUST also have a
-  pristine-QEMU attribution negative, and its simulation-control mechanisms
-  MUST be inert out of sim mode. *Gate:* `gate:qemu-inert`.
+  demonstrates its intended effect, including ordinary-TCG exact-phase timers.
+  The atomic patch MUST also have a pristine-QEMU attribution negative, and its
+  simulation-control mechanisms MUST be inert out of sim mode. *Gate:*
+  `gate:qemu-inert`.
   *Spec:* §4.10, forward-ref 11.
 
 ## 4.11 Verification: run-twice-and-diff under adversarial conditions

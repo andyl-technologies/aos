@@ -149,7 +149,8 @@ formal model, the defining file is named.
 ## Build & integration
 
 - **AOS QEMU package** — the patched, from-source QEMU shipped by AOS that Crucible
-  uses; patches inert unless sim mode is on. (11, 26)
+  uses; sim controls are inert unless sim mode is on, while ordinary TCG retains
+  versioned picosecond timer state. (11, 26)
 - **ratchet** — RFC-0007's language-agnostic Nix-evaluator engine; a conceptual
   cousin, not a dependency; shared substrate gated for later. (26, README)
 - **Gate** — a named CI check that must be green to advance a phase. (00, 24)

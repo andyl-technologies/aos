@@ -65,7 +65,7 @@ instruction.
               │  -plugin, -icount shift=0, sealed entropy boundary
               ▼
   ┌──────────────────────────────────────────────────────────────────────────┐
-  │  QEMU TCG  (patched, from-source; patches inert unless sim mode, INV-7)    │
+  │  QEMU TCG  (patched; sim controls inert off; ps timer exact, INV-7)         │
   │   VM #0 (-smp 1)   VM #1 (-smp 1)   …   VM #k (-smp 1)                      │
   └──────────────────────────────────────────────────────────────────────────┘
               │  observed I/O + (optional white-box markers)

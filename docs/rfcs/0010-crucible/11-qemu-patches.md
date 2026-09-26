@@ -112,13 +112,15 @@ representation is governed separately by the exact-phase migration check in
 
 ### 11.1.2 Component micro-tests
 
-- **[PATCH-4]** Every capability task MUST have a **focused micro-test** exercising exactly
-  the behavior it adds — neither a broad end-to-end scenario nor a no-op smoke
-  test. A determinism capability's micro-test MUST demonstrate, in isolation, that the
-  entropy source it targets is eliminated by the atomic patch (e.g. two runs
-  agree on the affected quantity), while the pristine-QEMU negative lacks the
-  capability and makes the same focused assertion fail, per [DET-18]. A capability micro-test MUST exercise
-  the new API or device path and assert its documented contract. *Gate:*
+- **[PATCH-4]** Every capability task MUST have a **focused micro-test**
+  exercising exactly the behavior it adds — neither a broad end-to-end scenario
+  nor a no-op smoke test. A simulation determinism capability's micro-test MUST
+  demonstrate, in isolation, that the entropy source it targets is eliminated by
+  the atomic patch (e.g. two runs agree on the affected quantity), while the
+  pristine-QEMU negative lacks the capability and makes the same focused
+  assertion fail, per [DET-18]. Ordinary-TCG picosecond timer micro-tests MUST
+  instead prove exact-phase behavior. A capability micro-test MUST exercise the
+  new API or device path and assert its documented contract. *Gate:*
   `gate:patch-microtests`. *Spec:* §11.1.2; satisfies [DET-37], forward-ref 24.
 
 - **[PATCH-5]** The component suite MUST also assert simulation-control
@@ -797,7 +799,7 @@ gated capability in the atomic integration patch.
 - **[PATCH-38]** CI MUST run, for the pinned QEMU version, the atomic integration pipeline:
   (1) the patch **applies cleanly**; (2) the patched tree **builds**;
   (3) **every component micro-test passes** ([PATCH-4]); (4) **`gate:qemu-inert`**
-  proves non-sim behavior is upstream-identical ([PATCH-2]); (5) the
+  proves sim-control inertness and the pinned-corpus comparison ([PATCH-2]); (5) the
   **`gate:patch-microtests`** aggregate is green. A change to the patch, the
   pin, or the generated shmem header ([SHM-4]) MUST re-run all five. *Gate:*
   `gate:patch-microtests`, `gate:qemu-inert`, forward-ref 24, 26. *Spec:* §11.9;

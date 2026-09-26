@@ -10,8 +10,8 @@ package built from source with no upstream binary dependency and no host tools.
 
 Requirement IDs in this file use the prefix `PKG`. The goal this file principally
 serves is **[G-7]** (hermetic, from-source build inside AOS) and the invariant
-**[INV-7]** (patch inertness: AOS's production QEMU is unaffected unless sim mode
-is active). The non-goal it most carefully respects is **[NG-7]** (no dependency
+**[INV-7]** (simulation-control inertness with versioned ordinary-TCG picosecond
+state). The non-goal it most carefully respects is **[NG-7]** (no dependency
 on RFC-0007 `ratchet`).
 
 Cross-references: the atomic patch this file applies and gates is
@@ -109,8 +109,8 @@ crates at `crates/`.
 
 The patched QEMU is the production QEMU package's source plus the atomic
 integration patch ([`11-qemu-patches.md`](11-qemu-patches.md)). The whole point is that the
-*same source* yields a binary that is upstream-identical with sim mode off
-([INV-7]) and Crucible-capable with sim mode on.
+*same source* yields a binary with sim controls inert when off ([INV-7]) and
+Crucible-capable when on. Ordinary TCG retains versioned picosecond timer state.
 
 - **[PKG-8]** `qemu-crucible` MUST build the **same pinned upstream QEMU source**
   as the AOS production QEMU package, applying
@@ -155,8 +155,9 @@ integration patch ([`11-qemu-patches.md`](11-qemu-patches.md)). The whole point 
 
 ### 26.3.1 Inertness, gated in the package build (INV-7)
 
-This is the load-bearing packaging requirement: the patched binary AOS ships must
-be behaviorally identical to production QEMU when sim mode is off.
+This is the load-bearing packaging requirement: sim controls in the patched
+binary must be inert when off, while its checked corpus retains upstream behavior
+apart from authenticated exact-phase timer state.
 
 - **[PKG-13]** The `qemu-crucible` package's checks MUST include `gate:qemu-inert`
   ([`24-determinism-harness-testing.md`](24-determinism-harness-testing.md) §1.2):
@@ -164,8 +165,10 @@ be behaviorally identical to production QEMU when sim mode is off.
   pinned source, and run an upstream-equivalent corpus (boot, device I/O,
   migration, snapshot, QMP introspection) against the patched binary **with sim
   mode off** (no plugin loaded, no `-accel sim`, no sim flags), asserting
-  byte-identical guest-visible behavior versus the unpatched reference. A patch
-  that perturbs any non-sim path fails the build. *Gate:* `gate:qemu-inert`.
+  matching guest-visible output and legacy Q35 migration bytes versus the
+  unpatched reference. Only the authenticated PIT phase subsection and enumerated
+  fail-closed QMP host-control extension may differ; any other checked-corpus
+  difference fails the build. *Gate:* `gate:qemu-inert`.
   *Spec:* §26.3.1; satisfies [INV-7], [PATCH-1], [PATCH-2].
 
 - **[PKG-14]** The `qemu-crucible` package's checks MUST include
@@ -592,7 +595,8 @@ carries findings across an incompatible build.
     for inertness comparison, and the plugin package consumes the matched
     `qemu-crucible` header and sim-capability marker.
 - [x] **T-PKG-3** Wire `gate:qemu-inert` as a `qemu-crucible` package check:
-  unpatched vs patched-sim-off byte-identical over the upstream-equivalent corpus.
+  unpatched vs patched-sim-off equality over the checked corpus, with the sole
+  authenticated PIT phase subsection in Q35 migration.
   — satisfies [PKG-13]; spec §26.3.1, routes [INV-7].
   - Completed by `checks.crucible.phase2.gates.qemuInert`; the AOS package set now
     exposes `qemu-crucible-reference` from the same pinned source with
