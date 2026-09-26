@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerAuthorizationArtifactsV1, BrokerClientHello, BrokerMethod,
     BrokerRequestEnvelope, BrokerResponseEnvelope, BrokerServerHello, Feature,
-    ObserveHostExecutionArgumentRequestV1, QueryHostExecutionArgumentNoApplyRequestV1,
-    RequestHeader, TerminalHostExecutionArgumentNoApplyRequestV1,
-    TerminalHostExecutionArgumentNoApplyResponseV1,
+    HostNoApplySettlementPhaseV2, ObserveHostExecutionArgumentRequestV1,
+    QueryHostExecutionArgumentNoApplyRequestV1, RequestHeader, SettleHostExecutionNoApplyRequestV2,
+    TerminalHostExecutionArgumentNoApplyRequestV1, TerminalHostExecutionArgumentNoApplyResponseV1,
 };
 use aos_sandbox::Journal;
 use aos_sandbox_broker_session_protocol::{
@@ -39,11 +39,14 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeAdmissionV1, AuthenticatedBrokerMethodOutcomeV1,
     AuthenticatedBrokerMethodRequestAdmissionV1, AuthenticatedBrokerMethodRequestV1,
     admit_client_received_authenticated_broker_method_outcome_v1,
+    admit_server_received_authenticated_broker_method_request_v1,
     authenticated_semantic_bindings_from_envelope_v1,
     prepare_client_sent_authenticated_broker_method_request_v1,
 };
 use aos_sandbox_protocol::host_execution_no_apply::{
     HostExecutionNoApplyRecordFieldsV1, HostExecutionNoApplyRecordV1,
+    decode_host_no_apply_settlement_request_v2, match_archived_host_no_apply_outcome_v2,
+    signed_host_no_apply_terminal_outcome_digest_v2,
 };
 use aos_sandbox_protocol::semantics::host_execution_argument::{
     host_execution_argument_no_apply_grant_v1, host_execution_argument_observe_grant_v1,
@@ -51,6 +54,7 @@ use aos_sandbox_protocol::semantics::host_execution_argument::{
 };
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use ed25519_dalek::SigningKey;
+use rustix::time::{ClockId, clock_gettime};
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 
@@ -275,6 +279,16 @@ fn header(request_id: [u8; 16]) -> RequestHeader {
         maximum_response_bytes: RESPONSE_MAXIMUM,
         ..Default::default()
     }
+}
+
+fn current_boottime_nanoseconds() -> u64 {
+    let now = clock_gettime(ClockId::Boottime);
+    let seconds = u64::try_from(now.tv_sec).unwrap();
+    let nanoseconds = u64::try_from(now.tv_nsec).unwrap();
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .unwrap()
 }
 
 fn source() -> [u8; 336] {
@@ -679,7 +693,7 @@ fn open_test_journal(
 }
 
 #[test]
-fn signed_method37_to_method39_archive_survives_cold_rollover() {
+fn signed_method37_to_method42_preliminary_request_survives_archive_rollover() {
     let fixture = Fixture::new();
     let mut client = fixture.client();
     let mut broker = fixture.broker();
@@ -827,5 +841,159 @@ fn signed_method37_to_method39_archive_survives_cold_rollover() {
     assert_eq!(
         joined.no_apply_outcome().canonical_packet(),
         terminal_outcome.canonical_packet()
+    );
+    drop(reopened);
+
+    // The new session authenticates Controller's H/T assertions, but cannot
+    // by itself prove that Host still holds the marker or append AOSCHA01.
+    let mut settlement_client = fixture.client();
+    let method = BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2;
+    let (settlement_session, settlement_checkpoint) =
+        session(&mut settlement_client, &mut broker, &[method]);
+    let now = current_boottime_nanoseconds();
+    let deadline = now.checked_add(30_000_000_000).unwrap();
+    let request_id = [21; 16];
+    let body = SettleHostExecutionNoApplyRequestV2 {
+        header: Some(RequestHeader {
+            deadline_boottime_nanoseconds: deadline,
+            ..header(request_id)
+        })
+        .into(),
+        canonical_attempt: source.to_vec(),
+        original_session_binding: joined.original().request().session_binding().to_vec(),
+        original_signed_request_digest: joined
+            .original()
+            .request()
+            .signed_request_digest()
+            .to_vec(),
+        archive_head: joined.original().archive_head().to_vec(),
+        signed_terminal_outcome: signed_host_no_apply_terminal_outcome_digest_v2(
+            joined.no_apply_outcome(),
+        )
+        .as_bytes()
+        .to_vec(),
+        phase: HostNoApplySettlementPhaseV2::HOST_NO_APPLY_SETTLEMENT_PHASE_PRELIMINARY.into(),
+        challenge: request_id.to_vec(),
+        ..Default::default()
+    };
+    let envelope = BrokerRequestEnvelope {
+        method: method.into(),
+        body: body.encode_to_vec(),
+        ..Default::default()
+    };
+    let packet = settlement_client
+        .finalize_method_request(
+            envelope.clone(),
+            method,
+            settlement_session.session_binding(),
+            settlement_client.process_execution_id_bytes(),
+            1,
+            request_id,
+        )
+        .unwrap();
+    let canonical = decode_canonical_request_v1(&packet).unwrap();
+    let bindings =
+        authenticated_semantic_bindings_from_envelope_v1(canonical.message(), method).unwrap();
+    let traffic =
+        BrokerSessionTrafficStateV1::from_provisional_transcript(settlement_session.clone())
+            .unwrap();
+    let (admitted, next_traffic) =
+        match admit_server_received_authenticated_broker_method_request_v1(
+            &traffic,
+            &packet,
+            None,
+            0,
+            peer(),
+            policy(),
+            now,
+            bindings,
+            settlement_checkpoint.context(),
+        )
+        .unwrap()
+        {
+            AuthenticatedBrokerMethodRequestAdmissionV1::New {
+                request,
+                next_traffic,
+            } => (request, next_traffic),
+            AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(_) => {
+                panic!("new settlement request replayed")
+            }
+        };
+    assert!(admitted.authorization().is_none());
+    assert_eq!(admitted.canonical_packet(), packet);
+    let decoded = decode_host_no_apply_settlement_request_v2(
+        admitted.exact_body(),
+        admitted.peer(),
+        admitted.peer_policy(),
+        now,
+    )
+    .unwrap();
+    assert_eq!(
+        match_archived_host_no_apply_outcome_v2(
+            &decoded,
+            ObjectDigest::from_bytes(joined.original().archive_head()),
+            joined.no_apply_outcome(),
+        )
+        .unwrap(),
+        marker
+    );
+
+    assert!(matches!(
+        admit_server_received_authenticated_broker_method_request_v1(
+            &next_traffic,
+            &packet,
+            Some(&admitted),
+            0,
+            peer(),
+            policy(),
+            deadline + 1,
+            bindings,
+            settlement_checkpoint.context(),
+        ),
+        Ok(AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(_))
+    ));
+    assert!(
+        admit_server_received_authenticated_broker_method_request_v1(
+            &traffic,
+            &packet,
+            None,
+            0,
+            peer(),
+            policy(),
+            deadline,
+            bindings,
+            settlement_checkpoint.context(),
+        )
+        .is_err()
+    );
+
+    let mut foreign_body = body;
+    foreign_body.archive_head[0] ^= 1;
+    let foreign_packet = settlement_client
+        .finalize_method_request(
+            BrokerRequestEnvelope {
+                body: foreign_body.encode_to_vec(),
+                ..envelope
+            },
+            method,
+            settlement_session.session_binding(),
+            settlement_client.process_execution_id_bytes(),
+            1,
+            request_id,
+        )
+        .unwrap();
+    assert!(
+        admit_server_received_authenticated_broker_method_request_v1(
+            &next_traffic,
+            &foreign_packet,
+            Some(&admitted),
+            0,
+            peer(),
+            policy(),
+            now,
+            bindings,
+            settlement_checkpoint.context(),
+        )
+        .is_err()
     );
 }
