@@ -71,7 +71,8 @@
       else helperScope.bazelSource
     else bootstrapSource;
   mavenJars =
-    if bootstrapVersion == "9.2.0"
+    # Bazel 8+ must deserialize its lockfile with the source-built newer Gson.
+    if builtins.compareVersions bootstrapVersion "8.0.0" >= 0
     then callHelper ./_bazel-maven-bootstrap.nix {includeModernLibraries = true;}
     else helperScope.bazelMavenBootstrap;
   protobufJava = helperScope.bazelProtobufJava;
@@ -131,6 +132,13 @@ in
     pname = "bazel-bootstrap";
     version = bootstrapVersion;
     src = source;
+
+    # Release tooling can pass these verified Bazel 8 checkouts as module
+    # overrides while fetching the remaining graph with downloads disabled.
+    passthru.offlineModules = helperScope.bazelOfflineModules;
+    passthru.offlineRepositories = {
+      platforms = helperScope.bazelPlatformsSource;
+    };
 
     buildDeps =
       [
