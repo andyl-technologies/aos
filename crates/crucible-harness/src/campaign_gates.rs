@@ -491,6 +491,15 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         "checks.crucible.phase9.gates.campaignGateMatrix",
     ),
     automated(
+        "gate:campaign-metadata-million",
+        "crucible-daemon",
+        &[integration_target(
+            "crucible-daemon",
+            "gate_campaign_metadata_million",
+        )],
+        "checks.crucible.phase9.gates.campaignMetadataMillion",
+    ),
+    automated(
         "gate:campaign-model",
         "crucible-campaign",
         &[integration_target(
@@ -531,6 +540,33 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
             },
         }],
         "checks.crucible.phase9.gates.campaignOperationalContinuity",
+    ),
+    automated(
+        "gate:campaign-performance",
+        "crucible-daemon",
+        &[
+            integration_target("crucible-daemon", "gate_campaign_metadata_million"),
+            CampaignGateTarget {
+                package: "crucible-daemon",
+                kind: CampaignGateTargetKind::LibExactAggregate {
+                    selectors: HOT_FORK_SCALING_SELECTORS,
+                    producer_nix_source: "tests/crucible/phase7-qemu-hot-fork-scaling-vm.nix",
+                    producer_nix_attr: "checks.crucible.phase7.gates.hotForkScaling.rawGate",
+                    producer_gate: "gate:hot-fork-scaling",
+                    aggregate_nix_source: "tests/crucible/phase9-campaign-performance.nix",
+                    evidence_input: "nativeScaling",
+                    evidence: &[
+                        "metadataMillion",
+                        "real_admissions=1000000",
+                        "short_branch_planner_queue_under_5_percent=true",
+                        "same_pinned_host_reference=true",
+                        "durable_metadata_budget_authenticated=true",
+                    ],
+                    ignored: true,
+                },
+            },
+        ],
+        "checks.crucible.phase9.gates.campaignPerformance",
     ),
     automated(
         "gate:campaign-policy-timeout-real-qemu",
