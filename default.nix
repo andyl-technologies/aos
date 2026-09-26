@@ -1850,6 +1850,9 @@ in {
         sandbox-cache-journal-idmap = import ./tests/vm/sandbox-cache-journal-idmap.nix {
           inherit testing pkgs;
         };
+        sandbox-q04-held-writer-idmap = import ./tests/vm/sandbox-q04-held-writer-idmap.nix {
+          inherit testing pkgs;
+        };
         sandbox-cache-journal-readonly-replay = import ./tests/vm/sandbox-cache-journal-readonly-replay.nix {
           inherit testing pkgs lib;
         };
