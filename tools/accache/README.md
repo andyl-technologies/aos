@@ -121,6 +121,8 @@ Incremental Rust, executable/proc-macro compilation, ordinary linking, and
 upstream parser exclusions bypass. Frontend parsing compatibility is not a
 claim of support for every compiler/version/platform, nor for arbitrary new
 side-effect flags. This package targets the AOS Linux compiler toolchains.
+Rust `--emit` forms that name individual output paths bypass as in the pinned
+sccache frontend; the compiler still writes those requested files normally.
 Rust `-Csave-temps=yes` stores files inside randomly named `rmeta*` and `rustc*`
 directories as well as top-level bitcode and object files. All wrapped Rust
 compilers using one accache state directory take a shared lock for their output
