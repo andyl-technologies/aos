@@ -150,6 +150,11 @@ are restored on warm hits; pinned sccache omits the files.
 Rust coverage includes nonincremental rlib/staticlib, metadata, dep-info,
 unpacked split debug
 `.dwo` files, and `-Csave-temps=yes` bitcode, object, and saved metadata files.
+Final binary crates, whether `--crate-type=bin` is explicit or inferred, run
+directly: the pinned sccache frontend does not cache them. The oracle verifies
+their executable and depfile across source edits and repeated wrapper calls.
+The same frontend exclusion covers `dylib`, `cdylib`, `proc-macro`, and mixed
+`rlib,cdylib` outputs; those actions preserve direct compiler behavior.
 Rust extern/native dependencies and proc macro consumers are covered by the
 input contract above. Rust's unstable sample-profile and dataflow-sanitizer ABI
 list inputs are fingerprinted; editing either invalidates the action.

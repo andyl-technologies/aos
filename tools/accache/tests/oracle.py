@@ -472,6 +472,31 @@ def fixtures(gcc, clang, rustc):
     yield Fixture("rust-staticlib", rustc,
                   ["--crate-name=example", "--crate-type=staticlib", "--emit=link,dep-info", "--out-dir=target", "library.rs"],
                   rust_sources)
+    binary_sources = {
+        "main.rs": 'fn main() { println!("{}", include_str!("value.txt")); }\n',
+        "value.txt": "first",
+    }
+    for suffix, crate_type in [("explicit", ["--crate-type=bin"]),
+                               ("inferred", [])]:
+        yield Fixture("rust-bin-" + suffix, rustc,
+                      ["--crate-name=example", *crate_type, "--emit=link,dep-info",
+                       "--out-dir=target", "-C", "linker=" + gcc, "main.rs"],
+                      binary_sources, {"value.txt": "second"}, cacheable=False)
+    other_rust_sources = {
+        "dylib": 'pub fn answer() -> usize { include_str!("value.txt").len() }\n',
+        "cdylib": '#[no_mangle] pub extern "C" fn answer() -> usize { include_str!("value.txt").len() }\n',
+        "proc-macro": ('extern crate proc_macro; use proc_macro::TokenStream; '
+                       '#[proc_macro] pub fn answer(_: TokenStream) -> TokenStream '
+                       '{ include_str!("value.txt").parse().unwrap() }\n'),
+    }
+    for crate_type in ["dylib", "cdylib", "proc-macro", "rlib,cdylib"]:
+        source = other_rust_sources["cdylib" if crate_type == "rlib,cdylib" else crate_type]
+        yield Fixture("rust-other-crate-" + crate_type.replace(",", "-"), rustc,
+                      ["--crate-name=example", "--crate-type=" + crate_type,
+                       "--emit=link,dep-info", "--out-dir=target",
+                       "-C", "linker=" + gcc, "library.rs"],
+                      {"library.rs": source, "value.txt": "42"},
+                      {"value.txt": "434"}, cacheable=False)
     for name, crate_type, emits in [
         ("rlib-metadata-only", "rlib", "metadata,dep-info"),
         ("staticlib-metadata-only", "staticlib", "metadata,dep-info"),
@@ -5194,6 +5219,11 @@ def run_suite(root, accache, sccache, gcc, clang, rustc, raw_gcc):
                     assert oracle_hit, (fixture.name, "sccache did not hit", stats())
                 else:
                     assert warm_event["outcome"] != "hit", (fixture.name, warm_event)
+                    if fixture.name.startswith(("rust-bin-", "rust-other-crate-")):
+                        assert not oracle_hit, (fixture.name, "pinned sccache cached this crate")
+                        assert (warm_event["outcome"] == "bypass"
+                                and "crate-type" in warm_event["reason"]), (
+                            fixture.name, warm_event)
                     if fixture.name.startswith("rust-named-"):
                         # The pinned parser checks for a literal link or
                         # metadata emission before rejecting named emit kinds.
