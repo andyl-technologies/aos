@@ -12,7 +12,7 @@ in
     inherit version;
     src = protobuf.src;
 
-    buildDeps = [buildJdk protobuf];
+    buildDeps = [buildJdk protobuf buildPackages.python3];
     runtimeDeps = [];
 
     phases = [
@@ -41,10 +41,67 @@ in
           protoc -I src -I java/core/src/main/resources \
             --java_out=generated $(cat well-known-protos)
 
+          # The enum switch initializes a compiler-generated mapping class that
+          # also touches WireFormat while Internal's empty stream is starting.
+          # Equivalent comparisons keep the varint selection and break the cycle.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path("java/core/src/main/java/com/google/protobuf/CodedInputStream.java")
+          original = """    switch (varintExperiment) {
+                case NEW_ALL_CASES:
+                  result = new ArrayDecoderNewVarintAllCases(buf, off, len, bufferIsImmutable);
+                  break;
+                case NEW_TAGS_LENGTHS_UNSIGNED_ONLY:
+                  result = new ArrayDecoderNewVarintTagsLengthsOnly(buf, off, len, bufferIsImmutable);
+                  break;
+                case CONTROL:
+                default:
+                  result = new ArrayDecoderOldVarint(buf, off, len, bufferIsImmutable);
+                  break;
+              }"""
+          replacement = """    if (varintExperiment == VarintExperiment.NEW_ALL_CASES) {
+                result = new ArrayDecoderNewVarintAllCases(buf, off, len, bufferIsImmutable);
+              } else if (varintExperiment == VarintExperiment.NEW_TAGS_LENGTHS_UNSIGNED_ONLY) {
+                result = new ArrayDecoderNewVarintTagsLengthsOnly(buf, off, len, bufferIsImmutable);
+              } else {
+                result = new ArrayDecoderOldVarint(buf, off, len, bufferIsImmutable);
+              }"""
+
+          contents = source.read_text()
+          if contents.count(original) != 1:
+              raise SystemExit("Unexpected Protobuf CodedInputStream varint selector")
+          source.write_text(contents.replace(original, replacement))
+          PY
+
           find java/core/src/main/java generated -name '*.java' \
             ! -name module-info.java -print > java-sources
           javac --release 17 -proc:none -encoding UTF-8 \
             -d classes @java-sources
+        '';
+      }
+      {
+        name = "check";
+        script = ''
+          cat > ProtobufBootstrapCheck.java <<'JAVA'
+          import com.google.protobuf.CodedInputStream;
+          import com.google.protobuf.DescriptorProtos;
+
+          public final class ProtobufBootstrapCheck {
+              public static void main(String[] args) throws Exception {
+                  if (!CodedInputStream.newInstance(new byte[0]).isAtEnd()) {
+                      throw new AssertionError("Empty input stream is not at end");
+                  }
+                  if (!DescriptorProtos.getDescriptor().getFullName()
+                          .equals("google/protobuf/descriptor.proto")) {
+                      throw new AssertionError("Descriptor initialization failed");
+                  }
+              }
+          }
+          JAVA
+
+          javac --release 17 -cp classes ProtobufBootstrapCheck.java
+          java -cp classes:. ProtobufBootstrapCheck
         '';
       }
       {
