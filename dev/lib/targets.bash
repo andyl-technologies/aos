@@ -76,14 +76,15 @@ aos_dev_target_attr() {
 }
 
 aos_dev_validate_target() {
-  # Most names must be listed exactly. Deep check attrs are evaluated lazily
-  # by Nix and can be addressed directly without flattening the whole tree.
   local category=$1 name=$2
-  if [[ $category == checks && $name == *.*.* ]]; then
-    return
-  fi
   local entries
-  entries=$(aos_dev_list "$category")
+  # Resolve a dotted check within its own scope so selecting one check does
+  # not evaluate every unrelated check tree.
+  if [[ $category == checks && $name == *.* ]]; then
+    entries=$(aos_dev_list "$category" "$name")
+  else
+    entries=$(aos_dev_list "$category")
+  fi
   if ! printf '%s\n' "$entries" | grep -Fxq -- "$name"; then
     printf 'aos-dev: unknown %s target: %s\n' "$category" "$name" >&2
     printf '%s\n' "$entries" | grep -iF -- "${name%%:*}" | head -8 >&2 || true

@@ -9,10 +9,18 @@
   firmwarePackages ? null,
   targetPackages ? null,
   releasePlatforms ? [stdenv.hostPlatform],
-  sharedBuildCache ? false,
-  sharedBuildCacheTool ? null,
+  sharedGoCacheDir ? null,
+  sharedBazelCacheDir ? null,
+  sharedRustTargetDir ? null,
+  sharedRustIncremental ? false,
   ordinaryToolchainPackages ? null,
 }: let
+  anySharedCache =
+    sharedGoCacheDir
+    != null
+    || sharedBazelCacheDir != null
+    || sharedRustTargetDir != null
+    || sharedRustIncremental;
   fetchurl = lib.fetchurl;
   fetchgit = lib.fetchgit;
   mkUpstream = import ./build-support/_upstream.nix {
@@ -130,100 +138,6 @@
   # Raw stdenv.mkDerivation, without nuke-references injected. Used by
   # nuke-references itself (to break the self-referential cycle).
   rawMkDerivation = stdenv.mkDerivation;
-  # Build the compiler wrapper from the ordinary package set. An explicitly
-  # supplied store output lets a developer reuse an already-built AOS sccache
-  # while its normal derivation still awaits a Rust toolchain bootstrap.
-  cacheTool =
-    if sharedBuildCache
-    then
-      if sharedBuildCacheTool != null
-      then builtins.storePath sharedBuildCacheTool
-      else (import ../. {system = stdenv.buildPlatform.system;}).pkgs.sccache
-    else null;
-  # This is the path inside every development sandbox. The host directory is
-  # selected by aos-dev at invocation time and must not enter derivation hashes.
-  sharedBuildCacheRoot = "/aos-build-cache";
-  cacheCompilerLaunchers =
-    if sharedBuildCache
-    then
-      builtins.derivation {
-        name = "aos-cache-compiler-launchers";
-        system = stdenv.buildPlatform.system;
-        builder = stdenv.shell;
-        args = [
-          "-c"
-          ''
-            ${stdenv.coreutils}/bin/mkdir -p "$out/bin"
-            ${stdenv.coreutils}/bin/cat > "$out/bin/gcc" <<'WRAPPER'
-            #!${stdenv.shell}
-            exec ${cacheTool}/bin/sccache ${stdenv.cc}/bin/gcc "$@"
-            WRAPPER
-            ${stdenv.coreutils}/bin/cat > "$out/bin/g++" <<'WRAPPER'
-            #!${stdenv.shell}
-            exec ${cacheTool}/bin/sccache ${stdenv.cc}/bin/g++ "$@"
-            WRAPPER
-            ${stdenv.coreutils}/bin/chmod +x "$out/bin/gcc" "$out/bin/g++"
-            ${stdenv.coreutils}/bin/ln -s gcc "$out/bin/cc"
-            ${stdenv.coreutils}/bin/ln -s g++ "$out/bin/c++"
-            ${stdenv.coreutils}/bin/cat > "$out/bin/aos-cmake-compiler-launcher" <<'WRAPPER'
-            #!${stdenv.shell}
-            launcher_dir=''${0%/*}
-
-            # CMake may select a compiler through CC/CXX or an explicit path.
-            # Avoid wrapping our PATH shims twice while still caching direct
-            # Clang invocations used by LLVM runtimes and other CMake builds.
-            case "$1" in
-              "$launcher_dir"/*|${cacheClangLaunchers}/bin/*|gcc|cc|g++|c++|clang|clang++)
-                exec "$@"
-                ;;
-            esac
-            exec ${cacheTool}/bin/sccache "$@"
-            WRAPPER
-            ${stdenv.coreutils}/bin/chmod +x "$out/bin/aos-cmake-compiler-launcher"
-          ''
-        ];
-      }
-    else null;
-  # A clang shim must not be present for packages without clang: configure
-  # scripts use `command -v clang` to decide whether that compiler exists.
-  cacheClangLaunchers =
-    if sharedBuildCache
-    then
-      builtins.derivation {
-        name = "aos-cache-clang-launchers";
-        system = stdenv.buildPlatform.system;
-        builder = stdenv.shell;
-        args = [
-          "-c"
-          ''
-            ${stdenv.coreutils}/bin/mkdir -p "$out/bin"
-            ${stdenv.coreutils}/bin/cat > "$out/bin/clang" <<'WRAPPER'
-            #!${stdenv.shell}
-            compiler_name=''${0##*/}
-            launcher_dir=''${0%/*}
-
-            # The same launcher can occur twice in PATH after multiple build
-            # phases. Skip every occurrence to find the real AOS clang.
-            original_ifs=$IFS
-            IFS=:
-            for directory in $PATH; do
-              [ -z "$directory" ] && continue
-              [ "$directory" = "$launcher_dir" ] && continue
-              if [ -x "$directory/$compiler_name" ]; then
-                IFS=$original_ifs
-                exec ${cacheTool}/bin/sccache "$directory/$compiler_name" "$@"
-              fi
-            done
-            IFS=$original_ifs
-            printf '%s: underlying compiler not found\n' "$compiler_name" >&2
-            exit 127
-            WRAPPER
-            ${stdenv.coreutils}/bin/chmod +x "$out/bin/clang"
-            ${stdenv.coreutils}/bin/ln -s clang "$out/bin/clang++"
-          ''
-        ];
-      }
-    else null;
   defaultMaintainers = ["Andyl, Inc."];
 
   # Keep public compiler and language-toolchain attrs on their ordinary
@@ -231,7 +145,7 @@
   # disabling wrappers on their final derivation is not enough to preserve
   # the whole ladder's identity.
   isToolchainName = name:
-    builtins.elem name ["gcc" "gcc-libs" "binutils" "sccache" "bazel-bootstrap" "openjdk-bootstrap"]
+    builtins.elem name ["gcc" "gcc-libs" "binutils" "bazel-bootstrap" "openjdk-bootstrap"]
     || builtins.match "(rust|go|llvm|openjdk|bazel)(-.*)?" name != null;
 
   withDistributionMeta = extra: drv:
@@ -387,46 +301,6 @@
       args.pname
       or args.name
       or (throw "mkDerivation: package must set pname or name");
-    # Toolchain stages keep their ordinary identities in development mode.
-    # Rebuilding the ladder just to enable cache reuse costs far more than the
-    # package builds this mode is meant to accelerate.
-    cacheEligible =
-      sharedBuildCache
-      && (args.sharedBuildCache or true)
-      && !isToolchainName packageName;
-    cacheSetup = ''
-      # Only expose the clang launchers when a package already provides clang.
-      # A global shim would make configure scripts select a missing compiler.
-      if command -v clang >/dev/null 2>&1; then
-        case ":$PATH:" in
-          *":${cacheClangLaunchers}/bin:"*) ;;
-          *) export PATH="${cacheClangLaunchers}/bin:$PATH" ;;
-        esac
-      fi
-      # PATH catches makefiles that invoke gcc/cc by name; CC/CXX cover
-      # configure scripts that use the stdenv compiler variables directly.
-      case "$PATH" in
-        ${cacheCompilerLaunchers}/bin:*) ;;
-        *) export PATH="${cacheCompilerLaunchers}/bin:$PATH" ;;
-      esac
-      export CC="${cacheCompilerLaunchers}/bin/gcc"
-      export CXX="${cacheCompilerLaunchers}/bin/g++"
-      # CMake can otherwise bypass PATH and CC/CXX with absolute compiler
-      # paths, notably when LLVM builds its runtimes with a new Clang.
-      export CMAKE_C_COMPILER_LAUNCHER="${cacheCompilerLaunchers}/bin/aos-cmake-compiler-launcher"
-      export CMAKE_CXX_COMPILER_LAUNCHER="$CMAKE_C_COMPILER_LAUNCHER"
-      # sccache cannot store Rust's incremental compilation units.
-      export CARGO_INCREMENTAL=0
-    '';
-    cacheFinish = ''
-      # Keep output roots read-only to other build users even if a package
-      # deliberately creates a permissive directory during installation.
-      ${builtins.concatStringsSep "\n" (builtins.map (outputName: ''
-        if [ -d "${"$"}${outputName}" ]; then
-          chmod go-w "${"$"}${outputName}"
-        fi
-      '') (args.outputs or ["out"]))}
-    '';
     existingOutputs = args.outputs or ["out"];
     reservedAbilityOutputs = ["abilities" "module"];
     conflictingAbilityOutputs =
@@ -701,8 +575,7 @@
           };
         buildDeps =
           builtins.map spliceBuildDependency (args.buildDeps or [])
-          ++ [resolvedBuildPackages.nuke-references]
-          ++ lib.optionals cacheEligible [cacheTool cacheCompilerLaunchers];
+          ++ [resolvedBuildPackages.nuke-references];
         passthru = args.passthru or {};
       }
       // lib.optionalAttrs (
@@ -714,39 +587,6 @@
         # Replace only that exact implementation so package-authored phases
         # that happen to use the same name retain their behavior.
         phases = crossPhases;
-      }
-      // lib.optionalAttrs cacheEligible {
-        RUSTC_WRAPPER = "${cacheTool}/bin/sccache";
-        GOCACHE = "${sharedBuildCacheRoot}/go";
-        SCCACHE_SERVER_UDS = "${sharedBuildCacheRoot}/sccache/server.sock";
-        SCCACHE_CLIENT_SIDE = "1";
-        AOS_BAZEL_DISK_CACHE = "${sharedBuildCacheRoot}/bazel";
-        AOS_SHARED_BUILD_CACHE = sharedBuildCacheRoot;
-        preConfigure = cacheSetup + (args.preConfigure or "");
-        preBuild = cacheSetup + (args.preBuild or "");
-      }
-      // lib.optionalAttrs (cacheEligible && !(args ? phases)) {
-        postInstall = (args.postInstall or "") + cacheFinish;
-      }
-      // lib.optionalAttrs (cacheEligible && args ? phases) {
-        phases =
-          [
-            {
-              name = "shared-cache-setup";
-              script = cacheSetup;
-            }
-          ]
-          ++ (
-            if stdenv.buildPlatform.system != stdenv.hostPlatform.system
-            then crossPhases
-            else args.phases
-          )
-          ++ [
-            {
-              name = "shared-cache-finish";
-              script = cacheFinish;
-            }
-          ];
       };
     drv = rawMkDerivation lowerArgs;
     abilityAttrs =
@@ -1118,10 +958,52 @@
       }
       // (args.cargoArtifactContract or {});
     inheritedArtifacts = args.cargoArtifacts or null;
+    # Development builds keep Cargo's own target directory across Nix
+    # sandboxes. A contract-derived key separates toolchains, dependencies,
+    # features, and compiler settings while source edits keep the same cache.
+    sharedCargoTarget =
+      sharedRustTargetDir
+      != null
+      && (args.sharedBuildCache or true)
+      && !(args.installCargoArtifacts or false)
+      && !isToolchainName (args.pname or args.name or "");
+    cargoTargetKey = builtins.hashString "sha256" (builtins.toJSON {
+      inherit cargoArtifactContract;
+      cargoDeps = toString args.cargoDeps;
+      cargoRoot = args.cargoRoot or ".";
+      cargoFlags = args.cargoFlags or "";
+      cargoBuildCommands = args.cargoBuildCommands or [];
+      gitDeps = args.gitDeps or [];
+      rustFlags = args.RUSTFLAGS or "";
+      cc = toString stdenv.cc;
+      inherit cargoBuildToolchainEnv;
+    });
+    cargoTargetDir = "${sharedRustTargetDir}/${args.pname or args.name or "cargo"}-${builtins.substring 0 20 cargoTargetKey}";
+    cargoSourceId = builtins.hashString "sha256" (builtins.toJSON {
+      source = toString args.src;
+      patches = map toString (args.patches or []);
+      postUnpack = args.postUnpack or "";
+      prePatch = args.prePatch or "";
+      postPatch = args.postPatch or "";
+      preConfigure = args.preConfigure or "";
+      postConfigure = args.postConfigure or "";
+      preBuild = args.preBuild or "";
+    });
+    incrementalCargoBuild =
+      sharedRustIncremental
+      && (args.sharedBuildCache or true)
+      && !(args.installCargoArtifacts or false)
+      && !isToolchainName (args.pname or args.name or "");
+    # The mutable target directory replaces the dummy-source artifact seed in
+    # development mode. Do not extract that tarball into an active shared tree.
+    effectiveArtifacts =
+      if sharedCargoTarget
+      then null
+      else inheritedArtifacts;
     cargoBuildOnlyReferences =
       [args.cargoDeps cargoBuildTool]
       ++ lib.optional stdenv.isCross cargoBuildToolchain
-      ++ lib.optional (inheritedArtifacts != null) inheritedArtifacts;
+      ++ lib.optional (effectiveArtifacts != null) effectiveArtifacts;
     artifactsCompatible =
       inheritedArtifacts
       == null
@@ -1140,7 +1022,12 @@
         // {
           inherit cargoArtifactContract;
           cargoEnv = cargoEffectiveEnv;
-        });
+          cargoArtifacts = effectiveArtifacts;
+        })
+      // lib.optionalAttrs sharedCargoTarget {
+        inherit cargoSourceId;
+        cargoCacheLock = resolvedBuildPackages.util-linux;
+      };
     # Remove cargo-specific attrs before passing to mkDerivation
     restArgs = removeAttrs args cargoSpecificAttrs;
   in
@@ -1151,9 +1038,16 @@
         mkDerivation (
           restArgs
           // cargoBuildToolchainEnv
+          // lib.optionalAttrs sharedCargoTarget {
+            CARGO_TARGET_DIR = cargoTargetDir;
+          }
+          // lib.optionalAttrs incrementalCargoBuild {
+            CARGO_INCREMENTAL = "1";
+          }
           // {
             buildDeps =
               [cargoBuildTool resolvedBuildPackages.jq]
+              ++ lib.optional sharedCargoTarget resolvedBuildPackages.util-linux
               ++ (
                 if args.cargoNextest or false
                 then [resolvedBuildPackages.cargo-nextest]
@@ -1203,6 +1097,7 @@
         installBins = false;
         installLibs = false;
         installCargoArtifacts = true;
+        sharedBuildCache = false;
         passthru = (args.passthru or {}) // {isCargoArtifacts = true;};
         doCheck = false;
         dontStrip = true;
@@ -1225,6 +1120,11 @@
     );
 
   mkGoPackage = args: let
+    sharedGoBuild =
+      sharedGoCacheDir
+      != null
+      && (args.sharedBuildCache or true)
+      && !isToolchainName (args.pname or args.name or "");
     goArgs =
       builtins.intersectAttrs (builtins.listToAttrs (
         map (n: {
@@ -1245,6 +1145,9 @@
     addBuilderOverrides mkGoPackage args (
       mkDerivation (
         restArgs
+        // lib.optionalAttrs sharedGoBuild {
+          GOCACHE = sharedGoCacheDir;
+        }
         // {
           buildDeps = [resolvedBuildPackages.go] ++ (args.buildDeps or []);
           phases = phases.goPhases goArgsWithDefaults;
@@ -1281,6 +1184,11 @@
     );
 
   mkBazelPackage = args: let
+    sharedBazelBuild =
+      sharedBazelCacheDir
+      != null
+      && (args.sharedBuildCache or true)
+      && !isToolchainName (args.pname or args.name or "");
     # Extract bazel-specific parameters
     bazel = args.bazel or resolvedBuildPackages.bazel;
     jdk = args.jdk or resolvedBuildPackages.openjdk;
@@ -1326,6 +1234,9 @@
     addBuilderOverrides mkBazelPackage args (
       mkDerivation (
         restArgs
+        // lib.optionalAttrs sharedBazelBuild {
+          AOS_BAZEL_DISK_CACHE = sharedBazelCacheDir;
+        }
         // {
           buildDeps =
             [
@@ -3020,7 +2931,7 @@
           ;
       }
     )
-    // lib.optionalAttrs (sharedBuildCache && ordinaryToolchainPackages != null) (
+    // lib.optionalAttrs (anySharedCache && ordinaryToolchainPackages != null) (
       builtins.listToAttrs (
         builtins.map (name: {
           inherit name;

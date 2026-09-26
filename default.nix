@@ -32,9 +32,17 @@
   crossSystem ? null,
   releasePlatforms ? null,
   containerPublicationInputsOverride ? null,
-  sharedBuildCache ? false,
-  sharedBuildCacheTool ? null,
+  sharedGoCacheDir ? null,
+  sharedBazelCacheDir ? null,
+  sharedRustTargetDir ? null,
+  sharedRustIncremental ? false,
 }: let
+  anySharedCache =
+    sharedGoCacheDir
+    != null
+    || sharedBazelCacheDir != null
+    || sharedRustTargetDir != null
+    || sharedRustIncremental;
   lib = import ./lib {
     inherit system;
     abilityInterfaceDirectory = ./modules/abilities/_interfaces;
@@ -77,7 +85,7 @@
     then pkgs
     else ordinaryBuildPackages;
   ordinaryToolchainPackages =
-    if !sharedBuildCache
+    if !anySharedCache
     then null
     else if crossSystem == null
     then ordinaryBuildPackages
@@ -134,7 +142,7 @@
         targetPlatform = firmwarePlatform;
       };
       ordinaryFirmwareToolchainPackages =
-        if sharedBuildCache
+        if anySharedCache
         then
           (import ./. {
             inherit system;
@@ -143,7 +151,14 @@
         else null;
     in
       import ./pkgs {
-        inherit lib buildPackages sharedBuildCache sharedBuildCacheTool;
+        inherit
+          lib
+          buildPackages
+          sharedGoCacheDir
+          sharedBazelCacheDir
+          sharedRustTargetDir
+          sharedRustIncremental
+          ;
         ordinaryToolchainPackages = ordinaryFirmwareToolchainPackages;
         stdenv = firmwareStdenv;
       }
@@ -158,8 +173,10 @@
       stdenv
       buildPackages
       firmwarePackages
-      sharedBuildCache
-      sharedBuildCacheTool
+      sharedGoCacheDir
+      sharedBazelCacheDir
+      sharedRustTargetDir
+      sharedRustIncremental
       ordinaryToolchainPackages
       ;
     releasePlatforms = selectedReleasePlatforms;

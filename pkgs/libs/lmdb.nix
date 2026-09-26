@@ -3,7 +3,6 @@
   lib,
   mkDerivation,
   fetchurl,
-  lib,
   stdenv,
   gnumake,
 }: let

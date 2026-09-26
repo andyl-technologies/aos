@@ -56,7 +56,6 @@
     pkgs.pv
     pkgs.python3
     pkgs.ripgrep
-    pkgs.sccache
     pkgs.strace
     pkgs.tcpdump
     pkgs.tmux
