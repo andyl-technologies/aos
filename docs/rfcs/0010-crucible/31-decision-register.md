@@ -1582,12 +1582,13 @@ register.
     schema-v4 provider projection.
 
 - **RISK-6 / RISK-7 / T-RISK-2 — S2 block/9p HLT-vs-busy-poll**
-  - **Status:** PASS; delayed synchronous virtio-block and virtio-9p reads idle
-    in the measured target Linux guest, so idle fast-forward applies to this
-    blocking-read path.
+  - **Status:** PASS; delayed synchronous virtio-9p reads idle in the measured
+    Linux fixture, while virtio-block reads complete bounded inline. Idle
+    fast-forward applies to the measured delayed 9p path.
   - **Check:** `checks.crucible.phase0.s2HltBusyPoll`.
-  - **Result:** `target_guest=stock_linux_initramfs`,
-    `qemu_accel=sim_tcg_thread_single`, `icount=shift0_sleep_off_align_off`,
+  - **Result:** `target_guest=fixture_linux_initramfs`,
+    `qemu_accel=sim_tcg_thread_single`,
+    `icount=fixed_50ps_per_instruction_sleep_off_align_off`,
     `workload_block_reads=32`, `workload_9p_reads=32`,
     `block_completion_mode=bounded_inline_or_hlt_idle`,
     `ninep_outstanding_wait_source=qemu_9p_read_throttle_iops_20`,
@@ -1595,7 +1596,7 @@ register.
     `block_idled_operations+block_inline_operations=32`,
     `block_busy_polled_operations=0`,
     `block_operations_with_io_events=32`, `block_operations_without_io_events=0`,
-    `block_inline_max_instructions=33022`,
+    `block_inline_max_instructions=11485`,
     `block_busy_poll_instruction_distribution=empty`,
     `block_hlt_required=false_but_permitted`,
     `block_io_events_observed_per_operation=true`,
@@ -1611,14 +1612,17 @@ register.
     `correctness_dependency=none_busy_poll_remains_bit_correct`,
     `busy_poll_mitigation_decision=not_needed_for_measured_inline_block_and_delayed_9p_paths`,
     `s2_complete=true`.
-  - **Scope:** validates the Phase-0 S2 measurement path for one stock Linux
-    kernel plus initramfs under TCG/icount with deterministic-inline
-    virtio-block and QEMU-throttled virtio-9p reads. The 9p throttle creates an
-    outstanding device completion interval; the block path must complete within
-    a fixed 40,000-instruction bound or is classified as busy polling. The guest
-    workload completes all 64 reads and prints
-    `TEST_RESULT:PASS`, and the plugin verifies every bracketed operation
-    included device I/O events before the idle/busy classification is accepted.
+  - **Scope:** validates the Phase-0 S2 measurement path for a focused Linux
+    7.2.3 kernel plus initramfs with built-in serial, virtio-block, and 9p
+    drivers. The fixture provides sim's known 4 GHz TSC and LAPIC period so
+    boot calibration does not consume the 300-second wall bound; QEMU still
+    exposes the TSC and advances virtual time by 50 ps per retired instruction.
+    The gate uses deterministic-inline virtio-block and QEMU-throttled
+    virtio-9p reads. The 9p throttle creates an outstanding device completion
+    interval; the block path must complete within a fixed 40,000-instruction
+    bound or is classified as busy polling. The guest workload completes all
+    64 reads and prints `TEST_RESULT:PASS`; the plugin verifies that every
+    operation includes device I/O events before classifying it.
   - **Fallback:** none adopted for the measured bounded-inline block and delayed
     synchronous 9p paths;
     the exactness-preserving busy-poll fast-forward of [IO-30] remains the
