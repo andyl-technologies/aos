@@ -11,7 +11,7 @@ CAM-9	T-CAM-4.5	gate:lazy-frontier,gate:control-responsiveness
 CAM-10	T-CAM-8.1,T-CAM-8.2	gate:campaign-model,gate:campaign-component-contract
 CAM-11	T-CAM-9.5	gate:license-boundary,gate:abi-conformance
 CAM-12	T-CAM-4.9	gate:campaign-component-contract
-CAM-13	T-CAM-6.9,T-CAM-9.1,T-CAM-9.7	gate:e2e-determinism,gate:campaign-envoy-network-five-vm,gate:campaign-gate-matrix,gate:campaign-release-acceptance
+CAM-13	T-CAM-3.6,T-CAM-6.9,T-CAM-8.6,T-CAM-9.1,T-CAM-9.7	gate:e2e-determinism,gate:campaign-envoy-network-five-vm,gate:campaign-envoy-known-finding,gate:campaign-envoy-product-lifecycle,gate:campaign-gate-matrix,gate:campaign-release-acceptance
 CAM-14	T-CAM-4.2,T-CAM-8.1	gate:branch-point-model
 CMOD-1	T-CAM-1.1,T-CAM-2.2	gate:campaign-model,gate:typed-choice
 CMOD-2	T-CAM-1.1,T-CAM-2.2	gate:campaign-model,gate:typed-choice
@@ -242,7 +242,7 @@ CMEAS-4	T-CAM-3.1	gate:campaign-model,gate:campaign-replay
 CMEAS-5	T-CAM-3.1	gate:campaign-model,gate:campaign-replay
 CMEAS-6	T-CAM-3.2	gate:abi-conformance,gate:campaign-replay
 CMEAS-7	T-CAM-3.2	gate:abi-conformance,gate:campaign-replay
-CMEAS-8	T-CAM-3.4	gate:campaign-statistics,gate:campaign-replay
+CMEAS-8	T-CAM-3.4,T-CAM-3.6	gate:campaign-statistics,gate:campaign-replay,gate:campaign-envoy-known-finding
 CMEAS-9	T-CAM-3.4	gate:campaign-statistics,gate:campaign-replay
 CMEAS-10	T-CAM-8.2	gate:campaign-model
 CMEAS-11	T-CAM-3.5	gate:campaign-replay

@@ -31,6 +31,8 @@
       "T-CAM-9.7"
     ]
     && contract.executable_evidence.required_gates == expectedExecutableGates
+    && builtins.elem "gate:campaign-envoy-known-finding" contract.executable_evidence.required_claim_gates
+    && builtins.elem "gate:campaign-envoy-product-lifecycle" contract.executable_evidence.required_claim_gates
     && contract.e2e_evidence.gate == "gate:e2e-determinism"
     && contract.e2e_evidence.schema == "crucible.e2e.native-gate-evidence.v1"
     && contract.e2e_evidence.live_packaged_qemu_required

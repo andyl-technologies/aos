@@ -39,6 +39,9 @@ in
           require_serial_line envoy_known_finding_measured_objective=true
           require_serial_line envoy_known_finding_rank_filtered=true
           require_serial_line envoy_known_finding_fresh_packaged_replay=true
+          require_serial_line public_product_finding_debug_authenticated=true
+          require_serial_line envoy_product_branch_steering_authenticated=true
+          require_serial_line envoy_product_retention_and_cleanup_authenticated=true
           require_serial_line envoy_known_finding_authenticated=true
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$serial"
 
@@ -52,6 +55,9 @@ in
           measured_objective_authenticated=true
           failed_candidate_filtered=true
           fresh_packaged_replay_authenticated=true
+          product_finding_debug_authenticated=true
+          product_branch_steering_authenticated=true
+          product_retention_and_cleanup_authenticated=true
           envoy_known_finding_authenticated=true
           evidence_retained=true
           RESULT
