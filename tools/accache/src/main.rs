@@ -43,9 +43,10 @@ also bypasses caching. ACCACHE_DERIVATION optionally records the .drv identity
 as provenance; it is never an action-key input. ACCACHE_VERBOSE=1 prints the
 per-invocation outcome. Inspection prints JSON (provenance: JSON lines).
 
-GCC/Clang and Rust parsing uses the pinned sccache frontend tables. Compilation
-receives the original arguments. Supported output families include dependency,
-debug, coverage, PCH, Clang module, and Rust library/metadata artifacts. Linking,
+GCC/Clang and Rust parsing uses the pinned sccache frontend tables. A cacheable
+Rust invocation with nested response files expands them as sccache does;
+other compilations receive the original arguments. Supported outputs include
+dependency, debug, coverage, PCH, Clang module, and Rust library/metadata artifacts. Linking,
 incremental Rust, and other uncacheable work runs unchanged with a bypass reason.
 See tools/accache/README.md for the read contract and coverage limits.
 ";
@@ -181,10 +182,11 @@ fn prepare(backend: &Backend, compiler: &str, args: &[String]) -> Result<Prepare
         }
         .encode_to_vec(),
     )?;
+    let execution_args = invocation.execution_args.as_deref().unwrap_or(args);
     let command = backend.put(
         &proto::Command {
             arguments: std::iter::once(compiler.to_owned())
-                .chain(args.iter().cloned())
+                .chain(execution_args.iter().cloned())
                 .collect(),
             environment_variables: environment
                 .iter()
@@ -276,7 +278,8 @@ fn execute(backend: &Backend, args: &[String], prepared: Prepared, start: Instan
         event.reason = "cache lock unavailable; compiling without publication".into();
     }
 
-    let result = model::command(compiler, args, &environment).output()?;
+    let execution_args = invocation.execution_args.as_deref().unwrap_or(args);
+    let result = model::command(compiler, execution_args, &environment).output()?;
     io::stdout().write_all(&result.stdout)?;
     io::stderr().write_all(&result.stderr)?;
     let status = code(result.status);

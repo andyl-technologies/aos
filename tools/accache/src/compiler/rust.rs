@@ -15,7 +15,11 @@ pub(super) fn configure(
 ) -> Result<()> {
     let arguments: Vec<_> = args.iter().map(OsString::from).collect();
     let parsed = parsed(rust::parse_arguments(&arguments, &std::env::current_dir()?))?;
-    let mut print_args = args.to_vec();
+    let mut print_args = invocation
+        .execution_args
+        .as_deref()
+        .unwrap_or(args)
+        .to_vec();
     print_args.push("--print=file-names".into());
     let names = command(compiler, &print_args, environment).output()?;
     ensure!(names.status.success(), "rustc output discovery failed");

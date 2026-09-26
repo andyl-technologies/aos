@@ -417,7 +417,7 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
 /// inside a response file.
 ///
 /// Rustc reference: https://github.com/rust-lang/rust/blob/main/compiler/rustc_driver_impl/src/args.rs
-fn split_rust_response_file_args(contents: &str) -> Vec<OsString> {
+pub fn split_rust_response_file_args(contents: &str) -> Vec<OsString> {
     contents
         .lines()
         .map(|line| line.trim())
