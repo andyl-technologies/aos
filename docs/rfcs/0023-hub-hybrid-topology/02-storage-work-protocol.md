@@ -61,7 +61,7 @@ StorageWorkPlan v1
   org_id, surface_id, registry_id (where applicable)
   placement_id, placement_resource_version, observation_version
   binding_id, binding_resource_version, binding_revision
-  binding_snapshot_revision, credential_reference
+  binding_snapshot_revision, credential_references (purpose and generation)
   placement_prefix, operation_kind, object_selector
   expected_object_identity, parser_schema_version
   projection, filters, page_cursor
@@ -85,7 +85,8 @@ each object read. A plan naming a missing, expired, or different snapshot or
 credential revision fails closed. The Worker never receives a storage secret
 inside a work plan or returns one in a result. `deployment_r2` resolves to its
 bound R2 bucket; portable `r2` and `s3` bindings resolve to an admitted
-S3-compatible endpoint and exact read or write credential revision.
+S3-compatible endpoint and exact purpose-scoped credential revisions. A
+compound read/write operation names both revisions in canonical purpose order.
 
 Snapshot distribution is part of topology reconciliation. Native publishes a
 new immutable snapshot before issuing plans for its revision, waits for the

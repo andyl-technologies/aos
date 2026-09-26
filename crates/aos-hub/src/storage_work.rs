@@ -156,6 +156,8 @@ impl RemoteStorageWorkClient {
             binding_id: binding.id,
             binding_resource_version: binding.resource_version,
             binding_kind: binding.kind.clone(),
+            binding_snapshot_revision: None,
+            credential_references: Vec::new(),
             placement_prefix: placement.prefix.clone(),
             operation,
         };
@@ -1874,6 +1876,8 @@ mod tests {
             binding_id: 3,
             binding_resource_version: 1,
             binding_kind: "deployment_r2".into(),
+            binding_snapshot_revision: None,
+            credential_references: Vec::new(),
             placement_prefix: "registry".into(),
             operation: StorageWorkOperation::ComposeOciBlob {
                 path: path.clone(),
@@ -1977,6 +1981,8 @@ mod tests {
             binding_id: 3,
             binding_resource_version: 1,
             binding_kind: "deployment_r2".into(),
+            binding_snapshot_revision: None,
+            credential_references: Vec::new(),
             placement_prefix: "registry".into(),
             operation: StorageWorkOperation::InspectDocumentation {
                 package_name: "example".into(),
@@ -2043,6 +2049,8 @@ mod tests {
             binding_id: 3,
             binding_resource_version: 1,
             binding_kind: "deployment_r2".into(),
+            binding_snapshot_revision: None,
+            credential_references: Vec::new(),
             placement_prefix: "registry/".into(),
             operation: StorageWorkOperation::Head {
                 path: "HEAD".into(),
@@ -2086,6 +2094,8 @@ mod tests {
             binding_id: 3,
             binding_resource_version: 1,
             binding_kind: "deployment_r2".into(),
+            binding_snapshot_revision: None,
+            credential_references: Vec::new(),
             placement_prefix: "registry/".into(),
             operation: StorageWorkOperation::CopyObject {
                 source_placement_id: 5,
@@ -2149,6 +2159,8 @@ mod tests {
             binding_id: 3,
             binding_resource_version: 1,
             binding_kind: "deployment_r2".into(),
+            binding_snapshot_revision: None,
+            credential_references: Vec::new(),
             placement_prefix: "registry/".into(),
             operation: StorageWorkOperation::InspectGitObject { oid: oid.clone() },
         };
@@ -2202,6 +2214,8 @@ mod tests {
             binding_id: 3,
             binding_resource_version: 1,
             binding_kind: "deployment_r2".into(),
+            binding_snapshot_revision: None,
+            credential_references: Vec::new(),
             placement_prefix: "registry/".into(),
             operation: StorageWorkOperation::InspectGitObjects {
                 oids: oids.iter().map(|(oid, _)| oid.clone()).collect(),
@@ -2257,6 +2271,8 @@ mod tests {
             binding_id: 3,
             binding_resource_version: 1,
             binding_kind: "deployment_r2".into(),
+            binding_snapshot_revision: None,
+            credential_references: Vec::new(),
             placement_prefix: "registry/".into(),
             operation: StorageWorkOperation::InspectMetadata {
                 path: "HEAD".into(),
@@ -2304,6 +2320,8 @@ mod tests {
             binding_id: 3,
             binding_resource_version: 1,
             binding_kind: "deployment_r2".into(),
+            binding_snapshot_revision: None,
+            credential_references: Vec::new(),
             placement_prefix: "registry/".into(),
             operation: StorageWorkOperation::InspectOciRange {
                 path: path.clone(),
@@ -2352,6 +2370,8 @@ mod tests {
             binding_id: 3,
             binding_resource_version: 1,
             binding_kind: "deployment_r2".into(),
+            binding_snapshot_revision: None,
+            credential_references: Vec::new(),
             placement_prefix: "registry/".into(),
             operation: StorageWorkOperation::HashOciRange {
                 path: path.clone(),

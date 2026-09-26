@@ -62,6 +62,12 @@ pub struct StorageCapabilities {
     pub max_verify_source_bytes: u64,
 }
 
+mod binding_snapshot;
+
+pub use binding_snapshot::{
+    StorageBindingSnapshot, StorageCredentialReference, StorageCredentialSelector,
+};
+
 /// One frozen staged object consumed by an OCI blob composition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -246,6 +252,30 @@ pub enum StorageWorkOperation {
 }
 
 impl StorageWorkOperation {
+    /// Returns the sorted provider credential purposes needed by an external binding.
+    #[must_use]
+    pub const fn credential_purposes(&self) -> &'static [&'static str] {
+        match self {
+            Self::Head { .. }
+            | Self::InspectSha256 { .. }
+            | Self::InspectGitObject { .. }
+            | Self::InspectGitObjects { .. }
+            | Self::InspectMetadata { .. }
+            | Self::InspectDocumentation { .. }
+            | Self::InspectOciRange { .. }
+            | Self::HashOciRange { .. } => &["read"],
+            Self::ListPage { .. } => &["list"],
+            Self::CopyObject { .. } | Self::ComposeOciBlob { .. } => &["read", "write"],
+            Self::PutMetadata { .. }
+            | Self::PutProbe { .. }
+            | Self::CreateMultipart { .. }
+            | Self::CompleteMultipart { .. }
+            | Self::AbortMultipart { .. } => &["write"],
+            Self::DeleteIfMatches { .. } => &["delete", "read"],
+            Self::DeleteOciStaging { .. } | Self::DeleteProbe { .. } => &["delete"],
+        }
+    }
+
     /// Names the operation for capability checks and boundary measurements.
     #[must_use]
     pub const fn kind(&self) -> &'static str {
@@ -295,8 +325,14 @@ pub struct StorageWorkPlan {
     pub binding_id: i64,
     /// Binding resource version authorized by Native SQL.
     pub binding_resource_version: i64,
-    /// Only the deployment R2 attachment is supported by this executor.
+    /// Frozen storage kind (`deployment_r2`, `s3`, or external `r2`).
     pub binding_kind: String,
+    /// Digest of the external binding snapshot admitted by the executor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_snapshot_revision: Option<String>,
+    /// Sorted exact credential generations, empty for public bindings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_references: Vec<StorageCredentialSelector>,
     /// Exact object-key prefix from the frozen placement.
     pub placement_prefix: String,
     /// Closed operation and its bounded selector.
@@ -554,6 +590,9 @@ pub enum StorageWorkError {
     /// The plan or its object selector is malformed or unsupported.
     #[error("storage work plan is invalid")]
     InvalidPlan,
+    /// A frozen external binding or credential does not match the plan.
+    #[error("storage binding snapshot is invalid")]
+    InvalidSnapshot,
     /// The plan is expired, premature, or excessively long-lived.
     #[error("storage work plan is outside its validity window")]
     InvalidTime,
@@ -661,13 +700,37 @@ impl StorageWorkPlan {
         if self.version != 1
             || self.plan_id.len() != 32
             || !self.plan_id.bytes().all(|byte| byte.is_ascii_hexdigit())
-            || self.binding_kind != "deployment_r2"
+            || !matches!(self.binding_kind.as_str(), "deployment_r2" | "s3" | "r2")
             || self.placement_id <= 0
             || self.placement_resource_version <= 0
             || self.binding_id <= 0
             || self.binding_resource_version <= 0
             || !valid_relative_path(&self.placement_prefix, true)
         {
+            return Err(StorageWorkError::InvalidPlan);
+        }
+        let valid_snapshot_reference = match self.binding_kind.as_str() {
+            "deployment_r2" => {
+                self.binding_snapshot_revision.is_none() && self.credential_references.is_empty()
+            }
+            "s3" | "r2" => {
+                self.binding_snapshot_revision
+                    .as_ref()
+                    .is_some_and(|revision| valid_sha256_hex(revision))
+                    && (self.credential_references.is_empty()
+                        || (self.credential_references.len()
+                            == self.operation.credential_purposes().len()
+                            && self
+                                .credential_references
+                                .iter()
+                                .zip(self.operation.credential_purposes())
+                                .all(|(reference, purpose)| {
+                                    reference.purpose == *purpose && reference.generation > 0
+                                })))
+            }
+            _ => false,
+        };
+        if !valid_snapshot_reference {
             return Err(StorageWorkError::InvalidPlan);
         }
         if self.deployment_id != deployment_id {
@@ -1054,6 +1117,33 @@ fn valid_sha256_hex(digest: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn binding_snapshot(now: i64) -> StorageBindingSnapshot {
+        StorageBindingSnapshot {
+            version: 1,
+            deployment_id: "deployment-1".into(),
+            binding_id: 3,
+            binding_resource_version: 2,
+            binding_stable_id: "binding-external-1".into(),
+            binding_kind: "s3".into(),
+            object_bucket: "aos-fixtures".into(),
+            object_prefix: "tenant".into(),
+            endpoint_scheme: "https".into(),
+            endpoint_host_kind: "dns".into(),
+            endpoint_host_bytes: b"s3.example.test".to_vec(),
+            endpoint_port: Some(443),
+            signing_region: "us-west-1".into(),
+            access_mode: "private".into(),
+            credentials: vec![StorageCredentialReference {
+                purpose: "read".into(),
+                generation: 4,
+                secret_version_ref: "secret://aos/s3/read/v4".into(),
+                fingerprint: "b".repeat(64),
+            }],
+            issued_at: now,
+            expires_at: now + 300,
+        }
+    }
+
     fn plan(now: i64) -> StorageWorkPlan {
         StorageWorkPlan {
             version: 1,
@@ -1066,11 +1156,111 @@ mod tests {
             binding_id: 3,
             binding_resource_version: 2,
             binding_kind: "deployment_r2".into(),
+            binding_snapshot_revision: None,
+            credential_references: Vec::new(),
             placement_prefix: "tenant/registry/".into(),
             operation: StorageWorkOperation::Head {
                 path: "objects/ab/1234".into(),
             },
         }
+    }
+
+    #[test]
+    fn external_binding_plan_requires_exact_snapshot_and_credential() {
+        let now = 100;
+        let snapshot = binding_snapshot(now);
+        let mut plan = plan(now);
+        plan.binding_kind = "s3".into();
+        plan.binding_snapshot_revision = Some(snapshot.revision().unwrap());
+        plan.credential_references = vec![StorageCredentialSelector {
+            purpose: "read".into(),
+            generation: 4,
+        }];
+
+        assert!(snapshot.authorizes(&plan, "deployment-1", now + 1).is_ok());
+
+        let mut missing_snapshot = plan.clone();
+        missing_snapshot.binding_snapshot_revision = None;
+        assert_eq!(
+            missing_snapshot.validate("deployment-1", now + 1),
+            Err(StorageWorkError::InvalidPlan)
+        );
+
+        plan.credential_references[0].generation = 3;
+        assert_eq!(
+            snapshot.authorizes(&plan, "deployment-1", now + 1),
+            Err(StorageWorkError::InvalidSnapshot)
+        );
+        plan.credential_references[0].generation = 4;
+        plan.binding_snapshot_revision = Some("c".repeat(64));
+        assert_eq!(
+            snapshot.authorizes(&plan, "deployment-1", now + 1),
+            Err(StorageWorkError::InvalidSnapshot)
+        );
+        plan.binding_snapshot_revision = Some(snapshot.revision().unwrap());
+        assert_eq!(
+            snapshot.authorizes(&plan, "deployment-1", now + 301),
+            Err(StorageWorkError::InvalidTime)
+        );
+    }
+
+    #[test]
+    fn public_binding_snapshot_cannot_authorize_a_mutation() {
+        let now = 100;
+        let mut snapshot = binding_snapshot(now);
+        snapshot.access_mode = "public".into();
+        snapshot.credentials.clear();
+
+        let mut plan = plan(now);
+        plan.binding_kind = "s3".into();
+        plan.binding_snapshot_revision = Some(snapshot.revision().unwrap());
+        assert!(snapshot.authorizes(&plan, "deployment-1", now + 1).is_ok());
+
+        plan.operation = StorageWorkOperation::CreateMultipart {
+            path: "nar/object.nar".into(),
+        };
+        assert_eq!(
+            snapshot.authorizes(&plan, "deployment-1", now + 1),
+            Err(StorageWorkError::InvalidSnapshot)
+        );
+    }
+
+    #[test]
+    fn external_copy_requires_read_and_write_credential_revisions() {
+        let now = 100;
+        let mut snapshot = binding_snapshot(now);
+        snapshot.credentials.push(StorageCredentialReference {
+            purpose: "write".into(),
+            generation: 2,
+            secret_version_ref: "secret://aos/s3/write/v2".into(),
+            fingerprint: "c".repeat(64),
+        });
+
+        let mut plan = plan(now);
+        plan.binding_kind = "s3".into();
+        plan.binding_snapshot_revision = Some(snapshot.revision().unwrap());
+        plan.operation = StorageWorkOperation::CopyObject {
+            source_placement_id: 11,
+            source_placement_resource_version: 3,
+            source_prefix: "tenant/source/".into(),
+            path: "web/object.bin".into(),
+            expected_size: 10,
+            expected_etag: "\"source-version\"".into(),
+        };
+        plan.credential_references = vec![StorageCredentialSelector {
+            purpose: "read".into(),
+            generation: 4,
+        }];
+        assert_eq!(
+            plan.validate("deployment-1", now + 1),
+            Err(StorageWorkError::InvalidPlan)
+        );
+
+        plan.credential_references.push(StorageCredentialSelector {
+            purpose: "write".into(),
+            generation: 2,
+        });
+        assert!(snapshot.authorizes(&plan, "deployment-1", now + 1).is_ok());
     }
 
     #[test]

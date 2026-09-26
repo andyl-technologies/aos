@@ -74,6 +74,12 @@ pub(crate) async fn execute_r2_storage_work(
     env: &Env,
     plan: &StorageWorkPlan,
 ) -> Result<StorageWorkResult> {
+    anyhow::ensure!(
+        plan.binding_kind == "deployment_r2"
+            && plan.binding_snapshot_revision.is_none()
+            && plan.credential_references.is_empty(),
+        "deployment R2 executor requires its exact bound storage kind"
+    );
     let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
     let fetcher = R2SurfaceFetch {
         contract: R2Contract::new(WorkerR2BucketAdapter {
