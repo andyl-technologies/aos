@@ -140,8 +140,9 @@ LLVM report and dump switches bypass caching so each invocation writes its
 own files. An oracle with `--print-after=instcombine` and
 `--ir-dump-directory=dumps` checks all 13 IR files on two accache calls;
 pinned sccache warm-hits but omits them. LLVM's internal option surface also
-permits other file reads and side outputs; disable accache for any such option
-not covered by this adapter.
+permits other file reads and side outputs. Unrecognized `-Cllvm-args` options
+automatically pass through to rustc until their effects have an audited cache
+contract; `accache explain` records the bypass reason.
 Unstable Rust modes that write profiling data, MIR or NLL dumps, monomorphization
 statistics, closure reports, metrics, LLVM traces, codegen statistics,
 optimization remarks, or live timing reports bypass the cache so each
