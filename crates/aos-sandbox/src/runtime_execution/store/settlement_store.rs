@@ -13,6 +13,28 @@ use super::*;
 const HOST_SETTLEMENT_CUT_DOMAIN: &[u8] = b"aos.sandbox.host-settlement-protected-cut.v1\0";
 
 impl JournalRuntimeExecutionStoreV1<'_> {
+    /// Runs one bounded action while the protected Host writer remains held.
+    ///
+    /// The action sees the exact Effect cut measured before it runs. A changed
+    /// sequence or digest suppresses its result, even if the action succeeded.
+    /// This local scope does not hold the Controller writer and cannot turn a
+    /// signed response into a two-owner settlement barrier. A rejected result
+    /// does not undo an action's effects; the caller must resolve ambiguity by
+    /// cold protected readback rather than retrying with a new challenge.
+    pub(crate) fn with_held_host_settlement_cut_v1<T>(
+        &mut self,
+        action: impl FnOnce(&mut Self, (u64, ObjectDigest)) -> Result<T, JournalRuntimeExecutionError>,
+    ) -> Result<T, JournalRuntimeExecutionError> {
+        let before = self.protected_host_settlement_cut_v1()?;
+        let result = action(self, before);
+        let after = self.protected_host_settlement_cut_v1()?;
+
+        if before != after {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+        result
+    }
+
     /// Hashes the exact protected Effect replay and sequence under the writer claim.
     ///
     /// Authority records iterate in bytewise key order. Fixed-width scope and

@@ -3595,14 +3595,65 @@ mod output_v2_tests {
             terminal_signed_request_digest: [25; 32],
         };
         let runtime_handle = ObjectDigest::from_bytes([26; 32]);
+        assert_eq!(
+            store
+                .with_held_host_settlement_cut_v1(|_, cut| {
+                    assert!(matches!(
+                        Journal::open_protected_at_uid(
+                            directory.path(),
+                            "execution.journal",
+                            JournalLimits::default(),
+                            uid,
+                        ),
+                        Err(JournalError::AlreadyLocked)
+                    ));
+                    Ok(cut)
+                })
+                .expect("unchanged held cut"),
+            (before_marker_epoch, before_marker_cut)
+        );
+        assert!(matches!(
+            store.with_held_host_settlement_cut_v1::<()>(|_, _| {
+                Err(JournalRuntimeExecutionError::RecordConflict)
+            }),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        assert!(matches!(
+            store.with_held_host_settlement_cut_v1(|store, cut| {
+                assert_eq!(cut, (before_marker_epoch, before_marker_cut));
+                store.commit_host_no_apply_v1(&identity, runtime_handle)
+            }),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
         let committed = store
-            .commit_host_no_apply_v1(&identity, runtime_handle)
-            .expect("terminal marker");
+            .load_host_no_apply_v1(identity.source.execution())
+            .expect("protected marker readback")
+            .expect("durable terminal marker");
         let (marker_epoch, marker_cut) = store
             .protected_host_settlement_cut_v1()
             .expect("protected marker cut");
         assert!(marker_epoch > before_marker_epoch);
         assert_ne!(marker_cut, before_marker_cut);
+        let same_bytes = JournalTransaction::new(
+            [34; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                no_apply_key(identity.source.execution()),
+                committed.encode_canonical().to_vec(),
+            )],
+        )
+        .expect("same-byte write");
+        assert!(matches!(
+            store.with_held_host_settlement_cut_v1(|store, cut| {
+                assert_eq!(cut, (marker_epoch, marker_cut));
+                store.authority.commit(&same_bytes)?;
+                Ok(())
+            }),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        let (marker_epoch, marker_cut) = store
+            .protected_host_settlement_cut_v1()
+            .expect("same-byte replacement advanced the epoch");
         assert_eq!(
             store
                 .commit_host_no_apply_v1(&identity, runtime_handle)

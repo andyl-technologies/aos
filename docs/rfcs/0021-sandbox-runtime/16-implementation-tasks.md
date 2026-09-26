@@ -311,6 +311,18 @@ cross-owner anti-rollback barrier, and no authenticated acknowledgment permits
 H archive retirement.
 Public Create and production methods 39/40 therefore remain closed.
 
+The protected `AOSCSC01` cursor retains the exact signed method-42 request and
+a signed method-42/43 preliminary observation, but only as historical custody.
+A Host owner-local scope can keep its exclusive writer claim while a bounded
+callback runs and reject a changed protected Effect sequence or digest before
+returning success. This scope has no Controller writer and is not the missing
+two-owner cut. A production continuation must either keep the Host claim held
+through an authenticated, versioned Controller floor exchange and its durable
+compare-and-swap, or install a durable Host fence that excludes competing
+writes and can be recovered after transport loss. The floor must bind both
+exact protected heads and reject rollback or uncertain release on cold replay
+before FloorSeal, failed-Create CAS, or ACK can be enabled.
+
 - `crates/aos-sandbox-broker-session-security/src/controller_service.rs` now
   constructs `NodeController<ProductionOperationCompilerV1,
   ProductionEffectExecutor>` with one protected journal writer. Public admission

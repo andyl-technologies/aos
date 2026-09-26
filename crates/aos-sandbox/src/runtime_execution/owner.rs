@@ -2636,6 +2636,39 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         Ok(ProtectedHostSettlementCutV1 { epoch, digest })
     }
 
+    /// Runs a bounded action without releasing the protected Host writer claim.
+    ///
+    /// The action receives only an Effect-cut coordinate. Both the protected
+    /// Host currentness and exact Effect cut are checked again before any
+    /// successful result is returned. The action must itself bound any socket
+    /// wait; a copied coordinate or completed callback is not a transferable
+    /// Host lease, Controller floor, or two-owner barrier. If the postcheck
+    /// fails, a sent request or durable write remains outcome-unknown and
+    /// requires cold exact-request recovery, never a new challenge.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale owner currentness, an Effect-cut change during the
+    /// action, an unavailable protected journal, or the action's own error.
+    pub fn with_held_host_settlement_cut_v1<T, E>(
+        &mut self,
+        action: impl FnOnce(ProtectedHostSettlementCutV1) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<DormantRuntimeExecutionOwnerErrorV1>,
+    {
+        self.validate_current().map_err(E::from)?;
+        let result = self
+            .execution
+            .with_held_host_settlement_cut_v1(|_, (epoch, digest)| {
+                Ok(action(ProtectedHostSettlementCutV1 { epoch, digest }))
+            })
+            .map_err(DormantRuntimeExecutionOwnerErrorV1::from)
+            .map_err(E::from)?;
+        self.validate_current().map_err(E::from)?;
+        result
+    }
+
     /// Prepares, without appending, one preliminary Host no-Apply settlement stage.
     ///
     /// The protected marker and absent stage history are re-read under this
