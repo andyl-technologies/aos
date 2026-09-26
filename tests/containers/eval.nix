@@ -66,6 +66,8 @@
     container = evaluated.config.aos.containers.definitions.aos;
   }) ["edge" "candidate" "stable"];
   systemPackageSlice = server.config.aos.containers.systemPackageSlice;
+  systemProfilePaths = map builtins.toString server.config.environment.systemPackages;
+  slicePaths = map builtins.toString systemPackageSlice;
 
   fixture = evaluateServer ({config, ...}: let
     targetPlatform = pkgs.stdenv.hostPlatform.constraints;
@@ -231,7 +233,9 @@ in
   assert map builtins.toString aos.packageRoots
   == map builtins.toString (lib.uniqueBy builtins.toString (builtins.concatMap (layer: layer.roots) aos.layers));
   assert map builtins.toString (builtins.elemAt aos.layers 1).roots
-  == map builtins.toString systemPackageSlice;
+  == slicePaths;
+  assert builtins.all (path: builtins.elem path systemProfilePaths) slicePaths;
+  assert builtins.length slicePaths < builtins.length systemProfilePaths;
   assert !(builtins.elem (builtins.toString pkgs.qemu) (map builtins.toString aos.packageRoots));
   assert !(builtins.elem (builtins.toString pkgs.linux) (map builtins.toString aos.packageRoots));
   assert aos.packageManagement
