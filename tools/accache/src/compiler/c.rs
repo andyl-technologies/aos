@@ -48,6 +48,19 @@ pub(super) fn configure(
         .extra_inputs
         .extend(parsed.extra_hash_files.iter().cloned());
     let expanded = strings(gcc::ExpandIncludeFile::new(&cwd, &arguments))?;
+    // GCC accepts these options through sccache's generic argument path, but
+    // they create extra files outside the parsed output set. Passing through
+    // preserves those requested reports until their names can be discovered.
+    if !clang {
+        ensure!(
+            !expanded.iter().any(|arg| {
+                arg.starts_with("-fdump-")
+                    || arg.starts_with("-fopt-info")
+                    || arg == "-fdiagnostics-format=sarif-file"
+            }),
+            "GCC report option writes untracked side outputs"
+        );
+    }
     for (index, arg) in expanded.iter().enumerate() {
         // sccache's Clang table classifies serialized diagnostics as pass-through;
         // accache must still restore the resulting side file on a hit.
