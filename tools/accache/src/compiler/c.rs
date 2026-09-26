@@ -255,6 +255,7 @@ pub(super) fn configure(
         for prefix in [
             "-specs=",
             "--specs=",
+            "-fauto-profile=",
             "-fprofile-list=",
             "-fprofile-remapping-file=",
         ] {
@@ -271,6 +272,10 @@ pub(super) fn configure(
                     invocation.recursive_dirs.insert(parent.into());
                 }
             }
+        }
+        if arg == "-fauto-profile" {
+            // GCC reads this default path even though it is absent from -MD.
+            invocation.extra_inputs.insert("fbdata.afdo".into());
         }
     }
     for pair in preprocessing.windows(2) {

@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import tempfile
 
@@ -1059,6 +1060,73 @@ def check_gcc_profile_note_outputs(root, env, accache, sccache, gcc, hits):
     return results
 
 
+def check_gcc_auto_profile_inputs(root, env, accache, sccache, gcc, hits):
+    """Hash GCC AutoFDO profiles that do not appear in preprocessor depfiles."""
+    def empty_profile(total_count):
+        # GCC 16's gcov AutoFDO reader accepts an empty function table. The
+        # summary count can change while both revisions remain valid profiles.
+        data = struct.pack("<III", 0x67636461, 3, 0)
+        data += struct.pack("<I6Q", 0xa8000000, total_count, 0, 0, 0, 0, 16)
+        for percentile in range(16):
+            data += struct.pack("<IQQ", (percentile + 1) * 62500, 0, 0)
+        data += struct.pack("<IIII", 0xaa000000, 2, 0, 0)
+        data += struct.pack("<III", 0xac000000, 1, 0)
+        data += struct.pack("<III", 0xae000000, 1, 0)
+        return data
+
+    results = []
+    for spelling, filename in [("explicit", "sample.afdo"),
+                               ("default", "fbdata.afdo")]:
+        work = root / f"gcc-auto-profile-{spelling}"
+        work.mkdir()
+        (work / "source.c").write_text("int answer(void) { return 42; }\n")
+        profile = work / filename
+        object_file = work / "source.o"
+        option = ("-fauto-profile=" + filename if spelling == "explicit"
+                  else "-fauto-profile")
+        args = [gcc, "-c", "source.c", "-o", "source.o", "-O2",
+                "-frandom-seed=auto-profile-" + spelling, option]
+
+        def compile_object(wrapper):
+            object_file.unlink(missing_ok=True)
+            completed = subprocess.run([*wrapper, *args], cwd=work, env=env,
+                                       capture_output=True, timeout=120)
+            assert completed.returncode == 0, (spelling, wrapper, completed.stderr)
+            return completed.stdout, completed.stderr, object_file.read_bytes()
+
+        for revision, total_count in enumerate([0, 100]):
+            profile.write_bytes(empty_profile(total_count))
+            direct = compile_object([])
+
+            before_hits = hits()
+            oracle_cold = compile_object([sccache])
+            assert oracle_cold == direct, (spelling, revision, "sccache output")
+            if revision:
+                assert hits() > before_hits, (spelling, "sccache tracked the AutoFDO file")
+            else:
+                assert hits() == before_hits, (spelling, "unexpected initial sccache hit")
+            before_hits = hits()
+            assert compile_object([sccache]) == direct
+            assert hits() > before_hits, (spelling, "sccache did not warm-hit")
+
+            assert compile_object([accache]) == direct
+            cold = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert cold["outcome"] == "miss", (spelling, revision, cold)
+            if revision:
+                assert any(filename in item for item in cold["changes"]), cold
+            assert compile_object([accache]) == direct
+            warm = json.loads(subprocess.check_output([accache, "explain"], env=env))
+            assert warm["outcome"] == "hit", (spelling, revision, warm)
+
+            results.append({"fixture": "gcc-auto-profile-" + spelling,
+                            "revision": revision, "oracle_hit": True,
+                            "oracle_profile_input_tracked": False,
+                            "accache": "hit", "artifacts": ["source.o"]})
+        print("PASS oracle GCC AutoFDO", spelling, "input invalidation", flush=True)
+
+    return results
+
+
 def check_field_named_include(root, env, accache, sccache, gcc, clang, hits):
     """A C field named include must not trigger an assembler dependency probe."""
     results = []
@@ -1842,6 +1910,8 @@ def run_suite(root, accache, sccache, gcc, clang, rustc):
         results.extend(check_gcc_nested_specs(root, env, accache, sccache, gcc, hits))
         results.extend(check_gcc_profile_note_outputs(root, env, accache,
                                                       sccache, gcc, hits))
+        results.extend(check_gcc_auto_profile_inputs(root, env, accache,
+                                                     sccache, gcc, hits))
         results.extend(check_field_named_include(root, env, accache, sccache,
                                                  gcc, clang, hits))
         results.append(check_absolute_inline_assembler_input(root, env, accache,
