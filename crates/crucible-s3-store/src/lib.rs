@@ -5,8 +5,8 @@
 //! [`AwsSdkS3Client`] owns a bounded command queue and a dedicated Tokio
 //! runtime. This keeps the synchronous, streaming `crucible-cas` contract free
 //! of credential and runtime policy while reusing one configured SDK client.
-//! Callers must invoke the synchronous CAS surface from their admitted blocking
-//! worker pool rather than an async reactor thread.
+//! Callers should invoke the synchronous CAS surface from their admitted
+//! blocking worker pool so a read does not park an async reactor thread.
 //!
 //! Module map: the crate root owns the bounded synchronous command facade and
 //! AWS SDK worker; the private `deadline` module owns absolute
@@ -14,7 +14,6 @@
 
 #![forbid(unsafe_code)]
 
-use std::io::{self, Cursor, Read};
 use std::mem;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -35,8 +34,10 @@ use crucible_cas::content_store::{
 };
 
 mod deadline;
+mod download;
 
 use deadline::OperationalDeadline;
+use download::{ChannelReader, DownloadChunk, send_download_chunk};
 
 const MAX_COMMAND_QUEUE: usize = 1_024;
 const MAX_IN_FLIGHT_OPERATIONS: usize = 64;
@@ -1052,7 +1053,7 @@ async fn handle_command(client: aws_sdk_s3::Client, command: Command) {
                     let _ = response.send(Err(StoreError::Incompatible));
                     return;
                 };
-                let (chunks, reader) = tokio::sync::mpsc::channel(DOWNLOAD_CHANNEL_CHUNKS);
+                let (chunks, reader) = mpsc::sync_channel(DOWNLOAD_CHANNEL_CHUNKS);
                 if response
                     .send(Ok(StoreS3ObjectDownload::new(
                         logical_length,
@@ -1067,20 +1068,21 @@ async fn handle_command(client: aws_sdk_s3::Client, command: Command) {
                 loop {
                     match tokio::io::AsyncReadExt::read(&mut body, &mut buffer).await {
                         Ok(0) => {
-                            let _ = chunks.send(DownloadChunk::Eof).await;
+                            let _ = send_download_chunk(&chunks, DownloadChunk::Eof).await;
                             return;
                         }
                         Ok(read) => {
-                            if chunks
-                                .send(DownloadChunk::Bytes(buffer[..read].to_vec()))
-                                .await
-                                .is_err()
+                            if !send_download_chunk(
+                                &chunks,
+                                DownloadChunk::Bytes(buffer[..read].to_vec()),
+                            )
+                            .await
                             {
                                 return;
                             }
                         }
                         Err(error) => {
-                            let _ = chunks.send(DownloadChunk::Error(error)).await;
+                            let _ = send_download_chunk(&chunks, DownloadChunk::Error(error)).await;
                             return;
                         }
                     }
@@ -1529,51 +1531,6 @@ fn decode_multipart_list_page(
     StoreS3MultipartListPage::new(uploads, next, after, maximum_items)
 }
 
-enum DownloadChunk {
-    Bytes(Vec<u8>),
-    Error(io::Error),
-    Eof,
-}
-
-struct ChannelReader {
-    chunks: tokio::sync::mpsc::Receiver<DownloadChunk>,
-    current: Cursor<Vec<u8>>,
-    finished: bool,
-}
-
-impl ChannelReader {
-    fn new(chunks: tokio::sync::mpsc::Receiver<DownloadChunk>) -> Self {
-        Self {
-            chunks,
-            current: Cursor::new(Vec::new()),
-            finished: false,
-        }
-    }
-}
-
-impl Read for ChannelReader {
-    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-        if output.is_empty() || self.finished {
-            return Ok(0);
-        }
-        loop {
-            let read = self.current.read(output)?;
-            if read != 0 {
-                return Ok(read);
-            }
-            match self.chunks.blocking_recv() {
-                Some(DownloadChunk::Bytes(bytes)) => self.current = Cursor::new(bytes),
-                Some(DownloadChunk::Error(error)) => return Err(error),
-                Some(DownloadChunk::Eof) => {
-                    self.finished = true;
-                    return Ok(0);
-                }
-                None => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
-            }
-        }
-    }
-}
-
 fn key_content_id(key: &str) -> Option<ContentId> {
     key.rsplit('/')
         .next()
@@ -1653,6 +1610,7 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+    use std::io::Read;
     use std::time::Instant;
 
     fn endpoint() -> StoreS3EndpointId {
@@ -1893,13 +1851,9 @@ mod tests {
 
     #[test]
     fn queue_bounds_and_channel_reader_are_exact() {
-        let (sender, receiver) = tokio::sync::mpsc::channel(2);
-        sender
-            .blocking_send(DownloadChunk::Bytes(vec![1, 2]))
-            .expect("first chunk");
-        sender
-            .blocking_send(DownloadChunk::Bytes(vec![3]))
-            .expect("second chunk");
+        let (sender, receiver) = mpsc::sync_channel(2);
+        assert!(sender.send(DownloadChunk::Bytes(vec![1, 2])).is_ok());
+        assert!(sender.send(DownloadChunk::Bytes(vec![3])).is_ok());
         drop(sender);
         let mut reader = ChannelReader::new(receiver);
         let mut bytes = Vec::new();
