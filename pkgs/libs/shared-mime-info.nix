@@ -1,5 +1,6 @@
 ##! Shared MIME type database and its cache compiler.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -48,6 +49,88 @@ in
       role = "public-package";
     };
     pname = "shared-mime-info";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A MIME declaration for the .aosq file extension.";
+        operation = "Compile the declaration into the shared MIME database.";
+        expected = "The generated type and glob indexes contain the declared mapping.";
+        files."mime/packages/aos.xml" = ''
+          <?xml version="1.0" encoding="UTF-8"?>
+          <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+            <mime-type type="application/x-aos-qualification">
+              <comment>AOS qualification fixture</comment>
+              <glob pattern="*.aosq"/>
+            </mime-type>
+          </mime-info>
+        '';
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import os
+                from pathlib import Path
+                import subprocess
+
+                environment = dict(os.environ, XDG_DATA_HOME=str(Path.cwd()))
+                subprocess.run(
+                    ["@out@/bin/update-mime-database", "mime"],
+                    check=True,
+                    capture_output=True,
+                    env=environment,
+                )
+                assert "application/x-aos-qualification" in Path("mime/types").read_text().splitlines()
+                assert "50:application/x-aos-qualification:*.aosq" in Path("mime/globs2").read_text().splitlines()
+                print("shared MIME database compilation passed")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "shared MIME database compilation passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "An incomplete MIME XML declaration.";
+        operation = "Compile the malformed declaration.";
+        expected = "The parser reports the bad file and omits its MIME type.";
+        files."mime/packages/bad.xml" = ''
+          <mime-info><mime-type type="application/x-aos-bad">
+        '';
+        artifacts = [];
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import os
+                from pathlib import Path
+                import subprocess
+
+                environment = dict(os.environ, XDG_DATA_HOME=str(Path.cwd()))
+                result = subprocess.run(
+                    ["@out@/bin/update-mime-database", "mime"],
+                    capture_output=True,
+                    text=True,
+                    env=environment,
+                )
+                assert "Failed to parse" in result.stdout
+                assert "application/x-aos-bad" not in Path("mime/types").read_text()
+                print("shared MIME database rejected malformed XML")
+                raise SystemExit(7)
+              ''
+            ];
+            exit_code = 7;
+            observes_rejection = true;
+            stdout.exact = "shared MIME database rejected malformed XML\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+    };
     inherit version;
     inherit src;
     passthru.evidenceSources = [src xdgmimeSource];
