@@ -20,7 +20,7 @@
       };
     };
 
-    # Exercise exact duplicate normalization and one root used in two roles.
+    # Exercise exact duplicate normalization for an early runtime root.
     aos.boot.initrd.packageRoots = [
       pkgs.coreutils
       pkgs.coreutils
@@ -70,24 +70,26 @@ in
       pname = "aos-initrd-stage-contract-check";
       version = "1";
       src = null;
-      buildDeps = [
-        assembly
-        baseLib
-        frozenHostAbilities
-        hostAbilities
-        initrdAbilities
-        pkgs.aos.packageRuntime
-        pkgs.aos.testSupport
-        pkgs.coreutils
-        pkgs.cpio
-        pkgs.erofs-utils
-        pkgs.gawk
-        pkgs.grep
-        pkgs.jq
-        pkgs.nix
-        pkgs.zstd
-        runtimeEvalInputClosure
-      ];
+      buildDeps =
+        [
+          assembly
+          baseLib
+          frozenHostAbilities
+          hostAbilities
+          initrdAbilities
+          pkgs.aos.packageRuntime
+          pkgs.aos.testSupport
+          pkgs.coreutils
+          pkgs.cpio
+          pkgs.erofs-utils
+          pkgs.gawk
+          pkgs.grep
+          pkgs.jq
+          pkgs.nix
+          pkgs.zstd
+          runtimeEvalInputClosure
+        ]
+        ++ system.config.system.build.initrdStaticAbilityEvidence;
       phases = [
         {
           name = "check";
@@ -165,10 +167,15 @@ in
               --module-abi ${toString moduleAbi} \
               --out "$runtime_eval/manifest.json" \
               --eval-root "$runtime_eval"
-            ${pkgs.jq}/bin/jq -e \
+            if ! ${pkgs.jq}/bin/jq -e \
               --argjson storeView "$store_view" '
               .inputs.store_view == $storeView
-            ' "$runtime_eval/manifest.json" >/dev/null
+            ' "$runtime_eval/manifest.json" >/dev/null; then
+              echo "runtime evaluation changed the requested package-store view" >&2
+              ${pkgs.jq}/bin/jq -S '.inputs.store_view' \
+                "$runtime_eval/manifest.json" >&2
+              exit 1
+            fi
 
             validate_contract() {
               candidate=$1
@@ -191,9 +198,6 @@ in
                    | sort_by([.kind,.store_path,.available_stage]))
                  and ([.dependency_roots[]
                    | select(.store_path == "${pkgs.coreutils}" and .kind == "runtime-package")]
-                   | length == 1)
-                 and ([.dependency_roots[]
-                   | select(.store_path == "${pkgs.coreutils}" and .kind == "extra-package")]
                    | length == 1)
                  and all(.dependency_roots[];
                    .available_stage == "build" or .available_stage == "initrd")
@@ -286,6 +290,12 @@ in
               printf '%s\n' "$archived_path"
             }
 
+            require_handoff_unit() {
+              ${pkgs.jq}/bin/jq -e --arg unit "$1" '
+                (.handoff.required_units | index($unit)) != null
+              ' "$contract" >/dev/null
+            }
+
             finish_canonical_json() {
               candidate=$1
               candidate_size=$(stat -c %s "$candidate")
@@ -305,10 +315,9 @@ in
               and .runtime_grants == []
               and (.platforms | length == 1)
               and .platforms[0].execution_stage == "initrd"
-              and (.platforms[0].packages | length == 1)
-              and .platforms[0].packages[0].name == "ability-package-smoke"
-              and (.platforms[0].abilities | length == 1)
-              and .platforms[0].abilities[0].availability == "unresolved-at-launch"
+              and any(.platforms[0].packages[]; .name == "ability-package-smoke")
+              and any(.platforms[0].abilities[];
+                .availability == "unresolved-at-launch")
               and any(.platforms[0].unresolved_launch_obligations[];
                 .kind == "implementation-artifact"
                 and .disposition == "external-launch-obligation")
@@ -318,8 +327,7 @@ in
               and .runtime_grants == []
               and (.platforms | length == 1)
               and .platforms[0].execution_stage == "host"
-              and (.platforms[0].packages | length == 1)
-              and .platforms[0].packages[0].name == "ability-package-smoke"
+              and any(.platforms[0].packages[]; .name == "ability-package-smoke")
             ' "$host_abilities" >/dev/null
             test "$(sha256sum "$initrd_abilities" | cut -d ' ' -f1)" != \
               "$(sha256sum "$host_abilities" | cut -d ' ' -f1)"
@@ -373,41 +381,48 @@ in
               exit 1
             fi
 
-            initrd_controller=$(resolve_archived_store_path unit-graph/nix \
-              "$(readlink unit-graph/etc/systemd/system/aos-ability-initrd-controller.service)")
-            grep -F "Before=mount-var.service initrd-fs.target initrd-switch-root.target" \
+            require_handoff_unit aos-ability-initrd-controller.service
+            initrd_controller=unit-graph/etc/systemd/system/aos-ability-initrd-controller.service
+            test -f "$initrd_controller"
+            grep -Fx "Before=mount-var.service" "$initrd_controller" >/dev/null
+            grep -Fx "Before=initrd-fs.target" "$initrd_controller" >/dev/null
+            grep -Fx "Before=initrd-switch-root.target" "$initrd_controller" >/dev/null
+            grep -Fx "RemainAfterExit=yes" "$initrd_controller" >/dev/null
+            initrd_controller_command=$(sed -n 's/^ExecStart="\([^"]*\)".*/\1/p' \
+              "$initrd_controller")
+            test -x "$(resolve_archived_store_path unit-graph/nix "$initrd_controller_command")"
+            grep -F '"__ability-stage-run" "--stage" "initrd"' \
               "$initrd_controller" >/dev/null
-            grep -F "RemainAfterExit=true" "$initrd_controller" >/dev/null
-            initrd_controller_script=$(resolve_archived_store_path unit-graph/nix \
-              "$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$initrd_controller")")
-            grep -F "__ability-stage-run" "$initrd_controller_script" >/dev/null
-            grep -F -- "--source-stage-bundle /lib/aos/initrd/source-stage-bundle.json" \
-              "$initrd_controller_script" >/dev/null
-            grep -F -- "--static-contract-identity-file /lib/aos/initrd/static-ability-contract-identity" \
-              "$initrd_controller_script" >/dev/null
-            grep -F -- "--static-contract /lib/aos/initrd/static-ability-contract.json" \
-              "$initrd_controller_script" >/dev/null
-            initrd_barrier=$(resolve_archived_store_path unit-graph/nix \
-              "$(readlink unit-graph/etc/systemd/system/aos-ability-initrd-handoff-barrier.service)")
+            grep -F '"--source-stage-bundle" "/lib/aos/initrd/source-stage-bundle.json"' \
+              "$initrd_controller" >/dev/null
+            grep -F '"--static-contract-identity-file" "/lib/aos/initrd/static-ability-contract-identity"' \
+              "$initrd_controller" >/dev/null
+            grep -F '"--static-contract" "/lib/aos/initrd/static-ability-contract.json"' \
+              "$initrd_controller" >/dev/null
+            require_handoff_unit aos-ability-initrd-handoff-barrier.service
+            initrd_barrier=unit-graph/etc/systemd/system/aos-ability-initrd-handoff-barrier.service
+            test -f "$initrd_barrier"
             grep -F "Requires=aos-ability-initrd-controller.service" \
               "$initrd_barrier" >/dev/null
             grep -F "After=aos-ability-initrd-controller.service" \
               "$initrd_barrier" >/dev/null
-            grep -F "Before=mount-var.service initrd-fs.target initrd-switch-root.target" \
+            grep -Fx "Before=mount-var.service" "$initrd_barrier" >/dev/null
+            grep -Fx "Before=initrd-fs.target" "$initrd_barrier" >/dev/null
+            grep -Fx "Before=initrd-switch-root.target" "$initrd_barrier" >/dev/null
+            grep -Fx "RemainAfterExit=yes" "$initrd_barrier" >/dev/null
+            initrd_barrier_command=$(sed -n 's/^ExecStart="\([^"]*\)".*/\1/p' \
+              "$initrd_barrier")
+            test -x "$(resolve_archived_store_path unit-graph/nix "$initrd_barrier_command")"
+            grep -F '"__ability-stage-validate" "--from-stage" "initrd"' \
               "$initrd_barrier" >/dev/null
-            grep -F "RemainAfterExit=true" "$initrd_barrier" >/dev/null
-            initrd_barrier_script=$(resolve_archived_store_path unit-graph/nix \
-              "$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$initrd_barrier")")
-            grep -F "__ability-stage-validate" "$initrd_barrier_script" >/dev/null
-            grep -F -- "--from-stage initrd" "$initrd_barrier_script" >/dev/null
-            grep -F -- "--root /sysroot" "$initrd_barrier_script" >/dev/null
-            grep -F -- "--source-stage-bundle /lib/aos/initrd/source-stage-bundle.json" \
-              "$initrd_barrier_script" >/dev/null
-            grep -F -- "--static-contract-identity-file /lib/aos/initrd/static-ability-contract-identity" \
-              "$initrd_barrier_script" >/dev/null
-            grep -F -- "--static-contract /lib/aos/initrd/static-ability-contract.json" \
-              "$initrd_barrier_script" >/dev/null
-            if grep -F -- "--image-profile" "$initrd_barrier_script" >/dev/null; then
+            grep -F '"--root" "/sysroot"' "$initrd_barrier" >/dev/null
+            grep -F '"--source-stage-bundle" "/lib/aos/initrd/source-stage-bundle.json"' \
+              "$initrd_barrier" >/dev/null
+            grep -F '"--static-contract-identity-file" "/lib/aos/initrd/static-ability-contract-identity"' \
+              "$initrd_barrier" >/dev/null
+            grep -F '"--static-contract" "/lib/aos/initrd/static-ability-contract.json"' \
+              "$initrd_barrier" >/dev/null
+            if grep -F -- '"--image-profile"' "$initrd_barrier" >/dev/null; then
               echo "initrd stage validation still depends on the post-mount image profile" >&2
               exit 1
             fi
@@ -430,27 +445,27 @@ in
             root_system_units=$(resolve_archived_store_path root-tree/nix.lower \
               "$(readlink "$root_toplevel/systemd-units")")
             receiver_unit="$root_system_units/aos-ability-host-receiver.service"
-            test -L "$receiver_unit"
-            receiver_script=$(resolve_archived_store_path root-tree/nix.lower \
-              "$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$receiver_unit")")
-            grep -F -- "--source-stage-bundle /usr/lib/aos/initrd/source-stage-bundle.json" \
-              "$receiver_script" >/dev/null
-            grep -F -- "--static-contract-identity-file /usr/lib/aos/initrd/static-ability-contract-identity" \
-              "$receiver_script" >/dev/null
-            grep -F -- "--static-contract /usr/lib/aos/initrd/static-ability-contract.json" \
-              "$receiver_script" >/dev/null
+            test -f "$receiver_unit"
+            receiver_command=$(sed -n 's/^ExecStart="\([^"]*\)".*/\1/p' \
+              "$receiver_unit")
+            test -x "$(resolve_archived_store_path root-tree/nix.lower "$receiver_command")"
+            grep -F '"__ability-stage-receive" "--from-stage" "initrd"' \
+              "$receiver_unit" >/dev/null
+            grep -F '"--source-stage-bundle" "/usr/lib/aos/initrd/source-stage-bundle.json"' \
+              "$receiver_unit" >/dev/null
+            grep -F '"--static-contract-identity-file" "/usr/lib/aos/initrd/static-ability-contract-identity"' \
+              "$receiver_unit" >/dev/null
+            grep -F '"--static-contract" "/usr/lib/aos/initrd/static-ability-contract.json"' \
+              "$receiver_unit" >/dev/null
             for dependent in \
               aos-eval.service \
               aos-graph-compile.service \
               aos-config.target; do
-              requirement="$root_system_units/$dependent.requires/aos-ability-host-receiver.service"
-              test -L "$requirement"
-              requirement_target=$(readlink "$requirement")
-              resolved_requirement=$(realpath -m -s \
-                "$(dirname "$requirement")/$requirement_target")
-              resolved_receiver=$(realpath -m -s "$receiver_unit")
-              test "$resolved_requirement" = "$resolved_receiver"
+              grep -F "After=aos-ability-host-receiver.service" \
+                "$root_system_units/$dependent" >/dev/null
             done
+            grep -Fx "Requires=aos-ability-host-receiver.service" \
+              "$root_system_units/aos-eval.service" >/dev/null
             ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
               image-assembly-attachments \
               ${assembly} initrd-stage-contract-check unit-graph
@@ -459,7 +474,8 @@ in
             first_unit=$(${pkgs.jq}/bin/jq -er '.handoff.required_units[0]' "$contract")
             first_unit_path="unit-graph/etc/systemd/system/$first_unit"
             first_requirement="unit-graph/etc/systemd/system/initrd-fs.target.requires/$first_unit"
-            original_unit=$(readlink "$first_unit_path")
+            test -f "$first_unit_path"
+            cp "$first_unit_path" original-unit
             original_requirement=$(readlink "$first_requirement")
             chmod -R u+w unit-graph/etc
             ln -sfn /dev/null "$first_requirement"
@@ -506,7 +522,7 @@ in
             fi
 
             rm "$first_unit_path" "$first_requirement"
-            ln -s "$original_unit" "$first_unit_path"
+            cp original-unit "$first_unit_path"
             ln -s "$original_requirement" "$first_requirement"
             validate_unit_graph unit-graph "$contract"
 

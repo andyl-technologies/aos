@@ -444,9 +444,9 @@ in {
 
       # First-boot recovery seeding authenticates the ESP copy before it
       # records any retention evidence. The initrd copies an explicit package
-      # closure, so both PE verification tools must be named here.
+      # closure, so the focused PE inspection and signature tools belong here.
       aos.boot.initrd.packageRoots = lib.mkIf config.aos.boot.recovery.enable [
-        pkgs.binutils
+        pkgs.pe-tools
         pkgs.sbsigntools
       ];
     })

@@ -6,6 +6,7 @@
   staticContract,
   baseLib,
   targetPlatform,
+  selectedOutputArtifacts,
   packageSet,
   packageRuntime,
   retainedPackageContractArtifacts,
@@ -16,7 +17,7 @@
 }: let
   sourceGraph = sourceStageFixedPoint abilityGraph;
   selectors = collectPackageOutputSelectors sourceGraph;
-  artifactFor = selector: let
+  unselectedArtifactFor = selector: let
     package = packageSet.${selector.package}
       or (throw "${stage} source-stage selector names unavailable package '${selector.package}'");
   in
@@ -24,6 +25,24 @@
     then package
     else package.${selector.output}
       or (throw "${stage} source-stage selector names unavailable output '${selector.package}.${selector.output}'");
+  artifactFor = selector: let
+    selected =
+      builtins.filter (
+        output:
+          output.package
+          == selector.package
+          && output.output == selector.output
+      )
+      selectedOutputArtifacts;
+    selectedPackage = builtins.any (output: output.package == selector.package) selectedOutputArtifacts;
+  in
+    if builtins.length selected == 1
+    then (builtins.head selected).artifact
+    else if builtins.length selected != 0 || selectedPackage
+    then throw "${stage} source-stage selector '${selector.package}.${selector.output}' must resolve to one selected static-contract output"
+    # The fixed point may also name an image-built tool that is not a provider
+    # package. Its exact artifact is inventoried in the source bundle.
+    else unselectedArtifactFor selector;
   artifactOutputs =
     builtins.map (selector: {
       inherit selector;

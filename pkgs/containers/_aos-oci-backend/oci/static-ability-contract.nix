@@ -113,6 +113,7 @@
     }) (builtins.length entry.contract.selectors);
   in {
     document = builtins.toString entry.contract.document;
+    inherit selectorArtifacts;
     resolution = {
       payload = {
         path = builtins.toString entry.payload;
@@ -143,6 +144,27 @@
       })
       selectorArtifacts;
   }) (builtins.length selectedPackages);
+  # Reuse the same package-owned selector resolution for source-stage inputs.
+  # A later lookup through pkgs can select another derivation for an override.
+  selectedOutputArtifacts = lib.uniqueBy (selected:
+    builtins.toJSON {
+      inherit (selected) package output;
+      path = builtins.toString selected.artifact;
+    }) (
+    (builtins.map (entry: {
+        package = entry.payload.pname;
+        output = entry.payload.outputName or "out";
+        artifact = entry.payload;
+      })
+      selectedPackages)
+    ++ lib.concatMap (resolution:
+      builtins.map (selected: {
+        inherit (selected) package output;
+        artifact = selected.graphPath;
+      })
+      resolution.selectorArtifacts)
+    packageResolutions
+  );
   resolvedPackageContracts = builtins.genList (packageIndex: let
     entry = builtins.elemAt selectedPackages packageIndex;
     resolution = builtins.elemAt packageResolutions packageIndex;
@@ -295,6 +317,7 @@ in
     artifact = contractArtifact;
     inherit mediaType schema artifactClass executionStage checkedPlatform checkedTargetPlatform runtimeRootPaths;
     inherit retainedPackageContractArtifacts;
+    inherit selectedOutputArtifacts;
     inputContractPaths = contractPaths;
     selectedPayloadPaths = payloadPaths;
   }

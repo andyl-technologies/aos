@@ -158,7 +158,7 @@
       packageSet = pkgs;
       packageRuntime = pkgs.aos.packageRuntime;
       inherit (pkgs) runCommand writeTextFile;
-      inherit (staticAbilityContractBuild) retainedPackageContractArtifacts;
+      inherit (staticAbilityContractBuild) retainedPackageContractArtifacts selectedOutputArtifacts;
     }).bundle;
 in {
   options = {

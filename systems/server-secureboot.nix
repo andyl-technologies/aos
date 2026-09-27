@@ -22,8 +22,8 @@
   aos.roles.server.enable = true;
 
   # Signed normal and A/B recovery UKIs must coexist with the inactive-copy
-  # publication transaction. Keep this test fixture's larger storage and
-  # direct-download contracts scoped away from the production server image.
+  # publication transaction. Keep this test fixture's larger firmware storage
+  # contract scoped away from the production server image.
   aos.image.budgets = {
     maxBootExecutableMiB =
       if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
@@ -33,7 +33,6 @@
       if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
       then 768
       else 544;
-    maxDownloadMiB = 800;
   };
   aos.image.allowTestArtifacts = true;
 

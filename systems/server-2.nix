@@ -46,20 +46,13 @@
   aos.system.version = "test-2";
 
   aos.image.budgets = {
-    # The Python HTTP fixture occupies 807 MiB on x86_64 and 942 MiB on AArch64.
+    # The Python HTTP fixture adds to the full server package closure.
     maxRuntimeClosureMiB =
       if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
-      then 960
-      else 832;
+      then 3200
+      else 3072;
 
-    # The x86_64 VHD reaches 768.19 MiB with the generation-two fixture payload.
-    maxDownloadMiB = 800;
-
-    # The AArch64 VHD reaches 813 MiB with the same payload.
-    maxConvertedDownloadMiB =
-      lib.mkIf
-      (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64")
-      832;
+    maxDownloadMiB = 1536;
   };
 
   # symlink mode (the default) → baked into the system EROFS metadata

@@ -362,6 +362,13 @@ in {
         description = "Static ability contract embedded in the selected initrd artifact.";
       };
 
+      initrdStaticAbilityEvidence = lib.mkOption {
+        type = lib.types.listOf lib.types.package;
+        readOnly = true;
+        internal = true;
+        description = "Build-only resolved package documents used to validate the initrd static contract.";
+      };
+
       initrdSourceStageBundle = lib.mkOption {
         type = lib.types.package;
         readOnly = true;
@@ -436,6 +443,7 @@ in {
     {
       system.build.initrd = managerInitrd.artifact;
       system.build.initrdStaticAbilityContract = managerInitrd.staticAbilityContract;
+      system.build.initrdStaticAbilityEvidence = managerInitrd.staticAbilityEvidence;
       system.build.initrdSourceStageBundle = managerInitrd.sourceStageBundle;
       system.build.managerConfiguration = managerConfigurationOutput;
 

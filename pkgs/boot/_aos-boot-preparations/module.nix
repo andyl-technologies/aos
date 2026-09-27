@@ -10,6 +10,10 @@
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "boot-preparations";
+  managerIdentity = name: {
+    inherit name;
+    aliases = [];
+  };
   stage =
     if config.aos.abilities.environment == null
     then null
@@ -80,7 +84,6 @@
   bootIdentityReadiness = resultOf "boot-identity" "resource";
   bootStorageUnlockedReadiness = resultOf "boot-storage-unlocked" "resource";
   localFilesystemsReadiness = resultOf "local-filesystems" "resource";
-  hostStageReceivedReadiness = resultOf "host-stage-received" "resource";
   service = {
     key,
     description,
@@ -89,6 +92,7 @@
   }: {
     inherit consumerInstance;
     service = key;
+    manager_identity = managerIdentity key;
     lifecycle = {
       inherit description;
       execution_model = "oneshot";
@@ -218,6 +222,7 @@
     {
       inherit consumerInstance;
       service = key;
+      manager_identity = managerIdentity key;
       lifecycle = {
         inherit description;
         execution_model = "oneshot";
@@ -306,7 +311,6 @@
       // {
         after = [
           sysrootReadiness
-          initrdStageReadiness
         ];
         before = [
           (serviceResource "mount-var")
@@ -315,7 +319,6 @@
         ];
         requires = [
           sysrootReadiness
-          initrdStageReadiness
         ];
         required_by = [initrdFilesystemsReadiness];
         implicit_dependencies = false;
@@ -367,9 +370,7 @@
       emptyDependencies
       // {
         after = [localFilesystemsReadiness];
-        before = [hostStageReceivedReadiness];
         requires = [localFilesystemsReadiness];
-        required_by = [hostStageReceivedReadiness];
       };
   };
   substrateEnvironment = {
@@ -419,6 +420,7 @@
     {
       inherit consumerInstance;
       service = key;
+      manager_identity = managerIdentity key;
       lifecycle = {
         inherit description;
         execution_model = "oneshot";

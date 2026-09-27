@@ -37,8 +37,6 @@
 ##!   initrdNetworkDir — selected provider artifact directory containing
 ##!                   rendered systemd-networkd `.network` files; copied into
 ##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
-##!   keepBinutils — retain current binutils for signed UKI section inspection
-##!                  in recovery-enabled normal initrds.
 ##!   initrdSourceStageBundle — sealed source-stage template from the completed
 ##!                  initrd module fixed point; boot admission makes it executable.
 ##!
@@ -55,13 +53,11 @@
   initrdRuntimeRoots,
   initrdEvaluationLib,
   initrdNetworkDir ? null,
-  renderedUnits,
   handoff,
   initrdSourceStageBundle,
   initrdStaticContract,
   maskedUnits ? [],
   validateBootIdentity ? false,
-  keepBinutils ? false,
 }: let
   kernelPackage = kernel.package;
   kernelModuleTree =
@@ -920,6 +916,7 @@
                  root/nix/store/*-binutils-2.20* \
                  root/nix/store/*-binutils-2.25* \
                  root/nix/store/*-binutils-2.30* \
+                 root/nix/store/*-binutils-2.41* \
                  root/nix/store/*-glibc-2.12 \
                  root/nix/store/*-glibc-2.2.5 \
                  root/nix/store/*-coreutils-8.32 \
@@ -938,10 +935,6 @@
               exit 1
             }
           done
-          ${lib.optionalString (!keepBinutils) ''
-            rm -rf root/nix/store/*-binutils-2.41*
-          ''}
-
           # util-linux: man pages, zsh completion, etc.
           find root/nix/store -maxdepth 2 -type d -name '*-util-linux-*' -print0 \
             | xargs -0 -r -I{} sh -c '
@@ -1030,6 +1023,14 @@
               | LC_ALL=C ${coreutils}/bin/sort \
               | ${jq}/bin/jq -Rsc 'split("\n") | map(select(length > 0))'
           )
+          # Provider units are materialized after the pure option renderer, so
+          # inventory the actual unit directory that enters the archive.
+          rendered_units=$(
+            ${findutils}/bin/find root/etc/systemd/system \
+              -maxdepth 1 \( -type f -o -type l \) -printf '%f\n' \
+              | LC_ALL=C ${coreutils}/bin/sort \
+              | ${jq}/bin/jq -Rsc 'split("\n") | map(select(length > 0))'
+          )
           ${jq}/bin/jq -cS -n \
             --arg schema aos.boot.initrd-stage-contract/v1 \
             --arg platform ${lib.escapeShellArg kernel.targetPlatform.system} \
@@ -1037,7 +1038,7 @@
             --arg archiveSha256 "sha256:$archive_sha256" \
             --argjson archiveSize "$archive_size" \
             --argjson dependencyRoots ${lib.escapeShellArg (builtins.toJSON dependencyRoots)} \
-            --argjson renderedUnits ${lib.escapeShellArg (builtins.toJSON renderedUnits)} \
+            --argjson renderedUnits "$rendered_units" \
             --argjson renderedNetworks "$rendered_networks" \
             --argjson loadModules ${lib.escapeShellArg (builtins.toJSON loadModules)} \
             --argjson maskedUnits ${lib.escapeShellArg (builtins.toJSON maskedUnits)} \
@@ -1049,7 +1050,9 @@
                 kernel_release:$kernelRelease,
                 artifact:{path:"initrd.img",size_bytes:$archiveSize,sha256:$archiveSha256},
                 dependency_roots:$dependencies,
-                rendered_units:($renderedUnits | sort | unique),
+                rendered_units:($renderedUnits
+                  | map(select(. as $unit | ($maskedUnits | index($unit)) == null))
+                  | sort | unique),
                 rendered_networks:($renderedNetworks | sort | unique),
                 load_modules:($loadModules | sort | unique),
                 masked_units:($maskedUnits | sort | unique),

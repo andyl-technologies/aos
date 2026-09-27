@@ -13,6 +13,7 @@
   imports = [
     ./_artifact-backend.nix
     ./_base-packages.nix
+    ./_full-host-budgets.nix
     ./_image-builder.nix
     ./_kernel.nix
     ./_system-manager.nix
@@ -29,13 +30,10 @@
   aos.security.verity.enable = lib.mkDefault true;
   aos.boot.initrd.abilityHandoff.enable = lib.mkDefault true;
   aos.image.budgets = {
-    maxRootMiB = 640;
     maxVerityMiB = 16;
     maxInitrdMiB = 132;
     maxBootExecutableMiB = 160;
     maxFirmwarePartitionMiB = 384;
-    maxRuntimeClosureMiB = 768;
-    maxDownloadMiB = 768;
   };
 
   # The service modules retain backwards-compatible enabled defaults. Keep
