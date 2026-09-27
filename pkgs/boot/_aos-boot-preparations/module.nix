@@ -260,6 +260,7 @@
   stageInputPathsType = lib.abilities.types.record {
     fields = {
       initrd = stageInputPathType;
+      receivedInitrd = stageInputPathType;
       host = stageInputPathType;
     };
   };
@@ -269,10 +270,15 @@
       identity = "/lib/aos/initrd/static-ability-contract-identity";
       contract = "/lib/aos/initrd/static-ability-contract.json";
     };
-    host = {
+    receivedInitrd = {
       bundle = "/usr/lib/aos/initrd/source-stage-bundle.json";
       identity = "/usr/lib/aos/initrd/static-ability-contract-identity";
       contract = "/usr/lib/aos/initrd/static-ability-contract.json";
+    };
+    host = {
+      bundle = "/usr/lib/aos/host/source-stage-bundle.json";
+      identity = "/usr/lib/aos/host/static-ability-contract-identity";
+      contract = "/usr/lib/aos/host/static-ability-contract.json";
     };
   };
   stageInputs = stage: let
@@ -365,7 +371,7 @@
         "--image-profile"
         "/var/lib/profiles/image"
       ]
-      ++ stageInputs "host";
+      ++ stageInputs "receivedInitrd";
     dependencies =
       emptyDependencies
       // {

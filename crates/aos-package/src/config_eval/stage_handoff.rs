@@ -19,6 +19,7 @@ use aos_ability_model::{
     TransactionId,
 };
 use aos_ability_runtime::journal::{FileJournal, JournalLimits, JournalPayload, JournalRecord};
+use aos_ability_validate::StaticAbilityExecutionStage;
 use aos_contract::Sha256Digest;
 use aos_provider_protocol::validate_boot_id;
 use serde::{Deserialize, Serialize};
@@ -101,6 +102,7 @@ pub fn run_initrd_stage(
         &source_stage_bytes,
         static_contract_identity,
         &contract_bytes,
+        StaticAbilityExecutionStage::Initrd,
     )?;
     let transaction_storage = selected_transaction_storage(&source_stage_bytes)?;
 
@@ -152,6 +154,7 @@ pub fn receive_initrd_stage(
         &source_stage_bytes,
         static_contract_identity,
         &contract_bytes,
+        StaticAbilityExecutionStage::Initrd,
     )?;
 
     receive_initrd_stage_with(
@@ -206,6 +209,7 @@ pub fn validate_initrd_stage(
         &source_stage_bytes,
         static_contract_identity,
         &contract_bytes,
+        StaticAbilityExecutionStage::Initrd,
     )?;
 
     validate_initrd_stage_with(
@@ -633,6 +637,7 @@ fn validate_source_contract_binding(
     source_stage_bundle_bytes: &[u8],
     static_contract_identity: &str,
     contract_bytes: &[u8],
+    stage: StaticAbilityExecutionStage,
 ) -> Result<()> {
     let checked = super::source_stage::decode_source_stage(source_stage_bundle_bytes)?;
     let bound = checked.bundle().static_contract();
@@ -644,7 +649,7 @@ fn validate_source_contract_binding(
         bound.sha256 == sha256_digest(contract_bytes),
         "source stage bundle names other static contract content"
     );
-    super::static_packages::verified_initrd_packages(contract_bytes)
+    super::static_packages::verified_stage_packages(contract_bytes, stage)
         .context("authenticating source stage static contract")?;
     Ok(())
 }
@@ -694,8 +699,11 @@ fn run_initrd_stage_with(
     source_stage_bundle_bytes: &[u8],
 ) -> Result<()> {
     validate_boot_id(boot_id)?;
-    let packages = super::static_packages::verified_initrd_packages(contract_bytes)
-        .context("authenticating initrd static ability contract")?;
+    let packages = super::static_packages::verified_stage_packages(
+        contract_bytes,
+        StaticAbilityExecutionStage::Initrd,
+    )
+    .context("authenticating initrd static ability contract")?;
     let contract_digest = sha256_digest(contract_bytes);
 
     let transaction = transaction_for_boot(boot_id)?;
@@ -1142,8 +1150,11 @@ fn load_validated_release(
     image: &ImageIdentity,
 ) -> Result<ValidatedRelease> {
     validate_boot_id(boot_id)?;
-    super::static_packages::verified_initrd_packages(contract_bytes)
-        .context("reauthenticating initrd static ability contract")?;
+    super::static_packages::verified_stage_packages(
+        contract_bytes,
+        StaticAbilityExecutionStage::Initrd,
+    )
+    .context("reauthenticating initrd static ability contract")?;
     let checkpoint_bytes = read_trusted_file(
         checkpoint_path,
         DOCUMENT_MAX_BYTES,

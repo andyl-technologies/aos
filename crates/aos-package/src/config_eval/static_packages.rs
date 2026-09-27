@@ -22,7 +22,7 @@ use aos_contract::Sha256Digest;
 use super::runtime::{ContractOrigin, LocalRuntimePackage};
 use super::store_view::StoreViewLocator;
 
-const INITRD_STORE_ROOT: &str = "/nix/store";
+const BOOT_STORE_ROOT: &str = "/nix/store";
 const STATIC_CONTRACT_FILE: &str = "contract.json";
 const MAX_STATIC_CONTRACT_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -237,7 +237,7 @@ fn boot_expectation(
     }
 }
 
-/// Authenticates every package selected by an embedded initrd contract.
+/// Authenticates every package selected by an embedded boot-stage contract.
 ///
 /// The static contract fixes package documents and companion identities. This
 /// function additionally rechecks their live store objects before returning
@@ -247,13 +247,14 @@ fn boot_expectation(
 ///
 /// Returns an error when the contract, package companion, interface catalog,
 /// or any selected package artifact differs from the embedded selection.
-pub(super) fn verified_initrd_packages(
+pub(super) fn verified_stage_packages(
     contract_bytes: &[u8],
+    stage: StaticAbilityExecutionStage,
 ) -> Result<crate::package_contract::VerifiedPackageContractSet> {
     let checked = validate_static_ability_artifacts_at_store_root(
         contract_bytes,
-        &boot_expectation(StaticAbilityExecutionStage::Initrd),
-        Path::new(INITRD_STORE_ROOT),
+        &boot_expectation(stage),
+        Path::new(BOOT_STORE_ROOT),
     )?;
     let platform = runtime_platform(&checked)?;
     let mut packages = Vec::with_capacity(checked.packages().len());
@@ -262,12 +263,12 @@ pub(super) fn verified_initrd_packages(
         let document = selected
             .package_document()
             .cloned()
-            .context("checked initrd package has no artifact-backed document")?;
+            .context("checked boot-stage package has no artifact-backed document")?;
         ensure!(
             document.package.name == *selected.name()
                 && document.package.version == selected.version()
                 && document.package.payload == *selected.payload(),
-            "checked initrd package selection differs from its package document"
+            "checked boot-stage package selection differs from its package document"
         );
         let manifest = crate::registry_ops::resolve_store_artifact_reference(
             selected.manifest().store_path(),
