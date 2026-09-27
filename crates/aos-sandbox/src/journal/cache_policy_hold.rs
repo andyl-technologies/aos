@@ -46,6 +46,8 @@ const V8_PENDING_MAGIC: &[u8; 8] = b"AOSCPP08";
 const V8_PENDING_CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.cache-policy-v8-pending.v1\0";
 const V8_RELEASE_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.cache-policy-v8-release.v1\0";
 const V8_SETTLEMENT_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.cache-policy-v8-settlement.v1\0";
+const V8_SETTLEMENT_PREFLIGHT_DOMAIN: &[u8] =
+    b"aos.sandbox.cache-policy-v8-settlement-preflight.v1\0";
 const RECORD_BYTES: usize = 168;
 const V8_PENDING_RECORD_BYTES: usize = 152;
 
@@ -397,6 +399,25 @@ fn v8_settlement_transaction(
     )
 }
 
+fn v8_settlement_preflight_transaction(
+    released: CachePolicyHoldV1,
+) -> Result<JournalTransaction, JournalError> {
+    let digest = Sha256::new()
+        .chain_update(V8_SETTLEMENT_PREFLIGHT_DOMAIN)
+        .chain_update(released.encode()?)
+        .finalize();
+
+    JournalTransaction::new(
+        digest[..16]
+            .try_into()
+            .map_err(|_| JournalError::ProtectedBoundary)?,
+        vec![JournalRecord::delete(
+            RecordNamespace::DesiredState,
+            V8_PENDING_KEY.to_vec(),
+        )],
+    )
+}
+
 fn current_state(journal: &mut Journal) -> Result<CachePolicyHoldStateV1, JournalError> {
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     let mut records = authority.records()?;
@@ -690,7 +711,17 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         let mut journal = open(directory, uid)?;
-        let state = current_state(&mut journal)?;
+        journal.acquire_cache_policy_hold_for_writer(hold)
+    }
+
+    fn acquire_cache_policy_hold_for_writer(
+        &mut self,
+        hold: CachePolicyHoldV1,
+    ) -> Result<(), JournalError> {
+        if !hold.held {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let state = self.cache_policy_hold_state_for_writer()?;
         if state.hold.is_some_and(CachePolicyHoldV1::is_held) || state.v8_pending.is_some() {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -702,10 +733,13 @@ impl Journal {
         let legacy_release = transaction(HOLD_KEY, &released.encode()?)?;
         let v8_pending = CachePolicyV8PendingSettlementV1::new(hold, released)?;
         let v8_release = v8_release_transaction(released, v8_pending)?;
-        journal.preflight_transactions(&[acquire.clone(), legacy_release])?;
-        journal.preflight_transactions(&[acquire.clone(), v8_release])?;
-        journal.commit(&acquire)?;
-        if current(&mut journal)? != Some(hold) {
+        let v8_clear = v8_settlement_preflight_transaction(released)?;
+        self.preflight_transactions(&[acquire.clone(), legacy_release])?;
+        // The pending marker must be clearable without depending on future
+        // compaction, even when this acquire reaches the journal capacity edge.
+        self.preflight_transactions(&[acquire.clone(), v8_release, v8_clear])?;
+        self.commit(&acquire)?;
+        if current(self)? != Some(hold) {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
@@ -1164,6 +1198,50 @@ mod tests {
             reopened.release_held_cache_policy_hold_for_writer(hold()),
             Err(JournalError::ProtectedBoundary)
         ));
+    }
+
+    #[test]
+    fn cache_acquire_reserves_capacity_for_v8_marker_clear() {
+        let (directory, uid) = fixture();
+        initialize_fresh(directory.path(), uid).expect("fresh genesis");
+
+        let insufficient = JournalLimits {
+            maximum_transactions: 3,
+            ..hold_limits()
+        };
+        let (mut writer, _) =
+            Journal::open_protected_at_uid(directory.path(), NAME, insufficient, uid)
+                .expect("small Cache journal");
+        assert!(matches!(
+            writer.acquire_cache_policy_hold_for_writer(hold()),
+            Err(JournalError::LimitExceeded(_))
+        ));
+        assert_eq!(writer.cache_policy_hold_for_writer().unwrap(), None);
+        drop(writer);
+
+        let exact = JournalLimits {
+            maximum_transactions: 4,
+            ..hold_limits()
+        };
+        let (mut writer, _) = Journal::open_protected_at_uid(directory.path(), NAME, exact, uid)
+            .expect("four-transaction Cache journal");
+        writer
+            .acquire_cache_policy_hold_for_writer(hold())
+            .expect("acquire reserves release and clear");
+        let released = writer
+            .release_v8_held_cache_policy_hold_for_writer(hold())
+            .expect("reserved V8 release");
+        let grant = settled_grant(released);
+        assert_eq!(
+            writer
+                .clear_v8_pending_cache_settlement_for_writer(grant)
+                .expect("reserved marker clear"),
+            released
+        );
+        assert_eq!(
+            writer.cache_policy_hold_for_writer().unwrap(),
+            Some(released)
+        );
     }
 
     #[test]
