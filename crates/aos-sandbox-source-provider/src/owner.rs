@@ -9,7 +9,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use aos_sandbox::{Journal, JournalLimits, RecordNamespace, RecoveryReport};
+use aos_sandbox::{Journal, JournalLimits, RecoveryReport};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_ledger::ledger::model::AttemptRecordV1;
@@ -402,7 +402,7 @@ impl FixedProviderOwnerV1 {
             .journal
             .as_mut()
             .ok_or(ProviderLedgerError::RuntimePoisoned)?
-            .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+            .claim_source_provider_native_terminal_authority_v1()?;
         initial_authority.validate_fixed_source_provider_storage()?;
         let handoff = initial_authority.fixed_source_provider_session_handoff()?;
         let mut session = security.into_fixed_ledger_session(handoff)?;
@@ -528,7 +528,7 @@ impl FixedProviderOwnerV1 {
             }
         };
         let authority = match journal
-            .claim_protected_authority(RecordNamespace::SourceProviderAuthority)
+            .claim_source_provider_native_terminal_authority_v1()
             .and_then(|authority| {
                 authority.validate_fixed_source_provider_storage()?;
                 Ok(authority)
@@ -697,7 +697,7 @@ impl FixedProviderOwnerV1 {
             .journal
             .as_mut()
             .ok_or(ProviderLedgerError::RuntimePoisoned)?
-            .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+            .claim_source_provider_native_terminal_authority_v1()?;
         authority.validate_fixed_source_provider_storage()?;
         let handoff = authority.fixed_source_provider_session_handoff()?;
         let (session, supersession) = security.into_fixed_recovery_ledger_session(handoff)?;
@@ -2015,8 +2015,7 @@ impl FixedProviderOwnerV1 {
             .as_mut()
             .ok_or(ProviderLedgerError::RuntimePoisoned)
             .and_then(|journal| {
-                let authority =
-                    journal.claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+                let authority = journal.claim_source_provider_native_terminal_authority_v1()?;
                 authority.validate_fixed_source_provider_storage()?;
                 Ok(authority)
             }) {
@@ -2081,7 +2080,7 @@ fn claim_fixed_provider_authority(
 ) -> Result<aos_sandbox::ProtectedJournalAuthority<'_>, ProviderLedgerError> {
     let authority = journal
         .ok_or(ProviderLedgerError::RuntimePoisoned)?
-        .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+        .claim_source_provider_native_terminal_authority_v1()?;
     authority.validate_fixed_source_provider_storage()?;
     Ok(authority)
 }
@@ -2139,7 +2138,7 @@ fn claim_configured_ledger<'journal>(
     ),
     ProviderLedgerError,
 > {
-    let authority = journal.claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+    let authority = journal.claim_source_provider_native_terminal_authority_v1()?;
     authority.validate_fixed_source_provider_storage()?;
     let configuration = configured_ledger(session, canonical_catalog_publication)?;
     Ok((authority, configuration))

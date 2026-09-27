@@ -44,12 +44,6 @@ impl core::fmt::Debug for ProviderHeldSnapshotCatalogClaimV1 {
 }
 
 impl ProviderHeldSnapshotCatalogClaimV1 {
-    /// Returns the Provider authority that owns this selected catalog row.
-    #[must_use]
-    pub(crate) const fn provider(&self) -> &SourceProviderAuthorityV1 {
-        &self.provider
-    }
-
     /// Returns the resource identity asserted by the current catalog row.
     #[must_use]
     pub const fn resource(&self) -> &SourceResourceV1 {

@@ -205,7 +205,8 @@ pub(crate) fn reserve_acquire(
 
     let effect_id =
         derive_acquire_effect_id(request.acquisition_id(), attempt_evidence.attempt_digest())?;
-    let backend_id = if selected_resource.is_some() && !normalized_intent.kernel_coupled() {
+    let native_no_dispatch = selected_resource.is_some() && !normalized_intent.kernel_coupled();
+    let backend_id = if native_no_dispatch {
         derive_native_no_dispatch_id(
             normalized_intent.digest(),
             ledger.recovered.catalog.catalog_generation,
@@ -340,8 +341,25 @@ pub(crate) fn reserve_acquire(
         ),
         encode_session_history(&session),
     ));
-    let reservation_digest = commit_records(ledger, ACQUIRE_RESERVE_PURPOSE, records)?;
-    let journal_snapshot = ledger.journal.snapshot()?;
+    let reservation_digest = if native_no_dispatch {
+        crate::native_no_dispatch_capacity::commit_reservation(
+            ledger,
+            ACQUIRE_RESERVE_PURPOSE,
+            records,
+            &acquisition,
+            &attempt,
+            &session,
+        )?
+    } else {
+        commit_records(ledger, ACQUIRE_RESERVE_PURPOSE, records)?
+    };
+    let journal_snapshot = match ledger.journal.snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            ledger.poison_runtime();
+            return Err(error.into());
+        }
+    };
     let authorization_attempt = attempt.clone();
     let authorization_key = key.clone();
     let response_sequence = session.next_response_sequence;
@@ -365,21 +383,31 @@ pub(crate) fn reserve_acquire(
         ),
         session,
     );
-    let signing_authorization = authorize_current_reservation(
+    ledger.refresh_recovery_work();
+    let signing_authorization = match authorize_current_reservation(
         security_session,
         current_request,
         ledger,
         &authorization_key,
         &authorization_attempt,
         response_sequence,
-    )?;
-    ledger.refresh_recovery_work();
-    let completion_capacity = preflight_completion_capacity(
-        &ledger.journal,
-        ACQUIRE_COMPLETE_PURPOSE,
-        reservation_digest,
-        MAXIMUM_ACQUIRE_COMPLETION_BYTES,
-    )?;
+    ) {
+        Ok(authorization) => authorization,
+        Err(error) => {
+            ledger.poison_runtime();
+            return Err(error);
+        }
+    };
+    let completion_capacity = if native_no_dispatch {
+        crate::transaction::CompletionCapacityV1::native_no_dispatch()
+    } else {
+        preflight_completion_capacity(
+            &ledger.journal,
+            ACQUIRE_COMPLETE_PURPOSE,
+            reservation_digest,
+            MAXIMUM_ACQUIRE_COMPLETION_BYTES,
+        )?
+    };
     Ok(ProviderAdmissionDispositionV1::Acquire(
         DurableAcquireEffectPermitV1 {
             plan: acquire_plan,

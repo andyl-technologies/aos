@@ -970,9 +970,6 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
         &mut self,
         query: &RecoveryCurrentnessQueryV1,
     ) -> Result<NativeNoDispatchSettlementV1, ProviderLedgerError> {
-        let (publication, rows) = self
-            .current_catalog
-            .ok_or(ProviderLedgerError::Unavailable)?;
         let (provider_id, holder_id) = query.authorities();
         let settlement = self.owner.settle_native_no_dispatch_recovery(
             query.acquisition_id(),
@@ -980,8 +977,6 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
             holder_id,
             query.original_signed_request_digest(),
             query.digest(),
-            publication,
-            rows,
         )?;
         self.owner.pending_backend_recovery.retain(|recovery| {
             !matches!(

@@ -24,7 +24,7 @@ use crate::ledger::model::DecodedRecordV1;
 use crate::limits::{MAXIMUM_TRANSACTION_BYTES, MAXIMUM_TRANSACTION_RECORDS};
 use crate::model::{
     AttemptKeyV1, AttemptRecordV1, HolderSessionHeadRecordV1, ProviderAttemptStateV1,
-    ProviderRecoveryWorkV1, WriterIdentityV1,
+    ProviderRecoveryWorkV1, RecoveredProviderLedgerV1, WriterIdentityV1,
 };
 use crate::state::ProviderLedgerV1;
 use crate::{
@@ -34,14 +34,18 @@ use crate::{
 
 const TRANSACTION_ID_DOMAIN: &[u8] = b"aos.sandbox.source-provider.ledger.transaction-id.v1\0";
 
-pub(crate) struct CompletionCapacityV1 {
-    preflight: ProtectedJournalPreflight,
-    transaction: JournalTransaction,
+pub(crate) enum CompletionCapacityV1 {
+    Preflight {
+        preflight: ProtectedJournalPreflight,
+        transaction: JournalTransaction,
+    },
+    NativeNoDispatch,
 }
 
-struct PreparedLedgerMutationV1 {
-    transaction: JournalTransaction,
-    digest: ObjectDigest,
+pub(crate) struct PreparedLedgerMutationV1 {
+    pub(crate) transaction: JournalTransaction,
+    pub(crate) digest: ObjectDigest,
+    pub(crate) prospective_recovered: RecoveredProviderLedgerV1,
 }
 
 pub(crate) fn commit_sealed_completion(
@@ -63,6 +67,12 @@ pub(crate) fn commit_sealed_completion(
             return Err(error);
         }
     };
+    if let Err(error) =
+        crate::native_no_dispatch_capacity::validate_set(&ledger.journal, &recovered)
+    {
+        ledger.poison_runtime();
+        return Err(error);
+    }
     ledger.recovered = recovered;
     ledger.refresh_recovery_work();
     Ok(committed)
@@ -91,15 +101,25 @@ impl core::fmt::Debug for CompletionCapacityV1 {
 }
 
 impl CompletionCapacityV1 {
+    pub(crate) const fn native_no_dispatch() -> Self {
+        Self::NativeNoDispatch
+    }
+
     pub(crate) fn validate(
         &self,
         journal: &ProtectedJournalAuthority<'_>,
     ) -> Result<(), ProviderLedgerError> {
-        journal.validate_preflight_for_effect(
-            &self.preflight,
-            std::slice::from_ref(&self.transaction),
-        )?;
-        Ok(())
+        match self {
+            Self::Preflight {
+                preflight,
+                transaction,
+            } => {
+                journal
+                    .validate_preflight_for_effect(preflight, std::slice::from_ref(transaction))?;
+                Ok(())
+            }
+            Self::NativeNoDispatch => Err(ProviderLedgerError::Unavailable),
+        }
     }
 }
 
@@ -109,6 +129,20 @@ pub(crate) fn preflight_completion_capacity(
     reservation_digest: ObjectDigest,
     maximum_completion_bytes: usize,
 ) -> Result<CompletionCapacityV1, ProviderLedgerError> {
+    let transaction =
+        completion_capacity_transaction(purpose, reservation_digest, maximum_completion_bytes)?;
+    let preflight = journal.preflight_transactions(std::slice::from_ref(&transaction))?;
+    Ok(CompletionCapacityV1::Preflight {
+        preflight,
+        transaction,
+    })
+}
+
+fn completion_capacity_transaction(
+    purpose: &[u8],
+    reservation_digest: ObjectDigest,
+    maximum_completion_bytes: usize,
+) -> Result<JournalTransaction, ProviderLedgerError> {
     if maximum_completion_bytes == 0 || maximum_completion_bytes > MAXIMUM_TRANSACTION_BYTES {
         return Err(ProviderLedgerError::LimitExceeded(
             "completion capacity bytes",
@@ -137,11 +171,7 @@ pub(crate) fn preflight_completion_capacity(
             vec![0; maximum_completion_bytes],
         )],
     )?;
-    let preflight = journal.preflight_transactions(std::slice::from_ref(&transaction))?;
-    Ok(CompletionCapacityV1 {
-        preflight,
-        transaction,
-    })
+    Ok(transaction)
 }
 
 /// Confirms that no writer displaced the just-synced protected state.
@@ -1078,6 +1108,10 @@ fn commit_mutations_validated(
     validation_configuration: Option<&crate::ProtectedProviderConfigurationV1>,
 ) -> Result<ObjectDigest, ProviderLedgerError> {
     let prepared = prepare_mutations_validated(ledger, purpose, records, validation_configuration)?;
+    crate::native_no_dispatch_capacity::validate_set(
+        &ledger.journal,
+        &prepared.prospective_recovered,
+    )?;
     let preflight = match ledger
         .journal
         .preflight_transactions(std::slice::from_ref(&prepared.transaction))
@@ -1100,14 +1134,21 @@ fn commit_mutations_validated(
         return Err(error.into());
     }
     let effective_configuration = validation_configuration.unwrap_or(&ledger.configuration);
-    if let Err(error) = crate::recovery::recover(&ledger.journal, effective_configuration) {
+    let replay = match crate::recovery::recover(&ledger.journal, effective_configuration) {
+        Ok(replay) => replay,
+        Err(error) => {
+            ledger.poison_runtime();
+            return Err(error);
+        }
+    };
+    if let Err(error) = crate::native_no_dispatch_capacity::validate_set(&ledger.journal, &replay) {
         ledger.poison_runtime();
         return Err(error);
     }
     Ok(prepared.digest)
 }
 
-fn prepare_mutations_validated(
+pub(crate) fn prepare_mutations_validated(
     ledger: &ProviderLedgerV1<'_>,
     purpose: &[u8],
     mut records: Vec<(Vec<u8>, Option<Vec<u8>>)>,
@@ -1176,7 +1217,7 @@ fn prepare_mutations_validated(
             ProviderLedgerError::MigrationNeedsProvenance(message)
         }
     })?;
-    crate::recovery::recover_records(
+    let prospective_recovered = crate::recovery::recover_records(
         prospective
             .iter()
             .map(|(key, value)| (key.as_slice(), value.as_slice())),
@@ -1217,6 +1258,7 @@ fn prepare_mutations_validated(
     Ok(PreparedLedgerMutationV1 {
         transaction,
         digest: ObjectDigest::from_bytes(digest),
+        prospective_recovered,
     })
 }
 

@@ -371,6 +371,9 @@ impl<'a> ProviderLedgerV1<'a> {
             .find(|value| value.acquisition_id == acquisition_id)
             .cloned()
             .ok_or(ProviderLedgerError::Corrupt("recovery acquisition"))?;
+        if crate::acquire::is_native_no_dispatch_acquisition(&acquisition) {
+            return Err(ProviderLedgerError::Unavailable);
+        }
         let attempt = self
             .recovered
             .attempts

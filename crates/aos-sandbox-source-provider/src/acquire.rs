@@ -465,6 +465,9 @@ fn complete_acquire_disposition(
         .get(&acquisition_key_value)
         .cloned()
         .ok_or(ProviderLedgerError::Corrupt("missing applying acquisition"))?;
+    if is_native_no_dispatch_acquisition(&acquisition) {
+        return Err(ProviderLedgerError::Unavailable);
+    }
     if acquisition.state != ProviderAcquisitionStateV1::Applying
         || !permit.plan.matches_effect_acquisition(&acquisition)
         || permit.reservation_digest.as_bytes() == &[0; 32]

@@ -14,6 +14,7 @@ impl<'a> ProviderLedgerV1<'a> {
         configuration: ProtectedProviderConfigurationV1,
     ) -> Result<Self, ProviderLedgerError> {
         journal.validate_source_provider_authority()?;
+        journal.validate_global_capacity_reservation_set_v1(&std::collections::BTreeSet::new())?;
         if !journal.is_materialized_empty()? {
             return Err(ProviderLedgerError::InvalidTransition(
                 "SourceProvider authority journal is not empty",
@@ -154,6 +155,7 @@ impl<'a> ProviderLedgerV1<'a> {
         journal.validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
         journal.commit(&transaction)?;
         let recovered = crate::recovery::recover(&journal, &configuration)?;
+        crate::native_no_dispatch_capacity::validate_set(&journal, &recovered)?;
         Ok(Self {
             journal,
             configuration,
@@ -183,6 +185,7 @@ impl<'a> ProviderLedgerV1<'a> {
     ) -> Result<Self, ProviderLedgerError> {
         journal.validate_source_provider_authority()?;
         let recovered = crate::recovery::recover(&journal, &configuration)?;
+        crate::native_no_dispatch_capacity::validate_set(&journal, &recovered)?;
         Ok(Self::from_validated_recovery(
             journal,
             configuration,

@@ -30,6 +30,7 @@ mod held_snapshot_selection;
 mod inventory;
 mod limits;
 mod migration;
+mod native_no_dispatch_capacity;
 mod native_no_dispatch_recovery;
 mod owner;
 mod pending;

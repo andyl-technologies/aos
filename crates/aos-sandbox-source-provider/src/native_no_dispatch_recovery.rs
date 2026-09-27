@@ -17,7 +17,6 @@ use crate::format::{
     acquisition_key, attempt_key, encode_acquisition, encode_attempt, encode_session,
     record_digest, session_key,
 };
-use crate::held_snapshot_selection::select_current_held_snapshot_claim;
 use crate::model::{ProviderAcquisitionStateV1, ProviderAttemptStateV1};
 use crate::{FixedProviderOwnerV1, ProviderLedgerError};
 
@@ -38,6 +37,9 @@ impl FixedProviderOwnerV1 {
     /// The four digests name the original Applying acquisition and its exact
     /// Faulted acquisition, Retired attempt, and cleared old session. This is
     /// not a Storage plan, completed source, or permission for a successor.
+    /// Recovery does not require the original catalog row to remain current:
+    /// admission already retained that selection, and this path attests only
+    /// that the dedicated native reservation could never dispatch an effect.
     ///
     /// # Errors
     ///
@@ -50,8 +52,6 @@ impl FixedProviderOwnerV1 {
         expected_holder_id: [u8; 16],
         expected_signed_request_digest: ObjectDigest,
         query_digest: ObjectDigest,
-        canonical_publication: &[u8],
-        canonical_rows: &[u8],
     ) -> Result<NativeNoDispatchSettlementV1, ProviderLedgerError> {
         self.with_ledger(|ledger| {
             let journal_snapshot = ledger.journal.snapshot()?;
@@ -145,29 +145,6 @@ impl FixedProviderOwnerV1 {
                 return Err(ProviderLedgerError::Unavailable);
             }
 
-            if applying {
-                let claim = select_current_held_snapshot_claim(
-                    ledger,
-                    canonical_publication,
-                    canonical_rows,
-                    expected_holder_id,
-                    request.binding_digest(),
-                )?;
-                let resource = claim.resource();
-                if claim.provider() != &acquisition.provider
-                    || resource.resource_namespace_digest() != acquisition.resource_namespace_digest
-                    || resource.resource_id() != acquisition.resource_id
-                    || resource.resource_generation() != acquisition.resource_generation
-                    || resource.resource_digest() != acquisition.resource_digest
-                    || resource.catalog_generation() != acquisition.catalog_generation
-                    || resource.catalog_digest() != acquisition.catalog_digest
-                    || resource.selection_generation() != acquisition.selection_generation
-                    || resource.selection_digest() != acquisition.selection_digest
-                {
-                    return Err(ProviderLedgerError::ConfigurationMismatch);
-                }
-            }
-
             let retained = ledger
                 .journal
                 .get(&key)?
@@ -196,6 +173,9 @@ impl FixedProviderOwnerV1 {
                 record_digest(&encode_acquisition(&acquisition))?
             };
             let post_records = if applying {
+                let reserved_acquisition = acquisition.clone();
+                let reserved_attempt = attempt.clone();
+                let reserved_session = holder_head.clone();
                 let mut faulted = acquisition;
                 faulted.revision = faulted
                     .revision
@@ -221,7 +201,7 @@ impl FixedProviderOwnerV1 {
                 let expected_retired = encode_attempt(&retired);
                 let expected_cleared = encode_session(&cleared);
 
-                crate::transaction::commit_records(
+                crate::native_no_dispatch_capacity::commit_terminal(
                     ledger,
                     b"settle-native-no-dispatch-acquire",
                     vec![
@@ -229,6 +209,9 @@ impl FixedProviderOwnerV1 {
                         (attempt_key.clone(), expected_retired.clone()),
                         (holder_key.clone(), expected_cleared.clone()),
                     ],
+                    &reserved_acquisition,
+                    &reserved_attempt,
+                    &reserved_session,
                 )?;
                 Some((
                     faulted,
@@ -242,65 +225,71 @@ impl FixedProviderOwnerV1 {
                 None
             };
 
-            let faulted = ledger
-                .journal
-                .get(&key)?
-                .ok_or(ProviderLedgerError::Unavailable)?;
-            let retired = ledger
-                .journal
-                .get(&attempt_key)?
-                .ok_or(ProviderLedgerError::Unavailable)?;
-            let cleared = ledger
-                .journal
-                .get(&holder_key)?
-                .ok_or(ProviderLedgerError::Unavailable)?;
-            if let Some((_, _, _, expected_faulted, expected_retired, expected_cleared)) =
-                &post_records
-            {
-                if faulted != expected_faulted.as_slice()
-                    || retired != expected_retired.as_slice()
-                    || cleared != expected_cleared.as_slice()
-                {
-                    ledger.poison_runtime();
-                    return Err(ProviderLedgerError::ConfigurationMismatch);
-                }
-            }
-            let digests = NativeRecoveryTerminalDigestsV1 {
-                reservation: reservation_digest,
-                faulted_acquisition: record_digest(faulted)?,
-                retired_attempt: record_digest(retired)?,
-                cleared_session: record_digest(cleared)?,
-            };
-            ledger.journal.validate_source_provider_authority()?;
-            if settled {
-                ledger
+            let committed = post_records.is_some();
+            let outcome = (|| {
+                let faulted = ledger
                     .journal
-                    .validate_source_provider_authority_snapshot(&journal_snapshot)?;
+                    .get(&key)?
+                    .ok_or(ProviderLedgerError::Unavailable)?;
+                let retired = ledger
+                    .journal
+                    .get(&attempt_key)?
+                    .ok_or(ProviderLedgerError::Unavailable)?;
+                let cleared = ledger
+                    .journal
+                    .get(&holder_key)?
+                    .ok_or(ProviderLedgerError::Unavailable)?;
+                if let Some((_, _, _, expected_faulted, expected_retired, expected_cleared)) =
+                    &post_records
+                {
+                    if faulted != expected_faulted.as_slice()
+                        || retired != expected_retired.as_slice()
+                        || cleared != expected_cleared.as_slice()
+                    {
+                        return Err(ProviderLedgerError::ConfigurationMismatch);
+                    }
+                }
+                let digests = NativeRecoveryTerminalDigestsV1 {
+                    reservation: reservation_digest,
+                    faulted_acquisition: record_digest(faulted)?,
+                    retired_attempt: record_digest(retired)?,
+                    cleared_session: record_digest(cleared)?,
+                };
+                ledger.journal.validate_source_provider_authority()?;
+                if settled {
+                    ledger
+                        .journal
+                        .validate_source_provider_authority_snapshot(&journal_snapshot)?;
+                }
+                if let Some((faulted, retired, cleared, _, _, _)) = post_records {
+                    ledger
+                        .recovered
+                        .acquisitions
+                        .insert(acquisition_key_value, faulted);
+                    ledger.recovered.attempts.insert(attempt_key_value, retired);
+                    ledger
+                        .recovered
+                        .sessions
+                        .insert((expected_provider_id, expected_holder_id), cleared.clone());
+                    ledger.recovered.session_history.insert(
+                        (
+                            expected_provider_id,
+                            expected_holder_id,
+                            cleared.session_binding,
+                        ),
+                        cleared,
+                    );
+                }
+                Ok(NativeNoDispatchSettlementV1 {
+                    digests,
+                    query_digest,
+                    snapshot: ledger.journal.snapshot()?,
+                })
+            })();
+            if committed && outcome.is_err() {
+                ledger.poison_runtime();
             }
-            if let Some((faulted, retired, cleared, _, _, _)) = post_records {
-                ledger
-                    .recovered
-                    .acquisitions
-                    .insert(acquisition_key_value, faulted);
-                ledger.recovered.attempts.insert(attempt_key_value, retired);
-                ledger
-                    .recovered
-                    .sessions
-                    .insert((expected_provider_id, expected_holder_id), cleared.clone());
-                ledger.recovered.session_history.insert(
-                    (
-                        expected_provider_id,
-                        expected_holder_id,
-                        cleared.session_binding,
-                    ),
-                    cleared,
-                );
-            }
-            Ok(NativeNoDispatchSettlementV1 {
-                digests,
-                query_digest,
-                snapshot: ledger.journal.snapshot()?,
-            })
+            outcome
         })
     }
 }

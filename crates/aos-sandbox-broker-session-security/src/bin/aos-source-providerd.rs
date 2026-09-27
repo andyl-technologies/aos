@@ -100,19 +100,21 @@ fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
                         }
                         FixedProviderIngressProgressV1::CatalogReplied => {}
                         FixedProviderIngressProgressV1::Recovery(query) => {
-                            let (publication, manifest) =
-                                ingress.read_current_catalog_manifest()?;
                             let mut storage = ProductionSourceProviderStorageReadbackV1;
-                            let mut session = owner.backend_session_with_catalog(
-                                &mut storage,
-                                &publication,
-                                &manifest,
-                            );
-                            let answer = match session
-                                .settle_native_no_dispatch_recovery_for_query(&query)
-                            {
+                            // A retained no-dispatch cut needs no current row manifest.
+                            let native_settlement = owner
+                                .backend_session(&mut storage)
+                                .settle_native_no_dispatch_recovery_for_query(&query);
+                            let answer = match native_settlement {
                                 Ok(settlement) => RecoveryAnswerV1::Native(settlement),
                                 Err(ProviderLedgerError::Unavailable) => {
+                                    let (publication, manifest) =
+                                        ingress.read_current_catalog_manifest()?;
+                                    let mut session = owner.backend_session_with_catalog(
+                                        &mut storage,
+                                        &publication,
+                                        &manifest,
+                                    );
                                     RecoveryAnswerV1::LocalLive(
                                         session
                                             .inspect_selected_storage_recovery_for_query(&query)?,
@@ -120,7 +122,6 @@ fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
                                 }
                                 Err(error) => return Err(error.into()),
                             };
-                            drop(session);
 
                             match answer {
                                 RecoveryAnswerV1::Native(settlement) => {
