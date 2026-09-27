@@ -368,10 +368,12 @@ fn read_framed_reply<const REPLY: usize, const PACKET: usize>(
     let mut reply = [0; REPLY];
     stream.read_exact(&mut reply)?;
     let mut trailing = [0];
-    if &reply[..8] != magic || stream.read(&mut trailing)? != 0 {
+    if reply.get(..8) != Some(magic.as_slice()) || stream.read(&mut trailing)? != 0 {
         return Err(invalid_data("invalid Source signer reply"));
     }
-    reply[8..]
+    reply
+        .get(8..)
+        .ok_or_else(|| invalid_data("invalid Source signer packet length"))?
         .try_into()
         .map_err(|_| invalid_data("invalid Source signer packet length"))
 }
@@ -480,10 +482,7 @@ fn serve_request(
             credentials.generation(),
             &signing_key,
         )?;
-        let mut reply = [0; REPLY_PROJECT_BYTES];
-        reply[..8].copy_from_slice(REPLY_PROJECT_MAGIC);
-        reply[8..].copy_from_slice(&packet);
-        stream.write_all(&reply)?;
+        write_framed_reply::<REPLY_PROJECT_BYTES>(stream, REPLY_PROJECT_MAGIC, &packet)?;
     } else if mode == SourceSignerRequestModeV1::ProjectReservation {
         let packet = sign_fixed_source_project_reservation_readback_v1(
             controller_uid,
@@ -493,10 +492,7 @@ fn serve_request(
             credentials.generation(),
             &signing_key,
         )?;
-        let mut reply = [0; REPLY_RESERVATION_BYTES];
-        reply[..8].copy_from_slice(REPLY_RESERVATION_MAGIC);
-        reply[8..].copy_from_slice(&packet);
-        stream.write_all(&reply)?;
+        write_framed_reply::<REPLY_RESERVATION_BYTES>(stream, REPLY_RESERVATION_MAGIC, &packet)?;
     } else if mode == SourceSignerRequestModeV1::ProjectRetirement {
         let packet = sign_fixed_source_project_retirement_readback_v1(
             controller_uid,
@@ -505,10 +501,7 @@ fn serve_request(
             credentials.generation(),
             &signing_key,
         )?;
-        let mut reply = [0; REPLY_PROJECT_BYTES];
-        reply[..8].copy_from_slice(REPLY_RETIREMENT_MAGIC);
-        reply[8..].copy_from_slice(&packet);
-        stream.write_all(&reply)?;
+        write_framed_reply::<REPLY_PROJECT_BYTES>(stream, REPLY_RETIREMENT_MAGIC, &packet)?;
     } else if mode == SourceSignerRequestModeV1::HeldNames {
         let packet = sign_fixed_source_signer_readback_v2(
             controller_uid,
@@ -517,10 +510,7 @@ fn serve_request(
             credentials.generation(),
             &signing_key,
         )?;
-        let mut reply = [0; REPLY_NAMES_BYTES];
-        reply[..8].copy_from_slice(REPLY_NAMES_MAGIC);
-        reply[8..].copy_from_slice(&packet);
-        stream.write_all(&reply)?;
+        write_framed_reply::<REPLY_NAMES_BYTES>(stream, REPLY_NAMES_MAGIC, &packet)?;
     } else {
         let packet = sign_fixed_source_signer_readback_v1(
             controller_uid,
@@ -529,13 +519,25 @@ fn serve_request(
             credentials.generation(),
             &signing_key,
         )?;
-        let mut reply = [0; REPLY_BYTES];
-        reply[..8].copy_from_slice(REPLY_MAGIC);
-        reply[8..].copy_from_slice(&packet);
-        stream.write_all(&reply)?;
+        write_framed_reply::<REPLY_BYTES>(stream, REPLY_MAGIC, &packet)?;
     }
     stream.shutdown(std::net::Shutdown::Write)?;
     Ok(())
+}
+
+fn write_framed_reply<const REPLY: usize>(
+    stream: &mut UnixStream,
+    magic: &[u8; 8],
+    packet: &[u8],
+) -> io::Result<()> {
+    let mut reply = [0; REPLY];
+    let payload = reply
+        .get_mut(8..)
+        .filter(|payload| payload.len() == packet.len())
+        .ok_or_else(|| invalid_data("invalid Source signer reply length"))?;
+    payload.copy_from_slice(packet);
+    reply[..8].copy_from_slice(magic);
+    stream.write_all(&reply)
 }
 
 fn decode_request_mode(
@@ -584,7 +586,12 @@ mod tests {
         canonical[..8].copy_from_slice(REPLY_PROJECT_MAGIC);
         canonical[8..].fill(7);
         let (mut client, mut server) = UnixStream::pair().unwrap();
-        client.write_all(&canonical).unwrap();
+        write_framed_reply::<REPLY_PROJECT_BYTES>(
+            &mut client,
+            REPLY_PROJECT_MAGIC,
+            &[7; SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1],
+        )
+        .unwrap();
         client.shutdown(std::net::Shutdown::Write).unwrap();
         assert_eq!(
             read_project_reply(&mut server).unwrap(),
@@ -613,6 +620,14 @@ mod tests {
         let mut reservation = [0; REPLY_RESERVATION_BYTES];
         reservation[..8].copy_from_slice(REPLY_RESERVATION_MAGIC);
         let (mut client, mut server) = UnixStream::pair().unwrap();
+        assert!(
+            write_framed_reply::<REPLY_RESERVATION_BYTES>(
+                &mut client,
+                REPLY_RESERVATION_MAGIC,
+                &[0; 1],
+            )
+            .is_err()
+        );
         client.write_all(&reservation).unwrap();
         client.shutdown(std::net::Shutdown::Write).unwrap();
         assert!(
