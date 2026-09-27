@@ -319,26 +319,7 @@ pub(crate) fn recover_source_hierarchy_floor_v1(
         || checkpoint.predecessor_digest != expected_predecessor
         || !observed_cut.canonical()
         || checkpoint.cut != *observed_cut
-        || previous.is_some_and(|floor| {
-            floor.cut.project != checkpoint.cut.project
-                || floor.cut.deployment_epoch != checkpoint.cut.deployment_epoch
-                || floor.cut.authority_epoch >= checkpoint.cut.authority_epoch
-                || floor.cut.source_journal_sequence >= checkpoint.cut.source_journal_sequence
-                || floor.cut.controller_journal_sequence
-                    > checkpoint.cut.controller_journal_sequence
-                || (floor.cut.controller_journal_sequence
-                    == checkpoint.cut.controller_journal_sequence
-                    && floor.cut.controller_journal_head != checkpoint.cut.controller_journal_head)
-                || floor.cut.tree_generation > checkpoint.cut.tree_generation
-                || (floor.cut.tree_generation == checkpoint.cut.tree_generation
-                    && (floor.cut.tree_head != checkpoint.cut.tree_head
-                        || floor.cut.lineage_head != checkpoint.cut.lineage_head))
-                || floor.cut.publisher_generation > checkpoint.cut.publisher_generation
-                || floor.cut.seed_packet_digest != checkpoint.cut.seed_packet_digest
-                || floor.cut.seed_request_id != checkpoint.cut.seed_request_id
-                || floor.cut.seed_issuer_generation != checkpoint.cut.seed_issuer_generation
-                || floor.cut.seed_issuer_epoch != checkpoint.cut.seed_issuer_epoch
-        })
+        || previous.is_some_and(|floor| !continues_floor(&floor.cut, &checkpoint.cut))
     {
         return Err(SourceHierarchyFloorErrorV1::Ambiguous);
     }
@@ -353,6 +334,45 @@ pub(crate) fn recover_source_hierarchy_floor_v1(
         None if previous.is_none() => Ok(SourceHierarchyFloorRecoveryV1::PreparedUnanchored),
         _ => Err(SourceHierarchyFloorErrorV1::Ambiguous),
     }
+}
+
+fn continues_floor(previous: &SourceHierarchyFloorCutV1, next: &SourceHierarchyFloorCutV1) -> bool {
+    let same_controller_sequence =
+        previous.controller_journal_sequence == next.controller_journal_sequence;
+    let controller_head_consistent = if same_controller_sequence {
+        previous.controller_journal_head == next.controller_journal_head
+    } else {
+        previous.controller_journal_head != next.controller_journal_head
+    };
+    let controller_contiguous = previous.controller_journal_sequence
+        <= next.controller_journal_sequence
+        && controller_head_consistent;
+    let controller_projection_consistent = !same_controller_sequence
+        || (previous.publisher_generation == next.publisher_generation
+            && previous.publisher_head == next.publisher_head
+            && previous.project_authorization_head == next.project_authorization_head);
+
+    let tree_contiguous = previous.tree_generation <= next.tree_generation
+        && (previous.tree_generation != next.tree_generation
+            || (previous.tree_head == next.tree_head
+                && previous.lineage_head == next.lineage_head));
+    let publisher_contiguous = previous.publisher_generation <= next.publisher_generation
+        && (previous.publisher_generation != next.publisher_generation
+            || previous.publisher_head == next.publisher_head);
+
+    previous.project == next.project
+        && previous.deployment_epoch == next.deployment_epoch
+        && previous.authority_epoch < next.authority_epoch
+        && previous.source_journal_sequence < next.source_journal_sequence
+        && previous.source_journal_head != next.source_journal_head
+        && controller_contiguous
+        && controller_projection_consistent
+        && tree_contiguous
+        && publisher_contiguous
+        && previous.seed_packet_digest == next.seed_packet_digest
+        && previous.seed_request_id == next.seed_request_id
+        && previous.seed_issuer_generation == next.seed_issuer_generation
+        && previous.seed_issuer_epoch == next.seed_issuer_epoch
 }
 
 fn take<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Option<[u8; N]> {
@@ -453,6 +473,37 @@ mod tests {
     }
 
     #[test]
+    fn advanced_controller_and_source_cuts_remain_structural_only() {
+        let previous = SourceHierarchyFloorCheckpointV1::new(1, None, cut()).expect("first");
+        let mut advanced = previous.cut;
+        advanced.authority_epoch += 1;
+        advanced.source_journal_sequence += 1;
+        advanced.source_journal_head = digest(23);
+        advanced.controller_journal_sequence += 1;
+        advanced.controller_journal_head = digest(24);
+        advanced.tree_generation += 1;
+        advanced.tree_head = digest(25);
+        advanced.lineage_head = digest(26);
+        advanced.publisher_generation += 1;
+        advanced.publisher_head = digest(27);
+        advanced.project_authorization_head = digest(28);
+        let checkpoint =
+            SourceHierarchyFloorCheckpointV1::new(2, Some(previous.digest()), advanced)
+                .expect("successor");
+        let intent = PreparedSourceHierarchyFloorIntentV1::new(checkpoint);
+
+        assert_eq!(
+            recover_source_hierarchy_floor_v1(
+                Some(&previous),
+                Some(&intent),
+                Some(&checkpoint),
+                &advanced,
+            ),
+            Ok(SourceHierarchyFloorRecoveryV1::AnchoredStructurally)
+        );
+    }
+
+    #[test]
     fn rollback_fork_and_missing_intent_fail_closed() {
         let previous = SourceHierarchyFloorCheckpointV1::new(1, None, cut()).expect("first");
         let checkpoint = next(previous);
@@ -513,6 +564,12 @@ mod tests {
         let mut controller_fork = successor_cut;
         controller_fork.controller_journal_head = digest(24);
         candidates.push(controller_fork);
+        let mut unchanged_controller_head_after_advance = successor_cut;
+        unchanged_controller_head_after_advance.controller_journal_sequence += 1;
+        candidates.push(unchanged_controller_head_after_advance);
+        let mut unchanged_source_head_after_advance = successor_cut;
+        unchanged_source_head_after_advance.source_journal_head = prior_cut.source_journal_head;
+        candidates.push(unchanged_source_head_after_advance);
         let mut tree_regression = successor_cut;
         tree_regression.tree_generation -= 1;
         candidates.push(tree_regression);
@@ -522,6 +579,20 @@ mod tests {
         let mut publisher_regression = successor_cut;
         publisher_regression.publisher_generation -= 1;
         candidates.push(publisher_regression);
+        let mut publisher_changed_without_controller_advance = successor_cut;
+        publisher_changed_without_controller_advance.publisher_generation += 1;
+        candidates.push(publisher_changed_without_controller_advance);
+        let mut publisher_fork_without_controller_advance = successor_cut;
+        publisher_fork_without_controller_advance.publisher_head = digest(29);
+        candidates.push(publisher_fork_without_controller_advance);
+        let mut authorization_fork = successor_cut;
+        authorization_fork.project_authorization_head = digest(26);
+        candidates.push(authorization_fork);
+        let mut publisher_head_fork = successor_cut;
+        publisher_head_fork.controller_journal_sequence += 1;
+        publisher_head_fork.controller_journal_head = digest(27);
+        publisher_head_fork.publisher_head = digest(28);
+        candidates.push(publisher_head_fork);
 
         for candidate in candidates {
             let checkpoint =
