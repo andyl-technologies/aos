@@ -54,7 +54,19 @@
     scope =
       buildPackages
       // {
-        inherit mkDerivation fetchgit fetchurl lib stdenv buildPackages protobuf abseil-cpp zlib;
+        # Bootstrap helpers execute while building Bazel, so cross builds must
+        # construct their Java libraries and native tools for the build host.
+        inherit buildPackages fetchgit;
+        inherit
+          (buildPackages)
+          mkDerivation
+          fetchurl
+          lib
+          stdenv
+          protobuf
+          abseil-cpp
+          zlib
+          ;
       }
       // helperScope
       // aliases;
