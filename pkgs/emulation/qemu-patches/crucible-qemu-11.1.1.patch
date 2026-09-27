@@ -1,4 +1,4 @@
-From ea82c841a85f07021cab97915e03ce92cecad029 Mon Sep 17 00:00:00 2001
+From d938be44016e900ec9694db31203ecdeecfc7c6e Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -1877,7 +1877,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  
  uint8_t cpu_ldb_code_mmu(CPUArchState *env, vaddr addr,
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..a8ef798c17705744cf58a910241ba89956fb3d4f 100644
+index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3613b18511d3a58a745da71cdf862c53e6f34d3b 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -24,11 +24,15 @@
@@ -1952,7 +1952,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..a8ef798c17705744cf58a910241ba899
  static void icount_enable_precise(void)
  {
      /* Fixed conversion of insn to ns via "shift" option */
-@@ -76,6 +116,280 @@ static int64_t icount_get_executed(CPUState *cpu)
+@@ -76,6 +116,244 @@ static int64_t icount_get_executed(CPUState *cpu)
              (cpu->neg.icount_decr.u16.low + cpu->icount_extra));
  }
  
@@ -2194,46 +2194,10 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..a8ef798c17705744cf58a910241ba899
 +                                   quantum);
 +}
 +
-+void icount_crucible_rr_yield_cpu(CPUState *cpu)
-+{
-+    CPUState *next;
-+    uint64_t source_retired_delta;
-+
-+    if (!cpu || icount_crucible_rr_switch_quantum() == 0) {
-+        return;
-+    }
-+    if (!timers_state.crucible_rr_cursor_valid ||
-+        timers_state.crucible_rr_current_vcpu != cpu->cpu_index) {
-+        error_report("crucible RR yield owner mismatch: owner=%" PRIu64
-+                     " yielded-vcpu=%d",
-+                     timers_state.crucible_rr_current_vcpu, cpu->cpu_index);
-+        abort();
-+    }
-+
-+    /*
-+     * A guest PAUSE is an explicit deterministic scheduler yield.  Commit the
-+     * early handoff as canonical cursor state rather than retaining a partial
-+     * turn: retaining it lets a lock owner reacquire before a waiting vCPU can
-+     * run and can starve firmware or guest spin locks forever.
-+     */
-+    next = CPU_NEXT(cpu);
-+    if (!next) {
-+        next = first_cpu;
-+    }
-+    g_assert(next);
-+    source_retired_delta = timers_state.crucible_rr_cursor_position;
-+    timers_state.crucible_rr_current_vcpu = next->cpu_index;
-+    timers_state.crucible_rr_cursor_position = 0;
-+    timers_state.crucible_rr_selection_pending = true;
-+    qemu_plugin_fire_rr_handoff_cb(
-+        cpu->cpu_index, next->cpu_index,
-+        icount_crucible_rr_switch_quantum(), source_retired_delta);
-+}
-+
  /*
   * Update the global shared timer_state.qemu_icount to take into
   * account executed instructions. This is done by the TCG vCPU
-@@ -86,6 +400,9 @@ static void icount_update_locked(CPUState *cpu)
+@@ -86,6 +364,9 @@ static void icount_update_locked(CPUState *cpu)
      int64_t executed = icount_get_executed(cpu);
      cpu->icount_budget -= executed;
  
@@ -2243,7 +2207,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..a8ef798c17705744cf58a910241ba899
      qatomic_set(&timers_state.qemu_icount,
                  timers_state.qemu_icount + executed);
  }
-@@ -123,6 +440,17 @@ static int64_t icount_get_raw_locked(void)
+@@ -123,6 +404,17 @@ static int64_t icount_get_raw_locked(void)
  static int64_t icount_get_locked(void)
  {
      int64_t icount = icount_get_raw_locked();
@@ -2261,7 +2225,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..a8ef798c17705744cf58a910241ba899
      return qatomic_read(&timers_state.qemu_icount_bias) + icount_to_ns(icount);
  }
  
-@@ -139,6 +467,125 @@ int64_t icount_get_raw(void)
+@@ -139,6 +431,125 @@ int64_t icount_get_raw(void)
      return icount;
  }
  
@@ -2387,7 +2351,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..a8ef798c17705744cf58a910241ba899
  /* Return the virtual CPU time, based on the instruction counter.  */
  int64_t icount_get(void)
  {
-@@ -153,8 +600,100 @@ int64_t icount_get(void)
+@@ -153,8 +564,100 @@ int64_t icount_get(void)
      return icount;
  }
  
@@ -2488,7 +2452,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..a8ef798c17705744cf58a910241ba899
      return icount << qatomic_read(&timers_state.icount_time_shift);
  }
  
-@@ -224,6 +763,25 @@ static void icount_adjust_vm(void *opaque)
+@@ -224,6 +727,25 @@ static void icount_adjust_vm(void *opaque)
  
  int64_t icount_round(int64_t count)
  {
@@ -2514,7 +2478,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..a8ef798c17705744cf58a910241ba899
      int shift = qatomic_read(&timers_state.icount_time_shift);
      return (count + (1 << shift) - 1) >> shift;
  }
-@@ -331,6 +889,16 @@ void icount_start_warp_timer(void)
+@@ -331,6 +853,16 @@ void icount_start_warp_timer(void)
          }
      }
  
@@ -2531,7 +2495,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..a8ef798c17705744cf58a910241ba899
      /* We want to use the earliest deadline from ALL vm_clocks */
      clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT);
      deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
-@@ -421,15 +989,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -421,15 +953,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      bool sleep = qemu_opt_get_bool(opts, "sleep", true);
      bool align = qemu_opt_get_bool(opts, "align", false);
      long time_shift = -1;
@@ -2559,7 +2523,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..a8ef798c17705744cf58a910241ba899
      if (align && !sleep) {
          error_setg(errp, "align=on and sleep=off are incompatible");
          return false;
-@@ -450,6 +1030,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -450,6 +994,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      }
  
      icount_sleep = sleep;
@@ -3032,10 +2996,10 @@ index 0000000000000000000000000000000000000000..515e669a735cb8e10359564155bfb559
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..6ffc36b78bc3fad4f34d5ed4a25dadd964c809e9 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..7a6bc177fd83af0c77b669dd2da23a6fab5b02a9 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,1676 @@
+@@ -27,45 +27,1636 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -3672,6 +3636,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6ffc36b78bc3fad4f34d5ed4a25dadd9
 -    CPU_FOREACH(cpu) {
 -        tcg_kick_vcpu_thread(cpu);
 -    };
+-}
 +    if (rr_crucible_sim_mode() &&
 +        icount_crucible_rr_switch_quantum() != 0) {
 +        /*
@@ -4374,14 +4339,27 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6ffc36b78bc3fad4f34d5ed4a25dadd9
 +        bql_lock();
 +        acquired_replay = true;
 +    }
-+
+ 
+-/*
+- * TCG vCPU kick timer
+- *
+- * The kick timer is responsible for moving single threaded vCPU
+- * emulation on to the next vCPU. If more than one vCPU is running a
+- * timer event we force a cpu->exit so the next vCPU can get
+- * scheduled.
+- *
+- * The timer is removed if all vCPUs are idle and restarted again once
+- * idleness is complete.
+- */
 +    icount_account_warp_timer();
 +    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
 +    icount_handle_deadline();
 +    rr_crucible_sim_drain_pending_ipis();
 +    cpu_count = rr_cpu_count();
 +    *cpu_budget = icount_percpu_budget(cpu_count);
-+
+ 
+-static QEMUTimer *rr_kick_vcpu_timer;
+-static CPUState *rr_current_cpu;
 +    if (acquired_replay) {
 +        rr_replay_mutex_unlock();
 +    }
@@ -4402,41 +4380,26 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6ffc36b78bc3fad4f34d5ed4a25dadd9
 +    }
 +    rr_crucible_sim_wait_at_dispatch_ceiling();
 +    return true;
- }
++}
  
--/*
-- * TCG vCPU kick timer
-- *
-- * The kick timer is responsible for moving single threaded vCPU
-- * emulation on to the next vCPU. If more than one vCPU is running a
-- * timer event we force a cpu->exit so the next vCPU can get
-- * scheduled.
-- *
-- * The timer is removed if all vCPUs are idle and restarted again once
-- * idleness is complete.
-- */
+-static inline int64_t rr_next_kick_time(void)
 +static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
 +                                          int64_t *cpu_budget,
 +                                          bool *icount_retry,
 +                                          bool *completed_rr_quantum)
-+{
+ {
+-    return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
 +    unsigned int runs = 0;
 +    CPUState *cpu = *cpu_ptr;
- 
--static QEMUTimer *rr_kick_vcpu_timer;
--static CPUState *rr_current_cpu;
++
 +    while (true) {
-+        bool guest_pause_yield;
 +        bool retain_replay = rr_crucible_sim_quantum_dispatch_fence();
 +        int r;
 +        uint64_t dispatch_ceiling = UINT64_MAX;
 +        uint64_t service_before;
 +        uint64_t service_after;
 +        bool ready_marker_boundary_requested;
- 
--static inline int64_t rr_next_kick_time(void)
--{
--    return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
++
 +        if (rr_crucible_sim_mode() &&
 +            qemu_plugin_time_advance_is_pending()) {
 +            if (rr_crucible_sim_complete_wake_boundary()) {
@@ -4585,51 +4548,12 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6ffc36b78bc3fad4f34d5ed4a25dadd9
 +            }
 +        }
 +        r = tcg_cpu_exec(cpu);
-+        guest_pause_yield = cpu->crucible_guest_pause_yield;
-+        cpu->crucible_guest_pause_yield = false;
-+        if (guest_pause_yield && r != EXCP_INTERRUPT) {
-+            error_report("crucible guest PAUSE returned "
-+                         "unexpected exception %d", r);
-+            abort();
-+        }
 +        if (icount_enabled()) {
 +            if (retain_replay) {
 +                icount_process_data_replay_locked(cpu);
 +            } else {
 +                icount_process_data(cpu);
 +            }
-+        }
-+        if (rr_crucible_sim_mode() &&
-+            !rr_crucible_sim_single_vcpu() &&
-+            guest_pause_yield) {
-+            uint64_t owner;
-+            uint64_t cursor;
-+
-+            /*
-+             * Commit the helper-authenticated PAUSE transition before any
-+             * plugin callback, fault dispatch, vmstop, or preemption path can
-+             * return from this batch. Host work arriving at the same boundary
-+             * is serviced only after the guest-authored canonical handoff is
-+             * durable. A PAUSE that exactly exhausts the ordinary quantum has
-+             * already selected the next owner and must not hand off twice.
-+             */
-+            bql_lock();
-+            owner = icount_crucible_rr_current_vcpu();
-+            cursor = icount_crucible_rr_cursor_position();
-+            if (owner == cpu->cpu_index) {
-+                icount_crucible_rr_yield_cpu(cpu);
-+            } else if (cursor != 0) {
-+                error_report("crucible guest PAUSE owner mismatch: "
-+                             "owner=%" PRIu64 " yielded-vcpu=%d cursor=%" PRIu64,
-+                             owner, cpu->cpu_index, cursor);
-+                abort();
-+            }
-+            qemu_plugin_crucible_guest_pause_handoff_complete();
-+            bql_unlock();
-+        } else if (qemu_plugin_crucible_guest_pause_handoff_pending()) {
-+            error_report("Crucible guest PAUSE handoff fence lacked a "
-+                         "multi-vCPU sim marker");
-+            abort();
 +        }
 +        bql_lock();
 +        /* Serialized RR translation never carries CF_PARALLEL. */
@@ -4731,7 +4655,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6ffc36b78bc3fad4f34d5ed4a25dadd9
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +1715,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +1675,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -4764,7 +4688,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6ffc36b78bc3fad4f34d5ed4a25dadd9
      }
  }
  
-@@ -110,15 +1753,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +1713,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -4898,7 +4822,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6ffc36b78bc3fad4f34d5ed4a25dadd9
      }
  }
  
-@@ -140,6 +1899,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +1859,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -4917,7 +4841,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6ffc36b78bc3fad4f34d5ed4a25dadd9
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +1955,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +1915,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -4926,7 +4850,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6ffc36b78bc3fad4f34d5ed4a25dadd9
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -207,38 +1980,193 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -207,38 +1940,193 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_process_cpu_events_common(cpu);
          }
      }
@@ -5137,7 +5061,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6ffc36b78bc3fad4f34d5ed4a25dadd9
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2182,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2142,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -5170,7 +5094,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6ffc36b78bc3fad4f34d5ed4a25dadd9
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2224,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2184,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -5309,7 +5233,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6ffc36b78bc3fad4f34d5ed4a25dadd9
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2348,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2308,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -5449,7 +5373,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6ffc36b78bc3fad4f34d5ed4a25dadd9
      }
  
      g_assert_not_reached();
-@@ -318,13 +2487,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2447,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -21705,7 +21629,7 @@ index 5516eb262d70dca89e1f42a6868531dfa900930c..129d39c67aae057711eef24ac56ef941
          VMSTATE_STRUCT(parent_obj, PS2MouseState, 0, vmstate_ps2_common,
                         PS2State),
 diff --git a/hw/intc/apic.c b/hw/intc/apic.c
-index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e2b7d7141 100644
+index 74e25c60a80c7d0eb536e9d9882d0240dda10756..cd416e70591f8377c19782c707f928f436941413 100644
 --- a/hw/intc/apic.c
 +++ b/hw/intc/apic.c
 @@ -26,9 +26,15 @@
@@ -21860,7 +21784,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
      }
  }
  
-@@ -226,11 +325,156 @@ static void apic_external_nmi(APICCommonState *s)
+@@ -226,11 +325,158 @@ static void apic_external_nmi(APICCommonState *s)
      }\
  }
  
@@ -21911,6 +21835,8 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
 +    event->routing_generation =
 +        qemu_crucible_fault_interrupt_current_routing_generation();
 +    g_queue_push_tail(&crucible_sim_det_ipi_queue, event);
++    /* Drain at the next TB boundary before the source retires another TB. */
++    cpu_exit(src_cpu);
 +    return true;
 +}
 +
@@ -22018,7 +21944,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
  
      switch (delivery_mode) {
          case APIC_DM_LOWPRI:
-@@ -246,46 +490,73 @@ static void apic_bus_deliver(const uint32_t *deliver_bitmask,
+@@ -246,46 +492,73 @@ static void apic_bus_deliver(const uint32_t *deliver_bitmask,
                  }
                  if (d >= 0) {
                      apic_iter = local_apics[d];
@@ -22104,7 +22030,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
  }
  
  static void apic_deliver_irq(uint32_t dest, uint8_t dest_mode,
-@@ -298,7 +569,8 @@ static void apic_deliver_irq(uint32_t dest, uint8_t dest_mode,
+@@ -298,7 +571,8 @@ static void apic_deliver_irq(uint32_t dest, uint8_t dest_mode,
                             trigger_mode);
  
      apic_get_delivery_bitmask(deliver_bitmask, dest, dest_mode);
@@ -22114,7 +22040,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
  }
  
  bool is_x2apic_mode(APICCommonState *s)
-@@ -470,11 +742,24 @@ void apic_poll_irq(APICCommonState *s)
+@@ -470,11 +744,24 @@ void apic_poll_irq(APICCommonState *s)
      apic_update_irq(s);
  }
  
@@ -22141,7 +22067,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
      if (trigger_mode)
          apic_set_bit(s->tmr, vector_num);
      else
-@@ -492,6 +777,112 @@ static void apic_set_irq(APICCommonState *s, int vector_num, int trigger_mode)
+@@ -492,6 +779,112 @@ static void apic_set_irq(APICCommonState *s, int vector_num, int trigger_mode)
      apic_update_irq(s);
  }
  
@@ -22254,7 +22180,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
  static void apic_eoi(APICCommonState *s)
  {
      int isrv;
-@@ -688,11 +1079,17 @@ static void apic_deliver(APICCommonState *s, uint32_t dest, uint8_t dest_mode,
+@@ -688,11 +1081,17 @@ static void apic_deliver(APICCommonState *s, uint32_t dest, uint8_t dest_mode,
  
          case APIC_DM_SIPI:
              foreach_apic(apic_iter, deliver_bitmask,
@@ -22274,7 +22200,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
  }
  
  static bool apic_check_pic(APICCommonState *s)
-@@ -706,7 +1103,9 @@ static bool apic_check_pic(APICCommonState *s)
+@@ -706,7 +1105,9 @@ static bool apic_check_pic(APICCommonState *s)
  
  int apic_get_interrupt(APICCommonState *s)
  {
@@ -22284,7 +22210,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
  
      /* if the APIC is installed or enabled, we let the 8259 handle the
         IRQs */
-@@ -728,11 +1127,94 @@ int apic_get_interrupt(APICCommonState *s)
+@@ -728,11 +1129,94 @@ int apic_get_interrupt(APICCommonState *s)
          apic_sync_vapic(s, SYNC_TO_VAPIC);
          return s->spurious_vec & 0xff;
      }
@@ -22380,7 +22306,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
  
      return intno;
  }
-@@ -753,21 +1235,163 @@ int apic_accept_pic_intr(APICCommonState *s)
+@@ -753,21 +1237,163 @@ int apic_accept_pic_intr(APICCommonState *s)
      return 0;
  }
  
@@ -22548,7 +22474,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
  }
  
  static int apic_register_read(APICCommonState *s, int index, uint64_t *value)
-@@ -1007,7 +1631,7 @@ static int apic_register_write(APICCommonState *s, int index, uint64_t val)
+@@ -1007,7 +1633,7 @@ static int apic_register_write(APICCommonState *s, int index, uint64_t val)
              int n = index - 0x32;
              s->lvt[n] = val;
              if (n == APIC_LVT_TIMER) {
@@ -22557,7 +22483,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
              } else if (n == APIC_LVT_LINT0 && apic_check_pic(s)) {
                  apic_update_irq(s);
              }
-@@ -1015,8 +1639,21 @@ static int apic_register_write(APICCommonState *s, int index, uint64_t val)
+@@ -1015,8 +1641,21 @@ static int apic_register_write(APICCommonState *s, int index, uint64_t val)
          break;
      case 0x38:
          s->initial_count = val;
@@ -22581,7 +22507,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
          break;
      case 0x39:
          break;
-@@ -1103,11 +1740,14 @@ static void apic_pre_save(APICCommonState *s)
+@@ -1103,11 +1742,14 @@ static void apic_pre_save(APICCommonState *s)
  
  static void apic_post_load(APICCommonState *s)
  {
@@ -22601,7 +22527,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
  }
  
  static const MemoryRegionOps apic_io_ops = {
-@@ -1123,6 +1763,11 @@ static const MemoryRegionOps apic_io_ops = {
+@@ -1123,6 +1765,11 @@ static const MemoryRegionOps apic_io_ops = {
  static void apic_realize(DeviceState *dev, Error **errp)
  {
      APICCommonState *s = APIC(dev);
@@ -22613,7 +22539,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
  
      if (kvm_enabled()) {
          warn_report("Userspace local APIC is deprecated for KVM.");
-@@ -1140,6 +1785,38 @@ static void apic_realize(DeviceState *dev, Error **errp)
+@@ -1140,6 +1787,38 @@ static void apic_realize(DeviceState *dev, Error **errp)
      s->io_memory.disable_reentrancy_guard = true;
  
      s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, apic_timer, s);
@@ -22652,7 +22578,7 @@ index 74e25c60a80c7d0eb536e9d9882d0240dda10756..c88e0a76ac5965fa9ea68caec8df1c8e
  
      /*
       * The --machine none does not call apic_set_max_apic_id before creating
-@@ -1151,6 +1828,70 @@ static void apic_realize(DeviceState *dev, Error **errp)
+@@ -1151,6 +1830,70 @@ static void apic_realize(DeviceState *dev, Error **errp)
      }
      local_apics[s->initial_apic_id] = s;
  
@@ -50919,7 +50845,7 @@ index d6d13ad37f978ea8dcf816b66d06f3bf9645ffd7..8bc71b897f77ecbe385f3ea65e12fd83
                           TYPE_CHARDEV_SOCKET)
  
 diff --git a/include/exec/icount.h b/include/exec/icount.h
-index 7a26b40084dbf8c14560607f3350b89b49fa41bd..90fdf135114d46acb35b4e78bb582f4ec692ca13 100644
+index 7a26b40084dbf8c14560607f3350b89b49fa41bd..a324aa5e15938e7d0681ac1c27040113043e19cf 100644
 --- a/include/exec/icount.h
 +++ b/include/exec/icount.h
 @@ -46,8 +46,39 @@ void icount_update(CPUState *cpu);
@@ -50962,7 +50888,7 @@ index 7a26b40084dbf8c14560607f3350b89b49fa41bd..90fdf135114d46acb35b4e78bb582f4e
  /*
   * convert an instruction counter value to ns, based on the icount shift.
   * This shift is set as a fixed value with the icount "shift" option
-@@ -68,6 +99,18 @@ bool icount_configure(QemuOpts *opts, Error **errp);
+@@ -68,6 +99,17 @@ bool icount_configure(QemuOpts *opts, Error **errp);
  /* used by tcg vcpu thread to calc icount budget */
  int64_t icount_round(int64_t count);
  
@@ -50976,7 +50902,6 @@ index 7a26b40084dbf8c14560607f3350b89b49fa41bd..90fdf135114d46acb35b4e78bb582f4e
 +CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
 +bool icount_crucible_rr_commanded_switch(uint32_t from_vcpu,
 +                                         uint32_t to_vcpu);
-+void icount_crucible_rr_yield_cpu(CPUState *cpu);
 +
  /* if the CPUs are idle, start accounting real time to virtual clock. */
  void icount_start_warp_timer(void);
@@ -51506,7 +51431,7 @@ index 5f3b1327de0aa287c1859bf155a47c8815ebb08d..b726a4cbd5f2dae44f78ecbaefc4a92a
  
  SiFiveUARTState *sifive_uart_create(MemoryRegion *address_space, hwaddr base,
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index b54035fb13b22a530692186b0afbe2718f1fb8b8..0c9d14c915d0bd6b3b93e7ca79b3303779a5e9a5 100644
+index b54035fb13b22a530692186b0afbe2718f1fb8b8..f4301baa533cdf54c8d33a00028bca055d6c416a 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -63,6 +63,7 @@ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
@@ -51584,7 +51509,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..0c9d14c915d0bd6b3b93e7ca79b33037
      const char *gdb_core_xml_file;
      const char * (*gdb_arch_name)(CPUState *cpu);
      const char * (*gdb_get_core_xml_file)(CPUState *cpu);
-@@ -442,6 +489,16 @@ struct qemu_work_item;
+@@ -442,6 +489,14 @@ struct qemu_work_item;
   * @crash_occurred: Indicates the OS reported a crash (panic) for this CPU
   * @singlestep_flags: Flags for single-stepping.
   * @icount_extra: Instructions until next timer event.
@@ -51596,12 +51521,10 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..0c9d14c915d0bd6b3b93e7ca79b33037
 + *   translation for application before the generated TB executes.
 + * @crucible_fetch_transaction: Opaque fetch transaction staged until TB
 + *   generation succeeds or is discarded.
-+ * @crucible_guest_pause_yield: Transient x86 PAUSE marker consumed immediately
-+ *   after TCG returns to the serialized RR loop.
   * @cpu_ases: Pointer to array of CPUAddressSpaces (which define the
   *            AddressSpaces this CPU has)
   * @as: Pointer to the first AddressSpace, for the convenience of targets which
-@@ -508,6 +565,18 @@ struct CPUState {
+@@ -508,6 +563,17 @@ struct CPUState {
      unsigned singlestep_flags;
      int64_t icount_budget;
      int64_t icount_extra;
@@ -51616,11 +51539,10 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..0c9d14c915d0bd6b3b93e7ca79b33037
 +    uint64_t crucible_page_table_walk_instruction_pc;
 +    uint64_t crucible_register_before_icount;
 +    bool crucible_register_instruction_active;
-+    bool crucible_guest_pause_yield;
      uint64_t random_seed;
      sigjmp_buf jmp_env;
  
-@@ -738,6 +807,138 @@ enum CPUDumpFlags {
+@@ -738,6 +804,138 @@ enum CPUDumpFlags {
   */
  void cpu_dump_state(CPUState *cpu, FILE *f, int flags);
  
@@ -57182,7 +57104,7 @@ index 8c1241a2c11c289bc3c69fff66ab67d06e9f257c..0c821e747558eabaeb83af16c23b3c0f
  
  #endif
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..4c96078b1cc11292a6a1723a48298902beca18b4 100644
+index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..a0805448e2ae85f2467e7bc282f74272194060ac 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -9,6 +9,7 @@
@@ -57205,7 +57127,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..4c96078b1cc11292a6a1723a48298902
  /*
   * Construct a qemu_plugin_meminfo_t.
   */
-@@ -183,6 +189,84 @@ void qemu_plugin_flush_cb(void);
+@@ -183,6 +189,80 @@ void qemu_plugin_flush_cb(void);
  
  void qemu_plugin_atexit_cb(void);
  
@@ -57235,10 +57157,6 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..4c96078b1cc11292a6a1723a48298902
 +                                    unsigned int to_vcpu,
 +                                    uint64_t rr_switch_quantum,
 +                                    uint64_t source_retired_delta);
-+
-+void qemu_plugin_crucible_guest_pause_handoff_begin(void);
-+bool qemu_plugin_crucible_guest_pause_handoff_pending(void);
-+void qemu_plugin_crucible_guest_pause_handoff_complete(void);
 +
 +void qemu_plugin_crucible_exact_boundary_enter(void);
 +void qemu_plugin_crucible_exact_boundary_leave(void);
@@ -57290,7 +57208,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..4c96078b1cc11292a6a1723a48298902
  void qemu_plugin_add_dyn_cb_arr(GArray *arr);
  
  static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
-@@ -237,6 +321,11 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
+@@ -237,6 +317,11 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
  static inline void qemu_plugin_add_opts(void)
  { }
  
@@ -57302,7 +57220,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..4c96078b1cc11292a6a1723a48298902
  static inline void qemu_plugin_opt_parse(const char *optstr,
                                           QemuPluginList *head)
  {
-@@ -306,6 +395,126 @@ static inline void qemu_plugin_flush_cb(void)
+@@ -306,6 +391,126 @@ static inline void qemu_plugin_flush_cb(void)
  static inline void qemu_plugin_atexit_cb(void)
  { }
  
@@ -69348,7 +69266,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..d7a051534bd211c84e25d6b7fe42e62ca3ba23d3 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..21564ecbc6e746c9454c89348b26a7cfd8c28914 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,39 @@
@@ -69391,7 +69309,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..d7a051534bd211c84e25d6b7fe42e62c
  
  /*
   * In system mode we cannot trace the binary being executed so the
-@@ -101,14 +128,923 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
+@@ -101,14 +128,886 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
   */
  static bool has_control;
  static Error *migration_blocker;
@@ -70259,43 +70177,6 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..d7a051534bd211c84e25d6b7fe42e62c
 +static uint64_t qemu_plugin_rr_control_ack_generation;
 +static uint64_t qemu_plugin_rr_control_complete_generation;
 +static uintptr_t qemu_plugin_rr_control_schedule_token;
-+/*
-+ * 0: no handoff; 1: the RR writer owes the handoff; 2: the control BH owns
-+ * the deferral; 3: the BH relinquished its scheduling token.
-+ */
-+static int qemu_plugin_crucible_guest_pause_handoff;
-+
-+void qemu_plugin_crucible_guest_pause_handoff_begin(void)
-+{
-+    if (qatomic_cmpxchg(&qemu_plugin_crucible_guest_pause_handoff, 0, 1) != 0) {
-+        error_report("Crucible guest PAUSE handoff already pending");
-+        abort();
-+    }
-+}
-+
-+bool qemu_plugin_crucible_guest_pause_handoff_pending(void)
-+{
-+    return qatomic_load_acquire(
-+        &qemu_plugin_crucible_guest_pause_handoff) != 0;
-+}
-+
-+void qemu_plugin_crucible_guest_pause_handoff_complete(void)
-+{
-+    int state;
-+
-+    state = qatomic_cmpxchg(&qemu_plugin_crucible_guest_pause_handoff, 1, 0);
-+    if (state == 1) {
-+        return;
-+    }
-+    if (state == 3 &&
-+        qatomic_cmpxchg(&qemu_plugin_crucible_guest_pause_handoff, 3, 0) == 3) {
-+        qemu_plugin_schedule_control_boundary();
-+        return;
-+    }
-+
-+    error_report("Crucible guest PAUSE handoff completion had state %d", state);
-+    abort();
-+}
 +
 +bool qemu_plugin_has_time_control(void)
 +{
@@ -70318,7 +70199,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..d7a051534bd211c84e25d6b7fe42e62c
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1059,1528 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1022,1503 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -70586,30 +70467,6 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..d7a051534bd211c84e25d6b7fe42e62c
 +        g_assert(qatomic_load_acquire(
 +            &qemu_plugin_rr_control_schedule_token) != schedule_token);
 +        /* Let the settled RR thread claim a fresh epoch before the sole C. */
-+        qemu_plugin_release_control_boundary_schedule(schedule_token);
-+        return;
-+    }
-+
-+    /*
-+     * The x86 PAUSE helper publishes this fence before leaving translated
-+     * execution. The serialized RR writer clears it only after committing the
-+     * early owner/cursor handoff under the BQL. Relinquish this BH's token so
-+     * it cannot acknowledge or snapshot the preceding partial owner while the
-+     * RR thread is waiting to acquire the BQL; handoff completion schedules a
-+     * fresh two-pass boundary.
-+     */
-+    if (qatomic_cmpxchg(&qemu_plugin_crucible_guest_pause_handoff, 1, 2) == 1) {
-+        qemu_plugin_release_control_boundary_schedule(schedule_token);
-+        qatomic_store_release(&qemu_plugin_crucible_guest_pause_handoff, 3);
-+        return;
-+    }
-+    if (qemu_plugin_crucible_guest_pause_handoff_pending()) {
-+        /*
-+         * Another control request can acquire the scheduling token after the
-+         * first colliding BH relinquishes it but before the RR writer acquires
-+         * the BQL. Leave the deferred state intact and relinquish that token as
-+         * well; handoff completion schedules the one post-commit boundary.
-+         */
 +        qemu_plugin_release_control_boundary_schedule(schedule_token);
 +        return;
 +    }
@@ -71359,7 +71216,6 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..d7a051534bd211c84e25d6b7fe42e62c
 +
 +    smp_mb_acquire();
 +    if (!runstate_is_running() ||
-+        qemu_plugin_crucible_guest_pause_handoff_pending() ||
 +        qemu_plugin_crucible_vmstop_pending() ||
 +        qemu_plugin_crucible_vmstop_admission_pending()) {
 +        can_wait = false;
@@ -125048,6 +124904,24 @@ index b4fbf8a53746e13c1c5490bdd0205cbb4c524f2d..795d516ae1a36ae88dbd2c2663dd9281
    'machine.c',
    'monitor.c',
    'cpu-apic.c',
+diff --git a/target/i386/tcg/emit.c.inc b/target/i386/tcg/emit.c.inc
+index 473f415766f93cefbed48d0f556526efb5714370..45a796f9953eb2bea3afcbb9da16fab6bd36e060 100644
+--- a/target/i386/tcg/emit.c.inc
++++ b/target/i386/tcg/emit.c.inc
+@@ -2808,6 +2808,13 @@ static void gen_PANDN(DisasContext *s, X86DecodedInsn *decode)
+ 
+ static void gen_PAUSE(DisasContext *s, X86DecodedInsn *decode)
+ {
++#ifndef CONFIG_USER_ONLY
++    if (icount_crucible_sim_mode()) {
++        /* Sim's exact icount budget and RR quantum bound this hint. */
++        return;
++    }
++#endif
++
+     gen_update_cc_op(s);
+     gen_update_eip_next(s);
+     gen_helper_pause(tcg_env);
 diff --git a/target/i386/tcg/fpu_helper.c b/target/i386/tcg/fpu_helper.c
 index b812125efa17c18ef31b3e4fe81cd34d27a37444..08bd8930aa6f6e2fcf09da5f6d24224ad985ebf7 100644
 --- a/target/i386/tcg/fpu_helper.c
@@ -125086,10 +124960,10 @@ index b812125efa17c18ef31b3e4fe81cd34d27a37444..08bd8930aa6f6e2fcf09da5f6d24224a
  
  void helper_update_mxcsr(CPUX86State *env)
 diff --git a/target/i386/tcg/misc_helper.c b/target/i386/tcg/misc_helper.c
-index f7342871ded72b73b6998ac506651890aeeefc0e..375cfba42808150c992004d876283992ef178718 100644
+index f7342871ded72b73b6998ac506651890aeeefc0e..44378d6cc38b0c7550be4f962ac51c496c6ebd37 100644
 --- a/target/i386/tcg/misc_helper.c
 +++ b/target/i386/tcg/misc_helper.c
-@@ -18,8 +18,11 @@
+@@ -18,6 +18,8 @@
   */
  
  #include "qemu/osdep.h"
@@ -125097,11 +124971,8 @@ index f7342871ded72b73b6998ac506651890aeeefc0e..375cfba42808150c992004d876283992
 +#include "qemu/error-report.h"
  #include "qemu/log.h"
  #include "accel/tcg/cpu-loop.h"
-+#include "qemu/plugin.h"
  #include "cpu.h"
- #include "exec/helper-proto.h"
- #include "exec/cputlb.h"
-@@ -72,6 +75,25 @@ void helper_rdtsc(CPUX86State *env)
+@@ -72,6 +74,25 @@ void helper_rdtsc(CPUX86State *env)
      cpu_svm_check_intercept_param(env, SVM_EXIT_RDTSC, 0, GETPC());
  
      val = cpu_get_tsc(env) + env->tsc_offset;
@@ -125126,18 +124997,6 @@ index f7342871ded72b73b6998ac506651890aeeefc0e..375cfba42808150c992004d876283992
 +    }
      env->regs[R_EAX] = (uint32_t)(val);
      env->regs[R_EDX] = (uint32_t)(val >> 32);
- }
-@@ -98,6 +120,11 @@ G_NORETURN void helper_pause(CPUX86State *env)
-     helper_rechecking_single_step(env);
- 
-     /* Just let another CPU run.  */
-+    cs->crucible_guest_pause_yield = true;
-+    if (qemu_plugin_crucible_single_threaded_rr() &&
-+        qemu_plugin_num_vcpus() > 1) {
-+        qemu_plugin_crucible_guest_pause_handoff_begin();
-+    }
-     cs->exception_index = EXCP_INTERRUPT;
-     cpu_loop_exit(cs);
  }
 diff --git a/target/i386/tcg/seg_helper.c b/target/i386/tcg/seg_helper.c
 index 6d424349a58a388483b2dcbf9d2a9691999d580e..39a3ef90527e739d4b75d9ac1a04c56bdb4c6bd1 100644
@@ -126054,10 +125913,18 @@ index 8d45579ada253388acfe98316153f26bee59cb9b..7d74404d9f3b1f8562182d68bf6c1004
  {
  }
 diff --git a/target/i386/tcg/translate.c b/target/i386/tcg/translate.c
-index 2115c5cd24ba4b07ad7588c2413095dc37d15dc0..b06a8910790cc4b6c135e0838f5088c99c383d33 100644
+index 2115c5cd24ba4b07ad7588c2413095dc37d15dc0..d3b79de6aa2225fe09bad640a43c75e2100a80d6 100644
 --- a/target/i386/tcg/translate.c
 +++ b/target/i386/tcg/translate.c
-@@ -3585,6 +3585,9 @@ static void i386_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
+@@ -25,6 +25,7 @@
+ #include "tcg/tcg-op.h"
+ #include "tcg/tcg-op-gvec.h"
+ #include "exec/translator.h"
++#include "exec/icount.h"
+ #include "exec/target_page.h"
+ #include "fpu/softfloat.h"
+ 
+@@ -3585,6 +3586,9 @@ static void i386_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
          break;
      case DISAS_TOO_MANY:
          gen_update_cc_op(dc);
