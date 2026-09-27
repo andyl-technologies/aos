@@ -1,12 +1,13 @@
 ##! perl-readonly — Read-only Perl values
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
 }: let
   version = "2.05";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-readonly";
     inherit version;
     src = fetchurl {

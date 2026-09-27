@@ -1,12 +1,13 @@
 ##! perl-uri — Uniform resource identifier support for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
 }: let
   version = "5.21";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-uri";
     inherit version;
     src = fetchurl {

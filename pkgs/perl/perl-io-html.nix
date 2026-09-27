@@ -1,12 +1,13 @@
 ##! perl-io-html — HTML input with automatic encoding detection for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
 }: let
   version = "1.004";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-io-html";
     inherit version;
     src = fetchurl {

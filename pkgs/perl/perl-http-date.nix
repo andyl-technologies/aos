@@ -1,13 +1,14 @@
 ##! perl-http-date — HTTP date conversion for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
   perl-timedate,
 }: let
   version = "6.06";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-http-date";
     inherit version;
     src = fetchurl {
