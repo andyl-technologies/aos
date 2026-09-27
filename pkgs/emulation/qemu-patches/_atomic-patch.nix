@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "417a231652abd8fa913396742294d9addce02b8e605004d4ef741ad2721d51a7";
+  sha256 = "98f86f3377c6d570034cdf5b78e72f1bac50d6385b54909a2926fba7769562ea";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -49,9 +49,13 @@
     "Commit the in-flight CPU retirement prefix before anchoring an idle"
     "picosecond bias. Keep an opt-in idle-stage and prefix trace so"
     "the exact boundary can be checked without changing replay state."
+    ""
+    "Represent Linux eventfd-id zero with a nonzero one-based token through"
+    "the versioned hot-fork contracts, and reject token overflow. Exercise"
+    "zero, positive, and overflowing identities in a QEMU unit test."
   ];
-  commit = "a72372832041751bea042467283f73570f17a890";
-  tree = "20a65c3a225a6f18a34700887c01db7783c03de1";
+  commit = "c2118bfe2e54a0903c697b128367091792c37648";
+  tree = "e0ab2a42ade117f4999102efb76eabe3a74cf437";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -60,7 +64,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "adf7be00ff6716d714fd8ee01fab90e4311b63ea9c3c320430a47d3b4e97c7e3";
+  bundleSha256 = "d79aba728d01ccc4ee1f11bfe23c20f361b9e6b711711eddd856eaf783ebdf34";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
