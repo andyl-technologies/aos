@@ -3,6 +3,102 @@
 use super::*;
 use crucible_cas::content_store::ObjectKind;
 
+pub(super) fn campaign_measurements(
+    pending: &QemuFreshPendingObservation,
+    configuration: crucible_campaign::ConfigurationId,
+) -> Result<crate::CrucibleMeasurementPublication, QemuFreshModeledDriverError> {
+    let definitions = pending.input.scenario().measurements();
+    let mut node_icounts = BTreeMap::new();
+    for entry in &pending.event_log {
+        if let (Some(node), Some(retired)) = (&entry.time().stamp.node, entry.time().stamp.retired)
+        {
+            node_icounts
+                .entry(node.clone())
+                .and_modify(|value: &mut crucible::Icount| {
+                    *value = (*value).max(retired);
+                })
+                .or_insert(retired);
+        }
+    }
+    let terminal = MeasurementTerminalState {
+        scenario_ready_at: pending
+            .event_log
+            .iter()
+            .find(|entry| entry.event_payload().kind() == "scenario_ready")
+            .map(SchedulerEventLogEntry::at),
+        at: pending
+            .event_log
+            .last()
+            .map_or(pending.terminal_at, |entry| {
+                pending.terminal_at.max(entry.at())
+            }),
+        node_icounts,
+        scheduler_quiescent: pending
+            .terminal_quiescence
+            .as_ref()
+            .is_some_and(SchedulerQuiescence::is_quiescent),
+    };
+    let publication = match &pending.stop {
+        ModeledStop::ObservationReached { evidence, .. } => {
+            evaluate_crucible_observation_measurement_publication(
+                pending.input.lineage().scenario(),
+                configuration,
+                definitions,
+                pending.event_log.clone(),
+                terminal,
+                *evidence,
+                MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+            )
+        }
+        _ => evaluate_crucible_measurement_publication(
+            pending.input.lineage().scenario(),
+            configuration,
+            definitions,
+            pending.event_log.clone(),
+            terminal,
+            MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+        ),
+    };
+    publication.map_err(QemuFreshModeledDriverError::Measurements)
+}
+
+pub(super) fn property_verdicts(
+    report: &crucible::HostAssertionReport,
+    supplemental: Option<&(GuardedCampaignFindingOracleEvaluation, ContentId)>,
+) -> Result<PropertyVerdictSet, QemuFreshModeledDriverError> {
+    let mut properties = BTreeMap::new();
+    for outcome in report.outcomes() {
+        let verdict = match outcome.kind {
+            HostAssertionOutcomeKind::Passed | HostAssertionOutcomeKind::Satisfied => {
+                PropertyVerdict::Passed
+            }
+            HostAssertionOutcomeKind::Violated | HostAssertionOutcomeKind::NeverReachedFail => {
+                PropertyVerdict::Failed
+            }
+            HostAssertionOutcomeKind::Warning
+            | HostAssertionOutcomeKind::NeverEvaluated
+            | HostAssertionOutcomeKind::NeverTriggered
+            | HostAssertionOutcomeKind::NeverReachedWarn => PropertyVerdict::Inconclusive,
+        };
+        let evidence = PropertyEvidence::new(verdict, BTreeSet::new())?;
+        if properties
+            .insert(outcome.assertion.name.clone(), evidence)
+            .is_some()
+        {
+            return Err(QemuFreshModeledDriverError::LimitExceeded {
+                limit: "fresh-campaign-duplicate-property-outcome",
+            });
+        }
+    }
+    if let Some((evaluation, source)) = supplemental {
+        properties.insert(
+            evaluation.property().to_owned(),
+            PropertyEvidence::new(PropertyVerdict::Failed, BTreeSet::from([*source]))?,
+        );
+    }
+    PropertyVerdictSet::new(properties).map_err(Into::into)
+}
+
 pub(super) fn build_observation_candidate(
     pending: QemuFreshPendingObservation,
     resolved_effect_trace: Option<Vec<u8>>,

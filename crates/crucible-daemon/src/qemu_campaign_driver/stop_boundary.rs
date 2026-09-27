@@ -2,6 +2,35 @@
 
 use super::*;
 
+pub(super) fn requested_attempt_stop_frontier(requested: &StopCondition) -> Option<VirtualTime> {
+    match requested {
+        StopCondition::Bounded {
+            primary,
+            virtual_time_picoseconds,
+            ..
+        } => requested_attempt_stop_frontier(primary)
+            .map(|frontier| frontier.ticks)
+            .into_iter()
+            .chain(*virtual_time_picoseconds)
+            .min()
+            .map(|ticks| VirtualTime { ticks }),
+        StopCondition::VirtualTimePicoseconds(deadline) => Some(VirtualTime { ticks: *deadline }),
+        StopCondition::VirtualTimeOrExecutionQuanta {
+            virtual_time_picoseconds,
+            ..
+        } => Some(VirtualTime {
+            ticks: *virtual_time_picoseconds,
+        }),
+        StopCondition::NextChoice
+        | StopCondition::NextChoiceOrExecutionQuanta { .. }
+        | StopCondition::NamedBoundary(_)
+        | StopCondition::EventCount(_)
+        | StopCondition::Terminal
+        | StopCondition::ExecutionQuanta(_)
+        | StopCondition::Observation(_) => None,
+    }
+}
+
 pub(super) fn reached_requested_stop(
     requested: &StopCondition,
     evidence: &QuantumStopEvidence<'_>,
