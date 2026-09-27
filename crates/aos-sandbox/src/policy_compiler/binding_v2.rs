@@ -81,9 +81,10 @@ pub use ack::{
 };
 pub use ack_v8::{
     ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1, RootV8EffectAckErrorV1, RootV8EffectAckV1,
-    RootV8HeldTerminalStepV1, RootV8VerifiedTerminalV1,
+    RootV8HeldTerminalStepV1, RootV8TerminalCustodyV1, RootV8VerifiedTerminalV1,
     acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
     acknowledge_fixed_closed_root_v8_effect_v1, recover_fixed_closed_root_v8_effect_ack_v1,
+    recover_fixed_closed_root_v8_terminal_custody_v1,
     recover_fixed_closed_root_v8_verified_terminal_v1, verify_fixed_closed_root_v8_terminal_v1,
 };
 
@@ -2240,6 +2241,22 @@ fn recover_closed_binding_decision_with_proof_from_authority(
     ),
     PolicyCompilerJournalErrorV1,
 > {
+    recover_closed_binding_decision_with_proof_from_authority_inner(authority, binding, epoch, true)
+}
+
+fn recover_closed_binding_decision_with_proof_from_authority_inner(
+    authority: &ProtectedJournalAuthority<'_>,
+    binding: ObjectDigest,
+    epoch: u64,
+    verify_release: bool,
+) -> Result<
+    (
+        ClosedPolicyBindingDecisionV2,
+        Option<Vec<u8>>,
+        Option<ObjectDigest>,
+    ),
+    PolicyCompilerJournalErrorV1,
+> {
     if binding.as_bytes() == &[0; 32] || epoch == 0 {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
@@ -2282,12 +2299,18 @@ fn recover_closed_binding_decision_with_proof_from_authority(
     let proof = proof_bytes.map(RootQualifiedProofV1::decode).transpose()?;
     let held_proof_bytes = authority.get(&held_cas_proof_key(binding))?;
     let held_proof = held_proof_bytes.map(RootHeldProofV2::decode).transpose()?;
+    let v8_released = ack_v8::release_marker_matches(authority, binding, epoch, hold)?;
+    if v8_released && verify_release {
+        ack_v8::verify_released_terminal_without_decision(authority, binding, epoch)?;
+    }
     if proof.is_some_and(|proof| proof.binding != binding || proof.epoch != epoch) {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
-    if proof.is_some() && held_proof.is_some()
-        || held_proof
-            .is_some_and(|proof| proof.binding != binding || proof.epoch != epoch || !hold.held)
+    if v8_released && held_proof.is_none()
+        || proof.is_some() && held_proof.is_some()
+        || held_proof.is_some_and(|proof| {
+            proof.binding != binding || proof.epoch != epoch || !hold.held && !v8_released
+        })
     {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }

@@ -38,9 +38,11 @@ use super::*;
 mod terminal;
 
 pub use terminal::{
-    RootV8VerifiedTerminalV1, recover_fixed_closed_root_v8_verified_terminal_v1,
-    verify_fixed_closed_root_v8_terminal_v1,
+    RootV8TerminalCustodyV1, RootV8VerifiedTerminalV1,
+    recover_fixed_closed_root_v8_terminal_custody_v1,
+    recover_fixed_closed_root_v8_verified_terminal_v1, verify_fixed_closed_root_v8_terminal_v1,
 };
+pub(super) use terminal::{release_marker_matches, verify_released_terminal_without_decision};
 
 /// Identifies one step of the Root-held V8 terminal socket exchange.
 pub enum RootV8HeldTerminalStepV1 {
@@ -310,12 +312,48 @@ fn held_cut(
     binding: ObjectDigest,
     epoch: u64,
 ) -> Result<HeldCut, RootV8EffectAckErrorV1> {
-    let (decision, proposed, qualified) =
-        recover_closed_binding_decision_with_proof_from_authority(authority, binding, epoch)?;
-    if !matches!(decision, ClosedPolicyBindingDecisionV2::CommittedHeld(_))
-        || qualified.is_some()
-        || authority.get(ack::ACK_KEY)?.is_some()
-    {
+    custody_cut(authority, binding, epoch, false, true)
+}
+
+fn released_cut(
+    authority: &ProtectedJournalAuthority<'_>,
+    binding: ObjectDigest,
+    epoch: u64,
+) -> Result<HeldCut, RootV8EffectAckErrorV1> {
+    custody_cut(authority, binding, epoch, true, true)
+}
+
+fn released_cut_without_decision(
+    authority: &ProtectedJournalAuthority<'_>,
+    binding: ObjectDigest,
+    epoch: u64,
+) -> Result<HeldCut, RootV8EffectAckErrorV1> {
+    custody_cut(authority, binding, epoch, true, false)
+}
+
+fn custody_cut(
+    authority: &ProtectedJournalAuthority<'_>,
+    binding: ObjectDigest,
+    epoch: u64,
+    released: bool,
+    verify_release: bool,
+) -> Result<HeldCut, RootV8EffectAckErrorV1> {
+    let (decision, proposed, qualified) = if verify_release {
+        recover_closed_binding_decision_with_proof_from_authority(authority, binding, epoch)?
+    } else {
+        recover_closed_binding_decision_with_proof_from_authority_inner(
+            authority, binding, epoch, false,
+        )?
+    };
+    let expected_decision = if released {
+        matches!(
+            decision,
+            ClosedPolicyBindingDecisionV2::CommittedReleased(_)
+        )
+    } else {
+        matches!(decision, ClosedPolicyBindingDecisionV2::CommittedHeld(_))
+    };
+    if !expected_decision || qualified.is_some() || authority.get(ack::ACK_KEY)?.is_some() {
         return Err(RootV8EffectAckErrorV1::Stale);
     }
     let proposal =
@@ -400,6 +438,15 @@ fn current_ack(
     epoch: u64,
 ) -> Result<Option<RootV8EffectAckV1>, RootV8EffectAckErrorV1> {
     let held = held_cut(authority, binding, epoch)?;
+    current_ack_for_cut(authority, binding, epoch, &held)
+}
+
+fn current_ack_for_cut(
+    authority: &ProtectedJournalAuthority<'_>,
+    binding: ObjectDigest,
+    epoch: u64,
+    held: &HeldCut,
+) -> Result<Option<RootV8EffectAckV1>, RootV8EffectAckErrorV1> {
     let record = authority
         .get(ACK_KEY)?
         .map(RootV8EffectAckV1::decode)
@@ -611,6 +658,7 @@ fn acknowledge_in_authority(
         ack_capacity,
         future[0].clone(),
         future[1].clone(),
+        terminal::release_capacity_transaction()?,
     ];
     let preflight = authority.preflight_transactions(&planned)?;
     authority.validate_preflight_for_effect(&preflight, &planned)?;
@@ -917,7 +965,7 @@ mod tests {
         drop(root);
 
         let mut reopened = super::super::tests::open_test_root(directory.path());
-        let authority = reopened
+        let mut authority = reopened
             .claim_protected_authority(RecordNamespace::DesiredState)
             .unwrap();
         assert_eq!(
@@ -928,6 +976,76 @@ mod tests {
             )
             .unwrap(),
             Some(terminal)
+        );
+
+        let released = terminal::release::release_verified_terminal_in_authority(
+            &mut authority,
+            fixture.binding_head,
+            fixture.binding.handoff_epoch,
+            terminal,
+        )
+        .unwrap();
+        assert_eq!(released, RootV8TerminalCustodyV1::Released(terminal));
+        assert!(
+            current_ack(
+                &authority,
+                fixture.binding_head,
+                fixture.binding.handoff_epoch
+            )
+            .is_err()
+        );
+        assert_eq!(
+            terminal::current_terminal_custody(
+                &authority,
+                fixture.binding_head,
+                fixture.binding.handoff_epoch,
+            )
+            .unwrap(),
+            Some(released)
+        );
+        drop(authority);
+        drop(reopened);
+
+        let mut reopened = super::super::tests::open_test_root(directory.path());
+        let mut authority = reopened
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        assert_eq!(
+            terminal::current_terminal_custody(
+                &authority,
+                fixture.binding_head,
+                fixture.binding.handoff_epoch,
+            )
+            .unwrap(),
+            Some(released)
+        );
+
+        let mut marker = authority
+            .get(terminal::release::RELEASE_KEY)
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        marker[56] ^= 1;
+        authority
+            .commit(
+                &JournalTransaction::new(
+                    [29; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        terminal::release::RELEASE_KEY.to_vec(),
+                        marker,
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            recover_closed_binding_decision_with_proof_from_authority(
+                &authority,
+                fixture.binding_head,
+                fixture.binding.handoff_epoch,
+            )
+            .is_err()
         );
     }
 

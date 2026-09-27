@@ -24,6 +24,29 @@ use crate::policy_compiler::root_challenge_record::RootChallengeRecordCodec;
 
 use super::*;
 
+pub(super) mod release;
+
+pub(in crate::policy_compiler::binding_v2) use release::{
+    release_capacity_transaction, release_marker_matches,
+};
+
+pub(in crate::policy_compiler::binding_v2) fn verify_released_terminal_without_decision(
+    authority: &ProtectedJournalAuthority<'_>,
+    binding: ObjectDigest,
+    epoch: u64,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    // The binding decision calls this verifier. Read its prior chain without
+    // calling the decision again, then verify the pinned Controller signature.
+    let released = released_cut_without_decision(authority, binding, epoch)
+        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    let ack = current_ack_for_cut(authority, binding, epoch, &released)
+        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    current_terminal_for_cut(authority, ack, &released)
+        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
+        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    Ok(())
+}
+
 const TERMINAL_KEY: &[u8] = b"\0aos-policy-compiler-root-v8-verified-terminal-v1\0";
 const CHALLENGE_KEY: &[u8] = b"\0aos-policy-compiler-root-v8-verified-terminal-challenge-v1\0";
 const MAGIC: &[u8; 8] = b"AOSPC88T";
@@ -45,6 +68,15 @@ pub struct RootV8VerifiedTerminalV1 {
     ack: RootV8EffectAckV1,
     controller_uid: u32,
     signed_receipt: [u8; CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1],
+}
+
+/// Reports whether Root still holds the verified V8 terminal's custody.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RootV8TerminalCustodyV1 {
+    /// Root retains its exact protected binding hold.
+    Held(RootV8VerifiedTerminalV1),
+    /// Root durably released its exact protected binding hold.
+    Released(RootV8VerifiedTerminalV1),
 }
 
 impl RootV8VerifiedTerminalV1 {
@@ -136,12 +168,41 @@ pub(super) fn current_terminal(
     binding: ObjectDigest,
     epoch: u64,
 ) -> Result<Option<RootV8VerifiedTerminalV1>, RootV8EffectAckErrorV1> {
-    let ack = current_ack(authority, binding, epoch)?;
+    let held = held_cut(authority, binding, epoch)?;
+    let ack = current_ack_for_cut(authority, binding, epoch, &held)?;
+    current_terminal_for_cut(authority, ack, &held)
+}
+
+fn current_released_terminal(
+    authority: &ProtectedJournalAuthority<'_>,
+    binding: ObjectDigest,
+    epoch: u64,
+) -> Result<RootV8VerifiedTerminalV1, RootV8EffectAckErrorV1> {
+    let released = released_cut(authority, binding, epoch)?;
+    let ack = current_ack_for_cut(authority, binding, epoch, &released)?;
+    let terminal = current_terminal_for_cut(authority, ack, &released)?
+        .ok_or(RootV8EffectAckErrorV1::Stale)?;
+    let (head, next_epoch, count) = current_root_binding_chain(authority)?;
+    let hold =
+        current_hold(authority, head, next_epoch, count)?.ok_or(RootV8EffectAckErrorV1::Stale)?;
+    if hold.held
+        || !release_marker_matches(authority, binding, epoch, hold)
+            .map_err(RootV8EffectAckErrorV1::Root)?
+    {
+        return Err(RootV8EffectAckErrorV1::Stale);
+    }
+    Ok(terminal)
+}
+
+fn current_terminal_for_cut(
+    authority: &ProtectedJournalAuthority<'_>,
+    ack: Option<RootV8EffectAckV1>,
+    held: &HeldCut,
+) -> Result<Option<RootV8VerifiedTerminalV1>, RootV8EffectAckErrorV1> {
     let Some(row) = authority.get(TERMINAL_KEY)? else {
         return Ok(None);
     };
     let ack = ack.ok_or(RootV8EffectAckErrorV1::Stale)?;
-    let held = held_cut(authority, binding, epoch)?;
     let challenge_row = authority
         .get(CHALLENGE_KEY)?
         .ok_or(RootV8EffectAckErrorV1::Stale)?;
@@ -178,6 +239,48 @@ pub(super) fn terminal_capacity_transactions()
         CHALLENGE_CODEC.transaction(challenge)?,
         terminal_transaction([1; CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1])?,
     ])
+}
+
+/// Replays an exact verified V8 terminal and its Root custody phase.
+///
+/// A historical ACK without a terminal returns `None`. A release marker alone
+/// cannot establish a released terminal without its signed Controller receipt.
+///
+/// # Errors
+///
+/// Rejects a changed Root chain, malformed release, forged receipt, or failed
+/// protected journal custody.
+pub fn recover_fixed_closed_root_v8_terminal_custody_v1(
+    binding: ObjectDigest,
+    epoch: u64,
+) -> Result<Option<RootV8TerminalCustodyV1>, RootV8EffectAckErrorV1> {
+    let (mut journal, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    current_terminal_custody(&authority, binding, epoch)
+}
+
+pub(super) fn current_terminal_custody(
+    authority: &ProtectedJournalAuthority<'_>,
+    binding: ObjectDigest,
+    epoch: u64,
+) -> Result<Option<RootV8TerminalCustodyV1>, RootV8EffectAckErrorV1> {
+    let (head, next_epoch, count) = current_root_binding_chain(authority)?;
+    let hold =
+        current_hold(authority, head, next_epoch, count)?.ok_or(RootV8EffectAckErrorV1::Stale)?;
+    if head != binding || hold.binding != binding || hold.epoch != epoch {
+        return Err(RootV8EffectAckErrorV1::Stale);
+    }
+    if hold.held {
+        Ok(current_terminal(authority, binding, epoch)?.map(RootV8TerminalCustodyV1::Held))
+    } else {
+        Ok(Some(RootV8TerminalCustodyV1::Released(
+            current_released_terminal(authority, binding, epoch)?,
+        )))
+    }
 }
 
 /// Replays Root's verified V8 terminal under its protected journal writer.
@@ -275,6 +378,7 @@ pub(super) fn verify_in_authority(
     let planned = [
         CHALLENGE_CODEC.transaction(challenge_row)?,
         terminal_capacity[1].clone(),
+        release_capacity_transaction()?,
     ];
     let preflight = authority.preflight_transactions(&planned)?;
     authority.validate_preflight_for_effect(&preflight, &planned)?;
