@@ -187,6 +187,8 @@ in
     # overrides while fetching the remaining graph with downloads disabled.
     passthru.offlineModules = helperScope.bazelOfflineModules;
     passthru.offlineSource = source;
+    passthru.offlineMavenJars = mavenJars;
+    passthru.offlineProguard = helperScope.bazelProguard;
     passthru.offlineSource8Prepared = helperScope.bazelSource8Prepared;
     passthru.offlineNettyModules = helperScope.bazelNetty119;
     passthru.offlineNettyNativeRepositories = helperScope.bazelNetty119NativeRepositories;
@@ -310,6 +312,17 @@ in
             > derived/maven/MAVEN_CANONICAL_REPO_NAME
 
           python3 ${./generate-bazel-bootstrap-resources.py} --source-root .
+          # Source checkouts generate this text template as a Bazel action;
+          # the initial bootstrap archive must carry it before Bazel can run.
+          cp src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
+            tools/jdk/java_stub_template.txt
+          sed -i '1s|^#!/usr/bin/env bash$|#!${bash}/bin/bash|' \
+            src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
+            tools/jdk/java_stub_template.txt
+          sed -i \
+            's|#!/usr/bin/env python3|#!${python3}/bin/python3|' \
+            src/main/java/com/google/devtools/build/lib/rules/python/PyRuntimeInfo.java \
+            tools/python/toolchain.bzl
           ${lib.optionalString (bootstrapVersion == "9.2.0") ''
             # This Bazel source tag omits the Protolark option definition.
             # Removing only its annotations preserves the project message
