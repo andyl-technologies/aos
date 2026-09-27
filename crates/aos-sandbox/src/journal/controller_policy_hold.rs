@@ -20,7 +20,8 @@
 //! The hold freezes ordinary Controller mutations across crash and reopen.
 //! Only exact private no-Apply acknowledgment and release transitions can
 //! write while held. Neither freezes other owners nor authorizes public Create,
-//! policy publication, or Apply. The AOSQ8S01 row is defined by `v8_settlement`.
+//! policy publication, or Apply. The AOSQ8F01 and AOSQ8S01 rows have private
+//! codecs in `v8_pre_release_floor` and `v8_settlement`.
 
 use std::collections::BTreeMap;
 
@@ -29,13 +30,21 @@ use sha2::{Digest as _, Sha256};
 
 use crate::policy_compiler::{ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1, RootV8EffectAckV1};
 
-#[cfg(test)]
-use super::{CachePolicyHoldV1, SourceDomainPolicyHoldV1};
-use super::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
+use super::{
+    CachePolicyHoldV1, Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace,
+    SourceDomainPolicyHoldV1,
+};
 
+mod v8_pre_release_floor;
 mod v8_settlement;
 
-use v8_settlement::{ControllerPolicyV8ReleaseEvidenceV1, ControllerPolicyV8SettlementV1};
+pub(crate) use v8_pre_release_floor::ControllerPolicyV8PreReleaseFloorV1;
+use v8_pre_release_floor::{
+    KEY as V8_FLOOR_KEY, RECORD_BYTES as V8_FLOOR_RECORD_BYTES,
+    TRANSACTION_DOMAIN as V8_FLOOR_TRANSACTION_DOMAIN,
+};
+use v8_settlement::ControllerPolicyV8ReleaseEvidenceV1;
+pub(crate) use v8_settlement::ControllerPolicyV8SettlementV1;
 
 const KEY: &[u8] = b"\0aos-controller-policy-hold-v1\0";
 const MAGIC: &[u8; 8] = b"AOSCTH01";
@@ -637,6 +646,7 @@ fn current(
     let mut attempt = None;
     let mut v8_ack = None;
     let mut v8_root_receipt = None;
+    let mut v8_floor = None;
     let mut v8_settlement = None;
     for ((_, key), value) in state
         .range((RecordNamespace::ControllerPolicyHold, Vec::new())..)
@@ -653,6 +663,9 @@ fn current(
             }
             V8_ROOT_RECEIPT_KEY if v8_root_receipt.is_none() => {
                 v8_root_receipt = Some(decode_v8_root_receipt(value)?)
+            }
+            V8_FLOOR_KEY if v8_floor.is_none() => {
+                v8_floor = Some(ControllerPolicyV8PreReleaseFloorV1::decode(value)?)
             }
             V8_SETTLEMENT_KEY if v8_settlement.is_none() => {
                 v8_settlement = Some(ControllerPolicyV8SettlementV1::decode(value)?)
@@ -682,8 +695,16 @@ fn current(
             return Err(JournalError::ProtectedBoundary);
         }
     }
+    if let Some(floor) = v8_floor {
+        let controller = hold.ok_or(JournalError::ProtectedBoundary)?;
+        let receipt = v8_root_receipt.ok_or(JournalError::ProtectedBoundary)?;
+        if ack.is_some() || !floor.matches_chain(controller, receipt)? {
+            return Err(JournalError::ProtectedBoundary);
+        }
+    }
     if let Some(settlement) = v8_settlement {
         let released = hold.ok_or(JournalError::ProtectedBoundary)?;
+        let floor = v8_floor.ok_or(JournalError::ProtectedBoundary)?;
         let expected = ControllerPolicyV8SettlementV1::from_chain(
             released,
             attempt.ok_or(JournalError::ProtectedBoundary)?,
@@ -693,7 +714,10 @@ fn current(
             settlement.cache_released,
             settlement.source_released,
         )?;
-        if ack.is_some() || settlement != expected {
+        if ack.is_some()
+            || settlement != expected
+            || settlement.root_release_marker != floor.root_release_marker
+        {
             return Err(JournalError::ProtectedBoundary);
         }
     }
@@ -737,6 +761,40 @@ fn encode_v8_root_receipt(
         .finalize();
     bytes[V8_ROOT_RECEIPT_RECORD_BYTES - 32..].copy_from_slice(&checksum);
     Ok(bytes)
+}
+
+/// Returns the digest of Controller's canonical retained Root ACK receipt.
+///
+/// # Errors
+///
+/// Rejects a Root ACK that cannot be encoded as an exact Controller receipt.
+pub(crate) fn controller_v8_root_receipt_record_digest_v1(
+    receipt: RootV8EffectAckV1,
+) -> Result<ObjectDigest, JournalError> {
+    Ok(ObjectDigest::from_bytes(
+        Sha256::digest(encode_v8_root_receipt(receipt)?).into(),
+    ))
+}
+
+fn validate_held_owner_cut(
+    controller: ControllerPolicyHoldV1,
+    cache: CachePolicyHoldV1,
+    source: SourceDomainPolicyHoldV1,
+) -> Result<(), JournalError> {
+    if !controller.is_held()
+        || !cache.is_held()
+        || cache.binding() != controller.binding()
+        || cache.epoch() != controller.epoch()
+        || !source.is_held()
+        || source.operation() != controller.operation()
+        || source.sandbox() != controller.sandbox()
+        || source.controller_source() != controller.source()
+        || source.binding() != controller.binding()
+        || source.epoch() != controller.epoch()
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
 }
 
 fn decode_v8_root_receipt(bytes: &[u8]) -> Result<RootV8EffectAckV1, JournalError> {
@@ -799,6 +857,16 @@ fn current_v8_root_receipt(
             V8_ROOT_RECEIPT_KEY.to_vec(),
         ))
         .map(|bytes| decode_v8_root_receipt(bytes))
+        .transpose()
+}
+
+fn current_v8_floor(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+) -> Result<Option<ControllerPolicyV8PreReleaseFloorV1>, JournalError> {
+    current(state)?;
+    state
+        .get(&(RecordNamespace::ControllerPolicyHold, V8_FLOOR_KEY.to_vec()))
+        .map(|bytes| ControllerPolicyV8PreReleaseFloorV1::decode(bytes))
         .transpose()
 }
 
@@ -921,6 +989,33 @@ fn v8_root_receipt_capacity_transaction(
     )
 }
 
+fn v8_floor_transaction(
+    floor: ControllerPolicyV8PreReleaseFloorV1,
+) -> Result<JournalTransaction, JournalError> {
+    single_record_transaction(V8_FLOOR_TRANSACTION_DOMAIN, V8_FLOOR_KEY, &floor.encode()?)
+}
+
+fn v8_floor_capacity_transaction(
+    hold: ControllerPolicyHoldV1,
+) -> Result<JournalTransaction, JournalError> {
+    let digest = Sha256::new()
+        .chain_update(V8_FLOOR_TRANSACTION_DOMAIN)
+        .chain_update(b"capacity-preflight\0")
+        .chain_update(hold.encode()?)
+        .finalize();
+    let id = digest[..16]
+        .try_into()
+        .map_err(|_| JournalError::ProtectedBoundary)?;
+    JournalTransaction::new(
+        id,
+        vec![JournalRecord::put(
+            RecordNamespace::ControllerPolicyHold,
+            V8_FLOOR_KEY.to_vec(),
+            vec![0; V8_FLOOR_RECORD_BYTES],
+        )],
+    )
+}
+
 fn v8_settlement_transaction(
     released: ControllerPolicyHoldV1,
     settlement: ControllerPolicyV8SettlementV1,
@@ -1039,6 +1134,7 @@ impl Journal {
             ObjectDigest::from_bytes([1; 32]),
         )?)?;
         let v8_root_receipt = v8_root_receipt_capacity_transaction(hold)?;
+        let v8_floor = v8_floor_capacity_transaction(hold)?;
         let release = transaction(ControllerPolicyHoldV1 {
             held: false,
             ..hold
@@ -1058,6 +1154,7 @@ impl Journal {
                 attempt,
                 v8_ack,
                 v8_root_receipt,
+                v8_floor,
                 v8_settlement,
             ],
             None,
@@ -1259,6 +1356,80 @@ impl Journal {
         Ok(())
     }
 
+    /// Records the held Cache and Source cut after Root has durably released.
+    ///
+    /// A future caller must supply `root_release_marker` only from a peer-checked
+    /// R8X Released proof while Controller, Source, and Cache writers remain
+    /// held. This floor authorizes no owner release, successor, Create, or Apply.
+    /// It persists through the later Controller S row for exact cold recovery.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed V8 chain, held owner identity, Root marker, or prior
+    /// floor, or a failed durable commit and typed readback.
+    #[allow(dead_code)]
+    pub(crate) fn record_controller_policy_v8_pre_release_floor_v1(
+        &mut self,
+        expected: ControllerPolicyHoldV1,
+        receipt: RootV8EffectAckV1,
+        root_release_marker: ObjectDigest,
+        cache_held: CachePolicyHoldV1,
+        source_held: SourceDomainPolicyHoldV1,
+    ) -> Result<ControllerPolicyV8PreReleaseFloorV1, JournalError> {
+        ensure_controller(self)?;
+        let attempt = current_v8_attempt(&self.state)?.ok_or(JournalError::ProtectedBoundary)?;
+        let ack = current_v8_ack(&self.state)?.ok_or(JournalError::ProtectedBoundary)?;
+        if current(&self.state)? != Some(expected)
+            || !expected.is_held()
+            || attempt.hold() != expected
+            || ack.attempt() != attempt
+            || !v8_root_receipt_matches_ack(receipt, ack)?
+            || current_v8_root_receipt(&self.state)? != Some(receipt)
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let floor = ControllerPolicyV8PreReleaseFloorV1::from_held_rows(
+            expected,
+            receipt,
+            root_release_marker,
+            cache_held,
+            source_held,
+        )?;
+        match current_v8_floor(&self.state)? {
+            Some(prior) if prior == floor => return Ok(floor),
+            Some(_) => return Err(JournalError::ProtectedBoundary),
+            None => {}
+        }
+
+        self.commit_with_capacity_scope(
+            &v8_floor_transaction(floor)?,
+            None,
+            false,
+            true,
+            false,
+            false,
+            false,
+        )?;
+        if current(&self.state)? != Some(expected) || current_v8_floor(&self.state)? != Some(floor)
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(floor)
+    }
+
+    /// Reads the exact pre-release floor under the protected Controller writer.
+    ///
+    /// # Errors
+    ///
+    /// Rejects foreign or malformed Controller custody.
+    #[allow(dead_code)]
+    pub(crate) fn controller_policy_v8_pre_release_floor_v1(
+        &self,
+    ) -> Result<Option<ControllerPolicyV8PreReleaseFloorV1>, JournalError> {
+        ensure_controller(self)?;
+        current_v8_floor(&self.state)
+    }
+
     /// Atomically retires Controller V8 custody with exact owner-release evidence.
     ///
     /// The caller must obtain the Root marker digest from a peer-checked R8X
@@ -1290,6 +1461,13 @@ impl Journal {
             || ack.attempt() != attempt
             || !v8_root_receipt_matches_ack(receipt, ack)?
             || current_v8_root_receipt(&self.state)? != Some(receipt)
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let floor = current_v8_floor(&self.state)?.ok_or(JournalError::ProtectedBoundary)?;
+        if floor.root_release_marker != evidence.root_release_marker
+            || floor.cache_held != evidence.cache_held.record_digest()?
+            || floor.source_held != evidence.source_held.record_digest()?
         {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -1532,6 +1710,9 @@ mod tests {
         .unwrap();
         Journal::acquire_cache_policy_hold_at(cache_directory.path(), cache_uid, cache_held)
             .unwrap();
+        let cache_held = Journal::read_cache_policy_hold_at(cache_directory.path(), cache_uid)
+            .unwrap()
+            .unwrap();
         Journal::release_cache_policy_hold_if_at::<JournalError>(
             cache_directory.path(),
             cache_uid,
@@ -1565,6 +1746,7 @@ mod tests {
         source
             .acquire_source_domain_policy_hold_v1(source_held)
             .unwrap();
+        let source_held = source.source_domain_policy_hold_v1().unwrap().unwrap();
         source
             .retire_source_domain_policy_hold_v8(source_held)
             .unwrap();
@@ -1579,6 +1761,23 @@ mod tests {
             source_released,
         )
         .unwrap()
+    }
+
+    fn record_v8_floor(
+        controller: &mut Journal,
+        hold: ControllerPolicyHoldV1,
+        receipt: RootV8EffectAckV1,
+        evidence: ControllerPolicyV8ReleaseEvidenceV1,
+    ) -> ControllerPolicyV8PreReleaseFloorV1 {
+        controller
+            .record_controller_policy_v8_pre_release_floor_v1(
+                hold,
+                receipt,
+                evidence.root_release_marker,
+                evidence.cache_held,
+                evidence.source_held,
+            )
+            .unwrap()
     }
 
     #[test]
@@ -2086,6 +2285,14 @@ mod tests {
             ..hold
         };
         let evidence = v8_release_evidence(hold);
+        let floor = ControllerPolicyV8PreReleaseFloorV1::from_held_rows(
+            hold,
+            receipt,
+            evidence.root_release_marker,
+            evidence.cache_held,
+            evidence.source_held,
+        )
+        .unwrap();
         let settlement = ControllerPolicyV8SettlementV1::from_chain(
             released,
             attempt,
@@ -2096,6 +2303,10 @@ mod tests {
             evidence.source_released.record_digest().unwrap(),
         )
         .unwrap();
+        state.insert(
+            (RecordNamespace::ControllerPolicyHold, V8_FLOOR_KEY.to_vec()),
+            floor.encode().unwrap().to_vec(),
+        );
         state.insert(
             (
                 RecordNamespace::ControllerPolicyHold,
@@ -2158,6 +2369,100 @@ mod tests {
         controller
             .record_controller_policy_v8_root_receipt_v1(receipt)
             .unwrap();
+        assert!(
+            controller
+                .retire_controller_policy_v8_hold_with_settlement_v1(hold, receipt, evidence)
+                .is_err(),
+            "settlement requires a durable pre-release floor"
+        );
+        let floor = record_v8_floor(&mut controller, hold, receipt, evidence);
+        assert_eq!(
+            controller
+                .controller_policy_v8_pre_release_floor_v1()
+                .unwrap(),
+            Some(floor)
+        );
+        assert_eq!(
+            record_v8_floor(&mut controller, hold, receipt, evidence),
+            floor,
+            "exact pre-release floor replay is idempotent"
+        );
+        assert_eq!(
+            floor.cache_held_digest(),
+            evidence.cache_held.record_digest().unwrap()
+        );
+        assert_eq!(
+            floor.source_held_digest(),
+            evidence.source_held.record_digest().unwrap()
+        );
+        assert_eq!(
+            floor.root_release_marker_digest(),
+            evidence.root_release_marker
+        );
+        assert_ne!(floor.record_digest().unwrap().as_bytes(), &[0; 32]);
+        assert_eq!(
+            ControllerPolicyV8PreReleaseFloorV1::from_record_bytes(&floor.record_bytes().unwrap())
+                .unwrap(),
+            floor
+        );
+
+        let changed_cache = CachePolicyHoldV1::new(
+            ProjectId::from_bytes([47; 16]),
+            evidence.cache_held.partition(),
+            evidence.cache_held.cache_head(),
+            hold.binding(),
+            hold.epoch(),
+        )
+        .unwrap();
+        let changed_source = SourceDomainPolicyHoldV1::new(
+            hold.operation(),
+            hold.sandbox(),
+            hold.source(),
+            ObjectDigest::from_bytes([48; 32]),
+            hold.binding(),
+            hold.epoch(),
+        )
+        .unwrap();
+        for (marker, cache, source) in [
+            (
+                ObjectDigest::from_bytes([46; 32]),
+                evidence.cache_held,
+                evidence.source_held,
+            ),
+            (
+                evidence.root_release_marker,
+                changed_cache,
+                evidence.source_held,
+            ),
+            (
+                evidence.root_release_marker,
+                evidence.cache_held,
+                changed_source,
+            ),
+        ] {
+            assert!(
+                controller
+                    .record_controller_policy_v8_pre_release_floor_v1(
+                        hold, receipt, marker, cache, source,
+                    )
+                    .is_err(),
+                "changed held or Root evidence cannot replace the floor"
+            );
+        }
+        drop(controller);
+
+        let mut controller = directory.open();
+        assert_eq!(
+            controller
+                .controller_policy_v8_pre_release_floor_v1()
+                .unwrap(),
+            Some(floor),
+            "the exact floor survives cold replay while all writers remain held"
+        );
+        assert_eq!(
+            record_v8_floor(&mut controller, hold, receipt, evidence),
+            floor
+        );
 
         let changed_hold = ControllerPolicyHoldV1 {
             binding: ObjectDigest::from_bytes([29; 32]),
@@ -2229,8 +2534,23 @@ mod tests {
             Some(receipt)
         );
         assert_eq!(
+            reopened
+                .controller_policy_v8_pre_release_floor_v1()
+                .unwrap(),
+            Some(floor)
+        );
+        assert_eq!(
             reopened.controller_policy_v8_settlement_v1().unwrap(),
             Some(settlement)
+        );
+        assert_eq!(
+            ControllerPolicyV8SettlementV1::from_record_bytes(&settlement.record_bytes().unwrap())
+                .unwrap(),
+            settlement
+        );
+        assert_eq!(
+            settlement.root_receipt_digest(),
+            controller_v8_root_receipt_record_digest_v1(receipt).unwrap()
         );
         assert_eq!(
             reopened
@@ -2247,6 +2567,15 @@ mod tests {
             V8_SETTLEMENT_KEY.to_vec(),
         ));
         assert!(current(&torn).is_err(), "release without S fails closed");
+        let mut torn = settled_state.clone();
+        torn.remove(&(RecordNamespace::ControllerPolicyHold, V8_FLOOR_KEY.to_vec()));
+        assert!(current(&torn).is_err(), "S without floor fails closed");
+        let mut torn = settled_state.clone();
+        torn.remove(&(
+            RecordNamespace::ControllerPolicyHold,
+            V8_ROOT_RECEIPT_KEY.to_vec(),
+        ));
+        assert!(current(&torn).is_err(), "floor without R01 fails closed");
         let mut torn = settled_state.clone();
         torn.insert(
             (RecordNamespace::ControllerPolicyHold, KEY.to_vec()),
@@ -2277,6 +2606,29 @@ mod tests {
             );
             reopened.state = settled_state.clone();
         }
+        for offset in [16, 48, 56, 88, 120, 152] {
+            let mut changed = floor.record_bytes().unwrap();
+            changed[offset] ^= 1;
+            let checksum = Sha256::new()
+                .chain_update(v8_pre_release_floor::CHECKSUM_DOMAIN)
+                .chain_update(&changed[..184])
+                .finalize();
+            changed[184..].copy_from_slice(&checksum);
+            reopened.state.insert(
+                (RecordNamespace::ControllerPolicyHold, V8_FLOOR_KEY.to_vec()),
+                changed.to_vec(),
+            );
+            assert!(
+                reopened
+                    .retire_controller_policy_v8_hold_with_settlement_v1(hold, receipt, evidence)
+                    .is_err(),
+                "changed floor field at {offset} accepted"
+            );
+            reopened.state = settled_state.clone();
+        }
+        let mut changed = floor.record_bytes().unwrap();
+        changed[184] ^= 1;
+        assert!(ControllerPolicyV8PreReleaseFloorV1::decode(&changed).is_err());
         let mut changed = settlement.encode().unwrap();
         changed[280] ^= 1;
         assert!(ControllerPolicyV8SettlementV1::decode(&changed).is_err());
@@ -2480,7 +2832,7 @@ mod tests {
 
     #[test]
     fn acquisition_reserves_capacity_for_v8_receipt_and_atomic_settlement() {
-        for maximum_transactions in [1, 4] {
+        for maximum_transactions in [1, 5] {
             let directory = TestDirectory::new();
             let uid = fs::metadata(&directory.0).unwrap().uid();
             let limits = JournalLimits {
@@ -2522,6 +2874,22 @@ mod tests {
             .unwrap(),
         );
         let evidence = v8_release_evidence(hold);
+        let floor = ControllerPolicyV8PreReleaseFloorV1::from_held_rows(
+            hold,
+            receipt,
+            evidence.root_release_marker,
+            evidence.cache_held,
+            evidence.source_held,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::journal::encoded_transaction_record_bytes(
+                &v8_floor_capacity_transaction(hold).unwrap()
+            )
+            .unwrap(),
+            crate::journal::encoded_transaction_record_bytes(&v8_floor_transaction(floor).unwrap())
+                .unwrap(),
+        );
         let released = ControllerPolicyHoldV1 {
             held: false,
             ..hold
@@ -2550,7 +2918,7 @@ mod tests {
         let directory = TestDirectory::new();
         let uid = fs::metadata(&directory.0).unwrap().uid();
         let limits = JournalLimits {
-            maximum_transactions: 5,
+            maximum_transactions: 6,
             ..JournalLimits::default()
         };
         let (mut controller, _) =
@@ -2566,6 +2934,10 @@ mod tests {
         controller
             .record_controller_policy_v8_root_receipt_v1(receipt)
             .unwrap();
+        assert_eq!(
+            record_v8_floor(&mut controller, hold, receipt, evidence),
+            floor
+        );
         assert_eq!(
             controller
                 .retire_controller_policy_v8_hold_with_settlement_v1(hold, receipt, evidence)

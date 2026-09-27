@@ -21,7 +21,7 @@ use crate::policy_compiler::RootV8EffectAckV1;
 use super::{
     ControllerPolicyHoldV1, ControllerPolicyV8AttemptV1, ControllerPolicyV8EffectAckV1,
     V8_SETTLEMENT_CHECKSUM_DOMAIN, V8_SETTLEMENT_MAGIC, V8_SETTLEMENT_RECORD_BYTES,
-    encode_v8_root_receipt, take_attempt, v8_root_receipt_matches_ack,
+    encode_v8_root_receipt, take_attempt, v8_root_receipt_matches_ack, validate_held_owner_cut,
 };
 
 /// Retains typed owner readbacks for one local V8 release transition.
@@ -66,18 +66,14 @@ impl ControllerPolicyV8ReleaseEvidenceV1 {
         self,
         controller: ControllerPolicyHoldV1,
     ) -> Result<(), JournalError> {
-        if !controller.is_held()
-            || self.root_release_marker.as_bytes() == &[0; 32]
-            || !self.cache_held.is_held()
+        validate_held_owner_cut(controller, self.cache_held, self.source_held)?;
+        if self.root_release_marker.as_bytes() == &[0; 32]
             || self.cache_released.is_held()
             || self.cache_held.project() != self.cache_released.project()
             || self.cache_held.partition() != self.cache_released.partition()
             || self.cache_held.cache_head() != self.cache_released.cache_head()
             || self.cache_held.binding() != self.cache_released.binding()
             || self.cache_held.epoch() != self.cache_released.epoch()
-            || self.cache_held.binding() != controller.binding()
-            || self.cache_held.epoch() != controller.epoch()
-            || !self.source_held.is_held()
             || self.source_released.is_held()
             || self.source_held.operation() != self.source_released.operation()
             || self.source_held.sandbox() != self.source_released.sandbox()
@@ -85,11 +81,6 @@ impl ControllerPolicyV8ReleaseEvidenceV1 {
             || self.source_held.ancestry() != self.source_released.ancestry()
             || self.source_held.binding() != self.source_released.binding()
             || self.source_held.epoch() != self.source_released.epoch()
-            || self.source_held.operation() != controller.operation()
-            || self.source_held.sandbox() != controller.sandbox()
-            || self.source_held.controller_source() != controller.source()
-            || self.source_held.binding() != controller.binding()
-            || self.source_held.epoch() != controller.epoch()
         {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -114,6 +105,60 @@ pub(crate) struct ControllerPolicyV8SettlementV1 {
 }
 
 impl ControllerPolicyV8SettlementV1 {
+    /// Returns the settled Root binding identity.
+    #[must_use]
+    pub(crate) const fn binding(self) -> ObjectDigest {
+        self.binding
+    }
+
+    /// Returns the settled Root binding epoch.
+    #[must_use]
+    pub(crate) const fn epoch(self) -> u64 {
+        self.epoch
+    }
+
+    /// Returns the digest of the accepted V8 attempt row.
+    #[must_use]
+    pub(crate) const fn attempt_digest(self) -> ObjectDigest {
+        self.attempt
+    }
+
+    /// Returns the digest of the accepted V8 effect ACK row.
+    #[must_use]
+    pub(crate) const fn ack_digest(self) -> ObjectDigest {
+        self.ack
+    }
+
+    /// Returns the digest of the historical Root ACK receipt row.
+    #[must_use]
+    pub(crate) const fn root_receipt_digest(self) -> ObjectDigest {
+        self.root_receipt
+    }
+
+    /// Returns the digest of Root's exact AOSPC88L release marker.
+    #[must_use]
+    pub(crate) const fn root_release_marker_digest(self) -> ObjectDigest {
+        self.root_release_marker
+    }
+
+    /// Returns the digest of the released Cache hold row.
+    #[must_use]
+    pub(crate) const fn cache_released_digest(self) -> ObjectDigest {
+        self.cache_released
+    }
+
+    /// Returns the digest of the released Source hold row.
+    #[must_use]
+    pub(crate) const fn source_released_digest(self) -> ObjectDigest {
+        self.source_released
+    }
+
+    /// Returns the digest of the released Controller hold row.
+    #[must_use]
+    pub(crate) const fn controller_released_digest(self) -> ObjectDigest {
+        self.controller_released
+    }
+
     pub(super) fn from_chain(
         released: ControllerPolicyHoldV1,
         attempt: ControllerPolicyV8AttemptV1,
@@ -235,6 +280,24 @@ impl ControllerPolicyV8SettlementV1 {
     /// Rejects malformed local settlement fields.
     pub(crate) fn record_digest(self) -> Result<ObjectDigest, JournalError> {
         Ok(digest_record(&self.encode()?))
+    }
+
+    /// Returns the exact canonical settlement row for a challenged readback.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed local settlement fields.
+    pub(crate) fn record_bytes(self) -> Result<[u8; 312], JournalError> {
+        self.encode()
+    }
+
+    /// Parses one exact canonical settlement row from a challenged readback.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed, noncanonical, or corrupt settlement bytes.
+    pub(crate) fn from_record_bytes(bytes: &[u8]) -> Result<Self, JournalError> {
+        Self::decode(bytes)
     }
 }
 
