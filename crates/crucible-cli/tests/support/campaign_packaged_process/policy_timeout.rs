@@ -1,6 +1,5 @@
 //! Authenticated packaged-QEMU campaign timeout and retained causal marker.
 
-use std::io::Write as _;
 use std::os::unix::net::UnixStream;
 
 use super::*;
