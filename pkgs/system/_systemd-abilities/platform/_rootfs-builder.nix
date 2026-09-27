@@ -433,10 +433,9 @@ in
                 # shrink step.
                 #
                 # Compression tuning (measured on the server closure):
-                #   * -C1048576 — 1 MiB physical compression cluster. On the
-                #     measured server closure this reduces root.img from
-                #     679661568 to 669159424 bytes, leaving 1929216 bytes below
-                #     the 640 MiB release budget without changing its contents.
+                #   * -C1048576 — 1 MiB physical compression cluster. This
+                #     reduced the measured server image size without changing
+                #     its contents.
                 #     Linux 7.2 accepts encoded EROFS pclusters up to 1 MiB; its
                 #     12 MiB decoded-size limit is unchanged. A cold read can
                 #     consume up to 1 MiB of compressed input, while hot reads

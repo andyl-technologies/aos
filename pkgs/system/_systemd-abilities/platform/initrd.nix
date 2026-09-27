@@ -183,7 +183,6 @@ in {
         providerNetworkPlans = lib.mkOption {
           type = lib.types.listOf providerPlanTypes.network;
         };
-        renderedUnits = lib.mkOption {type = lib.types.listOf lib.types.str;};
       };
     };
     readOnly = true;
@@ -267,7 +266,6 @@ in {
       jobScripts = initrdJobScripts;
       providerPlans = initrdProviderPlans;
       providerNetworkPlans = initrdProviderNetworkPlans;
-      renderedUnits = builtins.attrNames renderedInitrdUnits;
     };
   };
 }

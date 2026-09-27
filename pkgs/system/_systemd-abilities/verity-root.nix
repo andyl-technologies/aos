@@ -9,6 +9,7 @@
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "systemd-verity-root";
+  serviceName = "aos-systemd-verity-root-setup";
   initrdStage =
     config.aos.abilities.environment
     != null
@@ -29,7 +30,11 @@
 
   setup = {
     inherit consumerInstance;
-    service = "aos-systemd-verity-root-setup";
+    service = serviceName;
+    manager_identity = {
+      name = serviceName;
+      aliases = [];
+    };
     lifecycle = {
       description = "Materialize and start systemd's verified root mapping";
       execution_model = "oneshot";

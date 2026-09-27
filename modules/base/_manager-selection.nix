@@ -73,6 +73,10 @@
         type = lib.types.package;
         description = "Selected initrd static ability contract.";
       };
+      staticAbilityEvidence = lib.mkOption {
+        type = lib.types.listOf lib.types.package;
+        description = "Build-only package documents for contract validation.";
+      };
     };
   };
   normalizedRelativePath = value: let

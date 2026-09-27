@@ -109,7 +109,7 @@
         else buildContext.initrdEvaluationLib;
       inherit (buildContext) targetPlatform packageSet runCommand writeTextFile;
       packageRuntime = buildContext.buildTools.packageRuntime;
-      inherit (staticContractBuild) retainedPackageContractArtifacts;
+      inherit (staticContractBuild) retainedPackageContractArtifacts selectedOutputArtifacts;
     }).bundle;
   handoff = let
     stageConfig = initrdAbilityEvaluation.config;
@@ -142,7 +142,6 @@
       ]
     );
     initrdEvaluationLib = buildContext.initrdEvaluationLib;
-    renderedUnits = plan.renderedUnits;
     initrdStaticContract = checkedStaticContract;
     initrdSourceStageBundle = sourceStageBundle;
     maskedUnits =
@@ -152,9 +151,9 @@
         "rescue.target"
       ];
     validateBootIdentity = config.aos.security.verity.enable;
-    keepBinutils = config.aos.boot.recovery.enable;
   };
 in {
   inherit artifact sourceStageBundle;
   staticAbilityContract = staticContractBuild.artifact;
+  staticAbilityEvidence = staticContractBuild.retainedPackageContractArtifacts;
 }

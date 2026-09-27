@@ -56,7 +56,6 @@
   kernelModulesReadiness = resultOf "kernel-modules" "resource";
   bootIdentityReadiness = resultOf "boot-identity" "resource";
   initrdStageReadiness = resultOf "initrd-stage" "resource";
-  espReadyReadiness = resultOf "esp-ready" "resource";
   imageBootCommittedReadiness = resultOf "image-boot-committed" "resource";
   service = {
     key,
@@ -72,6 +71,10 @@
     {
       inherit consumerInstance;
       service = key;
+      manager_identity = {
+        name = key;
+        aliases = [];
+      };
       lifecycle = {
         inherit description;
         execution_model = "oneshot";
@@ -108,7 +111,7 @@
     dependencies = {
       prerequisites = [];
       after = [];
-      before = [localFilesystemsReadiness espReadyReadiness];
+      before = [localFilesystemsReadiness];
       requires = [];
       wants = [];
       requisite = [];
@@ -116,7 +119,7 @@
       binds_to = [];
       part_of = [];
       upholds = [];
-      required_by = [espReadyReadiness];
+      required_by = [];
       wanted_by = [localFilesystemsReadiness];
       required_mounts = [];
       implicit_dependencies = false;

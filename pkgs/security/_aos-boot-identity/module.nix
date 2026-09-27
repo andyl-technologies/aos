@@ -61,6 +61,10 @@
     {
       inherit consumerInstance;
       service = key;
+      manager_identity = {
+        name = key;
+        aliases = [];
+      };
       lifecycle = {
         inherit description;
         execution_model = "oneshot";
