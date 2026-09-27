@@ -1,17 +1,19 @@
 //! Inert Source hierarchy floor checkpoint, prepared intent, and recovery model.
 //!
-//! The fixed-width formats bind a proposed Source cut to a predecessor floor.
+//! The fixed-width formats bind proposed Controller and Source cuts to a
+//! predecessor floor.
 //! They do not read a protected owner, advance an independent anchor, or mint
 //! the closed Source tree append authority.
 //!
 //! ```text
 //! AOSHSF01 | version:u16be | reserved:u16be | sequence:u64be |
-//! predecessor-digest:32 | cut:296
-//! AOSHFI01 | version:u16be | reserved:u16be | checkpoint:348
+//! predecessor-digest:32 | cut:336
+//! AOSHFI01 | version:u16be | reserved:u16be | checkpoint:388
 //!
 //! cut = deployment-epoch:u64be | authority-epoch:u64be | project:16 |
 //! tree-generation:u64be | tree-head:32 | lineage-head:32 |
 //! source-journal-sequence:u64be | source-journal-head:32 |
+//! controller-journal-sequence:u64be | controller-journal-head:32 |
 //! publisher-generation:u64be | publisher-head:32 |
 //! project-authorization-head:32 | seed-packet-digest:32 |
 //! seed-request-id:16 | seed-issuer-generation:u64be |
@@ -25,7 +27,7 @@ use thiserror::Error;
 const CHECKPOINT_MAGIC: &[u8; 8] = b"AOSHSF01";
 const INTENT_MAGIC: &[u8; 8] = b"AOSHFI01";
 const VERSION: [u8; 2] = 1_u16.to_be_bytes();
-const CUT_BYTES: usize = 296;
+const CUT_BYTES: usize = 336;
 const CHECKPOINT_BYTES: usize = 12 + 8 + 32 + CUT_BYTES;
 const INTENT_BYTES: usize = 12 + CHECKPOINT_BYTES;
 const CHECKPOINT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.source-hierarchy-floor.checkpoint.v1\0";
@@ -52,6 +54,10 @@ pub(crate) struct SourceHierarchyFloorCutV1 {
     pub(crate) source_journal_sequence: u64,
     /// Names the exact Source journal head at that position.
     pub(crate) source_journal_head: ObjectDigest,
+    /// Names the Controller journal position at the observed barrier cut.
+    pub(crate) controller_journal_sequence: u64,
+    /// Names the exact Controller journal head at that position.
+    pub(crate) controller_journal_head: ObjectDigest,
     /// Names the independently observed Controller publisher generation.
     pub(crate) publisher_generation: u64,
     /// Names the Controller publisher policy head.
@@ -81,6 +87,8 @@ impl SourceHierarchyFloorCutV1 {
             && self.lineage_head.as_bytes() != &[0; 32]
             && self.source_journal_sequence != 0
             && self.source_journal_head.as_bytes() != &[0; 32]
+            && self.controller_journal_sequence != 0
+            && self.controller_journal_head.as_bytes() != &[0; 32]
             && self.publisher_generation != 0
             && self.publisher_head.as_bytes() != &[0; 32]
             && self.project_authorization_head.as_bytes() != &[0; 32]
@@ -91,23 +99,27 @@ impl SourceHierarchyFloorCutV1 {
             && self.barrier_id != [0; 16]
     }
 
-    fn encode(&self, bytes: &mut Vec<u8>) {
-        bytes.extend_from_slice(&self.deployment_epoch.to_be_bytes());
-        bytes.extend_from_slice(&self.authority_epoch.to_be_bytes());
-        bytes.extend_from_slice(self.project.as_bytes());
-        bytes.extend_from_slice(&self.tree_generation.to_be_bytes());
-        bytes.extend_from_slice(self.tree_head.as_bytes());
-        bytes.extend_from_slice(self.lineage_head.as_bytes());
-        bytes.extend_from_slice(&self.source_journal_sequence.to_be_bytes());
-        bytes.extend_from_slice(self.source_journal_head.as_bytes());
-        bytes.extend_from_slice(&self.publisher_generation.to_be_bytes());
-        bytes.extend_from_slice(self.publisher_head.as_bytes());
-        bytes.extend_from_slice(self.project_authorization_head.as_bytes());
-        bytes.extend_from_slice(self.seed_packet_digest.as_bytes());
-        bytes.extend_from_slice(&self.seed_request_id);
-        bytes.extend_from_slice(&self.seed_issuer_generation.to_be_bytes());
-        bytes.extend_from_slice(&self.seed_issuer_epoch.to_be_bytes());
-        bytes.extend_from_slice(&self.barrier_id);
+    fn encode(&self) -> [u8; CUT_BYTES] {
+        let mut bytes = [0; CUT_BYTES];
+        bytes[0..8].copy_from_slice(&self.deployment_epoch.to_be_bytes());
+        bytes[8..16].copy_from_slice(&self.authority_epoch.to_be_bytes());
+        bytes[16..32].copy_from_slice(self.project.as_bytes());
+        bytes[32..40].copy_from_slice(&self.tree_generation.to_be_bytes());
+        bytes[40..72].copy_from_slice(self.tree_head.as_bytes());
+        bytes[72..104].copy_from_slice(self.lineage_head.as_bytes());
+        bytes[104..112].copy_from_slice(&self.source_journal_sequence.to_be_bytes());
+        bytes[112..144].copy_from_slice(self.source_journal_head.as_bytes());
+        bytes[144..152].copy_from_slice(&self.controller_journal_sequence.to_be_bytes());
+        bytes[152..184].copy_from_slice(self.controller_journal_head.as_bytes());
+        bytes[184..192].copy_from_slice(&self.publisher_generation.to_be_bytes());
+        bytes[192..224].copy_from_slice(self.publisher_head.as_bytes());
+        bytes[224..256].copy_from_slice(self.project_authorization_head.as_bytes());
+        bytes[256..288].copy_from_slice(self.seed_packet_digest.as_bytes());
+        bytes[288..304].copy_from_slice(&self.seed_request_id);
+        bytes[304..312].copy_from_slice(&self.seed_issuer_generation.to_be_bytes());
+        bytes[312..320].copy_from_slice(&self.seed_issuer_epoch.to_be_bytes());
+        bytes[320..336].copy_from_slice(&self.barrier_id);
+        bytes
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
@@ -124,6 +136,8 @@ impl SourceHierarchyFloorCutV1 {
             lineage_head: ObjectDigest::from_bytes(take(bytes, &mut cursor)?),
             source_journal_sequence: u64::from_be_bytes(take(bytes, &mut cursor)?),
             source_journal_head: ObjectDigest::from_bytes(take(bytes, &mut cursor)?),
+            controller_journal_sequence: u64::from_be_bytes(take(bytes, &mut cursor)?),
+            controller_journal_head: ObjectDigest::from_bytes(take(bytes, &mut cursor)?),
             publisher_generation: u64::from_be_bytes(take(bytes, &mut cursor)?),
             publisher_head: ObjectDigest::from_bytes(take(bytes, &mut cursor)?),
             project_authorization_head: ObjectDigest::from_bytes(take(bytes, &mut cursor)?),
@@ -174,18 +188,17 @@ impl SourceHierarchyFloorCheckpointV1 {
 
     /// Encodes the exact, fixed-width checkpoint bytes.
     #[must_use]
-    pub(crate) fn encode(self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(CHECKPOINT_BYTES);
-        bytes.extend_from_slice(CHECKPOINT_MAGIC);
-        bytes.extend_from_slice(&VERSION);
-        bytes.extend_from_slice(&[0; 2]);
-        bytes.extend_from_slice(&self.sequence.to_be_bytes());
-        bytes.extend_from_slice(
+    pub(crate) fn encode(self) -> [u8; CHECKPOINT_BYTES] {
+        let mut bytes = [0; CHECKPOINT_BYTES];
+        bytes[0..8].copy_from_slice(CHECKPOINT_MAGIC);
+        bytes[8..10].copy_from_slice(&VERSION);
+        bytes[12..20].copy_from_slice(&self.sequence.to_be_bytes());
+        bytes[20..52].copy_from_slice(
             &self
                 .predecessor_digest
                 .map_or([0; 32], |digest| *digest.as_bytes()),
         );
-        self.cut.encode(&mut bytes);
+        bytes[52..].copy_from_slice(&self.cut.encode());
         bytes
     }
 
@@ -236,12 +249,11 @@ impl PreparedSourceHierarchyFloorIntentV1 {
 
     /// Encodes the fixed-width prepared intent.
     #[must_use]
-    pub(crate) fn encode(self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(INTENT_BYTES);
-        bytes.extend_from_slice(INTENT_MAGIC);
-        bytes.extend_from_slice(&VERSION);
-        bytes.extend_from_slice(&[0; 2]);
-        bytes.extend_from_slice(&self.checkpoint.encode());
+    pub(crate) fn encode(self) -> [u8; INTENT_BYTES] {
+        let mut bytes = [0; INTENT_BYTES];
+        bytes[0..8].copy_from_slice(INTENT_MAGIC);
+        bytes[8..10].copy_from_slice(&VERSION);
+        bytes[12..].copy_from_slice(&self.checkpoint.encode());
         bytes
     }
 }
@@ -284,19 +296,20 @@ pub(crate) enum SourceHierarchyFloorErrorV1 {
 
 /// Reduces the crash cut around an independent anchor update without effects.
 ///
-/// The previous checkpoint and observed Source cut must come from protected,
-/// independent readback in a future caller. Even `AnchoredStructurally` does
-/// not certify currentness, grant append authority, or permit Create.
+/// The previous checkpoint and observed Controller-plus-Source cut must come
+/// from protected, independent readback in a future caller. Even an
+/// `AnchoredStructurally` result does not certify currentness, grant append
+/// authority, or permit Create.
 ///
 /// # Errors
 ///
-/// Rejects missing intent, rollback, same-sequence fork, mismatched Source
-/// heads, and a broken predecessor chain.
+/// Rejects missing intent, rollback, same-sequence fork, mismatched Controller
+/// or Source heads, and a broken predecessor chain.
 pub(crate) fn recover_source_hierarchy_floor_v1(
     previous: Option<&SourceHierarchyFloorCheckpointV1>,
     prepared: Option<&PreparedSourceHierarchyFloorIntentV1>,
     anchor: Option<&SourceHierarchyFloorCheckpointV1>,
-    observed_source: &SourceHierarchyFloorCutV1,
+    observed_cut: &SourceHierarchyFloorCutV1,
 ) -> Result<SourceHierarchyFloorRecoveryV1, SourceHierarchyFloorErrorV1> {
     let prepared = prepared.ok_or(SourceHierarchyFloorErrorV1::Ambiguous)?;
     let checkpoint = &prepared.checkpoint;
@@ -304,13 +317,23 @@ pub(crate) fn recover_source_hierarchy_floor_v1(
     let expected_predecessor = previous.map(|floor| floor.digest());
     if expected_sequence != Some(checkpoint.sequence)
         || checkpoint.predecessor_digest != expected_predecessor
-        || !observed_source.canonical()
-        || checkpoint.cut != *observed_source
+        || !observed_cut.canonical()
+        || checkpoint.cut != *observed_cut
         || previous.is_some_and(|floor| {
             floor.cut.project != checkpoint.cut.project
                 || floor.cut.deployment_epoch != checkpoint.cut.deployment_epoch
                 || floor.cut.authority_epoch >= checkpoint.cut.authority_epoch
                 || floor.cut.source_journal_sequence >= checkpoint.cut.source_journal_sequence
+                || floor.cut.controller_journal_sequence
+                    > checkpoint.cut.controller_journal_sequence
+                || (floor.cut.controller_journal_sequence
+                    == checkpoint.cut.controller_journal_sequence
+                    && floor.cut.controller_journal_head != checkpoint.cut.controller_journal_head)
+                || floor.cut.tree_generation > checkpoint.cut.tree_generation
+                || (floor.cut.tree_generation == checkpoint.cut.tree_generation
+                    && (floor.cut.tree_head != checkpoint.cut.tree_head
+                        || floor.cut.lineage_head != checkpoint.cut.lineage_head))
+                || floor.cut.publisher_generation > checkpoint.cut.publisher_generation
                 || floor.cut.seed_packet_digest != checkpoint.cut.seed_packet_digest
                 || floor.cut.seed_request_id != checkpoint.cut.seed_request_id
                 || floor.cut.seed_issuer_generation != checkpoint.cut.seed_issuer_generation
@@ -357,6 +380,8 @@ mod tests {
             lineage_head: digest(3),
             source_journal_sequence: 4,
             source_journal_head: digest(5),
+            controller_journal_sequence: 5,
+            controller_journal_head: digest(22),
             publisher_generation: 6,
             publisher_head: digest(7),
             project_authorization_head: digest(8),
@@ -468,5 +493,50 @@ mod tests {
             ),
             Err(SourceHierarchyFloorErrorV1::Ambiguous)
         );
+    }
+
+    #[test]
+    fn successor_rejects_controller_fork_and_generation_regression() {
+        let mut prior_cut = cut();
+        prior_cut.tree_generation = 3;
+        prior_cut.publisher_generation = 8;
+        let previous = SourceHierarchyFloorCheckpointV1::new(1, None, prior_cut).expect("first");
+        let mut successor_cut = prior_cut;
+        successor_cut.authority_epoch += 1;
+        successor_cut.source_journal_sequence += 1;
+        successor_cut.source_journal_head = digest(23);
+
+        let mut candidates = Vec::new();
+        let mut controller_rollback = successor_cut;
+        controller_rollback.controller_journal_sequence -= 1;
+        candidates.push(controller_rollback);
+        let mut controller_fork = successor_cut;
+        controller_fork.controller_journal_head = digest(24);
+        candidates.push(controller_fork);
+        let mut tree_regression = successor_cut;
+        tree_regression.tree_generation -= 1;
+        candidates.push(tree_regression);
+        let mut tree_fork = successor_cut;
+        tree_fork.tree_head = digest(25);
+        candidates.push(tree_fork);
+        let mut publisher_regression = successor_cut;
+        publisher_regression.publisher_generation -= 1;
+        candidates.push(publisher_regression);
+
+        for candidate in candidates {
+            let checkpoint =
+                SourceHierarchyFloorCheckpointV1::new(2, Some(previous.digest()), candidate)
+                    .expect("shape-valid candidate");
+            let intent = PreparedSourceHierarchyFloorIntentV1::new(checkpoint);
+            assert_eq!(
+                recover_source_hierarchy_floor_v1(
+                    Some(&previous),
+                    Some(&intent),
+                    Some(&checkpoint),
+                    &candidate,
+                ),
+                Err(SourceHierarchyFloorErrorV1::Ambiguous)
+            );
+        }
     }
 }
