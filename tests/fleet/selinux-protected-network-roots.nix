@@ -79,8 +79,9 @@
     });
     aos.image.erofsCompressionLevel = 1;
     # These secure-boot test images retain the full Network runtime and test
-    # artifacts. Keep their artifact headroom local to this fixture.
-    aos.image.budgets.maxRootMiB = 768;
+    # artifacts. The largest enforcing variant exceeds 768 MiB; keep its
+    # headroom local to this fixture and below the 1 GiB root partition.
+    aos.image.budgets.maxRootMiB = 800;
     aos.image.budgets.maxInitrdMiB = 224;
     aos.image.budgets.maxUkiMiB = 240;
     aos.image.budgets.maxEspMiB = 704;
