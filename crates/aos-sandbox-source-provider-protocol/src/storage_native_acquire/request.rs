@@ -31,6 +31,10 @@ pub struct StorageNativeAcquireRequestV2 {
 impl StorageNativeAcquireRequestV2 {
     /// Constructs matching claims without authenticating either owner.
     ///
+    /// The claim sequence orders Provider-to-Storage traffic. The embedded
+    /// RootMount request sequence orders RootMount-to-Provider traffic. These
+    /// independent spaces are retained exactly, not compared for equality.
+    ///
     /// # Errors
     ///
     /// Rejects legacy, non-kernel-coupled, mismatched, or overlong requests.
@@ -66,7 +70,7 @@ impl StorageNativeAcquireRequestV2 {
         })
     }
 
-    /// Returns the canonical claim context for independent Storage selection.
+    /// Returns native claims, including the original Provider-to-Storage sequence.
     #[must_use]
     pub const fn claims(&self) -> &StorageZfsHoldTransportRequestV1 {
         &self.claims

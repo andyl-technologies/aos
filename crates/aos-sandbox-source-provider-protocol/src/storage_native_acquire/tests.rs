@@ -226,6 +226,59 @@ fn sign_receipt(
 }
 
 #[test]
+fn independent_carrier_and_root_sequences_are_bound_without_being_equated() {
+    let fixture = Fixture::new();
+    let original = fixture.request.request();
+    let root = decode_acquire_request(original.signed_root_request().subject()).unwrap();
+    assert_eq!(root.sequence(), 2);
+    assert_eq!(original.claims().sequence(), 30);
+    assert!(
+        fixture
+            .request
+            .require_exact_replay(&fixture.request)
+            .is_ok()
+    );
+
+    let claims = original.claims();
+    let (issued, expires) = claims.validity();
+    let changed_claims = StorageZfsHoldTransportRequestV1::new(
+        claims.sequence() + 1,
+        claims.attempt().0,
+        claims.attempt().1,
+        claims.provider_acquisition().0,
+        claims.holder_session().0,
+        claims.holder_session().1,
+        claims.provider_acquisition().1,
+        claims.selection().0,
+        claims.selection().1,
+        issued,
+        expires,
+        claims.catalog().clone(),
+    )
+    .unwrap();
+    let changed =
+        StorageNativeAcquireRequestV2::new(changed_claims, original.signed_root_request().clone())
+            .unwrap();
+    let changed = SignedStorageNativeAcquireRequestV2::sign(
+        changed,
+        fixture.request.signer().clone(),
+        &fixture.provider_key,
+    )
+    .unwrap();
+    assert_eq!(
+        decode_acquire_request(changed.request().signed_root_request().subject())
+            .unwrap()
+            .sequence(),
+        root.sequence()
+    );
+    assert_eq!(changed.request().claims().sequence(), 31);
+    assert_eq!(
+        changed.require_exact_replay(&fixture.request),
+        Err(StorageNativeAcquireErrorV2::ReplayConflict)
+    );
+}
+
+#[test]
 fn canonical_native_graph_is_distinct_from_negative_only_carrier() {
     let fixture = Fixture::new();
     let request = fixture.request.to_canonical_bytes();

@@ -30,10 +30,13 @@
 //! cleanup or absence. These public scalar models grant no journal, kernel,
 //! release, descriptor-send, or production Acquire authority.
 //!
-//! The signed claim sequence is the original request sequence. A future owner
-//! must durably admit its first use and allow retry only for the exact saved
-//! signed bytes and original live custody; it must not apply the negative-only
-//! carrier's strictly-next rule as an implicit positive retry migration.
+//! The signed claim sequence belongs to Provider-to-Storage, independently of
+//! the embedded RootMount-to-Provider request sequence. Both are committed;
+//! they are not required to be equal. A future Storage owner must durably admit
+//! the first native carrier sequence and allow retry only for the exact saved
+//! signed bytes, including both original sequences, and original live custody.
+//! A fresh carrier sequence is not an exact positive retry; the negative-only
+//! carrier's strictly-next rule does not migrate an old accepted request.
 
 mod acceptance;
 mod cleanup;
