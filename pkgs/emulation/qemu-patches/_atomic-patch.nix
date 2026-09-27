@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "98d5eb065e300efbf1daa37d349890151ea25b72ec6e15713e2ca0a5af1a539b";
+  sha256 = "07220467b263546865f09fa3f044e495888ad801af024c6cb789e5b99b01d7bd";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -25,9 +25,14 @@
     "Reject malformed clock state and active PPC PMU migration before guest"
     "continuation. Preserve inactive and instruction-only PMU migration,"
     "ordinary-QEMU compatibility, and the GPL/Apache process boundary."
+    ""
+    "Keep a bottom half alive while a nested poll drains its owner, retain the"
+    "hot-fork inventory row through callback accounting, preserve the ARM timer"
+    "horizon in picosecond mode, and avoid fw_cfg device lookup when no deferred"
+    "service is pending. Wait for NBD export deletion in the upstream iotest."
   ];
-  commit = "5bf808077f31e34e9622a3460d32926ca3586d0a";
-  tree = "68d4a600d73796a1f4b83e367cae7f11ad8af6b1";
+  commit = "87c47bfbb53934f8fcd691194276780856331c8a";
+  tree = "c4d2221e1d2d5e3c91dcc0a99640ade0ad4ee9f4";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -36,7 +41,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "0a4837b119d62111cee4417c483d02ded5bcb2bf21807cf245e35e9fc926b903";
+  bundleSha256 = "bde52068cef45ed771055f5d048bbdb645b40ba6ac95930db07943d74fa0c672";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

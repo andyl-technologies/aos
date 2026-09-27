@@ -55,6 +55,8 @@
           mkdir -p "$out"
           install -m 644 tests/tcg/plugins/crucible-memory-access.c "$out/"
           install -m 644 tests/tcg/plugins/crucible-memory-dma.c "$out/"
+          install -m 644 hw/nvram/fw_cfg.c "$out/"
+          install -m 644 system/crucible-hot-fork-coordinator.c "$out/"
         '';
       }
     ];
@@ -75,11 +77,57 @@ in
         pkgs.grep
         pkgs.llvm
         pkgs.pkg-config
+        pkgs.sed
         pkgs.linux
         qemuPackage
         referenceQemu
       ];
       phases = [
+        {
+          name = "check-fwcfg-deadline-invariants";
+          script = ''
+            set -eu
+            source=${pluginSource}/fw_cfg.c
+            fork_source=${pluginSource}/crucible-hot-fork-coordinator.c
+
+            # The process-wide hint must never be false while a ticket exists,
+            # including after VMState commit or a copy-on-write hot fork.
+            require_order() {
+              block="$1"
+              before="$2"
+              after="$3"
+              before_line="$(printf '%s\n' "$block" | grep -nF "$before" | cut -d: -f1)"
+              after_line="$(printf '%s\n' "$block" | grep -nF "$after" | cut -d: -f1)"
+              test "$(printf '%s\n' "$before_line" | grep -Ec '^[0-9]+$')" -eq 1
+              test "$(printf '%s\n' "$after_line" | grep -Ec '^[0-9]+$')" -eq 1
+              test "$before_line" -lt "$after_line"
+            }
+
+            clear="$(sed -n '/^static void fw_cfg_crucible_ticket_clear(/,/^}/p' "$source")"
+            transfer="$(sed -n '/^static void fw_cfg_dma_transfer(/,/^}/p' "$source")"
+            restore="$(sed -n '/^static void fw_cfg_crucible_vmstate_commit(/,/^}/p' "$source")"
+            deadline="$(sed -n '/^static uint64_t fw_cfg_crucible_service_deadline(/,/^}/p' "$source")"
+
+            require_order "$clear" 's->crucible_service_pending = false;' \
+              'qatomic_set(&fw_cfg_crucible_service_may_be_pending, false);'
+            require_order "$transfer" \
+              'qatomic_set(&fw_cfg_crucible_service_may_be_pending, true);' \
+              's->crucible_service_pending = true;'
+            require_order "$restore" \
+              'qatomic_set(&fw_cfg_crucible_service_may_be_pending, true);' \
+              's->crucible_service_pending = true;'
+            require_order "$deadline" \
+              '!qatomic_read(&fw_cfg_crucible_service_may_be_pending)' \
+              's = fw_cfg_find();'
+
+            test "$(grep -Fc 'fw_cfg_crucible_service_may_be_pending' "$source")" -eq 5
+            grep -Fq 'return FW_CFG(object_resolve_path_type("", TYPE_FW_CFG, NULL));' "$source"
+            test "$(grep -Fc 'object_property_add_child(OBJECT(qdev_get_machine()), TYPE_FW_CFG,' "$source")" -eq 2
+            grep -Fq 'at most one %s device is permitted' "$source"
+            grep -Fq 'child = fork();' "$fork_source"
+            printf 'fwcfg_deadline_invariants=PASS\n'
+          '';
+        }
         {
           name = "build-live-fixtures";
           script = ''
@@ -98,7 +146,7 @@ in
               ${pluginSource}/crucible-memory-dma.c \
               -o crucible-memory-dma.so \
               $(pkg-config --libs glib-2.0)
-            for mode in $(seq 1 22); do
+            for mode in $(seq 1 23); do
               ${pkgs.llvm}/bin/clang --target=i386-none-elf \
                 -c -Wa,-defsym,TEST_MODE=$mode \
                 ${./phase2-qemu-memory-access-guest.S} \
@@ -106,13 +154,15 @@ in
               ${pkgs.llvm}/bin/ld.lld -m elf_i386 \
                 -T ${./phase2-qemu-memory-access-guest.ld} \
                 "guest-x86-$mode.o" -o "guest-x86-$mode.elf"
-              ${pkgs.llvm}/bin/clang --target=aarch64-none-elf \
-                -c -Wa,-defsym,TEST_MODE=$mode \
-                ${./phase2-qemu-memory-access-guest-aarch64.S} \
-                -o "guest-aarch64-$mode.o"
-              ${pkgs.llvm}/bin/ld.lld \
-                -T ${./phase2-qemu-memory-access-guest-aarch64.ld} \
-                "guest-aarch64-$mode.o" -o "guest-aarch64-$mode.elf"
+              if test "$mode" -le 22; then
+                ${pkgs.llvm}/bin/clang --target=aarch64-none-elf \
+                  -c -Wa,-defsym,TEST_MODE=$mode \
+                  ${./phase2-qemu-memory-access-guest-aarch64.S} \
+                  -o "guest-aarch64-$mode.o"
+                ${pkgs.llvm}/bin/ld.lld \
+                  -T ${./phase2-qemu-memory-access-guest-aarch64.ld} \
+                  "guest-aarch64-$mode.o" -o "guest-aarch64-$mode.elf"
+              fi
             done
           '';
         }
@@ -280,6 +330,9 @@ in
               if test "$length" -eq 2; then
                 mask=ffff
                 replacement=a014
+              elif test "$length" -eq 4; then
+                mask=ffffffff
+                replacement=a5a5a5a5
               elif test "$length" -eq 8; then
                 mask=ffffffffffffffff
                 replacement=a5a5a5a5a5a5a5a5
@@ -341,6 +394,8 @@ in
               run_advanced_case "$architecture" 21 \
                 page-table-walk-retry 5a 32 8
               if test "$architecture" = x86_64; then
+                run_advanced_case "$architecture" 23 \
+                  fwcfg-service-write 51 16 4
                 run_advanced_case "$architecture" 22 \
                   page-table-walk-nested-stage1 5a 32 8
                 run_advanced_case "$architecture" 22 \
