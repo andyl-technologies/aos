@@ -86,6 +86,7 @@
   };
 in
   mkDerivation {
+    passthru.sourceArchives = sources;
     pname = "bazel-asm";
     version = "9.2+9.6";
     src = (builtins.head sources).src;
