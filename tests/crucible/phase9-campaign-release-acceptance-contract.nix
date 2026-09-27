@@ -92,6 +92,26 @@ in
             printf 'canonical result\n' > "$evidence/evidence/canonical-results.tsv"
             printf 'command journal\n' > "$evidence/evidence/command-journal.tsv"
             printf 'reproduction artifact\n' > "$evidence/evidence/reproduction.crucible"
+            printf '24\n25\n26\n27\n' > "$evidence/evidence/allowed-cpus"
+            printf 'canonical identity\n' > "$evidence/evidence/canonical-identities.tsv"
+            printf 'artifact digest\n' > "$evidence/evidence/reproduction-artifacts.sha256"
+            printf 'replay transcript\n' > "$evidence/evidence/replay.jsonl"
+            mkdir -p "$evidence/evidence/replay-pressure"
+            printf 'replay worker\n' > "$evidence/evidence/replay-pressure/pids"
+            printf 'replay worker status\n' > "$evidence/evidence/replay-pressure/status"
+            for profile in \
+              quiet-single-core randomized-worker-two-core loaded-io-stall-four-core
+            do
+              profile_evidence="$evidence/evidence/profiles/$profile"
+              mkdir -p "$profile_evidence/pressure"
+              printf 'profile=%s\n' "$profile" > "$profile_evidence/profile.env"
+              : > "$profile_evidence/store-populate.log"
+              printf 'verify transcript\n' > "$profile_evidence/verify.jsonl"
+              printf 'reduction artifact digest\n' > "$profile_evidence/reduction-artifacts.sha256"
+              printf 'reduction artifact\n' > "$profile_evidence/reproduction.crucible"
+              : > "$profile_evidence/pressure/pids"
+              : > "$profile_evidence/pressure/status"
+            done
             canonical_sha="$(sha256sum "$evidence/evidence/canonical-results.tsv" | cut -d ' ' -f 1)"
             journal_sha="$(sha256sum "$evidence/evidence/command-journal.tsv" | cut -d ' ' -f 1)"
             artifact_sha="$(sha256sum "$evidence/evidence/reproduction.crucible" | cut -d ' ' -f 1)"
@@ -141,6 +161,21 @@ in
             RESULT
 
             ${pkgs.bash}/bin/bash ${runner} --probe-e2e-evidence "$evidence"
+
+            mv "$evidence/evidence/replay.jsonl" "$test_root/replay.missing"
+            if ${pkgs.bash}/bin/bash ${runner} --probe-e2e-evidence "$evidence"; then
+              echo 'release acceptance accepted a missing replay transcript' >&2
+              exit 1
+            fi
+            mv "$test_root/replay.missing" "$evidence/evidence/replay.jsonl"
+
+            profile_verify="$evidence/evidence/profiles/loaded-io-stall-four-core/verify.jsonl"
+            mv "$profile_verify" "$test_root/profile-verify.missing"
+            if ${pkgs.bash}/bin/bash ${runner} --probe-e2e-evidence "$evidence"; then
+              echo 'release acceptance accepted a missing profile transcript' >&2
+              exit 1
+            fi
+            mv "$test_root/profile-verify.missing" "$profile_verify"
 
             cp "$evidence/evidence/canonical-results.tsv" "$test_root/canonical.original"
             printf 'tampered result\n' > "$evidence/evidence/canonical-results.tsv"
@@ -273,7 +308,7 @@ in
             schema=aos.crucible.campaign-release-acceptance-contract.v2
             automated_evidence=required
             e2e_evidence=local-live-qemu-required
-            negative_controls=missing-evidence,missing-result,tampered-results,tampered-manifest-digest,mismatched-built-inputs,mismatched-package,mismatched-release-components
+            negative_controls=missing-evidence,missing-result,missing-replay-transcript,missing-profile-transcript,tampered-results,tampered-manifest-digest,mismatched-built-inputs,mismatched-package,mismatched-release-components
             RESULT
           '';
         }
