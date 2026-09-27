@@ -8,7 +8,8 @@ attempt was admitted.
 
 The current implementation is deliberately single-host. It does not provide
 multi-host executor fanout. A campaign repository has one authoritative local
-reference owner, while immutable objects may use a composed local store.
+reference owner. The built-in store uses a SQLite immutable-object leaf and
+durable directory refs; an explicit store deployment may use a composed graph.
 
 Release qualification uses the checked
 [automated packaged-QEMU matrix](../../rfcs/0020-crucible-campaigns/14-automated-release-validation.md).
@@ -504,9 +505,17 @@ record ID and must already occur in the daemon's verified import closure.
 
 The campaign endpoint is a managed Unix socket. Its state directory, peer
 policy, optional component authority keys, and any initial imports must be fixed
-before the socket becomes visible. This control-only setup creates a policy for
-the current Unix peer and exercises creation, inspection, derivation, and
-lifecycle mutations without planner or debugger component authority:
+before the socket becomes visible. Without `--campaign-store`, the owner keeps
+immutable objects in `STATE/objects/objects.sqlite3` (with SQLite journal files
+when present) and refs in `STATE/refs`, where `STATE` is `--campaign-state`.
+Startup reopens an existing SQLite state directory. It rejects a directory-leaf
+layout under `STATE/objects`, even if that layout contains only inventory
+state; it does not convert the layout in place. Starting the built-in profile
+after directory-leaf use requires a separate state directory.
+
+This control-only setup creates a policy for the current Unix peer and exercises
+creation, inspection, derivation, and lifecycle mutations without planner or
+debugger component authority:
 
 ```sh
 nix build .#pkg-jq -o result-jq
@@ -1095,8 +1104,10 @@ authority.
 
 ## Inspect and collect a composed store
 
-When the daemon uses `--campaign-store STORE`, use that same strict deployment
-file for inspection. `status` authenticates and describes the admitted graph
+For an explicit `--campaign-store STORE` deployment, use that same strict
+deployment file for inspection. These `store` commands operate on the supplied
+graph; they do not infer the built-in SQLite store from `--campaign-state`.
+`status` authenticates and describes the admitted graph
 without reading object bodies. `ensure` streams one exact content ID through
 authenticated EOF, and `verify` authenticates every bounded physical placement
 under a stable generation:
