@@ -9,7 +9,8 @@ fn public_offline_archive_transfer_reports_and_authenticates_sensitive_closure()
     let destination = FlightFixture::new()?;
     let trace_backend = DirectoryBlobBackend::new("archive-source-trace", &source.objects);
 
-    run_public_offline_archive_transfer(&source, &destination, &trace_backend)
+    run_public_offline_archive_transfer(&source, &destination, &trace_backend, false)?;
+    Ok(())
 }
 
 #[test]
@@ -23,7 +24,8 @@ fn public_archive_transfer_is_backend_neutral_across_compressed_stores()
         MAXIMUM_LOGICAL_OBJECT_BYTES,
     )?;
 
-    run_public_offline_archive_transfer(&source, &destination, &trace_backend)
+    run_public_offline_archive_transfer(&source, &destination, &trace_backend, false)?;
+    Ok(())
 }
 
 #[test]
@@ -33,7 +35,7 @@ fn public_worked_network_archive_survives_packed_repack_outage_and_corruption()
     let destination = packed_archive_fixture()?;
     let trace_backend = PackedBlobBackend::open("packed", &source.objects, 65_536)?;
 
-    run_public_offline_archive_transfer(&source, &destination, &trace_backend)?;
+    run_public_offline_archive_transfer(&source, &destination, &trace_backend, false)?;
     let mut service = source.start_service(None)?;
     let source_heads = DERIVED_CAMPAIGNS
         .iter()
@@ -140,7 +142,11 @@ fn public_worked_network_archive_survives_packed_repack_outage_and_corruption()
     Ok(())
 }
 
-fn packed_repack_command(fixture: &FlightFixture, journal: &Path, operation: &str) -> Command {
+pub(super) fn packed_repack_command(
+    fixture: &FlightFixture,
+    journal: &Path,
+    operation: &str,
+) -> Command {
     let mut command = command(&[
         "--format",
         "jsonl",
@@ -157,7 +163,7 @@ fn packed_repack_command(fixture: &FlightFixture, journal: &Path, operation: &st
     command
 }
 
-fn packed_archive_fixture() -> Result<FlightFixture, Box<dyn Error>> {
+pub(super) fn packed_archive_fixture() -> Result<FlightFixture, Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
     let refs = fixture._temporary.path().join("refs");
     fs::write(
@@ -210,11 +216,12 @@ maximum_logical_object_bytes = {MAXIMUM_LOGICAL_OBJECT_BYTES}
     Ok(fixture)
 }
 
-fn run_public_offline_archive_transfer(
+pub(super) fn run_public_offline_archive_transfer(
     source: &FlightFixture,
     destination: &FlightFixture,
     trace_backend: &dyn ImmutableBlobBackend,
-) -> Result<(), Box<dyn Error>> {
+    pause_source_before_transfer: bool,
+) -> Result<(ContentId, ContentId), Box<dyn Error>> {
     let generated = run_json(
         command(&[
             "--format",
@@ -230,15 +237,18 @@ fn run_public_offline_archive_transfer(
     let manifest = json_path(&generated, "manifest")?;
     let lineage = json_path(&generated, "lineage")?;
     let policy = json_path(&generated, "policy")?;
+    let scenario = ContentId::parse(&typed_content_id(&json_string(&generated, "scenario")?)?)?;
     let mut service = source.start_service(Some(&manifest))?;
-    run_json(
-        connected_campaign(source)
-            .args(["create", CAMPAIGN, "--lineage"])
-            .arg(&lineage)
-            .arg("--policy")
-            .arg(&policy),
-        "create archive source campaign",
-    )?;
+    let mut create = connected_campaign(source);
+    create
+        .args(["create", CAMPAIGN, "--lineage"])
+        .arg(&lineage)
+        .arg("--policy")
+        .arg(&policy);
+    if pause_source_before_transfer {
+        create.args(["--start-command", START_COMMAND]);
+    }
+    run_json(&mut create, "create archive source campaign")?;
     let source_snapshot = json_string(&campaign_status(source)?, "snapshot")?;
     let mut derived_snapshots = Vec::new();
     let mut parent = (CAMPAIGN.to_string(), source_snapshot.clone());
@@ -258,6 +268,25 @@ fn run_public_offline_archive_transfer(
         derived_snapshots.push(snapshot);
     }
     assert_ne!(derived_snapshots[0], derived_snapshots[1]);
+    if pause_source_before_transfer {
+        let running = campaign_status(source)?;
+        assert_eq!(running["state"], "running");
+        let running_snapshot = json_string(&running, "snapshot")?;
+        run_json(
+            connected_campaign(source).args([
+                "pause",
+                CAMPAIGN,
+                "--expected",
+                &running_snapshot,
+                "--command",
+                PAUSE_COMMAND,
+                "--active",
+                "checkpoint",
+            ]),
+            "exact-pause archive source campaign",
+        )?;
+        assert_eq!(campaign_status(source)?["state"], "paused");
+    }
     let snapshot = &derived_snapshots[0];
     service.stop()?;
 
@@ -406,5 +435,8 @@ fn run_public_offline_archive_transfer(
     println!("archive_transfer_derived_refs_retained=2");
     println!("archive_transfer_imported_campaign_authenticated=true");
 
-    Ok(())
+    let policy = CampaignPolicy::from_canonical_bytes(&fs::read(policy)?)?
+        .id()?
+        .content_id();
+    Ok((policy, scenario))
 }
