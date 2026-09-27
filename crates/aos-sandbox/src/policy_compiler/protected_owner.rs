@@ -812,7 +812,7 @@ mod tests {
             .commit(&challenge)
             .expect("terminal challenge budget");
         authority.commit(&terminal).expect("full record budget");
-        assert_eq!(filled + planned.len(), 9_235);
+        assert_eq!(filled + planned.len(), limits.maximum_materialized_records);
 
         let overflow = JournalTransaction::new(
             [0xa2; 16],
