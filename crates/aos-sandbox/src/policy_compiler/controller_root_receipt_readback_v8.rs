@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use ed25519_dalek::{Signature, Signer as _, SigningKey};
+use ed25519_dalek::SigningKey;
 
 use crate::controller_service::journal::production_journal_limits;
 use crate::journal::{Journal, RecordNamespace};
@@ -22,14 +22,14 @@ use super::controller_effect_ack_readback::{
 };
 use super::controller_effect_ack_readback_v8::require_current_ack;
 use super::controller_hold_readback::PinnedControllerHoldSignerV1;
+use super::controller_v8_readback_envelope::{
+    ControllerV8ReadbackProtocol, HEADER_BYTES, SIGNATURE_BYTES, sign_packet, verify_packet,
+};
 
-const MAGIC: &[u8; 8] = b"AOSCTR08";
-const SIGNATURE_DOMAIN: &[u8] =
-    b"aos.sandbox.controller-policy-v8-root-receipt.readback.v1\0/var/lib/aos/sandboxd/controller.journal\0";
-const BODY_BYTES: usize = 84 + ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1;
+const BODY_BYTES: usize = HEADER_BYTES + ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1;
 
 /// Bounds one signed Controller V8 Root receipt.
-pub const CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1: usize = BODY_BYTES + 64;
+pub const CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1: usize = BODY_BYTES + SIGNATURE_BYTES;
 
 /// Signs the exact durable Root receipt under the retained Controller writer.
 ///
@@ -131,34 +131,15 @@ pub fn verify_controller_v8_root_receipt_readback_v1(
     challenge: ControllerEffectAckChallengeV1,
     expected_uid: u32,
 ) -> Result<RootV8EffectAckV1, ControllerEffectAckReadbackErrorV1> {
-    if bytes.len() != CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1
-        || bytes[..8] != MAGIC[..]
-        || bytes[8..10] != 1_u16.to_be_bytes()
-        || bytes[10..16] != [0; 6]
-        || bytes[16..24] != signer.generation().to_be_bytes()
-        || bytes[24..40] != challenge.nonce()
-        || bytes[40..72] != *challenge.cut().as_bytes()
-        || bytes[72..76] != expected_uid.to_be_bytes()
-        || expected_uid == 0
-        || bytes[76..84] == [0; 8]
-    {
-        return Err(ControllerEffectAckReadbackErrorV1::Stale);
-    }
-    let receipt = RootV8EffectAckV1::from_record_bytes(&bytes[84..BODY_BYTES])
-        .map_err(|_| ControllerEffectAckReadbackErrorV1::Stale)?;
-    let signature = Signature::from_bytes(
-        &bytes[BODY_BYTES..]
-            .try_into()
-            .map_err(|_| ControllerEffectAckReadbackErrorV1::Stale)?,
-    );
-    signer
-        .verifying_key()
-        .verify_strict(
-            &[SIGNATURE_DOMAIN, &bytes[..BODY_BYTES]].concat(),
-            &signature,
-        )
-        .map_err(|_| ControllerEffectAckReadbackErrorV1::Signature)?;
-    Ok(receipt)
+    let record = verify_packet(
+        ControllerV8ReadbackProtocol::RootReceipt,
+        bytes,
+        signer,
+        challenge,
+        expected_uid,
+    )?;
+    RootV8EffectAckV1::from_record_bytes(record)
+        .map_err(|_| ControllerEffectAckReadbackErrorV1::Stale)
 }
 
 fn sign_fields(
@@ -170,25 +151,17 @@ fn sign_fields(
     key: &SigningKey,
 ) -> Result<[u8; CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1], ControllerEffectAckReadbackErrorV1>
 {
-    if uid == 0 || sequence == 0 || generation == 0 {
-        return Err(ControllerEffectAckReadbackErrorV1::Stale);
-    }
-    let mut bytes = [0; CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1];
-    bytes[..8].copy_from_slice(MAGIC);
-    bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-    bytes[16..24].copy_from_slice(&generation.to_be_bytes());
-    bytes[24..40].copy_from_slice(&challenge.nonce());
-    bytes[40..72].copy_from_slice(challenge.cut().as_bytes());
-    bytes[72..76].copy_from_slice(&uid.to_be_bytes());
-    bytes[76..84].copy_from_slice(&sequence.to_be_bytes());
-    bytes[84..BODY_BYTES].copy_from_slice(
+    sign_packet(
+        ControllerV8ReadbackProtocol::RootReceipt,
         &receipt
             .record_bytes()
             .map_err(|_| ControllerEffectAckReadbackErrorV1::Stale)?,
-    );
-    let signature = key.sign(&[SIGNATURE_DOMAIN, &bytes[..BODY_BYTES]].concat());
-    bytes[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
-    Ok(bytes)
+        uid,
+        sequence,
+        challenge,
+        generation,
+        key,
+    )
 }
 
 #[cfg(test)]
@@ -201,4 +174,31 @@ pub(crate) fn sign_test_controller_v8_root_receipt_readback_v1(
 ) -> Result<[u8; CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1], ControllerEffectAckReadbackErrorV1>
 {
     sign_fields(receipt, uid, 7, challenge, generation, key)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use super::*;
+
+    #[test]
+    fn current_root_receipt_requires_durable_row() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(directory.path()).unwrap().uid();
+        assert_ne!(uid, 0);
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "controller.journal",
+            production_journal_limits(),
+            uid,
+        )
+        .unwrap();
+        assert!(matches!(
+            current_receipt(&mut journal),
+            Err(ControllerEffectAckReadbackErrorV1::Stale)
+        ));
+    }
 }

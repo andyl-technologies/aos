@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use ed25519_dalek::{Signature, Signer as _, SigningKey};
+use ed25519_dalek::SigningKey;
 
 use crate::controller_service::journal::production_journal_limits;
 use crate::journal::{ControllerPolicyV8EffectAckV1, Journal, RecordNamespace};
@@ -20,14 +20,14 @@ use super::controller_effect_ack_readback::{
     ControllerEffectAckChallengeV1, ControllerEffectAckReadbackErrorV1,
 };
 use super::controller_hold_readback::PinnedControllerHoldSignerV1;
+use super::controller_v8_readback_envelope::{
+    ControllerV8ReadbackProtocol, HEADER_BYTES, SIGNATURE_BYTES, sign_packet, verify_packet,
+};
 use super::public_create_source::current_parentless_create_project_source_v1;
 
-const MAGIC: &[u8; 8] = b"AOSCTE08";
-const SIGNATURE_DOMAIN: &[u8] =
-    b"aos.sandbox.controller-policy-v8-effect-ack.readback.v1\0/var/lib/aos/sandboxd/controller.journal\0";
-const BODY_BYTES: usize = 404;
+const BODY_BYTES: usize = HEADER_BYTES + 320;
 /// Bounds one exact signed V8 Controller ACK packet.
-pub const CONTROLLER_V8_EFFECT_ACK_READBACK_BYTES_V1: usize = BODY_BYTES + 64;
+pub const CONTROLLER_V8_EFFECT_ACK_READBACK_BYTES_V1: usize = BODY_BYTES + SIGNATURE_BYTES;
 
 /// Signs the exact held V8 ACK from the protected Controller journal.
 ///
@@ -126,43 +126,14 @@ pub fn verify_controller_v8_effect_ack_readback_v1(
     challenge: ControllerEffectAckChallengeV1,
     expected_uid: u32,
 ) -> Result<ControllerPolicyV8EffectAckV1, ControllerEffectAckReadbackErrorV1> {
-    if bytes.len() != CONTROLLER_V8_EFFECT_ACK_READBACK_BYTES_V1
-        || bytes[..8] != MAGIC[..]
-        || bytes[8..10] != 1_u16.to_be_bytes()
-        || bytes[10..16] != [0; 6]
-        || bytes[16..24] != signer.generation().to_be_bytes()
-        || bytes[24..40] != challenge.nonce()
-        || bytes[40..72] != *challenge.cut().as_bytes()
-    {
-        return Err(ControllerEffectAckReadbackErrorV1::Stale);
-    }
-    let uid = u32::from_be_bytes(
-        bytes[72..76]
-            .try_into()
-            .map_err(|_| ControllerEffectAckReadbackErrorV1::Stale)?,
-    );
-    let sequence = u64::from_be_bytes(
-        bytes[76..84]
-            .try_into()
-            .map_err(|_| ControllerEffectAckReadbackErrorV1::Stale)?,
-    );
-    if uid == 0 || uid != expected_uid || sequence == 0 {
-        return Err(ControllerEffectAckReadbackErrorV1::Stale);
-    }
-    let ack = ControllerPolicyV8EffectAckV1::from_record_bytes(&bytes[84..BODY_BYTES])?;
-    let signature = Signature::from_bytes(
-        &bytes[BODY_BYTES..]
-            .try_into()
-            .map_err(|_| ControllerEffectAckReadbackErrorV1::Stale)?,
-    );
-    signer
-        .verifying_key()
-        .verify_strict(
-            &[SIGNATURE_DOMAIN, &bytes[..BODY_BYTES]].concat(),
-            &signature,
-        )
-        .map_err(|_| ControllerEffectAckReadbackErrorV1::Signature)?;
-    Ok(ack)
+    let record = verify_packet(
+        ControllerV8ReadbackProtocol::EffectAck,
+        bytes,
+        signer,
+        challenge,
+        expected_uid,
+    )?;
+    Ok(ControllerPolicyV8EffectAckV1::from_record_bytes(record)?)
 }
 
 fn sign_fields(
@@ -173,21 +144,15 @@ fn sign_fields(
     generation: u64,
     key: &SigningKey,
 ) -> Result<[u8; CONTROLLER_V8_EFFECT_ACK_READBACK_BYTES_V1], ControllerEffectAckReadbackErrorV1> {
-    if uid == 0 || sequence == 0 || generation == 0 {
-        return Err(ControllerEffectAckReadbackErrorV1::Stale);
-    }
-    let mut bytes = [0; CONTROLLER_V8_EFFECT_ACK_READBACK_BYTES_V1];
-    bytes[..8].copy_from_slice(MAGIC);
-    bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-    bytes[16..24].copy_from_slice(&generation.to_be_bytes());
-    bytes[24..40].copy_from_slice(&challenge.nonce());
-    bytes[40..72].copy_from_slice(challenge.cut().as_bytes());
-    bytes[72..76].copy_from_slice(&uid.to_be_bytes());
-    bytes[76..84].copy_from_slice(&sequence.to_be_bytes());
-    bytes[84..BODY_BYTES].copy_from_slice(&ack.record_bytes()?);
-    let signature = key.sign(&[SIGNATURE_DOMAIN, &bytes[..BODY_BYTES]].concat());
-    bytes[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
-    Ok(bytes)
+    sign_packet(
+        ControllerV8ReadbackProtocol::EffectAck,
+        &ack.record_bytes()?,
+        uid,
+        sequence,
+        challenge,
+        generation,
+        key,
+    )
 }
 
 #[cfg(test)]

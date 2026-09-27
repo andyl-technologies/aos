@@ -21,6 +21,7 @@ mod controller_hold_pin;
 mod controller_hold_readback;
 mod controller_readback_session;
 mod controller_root_receipt_readback_v8;
+mod controller_v8_readback_envelope;
 mod deployment_head;
 mod model;
 mod namespace;
