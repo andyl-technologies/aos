@@ -149,6 +149,7 @@ struct ProtectedWriteRequestV1<'a> {
 ///
 /// Construction is private to this authority module and its protected-store
 /// integration. It is singular and cannot be cloned or copied.
+#[derive(Eq, PartialEq)]
 struct ProtectedWriteResultV1 {
     storage_domain_digest: ObjectDigest,
     durability_generation: u64,
@@ -5681,7 +5682,7 @@ impl<'a> ProtectedStoreAuthoritySessionV1<'a> {
             || readback.canonical_bytes != canonical_bytes
             || ObjectDigest::from_bytes(Sha256::digest(&readback.canonical_bytes).into())
                 != canonical_bytes_digest
-            || !same_write_result(&result, &readback.result)
+            || result != readback.result
         {
             return Ok(ProtectedStorePersistOutcomeV1::RecoveryRequired(recovery));
         }
@@ -5848,18 +5849,6 @@ fn protected_transaction_digest(
     digest.update(next_generation.to_be_bytes());
     digest.update(replay_fence.as_bytes());
     ObjectDigest::from_bytes(digest.finalize().into())
-}
-
-fn same_write_result(left: &ProtectedWriteResultV1, right: &ProtectedWriteResultV1) -> bool {
-    left.storage_domain_digest == right.storage_domain_digest
-        && left.durability_generation == right.durability_generation
-        && left.protected_root_digest == right.protected_root_digest
-        && left.opaque_receipt_commitment == right.opaque_receipt_commitment
-        && left.replay_fence == right.replay_fence
-        && left.authority_binding_digest == right.authority_binding_digest
-        && left.predecessor_root_digest == right.predecessor_root_digest
-        && left.transaction_digest == right.transaction_digest
-        && left.context == right.context
 }
 
 fn encode_protected_store_history(
