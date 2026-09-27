@@ -3,6 +3,11 @@
 use super::*;
 use crucible_cas::content_store::{ContentId, ObjectKind};
 
+// A fresh packaged realization must boot to its authenticated selectable.
+// The previous 90-second host wait reached only 203 ms of virtual time;
+// source discovery on the same clock reaches its marker near 555 ms.
+const LIFECYCLE_SELECTABLE_WAIT: Duration = Duration::from_secs(600);
+
 #[test]
 #[ignore = "requires packaged QEMU, cgroup-v2, and ext4 project quota inside the VM check"]
 fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Error>> {
@@ -23,7 +28,13 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
 
     grant_and_start_guest_choice_campaign(&fixture)?;
     let (parent, configuration) = wait_for_public_discovery(&fixture, &mut service, &compiled)?;
-    let recovery = wait_for_choice(&fixture, "network.recovery-policy", &parent, &configuration)?;
+    let recovery = wait_for_choice_with_timeout(
+        &fixture,
+        "network.recovery-policy",
+        &parent,
+        &configuration,
+        LIFECYCLE_SELECTABLE_WAIT,
+    )?;
     let widened = campaign_status(&fixture)?;
     assert!(json_u64(&widened["semantic"], "admitted_attempts")? >= 1);
     assert_ne!(widened["snapshot"], created_snapshot);
@@ -114,11 +125,12 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
 
     let safe_parent = json_string(&safe_explanation["observation"], "child_artifact")?;
     let safe_configuration = json_string(&safe_explanation["observation"], "child")?;
-    let retry = wait_for_choice(
+    let retry = wait_for_choice_with_timeout(
         &fixture,
         "network.retry-quanta",
         &safe_parent,
         &safe_configuration,
+        LIFECYCLE_SELECTABLE_WAIT,
     )?;
     let resumed = campaign_status(&fixture)?;
     run_json(

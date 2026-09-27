@@ -13,8 +13,9 @@ use crucible_campaign::{
 };
 use crucible_core::{FramePredicate, LinkId, RegexProgram};
 use crucible_daemon::{
-    AttemptExecutionKey, AttemptExecutionOrigin, AttemptRuntimeState, ExactCheckpointStore,
-    CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5, visit_directory_attempt_states_bounded,
+    AttemptExecutionKey, AttemptExecutionOrigin, AttemptRuntimeState,
+    CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5, ExactCheckpointStore,
+    visit_directory_attempt_states_bounded,
 };
 use crucible_session::engine::{LinkDef, LinkLossProbability, MarkerId};
 
@@ -776,7 +777,23 @@ pub(crate) fn wait_for_choice(
     parent_artifact: &str,
     parent_configuration: &str,
 ) -> Result<PublicChoice, Box<dyn Error>> {
-    let deadline = Instant::now() + Duration::from_secs(90);
+    wait_for_choice_with_timeout(
+        fixture,
+        selectable,
+        parent_artifact,
+        parent_configuration,
+        Duration::from_secs(90),
+    )
+}
+
+pub(crate) fn wait_for_choice_with_timeout(
+    fixture: &FlightFixture,
+    selectable: &str,
+    parent_artifact: &str,
+    parent_configuration: &str,
+    timeout: Duration,
+) -> Result<PublicChoice, Box<dyn Error>> {
+    let deadline = Instant::now() + timeout;
     let mut cursor = None;
     let mut last_head = None;
     let mut last_choices = None;
