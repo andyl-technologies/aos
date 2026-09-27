@@ -13,8 +13,9 @@ pub const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL: &str = "qemu_plugin_clock_deadline_
 /// QEMU's exact virtual-clock deadline function.
 ///
 /// The patched QEMU plugin API exports this symbol as a no-argument function
-/// returning either the absolute `QEMU_CLOCK_VIRTUAL` deadline in picoseconds or
-/// a negative sentinel when no virtual-clock timer is armed.
+/// returning the absolute `QEMU_CLOCK_VIRTUAL` deadline in picoseconds, `-1`
+/// when no virtual-clock timer is armed, or `-2` when an armed deadline cannot
+/// be represented.
 pub type QemuClockDeadlineFn = extern "C" fn() -> i64;
 
 /// A validated exact-deadline report from QEMU.
@@ -59,13 +60,18 @@ impl ExactDeadlineReader {
     ///
     /// # Errors
     ///
-    /// This reader has no runtime error after [`Self::require`] admits the
-    /// required QEMU export. The result type preserves the deadline-reading
-    /// boundary used by the scheduler callbacks.
+    /// Returns [`ExactDeadlineError::UnrepresentableDeadline`] when QEMU cannot
+    /// represent an armed deadline, or
+    /// [`ExactDeadlineError::UnexpectedDeadlineSentinel`] for any other negative
+    /// value. Only `-1` means no timer is armed.
     pub fn read_next_deadline(&self) -> Result<ExactDeadlineReport, ExactDeadlineError> {
-        match u64::try_from((self.clock_deadline_ps)()) {
-            Ok(deadline_ps) => Ok(ExactDeadlineReport::Armed { deadline_ps }),
-            Err(_) => Ok(ExactDeadlineReport::NoArmedTimer),
+        match (self.clock_deadline_ps)() {
+            -1 => Ok(ExactDeadlineReport::NoArmedTimer),
+            -2 => Err(ExactDeadlineError::UnrepresentableDeadline),
+            deadline_ps if deadline_ps >= 0 => Ok(ExactDeadlineReport::Armed {
+                deadline_ps: deadline_ps as u64,
+            }),
+            value => Err(ExactDeadlineError::UnexpectedDeadlineSentinel { value }),
         }
     }
 }
@@ -166,6 +172,15 @@ pub enum ExactDeadlineError {
         /// The missing QEMU plugin symbol.
         symbol: &'static str,
     },
+    /// An armed virtual-clock deadline cannot be represented by the QEMU API.
+    #[error("QEMU exact deadline is outside the representable picosecond range")]
+    UnrepresentableDeadline,
+    /// The QEMU deadline export returned a negative value outside its protocol.
+    #[error("QEMU exact deadline export returned unexpected sentinel {value}")]
+    UnexpectedDeadlineSentinel {
+        /// The unsupported negative sentinel.
+        value: i64,
+    },
     /// A multi-vCPU deadline aggregation was requested for zero vCPUs.
     #[error("multi-vCPU deadline aggregation requires a non-zero vCPU count")]
     ZeroVcpuDeadlineCount,
@@ -230,6 +245,23 @@ mod tests {
         assert_eq!(
             no_timer_reader.read_next_deadline(),
             Ok(ExactDeadlineReport::NoArmedTimer)
+        );
+    }
+
+    #[test]
+    fn exact_deadline_reader_rejects_unrepresentable_and_unknown_sentinels() {
+        let overflow_reader = ExactDeadlineReader::require(Some(test_overflow_deadline))
+            .expect("resolved deadline symbol should be accepted");
+        assert_eq!(
+            overflow_reader.read_next_deadline(),
+            Err(ExactDeadlineError::UnrepresentableDeadline)
+        );
+
+        let unknown_reader = ExactDeadlineReader::require(Some(test_unknown_deadline))
+            .expect("resolved deadline symbol should be accepted");
+        assert_eq!(
+            unknown_reader.read_next_deadline(),
+            Err(ExactDeadlineError::UnexpectedDeadlineSentinel { value: -3 })
         );
     }
 
@@ -331,5 +363,13 @@ mod tests {
 
     extern "C" fn test_no_armed_deadline() -> i64 {
         -1
+    }
+
+    extern "C" fn test_overflow_deadline() -> i64 {
+        -2
+    }
+
+    extern "C" fn test_unknown_deadline() -> i64 {
+        -3
     }
 }
