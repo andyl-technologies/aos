@@ -955,6 +955,8 @@ in
 
               export PATH="/bin:/sbin:${fullUpstreamTestGuestPath}"
               export HOME=/tmp
+              # QEMU's functional helpers read TMPDIR when their modules load.
+              export TMPDIR=/tmp
               export CONFIG_SHELL=${buildBash}/bin/bash
               export NIX_BUILD_CORES=8
               export PYTHONPATH="${buildPygdbmi}/lib/python3.14/site-packages:${buildPython}/lib/python3.14/ensurepip/_bundled/pip-25.3-py3-none-any.whl:${buildSetuptools}/lib/python3.14/site-packages/setuptools/_vendor:${buildMeson}/lib/python3/site-packages:${buildDistlib}/lib/python3.14/site-packages:${buildSetuptools}/lib/python3.14/site-packages"
