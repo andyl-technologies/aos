@@ -1871,6 +1871,7 @@ impl QemuNode {
             && (5_823_790_656..=5_825_708_109).contains(&calibration.raw_icount)
             && calibration.logical_icount <= 555_385_025_750
         {
+            // crucible-lint: allow direct-diagnostic -- the opt-in trace is captured from packaged-VM stderr.
             eprintln!(
                 "CRUCIBLE-PHASE4-CLOCK-TRACE pid={} ceiling={} outcome={advance:?} logical={} raw={} bias={:?} raw_mod4096={} next_deadline={:?} inbound={} outputs={}",
                 self.process_id(),
