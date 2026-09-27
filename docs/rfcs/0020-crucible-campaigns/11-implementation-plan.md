@@ -2426,6 +2426,10 @@ manual-bundle, trusted-signers, legacy evidence, or compatibility input path.
 - [ ] **T-CAM-9.2** Run performance baselines and prove the hot path meets the
   required scaling shape and minimum speedup.
 
+  The [pinned performance baseline procedure](../../maintainers/crucible-campaign-performance-baseline.md)
+  records the quiet-host measurement and reviewed fixture needed to unblock
+  `gate:campaign-performance`. No reference sample has been pinned yet.
+
   The packaged lazy-frontier gate reports a small real-admission planner/queue
   diagnostic, including paged accounting scans and retained logical object
   bytes. This is not the §10.4 performance gate: it has no guest host-time
