@@ -1554,6 +1554,8 @@ in
           );
           bool SecTrustEvaluateWithError(SecTrustRef trust, CFErrorRef *error);
           SecCertificateRef SecTrustGetCertificateAtIndex(SecTrustRef trust, CFIndex index);
+          OSStatus SecTrustSetOCSPResponse(SecTrustRef trust, CFTypeRef responseData);
+          OSStatus SecTrustSetVerifyDate(SecTrustRef trust, CFDateRef verifyDate);
           __END_DECLS
           #endif
           EOF
@@ -1736,6 +1738,8 @@ in
                 - _CFDictionaryGetValueIfPresent
                 - _CFDictionarySetValue
                 - _CFEqual
+                - _CFErrorCopyDescription
+                - _CFErrorGetCode
                 - _CFGetTypeID
                 - _CFLocaleCreateCanonicalLanguageIdentifierFromString
                 - _CFLocaleCopyISOLanguageCodes
@@ -1810,6 +1814,7 @@ in
                 - _kCFAllocatorNull
                 - _kCFAllocatorMalloc
                 - _kCFAllocatorSystemDefault
+                - _kCFAbsoluteTimeIntervalSince1970
                 - _kCFBooleanTrue
                 - _kCFBooleanFalse
                 - _kCFBundleExecutableKey
