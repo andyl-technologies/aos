@@ -49,6 +49,7 @@
   gnumake,
   bash,
   workerd,
+  workerd-source,
   esbuild,
 }: let
   # Wrangler 4.36.0 introduced Worker Rate Limiting binding uploads. Older
@@ -89,7 +90,7 @@
     inherit nodeModules;
     vips = sharpVips;
   };
-  modernWorkerd = callPackage ../workerd/_modern.nix {};
+  modernWorkerd = workerd-source;
 
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
@@ -422,8 +423,8 @@ in
         name = "install-source-workerd";
         script = lib.optionalString hasModernSourceRuntime ''
           NM="$out/lib/node_modules"
-          # Each npm resolver must retain its matching runtime version: Wrangler
-          # and the standalone Miniflare command use different protocol releases.
+          # Both npm resolver trees use the source-built runtime. Keep the
+          # package paths separate because the wrappers resolve from each tree.
           rm -rf "$NM"/@cloudflare/workerd-* \
             "$NM"/wrangler/node_modules/@cloudflare/workerd-*
           mkdir -p "$NM/@cloudflare/workerd-linux-${workerdLinuxArch}/bin" \
