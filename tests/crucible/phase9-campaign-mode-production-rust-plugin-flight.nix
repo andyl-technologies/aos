@@ -22,7 +22,7 @@
       import shlex
 
       mode = ${builtins.toJSON mode}
-      expected_toplevel = ${builtins.toJSON (toString toplevel)}
+      expected_toplevel = ${builtins.toJSON (toString fleet.machineSystems.primary.config.system.build.toplevel)}
       primary.wait_for_unit("multi-user.target", timeout=180)
       actual_toplevel = primary.succeed("readlink -f /run/current-system").strip()
       assert actual_toplevel == expected_toplevel, (actual_toplevel, expected_toplevel)
@@ -131,6 +131,7 @@ in
                 'campaign_mode=${mode}' \
                 "campaign_configuration_identity=$configuration_identity" \
                 'campaign_toplevel=${toplevel}' \
+                'machine_toplevel=${fleet.machineSystems.primary.config.system.build.toplevel}' \
                 'executor_derivation=${fleet}'
             } > "$out/raw-result"
             {
