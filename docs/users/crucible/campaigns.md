@@ -13,9 +13,10 @@ durable directory refs; an explicit store deployment may use a composed graph.
 
 Release qualification uses the checked
 [automated packaged-QEMU matrix](../../rfcs/0020-crucible-campaigns/14-automated-release-validation.md).
-It runs the product fixture through live deterministic TCG under same-host
-one-, two-, and four-core profiles with bounded scheduling and I/O jitter, then
-authenticates byte-identical artifacts and results.
+Its determinism gate runs a three-VM nginx, curl, and I/O-probe scenario under
+live TCG with same-host one-, two-, and four-core profiles and bounded scheduling
+and I/O jitter. It authenticates byte-identical artifacts and results. Separate
+required product gates run the five-VM Envoy campaign and its finding lifecycle.
 
 ## What is implemented
 
@@ -140,8 +141,8 @@ their authenticated build identity and current protocol versions. This binds
 all five VM roles to the actual guest image and produces new scenario, lineage,
 and policy identities. RFC-0020's
 [automated release validation](../../rfcs/0020-crucible-campaigns/14-automated-release-validation.md)
-runs this packaged fixture through the required same-host deterministic replay
-profiles.
+requires separate packaged gates for this five-VM Envoy workload and for the
+same-host deterministic replay profiles.
 
 Campaign creation uses content identities, not large artifact bodies in a
 control message. Import manifests therefore list dependency-ordered canonical
