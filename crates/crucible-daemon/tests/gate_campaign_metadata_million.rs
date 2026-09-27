@@ -146,8 +146,15 @@ fn small_real_admission_corpus_exercises_the_same_path() -> Result<(), Box<dyn E
         std::env::var_os("CRUCIBLE_CAMPAIGN_MILLION_PLANNER_EXECUTABLE")
             .ok_or("missing packaged planner worker executable")?,
     );
-    let measured = run_corpus(&root, &worker, 2 * REQUEST_SIZE)?;
-    assert_eq!(measured.hot_claimable, 2 * REQUEST_SIZE);
+    let request_count = std::env::var("CRUCIBLE_CAMPAIGN_MILLION_DIAGNOSTIC_REQUESTS")
+        .ok()
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(2);
+    assert!((1..=256).contains(&request_count));
+    let admissions = request_count * REQUEST_SIZE;
+    let measured = run_corpus(&root, &worker, admissions)?;
+    assert_eq!(measured.hot_claimable, admissions);
     assert_eq!(measured.cold_claimable, measured.hot_claimable);
     assert!(measured.index_bytes > 0);
     assert!(measured.physical_bytes > 0);
@@ -309,6 +316,7 @@ fn run_corpus(
     let mut ancestry_depth = 3_usize;
     let mut setup_elapsed = Duration::ZERO;
     let mut planner_elapsed = Duration::ZERO;
+    let emit_plan_ids = std::env::var_os("CRUCIBLE_CAMPAIGN_MILLION_DIAGNOSTIC_REQUESTS").is_some();
     for request_index in 0..admissions / REQUEST_SIZE {
         let setup_started = clock_gettime(ClockId::Monotonic);
         let request = publish_request(&repository, &lineage, request_index)?;
@@ -339,6 +347,13 @@ fn run_corpus(
             .into());
         };
         assert_eq!(issued_proposals.len(), REQUEST_SIZE);
+        if emit_plan_ids {
+            println!(
+                "campaign_million_plan_id request={} step={}",
+                request_index + 1,
+                result.step.content_id()
+            );
+        }
         parent = result.new_snapshot;
         ancestry_depth += 1;
         planner_elapsed += measurement_elapsed_since(step_started)?;
