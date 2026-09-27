@@ -98,6 +98,8 @@
   asyncProfilerMavenRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelAsyncProfilerJar;
   };
+  netty93Repositories = helperScope.bazelNetty93Repositories;
+  netty93NativeRepositories = helperScope.bazelNetty93NativeRepositories;
   googleHttpRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelGoogleHttp;
   };
@@ -202,6 +204,8 @@ in
     passthru.offlineMavenSourceRepositories = mavenSourceRepositories;
     passthru.offlineGrpcNettyRepositories = grpcNettyRepositories;
     passthru.offlineAsyncProfilerMavenRepositories = asyncProfilerMavenRepositories;
+    passthru.offlineNetty93Repositories = netty93Repositories;
+    passthru.offlineNetty93NativeRepositories = netty93NativeRepositories;
     passthru.offlineGoogleHttpRepositories = googleHttpRepositories;
     passthru.offlineTomcatAnnotationRepositories = tomcatAnnotationRepositories;
     passthru.offlineGoogleAuthRepositories = googleAuthRepositories;
@@ -220,6 +224,8 @@ in
       mavenSourceRepositories
       // grpcNettyRepositories
       // asyncProfilerMavenRepositories
+      // netty93Repositories
+      // netty93NativeRepositories
       // googleHttpRepositories
       // tomcatAnnotationRepositories
       // googleAuthRepositories
