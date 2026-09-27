@@ -35,6 +35,7 @@ use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb, ObjectDigest};
 use hmac::{Hmac, Mac as _};
 use sha2::Digest as _;
 
+use crate::record_cursor::Decoder;
 use crate::root_policy::WorkspaceRootPolicyV1;
 use crate::workspace_pin::{
     WorkspaceDatasetObservationV1, WorkspacePinAttemptPhaseV1, WorkspacePinHostScopeV1,
@@ -996,59 +997,6 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
                 difference | (left ^ right)
             })
             == 0
-}
-
-struct Decoder<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> Decoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    fn take(&mut self, length: usize) -> Result<&'a [u8], StorageStateError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(StorageStateError::CorruptRecord)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(StorageStateError::CorruptRecord)?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], StorageStateError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| StorageStateError::CorruptRecord)
-    }
-
-    fn u8(&mut self) -> Result<u8, StorageStateError> {
-        self.take(1)?
-            .first()
-            .copied()
-            .ok_or(StorageStateError::CorruptRecord)
-    }
-
-    fn u16(&mut self) -> Result<u16, StorageStateError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-
-    fn u32(&mut self) -> Result<u32, StorageStateError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-
-    fn u64(&mut self) -> Result<u64, StorageStateError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-
-    fn is_empty(&self) -> bool {
-        self.offset == self.bytes.len()
-    }
 }
 
 fn digest_bytes(bytes: &[u8]) -> ObjectDigest {

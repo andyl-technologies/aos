@@ -228,16 +228,11 @@ pub(super) fn read_lookup_slot(
     table_offset: u64,
     slot: u64,
 ) -> Result<LookupSlot, IndexError> {
-    let offset = slot
-        .checked_mul(LOOKUP_SLOT_BYTES as u64)
-        .and_then(|value| table_offset.checked_add(value))
-        .and_then(|value| usize::try_from(value).ok())
-        .ok_or(IndexError::InvalidRecord)?;
-    let end = offset
-        .checked_add(LOOKUP_SLOT_BYTES)
-        .ok_or(IndexError::InvalidRecord)?;
-    let encoded = bytes.get(offset..end).ok_or(IndexError::InvalidRecord)?;
-    let mut cursor = Cursor::new(encoded);
+    let mut cursor = Cursor::new(read_table_slot::<LOOKUP_SLOT_BYTES>(
+        bytes,
+        table_offset,
+        slot,
+    )?);
     Ok(LookupSlot {
         parent: cursor.u64()?,
         name_hash: cursor.array::<32>()?,
@@ -260,21 +255,33 @@ pub(super) fn read_directory_slot(
     table_offset: u64,
     slot: u64,
 ) -> Result<DirectorySlot, IndexError> {
-    let offset = slot
-        .checked_mul(DIRECTORY_SLOT_BYTES as u64)
-        .and_then(|value| table_offset.checked_add(value))
-        .and_then(|value| usize::try_from(value).ok())
-        .ok_or(IndexError::InvalidRecord)?;
-    let end = offset
-        .checked_add(DIRECTORY_SLOT_BYTES)
-        .ok_or(IndexError::InvalidRecord)?;
-    let mut cursor = Cursor::new(bytes.get(offset..end).ok_or(IndexError::InvalidRecord)?);
+    let mut cursor = Cursor::new(read_table_slot::<DIRECTORY_SLOT_BYTES>(
+        bytes,
+        table_offset,
+        slot,
+    )?);
     Ok(DirectorySlot {
         parent: cursor.u64()?,
         record_offset: cursor.u64()?,
         record_id: cursor.u64()?,
         nlink: cursor.u64()?,
     })
+}
+
+fn read_table_slot<const SLOT_BYTES: usize>(
+    bytes: &[u8],
+    table_offset: u64,
+    slot: u64,
+) -> Result<&[u8], IndexError> {
+    let offset = slot
+        .checked_mul(SLOT_BYTES as u64)
+        .and_then(|value| table_offset.checked_add(value))
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or(IndexError::InvalidRecord)?;
+    let end = offset
+        .checked_add(SLOT_BYTES)
+        .ok_or(IndexError::InvalidRecord)?;
+    bytes.get(offset..end).ok_or(IndexError::InvalidRecord)
 }
 
 pub(super) fn decode_record_view<'a>(

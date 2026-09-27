@@ -386,11 +386,11 @@ const PUBLIC_RESOURCE_VERSION_DOMAIN: &[u8] = b"aos.sandbox.public-resource-vers
 
 pub(super) fn compile_public_mutation(
     journal: &mut Journal,
-    peer: &crate::public_api_session::PublicApiPeer,
     authorized: &AuthorizedPublicMutationRequestV1,
     canonical_request: &[u8],
     request_digest: [u8; 32],
 ) -> Result<OperationPlan, OperationCompilationError> {
+    // Authorization captured the authenticated peer's project in this value.
     let request = authorized.request();
     if let Request::ExecutionControl(control) = request.request() {
         if control.action.as_known()
@@ -402,6 +402,10 @@ pub(super) fn compile_public_mutation(
             // holder-bound route, including during idempotent replay.
             return Err(OperationCompilationError::Rejected);
         }
+    }
+    if matches!(request.request(), Request::Delete(_)) {
+        // Delete needs a protected dependency plan before desired state can change.
+        return Err(OperationCompilationError::Rejected);
     }
     match journal.check_idempotency(request.idempotency_key(), request_digest) {
         IdempotencyOutcome::Replay(operation_id) => {
@@ -421,7 +425,7 @@ pub(super) fn compile_public_mutation(
     let desired = match request.request() {
         Request::Create(value) => create_sandbox_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             authorized.policy_generation(),
@@ -430,7 +434,7 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::UpdatePolicy(value) => update_sandbox_policy_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             authorized.policy_generation(),
@@ -439,7 +443,7 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::Start(value) => lifecycle_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             request_digest,
@@ -450,7 +454,7 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::Stop(value) => lifecycle_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             request_digest,
@@ -461,7 +465,7 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::Suspend(value) => lifecycle_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             request_digest,
@@ -472,7 +476,7 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::Resume(value) => lifecycle_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             request_digest,
@@ -481,17 +485,10 @@ pub(super) fn compile_public_mutation(
             DesiredLifecycle::DESIRED_LIFECYCLE_RUNNING,
             true,
         )?,
-        Request::Delete(value) => delete_sandbox_projection(
-            journal,
-            peer.project(),
-            operation_id,
-            authorized.accepted_wall_seconds(),
-            request_digest,
-            value,
-        )?,
+        Request::Delete(_) => return Err(OperationCompilationError::Rejected),
         Request::Exec(value) => create_execution_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             request_digest,
@@ -499,21 +496,21 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::ExecutionControl(value) => control_execution_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             request_digest,
             value,
         )?,
         Request::CancelExec(value) => cancel_execution_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             request_digest,
             value,
         )?,
         Request::CachePin(value) => cache_consumer_mutation_intent(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             request.operation_method(),
             canonical_request,
@@ -524,7 +521,7 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::CacheUnpin(value) => cache_consumer_mutation_intent(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             request.operation_method(),
             canonical_request,
@@ -535,14 +532,14 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::CancelOperation(value) => cancel_operation_intent(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             canonical_request,
             value,
         )?,
         Request::ViewCreate(value) => create_view_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             request_digest,
@@ -550,7 +547,7 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::ViewAttach(value) => attach_view_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             request_digest,
@@ -558,7 +555,7 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::ViewReplace(value) => replace_attachment_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             request_digest,
@@ -566,7 +563,7 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::ViewDetach(value) => detach_view_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             request_digest,
@@ -574,7 +571,7 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::ViewRelease(value) => release_view_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             request_digest,
@@ -582,7 +579,7 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::Snapshot(value) => create_snapshot_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             request_digest,
@@ -590,7 +587,7 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::Restore(value) => restore_snapshot_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             authorized.policy_generation(),
@@ -599,7 +596,7 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::DeleteSnapshot(value) => delete_snapshot_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             request_digest,
@@ -607,7 +604,7 @@ pub(super) fn compile_public_mutation(
         )?,
         Request::Fork(value) => fork_snapshot_projection(
             journal,
-            peer.project(),
+            authorized.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
             authorized.policy_generation(),
@@ -642,7 +639,7 @@ pub(super) fn compile_public_mutation(
     };
     operation_plan(
         authorized,
-        peer.project(),
+        authorized.project(),
         operation_id,
         request_digest,
         canonical_request,
@@ -932,47 +929,6 @@ fn lifecycle_projection(
     next_desired.generation = generation;
     sandbox.desired = Some(next_desired).into();
     sandbox.resource_version = resource_version(operation, method, generation, request_digest);
-    sandbox.updated_at = Some(timestamp(accepted_at)).into();
-    projection(
-        project,
-        operation,
-        PublicProjectionResourceV1::Sandbox(sandbox),
-    )
-}
-
-fn delete_sandbox_projection(
-    journal: &Journal,
-    project: ProjectId,
-    operation: OperationId,
-    accepted_at: i64,
-    request_digest: [u8; 32],
-    request: &aos_proto::aos::sandbox::v1::DeleteSandboxRequest,
-) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
-    let mut sandbox = load_sandbox(journal, exact_id(&request.sandbox_id)?)?;
-    ensure_sandbox_project(&sandbox, project)?;
-    let mutation = request
-        .mutation
-        .as_option()
-        .ok_or(OperationCompilationError::Malformed)?;
-    validate_sandbox_mutation(&sandbox, mutation, false)?;
-    let desired = sandbox
-        .desired
-        .as_option()
-        .ok_or(OperationCompilationError::Rejected)?;
-    let generation = desired
-        .generation
-        .checked_add(1)
-        .ok_or(OperationCompilationError::Rejected)?;
-    let mut next_desired = desired.clone();
-    next_desired.lifecycle = DesiredLifecycle::DESIRED_LIFECYCLE_DELETED.into();
-    next_desired.generation = generation;
-    sandbox.desired = Some(next_desired).into();
-    sandbox.resource_version = resource_version(
-        operation,
-        PublicOperationMethodV1::DeleteSandbox,
-        generation,
-        request_digest,
-    );
     sandbox.updated_at = Some(timestamp(accepted_at)).into();
     projection(
         project,
@@ -2202,16 +2158,92 @@ fn timestamp(seconds: i64) -> Timestamp {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
     use aos_proto::aos::sandbox::v1::{
-        Command, Execution, ExecutionControlAction, ExecutionControlRequest, ExecutionIoMode,
-        ExecutionPhase, MutationContext,
+        Command, DeleteSandboxRequest, Duration, Execution, ExecutionControlAction,
+        ExecutionControlRequest, ExecutionIoMode, ExecutionPhase, Feature, MutationContext,
     };
     use aos_sandbox_core::OperationId;
+    use buffa::Message as _;
 
     use super::{
-        OperationCompilationError, next_cancel_desired_execution, next_controlled_execution,
-        validate_execution_control, validate_execution_mutation,
+        Journal, OperationCompilationError, compile_public_mutation, next_cancel_desired_execution,
+        next_controlled_execution, validate_execution_control, validate_execution_mutation,
     };
+    use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
+    use crate::public_mutation_compiler::AuthorizedPublicMutationRequestV1;
+    use crate::{IdempotencyOutcome, JournalLimits};
+
+    #[test]
+    fn public_delete_rejects_every_plan_and_force_shape_before_journal_mutation() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let owner = fs::metadata(directory.path()).unwrap().uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "delete-admission.journal",
+            JournalLimits::default(),
+            owner,
+        )
+        .unwrap();
+        let initial_sequence = journal.snapshot_sequence();
+
+        for (cascade, force, plan_byte) in [
+            (false, false, 0x31),
+            (true, false, 0x42),
+            (false, true, 0x53),
+            (true, true, 0x64),
+        ] {
+            let required_features = if force {
+                vec![Feature {
+                    namespace: crate::controller_query::FORCE_DELETE_FEATURE_V1.to_owned(),
+                    major: 1,
+                    minor: 0,
+                    ..Default::default()
+                }]
+            } else {
+                Vec::new()
+            };
+            let request = DeleteSandboxRequest {
+                sandbox_id: vec![0x11; 16],
+                cascade,
+                force,
+                expected_plan_digest: vec![plan_byte; 32],
+                mutation: Some(MutationContext {
+                    idempotency_key: vec![plan_byte; 16],
+                    expected_resource_version: vec![0x22; 32],
+                    operation_timeout: Some(Duration {
+                        nanoseconds: 1,
+                        ..Default::default()
+                    })
+                    .into(),
+                    required_features,
+                    ..Default::default()
+                })
+                .into(),
+                ..Default::default()
+            };
+            let encoded = PublicMutationRequestV1::new(
+                PublicApiAuditMethodV1::DeleteSandbox,
+                &request.encode_to_vec(),
+            )
+            .unwrap()
+            .encode();
+            let authorized = AuthorizedPublicMutationRequestV1::test_authorized_delete(&encoded);
+
+            assert!(matches!(
+                compile_public_mutation(&mut journal, &authorized, &encoded, [0x75; 32]),
+                Err(OperationCompilationError::Rejected)
+            ));
+            assert_eq!(journal.snapshot_sequence(), initial_sequence);
+            assert_eq!(
+                journal.check_idempotency(authorized.request().idempotency_key(), [0x75; 32]),
+                IdempotencyOutcome::Vacant
+            );
+        }
+    }
 
     #[test]
     fn execution_mutation_requires_current_version_and_incarnation() {

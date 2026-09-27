@@ -223,6 +223,7 @@ pub(in crate::registry_ops) fn store_dir_from_store_path(path: &str) -> Option<&
 
 /// Metadata returned by `nix-store --query` for a single store path.
 #[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
 pub(in crate::registry_ops) struct StorePathInfo {
     pub(in crate::registry_ops) path: String,
     pub(in crate::registry_ops) nar_hash: String,

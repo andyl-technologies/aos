@@ -90,6 +90,42 @@ impl AuthorizedPublicMutationRequestV1 {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_authorized_delete(encoded: &[u8]) -> Self {
+        use crate::cli_model::{
+            AuthenticatedRequestSemanticsDigestV1, CanonicalRequestDigestV1, RequestProvenanceV1,
+        };
+        use crate::controller_query::{
+            AuthorizationRevisionDigestV1, ObservationSchemaDigestV1, QueryPrincipalDigestV1,
+        };
+
+        let request = ResolvedPublicMutationRequestV1::decode_with_capability_id(
+            encoded,
+            Some(CapabilityId::from_bytes([3; 16])),
+        )
+        .unwrap();
+        assert!(matches!(
+            request.request(),
+            DormantSandboxRequestKindV1::Delete(_)
+        ));
+        let provenance = RequestProvenanceV1::from_authenticated(
+            QueryPrincipalDigestV1::commit(b"delete-admission-test-principal"),
+            AuthorizationRevisionDigestV1::commit(b"delete-admission-test-authorization"),
+            ObservationSchemaDigestV1::commit(b"delete-admission-test-schema"),
+            CanonicalRequestDigestV1::from_authenticated_canonical(encoded).unwrap(),
+            AuthenticatedRequestSemanticsDigestV1::from_decoded(ObjectDigest::from_bytes([4; 32])),
+        );
+
+        Self {
+            request,
+            authorization: crate::cli_model::PublicMutationAuthorizationV1::from_authorized(
+                provenance, 1, 1,
+            ),
+            caller: PrincipalId::from_bytes([1; 16]),
+            project: ProjectId::from_bytes([2; 16]),
+        }
+    }
+
     /// Returns the validated request and its closed endpoint semantics.
     #[must_use]
     pub(crate) const fn request(&self) -> &ResolvedPublicMutationRequestV1 {
