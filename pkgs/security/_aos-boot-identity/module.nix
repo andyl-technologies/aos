@@ -55,12 +55,13 @@
     key,
     description,
     dependencies,
+    activationOwner ? "manager",
     failurePolicy ? null,
     logging ? false,
   }:
     {
       inherit consumerInstance;
-      activationOwner = "manager";
+      inherit activationOwner;
       service = key;
       manager_identity = {
         name = key;
@@ -109,6 +110,7 @@
       };
     };
   identitySuccess = service {
+    activationOwner = "image";
     key = "aos-boot-identity-success";
     description = "Validate the normal boot identity";
     dependencies =
@@ -120,6 +122,7 @@
     logging = true;
   };
   identityGuard = service {
+    activationOwner = "image";
     key = "aos-boot-identity-guard";
     description = "Require a validated normal boot identity";
     dependencies =

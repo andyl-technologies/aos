@@ -748,8 +748,9 @@ in
       request = "consumer:lifecycle";
       output = "runtime-marker";
     };
-    assert deferredRuntimeResource.realization.runtime_marker
-    == deferredRuntimeDesired.realization.runtime_marker;
+    assert deferredRuntimeResource.realization.source == "object";
+    assert deferredRuntimeResource.realization.fields.runtime_marker.source == "request-output";
+    assert deferredRuntimeResource.realization.fields.runtime_marker.reference.output == "runtime-marker";
     assert rejects shortRuntimeReference.config.aos.abilities.desiredResources;
     assert observerSelection.config.aos.abilities.resolvedExecutionObserver
     == {

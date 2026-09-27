@@ -142,7 +142,7 @@ in
   ];
   assert measuredVarDependencies.implicit_dependencies;
   assert measuredVarLifecycle.activation_owner == "manager";
-  assert (request "aos-verity-root-guard" "aos-verity-root-verify-lifecycle").activation_owner == "manager";
+  assert (request "aos-verity-root-guard" "aos-verity-root-verify-lifecycle").activation_owner == "image";
   assert measuredVarCondition.all
   == [
     {
@@ -168,8 +168,8 @@ in
   assert !(lib.hasInfix ''{package = "systemd";}'' bootIdentityModule);
   assert identityGuardDependencies.required_by
   == [(output "aos-boot-identity:initrd-filesystems" "resource")];
-  assert (request "aos-boot-identity" "aos-boot-identity-guard-lifecycle").activation_owner == "manager";
-  assert systemdVerityLifecycle.activation_owner == "manager";
+  assert (request "aos-boot-identity" "aos-boot-identity-guard-lifecycle").activation_owner == "image";
+  assert systemdVerityLifecycle.activation_owner == "image";
   assert identityGuardFailure.dispatch == "isolate-active-goal";
   assert identityGuardFailure.handlers
   == [(output "aos-boot-identity:integrity-failure" "resource")];
@@ -193,7 +193,7 @@ in
   == {
     service = "aos-verity-root-verify";
     enabled = true;
-    activation_owner = "manager";
+    activation_owner = "image";
     handlers = [(output "aos-verity-root-guard:integrity-failure" "resource")];
     dispatch = "isolate-active-goal";
   };
