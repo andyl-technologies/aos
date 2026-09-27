@@ -1,4 +1,4 @@
-From c2118bfe2e54a0903c697b128367091792c37648 Mon Sep 17 00:00:00 2001
+From e278eb8ad4cbf287c162a584c9c286e902b7e9e4 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -47,6 +47,10 @@ the exact boundary can be checked without changing replay state.
 Represent Linux eventfd-id zero with a nonzero one-based token through
 the versioned hot-fork contracts, and reject token overflow. Exercise
 zero, positive, and overflowing identities in a QEMU unit test.
+
+Report an unrepresentable armed virtual timer deadline as a distinct
+overflow status instead of absence. Keep the full QEMU timer horizon
+and exercise the plugin-facing signed projection with wide timers.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -54249,7 +54253,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..8211411ebe9bd9345eab9a18844852e3
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..03f20d609026ef2d3bf82eac8f84cb8f8bd372e5 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..917c87649c7f986927f52ec8d37bcd95dc3352cd 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -55401,7 +55405,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..03f20d609026ef2d3bf82eac8f84cb8f
  /**
   * qemu_plugin_write_memory_vaddr() - write to memory using a virtual address
   *
-@@ -1292,6 +2420,665 @@ qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
+@@ -1292,6 +2420,666 @@ qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
  QEMU_PLUGIN_API
  bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr);
  
@@ -55755,7 +55759,8 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..03f20d609026ef2d3bf82eac8f84cb8f
 + * qemu_plugin_clock_deadline_ps() - return next virtual-clock timer expiry time
 + *
 + * Returns the exact virtual-clock timestamp for the next QEMU_CLOCK_VIRTUAL
-+ * timer deadline, or a negative value when no virtual-clock timer is armed.
++ * timer deadline. -1 means no virtual-clock timer is armed; -2 means an armed
++ * deadline cannot be represented in the signed picosecond API.
 + *
 + * This AOS Crucible extension is required for exact idle fast-forward and never
 + * consults QEMU_CLOCK_REALTIME or QEMU_CLOCK_HOST.
@@ -58369,7 +58374,7 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..eff8dc4e5e7a3693797bc130fa0647ff
  /**
   * qemu_thread_atexit_add:
 diff --git a/include/qemu/timer.h b/include/qemu/timer.h
-index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..e7fb6f3c1b2b36079c741c5657b8719d37d48f5c 100644
+index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..7a9d20451c3dc81208c8724aa35368cc294d6d94 100644
 --- a/include/qemu/timer.h
 +++ b/include/qemu/timer.h
 @@ -6,6 +6,8 @@
@@ -58425,7 +58430,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..e7fb6f3c1b2b36079c741c5657b8719d
  };
  
  extern QEMUTimerListGroup main_loop_tlg;
-@@ -105,6 +134,38 @@ extern QEMUTimerListGroup main_loop_tlg;
+@@ -105,6 +134,41 @@ extern QEMUTimerListGroup main_loop_tlg;
   */
  int64_t qemu_clock_get_ns(QEMUClockType type);
  
@@ -58461,10 +58466,13 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..e7fb6f3c1b2b36079c741c5657b8719d
 +/* Exact time until the next TCG virtual timer, or -1 if none exists. */
 +int64_t qemu_clock_deadline_ps_all(QEMUClockType type, int attr_mask);
 +
++/* Absolute signed TCG deadline: -1 means no timer, -2 means out of range. */
++int64_t qemu_clock_deadline_ps_all_absolute(QEMUClockType type, int attr_mask);
++
  /**
   * qemu_clock_get_ms;
   * @type: the clock type
-@@ -652,6 +713,22 @@ static inline void timer_free(QEMUTimer *ts)
+@@ -652,6 +716,22 @@ static inline void timer_free(QEMUTimer *ts)
   */
  void timer_mod_ns(QEMUTimer *ts, int64_t expire_time);
  
@@ -58487,7 +58495,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..e7fb6f3c1b2b36079c741c5657b8719d
  /**
   * timer_mod_anticipate_ns:
   * @ts: the timer
-@@ -665,6 +742,12 @@ void timer_mod_ns(QEMUTimer *ts, int64_t expire_time);
+@@ -665,6 +745,12 @@ void timer_mod_ns(QEMUTimer *ts, int64_t expire_time);
   */
  void timer_mod_anticipate_ns(QEMUTimer *ts, int64_t expire_time);
  
@@ -58500,7 +58508,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..e7fb6f3c1b2b36079c741c5657b8719d
  /**
   * timer_mod:
   * @ts: the timer
-@@ -691,6 +774,38 @@ void timer_mod(QEMUTimer *ts, int64_t expire_timer);
+@@ -691,6 +777,38 @@ void timer_mod(QEMUTimer *ts, int64_t expire_timer);
   */
  void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time);
  
@@ -58539,7 +58547,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..e7fb6f3c1b2b36079c741c5657b8719d
  /**
   * timer_pending:
   * @ts: the timer
-@@ -702,6 +817,9 @@ void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time);
+@@ -702,6 +820,9 @@ void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time);
   */
  bool timer_pending(const QEMUTimer *ts);
  
@@ -58549,7 +58557,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..e7fb6f3c1b2b36079c741c5657b8719d
  /**
   * timer_expired:
   * @ts: the timer
-@@ -717,12 +835,41 @@ bool timer_expired(const QEMUTimer *timer_head, int64_t current_time);
+@@ -717,12 +838,41 @@ bool timer_expired(const QEMUTimer *timer_head, int64_t current_time);
   * timer_expire_time_ns:
   * @ts: the timer
   *
@@ -69991,7 +69999,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..724787a6f578119c2871a83d0e305c2e59abbab6 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..c6d205fef4c0f77bf74082de52e96bddc5002f20 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,39 @@
@@ -70928,7 +70936,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..724787a6f578119c2871a83d0e305c2e
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1026,1507 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1026,1503 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -72336,15 +72344,8 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..724787a6f578119c2871a83d0e305c2e
 +
 +int64_t qemu_plugin_clock_deadline_ps(void)
 +{
-+    int64_t delta = qemu_clock_deadline_ps_all(QEMU_CLOCK_VIRTUAL,
-+                                              QEMU_TIMER_ATTR_ALL);
-+    int64_t now;
-+
-+    if (delta < 0) {
-+        return -1;
-+    }
-+    now = qemu_clock_get_ps(QEMU_CLOCK_VIRTUAL);
-+    return now < 0 || delta > INT64_MAX - now ? -1 : now + delta;
++    return qemu_clock_deadline_ps_all_absolute(QEMU_CLOCK_VIRTUAL,
++                                               QEMU_TIMER_ATTR_ALL);
 +}
 +
 +int qemu_plugin_crucible_arm_virtual_timer_witness(
@@ -72372,6 +72373,9 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..724787a6f578119c2871a83d0e305c2e
 +    current_deadline = qemu_plugin_clock_deadline_ps();
 +    current_virtual_ps = qemu_clock_get_ps(QEMU_CLOCK_VIRTUAL);
 +    raw_icount = qemu_plugin_icount_raw();
++    if (current_deadline == -2) {
++        return -EOVERFLOW;
++    }
 +    if (current_deadline < 0 || deadline_ps != current_deadline) {
 +        return -ESTALE;
 +    }
@@ -147692,10 +147696,10 @@ index 0000000000000000000000000000000000000000..ca1c90abe3b22fa2412002e449f07c67
 +}
 diff --git a/tests/unit/test-crucible-idle-wait.c b/tests/unit/test-crucible-idle-wait.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..64c60875c2ef3b040d01f93b8f00f1aafa4cafe2
+index 0000000000000000000000000000000000000000..ee2bb16e87d73feab53496231bcb3f461d75f482
 --- /dev/null
 +++ b/tests/unit/test-crucible-idle-wait.c
-@@ -0,0 +1,1386 @@
+@@ -0,0 +1,1430 @@
 +/*
 + * Crucible one-shot idle wait tests
 + *
@@ -147984,6 +147988,48 @@ index 0000000000000000000000000000000000000000..64c60875c2ef3b040d01f93b8f00f1aa
 +    g_assert_cmpint(qemu_clock_deadline_ps_all(QEMU_CLOCK_VIRTUAL,
 +                                               QEMU_TIMER_ATTR_ALL), ==, 0);
 +    g_assert_cmpuint(timer_expire_time_ns(timer), ==, 0);
++    timer_free(timer);
++}
++
++static void test_tcg_timer_absolute_deadline_overflow(void)
++{
++    QEMUTimer *timer;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    qemu_init_clocks(NULL);
++    test_virtual_ps = 0;
++    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps, NULL);
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, test_timer_callback, NULL);
++
++    g_assert_cmpint(qemu_clock_deadline_ps_all_absolute(QEMU_CLOCK_VIRTUAL,
++                                                         QEMU_TIMER_ATTR_ALL),
++                    ==, -1);
++    timer_mod_ps_wide(timer, (__int128)INT64_MAX + 1);
++    g_assert_cmpint(qemu_clock_deadline_ps_all(QEMU_CLOCK_VIRTUAL,
++                                               QEMU_TIMER_ATTR_ALL), ==,
++                    INT64_MAX);
++    g_assert_cmpint(qemu_clock_deadline_ps_all_absolute(QEMU_CLOCK_VIRTUAL,
++                                                         QEMU_TIMER_ATTR_ALL),
++                    ==, -2);
++
++    test_virtual_ps = 2;
++    g_assert_cmpint(qemu_clock_deadline_ps_all(QEMU_CLOCK_VIRTUAL,
++                                               QEMU_TIMER_ATTR_ALL), ==,
++                    INT64_MAX - 1);
++    g_assert_cmpint(qemu_clock_deadline_ps_all_absolute(QEMU_CLOCK_VIRTUAL,
++                                                         QEMU_TIMER_ATTR_ALL),
++                    ==, -2);
++
++    timer_mod_ps(timer, 100);
++    g_assert_cmpint(qemu_clock_deadline_ps_all_absolute(QEMU_CLOCK_VIRTUAL,
++                                                         QEMU_TIMER_ATTR_ALL),
++                    ==, 100);
 +    timer_free(timer);
 +}
 +
@@ -149050,6 +149096,8 @@ index 0000000000000000000000000000000000000000..64c60875c2ef3b040d01f93b8f00f1aa
 +                    test_generic_tcg_negative_deadline);
 +    g_test_add_func("/crucible/idle-wait/timer/extreme-deadlines",
 +                    test_tcg_timer_extreme_deadlines);
++    g_test_add_func("/crucible/idle-wait/timer/absolute-deadline-overflow",
++                    test_tcg_timer_absolute_deadline_overflow);
 +    g_test_add_func("/crucible/idle-wait/timer/extreme-expiry-projection",
 +                    test_tcg_timer_extreme_expiry_projection);
 +    g_test_add_func("/crucible/idle-wait/timer/ns-projection-no-early-fire",
@@ -155884,7 +155932,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
      pthread_sigmask(SIG_SETMASK, &oldset, NULL);
  
 diff --git a/util/qemu-timer.c b/util/qemu-timer.c
-index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dacd1afdd14 100644
+index d93a020064fe2a82602c5739f4cb39a930d64a0e..3103c701ac2248eb517c24b4d110c9342e0d12f0 100644
 --- a/util/qemu-timer.c
 +++ b/util/qemu-timer.c
 @@ -23,6 +23,8 @@
@@ -156227,7 +156275,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
 +static __int128 (*timer_virtual_ps)(void);
 +
 +bool qemu_timer_tcg_ps_enabled(void)
- {
++{
 +    return timer_tcg_ps_enabled;
 +}
 +
@@ -156256,7 +156304,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
 +
 +bool qemu_time_join_ps(int64_t time_ns, uint16_t phase_ps,
 +                       __int128 *time_ps)
-+{
+ {
 +    if (phase_ps >= PICOSECONDS_PER_NANOSECOND) {
 +        return false;
 +    }
@@ -156501,7 +156549,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
      QEMUTimer *ts;
      QEMUTimerList *timer_list;
      QEMUClock *clock = qemu_clock_ptr(type);
-@@ -276,25 +732,75 @@ int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask)
+@@ -276,25 +732,91 @@ int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask)
              qemu_mutex_unlock(&timer_list->active_timers_lock);
              continue;
          }
@@ -156569,6 +156617,22 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
      return deadline;
  }
  
++int64_t qemu_clock_deadline_ps_all_absolute(QEMUClockType type, int attr_mask)
++{
++    int64_t delta = qemu_clock_deadline_ps_all(type, attr_mask);
++    int64_t now;
++
++    if (delta < 0) {
++        return -1;
++    }
++    now = qemu_clock_get_ps(type);
++    /* A saturated relative delay can hide a wider armed deadline. */
++    if (now < 0 || delta == INT64_MAX || delta > INT64_MAX - now) {
++        return -2;
++    }
++    return now + delta;
++}
++
  void timerlist_notify(QEMUTimerList *timer_list)
  {
 +    qemu_async_worker_hot_fork_admission_begin();
@@ -156581,7 +156645,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
  }
  
  /* Transition function to convert a nanosecond timeout to ms
-@@ -353,6 +859,7 @@ void timer_init_full(QEMUTimer *ts,
+@@ -353,6 +875,7 @@ void timer_init_full(QEMUTimer *ts,
                       int scale, int attributes,
                       QEMUTimerCB *cb, void *opaque)
  {
@@ -156589,7 +156653,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
      if (!timer_list_group) {
          timer_list_group = &main_loop_tlg;
      }
-@@ -362,12 +869,23 @@ void timer_init_full(QEMUTimer *ts,
+@@ -362,12 +885,23 @@ void timer_init_full(QEMUTimer *ts,
      ts->scale = scale;
      ts->attributes = attributes;
      ts->expire_time = -1;
@@ -156614,7 +156678,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
  }
  
  static void timer_del_locked(QEMUTimerList *timer_list, QEMUTimer *ts)
-@@ -375,6 +893,7 @@ static void timer_del_locked(QEMUTimerList *timer_list, QEMUTimer *ts)
+@@ -375,6 +909,7 @@ static void timer_del_locked(QEMUTimerList *timer_list, QEMUTimer *ts)
      QEMUTimer **pt, *t;
  
      ts->expire_time = -1;
@@ -156622,7 +156686,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
      pt = &timer_list->active_timers;
      for(;;) {
          t = *pt;
-@@ -395,8 +914,8 @@ static void timer_fire(CPUState *cpu, run_on_cpu_data data)
+@@ -395,8 +930,8 @@ static void timer_fire(CPUState *cpu, run_on_cpu_data data)
      t->cb(t->opaque);
  }
  
@@ -156633,7 +156697,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
  {
      QEMUTimer **pt, *t;
  
-@@ -416,7 +935,7 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
+@@ -416,7 +951,7 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
      if (replay_mode != REPLAY_MODE_NONE &&
          timer_list->clock->type == QEMU_CLOCK_VIRTUAL &&
          !(ts->attributes & QEMU_TIMER_ATTR_EXTERNAL) &&
@@ -156642,7 +156706,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
          async_run_on_cpu(first_cpu, timer_fire,
                           RUN_ON_CPU_HOST_PTR(ts));
          return false;
-@@ -426,12 +945,14 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
+@@ -426,12 +961,14 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
      pt = &timer_list->active_timers;
      for (;;) {
          t = *pt;
@@ -156659,7 +156723,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
      ts->next = *pt;
      qatomic_set(pt, ts);
  
-@@ -448,44 +969,139 @@ void timer_del(QEMUTimer *ts)
+@@ -448,11 +985,16 @@ void timer_del(QEMUTimer *ts)
  {
      QEMUTimerList *timer_list = ts->timer_list;
  
@@ -156676,45 +156740,20 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
  }
  
  /* modify the current timer so that it will be fired when current_time
-    >= expire_time. The corresponding callback will be called. */
+@@ -460,32 +1002,122 @@ void timer_del(QEMUTimer *ts)
  void timer_mod_ns(QEMUTimer *ts, int64_t expire_time)
-+{
-+    QEMUTimerList *timer_list = ts->timer_list;
-+    __int128 internal_expire_time;
-+    bool rearm;
-+
-+    internal_expire_time = timer_ns_to_internal(
-+        timer_list->clock->type, expire_time);
-+    qemu_async_worker_hot_fork_admission_begin();
-+    qemu_mutex_lock(&timer_list->active_timers_lock);
-+    timer_del_locked(timer_list, ts);
-+    rearm = timer_mod_internal_locked(timer_list, ts, internal_expire_time);
-+#ifdef CONFIG_POSIX
-+    crucible_hot_fork_timer_set_pending(ts, true);
-+#endif
-+    qemu_mutex_unlock(&timer_list->active_timers_lock);
-+
-+    if (rearm) {
-+        timerlist_rearm(timer_list);
-+    }
-+    qemu_async_worker_hot_fork_admission_end();
-+}
-+
-+void timer_mod_ps_wide(QEMUTimer *ts, __int128 expire_time_ps)
  {
      QEMUTimerList *timer_list = ts->timer_list;
++    __int128 internal_expire_time;
      bool rearm;
  
-+    if (!timer_tcg_ps_enabled ||
-+        timer_list->clock->type != QEMU_CLOCK_VIRTUAL) {
-+        error_report("Picosecond timer used outside a TCG virtual clock");
-+        exit(EXIT_FAILURE);
-+    }
++    internal_expire_time = timer_ns_to_internal(
++        timer_list->clock->type, expire_time);
 +    qemu_async_worker_hot_fork_admission_begin();
      qemu_mutex_lock(&timer_list->active_timers_lock);
      timer_del_locked(timer_list, ts);
 -    rearm = timer_mod_ns_locked(timer_list, ts, expire_time);
-+    rearm = timer_mod_internal_locked(timer_list, ts, expire_time_ps);
++    rearm = timer_mod_internal_locked(timer_list, ts, internal_expire_time);
 +#ifdef CONFIG_POSIX
 +    crucible_hot_fork_timer_set_pending(ts, true);
 +#endif
@@ -156723,6 +156762,31 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
      if (rearm) {
          timerlist_rearm(timer_list);
      }
++    qemu_async_worker_hot_fork_admission_end();
++}
++
++void timer_mod_ps_wide(QEMUTimer *ts, __int128 expire_time_ps)
++{
++    QEMUTimerList *timer_list = ts->timer_list;
++    bool rearm;
++
++    if (!timer_tcg_ps_enabled ||
++        timer_list->clock->type != QEMU_CLOCK_VIRTUAL) {
++        error_report("Picosecond timer used outside a TCG virtual clock");
++        exit(EXIT_FAILURE);
++    }
++    qemu_async_worker_hot_fork_admission_begin();
++    qemu_mutex_lock(&timer_list->active_timers_lock);
++    timer_del_locked(timer_list, ts);
++    rearm = timer_mod_internal_locked(timer_list, ts, expire_time_ps);
++#ifdef CONFIG_POSIX
++    crucible_hot_fork_timer_set_pending(ts, true);
++#endif
++    qemu_mutex_unlock(&timer_list->active_timers_lock);
++
++    if (rearm) {
++        timerlist_rearm(timer_list);
++    }
 +    qemu_async_worker_hot_fork_admission_end();
 +}
 +
@@ -156804,7 +156868,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
          } else {
              rearm = false;
          }
-@@ -493,6 +1109,56 @@ void timer_mod_anticipate_ns(QEMUTimer *ts, int64_t expire_time)
+@@ -493,6 +1125,56 @@ void timer_mod_anticipate_ns(QEMUTimer *ts, int64_t expire_time)
      if (rearm) {
          timerlist_rearm(timer_list);
      }
@@ -156861,7 +156925,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
  }
  
  void timer_mod(QEMUTimer *ts, int64_t expire_time)
-@@ -507,25 +1173,51 @@ void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time)
+@@ -507,25 +1189,51 @@ void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time)
  
  bool timer_pending(const QEMUTimer *ts)
  {
@@ -156917,7 +156981,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
  
      qemu_event_reset(&timer_list->timers_done_ev);
      if (!timer_list->clock->enabled) {
-@@ -560,10 +1252,10 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+@@ -560,10 +1268,10 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
       * the checkpoint can be issued at a time until no timers are left and we are
       * done".
       */
@@ -156930,7 +156994,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
              /* No expired timers left.  The checkpoint can be skipped
               * if no timers fired or they were all external.
               */
-@@ -584,13 +1276,68 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+@@ -584,13 +1292,68 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
          /* remove timer from the list before calling the callback */
          timer_list->active_timers = ts->next;
          ts->next = NULL;
@@ -156999,7 +157063,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
          qemu_mutex_lock(&timer_list->active_timers_lock);
  
          progress = true;
-@@ -599,6 +1346,7 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+@@ -599,6 +1362,7 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
  
  out:
      qemu_event_set(&timer_list->timers_done_ev);
@@ -157007,7 +157071,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
      return progress;
  }
  
-@@ -639,6 +1387,15 @@ int64_t timerlistgroup_deadline_ns(QEMUTimerListGroup *tlg)
+@@ -639,6 +1403,15 @@ int64_t timerlistgroup_deadline_ns(QEMUTimerListGroup *tlg)
      int64_t deadline = -1;
      QEMUClockType type;
      for (type = 0; type < QEMU_CLOCK_MAX; type++) {
@@ -157023,7 +157087,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
          if (qemu_clock_use_for_deadline(type)) {
              deadline = qemu_soonest_timeout(deadline,
                                              timerlist_deadline_ns(tlg->tl[type]));
-@@ -662,6 +1419,18 @@ int64_t qemu_clock_get_ns(QEMUClockType type)
+@@ -662,6 +1435,18 @@ int64_t qemu_clock_get_ns(QEMUClockType type)
      }
  }
  
@@ -157042,7 +157106,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
  static void qemu_virtual_clock_set_ns(int64_t time)
  {
      return cpus_set_virtual_clock(time);
-@@ -670,6 +1439,8 @@ static void qemu_virtual_clock_set_ns(int64_t time)
+@@ -670,6 +1455,8 @@ static void qemu_virtual_clock_set_ns(int64_t time)
  void qemu_init_clocks(QEMUTimerListNotifyCB *notify_cb)
  {
      QEMUClockType type;
@@ -157051,7 +157115,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
      for (type = 0; type < QEMU_CLOCK_MAX; type++) {
          qemu_clock_init(type, notify_cb);
      }
-@@ -681,7 +1452,80 @@ void qemu_init_clocks(QEMUTimerListNotifyCB *notify_cb)
+@@ -681,7 +1468,80 @@ void qemu_init_clocks(QEMUTimerListNotifyCB *notify_cb)
  
  uint64_t timer_expire_time_ns(const QEMUTimer *ts)
  {
@@ -157133,7 +157197,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
  }
  
  bool qemu_clock_run_all_timers(void)
-@@ -700,8 +1544,11 @@ bool qemu_clock_run_all_timers(void)
+@@ -700,8 +1560,11 @@ bool qemu_clock_run_all_timers(void)
  
  int64_t qemu_clock_advance_virtual_time(int64_t dest)
  {
@@ -157146,7 +157210,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dac
      aio_context = qemu_get_aio_context();
      while (clock < dest) {
          int64_t deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
-@@ -716,5 +1563,6 @@ int64_t qemu_clock_advance_virtual_time(int64_t dest)
+@@ -716,5 +1579,6 @@ int64_t qemu_clock_advance_virtual_time(int64_t dest)
      }
      qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
  

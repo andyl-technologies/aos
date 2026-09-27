@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "98f86f3377c6d570034cdf5b78e72f1bac50d6385b54909a2926fba7769562ea";
+  sha256 = "fa6515d307c554ba83bbbd7c4dec6bf37b9430445c561e0477e1f90aef30048e";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -53,9 +53,13 @@
     "Represent Linux eventfd-id zero with a nonzero one-based token through"
     "the versioned hot-fork contracts, and reject token overflow. Exercise"
     "zero, positive, and overflowing identities in a QEMU unit test."
+    ""
+    "Report an unrepresentable armed virtual timer deadline as a distinct"
+    "overflow status instead of absence. Keep the full QEMU timer horizon"
+    "and exercise the plugin-facing signed projection with wide timers."
   ];
-  commit = "c2118bfe2e54a0903c697b128367091792c37648";
-  tree = "e0ab2a42ade117f4999102efb76eabe3a74cf437";
+  commit = "e278eb8ad4cbf287c162a584c9c286e902b7e9e4";
+  tree = "0d64e29a5b2fa353fe05102a30104aff1c99ed94";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -64,7 +68,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "d79aba728d01ccc4ee1f11bfe23c20f361b9e6b711711eddd856eaf783ebdf34";
+  bundleSha256 = "b50592449e518bd75cb85aa0f55205e81dbcd566d8d311db2a436dd0b71bf72b";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
