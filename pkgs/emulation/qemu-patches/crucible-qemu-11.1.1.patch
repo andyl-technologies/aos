@@ -1,4 +1,4 @@
-From a72372832041751bea042467283f73570f17a890 Mon Sep 17 00:00:00 2001
+From c2118bfe2e54a0903c697b128367091792c37648 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -43,6 +43,10 @@ runnable peer remains, so the single-CPU and post-startup paths stay fast.
 Commit the in-flight CPU retirement prefix before anchoring an idle
 picosecond bias. Keep an opt-in idle-stage and prefix trace so
 the exact boundary can be checked without changing replay state.
+
+Represent Linux eventfd-id zero with a nonzero one-based token through
+the versioned hot-fork contracts, and reject token overflow. Exercise
+zero, positive, and overflowing identities in a QEMU unit test.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -54245,7 +54249,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..8211411ebe9bd9345eab9a18844852e3
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..036aec12e301f04974356b2bbc4dce2cf6bc0404 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..03f20d609026ef2d3bf82eac8f84cb8f8bd372e5 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -54914,8 +54918,8 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..036aec12e301f04974356b2bbc4dce2c
 +    qemu_plugin_crucible_hot_fork_barrier_cb_t cb,
 +    void *userdata);
 +
-+#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION 3
-+#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_STATUS_VERSION 3
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_PLAN_VERSION 4
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_STATUS_VERSION 4
 +#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_INITIALIZE 1
 +#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_QUERY 2
 +#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_CHILD_RELEASE 3
@@ -54945,7 +54949,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..036aec12e301f04974356b2bbc4dce2c
 +    uint64_t plugin_barrier_generation;
 +    uint64_t worker_mask;
 +    uint64_t control_socket_cookie;
-+    uint64_t wake_eventfd_id;
++    uint64_t wake_eventfd_id; /* Linux eventfd-id plus one; zero is absent. */
 +    uint64_t shmem_device;
 +    uint64_t shmem_inode;
 +    uint64_t shmem_length;
@@ -54970,7 +54974,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..036aec12e301f04974356b2bbc4dce2c
 +    uint64_t plugin_endpoint_generation;
 +    uint64_t plugin_barrier_generation;
 +    uint64_t control_socket_cookie;
-+    uint64_t wake_eventfd_id;
++    uint64_t wake_eventfd_id; /* Linux eventfd-id plus one; zero is absent. */
 +    uint64_t source_mapping_start;
 +    uint64_t source_mapping_length;
 +    uint64_t source_mapping_offset;
@@ -57135,10 +57139,10 @@ index 0000000000000000000000000000000000000000..4b8f7d11a929f46414f1d1bb57a3b27d
 +#endif
 diff --git a/include/qemu/crucible-hot-fork-child.h b/include/qemu/crucible-hot-fork-child.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..100a255ebb828baf30e0e15353b544795c957891
+index 0000000000000000000000000000000000000000..38093e6a5ca5af8873353e9e723814d3a8aa02b1
 --- /dev/null
 +++ b/include/qemu/crucible-hot-fork-child.h
-@@ -0,0 +1,407 @@
+@@ -0,0 +1,419 @@
 +/*
 + * Crucible hot-fork child resource disposition helpers
 + *
@@ -57160,6 +57164,18 @@ index 0000000000000000000000000000000000000000..100a255ebb828baf30e0e15353b54479
 +#define QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_RECORDS 65536
 +#define QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_RECORD_BYTES 8192
 +#define QEMU_CRUCIBLE_HOT_FORK_MAX_MAPPING_BYTES (16 * 1024 * 1024)
++
++/* Zero denotes an absent identity throughout the hot-fork contracts. */
++static inline bool qemu_crucible_hot_fork_eventfd_identity_token(
++    uint64_t kernel_id, uint64_t *token)
++{
++    if (kernel_id == UINT64_MAX) {
++        return false;
++    }
++
++    *token = kernel_id + 1;
++    return true;
++}
 +
 +typedef struct QemuCrucibleHotForkParentIdentity {
 +    pid_t parent_pid;
@@ -63259,10 +63275,10 @@ index 8fe0876a3dab43aa3dc7376ada20b149b7c9d032..5434d4501636c9aad39475c8f6920e48
      if (mon->commands == &qmp_commands) {
          error_set(errp, ERROR_CLASS_COMMAND_NOT_FOUND,
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8ddfde3f13f663fc2620f49bc1f486bb465d082c 100644
+index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..9590aa65113ea6ced7e6f0ea506d65c3b7cf7d34 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
-@@ -14,53 +14,6015 @@
+@@ -14,53 +14,6016 @@
   */
  
  #include "qemu/osdep.h"
@@ -64305,11 +64321,12 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8ddfde3f13f663fc2620f49bc1f486bb
 +            memcpy(value, value_start, value_length);
 +            value[value_length] = '\0';
 +            if (qemu_strtou64(value, &end, 10, &parsed) < 0 ||
-+                !end || *end != '\0' || parsed == 0) {
++                !end || *end != '\0' ||
++                !qemu_crucible_hot_fork_eventfd_identity_token(
++                    parsed, eventfd_id)) {
 +                error_setg(errp, "Invalid Crucible hot-fork eventfd identity");
 +                return false;
 +            }
-+            *eventfd_id = parsed;
 +            found = true;
 +        }
 +        if (!line_end) {
@@ -64861,7 +64878,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8ddfde3f13f663fc2620f49bc1f486bb
 +    CrucibleHotForkPluginEndpointState *report =
 +        g_new0(CrucibleHotForkPluginEndpointState, 1);
 +
-+    report->schema_version = 4;
++    report->schema_version = 5;
 +    report->generation = crucible_hot_fork_plugin_endpoint_stage.generation;
 +    report->template_generation =
 +        crucible_hot_fork_plugin_endpoint_stage.template_generation;
@@ -68672,7 +68689,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8ddfde3f13f663fc2620f49bc1f486bb
 +    CrucibleHotForkChildProcessContractState *report =
 +        g_new0(CrucibleHotForkChildProcessContractState, 1);
 +
-+    report->schema_version = 2;
++    report->schema_version = 3;
 +    report->generation = stage->generation;
 +    report->template_generation = stage->template_generation;
 +    report->staged = stage->staged;
@@ -69294,7 +69311,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8ddfde3f13f663fc2620f49bc1f486bb
  }
  
  void qmp_cont(Error **errp)
-@@ -68,7 +6030,23 @@ void qmp_cont(Error **errp)
+@@ -68,7 +6031,23 @@ void qmp_cont(Error **errp)
      BlockBackend *blk;
      BlockJob *job;
      Error *local_err = NULL;
@@ -69318,7 +69335,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8ddfde3f13f663fc2620f49bc1f486bb
      /* if there is a dump in background, we should wait until the dump
       * finished */
      if (qemu_system_dump_in_progress()) {
-@@ -116,6 +6094,155 @@ void qmp_cont(Error **errp)
+@@ -116,6 +6095,155 @@ void qmp_cont(Error **errp)
      }
  }
  
@@ -111245,10 +111262,10 @@ index 22b7afed9f650c866f81aa154e6ba03dcc606c44..1d42273ed53a18559b7b421cf756f415
  # @CommandLineParameterType:
  #
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index a5771ad46815528fef2c2ebfa538d4e023a19969..8807f17e9630670ecc25f34ff360907894090b8a 100644
+index a5771ad46815528fef2c2ebfa538d4e023a19969..ace9077a405c0a00cff6e41d3f1d62786325b23f 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
-@@ -132,6 +132,2729 @@
+@@ -132,6 +132,2731 @@
  { 'command': 'query-status', 'returns': 'StatusInfo',
    'allow-preconfig': true }
  
@@ -111763,7 +111780,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..8807f17e9630670ecc25f34ff3609078
 +# action; it does not fork, install resources, release admission, or
 +# acknowledge proof bit 8.
 +#
-+# @schema-version: child-runtime status contract version, currently 3
++# @schema-version: child-runtime status contract version, currently 4
 +#
 +# @generation: process-local registration/status mutation generation
 +#
@@ -111814,8 +111831,8 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..8807f17e9630670ecc25f34ff3609078
 +# @control-socket-cookie: authenticated replacement socket identity,
 +#     or zero before child initialization
 +#
-+# @wake-eventfd-id: authenticated replacement eventfd identity, or
-+#     zero before child initialization
++# @wake-eventfd-id: authenticated replacement Linux eventfd-id plus
++#     one, or zero before child initialization
 +#
 +# @source-mapping-start: authenticated template setup-region VMA
 +#     start, or zero before child initialization
@@ -112801,7 +112818,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..8807f17e9630670ecc25f34ff3609078
 +# QEMU across a delegated root.  The child then checks the sticky
 +# cancellation event before any runtime reconstruction.
 +#
-+# @schema-version: process-contract status version, currently 2
++# @schema-version: process-contract status version, currently 3
 +#
 +# @generation: monotonically increasing source-QEMU contract
 +#     generation
@@ -112828,7 +112845,8 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..8807f17e9630670ecc25f34ff3609078
 +# @cgroup-procs-inode: authenticated st_ino of the directory's
 +#     cgroup.procs
 +#
-+# @cancellation-eventfd-id: authenticated Linux eventfd-id
++# @cancellation-eventfd-id: authenticated Linux eventfd-id plus one;
++#     zero means no staged eventfd
 +#
 +# @maximum-file-bytes: exact child RLIMIT_FSIZE ceiling
 +#
@@ -112880,7 +112898,8 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..8807f17e9630670ecc25f34ff3609078
 +# @expected-cgroup-procs-inode: expected st_ino identity of
 +#     cgroup.procs
 +#
-+# @expected-cancellation-eventfd-id: expected Linux eventfd-id
++# @expected-cancellation-eventfd-id: expected Linux eventfd-id plus
++#     one; zero is reserved for an absent identity
 +#
 +# @maximum-file-bytes: nonzero child RLIMIT_FSIZE ceiling
 +#
@@ -113162,7 +113181,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..8807f17e9630670ecc25f34ff3609078
 +# @CrucibleHotForkPluginEndpointState:
 +#
 +# Exact QEMU-owned state for one authenticated branch-private plugin
-+# endpoint pair.  For a template-bound stage, version 4 records the
++# endpoint pair.  For a template-bound stage, version 5 records the
 +# exact quiescent plugin-barrier generation, complete worker masks,
 +# retained source descriptor slots, and distinct manifest-owned
 +# destination slots.  The future child must atomically replace both
@@ -113172,7 +113191,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..8807f17e9630670ecc25f34ff3609078
 +# table and invokes the retained plugin reinitializer before releasing
 +# child input.
 +#
-+# @schema-version: retained-endpoint contract version, currently 4
++# @schema-version: retained-endpoint contract version, currently 5
 +#
 +# @generation: process-local positive mutation generation, or zero
 +#     initially
@@ -113191,8 +113210,8 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..8807f17e9630670ecc25f34ff3609078
 +# @control-socket-cookie: authenticated Linux `SO_COOKIE`, or zero
 +#     when absent
 +#
-+# @wake-eventfd-id: authenticated Linux `/proc/self/fdinfo` eventfd
-+#     identity, or zero when absent
++# @wake-eventfd-id: authenticated Linux `/proc/self/fdinfo` eventfd-id
++#     plus one, or zero when absent
 +#
 +# @control-source-fd: QEMU-owned descriptor carrying the replacement
 +#     control file description while staged, otherwise -1
@@ -113299,8 +113318,8 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..8807f17e9630670ecc25f34ff3609078
 +# @expected-control-socket-cookie: exact expected Linux `SO_COOKIE`
 +#     for @stage and @release
 +#
-+# @expected-wake-eventfd-id: exact expected Linux eventfd identity for
-+#     @stage and @release
++# @expected-wake-eventfd-id: exact expected Linux eventfd-id plus one
++#     for @stage and @release; zero is reserved for absence
 +#
 +# Returns: @CrucibleHotForkPluginEndpointState
 +#
@@ -143873,10 +143892,10 @@ index 0000000000000000000000000000000000000000..8c972db14596c1fc9b9a80e2542bb058
 +}
 diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..953e878dfa8e8deb8c1702b80a26405842025dc1
+index 0000000000000000000000000000000000000000..c028f84e76600f1f90c3e3907a0c1b160e368bed
 --- /dev/null
 +++ b/tests/unit/test-crucible-hot-fork-child.c
-@@ -0,0 +1,3229 @@
+@@ -0,0 +1,3246 @@
 +/*
 + * Crucible hot-fork child resource disposition tests
 + *
@@ -147025,11 +147044,28 @@ index 0000000000000000000000000000000000000000..953e878dfa8e8deb8c1702b80a264058
 +    }
 +}
 +
++static void test_eventfd_identity_token(void)
++{
++    uint64_t token = 0;
++
++    g_assert_true(qemu_crucible_hot_fork_eventfd_identity_token(0, &token));
++    g_assert_cmpuint(token, ==, 1);
++
++    g_assert_true(qemu_crucible_hot_fork_eventfd_identity_token(42, &token));
++    g_assert_cmpuint(token, ==, 43);
++
++    g_assert_false(qemu_crucible_hot_fork_eventfd_identity_token(
++        UINT64_MAX, &token));
++    g_assert_cmpuint(token, ==, 43);
++}
++
 +int main(int argc, char **argv)
 +{
 +    /* Match system startup before retained hot-fork owns RCU disposition. */
 +    rcu_disable_atfork();
 +    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/crucible/hot-fork-child/eventfd-identity-token",
++                    test_eventfd_identity_token);
 +    g_test_add_func("/crucible/hot-fork-child/registry-rebuild",
 +                    test_child_registry_rebuild_preserves_parent);
 +    g_test_add_func("/crucible/hot-fork-child/active-rcu-reader",
