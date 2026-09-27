@@ -25,6 +25,11 @@ in
           "${repoRootString}/tests/crucible"
           "${repoRootString}/tests/crucible/fixtures"
           "${repoRootString}/tests/crucible/fixtures/live-qemu-fuzz.family.toml"
+          "${repoRootString}/docs"
+          "${repoRootString}/docs/rfcs"
+          "${repoRootString}/docs/rfcs/0020-crucible-campaigns"
+          "${repoRootString}/docs/rfcs/0020-crucible-campaigns/schema-registry.tsv"
+          "${repoRootString}/docs/rfcs/0020-crucible-campaigns/11-implementation-plan.md"
         ]
       );
   }
