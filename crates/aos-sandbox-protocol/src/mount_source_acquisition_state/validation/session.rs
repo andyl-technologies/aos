@@ -174,18 +174,16 @@ fn barrier_idle_observation_matches(
                 }
                 && execution.death_evidence_digest == death_digest(execution)?
         }
-        BarrierIdlePredecessorObservationV2::Live => {
-            live_barrier_predecessor_matches(
-                predecessor.node_id,
-                predecessor.kernel_boot_id,
-                predecessor.provider_process_instance,
-                &predecessor.provider_execution,
-                successor.node_id,
-                successor.kernel_boot_id,
-                successor.provider_process_instance,
-                &successor.provider_execution,
-            )
-        }
+        BarrierIdlePredecessorObservationV2::Live => live_barrier_predecessor_matches(
+            predecessor.node_id,
+            predecessor.kernel_boot_id,
+            predecessor.provider_process_instance,
+            &predecessor.provider_execution,
+            successor.node_id,
+            successor.kernel_boot_id,
+            successor.provider_process_instance,
+            &successor.provider_execution,
+        ),
     })
 }
 
@@ -230,14 +228,7 @@ mod tests {
         };
         let matches = |node, boot, instance, candidate: &ProviderExecutionSnapshotV2| {
             live_barrier_predecessor_matches(
-                [1; 16],
-                [2; 16],
-                [3; 16],
-                &execution,
-                node,
-                boot,
-                instance,
-                candidate,
+                [1; 16], [2; 16], [3; 16], &execution, node, boot, instance, candidate,
             )
         };
 
