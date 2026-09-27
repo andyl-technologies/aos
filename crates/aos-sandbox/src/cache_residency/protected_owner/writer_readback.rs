@@ -129,6 +129,50 @@ impl CacheResidencyProtectedOwnerV1 {
     where
         Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
     {
+        self.with_held_cache_owner_terminal_cut(physical, inspect, Ok, false)
+    }
+
+    /// Runs a final continuation and retires the exact Cache hold under its writer.
+    ///
+    /// The first callback and terminal continuation have the same ordering as
+    /// v3. After Cache postflight, `finalize` runs with all four journal writers
+    /// and the physical owner still held. A second postflight must pass before
+    /// the already-open hold journal durably records the released phase. This
+    /// local primitive does not verify a Root receipt or open public Create.
+    ///
+    /// # Errors
+    ///
+    /// Rejects failed callbacks, stale Cache custody, changed physical state,
+    /// or an unsuccessful durable release readback. A failed final callback
+    /// leaves the hold active.
+    pub(crate) fn with_held_cache_owner_terminal_and_release_v4<Prepared, Output, Final, Finish>(
+        &mut self,
+        physical: &DormantCacheOwnerV1,
+        inspect: impl FnOnce(
+            &CacheResidencyWriterReadbackV2,
+        )
+            -> Result<(Prepared, Finish), CacheResidencyProtectedJournalErrorV1>,
+        finalize: impl FnOnce(Output) -> Result<Final, CacheResidencyProtectedJournalErrorV1>,
+    ) -> Result<Final, CacheResidencyProtectedJournalErrorV1>
+    where
+        Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
+    {
+        self.with_held_cache_owner_terminal_cut(physical, inspect, finalize, true)
+    }
+
+    fn with_held_cache_owner_terminal_cut<Prepared, Output, Final, Finish>(
+        &mut self,
+        physical: &DormantCacheOwnerV1,
+        inspect: impl FnOnce(
+            &CacheResidencyWriterReadbackV2,
+        )
+            -> Result<(Prepared, Finish), CacheResidencyProtectedJournalErrorV1>,
+        finalize: impl FnOnce(Output) -> Result<Final, CacheResidencyProtectedJournalErrorV1>,
+        retire_hold: bool,
+    ) -> Result<Final, CacheResidencyProtectedJournalErrorV1>
+    where
+        Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
+    {
         reject_legacy_cache_journals()?;
         let clock = Arc::clone(
             self.clock
@@ -195,42 +239,39 @@ impl CacheResidencyProtectedOwnerV1 {
             inspect(&readback)
         });
 
-        clock_guard.revalidate()?;
-        self.check_held_writer_names(&state_witness, &authority_witness)?;
-        hold_journal.require_protected_named_location(
-            root,
-            CACHE_POLICY_HOLD_JOURNAL,
-            self.owner_uid,
-            Journal::cache_policy_hold_limits(),
-        )?;
-        hold_journal.validate_protected_writer_name_witness(&hold_witness)?;
-        if hold_journal.held_cache_policy_hold_for_writer()? != hold {
-            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
-        }
-        physical_snapshot
-            .revalidate()
-            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-        reject_legacy_cache_journals()?;
+        let revalidate = |hold_journal: &mut Journal| {
+            clock_guard.revalidate()?;
+            self.check_held_writer_names(&state_witness, &authority_witness)?;
+            hold_journal.require_protected_named_location(
+                root,
+                CACHE_POLICY_HOLD_JOURNAL,
+                self.owner_uid,
+                Journal::cache_policy_hold_limits(),
+            )?;
+            hold_journal.validate_protected_writer_name_witness(&hold_witness)?;
+            if hold_journal.held_cache_policy_hold_for_writer()? != hold {
+                return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+            }
+            physical_snapshot
+                .revalidate()
+                .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            reject_legacy_cache_journals()?;
+            Ok::<(), CacheResidencyProtectedJournalErrorV1>(())
+        };
+
+        revalidate(&mut hold_journal)?;
         let (prepared, finish) = result?;
         let outcome = finish(prepared);
-
-        clock_guard.revalidate()?;
-        self.check_held_writer_names(&state_witness, &authority_witness)?;
-        hold_journal.require_protected_named_location(
-            root,
-            CACHE_POLICY_HOLD_JOURNAL,
-            self.owner_uid,
-            Journal::cache_policy_hold_limits(),
-        )?;
-        hold_journal.validate_protected_writer_name_witness(&hold_witness)?;
-        if hold_journal.held_cache_policy_hold_for_writer()? != hold {
-            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        revalidate(&mut hold_journal)?;
+        let finalized = finalize(outcome?);
+        if retire_hold {
+            revalidate(&mut hold_journal)?;
+            let value = finalized?;
+            hold_journal.release_held_cache_policy_hold_for_writer(hold)?;
+            Ok(value)
+        } else {
+            finalized
         }
-        physical_snapshot
-            .revalidate()
-            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-        reject_legacy_cache_journals()?;
-        outcome
     }
 
     fn check_held_writer_names(
@@ -288,6 +329,24 @@ fn with_cache_writer_readback_after_postflight_at<Prepared, Output, Finish>(
         CacheResidencyWriterReadbackV2,
     ) -> Result<(Prepared, Finish), CacheResidencyProtectedJournalErrorV1>,
 ) -> Result<Output, CacheResidencyProtectedJournalErrorV1>
+where
+    Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
+{
+    with_cache_writer_terminal_cut_at(root, owner_uid, open, check, action, Ok, false)
+}
+
+#[cfg(test)]
+fn with_cache_writer_terminal_cut_at<Prepared, Output, Final, Finish>(
+    root: &Path,
+    owner_uid: u32,
+    open: impl Fn(&Path, &str, JournalLimits) -> Result<(Journal, RecoveryReport), JournalError>,
+    check: impl Fn(&Journal, &Path, &str, JournalLimits) -> Result<(), JournalError>,
+    action: impl FnOnce(
+        CacheResidencyWriterReadbackV2,
+    ) -> Result<(Prepared, Finish), CacheResidencyProtectedJournalErrorV1>,
+    finalize: impl FnOnce(Output) -> Result<Final, CacheResidencyProtectedJournalErrorV1>,
+    retire_hold: bool,
+) -> Result<Final, CacheResidencyProtectedJournalErrorV1>
 where
     Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
 {
@@ -352,7 +411,7 @@ where
         return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
     }
 
-    let check_all = || -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+    let check_all = |hold_journal: &Journal| -> Result<(), CacheResidencyProtectedJournalErrorV1> {
         check(
             &clock,
             root,
@@ -381,7 +440,7 @@ where
         )?;
         state.validate_protected_writer_name_witness(&state_witness)?;
         check(
-            &hold_journal,
+            hold_journal,
             root,
             CACHE_POLICY_HOLD_JOURNAL,
             Journal::cache_policy_hold_limits(),
@@ -389,18 +448,29 @@ where
         hold_journal.validate_protected_writer_name_witness(&hold_witness)?;
         Ok(())
     };
-    check_all()?;
+    check_all(&hold_journal)?;
     let result = action(CacheResidencyWriterReadbackV2 {
         hold,
         selected,
         quota_digest,
         node_quotas,
     });
-    check_all()?;
+    check_all(&hold_journal)?;
     let (prepared, finish) = result?;
     let outcome = finish(prepared);
-    check_all()?;
-    outcome
+    check_all(&hold_journal)?;
+    let finalized = finalize(outcome?);
+    if retire_hold {
+        check_all(&hold_journal)?;
+        if hold_journal.held_cache_policy_hold_for_writer()? != hold {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        let value = finalized?;
+        hold_journal.release_held_cache_policy_hold_for_writer(hold)?;
+        Ok(value)
+    } else {
+        finalized
+    }
 }
 
 #[cfg(test)]
@@ -449,6 +519,31 @@ mod tests {
                 journal.require_protected_named_location_at_uid_for_test(root, name, uid, limits)
             },
             action,
+        )
+    }
+
+    fn with_fixture_after_final<Prepared, Output, Final, Finish>(
+        root: &Path,
+        uid: u32,
+        action: impl FnOnce(
+            CacheResidencyWriterReadbackV2,
+        )
+            -> Result<(Prepared, Finish), CacheResidencyProtectedJournalErrorV1>,
+        finalize: impl FnOnce(Output) -> Result<Final, CacheResidencyProtectedJournalErrorV1>,
+    ) -> Result<Final, CacheResidencyProtectedJournalErrorV1>
+    where
+        Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
+    {
+        with_cache_writer_terminal_cut_at(
+            root,
+            uid,
+            |root, name, limits| Journal::open_protected_at_uid(root, name, limits, uid),
+            |journal, root, name, limits| {
+                journal.require_protected_named_location_at_uid_for_test(root, name, uid, limits)
+            },
+            action,
+            finalize,
+            true,
         )
     }
 
@@ -549,6 +644,148 @@ mod tests {
         })
         .expect("terminal Cache continuation");
         assert_eq!(observed.hold(), expected);
+    }
+
+    #[test]
+    fn final_continuation_retires_exact_hold_after_cache_postflight() {
+        let (directory, uid, expected) = super::super::tests::live_cache_hold_fixture();
+        let stage = Cell::new(0);
+
+        let observed = with_fixture_after_final(
+            directory.path(),
+            uid,
+            |readback| {
+                assert_eq!(stage.get(), 0);
+                stage.set(1);
+                Ok((readback, |readback: CacheResidencyWriterReadbackV2| {
+                    assert_eq!(stage.get(), 1);
+                    stage.set(2);
+                    Ok(readback)
+                }))
+            },
+            |readback| {
+                assert_eq!(stage.get(), 2);
+                for (name, limits) in [
+                    (CACHE_CLOCK_JOURNAL, cache_clock_journal_limits()),
+                    (CACHE_AUTHORITY_JOURNAL, cache_authority_journal_limits()),
+                    (CACHE_STATE_JOURNAL, cache_state_journal_limits()),
+                    (
+                        CACHE_POLICY_HOLD_JOURNAL,
+                        Journal::cache_policy_hold_limits(),
+                    ),
+                ] {
+                    assert!(matches!(
+                        Journal::open_protected_at_uid(directory.path(), name, limits, uid),
+                        Err(JournalError::AlreadyLocked)
+                    ));
+                }
+                assert!(matches!(
+                    Journal::read_cache_policy_hold_at(directory.path(), uid),
+                    Err(JournalError::AlreadyLocked)
+                ));
+                stage.set(3);
+                Ok(readback)
+            },
+        )
+        .expect("final Cache continuation and release");
+
+        assert_eq!(stage.get(), 3);
+        assert_eq!(observed.hold(), expected);
+        let released = Journal::read_cache_policy_hold_at(directory.path(), uid)
+            .expect("cold replay of released hold")
+            .expect("released phase retained");
+        assert!(!released.is_held());
+        assert_eq!(released.project(), expected.project());
+        assert_eq!(released.partition(), expected.partition());
+        assert_eq!(released.cache_head(), expected.cache_head());
+        assert_eq!(released.binding(), expected.binding());
+        assert_eq!(released.epoch(), expected.epoch());
+    }
+
+    #[test]
+    fn failed_cache_postflight_suppresses_final_continuation_and_release() {
+        let (directory, uid, expected) = super::super::tests::live_cache_hold_fixture();
+        let named = directory.path().join(format!("{CACHE_STATE_JOURNAL}.lock"));
+        let retained = directory
+            .path()
+            .join(format!("{CACHE_STATE_JOURNAL}.lock.retained"));
+        let finished = Cell::new(false);
+        let finalized = Cell::new(false);
+
+        let result = with_fixture_after_final(
+            directory.path(),
+            uid,
+            |_| {
+                fs::rename(&named, &retained).expect("retain state lock inode");
+                fs::copy(&retained, &named).expect("replace state lock name");
+                Ok(((), |_| {
+                    finished.set(true);
+                    Ok(())
+                }))
+            },
+            |_| {
+                finalized.set(true);
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(!finished.get());
+        assert!(!finalized.get());
+        assert_eq!(
+            Journal::read_cache_policy_hold_at(directory.path(), uid)
+                .expect("hold replay after failed postflight"),
+            Some(expected),
+        );
+    }
+
+    #[test]
+    fn failed_final_continuation_preserves_the_held_phase() {
+        let (directory, uid, expected) = super::super::tests::live_cache_hold_fixture();
+
+        let result = with_fixture_after_final(
+            directory.path(),
+            uid,
+            |_| Ok(((), |_| Ok(()))),
+            |_| -> Result<(), _> { Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord) },
+        );
+
+        assert!(matches!(
+            result,
+            Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)
+        ));
+        assert_eq!(
+            Journal::read_cache_policy_hold_at(directory.path(), uid)
+                .expect("hold replay after failed final continuation"),
+            Some(expected),
+        );
+    }
+
+    #[test]
+    fn changed_writer_during_final_continuation_blocks_release() {
+        let (directory, uid, expected) = super::super::tests::live_cache_hold_fixture();
+        let named = directory.path().join(format!("{CACHE_STATE_JOURNAL}.lock"));
+        let retained = directory
+            .path()
+            .join(format!("{CACHE_STATE_JOURNAL}.lock.retained"));
+
+        let result = with_fixture_after_final(
+            directory.path(),
+            uid,
+            |_| Ok(((), |_| Ok(()))),
+            |_| {
+                fs::rename(&named, &retained).expect("retain state lock inode");
+                fs::copy(&retained, &named).expect("replace state lock name");
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            Journal::read_cache_policy_hold_at(directory.path(), uid)
+                .expect("hold replay after final postflight failure"),
+            Some(expected),
+        );
     }
 
     #[test]
