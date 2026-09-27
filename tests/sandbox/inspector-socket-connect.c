@@ -12,6 +12,8 @@ int main(int argc, char **argv)
     static const char inspector_path[] =
         "/run/aos/sandbox-network-namespace-inspector/control.sock";
     static const char broker_path[] = "/run/aos/sandbox-network/control.sock";
+    static const char lifecycle_path[] =
+        "/run/aos/sandbox-network-lifecycle-worker/control.sock";
     struct sockaddr_un address = {.sun_family = AF_UNIX};
     const char *path = inspector_path;
     size_t path_length;
@@ -20,6 +22,8 @@ int main(int argc, char **argv)
 
     if (argc == 2 && strcmp(argv[1], "--broker") == 0)
         path = broker_path;
+    else if (argc == 2 && strcmp(argv[1], "--lifecycle") == 0)
+        path = lifecycle_path;
     else if (argc != 1)
         return 2;
 

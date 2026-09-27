@@ -7,6 +7,7 @@
 }: let
   cfg = config.aos.sandbox.networkBroker;
   loaderEnvironment = import ./_network-loader-environment.nix {inherit lib;};
+  immutableStoreView = import ./_network-immutable-store-view.nix {inherit lib;};
   brokerUnitName = "aos-netd.service";
   renderedBrokerUnit = config.systemd.units.${brokerUnitName}.text;
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
@@ -174,6 +175,10 @@ in {
           assertion = loaderEnvironment.renderedUnitMatchesSourcePolicy renderedBrokerUnit;
           message = "${brokerUnitName} must render the inherited-environment scrub without EnvironmentFile or PassEnvironment";
         }
+        {
+          assertion = !protectedRoots || immutableStoreView.renderedUnitHasExactBind renderedBrokerUnit;
+          message = "${brokerUnitName} must execute against the exact immutable lower-store view";
+        }
       ]
       ++ brokerSessionConfiguration.assertions;
 
@@ -245,7 +250,8 @@ in {
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
         RequiresMountsFor =
-          lib.optionals config.aos.sandbox.networkInspector.enable [
+          lib.optionals protectedRoots ["/nix.lower/store"]
+          ++ lib.optionals config.aos.sandbox.networkInspector.enable [
             "/var/lib/aos/sandbox-network/namespace-inspector/expected-staging"
             "/var/lib/aos/sandbox-network/namespace-inspector/expected-final"
           ];
@@ -260,6 +266,7 @@ in {
             lib.optional protectedRoots "+${runtimeRootsCommand}"
             ++ brokerSessionConfiguration.installCommands;
           ExecStart = "${cfg.package}/bin/aos-netd ${toString cfg.maximumRetainedNamespaces}";
+          BindReadOnlyPaths = lib.optionals protectedRoots [immutableStoreView.bind];
           LoadCredential =
             authorityLoadCredentials
             ++ inspectorDeploymentLoadCredentials

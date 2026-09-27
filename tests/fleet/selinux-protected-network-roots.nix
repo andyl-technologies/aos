@@ -141,6 +141,7 @@
       serviceConfig = {
         Type = "exec";
         ExecStart = "${pkgs.aos-netd}/bin/aos-sandbox-network-namespace-inspector";
+        BindReadOnlyPaths = ["/nix.lower/store:/nix/store"];
         StandardInput = "socket";
         StandardOutput = "socket";
         StandardError = "journal+console";
@@ -247,6 +248,13 @@
   workerPackageOverride = protectedSystem.extendModules {
     modules = [{aos.sandbox.networkWorker.package = lib.mkForce inspectorLookalike;}];
   };
+  brokerStoreBindOverride = protectedSystem.extendModules {
+    modules = [
+      {
+        systemd.services.aos-netd.serviceConfig.BindReadOnlyPaths = lib.mkForce ["/nix/store"];
+      }
+    ];
+  };
   packageOverrideRejected = system:
     builtins.any
     (assertion:
@@ -264,6 +272,13 @@ in
   assert toString inspectorLookalike != toString pkgs.aos-netd;
   assert packageOverrideRejected brokerPackageOverride;
   assert packageOverrideRejected workerPackageOverride;
+  assert protectedConfig.systemd.services.aos-netd.serviceConfig.BindReadOnlyPaths == ["/nix.lower/store:/nix/store"];
+  assert protectedConfig.systemd.services."aos-sandbox-network-lifecycle-worker@".serviceConfig.BindReadOnlyPaths == ["/nix.lower/store:/nix/store"];
+  assert builtins.any
+  (assertion:
+    !assertion.assertion
+    && assertion.message == "aos-netd.service must execute against the exact immutable lower-store view")
+  brokerStoreBindOverride.config.assertions;
   assert protectedConfig.aos.boot.secureBoot.enable;
   assert protectedConfig.aos.boot.secureBoot.lockdown.enable;
   assert protectedMeasuredConfig.aos.boot.secureBoot.measuredBoot.enable;
@@ -387,6 +402,41 @@ in
 
             return observed
 
+        def assert_private_lower_store(machine, pid, executable):
+            mountinfo = machine.succeed(f"cat /proc/{pid}/mountinfo")
+            store_mounts = [
+                line.split(" - ", 1)
+                for line in mountinfo.splitlines()
+                if line.split()[4] == "/nix/store"
+            ]
+            assert len(store_mounts) == 1, store_mounts
+            mount, filesystem = store_mounts[0]
+            fields = mount.split()
+            options = set(fields[5].split(","))
+            assert fields[3] == "/nix.lower/store", fields
+            assert filesystem.split()[0] == "erofs", filesystem
+            assert {"ro", "nodev"} <= options, options
+            assert "nosuid" not in options and "noexec" not in options, options
+
+            private_executable = f"/proc/{pid}/root/nix/store/${netdBasename}/bin/{executable}"
+            physical_executable = f"/nix.lower/store/${netdBasename}/bin/{executable}"
+            identities = machine.succeed(
+                f"stat -Lc '%d:%i' {private_executable} {physical_executable}"
+            ).splitlines()
+            assert len(identities) == 2 and identities[0] == identities[1], identities
+
+            # An upper-layer shadow is visible in the host's logical store,
+            # but cannot replace bytes resolved by this service's loader.
+            shadowed = "/nix/store/${libselinuxBasename}/lib/libselinux.so.1"
+            private_shadowed = f"/proc/{pid}/root{shadowed}"
+            machine.succeed(f"grep -q AOS_SHADOWED_LIBSELINUX {shadowed}")
+            machine.fail(f"grep -q AOS_SHADOWED_LIBSELINUX {private_shadowed}")
+            private_dso = machine.succeed(
+                f"stat -Lc '%d:%i' {private_shadowed} "
+                "/nix.lower/store/${libselinuxBasename}/lib/libselinux.so.1"
+            ).splitlines()
+            assert len(private_dso) == 2 and private_dso[0] == private_dso[1], private_dso
+
         boot_log = await_serial(
             protected,
             "Finished Prepare protected AOS sandbox Network roots",
@@ -424,6 +474,14 @@ in
             protected,
             "CREDENTIALS_DIRECTORY is absent",
         )
+        protected.succeed(
+            "${inspectorSocketConnector}/bin/aos-inspector-socket-connect --lifecycle"
+        )
+        protected.wait_until_succeeds(
+            "journalctl -b -o cat --no-pager | "
+            "grep -F 'aos-sandbox-network-lifecycle-worker:'",
+            timeout=30,
+        )
         initial = identities(protected)
 
         # Socket activation must run the production broker's preflight, then
@@ -446,6 +504,9 @@ in
             "Started AOS authenticated sandbox Network inventory broker",
         )
         protected.wait_until_succeeds(broker_process, timeout=30)
+        broker_pid = protected.succeed("systemctl show -P MainPID aos-netd.service").strip()
+        assert broker_pid.isdecimal() and broker_pid != "0", broker_pid
+        assert_private_lower_store(protected, broker_pid, "aos-netd")
         time.sleep(2)
         protected.succeed(broker_process)
 
