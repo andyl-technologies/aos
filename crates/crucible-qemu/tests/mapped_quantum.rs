@@ -354,7 +354,7 @@ fn mapped_quantum_rejects_invalid_marker_timing_and_non_observational_kinds()
         QemuMappedQuantumShmemHotPath::new(qemu_config(), regressing_region, AllowAllSends)?;
     let error = QemuShmemHotPathChannel::drain_observable_events(&mut regressing)
         .expect_err("a regressing marker must fail the run");
-    assert!(error.message.contains("marker icount regressed"));
+    assert!(error.message.contains("marker tick regressed"));
 
     let random = WhiteboxMarkerPayload::RandomRequest(WhiteboxRandomRequestBody {
         request_id: 3,
