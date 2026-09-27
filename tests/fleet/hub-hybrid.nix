@@ -28,6 +28,41 @@
   s3PrivateKey = writeFixture "hub-hybrid-fleet-s3-private-key" (
     builtins.readFile ../fixtures/hub-hybrid-fleet-s3.key
   );
+  garageConfig = writeFixture "hub-hybrid-fleet-garage.toml" ''
+    metadata_dir = "/var/lib/hybrid-s3/meta"
+    data_dir = "/var/lib/hybrid-s3/data"
+    db_engine = "sqlite"
+    replication_factor = 1
+    rpc_bind_addr = "127.0.0.1:3901"
+    rpc_secret_file = "/var/lib/hybrid-s3/rpc-secret"
+
+    [s3_api]
+    api_bind_addr = "127.0.0.1:3900"
+    s3_region = "garage"
+  '';
+  s3ProxyConfig = writeFixture "hub-hybrid-fleet-s3-nginx.conf" ''
+    pid /var/lib/hybrid-s3/nginx.pid;
+    error_log /var/lib/hybrid-s3/nginx-error.log info;
+    events { worker_connections 128; }
+    http {
+      access_log off;
+      client_body_temp_path /var/lib/hybrid-s3/client-body;
+      proxy_temp_path /var/lib/hybrid-s3/proxy-temp;
+      server {
+        listen 443 ssl;
+        server_name s3.fleet.test;
+        ssl_certificate ${s3Certificate}/value;
+        ssl_certificate_key ${s3PrivateKey}/value;
+        client_max_body_size 64m;
+        location / {
+          proxy_pass http://127.0.0.1:3900;
+          proxy_set_header Host $http_host;
+          proxy_http_version 1.1;
+          proxy_request_buffering off;
+        }
+      }
+    }
+  '';
   databaseUrl = writeFixture
     "hub-hybrid-fleet-database-url"
     "postgresql://postgres@127.0.0.1:5432/postgres\n";
@@ -188,6 +223,8 @@
       serverPrivateKey
       s3Certificate
       s3PrivateKey
+      garageConfig
+      s3ProxyConfig
       wranglerConfig
       workerSecrets
     ];
@@ -256,10 +293,7 @@ in {
       APR = "${pkgs.aos.apr}/bin/apr"
       CHROOT = "${pkgs.coreutils}/bin/chroot --userspec=802:802 /"
       POSTGRES = "${pkgs.postgresql}/bin"
-      GARAGE = (
-          "GARAGE_RPC_SECRET_FILE=/var/lib/hybrid-s3/rpc-secret "
-          "${pkgs.garage}/bin/garage -c /var/lib/hybrid-s3/garage.toml"
-      )
+      GARAGE = "${pkgs.garage}/bin/garage -c /var/lib/hybrid-s3/garage.toml"
 
       for machine in (client, native, worker, s3):
           machine.wait_for_unit("multi-user.target", timeout=240)
@@ -297,43 +331,11 @@ in {
           printf '%s\n' '1799bccfd7411eddcf9ebd316bc1f5287ad12a68094e1c6ac6abde7e6feae1ec' \
             > /var/lib/hybrid-s3/rpc-secret
           chmod 0600 /var/lib/hybrid-s3/rpc-secret
-          cat > /var/lib/hybrid-s3/garage.toml <<'EOF'
-          metadata_dir = "/var/lib/hybrid-s3/meta"
-          data_dir = "/var/lib/hybrid-s3/data"
-          db_engine = "sqlite"
-          replication_factor = 1
-          rpc_bind_addr = "127.0.0.1:3901"
-          [s3_api]
-          api_bind_addr = "127.0.0.1:3900"
-          s3_region = "garage"
-          EOF
-          GARAGE_RPC_SECRET_FILE=/var/lib/hybrid-s3/rpc-secret \
-            ${pkgs.garage}/bin/garage -c /var/lib/hybrid-s3/garage.toml server \
+          cp ${garageConfig}/value /var/lib/hybrid-s3/garage.toml
+          ${pkgs.garage}/bin/garage -c /var/lib/hybrid-s3/garage.toml server \
             > /var/lib/hybrid-s3/garage.log 2>&1 < /dev/null &
           echo $! > /var/lib/hybrid-s3/garage.pid
-          cat > /var/lib/hybrid-s3/nginx.conf <<'EOF'
-          pid /var/lib/hybrid-s3/nginx.pid;
-          error_log /var/lib/hybrid-s3/nginx-error.log info;
-          events { worker_connections 128; }
-          http {
-            access_log off;
-            client_body_temp_path /var/lib/hybrid-s3/client-body;
-            proxy_temp_path /var/lib/hybrid-s3/proxy-temp;
-            server {
-              listen 443 ssl;
-              server_name s3.fleet.test;
-              ssl_certificate ${s3Certificate}/value;
-              ssl_certificate_key ${s3PrivateKey}/value;
-              client_max_body_size 64m;
-              location / {
-                proxy_pass http://127.0.0.1:3900;
-                proxy_set_header Host $http_host;
-                proxy_http_version 1.1;
-                proxy_request_buffering off;
-              }
-            }
-          }
-          EOF
+          cp ${s3ProxyConfig}/value /var/lib/hybrid-s3/nginx.conf
           ${pkgs.nginx}/bin/nginx -c /var/lib/hybrid-s3/nginx.conf \
             -p /var/lib/hybrid-s3/ -g 'daemon off;' \
             > /var/lib/hybrid-s3/nginx.log 2>&1 < /dev/null &
