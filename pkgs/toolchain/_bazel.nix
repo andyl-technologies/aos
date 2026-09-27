@@ -1264,6 +1264,8 @@
   };
 in
   mkDerivation {
+    passthru.sourceBootstrap = buildBazelBootstrap;
+    passthru.sourceJavaTools = sourceRemoteJavaTools;
     pname = "bazel";
     inherit version;
     inherit update;

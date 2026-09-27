@@ -11,6 +11,10 @@
   mavenRepositories,
 }: let
   jdk = buildPackages.openjdk-21;
+  jarjarApi =
+    if builtins.compareVersions bazelBootstrap.version "9.0.0" >= 0
+    then "ASM9"
+    else "ASM7";
   dependencyRepositories = mavenRepositories ++ bazelErrorProne;
   repositoryPaths = builtins.concatStringsSep " " (builtins.map (path: "'${path}'") dependencyRepositories);
   asmSourceInstall = builtins.concatStringsSep "\n" (builtins.map (
@@ -22,7 +26,8 @@
 in
   mkDerivation {
     pname = "bazel-remote-java-tools-source";
-    version = "8.6.0";
+    version = bazelBootstrap.version;
+    src = bazelSource;
 
     buildDeps =
       [
@@ -51,6 +56,7 @@ in
           from pathlib import Path
 
           root = Path("jarjar-source/com/tonicsystems/jarjar")
+          original_api = "Opcodes.${jarjarApi}"
           expected = {
               "StringReader.java": 4,
               "EmptyClassVisitor.java": 4,
@@ -59,9 +65,9 @@ in
           for relative, count in expected.items():
               path = root / relative
               source = path.read_text()
-              if source.count("Opcodes.ASM7") != count:
+              if source.count(original_api) != count:
                   raise SystemExit(f"unexpected Jarjar ASM visitor layout: {relative}")
-              path.write_text(source.replace("Opcodes.ASM7", "Opcodes.ASM9"))
+              path.write_text(source.replace(original_api, "Opcodes.ASM9"))
           PY
         '';
       }
