@@ -1488,13 +1488,7 @@ where
                 continue;
             }
             let operation = decode_operation(value)?;
-            if !matches!(
-                operation.state,
-                OperationState::Succeeded
-                    | OperationState::CanceledBeforeCommit
-                    | OperationState::FailedBeforeCommit
-                    | OperationState::PermanentlyBlocked
-            ) {
+            if !operation.state.is_terminal() {
                 pending = pending
                     .checked_add(1)
                     .ok_or(ReconcilerError::CorruptLedger(
@@ -1819,14 +1813,8 @@ where
         for (key, value) in self.journal.records(RecordNamespace::Operation) {
             let operation_id = decode_operation_key(key)?;
             let operation = decode_operation(value)?;
-            if matches!(
-                operation.state,
-                OperationState::Succeeded
-                    | OperationState::CanceledBeforeCommit
-                    | OperationState::FailedBeforeCommit
-                    | OperationState::PermanentlyBlocked
-                    | OperationState::OwnershipPending
-            ) {
+            if operation.state.is_terminal() || operation.state == OperationState::OwnershipPending
+            {
                 continue;
             }
             first.get_or_insert(operation_id);
