@@ -88,15 +88,15 @@
     aos.image.budgets.maxDownloadMiB = 1024;
     aos.image.testArtifactRoots =
       [pkgs.attr]
-      ++ lib.optionals (mode == "shadows") [inspectorSocketConnector];
+      ++ lib.optionals (builtins.elem mode ["shadows" "unit-overrides"]) [inspectorSocketConnector];
     environment.systemPackages =
       [pkgs.attr pkgs.grep pkgs.util-linux]
-      ++ lib.optionals (mode == "shadows") [inspectorLookalike inspectorSocketConnector];
+      ++ lib.optionals (builtins.elem mode ["shadows" "unit-overrides"]) [inspectorLookalike inspectorSocketConnector];
 
     # This fixture needs no configuration-generation replacement. Keep its
     # control channel in one unit so enforcing init_t never needs the broad
     # manager reload permission used by the generic fleet bootstrap.
-    systemd.services.aos-test-agent-bootstrap = lib.mkIf (mode == "shadows") {
+    systemd.services.aos-test-agent-bootstrap = lib.mkIf (builtins.elem mode ["shadows" "unit-overrides"]) {
       environment.PATH = "${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.attr}/bin:${pkgs.grep}/bin:${pkgs.util-linux}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin";
       serviceConfig.Type = lib.mkForce "simple";
       serviceConfig.Restart = "on-failure";
@@ -119,7 +119,7 @@
     # This qualification-only socket launches the exact production ELF without
     # credentials. Reaching its credential guard proves the enforcing MAC
     # transition and guarded socket activation without admitting inspection.
-    systemd.sockets.aos-sandbox-network-namespace-inspector = lib.mkIf (mode == "shadows") {
+    systemd.sockets.aos-sandbox-network-namespace-inspector = lib.mkIf (builtins.elem mode ["shadows" "unit-overrides"]) {
       description = "Qualification-only Network inspector activation socket";
       wantedBy = ["sockets.target"];
       socketConfig = {
@@ -135,7 +135,7 @@
       };
     };
 
-    systemd.services."aos-sandbox-network-namespace-inspector@" = lib.mkIf (mode == "shadows") {
+    systemd.services."aos-sandbox-network-namespace-inspector@" = lib.mkIf (builtins.elem mode ["shadows" "unit-overrides"]) {
       description = "Qualification-only Network inspector MAC transition";
       unitConfig.CollectMode = "inactive-or-failed";
       serviceConfig = {
@@ -207,6 +207,29 @@
       '';
     };
 
+    # Place hostile drop-ins in the persistent /etc lower before stage-2 PID 1
+    # loads any Network service. Their privileged prestart markers must not run.
+    boot.initrd.systemd.services.aos-protected-unit-adversary = lib.mkIf (mode == "unit-overrides") {
+      description = "Seed mutable Network unit drop-ins before switch-root";
+      wantedBy = ["initrd-fs.target"];
+      requires = ["aos-seed-profiles.service" "mount-var.service"];
+      after = ["aos-seed-profiles.service" "mount-var.service"];
+      before = ["etc-overlay-setup.service" "initrd-fs.target"];
+      unitConfig.DefaultDependencies = "no";
+      serviceConfig.Type = "oneshot";
+      script = ''
+        set -eu
+        for unit in aos-netd.service \
+          aos-sandbox-network-namespace-inspector@.service \
+          aos-sandbox-network-lifecycle-worker@.service; do
+          directory="/sysroot/var/etc/systemd/system/$unit.d"
+          mkdir -p "$directory"
+          printf '[Service]\nExecStartPre=+${pkgs.coreutils}/bin/touch /run/aos-forbidden-network-prestart\n' \
+            > "$directory/override.conf"
+        done
+      '';
+    };
+
     systemd.services.aos-protected-root-submount-adversary = lib.mkIf (mode == "submount") {
       description = "Replace /var/lib with a qualification-only submount";
       requiredBy = ["sysinit.target"];
@@ -236,6 +259,7 @@
     };
   protectedSystem = systemFor "shadows";
   submountSystem = systemFor "submount";
+  overriddenSystem = systemFor "unit-overrides";
   protectedConfig = protectedSystem.config;
   protectedMeasuredConfig =
     (systems.server-verity.extendModules {
@@ -315,6 +339,11 @@ in
         bootMode = "image";
         firmwareVars = enrolledFirmwareVarsPath;
         expectAgent = false;
+      };
+      overridden = {
+        system = overriddenSystem;
+        bootMode = "image";
+        firmwareVars = enrolledFirmwareVarsPath;
       };
     };
 
@@ -544,5 +573,27 @@ in
         assert "/var/lib submount installed" in failure
         assert "aos-netd.socket" in failure
         assert "Started AOS authenticated sandbox Network inventory broker" not in failure
+
+        overridden.wait_for_unit("multi-user.target", timeout=180)
+        overridden.succeed("test -f /etc/systemd/system/aos-netd.service.d/override.conf")
+        overridden.execute(
+            "${inspectorSocketConnector}/bin/aos-inspector-socket-connect --broker"
+        )
+        overridden.execute(
+            "${inspectorSocketConnector}/bin/aos-inspector-socket-connect"
+        )
+        overridden.execute(
+            "${inspectorSocketConnector}/bin/aos-inspector-socket-connect --lifecycle"
+        )
+        overridden.wait_until_succeeds(
+            "test $(journalctl -b -o cat --no-pager | "
+            "grep -c 'Refusing unpinned Network service command') -ge 3",
+            timeout=30,
+        )
+        overridden.fail("test -e /run/aos-forbidden-network-prestart")
+        fragment = overridden.succeed(
+            "systemctl show -P FragmentPath aos-netd.service"
+        ).strip()
+        assert fragment.startswith("/nix/store/"), fragment
       '';
   }
