@@ -20,7 +20,14 @@
 in
   testing.mkVMTest {
     name = "sandbox-q04-protected-bootstrap";
-    rootfsDeps = [probe pkgs.bash pkgs.coreutils pkgs.e2fsprogs pkgs.util-linux];
+    rootfsDeps = [
+      probe
+      pkgs.aos-sandboxd
+      pkgs.bash
+      pkgs.coreutils
+      pkgs.e2fsprogs
+      pkgs.util-linux
+    ];
     memory = 512;
     testScript = ''
       set -eu
@@ -162,6 +169,36 @@ in
       signer_probe 813 cache-signer-readback
       ${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe root-cache-verify
       signer_probe 814 source-signer-reject-unheld
+
+      # The production Root daemon must bind the fixed socket and reject a
+      # non-Controller peer. No Q04 binding or V8 settlement is provisioned.
+      ${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe root-signed-inputs
+      root_credentials=/run/credentials/aos-sandbox-policy-authorityd.service
+      ${pkgs.aos-sandboxd}/bin/aos-sandbox-policy-key-pin deployment 1 \
+        /tmp/q04-deployment-public-key.raw "$root_credentials/deployment-public-key"
+      ${pkgs.aos-sandboxd}/bin/aos-sandbox-policy-key-pin project 1 \
+        /tmp/q04-project-public-key.raw "$root_credentials/project-public-key"
+      mkdir -m 0710 /run/aos/sandbox-policy-authority
+      chown 0:811 /run/aos/sandbox-policy-authority
+      umask 0007
+      ${pkgs.util-linux}/bin/setpriv --regid 811 --clear-groups \
+        ${pkgs.aos-sandboxd}/bin/aos-sandbox-policy-authorityd 811 811 813 814 &
+      root_pid=$!
+      trap 'kill "$root_pid" 2>/dev/null || true; wait "$root_pid" 2>/dev/null || true; unmount_views; umount /var/lib/aos/sandbox' EXIT
+      for attempt in 1 2 3 4 5; do
+        test -S /run/aos/sandbox-policy-authority/current-head.sock && break
+        kill -0 "$root_pid"
+        sleep 1
+      done
+      test -S /run/aos/sandbox-policy-authority/current-head.sock
+      test "$(stat -c '%u:%g:%a' /run/aos/sandbox-policy-authority/current-head.sock)" = 0:811:770
+      controller_probe root-settlement-absent
+      ${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe root-settlement-peer-denied
+      kill -0 "$root_pid"
+
+      kill "$root_pid"
+      wait "$root_pid" 2>/dev/null || true
+      trap 'unmount_views; umount /var/lib/aos/sandbox' EXIT
 
       unmount_views
       umount /var/lib/aos/sandbox

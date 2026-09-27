@@ -10,6 +10,8 @@ aos-sandbox = { workspace = true, features = ["cache-physical-join-vm-fixture"] 
 aos-sandbox-core.workspace = true
 ed25519-dalek.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
+serde_json.workspace = true
+sha2.workspace = true
 
 [lints]
 workspace = true

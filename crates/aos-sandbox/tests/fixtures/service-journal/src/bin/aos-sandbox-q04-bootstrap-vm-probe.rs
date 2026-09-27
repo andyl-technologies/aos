@@ -1,13 +1,15 @@
 //! Bootstraps real protected Q04 owner journals and role-separated VM credentials.
 //!
 //! This fixture has no accepted Create, Source hold, or Root binding. Its pins
-//! are deterministic test material, never deployment credentials or authority.
+//! and signed source claims are deterministic test material, never production
+//! credentials or proof that the claimed publisher and ancestry heads are current.
 
 use std::error::Error;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox::Journal;
 use aos_sandbox::cache_residency::{
@@ -19,12 +21,15 @@ use aos_sandbox::controller_service::journal::production_journal_limits;
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     PinnedControllerHoldSignerV1, PinnedSourceHoldReadbackSignerV1, PolicyCompilerProtectedOwnerV1,
-    SourceHoldReadbackChallengeV1, encode_controller_hold_signer_credential_v1,
-    encode_source_hold_readback_signer_credential_v1, read_fixed_policy_cache_hold_v1,
+    PolicyDeploymentInputsV1, SourceHoldReadbackChallengeV1,
+    encode_controller_hold_signer_credential_v1, encode_source_hold_readback_signer_credential_v1,
+    query_fixed_root_v8_settled_grant_v1, read_fixed_policy_cache_hold_v1,
     sign_fixed_source_signer_readback_v2, verify_fixed_policy_cache_owner_readback_v2,
+    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v2,
 };
 use aos_sandbox_core::{ObjectDigest, ProjectId};
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signer as _, SigningKey};
+use sha2::{Digest as _, Sha256};
 
 const CONTROLLER_UID: u32 = 811;
 const CACHE_SIGNER_UID: u32 = 813;
@@ -58,6 +63,23 @@ fn run() -> Result<(), Box<dyn Error>> {
         "credentials-replay" => {
             require_uid(0)?;
             replay_credentials()?;
+        }
+        "root-signed-inputs" => {
+            require_uid(0)?;
+            provision_root_signed_inputs()?;
+        }
+        "root-settlement-absent" => {
+            require_uid(CONTROLLER_UID)?;
+            if query_fixed_root_v8_settled_grant_v1(ObjectDigest::from_bytes([1; 32]), 1)?.is_some()
+            {
+                return Err("unissued Root V8 settlement was returned".into());
+            }
+        }
+        "root-settlement-peer-denied" => {
+            require_uid(0)?;
+            if query_fixed_root_v8_settled_grant_v1(ObjectDigest::from_bytes([1; 32]), 1).is_ok() {
+                return Err("Root accepted a non-Controller settlement peer".into());
+            }
         }
         "cache-signer-readback" => {
             require_uid(CACHE_SIGNER_UID)?;
@@ -211,6 +233,130 @@ fn bootstrap_credentials() -> Result<(), Box<dyn Error>> {
         create_credential("aos-sandbox-policy-authorityd.service", name, pin)?;
     }
     replay_credentials()
+}
+
+fn signed_packet(magic: &[u8; 8], domain: &[u8], payload: &[u8], key: &SigningKey) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(payload.len() + 8 + 64);
+    packet.extend_from_slice(magic);
+    packet.extend_from_slice(payload);
+
+    let mut signed = Vec::with_capacity(domain.len() + packet.len());
+    signed.extend_from_slice(domain);
+    signed.extend_from_slice(&packet);
+    packet.extend_from_slice(&key.sign(&signed).to_bytes());
+    packet
+}
+
+fn provision_root_signed_inputs() -> Result<(), Box<dyn Error>> {
+    let deployment_key = SigningKey::from_bytes(&[10; 32]);
+    let project_key = SigningKey::from_bytes(&[11; 32]);
+    let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())?;
+    let issued = now.checked_sub(60).ok_or("VM clock underflow")?;
+    let expires = now.checked_add(86_400).ok_or("VM clock overflow")?;
+
+    let portable = vec![serde_json::json!({"kind": "inherit"}); 16];
+    let accounting = vec![serde_json::json!({"kind": "inherit"}); 22];
+    let layer = serde_json::json!({"accounting": accounting, "portable": portable});
+    let inputs = [
+        serde_json::to_vec(
+            &serde_json::json!({"generation": 1, "input": layer, "magic": "AOSPNI01"}),
+        )?,
+        serde_json::to_vec(
+            &serde_json::json!({"generation": 1, "input": layer, "magic": "AOSPSI01"}),
+        )?,
+        serde_json::to_vec(
+            &serde_json::json!({"generation": 1, "input": {"enforcement": []}, "magic": "AOSPBI01"}),
+        )?,
+        serde_json::to_vec(
+            &serde_json::json!({"generation": 1, "input": {"destinations": [], "endpoints": []}, "magic": "AOSPCI01"}),
+        )?,
+    ];
+    let mut deployment_payload = Vec::with_capacity(152);
+    deployment_payload.extend_from_slice(&1_u64.to_be_bytes());
+    deployment_payload.extend_from_slice(&issued.to_be_bytes());
+    deployment_payload.extend_from_slice(&expires.to_be_bytes());
+    for input in &inputs {
+        deployment_payload.extend_from_slice(&Sha256::digest(input));
+    }
+    let deployment = signed_packet(
+        b"AOSPDH01",
+        b"aos.sandbox.policy-deployment-head.v1\0",
+        &deployment_payload,
+        &deployment_key,
+    );
+    let sources = PolicyDeploymentInputsV1 {
+        node: &inputs[0],
+        site: &inputs[1],
+        backend: &inputs[2],
+        catalogs: &inputs[3],
+    };
+    verify_policy_deployment_head_v1(&deployment, &sources, &deployment_key.verifying_key(), now)?;
+
+    // A signed source is required for normal Root service startup. Its
+    // publisher and ancestry claims are not admitted by this bootstrap probe.
+    let project = ProjectId::from_bytes([1; 16]);
+    let project_layer = serde_json::to_vec(&serde_json::json!({
+        "generation": 1,
+        "input": {
+            "accounting": vec![serde_json::json!({"kind": "inherit"}); 22],
+            "advisory_actions": [],
+            "cache_domain": "project",
+            "grants": [],
+            "namespace_rules": [],
+            "portable": vec![serde_json::json!({"kind": "inherit"}); 16],
+            "revocation": {"grace_nanos": 0, "mode": "deny-new"},
+        },
+        "magic": "AOSPPL02",
+        "project_id": project.to_string(),
+    }))?;
+    let mut project_payload = Vec::with_capacity(256);
+    project_payload.extend_from_slice(project.as_bytes());
+    project_payload.extend_from_slice(&1_u64.to_be_bytes());
+    project_payload.extend_from_slice(&issued.to_be_bytes());
+    project_payload.extend_from_slice(&expires.to_be_bytes());
+    project_payload.extend_from_slice(&1_u64.to_be_bytes());
+    project_payload.extend_from_slice(&[1; 32]);
+    project_payload.extend_from_slice(&Sha256::digest(&project_layer));
+    project_payload.extend_from_slice(&[2; 32]);
+    project_payload.extend_from_slice(&Sha256::digest(&deployment));
+    project_payload.extend_from_slice(&[3; 32]);
+    project_payload.extend_from_slice(&[4; 32]);
+    project_payload.extend_from_slice(&1_u64.to_be_bytes());
+    project_payload.extend_from_slice(&1_u64.to_be_bytes());
+    let project_packet = signed_packet(
+        b"AOSPPH02",
+        b"aos.sandbox.policy-project-head.v2\0",
+        &project_payload,
+        &project_key,
+    );
+    verify_signed_project_policy_source_v2(
+        &project_packet,
+        &project_layer,
+        &project_key.verifying_key(),
+        now,
+    )?;
+
+    let root = "aos-sandbox-policy-authorityd.service";
+    for (name, bytes) in [
+        ("deployment-head.packet", deployment.as_slice()),
+        ("node-policy.json", inputs[0].as_slice()),
+        ("site-policy.json", inputs[1].as_slice()),
+        ("backend-capabilities.json", inputs[2].as_slice()),
+        ("catalogs.json", inputs[3].as_slice()),
+        ("project-head-v2.packet", project_packet.as_slice()),
+        ("project-layer-v2.json", project_layer.as_slice()),
+    ] {
+        create_credential(root, name, bytes)?;
+    }
+    fs::write(
+        "/tmp/q04-deployment-public-key.raw",
+        deployment_key.verifying_key().as_bytes(),
+    )?;
+    fs::write(
+        "/tmp/q04-project-public-key.raw",
+        project_key.verifying_key().as_bytes(),
+    )?;
+    Ok(())
 }
 
 fn replay_credentials() -> Result<(), Box<dyn Error>> {
