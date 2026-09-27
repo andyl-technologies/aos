@@ -1368,9 +1368,9 @@ in
               grep -F -x -q 'tests=1552' "$out/result"
               grep -F -x -q 'failed=0' "$out/result"
               grep -F -x -q 'errors=0' "$out/result"
-              grep -F -x -q 'skipped=367' "$out/result"
+              grep -F -x -q 'skipped=459' "$out/result"
               grep -F -x -q \
-                'skip_inventory_sha256=b3f8b91542145297fe8accd5778855086512c71c74dd3f4e83bc3ca345414142' \
+                'skip_inventory_sha256=8e7cdfe49aaa3e59335e541af1d6305cd39fea662d04b212c302d42b191d8222' \
                 "$out/result"
               grep -F -x -q 'filesystem=ext4' "$out/result"
               grep -F -x -q 'execution_environment=qemu-kvm-vm' "$out/result"
