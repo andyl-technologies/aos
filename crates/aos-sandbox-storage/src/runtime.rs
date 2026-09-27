@@ -64,6 +64,7 @@ use crate::helper::{
     StorageMutationHelper, SystemdZfsProcessBackend, ZfsHelperOutcome, ZfsProcessBackend,
 };
 use crate::live_export_origin::StorageLiveExportOriginV1;
+use crate::native_issuance::StorageNativeIssuanceLedgerV1;
 use crate::observation_protocol::{
     WorkspaceCatalogObservationBindingsV1, WorkspaceCatalogObservationExpectationV1,
     WorkspaceCatalogObservationRequestV1, encode_request,
@@ -373,6 +374,7 @@ pub struct StorageBrokerRuntime {
     configuration_binding: ObjectDigest,
     broker_instance_id: [u8; 16],
     held_reader_state_directory: Option<PathBuf>,
+    native_issuance: Option<StorageNativeIssuanceLedgerV1>,
     pin_contract: ZfsHelperContract,
     pin_io: Box<dyn WorkspacePinRuntimeIo + Send>,
     helper: StorageMutationHelper<Box<dyn ZfsProcessBackend + Send>>,
@@ -1127,6 +1129,14 @@ impl StorageBrokerRuntime {
                     .map_err(Into::into)
             },
         )?;
+        // Preserve one lifetime writer order: primary transaction, workspace,
+        // then separate native issuance. Neither acceptance nor ReleaseHold
+        // may observe a separately reopened/unheld consumer-interest snapshot.
+        let mut native_issuance = StorageNativeIssuanceLedgerV1::open_root_owned(state_directory)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        native_issuance
+            .validate_active_holds(&coordinator)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         let broker_instance_id = random_challenge()?;
 
         let (backend, apply_readiness) = match apply_construction {
@@ -1146,6 +1156,7 @@ impl StorageBrokerRuntime {
             configuration_binding,
             broker_instance_id,
             held_reader_state_directory: Some(state_directory.to_path_buf()),
+            native_issuance: Some(native_issuance),
             pin_contract: contract.clone(),
             pin_io: Box::new(pin_io),
             helper: StorageMutationHelper::new(
@@ -1201,6 +1212,7 @@ impl StorageBrokerRuntime {
             configuration_binding,
             broker_instance_id: random_challenge()?,
             held_reader_state_directory: None,
+            native_issuance: None,
             pin_contract,
             pin_io: Box::new(pin_io),
             helper: helper.into_boxed(),
@@ -1246,6 +1258,7 @@ impl StorageBrokerRuntime {
             configuration_binding,
             broker_instance_id: random_challenge()?,
             held_reader_state_directory: None,
+            native_issuance: None,
             pin_contract,
             pin_io,
             helper,
@@ -1340,14 +1353,23 @@ impl StorageBrokerRuntime {
             && self.worker_dispatch.is_open()
     }
 
-    fn operation_permits_apply(&self, operation_id: [u8; 16]) -> Result<bool, StorageRuntimeError> {
+    fn operation_permits_apply(
+        &mut self,
+        operation_id: [u8; 16],
+    ) -> Result<bool, StorageRuntimeError> {
         if self.apply_readiness != StorageApplyReadiness::ProtectedWorkerReady
             || !self.readiness.permits_catalog_methods()
             || !self.worker_dispatch.is_open()
         {
             return Ok(false);
         }
-        let _ = self.coordinator.prepared_catalog_for_apply(operation_id)?;
+        let catalog = self.coordinator.prepared_catalog_for_apply(operation_id)?;
+        if let Some(issuance) = &mut self.native_issuance {
+            issuance
+                .validate_active_holds(&self.coordinator)
+                .and_then(|()| issuance.check_release(catalog.plan()))
+                .map_err(|_| StorageRuntimeError::Recovery)?;
+        }
         Ok(true)
     }
 
@@ -2718,6 +2740,33 @@ impl StorageBrokerRuntime {
             .worker_dispatch
             .enter()
             .map_err(|_| StorageRuntimeError::Recovery)?;
+        if let Some(issuance) = &mut self.native_issuance {
+            issuance
+                .validate_active_holds(&self.coordinator)
+                .map_err(|_| StorageRuntimeError::Recovery)?;
+            // Recovery must not publish a pending ReleaseHold around an active
+            // interest, even when observation reports that the effect already
+            // happened. Cleanup/recovery remains closed until both owners can
+            // settle the exact original acceptance; journal replay is no bypass.
+            for entry in self
+                .coordinator
+                .recovery_entries()
+                .map_err(|_| StorageRuntimeError::Recovery)?
+            {
+                if !matches!(
+                    entry.phase(),
+                    DurableStoragePhase::Committed | DurableStoragePhase::Aborted
+                ) {
+                    let catalog = self
+                        .coordinator
+                        .recovery_catalog_for_native_interest(entry)
+                        .map_err(|_| StorageRuntimeError::Recovery)?;
+                    issuance
+                        .check_release(catalog.plan())
+                        .map_err(|_| StorageRuntimeError::Recovery)?;
+                }
+            }
+        }
         let mut pending = reconcile_transaction_recovery(&mut self.coordinator, &mut self.helper)?;
         for dispatch in self
             .coordinator

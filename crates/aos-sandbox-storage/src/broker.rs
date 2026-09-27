@@ -1301,6 +1301,29 @@ impl StorageAdmissionCoordinator {
         Ok(self.transactions.recovery_entries()?.collect())
     }
 
+    /// Reopens a current durable recovery plan for consumer-interest exclusion.
+    ///
+    /// This accessor grants no execution or observation authority. It prevents
+    /// the separate issuance owner from checking a caller-supplied ReleaseHold
+    /// plan instead of the exact plan retained under the primary writer.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unreadable protected state, a stale entry, or an invalid catalog.
+    pub(crate) fn recovery_catalog_for_native_interest(
+        &self,
+        entry: crate::StorageRecoveryEntry,
+    ) -> Result<ResolvedCatalogCommitmentV1, ZfsHelperError> {
+        if self
+            .transactions
+            .current_recovery_entry(entry.operation_id())?
+            != entry
+        {
+            return Err(crate::StorageStateError::InvalidTransition.into());
+        }
+        self.transactions.recover_catalog(entry).map_err(Into::into)
+    }
+
     /// Retires authenticated inactive Prepared operations before startup observation.
     ///
     /// Entries are visited in stable operation-ID order. A fresh exact-current

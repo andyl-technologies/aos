@@ -8693,6 +8693,18 @@ the socket authenticates the Provider process, but Storage cannot independently
 prove the durable Provider attempt or retain a SourceRoot delivery across a
 crash. The transferred mount is dropped after the final Storage readback.
 
+Storage also retains a separate protected native-issuance journal after its
+primary and workspace writers. Its closed admission model binds the exact
+signed Provider request, original Root Acquire, consumer session, acquisition,
+attempt/challenge, native hold lineage, receipt commitment, and original
+descriptor identity. Active interests exclude physical `ReleaseHold` across
+handle/name aliases; exact retirement keeps the original acceptance tombstone.
+Admission reserves capacity for every outstanding retirement. No production
+admission or retirement token can yet be constructed: the authenticated live
+request/descriptor bridge and exact Provider terminal/cleanup authority remain
+required. This journal neither signs a receipt nor delivers a SourceRoot, and
+positive Acquire remains closed.
+
 Storage writes and fsyncs a single exclusive launch marker in its root-owned,
 mode-0700 StateDirectory before connecting to the reader socket. A restart
 that finds the marker refuses another reader launch even if systemd has not

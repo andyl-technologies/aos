@@ -115,6 +115,11 @@ mod live_export_request_trust;
 )]
 mod live_export_three_fd;
 pub mod live_export_transport;
+#[allow(
+    dead_code,
+    reason = "native issuance admission and retirement await the authenticated live carrier"
+)]
+mod native_issuance;
 mod observation;
 #[allow(
     dead_code,
