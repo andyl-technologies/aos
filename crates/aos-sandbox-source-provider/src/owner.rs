@@ -1434,7 +1434,8 @@ impl FixedProviderOwnerV1 {
     /// branded before leaving this owner. Its signature and durable sequence
     /// are still verified by the reservation reducer. Release and
     /// non-catalog Acquire remain closed in the production service. A native
-    /// selected Acquire still receives only a descriptor-free Unavailable.
+    /// selected Acquire remains pending until its separate signed no-dispatch
+    /// recovery settlement; it cannot return a SourceRoot or complete a lease.
     ///
     /// # Errors
     ///

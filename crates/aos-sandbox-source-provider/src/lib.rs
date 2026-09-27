@@ -1,19 +1,19 @@
 //! Durable provider-owned SourceProvider policy and state.
 //!
-//! This production-inert crate owns the canonical `AOSSPL01` journal graph,
+//! This crate owns the canonical `AOSSPL01` journal graph,
 //! normalized acquisition intent, hostile recovery, exactly-once request
 //! reservations, backend effect permits, completion ordering, and retained
-//! replay responses. Its constructible dormant backend adapter accepts only an
-//! externally supplied raw transport; a fixed root-owned verifier set must
-//! authenticate every class-specific observation before completion. Neither
-//! transport nor verifier inputs expose protected authority. The crate is a
-//! Linux-only boundary and deliberately has no listener, daemon, socket,
-//! service, Nix wiring, or production feature advertisement.
+//! replay responses. Its backend adapter accepts only an externally supplied
+//! raw transport; a fixed root-owned verifier set must authenticate every
+//! class-specific observation before completion. Neither transport nor
+//! verifier inputs expose protected authority. A separate daemon drives the
+//! fixed owner and its authenticated socket; this Linux-only crate does not
+//! own that listener or advertise a completed source-backed Acquire.
 //!
 //! [`ProviderLedgerV1`] is lent only by [`FixedProviderOwnerV1`], which binds
 //! fixed protected custody and journal paths to one authenticated live session.
-//! The dormant bootstrap path mints configuration from revalidated security
-//! custody and a verified catalog publication; it activates no listener or backend.
+//! Bootstrap mints configuration from revalidated security custody and a
+//! verified catalog publication; native selection does not dispatch a backend effect.
 //! Request admission always invokes protocol verification inside the ledger
 //! facade; arbitrary pre-verified values are never accepted.
 
