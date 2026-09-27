@@ -328,6 +328,10 @@ in
   assert (decisionFor "systemd" "aarch64-darwin").state == "not-applicable";
   assert (decisionFor "pango" "aarch64-darwin").rule == "package-darwin-release-scope/v1";
   assert (decisionFor "pango" "x86_64-linux").state == "eligible";
+  assert (decisionFor "crucible-controller" "x86_64-linux").state == "eligible";
+  assert (decisionFor "crucible-controller" "x86_64-darwin").rule == "package-darwin-release-scope/v1";
+  assert (decisionFor "crucible-fleet-store" "aarch64-linux").state == "eligible";
+  assert (decisionFor "crucible-fleet-store" "aarch64-darwin").rule == "package-darwin-release-scope/v1";
   assert (decisionFor "darwin-runtimes" "aarch64-darwin").state == "eligible";
   assert (decisionFor "rust" "x86_64-linux").blockers == [];
   assert (decisionFor "rust" "x86_64-darwin").blockers != [];
