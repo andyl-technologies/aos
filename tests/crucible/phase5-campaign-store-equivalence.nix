@@ -270,14 +270,31 @@ in
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' \
             "$TMPDIR/live-s3-product.log"
 
+          if ! cargo test \
+            --frozen --offline --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-cli --test campaign_store_process \
+            live_s3_product::public_paused_composed_campaign_survives_s3_outage_repack_archive_and_gc \
+            -- --ignored --exact --nocapture --test-threads=1 \
+            > "$TMPDIR/live-s3-composed.log" 2>&1; then
+            cat "$TMPDIR/live-s3-composed.log" >&2
+            exit 1
+          fi
+          grep -Fq 'composed_s3_packed_pause_outage_repack_archive_gc=true' \
+            "$TMPDIR/live-s3-composed.log"
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' \
+            "$TMPDIR/live-s3-composed.log"
+
           cleanup
           trap - EXIT
 
           mkdir -p "$out/evidence"
           cp "$TMPDIR/packed-worked-network.log" "$out/evidence/packed-worked-network.log"
           cp "$TMPDIR/live-s3-product.log" "$out/evidence/live-s3-product.log"
+          cp "$TMPDIR/live-s3-composed.log" "$out/evidence/live-s3-composed.log"
           packed_sha256=$(sha256sum "$out/evidence/packed-worked-network.log" | cut -d ' ' -f 1)
           product_sha256=$(sha256sum "$out/evidence/live-s3-product.log" | cut -d ' ' -f 1)
+          composed_sha256=$(sha256sum "$out/evidence/live-s3-composed.log" | cut -d ' ' -f 1)
           cat > "$out/result" <<RESULT
           PASS
           check=${attrPath}
@@ -290,6 +307,8 @@ in
           s3_live_conformance=true
           s3_live_worked_network_outage_credential_recovery=true
           s3_live_product_evidence_sha256=$product_sha256
+          composed_s3_packed_pause_outage_repack_archive_gc=true
+          composed_s3_packed_evidence_sha256=$composed_sha256
           packed_worked_network_archive_repack_outage_corruption_gc=true
           packed_worked_network_imported_campaign_retained=true
           packed_worked_network_evidence_sha256=$packed_sha256
