@@ -269,11 +269,12 @@ impl StorageWorkOperation {
             | Self::InspectOciRange { .. }
             | Self::HashOciRange { .. } => &["read"],
             Self::ListPage { .. } => &["list"],
-            Self::CopyObject { .. } | Self::ComposeOciBlob { .. } => &["read", "write"],
+            Self::CopyObject { .. }
+            | Self::ComposeOciBlob { .. }
+            | Self::CompleteMultipart { .. } => &["read", "write"],
             Self::PutMetadata { .. }
             | Self::PutProbe { .. }
             | Self::CreateMultipart { .. }
-            | Self::CompleteMultipart { .. }
             | Self::AbortMultipart { .. } => &["write"],
             Self::DeleteIfMatches { .. } => &["delete", "read"],
             Self::DeleteOciStaging { .. } | Self::DeleteProbe { .. } => &["delete"],
@@ -545,12 +546,12 @@ pub enum StorageWorkOutcome {
     MetadataWritten,
     /// Reserved capability probe write or cleanup completed.
     ProbeAcknowledged,
-    /// R2 accepted a new multipart upload and returned its opaque identity.
+    /// The provider accepted a new multipart upload and returned its opaque identity.
     MultipartCreated {
         /// Opaque provider upload identity to persist in Native SQL.
         upload_id: String,
     },
-    /// R2 completed a multipart upload and exposed the resulting object.
+    /// The provider completed a multipart upload and exposed the resulting object.
     MultipartCompleted {
         /// Physical object identity observed after completion.
         object: StorageObjectIdentity,
@@ -1310,6 +1311,47 @@ mod tests {
             purpose: "write".into(),
             generation: 2,
         });
+        assert!(snapshot.authorizes(&plan, "deployment-1", now + 1).is_ok());
+    }
+
+    #[test]
+    fn external_multipart_completion_requires_read_and_write_credentials() {
+        let now = 100;
+        let mut snapshot = binding_snapshot(now);
+        snapshot.credentials.push(StorageCredentialReference {
+            purpose: "write".into(),
+            generation: 2,
+            secret_version_ref: "secret://aos/s3/write/v2".into(),
+            fingerprint: "c".repeat(64),
+        });
+
+        let mut plan = plan(now);
+        plan.binding_kind = "s3".into();
+        plan.binding_snapshot_revision = Some(snapshot.revision().unwrap());
+        plan.operation = StorageWorkOperation::CompleteMultipart {
+            path: "nar/object.nar".into(),
+            upload_id: "provider-upload-1".into(),
+            parts: vec![crate::surface_write::PartTag {
+                part_number: 1,
+                etag: "\"part-version\"".into(),
+            }],
+        };
+        plan.credential_references = vec![StorageCredentialSelector {
+            purpose: "write".into(),
+            generation: 2,
+        }];
+        assert_eq!(
+            plan.validate("deployment-1", now + 1),
+            Err(StorageWorkError::InvalidPlan)
+        );
+
+        plan.credential_references.insert(
+            0,
+            StorageCredentialSelector {
+                purpose: "read".into(),
+                generation: 4,
+            },
+        );
         assert!(snapshot.authorizes(&plan, "deployment-1", now + 1).is_ok());
     }
 

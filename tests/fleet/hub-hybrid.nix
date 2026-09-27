@@ -1,4 +1,4 @@
-##! Hybrid Hub transport qualification across separate Native, Worker, and client VMs.
+##! Hybrid Hub transport qualification across separate Native, Worker, S3, and client VMs.
 ##!
 ##! Wrangler runs the deployable Worker under local workerd with a persistent
 ##! emulated R2 binding. Native uses PostgreSQL on its own VM and has no R2
@@ -297,6 +297,7 @@ in {
       import statistics
       import textwrap
       import time
+      import urllib.parse
       import zlib
 
       CURL = "${pkgs.curl}/bin/curl --noproxy '*' --cacert /etc/ssl/certs/ca-certificates.crt"
@@ -625,12 +626,15 @@ in {
 
       def external_binding_plan(revision, operation, plan_id):
           issued_at = int(time.time())
-          credential_purpose = {
-              "list_page": "list",
-              "put_metadata": "write",
-              "put_probe": "write",
-              "delete_probe": "delete",
-          }.get(operation["kind"], "read")
+          credential_purposes = {
+              "list_page": ("list",),
+              "put_metadata": ("write",),
+              "put_probe": ("write",),
+              "delete_probe": ("delete",),
+              "create_multipart": ("write",),
+              "complete_multipart": ("read", "write"),
+              "abort_multipart": ("write",),
+          }.get(operation["kind"], ("read",))
           external_plan = {
               "version": 1,
               "plan_id": plan_id,
@@ -643,10 +647,10 @@ in {
               "binding_resource_version": 1,
               "binding_kind": "s3",
               "binding_snapshot_revision": revision,
-              "credential_references": [{
-                  "purpose": credential_purpose,
-                  "generation": 1,
-              }],
+              "credential_references": [
+                  {"purpose": purpose, "generation": 1}
+                  for purpose in credential_purposes
+              ],
               "placement_prefix": "registry",
               "operation": operation,
           }
@@ -775,6 +779,65 @@ in {
       )
       assert absent_probe_status == "200", (absent_probe_status, absent_probe_response)
       assert json.loads(absent_probe_response)["outcome"]["kind"] == "not_found"
+      multipart_path = "multipart/fleet-recovery-probe.bin"
+      create_status, create_response = external_binding_plan(
+          published_revision,
+          {"kind": "create_multipart", "path": multipart_path},
+          "57" * 16,
+      )
+      assert create_status == "200", (create_status, create_response)
+      upload_id = json.loads(create_response)["outcome"]["upload_id"]
+      abort_status, abort_response = external_binding_plan(
+          published_revision,
+          {"kind": "abort_multipart", "path": multipart_path, "upload_id": upload_id},
+          "58" * 16,
+      )
+      assert abort_status == "200", (abort_status, abort_response)
+      assert json.loads(abort_response)["outcome"] == {
+          "kind": "multipart_aborted", "outcome": "aborted",
+      }, abort_response
+
+      complete_path = "multipart/fleet-complete-probe.bin"
+      complete_bytes = b"fleet external multipart completion\n"
+      complete_create_status, complete_create_response = external_binding_plan(
+          published_revision,
+          {"kind": "create_multipart", "path": complete_path},
+          "59" * 16,
+      )
+      assert complete_create_status == "200", (complete_create_status, complete_create_response)
+      complete_upload_id = json.loads(complete_create_response)["outcome"]["upload_id"]
+      encoded_upload_id = urllib.parse.quote(complete_upload_id, safe="")
+      client.succeed(
+          f"printf '%s' {shlex.quote(base64.b64encode(complete_bytes).decode())} | "
+          "${pkgs.coreutils}/bin/base64 -d > /tmp/hybrid-external-multipart-part"
+      )
+      part_url = (
+          f"https://s3.fleet.test/fleet-s3/tenant/registry/{complete_path}"
+          f"?partNumber=1&uploadId={encoded_upload_id}"
+      )
+      part_headers = client.succeed(
+          f"{CURL} -fsS --aws-sigv4 'aws:amz:garage:s3' "
+          f"-u {shlex.quote(access_key.group(1) + ':' + secret_key.group(1))} "
+          "-X PUT -D - -o /dev/null "
+          f"--data-binary @/tmp/hybrid-external-multipart-part {shlex.quote(part_url)}",
+          timeout=60,
+      )
+      part_etag = re.search(r"(?im)^etag:\s*(\S+)", part_headers)
+      assert part_etag is not None, part_headers
+      complete_status, complete_response = external_binding_plan(
+          published_revision,
+          {
+              "kind": "complete_multipart", "path": complete_path,
+              "upload_id": complete_upload_id,
+              "parts": [{"part_number": 1, "etag": part_etag.group(1)}],
+          },
+          "5a" * 16,
+      )
+      assert complete_status == "200", (complete_status, complete_response)
+      completed_object = json.loads(complete_response)["outcome"]["object"]
+      assert completed_object["key"] == f"registry/{complete_path}", completed_object
+      assert completed_object["size"] == len(complete_bytes), completed_object
+      print("hybrid external S3 multipart create, abort, and complete: passed")
       git_status, git_response = external_binding_plan(
           published_revision,
           {"kind": "inspect_git_object", "oid": git_oid},

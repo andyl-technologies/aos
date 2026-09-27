@@ -62,7 +62,8 @@ struct WorkerR2BucketAdapter {
 
 /// Executes admitted external-storage work through the same S3 signing path
 /// used by Worker-only mode. The bounded metadata and probe writes are
-/// idempotent; larger mutations require provider-specific recovery rules.
+/// idempotent; multipart creation returns the provider upload identity to its
+/// caller for durable recovery.
 ///
 /// # Errors
 ///
@@ -86,7 +87,11 @@ pub(crate) async fn execute_external_storage_work(
         | StorageWorkOperation::InspectDocumentation { .. }
         | StorageWorkOperation::InspectOciRange { .. }
         | StorageWorkOperation::HashOciRange { .. } => "read",
-        StorageWorkOperation::PutMetadata { .. } | StorageWorkOperation::PutProbe { .. } => "write",
+        StorageWorkOperation::PutMetadata { .. }
+        | StorageWorkOperation::PutProbe { .. }
+        | StorageWorkOperation::CreateMultipart { .. }
+        | StorageWorkOperation::CompleteMultipart { .. }
+        | StorageWorkOperation::AbortMultipart { .. } => "write",
         StorageWorkOperation::DeleteProbe { .. } => "delete",
         _ => return Ok(None),
     };
@@ -132,6 +137,53 @@ pub(crate) async fn execute_external_storage_work(
             StorageWorkOperation::DeleteProbe { path } => {
                 writer.delete(path).await?;
                 StorageWorkOutcome::ProbeAcknowledged
+            }
+            StorageWorkOperation::CreateMultipart { path } => {
+                let upload_id = writer.create_multipart(path).await?;
+                StorageWorkOutcome::MultipartCreated { upload_id }
+            }
+            StorageWorkOperation::CompleteMultipart {
+                path,
+                upload_id,
+                parts,
+            } => {
+                writer.complete_multipart(path, upload_id, parts).await?;
+                let read_credential = if publication.snapshot.access_mode == "private" {
+                    let selector = plan
+                        .credential_references
+                        .iter()
+                        .find(|selector| selector.purpose == "read")
+                        .context("external multipart completion has no read credential")?;
+                    Some(publication.credential_text(selector, &deployment_id, now)?)
+                } else {
+                    None
+                };
+                let read_surface = S3Surface::from_snapshot(
+                    &publication.snapshot,
+                    &deployment_id,
+                    &plan.placement_prefix,
+                    read_credential.as_ref().map(|value| value.as_str()),
+                    now,
+                )?;
+                let fetcher = S3SurfaceFetch {
+                    surface: read_surface,
+                    egress: Arc::clone(&writer.egress),
+                };
+                let object = fetcher
+                    .delivery_head(path)
+                    .await?
+                    .context("completed S3 multipart object is missing")?;
+                StorageWorkOutcome::MultipartCompleted {
+                    object: StorageObjectIdentity {
+                        key: plan.object_key(path)?,
+                        size: object.size,
+                        etag: object.strong_etag,
+                    },
+                }
+            }
+            StorageWorkOperation::AbortMultipart { path, upload_id } => {
+                let outcome = writer.abort_multipart(path, upload_id).await?;
+                StorageWorkOutcome::MultipartAborted { outcome }
             }
             _ => anyhow::bail!("external mutation purpose differs from its operation"),
         };
