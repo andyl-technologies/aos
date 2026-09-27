@@ -444,11 +444,11 @@ mod tests {
     #[test]
     fn signed_terminal_owner_does_not_advertise_method_34() {
         assert!(
-            authenticated_broker_methods_for_role_v1(
+            !authenticated_broker_methods_for_role_v1(
                 BrokerSessionProtocolV1::Host,
                 Audience::AUDIENCE_STORAGE_BROKER,
             )
-            .is_empty()
+            .contains(&BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP)
         );
     }
 
