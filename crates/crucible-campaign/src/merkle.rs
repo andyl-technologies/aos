@@ -739,12 +739,7 @@ impl MerkleMap {
         key: CampaignHash,
         value: ContentId,
     ) -> Result<MerkleMapRoot, CampaignStoreError> {
-        let node = self.read_node(root, 0)?;
-        let update = self.insert_node(root, node, key, value)?;
-        Ok(MerkleMapRoot {
-            content_id: update.content_id,
-            entry_count: update.entry_count,
-        })
+        self.insert_many(root, &BTreeMap::from([(key, value)]))
     }
 
     /// Reads a bounded ascending page after an exclusive key cursor.
@@ -1251,129 +1246,6 @@ impl MerkleMap {
         self.read_node(content_id, expected_depth)
     }
 
-    fn insert_node(
-        &self,
-        original_id: ContentId,
-        mut node: MerkleNode,
-        key: CampaignHash,
-        value: ContentId,
-    ) -> Result<NodeUpdate, CampaignStoreError> {
-        let slot = digest_nibble(key, node.depth);
-        let existing = node.entries.get(&slot).cloned();
-        let (entry, changed) = match existing {
-            None => (MerkleEntry::Leaf { key, value }, true),
-            Some(MerkleEntry::Leaf {
-                key: stored_key,
-                value: stored_value,
-            }) if stored_key == key => (MerkleEntry::Leaf { key, value }, stored_value != value),
-            Some(MerkleEntry::Leaf {
-                key: stored_key,
-                value: stored_value,
-            }) => {
-                let next_depth = node
-                    .depth
-                    .checked_add(1)
-                    .ok_or(invalid("distinct-keys-exhausted-digest"))?;
-                let child =
-                    self.split_leaves(next_depth, (stored_key, stored_value), (key, value))?;
-                (
-                    MerkleEntry::Node {
-                        content_id: child.content_id,
-                        entry_count: child.entry_count,
-                    },
-                    true,
-                )
-            }
-            Some(MerkleEntry::Node {
-                content_id,
-                entry_count,
-            }) => {
-                let next_depth = node.depth.checked_add(1).ok_or(invalid("depth-overflow"))?;
-                let child = self.read_node(content_id, next_depth)?;
-                if child.entry_count != entry_count {
-                    return Err(invalid("child-entry-count-mismatch"));
-                }
-                let update = self.insert_node(content_id, child, key, value)?;
-                (
-                    MerkleEntry::Node {
-                        content_id: update.content_id,
-                        entry_count: update.entry_count,
-                    },
-                    update.changed,
-                )
-            }
-        };
-
-        if !changed {
-            return Ok(NodeUpdate {
-                content_id: original_id,
-                entry_count: node.entry_count,
-                changed: false,
-            });
-        }
-        node.entries.insert(slot, entry);
-        node.recompute_count()?;
-        let content_id = self.persist_node(&node)?;
-        Ok(NodeUpdate {
-            content_id,
-            entry_count: node.entry_count,
-            changed: true,
-        })
-    }
-
-    fn split_leaves(
-        &self,
-        depth: u8,
-        first: (CampaignHash, ContentId),
-        second: (CampaignHash, ContentId),
-    ) -> Result<NodeUpdate, CampaignStoreError> {
-        if depth >= DIGEST_NIBBLES {
-            return Err(invalid("distinct-keys-exhausted-digest"));
-        }
-        let first_slot = digest_nibble(first.0, depth);
-        let second_slot = digest_nibble(second.0, depth);
-        let mut node = MerkleNode {
-            schema_version: MERKLE_NODE_SCHEMA_VERSION,
-            depth,
-            entry_count: 2,
-            entries: BTreeMap::new(),
-        };
-        if first_slot != second_slot {
-            node.entries.insert(
-                first_slot,
-                MerkleEntry::Leaf {
-                    key: first.0,
-                    value: first.1,
-                },
-            );
-            node.entries.insert(
-                second_slot,
-                MerkleEntry::Leaf {
-                    key: second.0,
-                    value: second.1,
-                },
-            );
-        } else {
-            let next_depth = depth
-                .checked_add(1)
-                .ok_or(invalid("distinct-keys-exhausted-digest"))?;
-            let child = self.split_leaves(next_depth, first, second)?;
-            node.entries.insert(
-                first_slot,
-                MerkleEntry::Node {
-                    content_id: child.content_id,
-                    entry_count: child.entry_count,
-                },
-            );
-        }
-        let content_id = self.persist_node(&node)?;
-        Ok(NodeUpdate {
-            content_id,
-            entry_count: 2,
-            changed: true,
-        })
-    }
-
     fn scan_node(
         &self,
         node: MerkleNode,
@@ -1778,7 +1650,54 @@ mod tests {
         BackendCapabilities, BlobStoreAdmin, ByteRange, ImmutableBlobBackend, MemoryBlobBackend,
         PutReceipt, StoreError,
     };
-    use std::sync::Mutex;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct CountingBatchBackend {
+        inner: Arc<MemoryBlobBackend>,
+        single_puts: AtomicUsize,
+        batch_sizes: Mutex<Vec<usize>>,
+    }
+
+    impl ImmutableBlobBackend for CountingBatchBackend {
+        fn name(&self) -> &str {
+            self.inner.name()
+        }
+
+        fn capabilities(&self) -> BackendCapabilities {
+            self.inner.capabilities()
+        }
+
+        fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+            self.inner.contains(id)
+        }
+
+        fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+            self.inner.read(id, range)
+        }
+
+        fn put_if_absent(
+            &self,
+            id: ContentId,
+            source: &BlobHandle,
+        ) -> Result<PutReceipt, StoreError> {
+            self.single_puts.fetch_add(1, Ordering::Relaxed);
+            self.inner.put_if_absent(id, source)
+        }
+
+        fn put_many_if_absent(
+            &self,
+            objects: &[(ContentId, BlobHandle)],
+        ) -> Result<Vec<PutReceipt>, StoreError> {
+            self.batch_sizes
+                .lock()
+                .expect("batch sizes lock")
+                .push(objects.len());
+            self.inner.put_many_if_absent(objects)
+        }
+    }
 
     struct FailAfterPutBackend {
         inner: Arc<MemoryBlobBackend>,
@@ -1990,6 +1909,53 @@ mod tests {
 
         assert_eq!(first, second);
         assert_eq!(first.entry_count(), 5);
+    }
+
+    #[test]
+    fn singleton_insert_commits_colliding_trie_path_as_one_batch() {
+        let inner = Arc::new(MemoryBlobBackend::new(
+            "single-edit-batch-test",
+            16 * 1024 * 1024,
+        ));
+        let backend = Arc::new(CountingBatchBackend {
+            inner,
+            single_puts: AtomicUsize::new(0),
+            batch_sizes: Mutex::new(Vec::new()),
+        });
+        let map = MerkleMap::new(backend.clone());
+        let empty = map.empty().expect("empty map");
+        for name in ["first", "second"] {
+            backend
+                .inner
+                .put_if_absent(
+                    value(name),
+                    &BlobHandle::from_bytes(name.as_bytes().to_vec()),
+                )
+                .expect("store leaf value");
+        }
+        let first = map
+            .insert(empty.content_id(), hash(0x10), value("first"))
+            .expect("first insert");
+        let single_puts_before = backend.single_puts.load(Ordering::Relaxed);
+        backend
+            .batch_sizes
+            .lock()
+            .expect("batch sizes lock")
+            .clear();
+
+        let second = map
+            .insert(first.content_id(), hash(0x1f), value("second"))
+            .expect("colliding insert");
+
+        assert_eq!(
+            backend.single_puts.load(Ordering::Relaxed),
+            single_puts_before
+        );
+        assert_eq!(*backend.batch_sizes.lock().expect("batch sizes lock"), [2]);
+        assert_eq!(
+            map.verify_closure(second.content_id()).expect("closure"),
+            second
+        );
     }
 
     #[test]

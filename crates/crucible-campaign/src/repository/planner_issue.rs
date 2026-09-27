@@ -85,6 +85,7 @@ impl CampaignRepository {
             },
             offer,
             IssueProjectionMode::Preflight,
+            &mut Vec::new(),
         )?;
         let attempt = attempt.id()?;
         let accounting = snapshot.snapshot.roots().accounting;
@@ -405,6 +406,7 @@ impl CampaignRepository {
         }
 
         let mut proposal_ids = Vec::with_capacity(proposals.len());
+        let mut pending_publications = Vec::new();
         let proposal_basis = PlannerIssueProposalBasis {
             request: &selected_request,
             domain: &selected_domain,
@@ -420,7 +422,17 @@ impl CampaignRepository {
             )?;
             let proposal_id = proposal.id()?;
             let proposal_content = if mode.publishes() {
-                self.put_proposal(proposal)?
+                let envelope = ObjectEnvelope::for_record_versioned(
+                    crate::CampaignRecordKind::Proposal,
+                    proposal.schema_version(),
+                    crate::object::content_children(proposal.content_children())?,
+                    proposal.canonical_bytes(),
+                )?;
+                if envelope.content_id() != proposal_id.content_id() {
+                    return Err(integrity("planner-issue-proposal-publication-id-mismatch"));
+                }
+                pending_publications.push(envelope);
+                proposal_id.content_id()
             } else {
                 proposal_id.content_id()
             };
@@ -460,7 +472,12 @@ impl CampaignRepository {
             parent_path: &parent_path,
         };
         for (proposal, proposal_id) in proposals.iter().zip(proposal_ids.iter().copied()) {
-            let attempt = self.derive_planner_issue_attempt(&attempt_basis, proposal, mode)?;
+            let attempt = self.derive_planner_issue_attempt(
+                &attempt_basis,
+                proposal,
+                mode,
+                &mut pending_publications,
+            )?;
             let attempt_id = attempt.id()?;
             let stored_admission = match mode {
                 IssueProjectionMode::Validate {
@@ -493,11 +510,17 @@ impl CampaignRepository {
             )?;
             let admission_content = match mode {
                 IssueProjectionMode::Publish => {
-                    let content = self.put_attempt_admission(&expected)?;
-                    if content != expected.id()?.content_id() {
+                    let envelope = ObjectEnvelope::for_record_versioned(
+                        crate::CampaignRecordKind::AttemptAdmission,
+                        expected.schema_version(),
+                        crate::object::content_children(expected.content_children())?,
+                        expected.canonical_bytes(),
+                    )?;
+                    if envelope.content_id() != expected.id()?.content_id() {
                         return Err(integrity("planner-issue-admission-publication-mismatch"));
                     }
-                    content
+                    pending_publications.push(envelope);
+                    expected.id()?.content_id()
                 }
                 IssueProjectionMode::Preflight => expected.id()?.content_id(),
                 IssueProjectionMode::Validate {
@@ -571,6 +594,12 @@ impl CampaignRepository {
                     "SMC proposal coordinate is already admitted",
                 )?;
             }
+        }
+
+        // All content-addressed records are durable before their trie roots
+        // can become reachable through the campaign ref CAS.
+        if mode.publishes() {
+            self.put_envelopes_batch(pending_publications)?;
         }
 
         let mut frontier_states = BTreeMap::new();
@@ -983,6 +1012,7 @@ impl CampaignRepository {
         basis: &PlannerIssueAttemptBasis<'_>,
         proposal: &Proposal,
         mode: IssueProjectionMode,
+        pending_publications: &mut Vec<ObjectEnvelope>,
     ) -> Result<Attempt, CampaignRepositoryError> {
         let selection = Selection::new_campaign_branch(
             basis.opportunity,
@@ -1014,12 +1044,25 @@ impl CampaignRepository {
         )?;
 
         if mode.publishes() {
-            if self.put_selection(&selection)? != selection.id()?.content_id()
-                || self.put_branch_path(&path)? != path.id()?.content_id()
-                || self.put_attempt(&attempt)? != attempt.id()?.content_id()
+            let selection_envelope = ObjectEnvelope::for_record(
+                crate::CampaignRecordKind::Selection,
+                crate::object::content_children(selection.content_children())?,
+                selection.canonical_bytes(),
+            )?;
+            let path_envelope = ObjectEnvelope::for_branch_path(&path)?;
+            let attempt_envelope = ObjectEnvelope::for_record_versioned(
+                crate::CampaignRecordKind::Attempt,
+                attempt.schema_version(),
+                crate::object::content_children(attempt.content_children())?,
+                attempt.canonical_bytes(),
+            )?;
+            if selection_envelope.content_id() != selection.id()?.content_id()
+                || path_envelope.content_id() != path.id()?.content_id()
+                || attempt_envelope.content_id() != attempt.id()?.content_id()
             {
                 return Err(integrity("planner-issue-attempt-publication-id-mismatch"));
             }
+            pending_publications.extend([selection_envelope, path_envelope, attempt_envelope]);
         } else if mode.validates_import()
             && (self.resolve_selection(selection.id()?)?.selection() != &selection
                 || self.read_branch_path(path.id()?.content_id())? != path

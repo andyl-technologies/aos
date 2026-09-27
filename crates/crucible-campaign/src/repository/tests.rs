@@ -5,9 +5,14 @@
 
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crucible_cas::content_store::{
-    BlobHandle, BlobStoreAdmin, ImmutableBlobBackend, MemoryBlobBackend, MemoryRefBackend,
+    BlobHandle, BlobStoreAdmin, DirectoryRefBackend, ImmutableBlobBackend, MemoryBlobBackend,
+    MemoryRefBackend, SqliteBlobBackend,
 };
 
 use crate::{
@@ -32,6 +37,260 @@ use crate::{
 };
 
 struct AllowCampaignQueries;
+
+struct FailOneBatchBackend {
+    inner: Arc<SqliteBlobBackend>,
+    fail_next_batch: AtomicBool,
+    target_id: Mutex<Option<ContentId>>,
+}
+
+impl ImmutableBlobBackend for FailOneBatchBackend {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn capabilities(&self) -> crucible_cas::content_store::BackendCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+        self.inner.contains(id)
+    }
+
+    fn read(
+        &self,
+        id: ContentId,
+        range: Option<crucible_cas::content_store::ByteRange>,
+    ) -> Result<BlobHandle, StoreError> {
+        self.inner.read(id, range)
+    }
+
+    fn put_if_absent(
+        &self,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<crucible_cas::content_store::PutReceipt, StoreError> {
+        self.inner.put_if_absent(id, source)
+    }
+
+    fn put_many_if_absent(
+        &self,
+        objects: &[(ContentId, BlobHandle)],
+    ) -> Result<Vec<crucible_cas::content_store::PutReceipt>, StoreError> {
+        let matches_target = self
+            .target_id
+            .lock()
+            .expect("batch target lock")
+            .is_none_or(|target| objects.iter().any(|(id, _)| *id == target));
+        if matches_target && self.fail_next_batch.swap(false, Ordering::SeqCst) {
+            if let Some((id, source)) = objects.first() {
+                self.inner.put_if_absent(*id, source)?;
+            }
+            return Err(StoreError::Unavailable);
+        }
+        self.inner.put_many_if_absent(objects)
+    }
+}
+
+#[test]
+fn failed_batched_trie_publication_never_advances_ref_and_retries_after_reopen() {
+    let storage = tempfile::tempdir().expect("durable campaign store");
+    let blob_root = storage.path().join("blobs");
+    let ref_root = storage.path().join("refs");
+    let backend = Arc::new(FailOneBatchBackend {
+        inner: Arc::new(
+            SqliteBlobBackend::open("failed-batch-ref-test", &blob_root).expect("blobs"),
+        ),
+        fail_next_batch: AtomicBool::new(false),
+        target_id: Mutex::new(None),
+    });
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let repository = CampaignRepository::new(backend.clone(), refs.clone());
+    let (repository, lineage, policy) = initialize_fixture(repository);
+    let name = "failed-batch-ref";
+    backend.fail_next_batch.store(true, Ordering::SeqCst);
+
+    assert!(matches!(
+        repository.create(name, &lineage, &policy, &BTreeMap::new()),
+        Err(CampaignRepositoryError::Merkle(
+            crate::CampaignStoreError::Store(StoreError::Unavailable)
+        ))
+    ));
+    assert!(matches!(
+        repository.head(name),
+        Err(CampaignRepositoryError::NotFound)
+    ));
+
+    drop(repository);
+    drop(backend);
+    drop(refs);
+    let reopened_blobs = Arc::new(
+        SqliteBlobBackend::open("failed-batch-ref-test", &blob_root).expect("reopen blobs"),
+    );
+    let reopened_refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let reopened = CampaignRepository::new(reopened_blobs.clone(), reopened_refs.clone());
+    assert!(matches!(
+        reopened.head(name),
+        Err(CampaignRepositoryError::NotFound)
+    ));
+    let created = reopened
+        .create(name, &lineage, &policy, &BTreeMap::new())
+        .expect("retry after incomplete immutable batch");
+    drop(reopened);
+    drop(reopened_blobs);
+    drop(reopened_refs);
+    let cold = CampaignRepository::new(
+        Arc::new(SqliteBlobBackend::open("failed-batch-ref-test", &blob_root).expect("cold blobs")),
+        Arc::new(DirectoryRefBackend::new(&ref_root)),
+    );
+    assert_eq!(
+        cold.head(name)
+            .expect("reopened authenticated head")
+            .snapshot_id(),
+        created.snapshot_id()
+    );
+}
+
+#[test]
+fn failed_planner_issue_record_batch_keeps_prior_head_and_retries_after_reopen() {
+    let storage = tempfile::tempdir().expect("durable planner issue store");
+    let blob_root = storage.path().join("blobs");
+    let ref_root = storage.path().join("refs");
+    let backend = Arc::new(FailOneBatchBackend {
+        inner: Arc::new(
+            SqliteBlobBackend::open("planner-issue-batch-test", &blob_root).expect("blobs"),
+        ),
+        fail_next_batch: AtomicBool::new(false),
+        target_id: Mutex::new(None),
+    });
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let (repository, lineage, policy) =
+        initialize_fixture(CampaignRepository::new(backend.clone(), refs.clone()));
+    let name = "failed-planner-issue-batch";
+    let genesis = repository
+        .create_funded(name, &lineage, &policy, &BTreeMap::new())
+        .expect("create funded campaign");
+    let source_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "failed-planner-issue-source",
+    );
+    let requested = repository
+        .submit_known_branch_request(name, genesis.snapshot_id(), &source_request)
+        .expect("submit source request");
+    let engine = PlannerEngine::new("closed-rust", 1, 1, BTreeSet::new()).expect("planner engine");
+    let initial_state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![0],
+    )
+    .expect("initial planner state");
+    let (_, _, invocation) =
+        planner_basis(&repository, name, requested.new_snapshot, initial_state);
+    let planner_request = BranchRequest::new(
+        BranchRequest::identity(
+            source_request.branch_point(),
+            source_request.parent(),
+            source_request.opportunity(),
+            source_request.domain(),
+        ),
+        source_request.source().clone(),
+        BranchRequestCause::Planner(invocation.id().expect("invocation id")),
+        source_request.budget(),
+        source_request.stop().clone(),
+    )
+    .expect("planner request");
+    let proposal = Proposal::new(
+        source_request.branch_point(),
+        source_request.id().expect("source request id"),
+        source_request.domain(),
+        ChoiceValue::Boolean(false),
+        policy.id().expect("policy id"),
+        Some(invocation.id().expect("invocation id")),
+        1,
+        invocation.input_view(),
+    )
+    .expect("proposal");
+    let usage = PlanningUsage {
+        branch_requests: 1,
+        proposals: 1,
+        input_objects: invocation.scan_page().input_objects(),
+        input_bytes: invocation.scan_page().input_bytes(),
+        fuel: 3,
+    };
+    let next_state = PlannerState::new(
+        engine.id().expect("engine id"),
+        "closed-rust-state",
+        1,
+        vec![1],
+    )
+    .expect("next planner state");
+    let step = PlannerStepProposal::new(
+        invocation.id().expect("invocation id"),
+        next_state,
+        usage,
+        GuidanceEvidence::new(BTreeMap::new()).expect("guidance"),
+        PlannerProposalDisposition::Issue {
+            selected: PlanningScanPosition::new(
+                source_request.branch_point(),
+                source_request.id().expect("source request id"),
+            ),
+            branch_requests: vec![planner_request],
+            proposals: vec![proposal.clone()],
+        },
+    )
+    .expect("planner Issue step");
+
+    *backend.target_id.lock().expect("batch target lock") =
+        Some(proposal.id().expect("proposal id").content_id());
+    backend.fail_next_batch.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        repository.accept_planner_step(name, requested.new_snapshot, &step, usage),
+        Err(CampaignRepositoryError::Store(StoreError::Unavailable))
+    ));
+    assert!(!backend.fail_next_batch.load(Ordering::SeqCst));
+    assert_eq!(
+        repository
+            .head(name)
+            .expect("head after failed batch")
+            .snapshot_id(),
+        requested.new_snapshot
+    );
+
+    drop(repository);
+    drop(backend);
+    drop(refs);
+    let reopened_blobs = Arc::new(
+        SqliteBlobBackend::open("planner-issue-batch-test", &blob_root).expect("reopen blobs"),
+    );
+    let reopened_refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let reopened = CampaignRepository::new(reopened_blobs.clone(), reopened_refs.clone());
+    assert_eq!(
+        reopened.head(name).expect("cold prior head").snapshot_id(),
+        requested.new_snapshot
+    );
+    let accepted = reopened
+        .accept_planner_step(name, requested.new_snapshot, &step, usage)
+        .expect("retry planner Issue");
+    drop(reopened);
+    drop(reopened_blobs);
+    drop(reopened_refs);
+    let cold = CampaignRepository::new(
+        Arc::new(
+            SqliteBlobBackend::open("planner-issue-batch-test", &blob_root).expect("cold blobs"),
+        ),
+        Arc::new(DirectoryRefBackend::new(&ref_root)),
+    );
+    assert_eq!(
+        cold.head(name).expect("cold committed head").snapshot_id(),
+        accepted.new_snapshot
+    );
+    cold.load_planner_step_at(accepted.new_snapshot, accepted.step)
+        .expect("cold authenticated Issue");
+}
 
 struct FailOnOpenBlobBackend {
     inner: Arc<MemoryBlobBackend>,

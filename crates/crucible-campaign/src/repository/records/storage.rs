@@ -284,6 +284,56 @@ impl CampaignRepository {
         Ok(id)
     }
 
+    pub(in crate::repository) fn put_envelopes_batch(
+        &self,
+        envelopes: Vec<ObjectEnvelope>,
+    ) -> Result<(), CampaignRepositoryError> {
+        // The SQLite leaf accepts at most 64 objects or 4 MiB per transaction.
+        // Keep a smaller bound so this path also works for large branch records.
+        const MAX_OBJECTS: usize = 32;
+        const MAX_BYTES: usize = 1024 * 1024;
+
+        let mut pending = Vec::new();
+        let mut pending_bytes = 0;
+        for envelope in envelopes {
+            let bytes = envelope.canonical_bytes();
+            if bytes.len() > MAX_BYTES {
+                self.commit_envelope_batch(&pending)?;
+                pending.clear();
+                pending_bytes = 0;
+                self.put_envelope(envelope)?;
+                continue;
+            }
+            if pending.len() == MAX_OBJECTS || pending_bytes + bytes.len() > MAX_BYTES {
+                self.commit_envelope_batch(&pending)?;
+                pending.clear();
+                pending_bytes = 0;
+            }
+            pending_bytes += bytes.len();
+            pending.push((envelope.content_id(), BlobHandle::from_bytes(bytes)));
+        }
+        self.commit_envelope_batch(&pending)
+    }
+
+    fn commit_envelope_batch(
+        &self,
+        objects: &[(ContentId, BlobHandle)],
+    ) -> Result<(), CampaignRepositoryError> {
+        if objects.is_empty() {
+            return Ok(());
+        }
+        let receipts = self.blobs.put_many_if_absent(objects)?;
+        if receipts.len() != objects.len()
+            || receipts
+                .iter()
+                .zip(objects)
+                .any(|(receipt, (id, _))| receipt.id != *id)
+        {
+            return Err(integrity("store-batch-receipt-mismatch"));
+        }
+        Ok(())
+    }
+
     pub(in crate::repository) fn read_envelope(
         &self,
         id: ContentId,
