@@ -632,6 +632,22 @@ in rec {
                 exec 8>&-
                 sleep 1
               done
+
+              # Build scripts can copy read-only Nix-store inputs into OUT_DIR.
+              # A later sandbox cannot chmod a prior build user's files, so
+              # replace only those outputs under the target's source lock.
+              find "$CARGO_TARGET_DIR" -type f -path '*/build/*/out/*' \
+                ! -writable -exec "''${CONFIG_SHELL:-bash}" -c '
+                  for file do
+                    replacement=$(mktemp "$file.aos-write.XXXXXX") || exit 1
+                    if ! cp --preserve=mode,timestamps "$file" "$replacement" ||
+                       ! chmod u+w "$replacement" ||
+                       ! mv -f "$replacement" "$file"; then
+                      rm -f "$replacement"
+                      exit 1
+                    fi
+                  done
+                ' sh {} +
             ''
           }
             # The top-level mtime is the target tree's last-use marker for
