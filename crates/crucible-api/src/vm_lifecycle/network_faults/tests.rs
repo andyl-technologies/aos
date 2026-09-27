@@ -651,6 +651,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
             route: None,
             fault_continuation: Default::default(),
         }],
+        &BTreeMap::new(),
     )
     .unwrap_or_else(|error| panic!("test frame should route: {error}"));
     let nodes = QemuNodeSet::new();
@@ -999,6 +1000,7 @@ fn production_preserve_keeps_queued_and_inflight_frames_on_the_old_profile() {
             route: None,
             fault_continuation: Default::default(),
         }],
+        &BTreeMap::new(),
     )
     .unwrap_or_else(|error| panic!("test frame should route: {error}"));
 
@@ -1113,6 +1115,7 @@ fn production_reevaluate_retains_work_until_the_next_declared_phase() {
             route: None,
             fault_continuation: Default::default(),
         }],
+        &BTreeMap::new(),
     )
     .unwrap_or_else(|error| panic!("test frame should route: {error}"));
 

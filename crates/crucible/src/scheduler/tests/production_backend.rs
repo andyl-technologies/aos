@@ -9,8 +9,8 @@ macro_rules! accepted_step {
 
 use super::*;
 use crate::{
-    AppRandomSelectable, BackendEffect, BackendRngEvidence, BackendSnapshot, MockSimulationBackend,
-    SelectionDecision, StepObservation,
+    AppRandomSelectable, BackendEffect, BackendNetworkOutput, BackendRngEvidence, BackendSnapshot,
+    MockSimulationBackend, SelectionDecision, StepObservation,
 };
 
 #[test]
@@ -641,6 +641,129 @@ fn external_selection_advances_the_authoritative_scheduler_frontier() {
     };
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
     assert!(!stale_publisher_called.get());
+}
+
+#[test]
+fn paused_selection_rebases_physical_output_only_after_reply_publication() {
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let mut scheduler = test_scheduler(
+        vec![test_scenario_node(
+            &node.name,
+            50,
+            SchedulerNodeActivity::Idle,
+            NetworkLookahead::Infinite,
+            ExactLocalEvent::NoArmedTimer,
+        )],
+        Vec::new(),
+    );
+    let parent = scheduler.configuration().clone();
+    let live = BackendRngEvidence {
+        node: node.clone(),
+        stream: RngStreamId::from_name("app-random/node:6:node-a/stream:8:paused"),
+        request_id: 12,
+        width: 64,
+        value: 7,
+    };
+    let selectable = AppRandomSelectable::from_decision(&parent.def, &live)
+        .expect("app-random selectable should reconstruct");
+    let selection = selectable
+        .branch_selection(&parent, live.value)
+        .expect("selection should bind to the exact parent");
+    let decision = SelectionDecision::new(&selection);
+    let selected = accepted_step!(&parent, Decision::Selection(decision.clone()));
+    let offset = scheduler.event_log_offset();
+    let pending_output = BackendNetworkOutput {
+        source: node.clone(),
+        destination: NodeId {
+            name: String::from("node-b"),
+        },
+        emit_icount: Icount { retired: 9 },
+        sequence: 1,
+        payload: vec![1],
+        route: None,
+        fault_continuation: Default::default(),
+    };
+    let original_emit_time = scheduler
+        .network_output_emit_time(&pending_output, &BTreeMap::new())
+        .expect("pre-choice emission time should project");
+
+    let error = scheduler
+        .apply_external_selection_with_counter_rebase(
+            &node,
+            NodeCounter { ticks: 10 },
+            &parent,
+            decision.clone(),
+            &selected,
+            || {
+                Err(SchedulerError::BoundaryViolation {
+                    message: String::from("reply transport rejected publication"),
+                })
+            },
+        )
+        .expect_err("failed publication must reject both the selection and rebase");
+
+    assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
+    assert_eq!(scheduler.configuration(), &parent);
+    assert_eq!(scheduler.event_log_offset(), offset);
+    assert_eq!(
+        scheduler
+            .scheduler_counter_for_node(&node)
+            .expect("node counter should be available"),
+        NodeCounter { ticks: 50 }
+    );
+    assert_eq!(
+        scheduler
+            .vm_delivery_time_for_tick(&node, SimInstant { ticks: 11 })
+            .expect("unrebased output tick should project"),
+        SimInstant { ticks: 11 }
+    );
+
+    scheduler
+        .apply_external_selection_with_counter_rebase(
+            &node,
+            NodeCounter { ticks: 10 },
+            &parent,
+            decision,
+            &selected,
+            || Ok(()),
+        )
+        .expect("published reply should commit the selection and counter rebase");
+
+    assert_eq!(scheduler.configuration(), &selected);
+    assert_eq!(
+        scheduler
+            .scheduler_counter_for_node(&node)
+            .expect("node counter should be available"),
+        NodeCounter { ticks: 10 }
+    );
+    assert_eq!(
+        scheduler
+            .vm_delivery_time_for_tick(&node, SimInstant { ticks: 11 })
+            .expect("resumed output tick should project"),
+        SimInstant { ticks: 51 }
+    );
+    assert_eq!(
+        scheduler
+            .network_output_emit_time(&pending_output, &BTreeMap::new())
+            .expect("unfrozen pre-choice frame would be retimed"),
+        SimInstant { ticks: 49 }
+    );
+    assert_eq!(
+        scheduler
+            .network_output_emit_time(
+                &pending_output,
+                &BTreeMap::from([(
+                    (node, pending_output.sequence),
+                    VirtualTime {
+                        ticks: original_emit_time.ticks,
+                    }
+                )]),
+            )
+            .expect("frozen pre-choice frame should keep its logical emission time"),
+        original_emit_time
+    );
 }
 
 #[test]

@@ -348,6 +348,40 @@ impl SingleScheduler {
         Ok(append)
     }
 
+    /// Applies a paused VM selection while re-anchoring its physical counter.
+    ///
+    /// The scheduler may have advanced a paused VM's logical counter to a safe
+    /// ceiling. Once the guest resumes, its physical trap counter must map to
+    /// that logical time before any emitted output enters the shared timeline.
+    /// Both changes commit only after the external reply is published.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] if the node cannot be rebased, the selection
+    /// is not an exact transition, the event log rejects it, or `publish` fails.
+    ///
+    /// # Panics
+    ///
+    /// Propagates a panic from `publish` without changing the live scheduler.
+    pub fn apply_external_selection_with_counter_rebase<F>(
+        &mut self,
+        node: &NodeId,
+        counter: NodeCounter,
+        parent: &Configuration,
+        decision: SelectionDecision,
+        selected: &Configuration,
+        publish: F,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError>
+    where
+        F: FnOnce() -> Result<(), SchedulerError>,
+    {
+        let mut staged = self.clone();
+        staged.rebase_restarted_backend_counter(node, counter)?;
+        let append = staged.apply_external_selection(parent, decision, selected, publish)?;
+        *self = staged;
+        Ok(append)
+    }
+
     pub(super) fn emit_quantum_decisions(
         &mut self,
         resolved_events: &[ScheduledEvent],

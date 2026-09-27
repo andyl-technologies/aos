@@ -13,6 +13,7 @@ pub(super) struct BackendOutcomeAdmission<'a, L, B, I> {
     pub(super) backend: &'a mut B,
     pub(super) network_output_interceptor: &'a mut I,
     pub(super) pending_network_outputs: &'a mut Vec<BackendNetworkOutput>,
+    pub(super) frozen_network_output_times: &'a mut BTreeMap<(NodeId, u64), VirtualTime>,
     pub(super) pending_observations: &'a mut Vec<ObservableEvent>,
     pub(super) preselection: &'a mut Option<BackendPendingPreselection>,
     pub(super) pause_before_live_network_choice: bool,
@@ -38,6 +39,7 @@ where
         backend,
         network_output_interceptor,
         pending_network_outputs,
+        frozen_network_output_times,
         pending_observations,
         preselection,
         pause_before_live_network_choice,
@@ -65,14 +67,12 @@ where
     let mut timed_network_outputs = std::mem::take(pending_network_outputs)
         .into_iter()
         .map(|output| {
-            loop_impl
-                .backend_network_output_time(&output.source, output.emit_icount)
-                .map(|at| {
-                    let resume = VirtualTime {
-                        ticks: output.fault_continuation.cursor().not_before_ticks(),
-                    };
-                    (at.max(resume), output)
-                })
+            pending_network_output_time(loop_impl, frozen_network_output_times, &output).map(|at| {
+                let resume = VirtualTime {
+                    ticks: output.fault_continuation.cursor().not_before_ticks(),
+                };
+                (at.max(resume), output)
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
     timed_network_outputs.sort_by(|(left_at, left), (right_at, right)| {
@@ -169,10 +169,13 @@ where
         }
         let can_pause = pause_before_live_network_choice;
         let admission = if can_pause {
-            loop_impl.append_backend_network_outputs_until_choice(network_outputs)?
+            loop_impl.append_backend_network_outputs_until_choice(
+                network_outputs,
+                frozen_network_output_times,
+            )?
         } else {
-            let (decisions, discoveries, configuration, append) =
-                loop_impl.append_backend_network_outputs(network_outputs)?;
+            let (decisions, discoveries, configuration, append) = loop_impl
+                .append_backend_network_outputs(network_outputs, frozen_network_output_times)?;
             BackendNetworkAdmission::Settled {
                 decisions,
                 discoveries,

@@ -104,7 +104,13 @@ where
                     message: String::from("no live-network preselection is pending"),
                 })?;
         let result = self.settle_live_network_preselection_inner(pending);
-        result.map_err(|error| self.poison_continuation(error))
+        match result {
+            Ok(outcome) => {
+                self.prune_frozen_network_output_times();
+                Ok(outcome)
+            }
+            Err(error) => Err(self.poison_continuation(error)),
+        }
     }
 
     fn settle_live_network_preselection_inner(
@@ -128,10 +134,12 @@ where
                     pending.remaining_outputs,
                     &pending.choice.parent,
                     selection,
+                    &self.frozen_network_output_times,
                 )?,
-            None => self
-                .loop_impl
-                .append_backend_network_outputs(pending.remaining_outputs)?,
+            None => self.loop_impl.append_backend_network_outputs(
+                pending.remaining_outputs,
+                &self.frozen_network_output_times,
+            )?,
         };
         let opportunity = pending
             .choice
@@ -177,8 +185,9 @@ where
             if outputs.is_empty() {
                 continue;
             }
-            let (decisions, discoveries, configuration, append) =
-                self.loop_impl.append_backend_network_outputs(outputs)?;
+            let (decisions, discoveries, configuration, append) = self
+                .loop_impl
+                .append_backend_network_outputs(outputs, &self.frozen_network_output_times)?;
             outcome.decisions.extend(decisions);
             outcome.discovered_choices.extend(discoveries);
             outcome.configuration = configuration;

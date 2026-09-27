@@ -215,7 +215,7 @@
       then 3072
       else 2048;
     headlessVcpuCount =
-      if envoyProduct
+      if envoyProduct || guestChoice
       then 6
       else 1;
     # Five 512 MiB RAM and 512 MiB disk snapshots need at least 5 GiB for
@@ -519,8 +519,9 @@
             exit 1
           fi
 
-          # One 300-second discovery and four 240-second replay waits fit this bound.
-          if ! ${pkgs.coreutils}/bin/timeout -k 5 1800 \
+          # Cold QEMU boots in every branch replay can take several minutes
+          # apiece under TCG; the host guard covers all independent waits.
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 3600 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
             packaged::guest_choice::public_guest_choices_survive_exact_checkpoint_and_daemon_restart \
             --nocapture > /tmp/guest-choice-flight.log 2>&1; then
@@ -549,7 +550,7 @@
             exit 1
           fi
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_discrete_and_integer=true' /tmp/guest-choice-flight.log
-          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_rendezvous_icount=250000000' /tmp/guest-choice-flight.log
+          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_rendezvous_ticks=250000000' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_negative_result=true' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_initial_qemu_fingerprint_enabled=true' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_restarted_qemu_fingerprint_enabled=true' /tmp/guest-choice-flight.log

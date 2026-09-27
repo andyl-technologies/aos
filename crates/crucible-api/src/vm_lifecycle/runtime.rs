@@ -74,14 +74,17 @@ impl ProductionVmLifecycleLoop {
     ///
     /// The scheduler stages its event-log transition before publishing the reply
     /// to QEMU and rolls that stage back if transport publication fails. Its
-    /// authoritative configuration advances only after publication succeeds.
+    /// authoritative configuration and resumed counter mapping advance only
+    /// after publication succeeds. Frames emitted before the pause retain their
+    /// original logical emission time across the mapping change.
     ///
     /// # Errors
     ///
     /// Returns [`SchedulerError`] when the decision does not exactly match the
     /// pending request and reply, the parent or selected configuration is not
     /// the scheduler's exact transition, event-log append fails, the node
-    /// generation is absent, or its shared-memory transport rejects the binding.
+    /// generation is absent, the physical pause counter or a pending frame
+    /// cannot be projected, or shared-memory transport rejects the binding.
     pub fn apply_selectable_reply(
         &mut self,
         parent: &Configuration,
@@ -91,12 +94,47 @@ impl ProductionVmLifecycleLoop {
         reply: &crucible_protocol::SelectionReply,
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         validate_selectable_reply_pairing(&decision, pending.pending(), reply)?;
+        let frozen_output_times = self
+            .inner
+            .pending_network_output_times_for_node(pending.node())?;
         let (scheduler, backend) = self.inner.parts_mut();
-        let append = scheduler.apply_external_selection(parent, decision, selected, || {
-            backend
-                .enqueue_selectable_reply(pending, reply)
-                .map_err(SchedulerError::Backend)
-        })?;
+        let physical = backend
+            .node_now(pending.node())
+            .map_err(SchedulerError::Backend)?;
+        let pause_tick = pending
+            .pending()
+            .trap_tick_ps()
+            .checked_add(
+                crucible_protocol::selectable_catalog_plan::SELECTABLE_NATIVE_HANDOFF_TICKS_PS,
+            )
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("guest selectable pause boundary overflowed"),
+            })?;
+        if physical.ticks != pause_tick {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "guest selectable physical counter {} differs from retained pause boundary {pause_tick}",
+                    physical.ticks
+                ),
+            });
+        }
+
+        let append = scheduler.apply_external_selection_with_counter_rebase(
+            pending.node(),
+            crucible::NodeCounter {
+                ticks: physical.ticks,
+            },
+            parent,
+            decision,
+            selected,
+            || {
+                backend
+                    .enqueue_selectable_reply(pending, reply)
+                    .map_err(SchedulerError::Backend)
+            },
+        )?;
+        self.inner
+            .retain_pending_network_output_times(pending.node(), frozen_output_times);
         Ok(append.entries)
     }
 
