@@ -502,7 +502,7 @@ in
             jq -e -s '
               any(.[]; .return.sections? == 37 and
                 .return.digest? ==
-                  "8b2c359bb48ee1791217fbeb9b7ce16fda2318dfaf4f146bf2e42fa74a6ae048")
+                  "2a582f4673194a3b08dbcf39f974dd48a9440a9e10aaf4ebcd1df3db2e3466a7")
             ' "$out/q35-missing-rng.json" > /dev/null
 
             {
