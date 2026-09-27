@@ -371,6 +371,7 @@ in
     testScript =
       # python
       ''
+        import json
         import time
         from pathlib import Path
 
@@ -493,6 +494,37 @@ in
                 f"grep -Fq '{refusal}'",
                 timeout=30,
             )
+
+        def activated_instance_since(machine, template, cursor):
+            command = (
+                f"journalctl -b --after-cursor='{cursor}' "
+                f"-u '{template}@*.service' -o json --no-pager"
+            )
+            deadline = time.monotonic() + 30
+
+            while time.monotonic() < deadline:
+                entries = (
+                    json.loads(line)
+                    for line in machine.succeed(command).splitlines()
+                )
+                instances = {
+                    name
+                    for entry in entries
+                    for name in (
+                        entry.get("UNIT"),
+                        entry.get("_SYSTEMD_UNIT"),
+                        entry.get("OBJECT_SYSTEMD_UNIT"),
+                    )
+                    if name and name.startswith(f"{template}@")
+                    and name.endswith(".service")
+                    and name != f"{template}@.service"
+                }
+                if len(instances) == 1:
+                    return instances.pop()
+                assert not instances, (template, instances)
+                time.sleep(1)
+
+            raise AssertionError(f"no new activated instance for {template}")
 
         def assert_manager_environment_isolated(machine, value):
             assignment = f"AOS_NETWORK_MANAGER_SENTINEL={value}"
@@ -705,21 +737,34 @@ in
             "/nix.lower/store/${policyBasename}/etc/selinux/aos/policy/policy.33"
         )
 
-        # The image fragment must win even when mutable lookup paths contain
-        # a complete replacement and the canonical /etc link is whiteouted.
-        protected.succeed("test -L /etc/systemd/system/aos-netd.service")
+        # The image fragments must win even when mutable lookup paths contain
+        # complete replacements and the canonical /etc links are whiteouted.
+        replacement_units = (
+            ("aos-netd.service", "broker"),
+            ("aos-sandbox-network-namespace-inspector@.service", "inspector"),
+            ("aos-sandbox-network-lifecycle-worker@.service", "lifecycle"),
+        )
         protected.succeed("mkdir -p /run/systemd/system")
-        protected.succeed(
-            "printf '%s\\n' '[Service]' 'Type=oneshot' "
-            "'ExecStartPre=+${pkgs.coreutils}/bin/touch "
-            "/run/aos-forbidden-network-run-fragment' "
-            "'ExecStart=${pkgs.coreutils}/bin/true' "
-            "> /run/systemd/system/aos-netd.service"
-        )
-        protected.succeed(
-            "${pkgs.coreutils}/bin/unlink /etc/systemd/system/aos-netd.service"
-        )
-        protected.fail("test -e /etc/systemd/system/aos-netd.service")
+        for unit, role in replacement_units:
+            protected.succeed(f"test -L /etc/systemd/system/{unit}")
+            protected.succeed(
+                "printf '%s\\n' '[Service]' 'Type=oneshot' "
+                "'ExecStartPre=+${pkgs.coreutils}/bin/touch "
+                f"/run/aos-forbidden-network-run-fragment-{role}' "
+                "'ExecStart=${pkgs.coreutils}/bin/true' "
+                f"> /run/systemd/system/{unit}"
+            )
+            protected.succeed(
+                f"${pkgs.coreutils}/bin/unlink /etc/systemd/system/{unit}"
+            )
+            protected.fail(f"test -e /etc/systemd/system/{unit}")
+
+        cursor_line = protected.succeed(
+            "journalctl -b -n 1 --show-cursor -o cat --no-pager"
+        ).splitlines()[-1]
+        assert cursor_line.startswith("-- cursor: "), cursor_line
+        activation_cursor = cursor_line[len("-- cursor: "):]
+
         protected.succeed("systemctl daemon-reexec", timeout=90)
         protected.wait_for_unit("multi-user.target", timeout=180)
         protected.succeed("systemctl restart aos-netd.service", timeout=90)
@@ -728,7 +773,27 @@ in
             "systemctl show -P FragmentPath aos-netd.service"
         ).strip()
         assert fragment.startswith("/nix/store/"), fragment
-        protected.fail("test -e /run/aos-forbidden-network-run-fragment")
+
+        for template, option in (
+            ("aos-sandbox-network-namespace-inspector", ""),
+            ("aos-sandbox-network-lifecycle-worker", " --lifecycle"),
+        ):
+            protected.succeed(
+                "${inspectorSocketConnector}/bin/aos-inspector-socket-connect"
+                + option
+            )
+            instance = activated_instance_since(
+                protected, template, activation_cursor
+            )
+            fragment = protected.succeed(
+                f"systemctl show -P FragmentPath '{instance}'"
+            ).strip()
+            assert fragment.startswith("/nix/store/"), (instance, fragment)
+
+        for _, role in replacement_units:
+            protected.fail(
+                f"test -e /run/aos-forbidden-network-run-fragment-{role}"
+            )
 
         # Runtime .conf drop-ins affect all three protected identities. A
         # reexec followed by fresh activation must refuse each one; this
