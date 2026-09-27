@@ -76,12 +76,24 @@ pub(crate) async fn execute_external_storage_work(
     let now = aos_hub_core::clock::now_unix_secs();
     let deployment_id = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     publication.snapshot.authorizes(plan, &deployment_id, now)?;
+    let purpose = match &plan.operation {
+        StorageWorkOperation::ListPage { .. } => "list",
+        StorageWorkOperation::Head { .. }
+        | StorageWorkOperation::InspectSha256 { .. }
+        | StorageWorkOperation::InspectMetadata { .. }
+        | StorageWorkOperation::InspectGitObject { .. }
+        | StorageWorkOperation::InspectGitObjects { .. }
+        | StorageWorkOperation::InspectDocumentation { .. }
+        | StorageWorkOperation::InspectOciRange { .. }
+        | StorageWorkOperation::HashOciRange { .. } => "read",
+        _ => return Ok(None),
+    };
     let credential = if publication.snapshot.access_mode == "private" {
         let selector = plan
             .credential_references
             .iter()
-            .find(|selector| selector.purpose == "read")
-            .context("external read plan has no read credential")?;
+            .find(|selector| selector.purpose == purpose)
+            .context("external storage plan has no purpose credential")?;
         Some(publication.credential_text(selector, &deployment_id, now)?)
     } else {
         None
@@ -134,6 +146,63 @@ pub(crate) async fn execute_external_storage_work(
                 }
             };
             (outcome, 0)
+        }
+        StorageWorkOperation::ListPage {
+            prefix,
+            cursor,
+            limit,
+        } => {
+            let url =
+                fetcher
+                    .surface
+                    .list_url_with_prefix(prefix, cursor.as_deref(), *limit, now)?;
+            let mut response = egress
+                .send(&url, "GET", None, None, None, None, None)
+                .await
+                .context("external storage listing failed")?;
+            anyhow::ensure!(
+                response.status_code() == 200,
+                "external storage listing returned HTTP {}",
+                response.status_code()
+            );
+            let body = crate::consoleports::read_response_capped(
+                &mut response,
+                aos_hub_core::s3surface::WORKER_MAX_S3_LIST_PAGE_BYTES,
+                "external S3 ListObjectsV2",
+            )
+            .await?;
+            let xml = std::str::from_utf8(&body).context("external S3 listing is not UTF-8")?;
+            let (listed, next, truncated) =
+                aos_hub_core::s3surface::parse_list_objects_v2_evidence(xml)?;
+            anyhow::ensure!(
+                listed.len() <= *limit,
+                "external S3 listing exceeds the signed page limit"
+            );
+            let mut objects = Vec::with_capacity(listed.len());
+            for listed_object in listed {
+                let relative = fetcher
+                    .surface
+                    .relative_from_key(&listed_object.key)
+                    .context("external S3 listing escaped the placement prefix")?;
+                anyhow::ensure!(
+                    relative.starts_with(prefix),
+                    "external S3 listing escaped the signed key prefix"
+                );
+                if relative.is_empty() {
+                    continue;
+                }
+                objects.push(StorageObjectIdentity {
+                    key: plan.object_key(&relative)?,
+                    size: listed_object.size,
+                    etag: listed_object.strong_etag,
+                });
+            }
+            let cursor = if truncated {
+                Some(next.context("external S3 listing has no continuation token")?)
+            } else {
+                None
+            };
+            (StorageWorkOutcome::ListPage { objects, cursor }, 0)
         }
         StorageWorkOperation::InspectSha256 {
             path,
@@ -214,6 +283,46 @@ pub(crate) async fn execute_external_storage_work(
         StorageWorkOperation::InspectGitObjects { oids } => {
             let (outcome, source_bytes) = inspect_git_objects(&fetcher, plan, oids).await?;
             (outcome, source_bytes)
+        }
+        StorageWorkOperation::InspectDocumentation {
+            package_name,
+            package_version,
+            platform,
+            artifact,
+            cursor,
+        } => {
+            inspect_documentation(
+                &fetcher,
+                package_name,
+                package_version,
+                platform,
+                artifact,
+                *cursor,
+            )
+            .await?
+        }
+        StorageWorkOperation::InspectOciRange { path, start, end } => {
+            inspect_oci_range(&fetcher, plan, path, *start, *end).await?
+        }
+        StorageWorkOperation::HashOciRange {
+            path,
+            start,
+            end,
+            total,
+            strong_etag,
+            sha256_state,
+        } => {
+            hash_oci_range(
+                &fetcher,
+                plan,
+                path,
+                *start,
+                *end,
+                *total,
+                strong_etag,
+                sha256_state,
+            )
+            .await?
         }
         _ => return Ok(None),
     };
@@ -367,75 +476,18 @@ pub(crate) async fn execute_r2_storage_work(
             artifact,
             cursor,
         } => {
-            let store_hash = aos_registry_surface::store::store_path_hash(&artifact.store_path)?;
-            let narinfo_key = format!("{store_hash}.narinfo");
-            let narinfo_size = fetcher
-                .size(&narinfo_key)
-                .await?
-                .context("documentation narinfo disappeared before inspection")?;
-            anyhow::ensure!(
-                narinfo_size <= MAX_METADATA_BYTES as u64,
-                "documentation narinfo exceeds the metadata limit"
-            );
-            let document = aos_hub_core::indexer::fetch_package_documentation(
+            inspect_documentation(
                 &fetcher,
                 package_name,
                 package_version,
                 platform,
                 artifact,
+                *cursor,
             )
-            .await?;
-            let source_bytes = narinfo_size
-                .checked_add(artifact.nar_size)
-                .context("documentation source byte count overflowed")?;
-            let inspection = DocumentationInspection::from_document(&document);
-            let page = StorageDocumentationPage::from_inspection(&inspection, *cursor)?;
-            (StorageWorkOutcome::Documentation { page }, source_bytes)
+            .await?
         }
         StorageWorkOperation::InspectOciRange { path, start, end } => {
-            use futures_util::TryStreamExt as _;
-
-            let Some(read) = fetcher.fetch_stream(path, Some((*start, *end))).await? else {
-                return Ok(storage_work_result(plan, StorageWorkOutcome::NotFound, 0));
-            };
-            anyhow::ensure!(
-                read.range == Some((*start, *end)) && *end < read.total,
-                "R2 returned a different OCI range"
-            );
-            let etag = read
-                .strong_etag
-                .context("R2 OCI range has no strong ETag")?;
-            let expected = end - start + 1;
-            let mut bytes = Vec::new();
-            let mut stream = read.body.into_data_stream();
-            while let Some(chunk) = stream.try_next().await? {
-                let next = bytes
-                    .len()
-                    .checked_add(chunk.len())
-                    .context("OCI range size overflow")?;
-                anyhow::ensure!(
-                    next <= MAX_OCI_RANGE_BYTES && next as u64 <= expected,
-                    "OCI range exceeded its signed length"
-                );
-                bytes.extend_from_slice(&chunk);
-            }
-            anyhow::ensure!(
-                bytes.len() as u64 == expected,
-                "OCI range ended before its signed length"
-            );
-            (
-                StorageWorkOutcome::OciRange {
-                    source: StorageObjectIdentity {
-                        key: plan.object_key(path)?,
-                        size: read.total,
-                        etag,
-                    },
-                    start: *start,
-                    end: *end,
-                    content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-                },
-                expected,
-            )
+            inspect_oci_range(&fetcher, plan, path, *start, *end).await?
         }
         StorageWorkOperation::HashOciRange {
             path,
@@ -445,36 +497,17 @@ pub(crate) async fn execute_r2_storage_work(
             strong_etag,
             sha256_state,
         } => {
-            let requested_bytes = end - start + 1;
-            let Some(chunk) = fetcher
-                .inventory_chunk_bounded(path, *start, *total, requested_bytes)
-                .await?
-            else {
-                return Ok(storage_work_result(plan, StorageWorkOutcome::NotFound, 0));
-            };
-            anyhow::ensure!(
-                chunk.total == *total
-                    && chunk.range == (*start, *end)
-                    && chunk.strong_etag == strong_etag.as_str()
-                    && chunk.bytes.len() as u64 == requested_bytes
-                    && chunk.bytes.len() <= MAX_OCI_HASH_RANGE_BYTES,
-                "R2 OCI inventory range changed identity or length"
-            );
-            let mut next_state = sha256_state.clone();
-            next_state.update(&chunk.bytes)?;
-            (
-                StorageWorkOutcome::OciRangeHashed {
-                    source: StorageObjectIdentity {
-                        key: plan.object_key(path)?,
-                        size: chunk.total,
-                        etag: chunk.strong_etag,
-                    },
-                    start: *start,
-                    end: *end,
-                    sha256_state: next_state,
-                },
-                requested_bytes,
+            hash_oci_range(
+                &fetcher,
+                plan,
+                path,
+                *start,
+                *end,
+                *total,
+                strong_etag,
+                sha256_state,
             )
+            .await?
         }
         StorageWorkOperation::CopyObject {
             source_prefix,
@@ -949,6 +982,134 @@ async fn read_bounded_source(
         etag,
     };
     Ok(Some((bytes, source)))
+}
+
+async fn inspect_documentation(
+    fetcher: &dyn SurfaceFetch,
+    package_name: &str,
+    package_version: &str,
+    platform: &str,
+    artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+    cursor: usize,
+) -> Result<(StorageWorkOutcome, u64)> {
+    let store_hash = aos_registry_surface::store::store_path_hash(&artifact.store_path)?;
+    let narinfo_key = format!("{store_hash}.narinfo");
+    let narinfo_size = fetcher
+        .size(&narinfo_key)
+        .await?
+        .context("documentation narinfo disappeared before inspection")?;
+    anyhow::ensure!(
+        narinfo_size <= MAX_METADATA_BYTES as u64,
+        "documentation narinfo exceeds the metadata limit"
+    );
+    let document = aos_hub_core::indexer::fetch_package_documentation(
+        fetcher,
+        package_name,
+        package_version,
+        platform,
+        artifact,
+    )
+    .await?;
+    let source_bytes = narinfo_size
+        .checked_add(artifact.nar_size)
+        .context("documentation source byte count overflowed")?;
+    let inspection = DocumentationInspection::from_document(&document);
+    let page = StorageDocumentationPage::from_inspection(&inspection, cursor)?;
+    Ok((StorageWorkOutcome::Documentation { page }, source_bytes))
+}
+
+async fn inspect_oci_range(
+    fetcher: &dyn SurfaceFetch,
+    plan: &StorageWorkPlan,
+    path: &str,
+    start: u64,
+    end: u64,
+) -> Result<(StorageWorkOutcome, u64)> {
+    use futures_util::TryStreamExt as _;
+
+    let Some(read) = fetcher.fetch_stream(path, Some((start, end))).await? else {
+        return Ok((StorageWorkOutcome::NotFound, 0));
+    };
+    anyhow::ensure!(
+        read.range == Some((start, end)) && end < read.total,
+        "storage provider returned a different OCI range"
+    );
+    let etag = read
+        .strong_etag
+        .context("storage OCI range has no strong ETag")?;
+    let expected = end - start + 1;
+    let mut bytes = Vec::new();
+    let mut stream = read.body.into_data_stream();
+    while let Some(chunk) = stream.try_next().await? {
+        let next = bytes
+            .len()
+            .checked_add(chunk.len())
+            .context("OCI range size overflow")?;
+        anyhow::ensure!(
+            next <= MAX_OCI_RANGE_BYTES && next as u64 <= expected,
+            "OCI range exceeded its signed length"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    anyhow::ensure!(
+        bytes.len() as u64 == expected,
+        "OCI range ended before its signed length"
+    );
+    Ok((
+        StorageWorkOutcome::OciRange {
+            source: StorageObjectIdentity {
+                key: plan.object_key(path)?,
+                size: read.total,
+                etag,
+            },
+            start,
+            end,
+            content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        },
+        expected,
+    ))
+}
+
+async fn hash_oci_range(
+    fetcher: &dyn SurfaceFetch,
+    plan: &StorageWorkPlan,
+    path: &str,
+    start: u64,
+    end: u64,
+    total: u64,
+    strong_etag: &str,
+    sha256_state: &aos_hub_core::db::OciSha256State,
+) -> Result<(StorageWorkOutcome, u64)> {
+    let requested_bytes = end - start + 1;
+    let Some(chunk) = fetcher
+        .inventory_chunk_bounded(path, start, total, requested_bytes)
+        .await?
+    else {
+        return Ok((StorageWorkOutcome::NotFound, 0));
+    };
+    anyhow::ensure!(
+        chunk.total == total
+            && chunk.range == (start, end)
+            && chunk.strong_etag == strong_etag
+            && chunk.bytes.len() as u64 == requested_bytes
+            && chunk.bytes.len() <= MAX_OCI_HASH_RANGE_BYTES,
+        "storage OCI inventory range changed identity or length"
+    );
+    let mut next_state = sha256_state.clone();
+    next_state.update(&chunk.bytes)?;
+    Ok((
+        StorageWorkOutcome::OciRangeHashed {
+            source: StorageObjectIdentity {
+                key: plan.object_key(path)?,
+                size: chunk.total,
+                etag: chunk.strong_etag,
+            },
+            start,
+            end,
+            sha256_state: next_state,
+        },
+        requested_bytes,
+    ))
 }
 
 fn storage_object_identity(key: String, head: R2HeadObject) -> StorageObjectIdentity {

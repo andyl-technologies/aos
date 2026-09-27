@@ -529,12 +529,20 @@ in {
           "endpoint_port": 443,
           "signing_region": "garage",
           "access_mode": "private",
-          "credentials": [{
-              "purpose": "read",
-              "generation": 1,
-              "secret_version_ref": "secret://fleet/external/read/v1",
-              "fingerprint": hashlib.sha256(binding_secret).hexdigest(),
-          }],
+          "credentials": [
+              {
+                  "purpose": "list",
+                  "generation": 1,
+                  "secret_version_ref": "secret://fleet/external/list/v1",
+                  "fingerprint": hashlib.sha256(binding_secret).hexdigest(),
+              },
+              {
+                  "purpose": "read",
+                  "generation": 1,
+                  "secret_version_ref": "secret://fleet/external/read/v1",
+                  "fingerprint": hashlib.sha256(binding_secret).hexdigest(),
+              },
+          ],
           "issued_at": binding_issued_at,
           "expires_at": binding_issued_at + 300,
       }
@@ -542,10 +550,16 @@ in {
           "kind": "publish",
           "publication": {
               "snapshot": binding_snapshot,
-              "materials": [{
-                  "selector": {"purpose": "read", "generation": 1},
-                  "value_base64": base64.b64encode(binding_secret).decode(),
-              }],
+              "materials": [
+                  {
+                      "selector": {"purpose": "list", "generation": 1},
+                      "value_base64": base64.b64encode(binding_secret).decode(),
+                  },
+                  {
+                      "selector": {"purpose": "read", "generation": 1},
+                      "value_base64": base64.b64encode(binding_secret).decode(),
+                  },
+              ],
           },
       }
       publish_status, publish_response = post_binding_control(publish_binding)
@@ -567,7 +581,10 @@ in {
               "binding_resource_version": 1,
               "binding_kind": "s3",
               "binding_snapshot_revision": revision,
-              "credential_references": [{"purpose": "read", "generation": 1}],
+              "credential_references": [{
+                  "purpose": "list" if operation["kind"] == "list_page" else "read",
+                  "generation": 1,
+              }],
               "placement_prefix": "registry",
               "operation": operation,
           }
@@ -622,6 +639,20 @@ in {
       assert metadata_result["outcome"]["kind"] == "metadata", metadata_result
       assert base64.b64decode(metadata_result["outcome"]["content_base64"]) == s3_object
       assert metadata_result["source_bytes"] == len(s3_object), metadata_result
+      list_status, list_response = external_binding_plan(
+          published_revision,
+          {"kind": "list_page", "prefix": "releases/", "cursor": None, "limit": 10},
+          "6" * 32,
+      )
+      assert list_status == "200", (list_status, list_response)
+      list_result = json.loads(list_response)
+      assert list_result["outcome"]["kind"] == "list_page", list_result
+      assert list_result["outcome"]["cursor"] is None, list_result
+      assert list_result["outcome"]["objects"] == [{
+          "key": "registry/" + metadata_path,
+          "size": len(s3_object),
+          "etag": metadata_result["outcome"]["source"]["etag"],
+      }], list_result
       git_status, git_response = external_binding_plan(
           published_revision,
           {"kind": "inspect_git_object", "oid": git_oid},
@@ -644,17 +675,58 @@ in {
       assert batch_result["outcome"]["kind"] == "git_objects", batch_result
       assert len(batch_result["outcome"]["objects"]) == 1, batch_result
       assert batch_result["outcome"]["objects"][0]["oid"] == git_oid
-      unsupported_status, _ = external_binding_plan(
+      oci_bytes = b"fleet S3 OCI range inspected and hashed beside storage"
+      oci_path = "oci/blobs/sha256/" + hashlib.sha256(oci_bytes).hexdigest()
+      client.succeed(
+          f"{CURL} -fsS --aws-sigv4 'aws:amz:garage:s3' "
+          f"-u {shlex.quote(access_key.group(1) + ':' + secret_key.group(1))} "
+          "-X PUT -H 'content-type: application/octet-stream' "
+          f"--data-binary {shlex.quote(oci_bytes.decode())} "
+          f"https://s3.fleet.test/fleet-s3/tenant/registry/{oci_path}",
+          timeout=60,
+      )
+      range_status, range_response = external_binding_plan(
           published_revision,
           {
               "kind": "inspect_oci_range",
-              "path": "oci/blobs/sha256/" + "0" * 64,
-              "start": 0,
-              "end": 0,
+              "path": oci_path,
+              "start": 6,
+              "end": 11,
           },
           "8" * 32,
       )
-      assert unsupported_status == "501", unsupported_status
+      assert range_status == "200", (range_status, range_response)
+      range_result = json.loads(range_response)
+      assert range_result["outcome"]["kind"] == "oci_range", range_result
+      assert base64.b64decode(range_result["outcome"]["content_base64"]) == oci_bytes[6:12]
+      assert range_result["source_bytes"] == 6, range_result
+      initial_sha256_state = {
+          "version": 1,
+          "words": [
+              0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+              0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+          ],
+          "total_bytes": 0,
+          "tail_hex": "",
+      }
+      hash_range_status, hash_range_response = external_binding_plan(
+          published_revision,
+          {
+              "kind": "hash_oci_range",
+              "path": oci_path,
+              "start": 0,
+              "end": len(oci_bytes) - 1,
+              "total": len(oci_bytes),
+              "strong_etag": range_result["outcome"]["source"]["etag"],
+              "sha256_state": initial_sha256_state,
+          },
+          "7" * 32,
+      )
+      assert hash_range_status == "200", (hash_range_status, hash_range_response)
+      hash_range_result = json.loads(hash_range_response)
+      assert hash_range_result["outcome"]["kind"] == "oci_range_hashed", hash_range_result
+      assert hash_range_result["outcome"]["sha256_state"]["total_bytes"] == len(oci_bytes)
+      assert hash_range_result["source_bytes"] == len(oci_bytes), hash_range_result
       revoke_issued_at = max(binding_issued_at + 1, int(time.time()))
       revoke_binding = {
           "kind": "revoke",
@@ -672,7 +744,7 @@ in {
       assert revoked_status == "409", revoked_status
       replay_status, _ = post_binding_control(publish_binding)
       assert replay_status == "503", replay_status
-      print("hybrid S3 HEAD, inspection, binding revocation, and replay fence: passed")
+      print("hybrid S3 HEAD, inspection, OCI ranges, binding revocation, and replay fence: passed")
 
       now = int(time.time())
       plan = {

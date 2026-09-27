@@ -561,14 +561,29 @@ impl S3Surface {
         max_keys: usize,
         now: i64,
     ) -> Result<String> {
+        self.list_url_with_prefix("", continuation, max_keys, now)
+    }
+
+    /// Builds a presigned listing URL for a surface-relative key prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a public binding or a signing failure.
+    pub fn list_url_with_prefix(
+        &self,
+        relative_prefix: &str,
+        continuation: Option<&str>,
+        max_keys: usize,
+        now: i64,
+    ) -> Result<String> {
         let Some(creds) = &self.creds else {
             bail!("cannot list a public (credential-less) binding");
         };
         let (bucket, in_bucket) = self.bucket_split();
         let list_prefix = if in_bucket.is_empty() {
-            String::new()
+            relative_prefix.to_owned()
         } else {
-            format!("{in_bucket}/")
+            format!("{in_bucket}/{relative_prefix}")
         };
         let bucket_path = format!("/{bucket}");
         let params = crate::sigv4::PresignParams {
@@ -683,6 +698,69 @@ pub fn visit_list_objects_v2(
         );
     }
     Ok((next, truncated))
+}
+
+/// Provider identity reported for one S3 `ListObjectsV2` object.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct S3ListedObject {
+    /// Bucket-relative object key.
+    pub key: String,
+    /// Full object length in bytes.
+    pub size: u64,
+    /// Strong provider entity tag suitable for a later conditional request.
+    pub strong_etag: String,
+}
+
+/// Parses bounded S3 listing evidence and its continuation token.
+///
+/// The existing key parser validates the enclosing document and pagination.
+/// Every key must also occur in exactly one `Contents` record with a size and
+/// strong ETag, so an incomplete provider page cannot become inventory proof.
+///
+/// # Errors
+///
+/// Returns an error for malformed XML, missing or duplicate evidence fields,
+/// or a listing key outside a `Contents` record.
+pub fn parse_list_objects_v2_evidence(
+    xml: &str,
+) -> Result<(Vec<S3ListedObject>, Option<String>, bool)> {
+    let (keys, next, truncated) = parse_list_objects_v2(xml)?;
+    anyhow::ensure!(
+        xml.matches("<Contents>").count() == xml.matches("</Contents>").count(),
+        "S3 listing has mismatched Contents elements"
+    );
+
+    let mut objects = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<Contents>") {
+        let body = &rest[start + "<Contents>".len()..];
+        let end = body
+            .find("</Contents>")
+            .context("S3 listing has an unterminated Contents element")?;
+        let content = &body[..end];
+        anyhow::ensure!(
+            !content.contains("<Contents>"),
+            "S3 listing has nested Contents elements"
+        );
+        let key = extract_unique_tag(content, "Key")?.context("S3 listing object has no Key")?;
+        let size = extract_unique_tag(content, "Size")?
+            .context("S3 listing object has no Size")?
+            .trim()
+            .parse::<u64>()
+            .context("S3 listing object has an invalid Size")?;
+        let etag = extract_unique_tag(content, "ETag")?.context("S3 listing object has no ETag")?;
+        objects.push(S3ListedObject {
+            key: xml_unescape(key)?,
+            size,
+            strong_etag: crate::surface_write::strong_if_match_etag(&xml_unescape(etag)?)?,
+        });
+        rest = &body[end + "</Contents>".len()..];
+    }
+    anyhow::ensure!(
+        objects.iter().map(|object| &object.key).eq(keys.iter()),
+        "S3 listing keys differ from their Contents records"
+    );
+    Ok((objects, next, truncated))
 }
 
 /// Parses the opaque upload id from a bounded CreateMultipartUpload response.
@@ -992,6 +1070,33 @@ mod tests {
     }
 
     #[test]
+    fn listing_evidence_requires_complete_identity_per_key() {
+        let xml = "<ListBucketResult><Contents><Key>tenant/reg/a&amp;b</Key>\
+            <Size>17</Size><ETag>&quot;etag-1&quot;</ETag></Contents>\
+            <IsTruncated>false</IsTruncated></ListBucketResult>";
+        let (objects, next, truncated) = parse_list_objects_v2_evidence(xml).unwrap();
+        assert_eq!(
+            objects,
+            vec![S3ListedObject {
+                key: "tenant/reg/a&b".into(),
+                size: 17,
+                strong_etag: "\"etag-1\"".into(),
+            }]
+        );
+        assert_eq!(next, None);
+        assert!(!truncated);
+
+        assert!(parse_list_objects_v2_evidence(&xml.replace("<Size>17</Size>", "")).is_err());
+        assert!(parse_list_objects_v2_evidence(&xml.replace("<ETag>", "<ETag>W/")).is_err());
+        assert!(parse_list_objects_v2_evidence(&xml.replace("</Contents>", "")).is_err());
+        assert!(parse_list_objects_v2_evidence(&xml.replace(
+            "<IsTruncated>false",
+            "<Key>tenant/reg/extra</Key><IsTruncated>false",
+        ))
+        .is_err());
+    }
+
+    #[test]
     fn relative_from_key_strips_in_bucket_prefix() {
         // root "my-bucket", reg "andyl/demo" -> key_prefix "my-bucket/andyl/demo".
         let b = binding("s3", "private", Some("https://s3.example.com"));
@@ -1016,6 +1121,13 @@ mod tests {
             "{url}"
         );
         assert!(url.contains("prefix=andyl%2Fdemo%2F"), "{url}");
+        let scoped = surface
+            .list_url_with_prefix("objects/ab", None, 20, 1_700_000_000)
+            .unwrap();
+        assert!(
+            scoped.contains("prefix=andyl%2Fdemo%2Fobjects%2Fab"),
+            "{scoped}"
+        );
         assert!(
             url.contains("list-type=2") && url.contains("X-Amz-Signature="),
             "{url}"
