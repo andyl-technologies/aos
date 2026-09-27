@@ -157,7 +157,8 @@
         BindReadOnlyPaths = ["/nix.lower/store:/nix/store"];
         StandardInput = "socket";
         StandardOutput = "socket";
-        StandardError = "journal+console";
+        # Keep loader failures visible when stage-2 journald is unavailable.
+        StandardError = "console";
         RuntimeMaxSec = "5s";
         User = "root";
         Group = "root";
