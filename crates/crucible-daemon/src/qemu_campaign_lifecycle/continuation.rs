@@ -6,6 +6,10 @@ use crate::automatic_finding_runner::{
     FindingExactRetentionSource, FindingTerminalCheckpointIdentity,
 };
 
+// Keep the private replay failure classified without carrying its large driver variant inline.
+type QemuCheckpointReplayFailure<E> =
+    Box<AttemptWorkerFailure<QemuFreshExecutionRunnerError<E, crate::QemuFreshModeledDriverError>>>;
+
 fn retain_failed_observation_checkpoint<L, D>(
     source: &dyn FindingExactRetentionSource,
     lifecycle: &mut L,
@@ -92,27 +96,24 @@ where
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
         target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
-    ) -> Result<
-        crate::QemuSavepointReplayProof,
-        AttemptWorkerFailure<
-            QemuFreshExecutionRunnerError<F::Error, crate::QemuFreshModeledDriverError>,
-        >,
-    > {
+    ) -> Result<crate::QemuSavepointReplayProof, QemuCheckpointReplayFailure<F::Error>> {
         let continuations = validated_attempt_continuations(input).map_err(|()| {
-            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
+            Box::new(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::InvalidContinuationInput,
+            ))
         })?;
         if !self
             .lifecycles
             .configure_attempt_continuations(&continuations)
         {
-            return Err(AttemptWorkerFailure::Terminal(
+            return Err(Box::new(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
-            ));
+            )));
         }
         if let Some(checkpoint) = context.resume_checkpoint() {
-            return Err(AttemptWorkerFailure::Terminal(
+            return Err(Box::new(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::ResumeCheckpointUnsupported(checkpoint),
-            ));
+            )));
         }
 
         let scenario = input.scenario().scenario_def();
@@ -129,12 +130,12 @@ where
         };
         if let Some(decision) = unsupported_fresh_replay_decision(start, start_signal_fault_replay)
         {
-            return Err(AttemptWorkerFailure::Terminal(
+            return Err(Box::new(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::StartDecisionUnsupported {
                     configuration: start.id(),
                     decision,
                 },
-            ));
+            )));
         }
 
         self.lifecycles.configure_authenticated_start(input.start());
@@ -147,7 +148,7 @@ where
                 start_signal_fault_replay,
                 context,
             )
-            .map_err(map_fresh_lifecycle_failure)?;
+            .map_err(|error| Box::new(map_fresh_lifecycle_failure(error)))?;
         let driven = materialize_fresh_start::<F::Error, crate::QemuFreshModeledDriverError>(
             &mut lifecycle,
             input,
@@ -155,6 +156,7 @@ where
             context,
             false,
         )
+        .map_err(Box::new)
         .and_then(|materialization| {
             replay_selected_origins::<F::Error, crate::QemuFreshModeledDriverError>(
                 &mut lifecycle,
@@ -162,6 +164,7 @@ where
                 context,
                 materialization,
             )
+            .map_err(Box::new)
         })
         .and_then(|materialization| {
             if input.attempt().stop().accepts_next_choice() {
@@ -175,25 +178,29 @@ where
                 materialization,
                 target,
             )
-            .map_err(map_fresh_driver_failure)?;
+            .map_err(|error| Box::new(map_fresh_driver_failure(error)))?;
             match outcome {
                 QemuFreshDriveOutcome::Observation(pending) => {
                     let offset = lifecycle.event_log_offset().map_err(|error| {
-                        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Driver(
-                            crate::QemuFreshModeledDriverError::Scheduler(error),
+                        Box::new(AttemptWorkerFailure::Terminal(
+                            QemuFreshExecutionRunnerError::Driver(
+                                crate::QemuFreshModeledDriverError::Scheduler(error),
+                            ),
                         ))
                     })?;
                     crate::QemuSavepointReplayProof::from_checkpoint_replay_boundary(
                         pending, offset,
                     )
                     .map_err(|error| {
-                        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Driver(error))
+                        Box::new(AttemptWorkerFailure::Terminal(
+                            QemuFreshExecutionRunnerError::Driver(error),
+                        ))
                     })
                 }
                 QemuFreshDriveOutcome::CheckpointRequested(_) => {
-                    Err(AttemptWorkerFailure::Terminal(
+                    Err(Box::new(AttemptWorkerFailure::Terminal(
                         QemuFreshExecutionRunnerError::UnsolicitedCheckpoint,
-                    ))
+                    )))
                 }
             }
         });
@@ -201,12 +208,12 @@ where
         match (driven, cleanup) {
             (Ok(proof), Ok(_)) => Ok(proof),
             (Err(failure), Ok(_)) => Err(failure),
-            (Ok(_), Err(cleanup)) => Err(AttemptWorkerFailure::Terminal(
+            (Ok(_), Err(cleanup)) => Err(Box::new(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::Cleanup(cleanup),
-            )),
-            (Err(failure), Err(cleanup)) => Err(AttemptWorkerFailure::Terminal(
-                cleanup_after_fresh_runner_failure(failure, cleanup),
-            )),
+            ))),
+            (Err(failure), Err(cleanup)) => Err(Box::new(AttemptWorkerFailure::Terminal(
+                cleanup_after_fresh_runner_failure(*failure, cleanup),
+            ))),
         }
     }
 }
