@@ -5,6 +5,9 @@
 //! state validation, and protected journal persistence without minting test
 //! owner authority.
 
+#[path = "native_recovery_fixture/installed_vm.rs"]
+mod installed_vm;
+
 use aos_proto::aos::sandbox::local::v1::{
     AcquireMountSourceRequest, ApplyMountRequest, Audience, MountAction, MountSourceConsistency,
 };
@@ -376,15 +379,28 @@ fn mount_acquire_request() -> (Vec<u8>, ValidatedAcquireMountSourceRequest) {
 }
 
 fn initial_signed_graph() -> Vec<StoredRecordV2> {
-    let session = signed_session([19; 16], 31);
+    initial_signed_graph_for_session(signed_session([19; 16], 31), 500, [62; 32], [63; 32])
+}
+
+fn initial_signed_graph_for_session(
+    session: SourceProviderSessionV2,
+    provider_deadline_seconds: i64,
+    catalog_digest: [u8; 32],
+    catalog_head_commitment: [u8; 32],
+) -> Vec<StoredRecordV2> {
     let (mount_bytes, mount) = mount_acquire_request();
     let provider_acquisition = ProviderAcquisitionIdentityV2 {
-        holder_authority_id: HOLDER,
-        holder_authority_generation: 1,
-        holder_authority_digest: [7; 32],
+        holder_authority_id: session.scope.holder_authority_id,
+        holder_authority_generation: session.root_mount_authority_generation,
+        holder_authority_digest: session.root_mount_authority_digest,
         acquisition_sequence: 1,
-        acquisition_id: *source_acquisition_id_v2(HOLDER, 1, ObjectDigest::from_bytes([7; 32]), 1)
-            .as_bytes(),
+        acquisition_id: *source_acquisition_id_v2(
+            session.scope.holder_authority_id,
+            session.root_mount_authority_generation,
+            ObjectDigest::from_bytes(session.root_mount_authority_digest),
+            1,
+        )
+        .as_bytes(),
     };
     let intent = ProviderIntentV2::Acquire {
         value: reservation::acquire_intent(
@@ -445,12 +461,12 @@ fn initial_signed_graph() -> Vec<StoredRecordV2> {
         SourceUseV1::MountCreate,
         session.node_id,
         session.kernel_boot_id,
-        HOLDER,
-        1,
-        ObjectDigest::from_bytes([7; 32]),
+        session.scope.holder_authority_id,
+        session.root_mount_authority_generation,
+        ObjectDigest::from_bytes(session.root_mount_authority_digest),
         binding.clone(),
         aos_sandbox_source_provider_protocol::digest_logical_binding_bytes(&binding),
-        500,
+        provider_deadline_seconds,
         mount.requested_lease_seconds(),
         ObjectDigest::from_bytes(session.revocation_digest),
         mount.recursive(),
@@ -460,36 +476,44 @@ fn initial_signed_graph() -> Vec<StoredRecordV2> {
     .expect("valid provider Acquire request");
     let normalized = NormalizedAcquisitionIntentV2::from_acquire_request(
         &request,
-        SourceProviderAuthorityV1::new(PROVIDER, 1, ObjectDigest::from_bytes([8; 32]))
-            .expect("Provider authority"),
-        SourceProviderAuthorityV1::new(HOLDER, 1, ObjectDigest::from_bytes([7; 32]))
-            .expect("holder authority"),
+        SourceProviderAuthorityV1::new(
+            session.scope.provider_authority_id,
+            session.provider_authority_generation,
+            ObjectDigest::from_bytes(session.provider_authority_digest),
+        )
+        .expect("Provider authority"),
+        SourceProviderAuthorityV1::new(
+            session.scope.holder_authority_id,
+            session.root_mount_authority_generation,
+            ObjectDigest::from_bytes(session.root_mount_authority_digest),
+        )
+        .expect("holder authority"),
         session.node_id,
         session.kernel_boot_id,
-        ROUTE,
-        1,
-        ObjectDigest::from_bytes([9; 32]),
+        session.scope.route_id,
+        session.route_generation,
+        ObjectDigest::from_bytes(session.route_digest),
         ObjectDigest::from_bytes(session.scope.resource_namespace_digest),
-        1,
+        session.revocation_generation,
         ObjectDigest::from_bytes(session.revocation_digest),
     )
     .expect("normalized provider Acquire");
     attempt.normalized_acquire_intent = Some(AttemptNormalizedAcquireV2 {
         bytes: normalized.to_canonical_bytes(),
         digest: *normalized.digest().as_bytes(),
-        maximum_lease_expiry_seconds: 500,
+        maximum_lease_expiry_seconds: provider_deadline_seconds,
     });
     let catalog = ProviderCatalogFloorV1::new(
-        PROVIDER,
+        session.scope.provider_authority_id,
         ObjectDigest::from_bytes(session.scope.resource_namespace_digest),
         1,
-        ObjectDigest::from_bytes([62; 32]),
+        ObjectDigest::from_bytes(catalog_digest),
     )
     .expect("provider catalog floor");
     attempt.acquire_verification_floor = Some(acquire_verification_floor_v2(
         &catalog,
         None,
-        Some([63; 32]),
+        Some(catalog_head_commitment),
     ));
     let request_key = SigningKey::from_bytes(&[12; 32]);
     let signed_request = sign_request(
@@ -533,7 +557,7 @@ fn initial_signed_graph() -> Vec<StoredRecordV2> {
         seal_record(StoredRecordV2::HolderSequence {
             value: HolderSequenceV2 {
                 revision: 1,
-                holder_authority_id: HOLDER,
+                holder_authority_id: session.scope.holder_authority_id,
                 last_allocated_acquisition_sequence: 1,
                 next_acquisition_sequence: 2,
                 record_digest: [0; 32],
