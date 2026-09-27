@@ -46,8 +46,7 @@
     ../../systems/server-test.nix
     ({config, ...}: let
       zfs = pkgs.zfsForKernel config.system.build.kernel;
-      runFixture = selectedTest:
-        "${fixture}/bin/aos-sandbox-held-snapshot-reader-tests --ignored --exact ${selectedTest} --test-threads=1 --nocapture";
+      runFixture = selectedTest: "${fixture}/bin/aos-sandbox-held-snapshot-reader-tests --ignored --exact ${selectedTest} --test-threads=1 --nocapture";
     in {
       aos.sandbox.storageWorker.enable = true;
       aos.image.budgets = {
@@ -180,6 +179,9 @@ in {
     run_case("matched", pool_guid, root_guid, dataset_guid, snapshot_guid)
     run_case("wrong-pool", pool_guid, root_guid, dataset_guid, snapshot_guid)
     run_case("wrong-snapshot", pool_guid, root_guid, dataset_guid, snapshot_guid)
+    run_case("matched-mount", pool_guid, root_guid, dataset_guid, snapshot_guid)
+    run_case("wrong-pool-mount", pool_guid, root_guid, dataset_guid, snapshot_guid)
+    run_case("wrong-snapshot-mount", pool_guid, root_guid, dataset_guid, snapshot_guid)
 
     # Keep the exact Storage cgroup alive while the decoy connects. Otherwise
     # the reader correctly fails at a missing owner anchor before peer matching.
@@ -202,7 +204,7 @@ in {
 
     client_output = vm.succeed("cat /run/aos-held-client-output")
     decoy_output = vm.succeed("cat /run/aos-held-decoy-output")
-    assert client_output.count("test result: ok") >= 4, client_output
+    assert client_output.count("test result: ok") >= 7, client_output
     assert "test result: ok" in decoy_output, decoy_output
     assert "aos-sbx-reader-vm" in vm.succeed(f"{ZFS} holds -H {SNAPSHOT}")
     assert vm.succeed(

@@ -965,6 +965,7 @@ pub(crate) fn verify_received_mount_fd(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read as _;
     use std::os::unix::fs::PermissionsExt as _;
 
     use crate::{ManagedDatasetRoot, ResolvedDataset, StorageDomainsV1};
@@ -1443,7 +1444,8 @@ mod tests {
             domains,
         )
         .unwrap();
-        let expected_snapshot_guid = if variant == "wrong-snapshot" {
+        let expected_snapshot_guid = if matches!(variant, "wrong-snapshot" | "wrong-snapshot-mount")
+        {
             different_guid(snapshot_guid)
         } else {
             snapshot_guid
@@ -1451,7 +1453,7 @@ mod tests {
         let snapshot =
             ResolvedSnapshot::from_catalog(dataset, "held", expected_snapshot_guid, [6; 32])
                 .unwrap();
-        let expected_pool_guid = if variant == "wrong-pool" {
+        let expected_pool_guid = if matches!(variant, "wrong-pool" | "wrong-pool-mount") {
             different_guid(pool_guid)
         } else {
             pool_guid
@@ -1464,15 +1466,28 @@ mod tests {
             Path::new("/var/lib/aos/sandbox-storage"),
         )
         .unwrap();
-        let observation = reader.measure(
-            &snapshot,
-            expected_pool_guid,
-            ObjectDigest::from_bytes([7; 32]),
-            [8; 16],
-        );
+        let observation = if variant.ends_with("-mount") {
+            reader
+                .measure_with_mount(
+                    &snapshot,
+                    expected_pool_guid,
+                    ObjectDigest::from_bytes([7; 32]),
+                    [8; 16],
+                )
+                .map(|(measured, mount)| (measured, Some(mount)))
+        } else {
+            reader
+                .measure(
+                    &snapshot,
+                    expected_pool_guid,
+                    ObjectDigest::from_bytes([7; 32]),
+                    [8; 16],
+                )
+                .map(|measured| (measured, None))
+        };
         match variant {
-            "matched" => {
-                let measured = observation.unwrap();
+            "matched" | "matched-mount" => {
+                let (measured, mount) = observation.unwrap();
                 assert_eq!(measured.mounted_snapshot_guid, snapshot_guid);
                 assert_ne!(measured.content_digest.as_bytes(), &[0; 32]);
                 assert!(measured.mount_id > 0 && measured.nodes > 0);
@@ -1494,8 +1509,30 @@ mod tests {
                     measured.identity.identity_tree_digest.to_string(),
                     "sha256:d96f62fc5f9c09ace8b0e2ce8ec2d746df8aeee6d0d0661c7019a9e2924f76b7",
                 );
+                if variant == "matched-mount" {
+                    let mount = mount.unwrap();
+
+                    // measure_with_mount waits for the whole one-shot unit to
+                    // quiesce before returning. Its detached root must remain
+                    // readable after the privileged reader has exited.
+                    reader.prove_prior_readers_empty().unwrap();
+                    verify_received_mount_fd(mount.as_fd(), &measured, pool_guid).unwrap();
+                    let payload = openat(
+                        mount.as_fd(),
+                        "payload",
+                        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                        Mode::empty(),
+                    )
+                    .unwrap();
+                    let mut payload = fs::File::from(payload);
+                    let mut contents = String::new();
+                    payload.read_to_string(&mut contents).unwrap();
+                    assert_eq!(contents, "held reader service payload\n");
+                } else {
+                    assert!(mount.is_none());
+                }
             }
-            "wrong-pool" | "wrong-snapshot" => {
+            "wrong-pool" | "wrong-snapshot" | "wrong-pool-mount" | "wrong-snapshot-mount" => {
                 assert!(observation.is_err());
                 assert!(!reader.fail_stopped);
             }

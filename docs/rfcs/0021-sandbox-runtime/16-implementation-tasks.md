@@ -8672,9 +8672,10 @@ It applies read-only, nodev, nosuid, and noexec attributes before reading, and
 returns a request-bound digest and mount identity on its original measurement
 wire. A distinct versioned reply can transfer exactly one GUID-verified,
 read-only detached mount FD to Storage, without exposing it to Provider.
-Storage's dormant held readback keeps its sole journal cut while it observes the GUID and hold and
-measures the bytes. A successful path observes the GUID and hold again after
-reader quiescence and rechecks the protected catalog and policy heads.
+Storage's dormant held readback keeps its sole journal cut while it observes
+the GUID and hold and measures the bytes. A successful path observes the GUID
+and hold again after reader quiescence and rechecks the protected catalog and
+policy heads.
 The private native-claim bridge now derives the opaque snapshot version handle
 from Storage's authenticated Snapshot result, not the Provider row, and checks
 the row's handle, format version, GUIDs, hold lineage, root policy, and portable
@@ -8712,7 +8713,11 @@ walk, rejects an absent or mismatched UUID, and only then asserts the
 request-bound mounted GUID. This closes the name-replacement ABA gap that
 pre/post `zfs list` checks alone could not close. The older `statfs` FSID is
 not treated as a GUID. The backport and protected-cut exchange still require
-ZFS/KVM qualification before any production authority is enabled. No
+ZFS/KVM qualification before any production authority is enabled. The installed
+reader fixture now includes an unrun AOSHSM03 transfer, wrong-GUID,
+whole-unit-quiescence, and post-exit retained-FD check. It does not construct
+Storage's protected journal; an installed stale-final-cut readback remains
+separate from the pure cut-comparison tests. No
 `/dev/zfs` node is exposed to the one-shot reader; its private `/dev` and
 mount namespace do not change the fact that CAP_SYS_ADMIN remains an
 initial-user-namespace capability. The syscall and descriptor boundary still
