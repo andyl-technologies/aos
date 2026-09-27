@@ -101,9 +101,9 @@
         inherit fetchurl buildPackages;
       }
     else null;
-  # Leave other bootstrap build scripts byte-identical to reuse their outputs.
+  # Older JDKs do not invoke MIG through this build path.
   darwinMigCompiler =
-    if isDarwinCross && major == 17
+    if isDarwinCross && major >= 17
     then ''
 
       # Apple's MIG driver must preprocess Mach definitions with the
