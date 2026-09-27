@@ -64,7 +64,7 @@ fn gate_qemu_inert_runs_reference_vs_patched_corpus() -> Result<(), Box<dyn Erro
         &inert_gate,
         "qmp_crucible_control_extension_sim_off_rejected_without_run_state_change=true",
     );
-    assert_contains(&inert_gate, "migration_stream_identical=true");
+    assert_contains(&inert_gate, "migration_legacy_projection_identical=true");
     assert_contains(&inert_gate, "compare_files boot-tcg-raw");
     assert_contains(&inert_gate, "compare_files execution-output-tcg");
     assert_contains(&inert_gate, "printk.time=0");
