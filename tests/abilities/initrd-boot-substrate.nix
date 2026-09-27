@@ -106,6 +106,9 @@ in
   assert builtins.elem "--source-stage-bundle"
   (builtins.head (stageCommand "aos-ability-initrd-handoff-barrier")).executable.arguments;
   assert (request "aos-boot-preparations" "aos-ability-initrd-controller-lifecycle").remain_after_exit;
+  assert (request "aos-boot-preparations" "aos-ability-initrd-controller-lifecycle").activation_owner == "image";
+  assert (request "aos-boot-preparations" "aos-ability-initrd-controller-readiness").mechanism == "process-running";
   assert (request "aos-boot-preparations" "aos-ability-initrd-handoff-barrier-lifecycle").remain_after_exit;
   assert hostRequests."aos-boot-preparations:aos-ability-host-receiver-lifecycle".parameters.remain_after_exit;
+  assert hostRequests."aos-boot-preparations:aos-ability-host-receiver-lifecycle".parameters.activation_owner == "image";
   assert !(requests ? "aos-boot-preparations:boot-preparation-handoff"); true
