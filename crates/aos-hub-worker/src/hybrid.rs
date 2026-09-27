@@ -921,17 +921,20 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
     };
     let operation_kind = plan.operation.kind();
 
-    if plan.binding_kind != "deployment_r2" {
-        if crate::hybrid_binding::resolve_for_plan(env, &plan)
-            .await
-            .is_err()
-        {
-            return Response::error("binding snapshot is unavailable", 409);
+    let execution = if plan.binding_kind == "deployment_r2" {
+        crate::surface::execute_r2_storage_work(env, &plan).await
+    } else {
+        let publication = match crate::hybrid_binding::resolve_for_plan(env, &plan).await {
+            Ok(publication) => publication,
+            Err(_) => return Response::error("binding snapshot is unavailable", 409),
+        };
+        match crate::surface::execute_external_storage_work(env, &plan, &publication).await {
+            Ok(Some(result)) => Ok(result),
+            Ok(None) => return Response::error("external storage operation is unavailable", 501),
+            Err(error) => Err(error),
         }
-        return Response::error("external storage operation is unavailable", 501);
-    }
-
-    let result = match crate::surface::execute_r2_storage_work(env, &plan).await {
+    };
+    let result = match execution {
         Ok(result) => result,
         Err(_error) => {
             worker::console_error!(

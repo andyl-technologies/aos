@@ -36,10 +36,10 @@ use aos_hub_core::storage_credential::{
     DatabaseStorageCredentialResolver, StorageCredentialResolver,
 };
 use aos_hub_core::storage_work::{
-    StorageDocumentationPage, StorageGitObjectProjection, StorageObjectIdentity,
-    StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
-    MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_OCI_HASH_RANGE_BYTES,
-    MAX_OCI_RANGE_BYTES,
+    StorageBindingPublication, StorageDocumentationPage, StorageGitObjectProjection,
+    StorageObjectIdentity, StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan,
+    StorageWorkResult, MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES,
+    MAX_OCI_HASH_RANGE_BYTES, MAX_OCI_RANGE_BYTES,
 };
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
@@ -58,6 +58,79 @@ struct WorkerR2BucketAdapter {
     /// Raw JavaScript R2 binding. Keeping reflection behind this exact value
     /// makes the production adapter executable against a JS-shape fixture.
     bucket: wasm_bindgen::JsValue,
+}
+
+/// Executes admitted external-storage reads through the same S3 signing path
+/// used by Worker-only mode. Unsupported operations remain unavailable until
+/// their provider-specific idempotency and identity checks are implemented.
+///
+/// # Errors
+///
+/// Returns an error when the published binding, selected credential, provider
+/// response, or observed object identity violates its signed plan.
+pub(crate) async fn execute_external_storage_work(
+    env: &Env,
+    plan: &StorageWorkPlan,
+    publication: &StorageBindingPublication,
+) -> Result<Option<StorageWorkResult>> {
+    let now = aos_hub_core::clock::now_unix_secs();
+    let deployment_id = env.var("HUB_DEPLOYMENT_ID")?.to_string();
+    publication.snapshot.authorizes(plan, &deployment_id, now)?;
+    let StorageWorkOperation::Head { path } = &plan.operation else {
+        return Ok(None);
+    };
+
+    let credential = if publication.snapshot.access_mode == "private" {
+        let selector = plan
+            .credential_references
+            .iter()
+            .find(|selector| selector.purpose == "read")
+            .context("external read plan has no read credential")?;
+        Some(publication.credential_text(selector, &deployment_id, now)?)
+    } else {
+        None
+    };
+    let surface = S3Surface::from_snapshot(
+        &publication.snapshot,
+        &deployment_id,
+        &plan.placement_prefix,
+        credential.as_ref().map(|value| value.as_str()),
+        now,
+    )?;
+
+    let url = surface.object_url(S3Method::Head, path, now)?;
+    let response = WorkerEgressClient::direct()
+        .send(&url, "HEAD", None, None, None, None, None)
+        .await
+        .context("external storage HEAD failed")?;
+    let outcome = if response.status_code() == 404 {
+        StorageWorkOutcome::NotFound
+    } else {
+        anyhow::ensure!(
+            response.status_code() == 200,
+            "external storage HEAD returned HTTP {}",
+            response.status_code()
+        );
+        let size = response
+            .headers()
+            .get("content-length")?
+            .context("external storage HEAD has no Content-Length")?
+            .parse::<u64>()
+            .context("external storage HEAD has an invalid Content-Length")?;
+        let etag = response
+            .headers()
+            .get("etag")?
+            .context("external storage HEAD has no ETag")?;
+        let etag = aos_hub_core::surface_write::strong_if_match_etag(&etag)?;
+        StorageWorkOutcome::Head {
+            object: StorageObjectIdentity {
+                key: plan.object_key(path)?,
+                size,
+                etag,
+            },
+        }
+    };
+    Ok(Some(storage_work_result(plan, outcome, 0)))
 }
 
 /// Executes a signed, validated storage plan against the deployment R2 bucket.

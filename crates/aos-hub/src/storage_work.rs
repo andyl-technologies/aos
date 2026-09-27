@@ -5,7 +5,7 @@
 //! caller rechecks their revisions before committing any derived state.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context as _, Result};
@@ -39,7 +39,7 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use futures_util::{StreamExt as _, TryStreamExt as _};
 use sha2::Digest as _;
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 use zeroize::Zeroizing;
 
 // Limit each index walk's simultaneous cross-cloud inspection requests.
@@ -58,6 +58,8 @@ pub struct RemoteStorageWorkClient {
     key: StorageWorkKey,
     http: reqwest::Client,
     in_flight: Semaphore,
+    binding_publication_gate: Mutex<()>,
+    published_bindings: RwLock<BTreeMap<i64, StorageBindingSnapshot>>,
 }
 
 impl RemoteStorageWorkClient {
@@ -106,6 +108,8 @@ impl RemoteStorageWorkClient {
             key: StorageWorkKey::new(key)?,
             http,
             in_flight: Semaphore::new(MAX_IN_FLIGHT_STORAGE_PLANS),
+            binding_publication_gate: Mutex::new(()),
+            published_bindings: RwLock::new(BTreeMap::new()),
         })
     }
 
@@ -184,7 +188,102 @@ impl RemoteStorageWorkClient {
         let expected_revision = snapshot.revision()?;
         self.send_binding_control(&control, &expected_revision)
             .await?;
+        self.published_bindings
+            .write()
+            .map_err(|_| anyhow::anyhow!("published binding state is poisoned"))?
+            .insert(binding.id, snapshot.clone());
         Ok(snapshot)
+    }
+
+    /// Reconciles one SQL binding and its credential heads before external work.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when SQL changed during publication, a secret cannot
+    /// be resolved, or the Worker cannot acknowledge the exact snapshot.
+    pub async fn ensure_binding_snapshot(
+        &self,
+        db: &Database,
+        binding: &BindingRecord,
+        resolver: &dyn SecretVersionResolver,
+    ) -> Result<()> {
+        let _gate = self.binding_publication_gate.lock().await;
+        let current_binding = db
+            .binding(binding.id)
+            .await?
+            .context("external storage binding disappeared")?;
+        anyhow::ensure!(
+            current_binding.resource_version == binding.resource_version
+                && current_binding.stable_id == binding.stable_id,
+            "external storage binding changed before publication"
+        );
+        let credentials = db.list_current_binding_credentials(binding.id).await?;
+        let now = aos_hub_core::clock::now_unix_secs();
+        let desired = StorageBindingSnapshot::from_binding(
+            self.deployment_id.clone(),
+            &current_binding,
+            &credentials,
+            now,
+            now.checked_add(60 * 60)
+                .context("binding snapshot expiry overflowed")?,
+        )?;
+        let published = self
+            .published_bindings
+            .read()
+            .map_err(|_| anyhow::anyhow!("published binding state is poisoned"))?
+            .get(&binding.id)
+            .cloned();
+        if let Some(published) = &published {
+            if published.expires_at > now.saturating_add(60)
+                && published.binding_resource_version == desired.binding_resource_version
+                && published.binding_spec_revision()? == desired.binding_spec_revision()?
+                && published.credentials == desired.credentials
+            {
+                return Ok(());
+            }
+        }
+
+        // The replay fence uses Unix seconds. A changed binding in the same
+        // second needs a fresh issue time before the Worker can admit it.
+        if published.is_some_and(|snapshot| snapshot.issued_at >= now) {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        let now = aos_hub_core::clock::now_unix_secs();
+
+        let snapshot = self
+            .publish_binding_snapshot(&current_binding, &credentials, resolver, now)
+            .await?;
+        let latest = async {
+            let binding = db
+                .binding(binding.id)
+                .await?
+                .context("external storage binding disappeared after publication")?;
+            let credentials = db.list_current_binding_credentials(binding.id).await?;
+            StorageBindingSnapshot::from_binding(
+                self.deployment_id.clone(),
+                &binding,
+                &credentials,
+                snapshot.issued_at,
+                snapshot.expires_at,
+            )
+        }
+        .await;
+        if !matches!(&latest, Ok(current) if current == &snapshot) {
+            let revision = snapshot.revision()?;
+            let revoke_at =
+                aos_hub_core::clock::now_unix_secs().max(snapshot.issued_at.saturating_add(1));
+            let revoke = self
+                .revoke_binding_snapshot(binding.id, &revision, revoke_at)
+                .await;
+            self.published_bindings
+                .write()
+                .map_err(|_| anyhow::anyhow!("published binding state is poisoned"))?
+                .remove(&binding.id);
+            revoke.context("revoking a binding changed during publication")?;
+            latest.context("rechecking a published binding")?;
+            anyhow::bail!("external storage binding changed during publication");
+        }
+        Ok(())
     }
 
     /// Withdraws one exact external binding revision from the Worker.
@@ -209,7 +308,18 @@ impl RemoteStorageWorkClient {
                 .context("binding revocation expiry overflowed")?,
         };
         control.validate(&self.deployment_id, now)?;
-        self.send_binding_control(&control, revision).await
+        self.send_binding_control(&control, revision).await?;
+        let mut published = self
+            .published_bindings
+            .write()
+            .map_err(|_| anyhow::anyhow!("published binding state is poisoned"))?;
+        if published
+            .get(&binding_id)
+            .is_some_and(|snapshot| snapshot.revision().ok().as_deref() == Some(revision))
+        {
+            published.remove(&binding_id);
+        }
+        Ok(())
     }
 
     async fn send_binding_control(
@@ -261,11 +371,50 @@ impl RemoteStorageWorkClient {
         now: i64,
     ) -> Result<StorageWorkPlan> {
         anyhow::ensure!(
-            placement.binding_id == binding.id
-                && binding.kind == "deployment_r2"
-                && binding.is_instance_default,
-            "storage work requires the selected deployment R2 binding"
+            placement.binding_id == binding.id,
+            "storage work binding differs from its placement"
         );
+        let snapshot = if binding.kind == "deployment_r2" && binding.is_instance_default {
+            None
+        } else {
+            anyhow::ensure!(
+                matches!(binding.kind.as_str(), "s3" | "r2") && !binding.is_instance_default,
+                "storage work requires an admitted object-store binding"
+            );
+            Some(
+                self.published_bindings
+                    .read()
+                    .map_err(|_| anyhow::anyhow!("published binding state is poisoned"))?
+                    .get(&binding.id)
+                    .cloned()
+                    .context("external binding snapshot has not been acknowledged")?,
+            )
+        };
+        let credential_references = if let Some(snapshot) = &snapshot {
+            if snapshot.access_mode == "public" {
+                Vec::new()
+            } else {
+                operation
+                    .credential_purposes()
+                    .iter()
+                    .map(|purpose| {
+                        let reference = snapshot
+                            .credentials
+                            .iter()
+                            .find(|reference| reference.purpose == *purpose)
+                            .with_context(|| {
+                                format!("external binding lacks {purpose} credential")
+                            })?;
+                        Ok(StorageCredentialSelector {
+                            purpose: reference.purpose.clone(),
+                            generation: reference.generation,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            }
+        } else {
+            Vec::new()
+        };
         let plan = StorageWorkPlan {
             version: 1,
             plan_id: uuid::Uuid::new_v4().simple().to_string(),
@@ -279,12 +428,18 @@ impl RemoteStorageWorkClient {
             binding_id: binding.id,
             binding_resource_version: binding.resource_version,
             binding_kind: binding.kind.clone(),
-            binding_snapshot_revision: None,
-            credential_references: Vec::new(),
+            binding_snapshot_revision: snapshot
+                .as_ref()
+                .map(StorageBindingSnapshot::revision)
+                .transpose()?,
+            credential_references,
             placement_prefix: placement.prefix.clone(),
             operation,
         };
         plan.validate(&self.deployment_id, now)?;
+        if let Some(snapshot) = &snapshot {
+            snapshot.authorizes(&plan, &self.deployment_id, now)?;
+        }
         Ok(plan)
     }
 
@@ -841,13 +996,18 @@ fn validate_git_projection(
 pub struct HybridSurfaceProvider {
     db: Arc<Database>,
     work: Arc<RemoteStorageWorkClient>,
+    secrets: Arc<dyn SecretVersionResolver>,
 }
 
 impl HybridSurfaceProvider {
     /// Creates a provider over the authoritative SQL database and Worker client.
     #[must_use]
-    pub fn new(db: Arc<Database>, work: Arc<RemoteStorageWorkClient>) -> Self {
-        Self { db, work }
+    pub fn new(
+        db: Arc<Database>,
+        work: Arc<RemoteStorageWorkClient>,
+        secrets: Arc<dyn SecretVersionResolver>,
+    ) -> Self {
+        Self { db, work, secrets }
     }
 }
 
@@ -870,10 +1030,11 @@ impl SurfaceProvider for HybridSurfaceProvider {
             .binding(placement.binding_id)
             .await?
             .context("hybrid placement references a missing storage binding")?;
-        anyhow::ensure!(
-            binding.kind == "deployment_r2" && binding.is_instance_default,
-            "hybrid R2 reader does not support this binding kind"
-        );
+        if !binding.is_instance_default {
+            self.work
+                .ensure_binding_snapshot(&self.db, &binding, self.secrets.as_ref())
+                .await?;
+        }
         Ok(Box::new(HybridSurfaceFetch {
             db: Arc::clone(&self.db),
             placement: placement.clone(),
@@ -1982,7 +2143,128 @@ async fn delete_hybrid_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_hub_core::storage_work::StorageObjectIdentity;
+    use aos_hub_core::storage_work::{StorageCredentialReference, StorageObjectIdentity};
+
+    #[test]
+    fn external_plan_names_only_the_acknowledged_snapshot_and_required_credential() {
+        let client = RemoteStorageWorkClient::new(
+            "https://worker.example",
+            "deployment-1".into(),
+            b"hybrid-storage-test-key-with-thirty-two-bytes",
+        )
+        .unwrap();
+        let binding = BindingRecord {
+            id: 7,
+            kind: "s3".into(),
+            stable_id: "external-7".into(),
+            resource_version: 3,
+            ..BindingRecord::default()
+        };
+        let placement = SurfacePlacementRecord {
+            id: 11,
+            registry_id: Some(1),
+            cache_id: None,
+            name: "primary".into(),
+            binding_id: binding.id,
+            prefix: "registry".into(),
+            derived_role: "primary".into(),
+            state: "active".into(),
+            completeness: "complete".into(),
+            hash_range_start: None,
+            hash_range_end: None,
+            mutable_publication_id: None,
+            effective_read_enabled: true,
+            effective_write_enabled: false,
+            read_order: 0,
+            created_at: 0,
+            updated_at: 0,
+            resource_version: 2,
+            kind: "complete".into(),
+            desired_state: "active".into(),
+            desired_read_enabled: true,
+            write_spec_version: 1,
+            requires_conditional_writes: false,
+            observed_at: None,
+            observation_version: None,
+            watermark_resource_version: None,
+            watermark_pending_publication_id: None,
+            write_authority_id: None,
+            authority_desired_placement_id: None,
+            authority_observed_placement_id: None,
+            authority_desired_write_spec_version: None,
+            authority_observed_write_spec_version: None,
+            authority_desired_binding_write_revision: None,
+            authority_observed_binding_write_revision: None,
+            authority_desired_generation: None,
+            authority_observed_generation: None,
+            authority_reconciliation_state: None,
+        };
+        let snapshot = StorageBindingSnapshot {
+            version: 1,
+            deployment_id: "deployment-1".into(),
+            binding_id: binding.id,
+            binding_resource_version: binding.resource_version,
+            binding_stable_id: binding.stable_id.clone(),
+            binding_kind: binding.kind.clone(),
+            object_bucket: "bucket".into(),
+            object_prefix: "tenant".into(),
+            endpoint_scheme: "https".into(),
+            endpoint_host_kind: "dns".into(),
+            endpoint_host_bytes: b"s3.example.test".to_vec(),
+            endpoint_port: Some(443),
+            signing_region: "us-west-1".into(),
+            access_mode: "private".into(),
+            credentials: vec![StorageCredentialReference {
+                purpose: "read".into(),
+                generation: 2,
+                secret_version_ref: "secret://test/binding/read/v2".into(),
+                fingerprint: "a".repeat(64),
+            }],
+            issued_at: 100,
+            expires_at: 200,
+        };
+        let operation = || StorageWorkOperation::Head {
+            path: "object".into(),
+        };
+        assert!(client
+            .plan_for_placement(&placement, &binding, operation(), 101)
+            .is_err());
+
+        client
+            .published_bindings
+            .write()
+            .unwrap()
+            .insert(binding.id, snapshot.clone());
+        let plan = client
+            .plan_for_placement(&placement, &binding, operation(), 101)
+            .unwrap();
+        assert_eq!(
+            plan.binding_snapshot_revision,
+            Some(snapshot.revision().unwrap())
+        );
+        assert_eq!(
+            plan.credential_references,
+            vec![StorageCredentialSelector {
+                purpose: "read".into(),
+                generation: 2,
+            }]
+        );
+        assert!(client
+            .plan_for_placement(
+                &placement,
+                &binding,
+                StorageWorkOperation::ListPage {
+                    prefix: "".into(),
+                    cursor: None,
+                    limit: 1,
+                },
+                101,
+            )
+            .is_err());
+        assert!(client
+            .plan_for_placement(&placement, &binding, operation(), 201)
+            .is_err());
+    }
 
     #[test]
     fn oci_composition_result_matches_the_signed_destination_and_digest() {

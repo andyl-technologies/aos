@@ -1283,6 +1283,13 @@ mod tests {
             }],
         };
         assert!(publication.validate("deployment-1", 101).is_ok());
+        assert_eq!(
+            publication
+                .credential_text(&publication.materials[0].selector, "deployment-1", 101)
+                .unwrap()
+                .as_str(),
+            std::str::from_utf8(value).unwrap()
+        );
 
         let mut tampered = binding_snapshot(100);
         tampered.credentials[0].fingerprint = hex::encode(Sha256::digest(value));

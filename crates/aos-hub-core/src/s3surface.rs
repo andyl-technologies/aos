@@ -36,6 +36,7 @@
 //!   nothing to sign with).
 
 use crate::db::BindingRecord;
+use crate::storage_work::StorageBindingSnapshot;
 
 /// Maximum in-memory S3 object read used by metadata/indexing operations.
 /// Large machine objects use [`crate::fetch::SurfaceFetch::fetch_stream`].
@@ -121,6 +122,17 @@ pub struct S3Surface {
     creds: Option<S3Creds>,
 }
 
+struct SurfaceCoordinates<'a> {
+    name: &'a str,
+    scheme: &'a str,
+    host_kind: &'a str,
+    host_bytes: &'a [u8],
+    port: Option<i64>,
+    bucket: &'a str,
+    binding_prefix: &'a str,
+    access_mode: &'a str,
+}
+
 impl S3Surface {
     /// Resolve a binding into an S3 surface scoped to `sub_prefix`, or `Ok(None)`
     /// when the binding is not an S3-compatible object store.
@@ -142,23 +154,84 @@ impl S3Surface {
             "s3" | "r2" => {}
             _ => return Ok(None),
         }
-        let scheme = binding
-            .endpoint_scheme
-            .as_deref()
-            .context("object-store binding has no typed endpoint scheme")?;
-        let host_bytes = binding
-            .endpoint_host_bytes
-            .as_deref()
-            .context("object-store binding has no typed endpoint host")?;
-        let host = match binding.endpoint_host_kind.as_deref() {
-            Some("dns") => std::str::from_utf8(host_bytes)
+        let coordinates = SurfaceCoordinates {
+            name: &binding.name,
+            scheme: binding
+                .endpoint_scheme
+                .as_deref()
+                .context("object-store binding has no typed endpoint scheme")?,
+            host_kind: binding
+                .endpoint_host_kind
+                .as_deref()
+                .context("object-store binding has no typed endpoint host kind")?,
+            host_bytes: binding
+                .endpoint_host_bytes
+                .as_deref()
+                .context("object-store binding has no typed endpoint host")?,
+            port: binding.endpoint_port,
+            bucket: binding
+                .object_bucket
+                .as_deref()
+                .context("object-store binding has no bucket")?,
+            binding_prefix: binding.object_prefix.as_deref().unwrap_or(""),
+            access_mode: binding
+                .access_mode
+                .as_deref()
+                .context("object-store binding has no access mode")?,
+        };
+        Self::from_coordinates(coordinates, sub_prefix, resolved_credential).map(Some)
+    }
+
+    /// Resolves an acknowledged hybrid binding without consulting Worker SQL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot is stale or its provider coordinates
+    /// or selected credential are invalid.
+    pub fn from_snapshot(
+        snapshot: &StorageBindingSnapshot,
+        deployment_id: &str,
+        sub_prefix: &str,
+        resolved_credential: Option<&str>,
+        now: i64,
+    ) -> Result<S3Surface> {
+        snapshot.validate(deployment_id, now)?;
+        let coordinates = SurfaceCoordinates {
+            name: &snapshot.binding_stable_id,
+            scheme: &snapshot.endpoint_scheme,
+            host_kind: &snapshot.endpoint_host_kind,
+            host_bytes: &snapshot.endpoint_host_bytes,
+            port: snapshot.endpoint_port,
+            bucket: &snapshot.object_bucket,
+            binding_prefix: &snapshot.object_prefix,
+            access_mode: &snapshot.access_mode,
+        };
+        let surface = Self::from_coordinates(coordinates, sub_prefix, resolved_credential)?;
+        anyhow::ensure!(
+            surface
+                .creds
+                .as_ref()
+                .is_none_or(|credentials| credentials.region == snapshot.signing_region),
+            "binding snapshot signing region differs from its credential"
+        );
+        Ok(surface)
+    }
+
+    fn from_coordinates(
+        coordinates: SurfaceCoordinates<'_>,
+        sub_prefix: &str,
+        resolved_credential: Option<&str>,
+    ) -> Result<S3Surface> {
+        let host_bytes = coordinates.host_bytes;
+        let host = match coordinates.host_kind {
+            "dns" => std::str::from_utf8(host_bytes)
                 .context("object-store DNS host is not UTF-8")?
                 .to_string(),
-            Some("ipv4") if host_bytes.len() == 4 => {
+            "ipv4" if host_bytes.len() == 4 => {
                 std::net::Ipv4Addr::new(host_bytes[0], host_bytes[1], host_bytes[2], host_bytes[3])
                     .to_string()
             }
-            Some("ipv6") if host_bytes.len() == 16 => {
+            "ipv6" if host_bytes.len() == 16 => {
                 let bytes: [u8; 16] = host_bytes
                     .try_into()
                     .map_err(|_| anyhow::anyhow!("invalid IPv6 endpoint bytes"))?;
@@ -166,24 +239,16 @@ impl S3Surface {
             }
             _ => bail!("object-store binding has an invalid typed endpoint host"),
         };
-        let host = match binding.endpoint_port {
+        let host = match coordinates.port {
             Some(port) => format!("{host}:{port}"),
             None => host,
         };
         if host.is_empty() {
-            bail!("binding '{}' has an empty endpoint host", binding.name);
+            bail!("binding '{}' has an empty endpoint host", coordinates.name);
         }
 
-        let bucket = binding
-            .object_bucket
-            .as_deref()
-            .context("object-store binding has no bucket")?
-            .trim_matches('/');
-        let binding_prefix = binding
-            .object_prefix
-            .as_deref()
-            .unwrap_or("")
-            .trim_matches('/');
+        let bucket = coordinates.bucket.trim_matches('/');
+        let binding_prefix = coordinates.binding_prefix.trim_matches('/');
         let sub = sub_prefix.trim_matches('/');
         let key_prefix = [bucket, binding_prefix, sub]
             .into_iter()
@@ -191,8 +256,8 @@ impl S3Surface {
             .collect::<Vec<_>>()
             .join("/");
 
-        let creds = match binding.access_mode.as_deref() {
-            Some("private") => {
+        let creds = match coordinates.access_mode {
+            "private" => {
                 let plaintext = resolved_credential
                     .context("private binding requires a resolved credential-version capability")?;
                 let (access_key, rest) = plaintext
@@ -211,7 +276,7 @@ impl S3Surface {
                     secret_key: Zeroizing::new(secret_key.to_string()),
                 })
             }
-            Some("public") => {
+            "public" => {
                 anyhow::ensure!(
                     resolved_credential.is_none(),
                     "public bindings must not resolve credentials"
@@ -221,12 +286,12 @@ impl S3Surface {
             _ => bail!("object-store binding has invalid access mode"),
         };
 
-        Ok(Some(S3Surface {
-            scheme: scheme.to_string(),
+        Ok(S3Surface {
+            scheme: coordinates.scheme.to_string(),
             host,
             key_prefix,
             creds,
-        }))
+        })
     }
 
     /// Whether this surface can be written to (a private, credentialed binding).
@@ -961,6 +1026,69 @@ mod tests {
     fn non_object_store_kinds_resolve_to_none() {
         let b = binding("local_fs", "private", None);
         assert!(S3Surface::from_binding(&b, "reg", None).unwrap().is_none());
+    }
+
+    #[test]
+    fn hybrid_snapshot_uses_the_same_scoped_sigv4_url_as_a_binding_row() {
+        let mut binding = binding("s3", "private", Some("https://s3.example.com"));
+        binding.stable_id = "external-store".into();
+        binding.resource_version = 1;
+        let snapshot = StorageBindingSnapshot {
+            version: 1,
+            deployment_id: "deployment-1".into(),
+            binding_id: binding.id,
+            binding_resource_version: binding.resource_version,
+            binding_stable_id: binding.stable_id.clone(),
+            binding_kind: binding.kind.clone(),
+            object_bucket: binding.object_bucket.clone().unwrap(),
+            object_prefix: "tenant".into(),
+            endpoint_scheme: binding.endpoint_scheme.clone().unwrap(),
+            endpoint_host_kind: binding.endpoint_host_kind.clone().unwrap(),
+            endpoint_host_bytes: binding.endpoint_host_bytes.clone().unwrap(),
+            endpoint_port: binding.endpoint_port,
+            signing_region: "auto".into(),
+            access_mode: "private".into(),
+            credentials: vec![],
+            issued_at: 1_700_000_000,
+            expires_at: 1_700_000_600,
+        };
+        binding.object_prefix = Some(snapshot.object_prefix.clone());
+        let credential = "AKID:secret:auto";
+        let from_row = S3Surface::from_binding(&binding, "registry", Some(credential))
+            .unwrap()
+            .unwrap();
+        let from_snapshot = S3Surface::from_snapshot(
+            &snapshot,
+            "deployment-1",
+            "registry",
+            Some(credential),
+            1_700_000_100,
+        )
+        .unwrap();
+        assert_eq!(
+            from_row
+                .object_url(Method::Get, "objects/ab", 1_700_000_100)
+                .unwrap(),
+            from_snapshot
+                .object_url(Method::Get, "objects/ab", 1_700_000_100)
+                .unwrap(),
+        );
+        assert!(S3Surface::from_snapshot(
+            &snapshot,
+            "deployment-1",
+            "registry",
+            Some(credential),
+            snapshot.expires_at + 1,
+        )
+        .is_err());
+        assert!(S3Surface::from_snapshot(
+            &snapshot,
+            "deployment-1",
+            "registry",
+            Some("AKID:secret:another-region"),
+            1_700_000_100,
+        )
+        .is_err());
     }
 
     #[test]

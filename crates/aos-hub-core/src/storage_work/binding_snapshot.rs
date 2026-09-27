@@ -113,6 +113,40 @@ impl StorageBindingPublication {
         }
         Ok(())
     }
+
+    /// Resolves one admitted textual S3 capability without exposing it in a plan.
+    ///
+    /// The caller receives an owned, zeroing string and must keep it within the
+    /// storage executor. Binary or malformed provider values fail closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale publication state, an unknown selector, or a
+    /// malformed or non-UTF-8 credential value.
+    pub fn credential_text(
+        &self,
+        selector: &StorageCredentialSelector,
+        deployment_id: &str,
+        now: i64,
+    ) -> Result<Zeroizing<String>, StorageWorkError> {
+        use base64::Engine as _;
+
+        self.validate(deployment_id, now)?;
+        let material = self
+            .materials
+            .iter()
+            .find(|material| material.selector == *selector)
+            .ok_or(StorageWorkError::InvalidSnapshot)?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&material.value_base64)
+            .map_err(|_| StorageWorkError::InvalidSnapshot)?;
+        let text = String::from_utf8(bytes).map_err(|error| {
+            let mut bytes = error.into_bytes();
+            bytes.zeroize();
+            StorageWorkError::InvalidSnapshot
+        })?;
+        Ok(Zeroizing::new(text))
+    }
 }
 
 /// Signed Native instruction to publish or revoke one external binding.

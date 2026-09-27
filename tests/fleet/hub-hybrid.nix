@@ -11,6 +11,7 @@
 }: let
   fixture = import ./_native-hub-production.nix {inherit lib mkSystem pkgs;};
   caCertificate = builtins.readFile ../fixtures/hub-hybrid-fleet-ca.crt;
+  s3CertificatePem = builtins.readFile ../fixtures/hub-hybrid-fleet-s3.crt;
   writeFixture = name: text:
     pkgs.writeTextFile {
       inherit name text;
@@ -22,6 +23,10 @@
   );
   serverPrivateKey = writeFixture "hub-hybrid-fleet-private-key" (
     builtins.readFile ../fixtures/hub-hybrid-fleet-server.key
+  );
+  s3Certificate = writeFixture "hub-hybrid-fleet-s3-certificate" s3CertificatePem;
+  s3PrivateKey = writeFixture "hub-hybrid-fleet-s3-private-key" (
+    builtins.readFile ../fixtures/hub-hybrid-fleet-s3.key
   );
   databaseUrl = writeFixture
     "hub-hybrid-fleet-database-url"
@@ -103,7 +108,7 @@
   edgeSystem = mkSystem [
     ../../systems/server-test.nix
     {
-      aos.security.pki.certificates = [caCertificate];
+      aos.security.pki.certificates = [caCertificate s3CertificatePem];
       aos.firewall.allowedTCP = [443];
       aos.kernel.modules = ["9pnet_virtio" "9p"];
       environment.systemPackages = [pkgs.util-linux];
@@ -112,7 +117,7 @@
   clientSystem = mkSystem [
     ../../systems/server-test.nix
     {
-      aos.security.pki.certificates = [caCertificate];
+      aos.security.pki.certificates = [caCertificate s3CertificatePem];
       aos.kernel.modules = ["9pnet_virtio" "9p"];
       environment.systemPackages = [pkgs.util-linux];
     }
@@ -166,6 +171,8 @@
       pkgs.grep
       pkgs.jq
       pkgs.miniflare
+      pkgs.garage
+      pkgs.nginx
       pkgs.nix
       pkgs.postgresql
       pkgs.sed
@@ -179,6 +186,8 @@
       qualificationKeys
       serverCertificate
       serverPrivateKey
+      s3Certificate
+      s3PrivateKey
       wranglerConfig
       workerSecrets
     ];
@@ -216,6 +225,15 @@ in {
       vcpuCount = 4;
       varProvisioning = "repart";
     };
+    s3 = {
+      system = edgeSystem;
+      bootMode = "image";
+      hostStoreMount = true;
+      hostAliases = ["s3.fleet.test"];
+      imageDiskMiB = 16384;
+      memoryMiB = 2048;
+      varProvisioning = "repart";
+    };
   };
 
   testScript =
@@ -238,8 +256,12 @@ in {
       APR = "${pkgs.aos.apr}/bin/apr"
       CHROOT = "${pkgs.coreutils}/bin/chroot --userspec=802:802 /"
       POSTGRES = "${pkgs.postgresql}/bin"
+      GARAGE = (
+          "GARAGE_RPC_SECRET_FILE=/var/lib/hybrid-s3/rpc-secret "
+          "${pkgs.garage}/bin/garage -c /var/lib/hybrid-s3/garage.toml"
+      )
 
-      for machine in (client, native, worker):
+      for machine in (client, native, worker, s3):
           machine.wait_for_unit("multi-user.target", timeout=240)
           machine.succeed(textwrap.dedent("""
               set -eu
@@ -266,6 +288,74 @@ in {
               ${pkgs.util-linux}/bin/findmnt -rn -t 9p -o OPTIONS \\
                 /run/aos-host-store | ${pkgs.grep}/bin/grep -qw ro
           """), timeout=180)
+
+      s3.succeed(textwrap.dedent("""
+          set -eu
+          install -d -m 0700 /var/lib/hybrid-s3 /var/lib/hybrid-s3/meta \
+            /var/lib/hybrid-s3/data /var/lib/hybrid-s3/client-body \
+            /var/lib/hybrid-s3/proxy-temp
+          printf '%s\n' '1799bccfd7411eddcf9ebd316bc1f5287ad12a68094e1c6ac6abde7e6feae1ec' \
+            > /var/lib/hybrid-s3/rpc-secret
+          chmod 0600 /var/lib/hybrid-s3/rpc-secret
+          cat > /var/lib/hybrid-s3/garage.toml <<'EOF'
+          metadata_dir = "/var/lib/hybrid-s3/meta"
+          data_dir = "/var/lib/hybrid-s3/data"
+          db_engine = "sqlite"
+          replication_factor = 1
+          rpc_bind_addr = "127.0.0.1:3901"
+          [s3_api]
+          api_bind_addr = "127.0.0.1:3900"
+          s3_region = "garage"
+          EOF
+          GARAGE_RPC_SECRET_FILE=/var/lib/hybrid-s3/rpc-secret \
+            ${pkgs.garage}/bin/garage -c /var/lib/hybrid-s3/garage.toml server \
+            > /var/lib/hybrid-s3/garage.log 2>&1 < /dev/null &
+          echo $! > /var/lib/hybrid-s3/garage.pid
+          cat > /var/lib/hybrid-s3/nginx.conf <<'EOF'
+          pid /var/lib/hybrid-s3/nginx.pid;
+          error_log /var/lib/hybrid-s3/nginx-error.log info;
+          events { worker_connections 128; }
+          http {
+            access_log off;
+            client_body_temp_path /var/lib/hybrid-s3/client-body;
+            proxy_temp_path /var/lib/hybrid-s3/proxy-temp;
+            server {
+              listen 443 ssl;
+              server_name s3.fleet.test;
+              ssl_certificate ${s3Certificate}/value;
+              ssl_certificate_key ${s3PrivateKey}/value;
+              client_max_body_size 64m;
+              location / {
+                proxy_pass http://127.0.0.1:3900;
+                proxy_set_header Host $http_host;
+                proxy_http_version 1.1;
+                proxy_request_buffering off;
+              }
+            }
+          }
+          EOF
+          ${pkgs.nginx}/bin/nginx -c /var/lib/hybrid-s3/nginx.conf \
+            -p /var/lib/hybrid-s3/ -g 'daemon off;' \
+            > /var/lib/hybrid-s3/nginx.log 2>&1 < /dev/null &
+          echo $! > /var/lib/hybrid-s3/nginx-process.pid
+      """), timeout=60)
+      s3.wait_until_succeeds(f"{GARAGE} status > /dev/null", timeout=180)
+      s3.succeed(textwrap.dedent(f"""
+          set -eu
+          node_id=$({GARAGE} node id -q | cut -d@ -f1)
+          test -n "$node_id"
+          {GARAGE} layout assign -z fleet -c 1G "$node_id"
+          {GARAGE} layout apply --version 1
+          {GARAGE} bucket create fleet-s3
+          {GARAGE} key create fleet-s3-key > /dev/null
+          {GARAGE} bucket allow --read --write fleet-s3 --key fleet-s3-key
+      """), timeout=90)
+      client.wait_until_succeeds(
+          f"{CURL} -sS -o /dev/null -w '%{{http_code}}' "
+          "https://s3.fleet.test/fleet-s3/absent | "
+          f"{GREP} -Eq '^(403|404)$'",
+          timeout=180,
+      )
 
       native.succeed(textwrap.dedent(f"""
           install -d -m 0700 -o aos-hub -g aos-hub /var/lib/hybrid-postgres
@@ -381,7 +471,20 @@ in {
       ).strip()
       assert unsigned_binding_status == "401", unsigned_binding_status
 
-      binding_secret = b"fleet-external-test:credential:us-west-1"
+      key_info = s3.succeed(f"{GARAGE} key info --show-secret fleet-s3-key")
+      access_key = re.search(r"Key ID:\s*(\S+)", key_info)
+      secret_key = re.search(r"Secret key:\s*(\S+)", key_info)
+      assert access_key and secret_key, "Garage did not return test key material"
+      binding_secret = f"{access_key.group(1)}:{secret_key.group(1)}:garage".encode()
+      s3_object = b"fleet external S3 object inspected beside storage"
+      client.succeed(
+          f"{CURL} -fsS --aws-sigv4 'aws:amz:garage:s3' "
+          f"-u {shlex.quote(access_key.group(1) + ':' + secret_key.group(1))} "
+          "-X PUT -H 'content-type: application/octet-stream' "
+          f"--data-binary {shlex.quote(s3_object.decode())} "
+          "https://s3.fleet.test/fleet-s3/tenant/registry/exists",
+          timeout=60,
+      )
       binding_issued_at = int(time.time())
       binding_snapshot = {
           "version": 1,
@@ -394,9 +497,9 @@ in {
           "object_prefix": "tenant",
           "endpoint_scheme": "https",
           "endpoint_host_kind": "dns",
-          "endpoint_host_bytes": list(b"s3.example.test"),
+          "endpoint_host_bytes": list(b"s3.fleet.test"),
           "endpoint_port": 443,
-          "signing_region": "us-west-1",
+          "signing_region": "garage",
           "access_mode": "private",
           "credentials": [{
               "purpose": "read",
@@ -422,11 +525,11 @@ in {
       published_revision = json.loads(publish_response)["revision"]
       assert len(published_revision) == 64, published_revision
 
-      def external_binding_plan_status(revision):
+      def external_binding_plan(revision, operation, plan_id):
           issued_at = int(time.time())
           external_plan = {
               "version": 1,
-              "plan_id": "f" * 32,
+              "plan_id": plan_id,
               "deployment_id": "fleet-hybrid-v1",
               "issued_at": issued_at,
               "expires_at": issued_at + 30,
@@ -438,19 +541,45 @@ in {
               "binding_snapshot_revision": revision,
               "credential_references": [{"purpose": "read", "generation": 1}],
               "placement_prefix": "registry",
-              "operation": {"kind": "head", "path": "absent-object"},
+              "operation": operation,
           }
           plan_body, plan_signature = sign_storage_plan(external_plan)
-          return client.succeed(
-              f"{CURL} -sS -o /dev/null -w '%{{http_code}}' -X POST "
+          status = client.succeed(
+              f"{CURL} -sS -o /tmp/hybrid-external-plan.response -w '%{{http_code}}' -X POST "
               "-H 'content-type: application/json' "
               f"-H 'x-aos-storage-work-signature: {plan_signature}' "
               f"--data-binary {shlex.quote(plan_body.decode())} "
               "https://aos.andyl.org/_internal/storage/v1/execute",
               timeout=60,
           ).strip()
+          return status, client.succeed("cat /tmp/hybrid-external-plan.response")
 
-      assert external_binding_plan_status(published_revision) == "501"
+      head_operation = {"kind": "head", "path": "exists"}
+      head_status, head_response = external_binding_plan(
+          published_revision, head_operation, "f" * 32
+      )
+      assert head_status == "200", (head_status, head_response)
+      head_result = json.loads(head_response)
+      assert head_result["outcome"]["kind"] == "head", head_result
+      assert head_result["outcome"]["object"]["key"] == "registry/exists", head_result
+      assert head_result["outcome"]["object"]["size"] == len(s3_object), head_result
+      assert head_result["source_bytes"] == 0, head_result
+      absent_status, absent_response = external_binding_plan(
+          published_revision, {"kind": "head", "path": "absent"}, "e" * 32
+      )
+      assert absent_status == "200", (absent_status, absent_response)
+      assert json.loads(absent_response)["outcome"]["kind"] == "not_found"
+      unsupported_status, _ = external_binding_plan(
+          published_revision,
+          {
+              "kind": "inspect_sha256",
+              "path": "exists",
+              "expected_sha256": None,
+              "max_source_bytes": 1024,
+          },
+          "d" * 32,
+      )
+      assert unsupported_status == "501", unsupported_status
       revoke_issued_at = max(binding_issued_at + 1, int(time.time()))
       revoke_binding = {
           "kind": "revoke",
@@ -462,10 +591,13 @@ in {
       }
       revoke_status, revoke_response = post_binding_control(revoke_binding)
       assert revoke_status == "200", (revoke_status, revoke_response)
-      assert external_binding_plan_status(published_revision) == "409"
+      revoked_status, _ = external_binding_plan(
+          published_revision, head_operation, "c" * 32
+      )
+      assert revoked_status == "409", revoked_status
       replay_status, _ = post_binding_control(publish_binding)
       assert replay_status == "503", replay_status
-      print("hybrid binding publication, revocation, and replay fence: passed")
+      print("hybrid S3 HEAD, binding revocation, and replay fence: passed")
 
       now = int(time.time())
       plan = {

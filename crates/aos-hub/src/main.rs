@@ -963,6 +963,7 @@ async fn main() -> Result<()> {
                     Arc::new(aos_hub::storage_work::HybridSurfaceProvider::new(
                         Arc::clone(&app_state.db),
                         Arc::clone(work),
+                        Arc::clone(&app_state.secret_versions),
                     ))
                 } else {
                     Arc::new(
@@ -1294,6 +1295,7 @@ async fn main() -> Result<()> {
                     Arc::new(aos_hub::storage_work::HybridSurfaceProvider::new(
                         Arc::clone(&inventory_db),
                         Arc::clone(work),
+                        Arc::clone(&app_state.secret_versions),
                     ));
                 let inventory_writers: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> =
                     Arc::new(aos_hub::storage_work::HybridSurfaceWrites::new(
