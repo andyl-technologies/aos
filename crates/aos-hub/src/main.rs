@@ -1045,12 +1045,24 @@ async fn main() -> Result<()> {
                 endpoint,
                 "native-hub",
             )?;
-            controller = controller.with_storage_credential_probe(Arc::new(
-                aos_hub::coreports::NativeStorageCredentialProbeProvider::new(
-                    app_state.http.clone(),
-                    Arc::clone(&app_state.secret_versions),
-                ),
-            ));
+            let credential_probe: Arc<
+                dyn aos_hub_core::topology_probe::StorageCredentialProbeProvider,
+            > = if let Some((_, _, work)) = &hybrid_runtime {
+                Arc::new(
+                    aos_hub::storage_work::HybridStorageCredentialProbeProvider::new(
+                        Arc::clone(work),
+                        Arc::clone(&app_state.secret_versions),
+                    ),
+                )
+            } else {
+                Arc::new(
+                    aos_hub::coreports::NativeStorageCredentialProbeProvider::new(
+                        app_state.http.clone(),
+                        Arc::clone(&app_state.secret_versions),
+                    ),
+                )
+            };
+            controller = controller.with_storage_credential_probe(credential_probe);
             let mut route_adapters =
                 aos_hub_core::topology_probe::ControllerOwnedRouteObservationProvider::new();
             let mut has_route_adapter = false;

@@ -158,7 +158,8 @@ pub trait RouteObservationProvider: crate::backend::BackendBounds {
 }
 
 /// Purpose-specific evidence from a controller-owned storage credential probe.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorageCredentialProbeEvidence {
     /// Whether the exact credential generation exercised its declared purpose.
     pub valid: bool,

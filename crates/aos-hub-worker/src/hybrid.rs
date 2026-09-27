@@ -20,9 +20,10 @@ use aos_hub_core::hybrid_ingress::{
     HYBRID_UPLOAD_PHASE_HEADER, MAX_HYBRID_OCI_CHUNK_BYTES, MAX_HYBRID_PUBLICATION_PLACEMENTS,
 };
 use aos_hub_core::storage_work::{
-    StorageBindingControl, StorageCapabilities, StorageWorkKey, MAX_BINDING_CONTROL_BYTES,
-    MAX_PLAN_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_BINDING_CONTROL_PATH,
-    STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH, STORAGE_WORK_PATH,
+    StorageBindingControl, StorageCapabilities, StorageCredentialProbeRequest, StorageWorkKey,
+    MAX_BINDING_CONTROL_BYTES, MAX_CREDENTIAL_PROBE_BYTES, MAX_PLAN_BYTES, MAX_RESULT_BYTES,
+    MAX_VERIFY_SOURCE_BYTES, STORAGE_BINDING_CONTROL_PATH, STORAGE_CAPABILITIES_CHALLENGE,
+    STORAGE_CAPABILITIES_PATH, STORAGE_CREDENTIAL_PROBE_PATH, STORAGE_WORK_PATH,
     STORAGE_WORK_SIGNATURE_HEADER,
 };
 use base64::Engine as _;
@@ -85,6 +86,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     }
     if path == STORAGE_BINDING_CONTROL_PATH {
         return control_storage_binding(request, env).await;
+    }
+    if path == STORAGE_CREDENTIAL_PROBE_PATH {
+        return probe_storage_credential(request, env).await;
     }
     if path.starts_with("/_internal/storage/") {
         return Response::error("not found", 404);
@@ -842,6 +846,7 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
             "create_multipart".into(),
             "complete_multipart".into(),
             "abort_multipart".into(),
+            "credential_probe".into(),
         ],
         max_result_bytes: MAX_RESULT_BYTES,
         max_verify_source_bytes: MAX_VERIFY_SOURCE_BYTES,
@@ -850,6 +855,65 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
     headers.set("content-type", "application/json")?;
     headers.set("cache-control", "private, no-store")?;
     Ok(Response::from_json(&capabilities)?.with_headers(headers))
+}
+
+async fn probe_storage_credential(mut request: Request, env: &Env) -> Result<Response> {
+    if request.method() != worker::Method::Post {
+        return Response::error("method not allowed", 405);
+    }
+    let Some(signature) = request.headers().get(STORAGE_WORK_SIGNATURE_HEADER)? else {
+        return Response::error("credential probe signature is required", 401);
+    };
+    let Some(body) = read_bounded_body(&mut request, MAX_CREDENTIAL_PROBE_BYTES).await? else {
+        return Response::error("credential probe body is too large", 413);
+    };
+    let key = StorageWorkKey::new(env.secret("HUB_STORAGE_WORK_KEY")?.to_string())
+        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+    if key.verify_body(&signature, &body).is_err() {
+        return Response::error("credential probe signature is invalid", 401);
+    }
+    let Ok(probe) = serde_json::from_slice::<StorageCredentialProbeRequest>(&body) else {
+        return Response::error("credential probe body is invalid", 400);
+    };
+    let deployment_id = env.var("HUB_DEPLOYMENT_ID")?.to_string();
+    let now = aos_hub_core::clock::now_unix_secs();
+    if probe.validate(&deployment_id, now).is_err() {
+        return Response::error("credential probe is not authorized", 400);
+    }
+    let credential = &probe.publication.snapshot.credentials[0];
+    let selector = aos_hub_core::storage_work::StorageCredentialSelector {
+        purpose: credential.purpose.clone(),
+        generation: credential.generation,
+    };
+    let secret = probe
+        .publication
+        .credential_text(&selector, &deployment_id, now)
+        .map_err(|_| worker::Error::RustError("credential material is invalid".into()))?;
+    let surface = aos_hub_core::s3surface::S3Surface::from_snapshot(
+        &probe.publication.snapshot,
+        &deployment_id,
+        "",
+        Some(&secret),
+        now,
+    )
+    .map_err(|_| worker::Error::RustError("credential surface is invalid".into()))?;
+    let egress = crate::consoleports::WorkerEgressClient::direct();
+    let evidence = match crate::consoleports::probe_storage_credential(
+        &egress,
+        &surface,
+        &credential.purpose,
+        credential.generation,
+        &probe.probe_token,
+    )
+    .await
+    {
+        Ok(evidence) => evidence,
+        Err(_) => return Response::error("credential provider probe failed", 503),
+    };
+    let headers = Headers::new();
+    headers.set("content-type", "application/json")?;
+    headers.set("cache-control", "private, no-store")?;
+    Ok(Response::from_json(&evidence)?.with_headers(headers))
 }
 
 async fn control_storage_binding(mut request: Request, env: &Env) -> Result<Response> {

@@ -66,8 +66,9 @@ mod binding_snapshot;
 
 pub use binding_snapshot::{
     StorageBindingAcknowledgement, StorageBindingControl, StorageBindingPublication,
-    StorageBindingSnapshot, StorageCredentialMaterial, StorageCredentialReference,
-    StorageCredentialSelector, MAX_BINDING_CONTROL_BYTES, STORAGE_BINDING_CONTROL_PATH,
+    StorageBindingSnapshot, StorageCredentialMaterial, StorageCredentialProbeRequest,
+    StorageCredentialReference, StorageCredentialSelector, MAX_BINDING_CONTROL_BYTES,
+    MAX_CREDENTIAL_PROBE_BYTES, STORAGE_BINDING_CONTROL_PATH, STORAGE_CREDENTIAL_PROBE_PATH,
 };
 
 /// One frozen staged object consumed by an OCI blob composition.
@@ -1144,6 +1145,52 @@ mod tests {
             issued_at: now,
             expires_at: now + 300,
         }
+    }
+
+    #[test]
+    fn credential_probe_admits_only_one_short_lived_exact_secret() {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+
+        let now = 100;
+        let secret = b"probe-secret";
+        let mut snapshot = binding_snapshot(now);
+        snapshot.expires_at = now + 30;
+        snapshot.credentials[0].fingerprint = hex::encode(Sha256::digest(secret));
+        let mut request = StorageCredentialProbeRequest {
+            version: 1,
+            publication: StorageBindingPublication {
+                snapshot,
+                materials: vec![StorageCredentialMaterial {
+                    selector: StorageCredentialSelector {
+                        purpose: "read".into(),
+                        generation: 4,
+                    },
+                    value_base64: base64::engine::general_purpose::STANDARD.encode(secret),
+                }],
+            },
+            probe_token: "a".repeat(64),
+        };
+
+        assert!(request.validate("deployment-1", now).is_ok());
+        request.probe_token = "../unsafe".into();
+        assert_eq!(
+            request.validate("deployment-1", now),
+            Err(StorageWorkError::InvalidSnapshot)
+        );
+        request.probe_token = "a".repeat(64);
+        request.publication.snapshot.expires_at = now + 31;
+        assert_eq!(
+            request.validate("deployment-1", now),
+            Err(StorageWorkError::InvalidSnapshot)
+        );
+        request.publication.snapshot.expires_at = now + 30;
+        request.publication.materials[0].value_base64 =
+            base64::engine::general_purpose::STANDARD.encode(b"wrong-secret");
+        assert_eq!(
+            request.validate("deployment-1", now),
+            Err(StorageWorkError::InvalidSnapshot)
+        );
     }
 
     fn plan(now: i64) -> StorageWorkPlan {

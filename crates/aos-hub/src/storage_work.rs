@@ -22,17 +22,21 @@ use aos_hub_core::secret_version::{verify_secret_fingerprint, SecretVersionResol
 use aos_hub_core::storage_work::{
     StorageBindingAcknowledgement, StorageBindingControl, StorageBindingPublication,
     StorageBindingSnapshot, StorageCapabilities, StorageCredentialMaterial,
-    StorageCredentialSelector, StorageGitObjectProjection, StorageOciChunkSource, StorageWorkKey,
-    StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
-    MAX_BINDING_CONTROL_BYTES, MAX_DOCUMENTATION_ROWS, MAX_GIT_INSPECTION_BATCH,
-    MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_OCI_HASH_RANGE_BYTES,
-    MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_BINDING_CONTROL_PATH,
-    STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH, STORAGE_WORK_PATH,
+    StorageCredentialProbeRequest, StorageCredentialSelector, StorageGitObjectProjection,
+    StorageOciChunkSource, StorageWorkKey, StorageWorkOperation, StorageWorkOutcome,
+    StorageWorkPlan, StorageWorkResult, MAX_BINDING_CONTROL_BYTES, MAX_CREDENTIAL_PROBE_BYTES,
+    MAX_DOCUMENTATION_ROWS, MAX_GIT_INSPECTION_BATCH, MAX_GIT_INSPECTION_CONTENT_BYTES,
+    MAX_METADATA_BYTES, MAX_OCI_HASH_RANGE_BYTES, MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES,
+    MAX_VERIFY_SOURCE_BYTES, STORAGE_BINDING_CONTROL_PATH, STORAGE_CAPABILITIES_CHALLENGE,
+    STORAGE_CAPABILITIES_PATH, STORAGE_CREDENTIAL_PROBE_PATH, STORAGE_WORK_PATH,
     STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceDeleteOutcome,
     SurfaceDeletePrecondition, SurfaceWrite, SurfaceWriteProvider,
+};
+use aos_hub_core::topology_probe::{
+    StorageCredentialProbeEvidence, StorageCredentialProbeProvider,
 };
 use aos_registry_surface::{object, object_bundle};
 use async_trait::async_trait;
@@ -54,6 +58,7 @@ pub struct RemoteStorageWorkClient {
     endpoint: String,
     capabilities_endpoint: String,
     binding_control_endpoint: String,
+    credential_probe_endpoint: String,
     deployment_id: String,
     key: StorageWorkKey,
     http: reqwest::Client,
@@ -95,6 +100,11 @@ impl RemoteStorageWorkClient {
             origin.origin().ascii_serialization(),
             STORAGE_BINDING_CONTROL_PATH
         );
+        let credential_probe_endpoint = format!(
+            "{}{}",
+            origin.origin().ascii_serialization(),
+            STORAGE_CREDENTIAL_PROBE_PATH
+        );
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30))
@@ -104,6 +114,7 @@ impl RemoteStorageWorkClient {
             endpoint,
             capabilities_endpoint,
             binding_control_endpoint,
+            credential_probe_endpoint,
             deployment_id,
             key: StorageWorkKey::new(key)?,
             http,
@@ -138,6 +149,65 @@ impl RemoteStorageWorkClient {
         let capabilities: StorageCapabilities =
             serde_json::from_slice(&body).context("decoding storage Worker capabilities")?;
         validate_capabilities(&self.deployment_id, &capabilities)
+    }
+
+    /// Runs one unvalidated capability probe beside its object store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid credentials, Worker rejection, or malformed evidence.
+    pub async fn probe_credential(
+        &self,
+        binding: &BindingRecord,
+        credential: &BindingCredentialRevisionRecord,
+        secret: &aos_hub_core::secret_version::ResolvedSecretVersion,
+        probe_token: &str,
+    ) -> Result<StorageCredentialProbeEvidence> {
+        let now = aos_hub_core::clock::now_unix_secs();
+        let snapshot = StorageBindingSnapshot::for_credential_probe(
+            self.deployment_id.clone(),
+            binding,
+            credential,
+            now,
+        )?;
+        let request = StorageCredentialProbeRequest {
+            version: 1,
+            publication: StorageBindingPublication {
+                snapshot,
+                materials: vec![StorageCredentialMaterial {
+                    selector: StorageCredentialSelector {
+                        purpose: credential.purpose.clone(),
+                        generation: credential.generation,
+                    },
+                    value_base64: base64::engine::general_purpose::STANDARD
+                        .encode(secret.expose_bytes()),
+                }],
+            },
+            probe_token: probe_token.to_owned(),
+        };
+        request.validate(&self.deployment_id, now)?;
+        let body = Zeroizing::new(serde_json::to_vec(&request)?);
+        anyhow::ensure!(
+            body.len() <= MAX_CREDENTIAL_PROBE_BYTES,
+            "credential probe exceeds its limit"
+        );
+        let signature = self.key.sign_body(body.as_slice())?;
+        let response = self
+            .http
+            .post(&self.credential_probe_endpoint)
+            .header("content-type", "application/json")
+            .header(STORAGE_WORK_SIGNATURE_HEADER, signature)
+            .body(body.to_vec())
+            .send()
+            .await
+            .context("sending credential probe to storage Worker")?;
+        anyhow::ensure!(
+            response.status() == reqwest::StatusCode::OK,
+            "storage Worker rejected credential probe with HTTP {}",
+            response.status()
+        );
+        let body = read_bounded_response(response, 4096).await?;
+        serde_json::from_slice(&body).context("decoding storage Worker credential evidence")
     }
 
     /// Publishes one frozen external binding and its exact credential heads.
@@ -560,6 +630,43 @@ impl RemoteStorageWorkClient {
     }
 }
 
+/// Hybrid probe adapter that sends only one exact secret to the paired Worker.
+pub struct HybridStorageCredentialProbeProvider {
+    work: Arc<RemoteStorageWorkClient>,
+    secrets: Arc<dyn SecretVersionResolver>,
+}
+
+impl HybridStorageCredentialProbeProvider {
+    /// Creates the controller-owned hybrid credential probe adapter.
+    #[must_use]
+    pub fn new(
+        work: Arc<RemoteStorageWorkClient>,
+        secrets: Arc<dyn SecretVersionResolver>,
+    ) -> Self {
+        Self { work, secrets }
+    }
+}
+
+#[async_trait]
+impl StorageCredentialProbeProvider for HybridStorageCredentialProbeProvider {
+    async fn probe(
+        &self,
+        binding: &BindingRecord,
+        credential: &BindingCredentialRevisionRecord,
+        probe_token: &str,
+    ) -> Result<StorageCredentialProbeEvidence> {
+        anyhow::ensure!(
+            credential.binding_id == binding.id,
+            "credential probe binding mismatch"
+        );
+        let secret = self.secrets.resolve(&credential.secret_version_ref).await?;
+        verify_secret_fingerprint(&secret, &credential.credential_fingerprint)?;
+        self.work
+            .probe_credential(binding, credential, &secret, probe_token)
+            .await
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("storage Worker result exceeds its limit")]
 struct StorageWorkResultTooLarge;
@@ -614,7 +721,8 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "delete_probe",
                 "create_multipart",
                 "complete_multipart",
-                "abort_multipart"
+                "abort_multipart",
+                "credential_probe"
             ]
             .iter()
             .all(|required| capabilities
@@ -2456,6 +2564,7 @@ mod tests {
                 "create_multipart".into(),
                 "complete_multipart".into(),
                 "abort_multipart".into(),
+                "credential_probe".into(),
             ],
             max_result_bytes: MAX_RESULT_BYTES,
             max_verify_source_bytes: MAX_VERIFY_SOURCE_BYTES,

@@ -66,6 +66,13 @@ Native-to-Worker storage protocol accepts only typed, bounded operations
 fenced to those revisions. It is not a remote SQL interface or arbitrary
 compute service. Every Worker result is checked before it changes SQL state.
 
+Hybrid credential validation also executes beside storage. Native resolves
+one immutable credential version, signs a short-lived, single-credential
+probe request to the paired Worker, and persists only the Worker's bounded
+purpose-specific evidence. The probe snapshot is never published as a usable
+binding; normal work still requires independently validated credential heads
+and an acknowledged binding publication.
+
 Hybrid must preserve Native-only and Workers-only as complete modes. Shared
 business rules and wire protocols retain one implementation or a tested common
 contract. Public cache entries and object-scoped parse caches are disposable;

@@ -16,6 +16,47 @@ const MAX_SNAPSHOT_LIFETIME_SECONDS: i64 = 60 * 60;
 pub const STORAGE_BINDING_CONTROL_PATH: &str = "/_internal/storage/v1/bindings";
 /// Maximum body size for one signed binding control request.
 pub const MAX_BINDING_CONTROL_BYTES: usize = 64 * 1024;
+/// Internal Worker route for one signed credential capability probe.
+pub const STORAGE_CREDENTIAL_PROBE_PATH: &str = "/_internal/storage/v1/credential-probe";
+/// Maximum body size for a signed credential probe request.
+pub const MAX_CREDENTIAL_PROBE_BYTES: usize = 16 * 1024;
+
+/// One short-lived credential probe; it never enters published binding state.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageCredentialProbeRequest {
+    /// Protocol version.
+    pub version: u8,
+    /// Single unvalidated credential and its exact resolved secret.
+    pub publication: StorageBindingPublication,
+    /// Opaque, unique token used only in the probe object key.
+    pub probe_token: String,
+}
+
+impl StorageCredentialProbeRequest {
+    /// Checks the single credential, short lifetime, and secret fingerprint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid, stale, or mismatched request.
+    pub fn validate(&self, deployment_id: &str, now: i64) -> Result<(), StorageWorkError> {
+        self.publication.validate(deployment_id, now)?;
+        let snapshot = &self.publication.snapshot;
+        if self.version != 1
+            || snapshot.access_mode != "private"
+            || snapshot.credentials.len() != 1
+            || snapshot.expires_at.saturating_sub(snapshot.issued_at) > 30
+            || self.probe_token.len() != 64
+            || !self
+                .probe_token
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            return Err(StorageWorkError::InvalidSnapshot);
+        }
+        Ok(())
+    }
+}
 
 /// Executor acknowledgement of one exact published or revoked revision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +306,34 @@ pub struct StorageBindingSnapshot {
 }
 
 impl StorageBindingSnapshot {
+    /// Freezes one unvalidated credential solely for an immediate probe.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for mismatched identities or malformed binding coordinates.
+    pub fn for_credential_probe(
+        deployment_id: String,
+        binding: &crate::db::BindingRecord,
+        credential: &crate::db::BindingCredentialRevisionRecord,
+        now: i64,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            credential.binding_id == binding.id,
+            "credential binding mismatch"
+        );
+        let expires_at = now
+            .checked_add(30)
+            .ok_or_else(|| anyhow::anyhow!("credential probe expiry overflowed"))?;
+        Self::build_from_binding(
+            deployment_id,
+            binding,
+            std::slice::from_ref(credential),
+            now,
+            expires_at,
+            false,
+        )
+    }
+
     /// Freezes an external binding and its validated current credential heads.
     ///
     /// The caller must load the binding and heads from one consistent SQL
@@ -282,6 +351,24 @@ impl StorageBindingSnapshot {
         issued_at: i64,
         expires_at: i64,
     ) -> anyhow::Result<Self> {
+        Self::build_from_binding(
+            deployment_id,
+            binding,
+            credentials,
+            issued_at,
+            expires_at,
+            true,
+        )
+    }
+
+    fn build_from_binding(
+        deployment_id: String,
+        binding: &crate::db::BindingRecord,
+        credentials: &[crate::db::BindingCredentialRevisionRecord],
+        issued_at: i64,
+        expires_at: i64,
+        require_validated: bool,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             !binding.is_instance_default && matches!(binding.kind.as_str(), "s3" | "r2"),
             "storage binding snapshot requires an external S3-compatible binding"
@@ -291,8 +378,9 @@ impl StorageBindingSnapshot {
             .map(|credential| {
                 anyhow::ensure!(
                     credential.binding_id == binding.id
-                        && credential.validation_state == "valid"
-                        && credential.validated_at.is_some(),
+                        && (!require_validated
+                            || (credential.validation_state == "valid"
+                                && credential.validated_at.is_some())),
                     "storage binding snapshot requires validated credential heads"
                 );
                 Ok(StorageCredentialReference {
