@@ -15,6 +15,7 @@ use aos_systemd::{PinnedSystemdManager, UnitActiveState};
 use crate::HandlerRole;
 use crate::model::ServiceRealization;
 use crate::render::{RenderedService, render_service};
+use crate::semantic::resolve_unit_identity;
 
 const STATIC_UNIT_ROOT: &str = "/etc/systemd/system";
 
@@ -35,6 +36,7 @@ pub(super) async fn observe(
             .context("image-owned service realization depends on a runtime result")?;
     let realization: ServiceRealization = serde_json::from_value(realization.as_json().clone())
         .context("decoding image-owned service realization")?;
+    let (_, primary_source) = resolve_unit_identity(&realization.systemd_unit)?;
     let rendered = render_service(&realization)?;
 
     let root = super::root_observation::observe(role, request.root.clone()).await?;
@@ -49,23 +51,34 @@ pub(super) async fn observe(
     let (fragment, drop_ins) = manager
         .unit_definition_paths_exact(&rendered.primary_unit, &unit_identity)
         .await?;
-    let loaded_from_image = fragment_matches(
-        Path::new(STATIC_UNIT_ROOT)
-            .join(&rendered.primary_unit)
-            .as_path(),
+    let mut loaded_from_image = fragment_matches(
+        &Path::new(STATIC_UNIT_ROOT).join(&primary_source),
         Path::new(&fragment),
     ) && drop_ins.is_empty();
     let active_state = manager
         .active_state_exact(&rendered.primary_unit, &unit_identity)
         .await?;
-    let manager_current = !manager
+    let mut manager_current = !manager
         .needs_daemon_reload_exact(&rendered.primary_unit, &unit_identity)
         .await?;
+    let mut unit_identities = vec![(rendered.primary_unit.clone(), unit_identity.clone())];
+    for name in companion_units(&rendered, &primary_source) {
+        let identity = manager.unit_identity(name).await?;
+        let (fragment, drop_ins) = manager.unit_definition_paths_exact(name, &identity).await?;
+        loaded_from_image &= fragment_matches(
+            &Path::new(STATIC_UNIT_ROOT).join(name),
+            Path::new(&fragment),
+        ) && drop_ins.is_empty();
+        manager_current &= !manager.needs_daemon_reload_exact(name, &identity).await?;
+        unit_identities.push((name.to_string(), identity));
+    }
     let files_after = static_files_match(Path::new(STATIC_UNIT_ROOT), &rendered);
-    ensure!(
-        manager.unit_identity(&rendered.primary_unit).await? == unit_identity,
-        "systemd unit identity changed during image resource observation"
-    );
+    for (name, identity) in &unit_identities {
+        ensure!(
+            manager.unit_identity(name).await? == *identity,
+            "systemd unit identity changed during image resource observation"
+        );
+    }
     let files_match = files_before && files_after;
     let state_matches = if realization.enabled {
         active_state.is_active()
@@ -83,7 +96,7 @@ pub(super) async fn observe(
         evidence: AbilityValue::new(serde_json::json!({
             "schema": "aos.systemd.image-service-observation/v1",
             "primary_unit": rendered.primary_unit,
-            "unit_identity": unit_identity,
+            "unit_identities": unit_identities,
             "files_match": files_match,
             "loaded_from_image": loaded_from_image,
             "manager_current": manager_current,
@@ -92,6 +105,17 @@ pub(super) async fn observe(
     };
     validate_root_resource_observation(&request, &result)?;
     Ok(result)
+}
+
+fn companion_units<'a>(rendered: &'a RenderedService, primary_source: &str) -> Vec<&'a str> {
+    // An instance loads its template fragment; systemd need not expose the
+    // template itself as another loaded unit object.
+    rendered
+        .units
+        .iter()
+        .filter(|unit| unit.name != primary_source)
+        .map(|unit| unit.name.as_str())
+        .collect()
 }
 
 fn static_files_match(root: &Path, rendered: &RenderedService) -> bool {
@@ -118,7 +142,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::symlink;
 
-    use super::{fragment_matches, static_files_match};
+    use super::{companion_units, fragment_matches, static_files_match};
     use crate::render::{RenderedService, RenderedServiceLink, RenderedServiceUnit};
 
     #[test]
@@ -156,5 +180,28 @@ mod tests {
         )
         .expect("changed unit file");
         assert!(!static_files_match(root.path(), &rendered));
+    }
+
+    #[test]
+    fn template_instance_observes_companions_without_loading_the_template_as_a_unit() {
+        let rendered = RenderedService {
+            primary_unit: "worker@one.service".to_string(),
+            units: vec![
+                RenderedServiceUnit {
+                    name: "worker@.service".to_string(),
+                    bytes: Vec::new(),
+                },
+                RenderedServiceUnit {
+                    name: "worker.socket".to_string(),
+                    bytes: Vec::new(),
+                },
+            ],
+            links: Vec::new(),
+        };
+
+        assert_eq!(
+            companion_units(&rendered, "worker@.service"),
+            ["worker.socket"]
+        );
     }
 }

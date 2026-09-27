@@ -56,9 +56,10 @@ the initrd handoff; executing the host-stage bundle remains a cutover task. The
 cutover must distinguish image-owned boot services from ability-owned services
 in the same typed service configuration, observe the live boot roots at stage
 entry, and remove their duplicate transitions before the host runner owns the
-remaining effects. The existing provider root probe establishes provider
-availability only; it does not attest to service resource identity or revision.
-The host runner must also replace the current activation service so it cannot
+remaining effects. Image-owned service roots now require a selected native
+handler to confirm the rendered unit files, loaded definitions, manager
+freshness, active state, and exact resource revision before admission. The
+host runner must also replace the current activation service so it cannot
 schedule its own creation. The root-observation protocol, initrd source-plan
 replay, and journal state machine have focused Rust tests. The
 [`ability-initrd-activation` VM flight](../../../tests/fleet/ability-initrd-activation.nix)
