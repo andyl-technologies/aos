@@ -613,9 +613,16 @@ the plan, checking the exact request/catalog commitment, and durably admitting
 the resulting fences. Plan signature verification alone never satisfies those
 steps.
 
-The publisher-authority protocol is independently versioned at 1.0 and is not
-a privileged-broker audience. Its v1 plan binds one project cache domain and
+The publisher-authority protocol advertises only 1.0 and is not a
+privileged-broker audience. Its v1 plan binds one project cache domain and
 one raw-content publication request without inventing a sandbox assignment.
+The source-only 1.1 profile uses the same canonical plan and request fields but
+admits exactly the registered View, tree, directory, and raw-content media
+types. Each media type determines a closed publication category; the View
+compiler still checks the tree's structural edges. A source release binds the
+full descriptor, including media type, so equal digest bytes cannot change
+categories. Production negotiation remains at 1.0,
+and the 1.1 model grants no publication effect or read access.
 The exact schema in `portable-v1.cddl` binds the service principal, execution
 instance and node, project and cache identities, isolation-policy revision,
 holder and authenticated channel, operation and reservation, full content

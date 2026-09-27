@@ -6,8 +6,10 @@
 //! durably retained completion permit. In particular, checking these generation
 //! numbers against caller-supplied numbers is not revocation validation.
 //!
-//! The v1 publisher accepts raw content within one project domain. Publishing
-//! publicly, building a tree, and reading cached data are different authorities.
+//! Protocol 1.0 accepts raw content within one project domain. Protocol 1.1
+//! also names the exact portable objects needed by an immutable View tree.
+//! Publishing publicly, building a tree, and reading cached data are different
+//! authorities.
 
 mod request;
 mod verification;
@@ -27,10 +29,62 @@ pub use verification::{
 
 use crate::model::{CacheDomain, CacheDomainKind};
 use crate::{
-    ChannelBinding, FeatureRef, NodeId, ObjectDescriptor, ObjectDigest, OperationId,
-    PortableMediaType, PrincipalId, ProjectId, ProtocolId, ProtocolVersion,
+    ChannelBinding, DescriptorRole, FeatureRef, NodeId, ObjectDescriptor, ObjectDigest,
+    OperationId, PortableMediaType, PrincipalId, ProjectId, ProtocolId, ProtocolVersion,
     PublicationReservationId, PublisherInstanceId, RegistryError, RevocationScopeId,
+    validate_descriptor_role,
 };
+
+// The source-only metadata profile is deliberately absent from public
+// PublisherAuthority negotiation until physical publication is qualified.
+const PORTABLE_METADATA_PROFILE: ProtocolVersion = ProtocolVersion::new(1, 1);
+
+/// Identifies the closed portable-object role admitted by a publisher request.
+///
+/// The canonical descriptor media type determines this role. No caller-supplied
+/// role can reinterpret the same bytes or broaden source-release authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublisherObjectRole {
+    /// Whole-file or sparse-extent content.
+    Content,
+    /// A directory in a View's immutable tree.
+    Directory,
+    /// The immutable tree selected by a View.
+    Tree,
+    /// The immutable View revision object.
+    View,
+}
+
+impl PublisherObjectRole {
+    /// Derives and validates the sole publisher role for a portable descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unregistered media and objects outside the View graph's closed
+    /// content, directory, tree, and View roles.
+    pub fn for_descriptor(
+        descriptor: &ObjectDescriptor,
+    ) -> Result<Self, InvalidPublisherDomainPlan> {
+        let (role, descriptor_role) = match descriptor.media_type().as_str() {
+            media if media == PortableMediaType::Content.as_str() => {
+                (Self::Content, DescriptorRole::FileContent)
+            }
+            media if media == PortableMediaType::Directory.as_str() => {
+                (Self::Directory, DescriptorRole::TreeRoot)
+            }
+            media if media == PortableMediaType::Tree.as_str() => {
+                (Self::Tree, DescriptorRole::ImmutableViewSource)
+            }
+            media if media == PortableMediaType::View.as_str() => {
+                (Self::View, DescriptorRole::FilesystemViewRevision)
+            }
+            _ => return Err(InvalidPublisherDomainPlan::InvalidObjectRole),
+        };
+        validate_descriptor_role(descriptor_role, descriptor)
+            .map_err(|_| InvalidPublisherDomainPlan::InvalidObjectRole)?;
+        Ok(role)
+    }
+}
 
 /// Binds one publisher execution to its configured project disclosure domain.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,7 +103,7 @@ pub struct PublisherTarget {
     pub isolation_policy: ObjectDigest,
 }
 
-/// Commits one bounded raw-content request without retaining producer bytes.
+/// Commits one bounded object request without retaining producer bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublisherRequest {
     /// Capability holder authenticated independently of its claimed request.
@@ -111,7 +165,7 @@ pub struct PublisherDomainPlanDraft {
 pub struct PublisherDomainPlan(PublisherDomainPlanDraft);
 
 impl PublisherDomainPlan {
-    /// Validates and seals the fields of a project-only raw-content plan.
+    /// Validates and seals a project-only object plan for its protocol profile.
     ///
     /// # Errors
     ///
@@ -167,8 +221,14 @@ impl PublisherDomainPlan {
         if target.cache_domain.kind() != CacheDomainKind::Project {
             return Err(InvalidPublisherDomainPlan::NotProjectDomain);
         }
-        if request.content.media_type().as_str() != PortableMediaType::Content.as_str() {
-            return Err(InvalidPublisherDomainPlan::NotRawContent);
+        let metadata_profile = draft.protocol_version == PORTABLE_METADATA_PROFILE;
+        if !metadata_profile {
+            crate::negotiate_protocol(ProtocolId::PublisherAuthority, draft.protocol_version)?;
+            if request.content.media_type().as_str() != PortableMediaType::Content.as_str() {
+                return Err(InvalidPublisherDomainPlan::NotRawContent);
+            }
+        } else {
+            PublisherObjectRole::for_descriptor(&request.content)?;
         }
         // File offsets must remain representable by the materializer, including
         // on an otherwise valid wire carrying the full unsigned CBOR range.
@@ -177,7 +237,6 @@ impl PublisherDomainPlan {
         {
             return Err(InvalidPublisherDomainPlan::InvalidByteCeiling);
         }
-        crate::negotiate_protocol(ProtocolId::PublisherAuthority, draft.protocol_version)?;
         if draft.issued_seconds >= draft.expires_seconds {
             return Err(InvalidPublisherDomainPlan::InvalidValidity);
         }
@@ -258,6 +317,9 @@ pub enum InvalidPublisherDomainPlan {
     /// A tree, provenance record, or another object cannot substitute for content.
     #[error("publisher plan requires the registered raw content media type")]
     NotRawContent,
+    /// The object is outside the closed View graph publication roles.
+    #[error("publisher plan object has an unsupported portable role")]
+    InvalidObjectRole,
     /// The object exceeds its signed or representable materialization ceiling.
     #[error("publisher plan byte ceiling is invalid")]
     InvalidByteCeiling,

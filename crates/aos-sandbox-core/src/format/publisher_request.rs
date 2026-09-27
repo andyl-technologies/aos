@@ -338,6 +338,53 @@ mod tests {
     }
 
     #[test]
+    fn tree_profile_request_has_an_exact_distinct_commitment_preimage() {
+        let mut fields = draft();
+        fields.protocol_version = ProtocolVersion::new(1, 1);
+        fields.claim.content = ObjectDescriptor::new(
+            MediaType::new("application/vnd.aos.sandbox.tree.v1").unwrap(),
+            ObjectDigest::from_bytes([11; 32]),
+            3,
+        );
+        let expected = hex::decode(format!(
+            concat!(
+                "8b0150{}50{}5820{}8201018650{}50{}50{}50{}820150{}5820{}",
+                "8750{}5820{}50{}50{}847823{}015820{}035820{}191000",
+                "865820{}010250{}03042019012c80"
+            ),
+            "10".repeat(16),
+            "11".repeat(16),
+            "12".repeat(32),
+            "01".repeat(16),
+            "02".repeat(16),
+            "03".repeat(16),
+            "04".repeat(16),
+            "05".repeat(16),
+            "06".repeat(32),
+            "07".repeat(16),
+            "08".repeat(32),
+            "09".repeat(16),
+            "0a".repeat(16),
+            "6170706c69636174696f6e2f766e642e616f732e73616e64626f782e747265652e7631",
+            "0b".repeat(32),
+            "0c".repeat(32),
+            "0e".repeat(32),
+            "0f".repeat(16),
+        ))
+        .unwrap();
+        let request = PublisherAdmissionRequestV1::new(fields).unwrap();
+        assert_eq!(encode_publisher_admission_request_v1(&request), expected);
+        assert_eq!(
+            decode_publisher_admission_request_v1(&expected, DecodeLimits::default()).unwrap(),
+            request
+        );
+        assert_eq!(
+            request.plan().fields().request.commitment,
+            PublisherRequestCommitment::for_canonical_bytes(&expected)
+        );
+    }
+
+    #[test]
     fn truncation_trailing_nonshortest_and_extra_reserved_field_fail_closed() {
         let canonical = wire();
         for length in 0..canonical.len() {

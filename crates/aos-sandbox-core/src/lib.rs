@@ -107,9 +107,9 @@ pub use ownership_lease::{
 pub use publisher::{
     InvalidPublisherAdmissionRequest, InvalidPublisherDomainPlan, PublisherAdmissionClaimV1,
     PublisherAdmissionRequestDraftV1, PublisherAdmissionRequestV1, PublisherAuthorityBindings,
-    PublisherChallengeV1, PublisherDomainPlan, PublisherDomainPlanDraft, PublisherPlanExpectation,
-    PublisherPlanTrustAnchor, PublisherPlanVerificationError, PublisherRequest,
-    PublisherRequestCommitment, PublisherTarget, VerifiedPublisherDomainPlan,
+    PublisherChallengeV1, PublisherDomainPlan, PublisherDomainPlanDraft, PublisherObjectRole,
+    PublisherPlanExpectation, PublisherPlanTrustAnchor, PublisherPlanVerificationError,
+    PublisherRequest, PublisherRequestCommitment, PublisherTarget, VerifiedPublisherDomainPlan,
     verify_publisher_domain_plan,
 };
 pub use registry::{

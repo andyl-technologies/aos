@@ -551,6 +551,13 @@ identity therefore remain outside the portable ownership protocol.
 
 ## Record-subject local ingress
 
+The publisher's portable-object request profile 1.1 is source-only. It keeps
+the 1.0 plan/request wire layout and commitment domain, but the protocol version
+and descriptor media type distinguish View, tree, directory, and raw content
+publication categories. The View compiler still verifies graph relationships.
+The production publisher still negotiates only 1.0; this profile does not
+activate descriptor ingress, root ownership, or physical publication.
+
 Producer-output and publisher admission use a distinct local carrier from the
 descriptor-passing broker protocols below. Each accepted record must include
 exactly one kernel-checked `SCM_CREDENTIALS` nomination and one correlated
