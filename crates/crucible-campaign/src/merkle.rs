@@ -563,6 +563,25 @@ impl MerkleMap {
         root: ContentId,
         verified_positions: &mut BTreeSet<(ContentId, Vec<u8>)>,
     ) -> Result<VerifiedMerkleClosure, CampaignStoreError> {
+        self.verify_closure_objects_cached_with_leaf_presence(root, verified_positions, true)
+    }
+
+    /// Verifies the trie while the enclosing full-closure walk reads its leaves.
+    /// The caller must authenticate every returned value before accepting the walk.
+    pub(crate) fn verify_closure_structure_cached(
+        &self,
+        root: ContentId,
+        verified_positions: &mut BTreeSet<(ContentId, Vec<u8>)>,
+    ) -> Result<VerifiedMerkleClosure, CampaignStoreError> {
+        self.verify_closure_objects_cached_with_leaf_presence(root, verified_positions, false)
+    }
+
+    fn verify_closure_objects_cached_with_leaf_presence(
+        &self,
+        root: ContentId,
+        verified_positions: &mut BTreeSet<(ContentId, Vec<u8>)>,
+        check_leaf_presence: bool,
+    ) -> Result<VerifiedMerkleClosure, CampaignStoreError> {
         let root_node = self.read_node(root, 0)?;
         let expected_entries = root_node.entry_count;
         let mut stack = vec![(root, root_node, Vec::<u8>::new())];
@@ -592,7 +611,7 @@ impl MerkleMap {
                         if !key_has_prefix(*key, &child_prefix) {
                             return Err(invalid("leaf-ancestor-prefix-mismatch"));
                         }
-                        if !self.backend.contains(*value)? {
+                        if check_leaf_presence && !self.backend.contains(*value)? {
                             return Err(crucible_cas::content_store::StoreError::NotFound {
                                 id: *value,
                             }

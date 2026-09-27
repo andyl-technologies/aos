@@ -29,6 +29,112 @@ fn expect_integrity_reason<T>(result: Result<T, CampaignRepositoryError>, expect
     }
 }
 
+struct CorruptLeafBackend {
+    inner: Arc<MemoryBlobBackend>,
+    target: ContentId,
+}
+
+impl ImmutableBlobBackend for CorruptLeafBackend {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn capabilities(&self) -> crucible_cas::content_store::BackendCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+        self.inner.contains(id)
+    }
+
+    fn read(
+        &self,
+        id: ContentId,
+        range: Option<crucible_cas::content_store::ByteRange>,
+    ) -> Result<BlobHandle, StoreError> {
+        if id == self.target {
+            return Ok(BlobHandle::from_bytes(b"corrupt-leaf".to_vec()));
+        }
+        self.inner.read(id, range)
+    }
+
+    fn put_if_absent(
+        &self,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<crucible_cas::content_store::PutReceipt, StoreError> {
+        self.inner.put_if_absent(id, source)
+    }
+}
+
+#[test]
+fn full_closure_walk_rejects_missing_shared_nested_and_corrupt_merkle_leaves() {
+    let (repository, lineage, _policy, blobs) = counted_fixture();
+    let empty = repository.merkle.empty().expect("empty map").content_id();
+    let missing = ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"missing-leaf");
+    let shared = [b"first".as_slice(), b"second".as_slice()]
+        .into_iter()
+        .try_fold(empty, |root, label| {
+            repository
+                .merkle
+                .insert(
+                    root,
+                    CampaignHash::derive("test.closure-leaf", label),
+                    missing,
+                )
+                .map(|map| map.content_id())
+        })
+        .expect("shared missing leaf map");
+    let nested = repository
+        .merkle
+        .insert(
+            empty,
+            CampaignHash::derive("test.closure-nested", b"root"),
+            shared,
+        )
+        .expect("nested map")
+        .content_id();
+    assert!(repository.merkle.verify_closure_objects(shared).is_err());
+
+    for root in [shared, nested] {
+        assert!(matches!(
+            repository.verify_campaign_closure_anchored(root, &BTreeSet::new()),
+            Err(CampaignRepositoryError::Store(StoreError::NotFound { id })) if id == missing
+        ));
+        assert!(
+            repository
+                .verify_campaign_closure_anchored(root, &BTreeSet::from([missing]))
+                .is_err()
+        );
+    }
+
+    let valid_leaf = lineage.genesis_content().content_id();
+    let valid_root = repository
+        .merkle
+        .insert(
+            empty,
+            CampaignHash::derive("test.closure-corrupt", b"root"),
+            valid_leaf,
+        )
+        .expect("valid leaf map")
+        .content_id();
+    repository
+        .verify_campaign_closure_anchored(valid_root, &BTreeSet::new())
+        .expect("uncorrupted leaf");
+    let corrupted = CampaignRepository::new(
+        Arc::new(CorruptLeafBackend {
+            inner: blobs,
+            target: valid_leaf,
+        }),
+        Arc::new(MemoryRefBackend::new()),
+    );
+    assert!(
+        corrupted
+            .verify_campaign_closure_anchored(valid_root, &BTreeSet::new())
+            .is_err()
+    );
+}
+
 #[test]
 fn current_exploration_index_anchors_are_required_without_writes() {
     let (repository, _lineage, _policy, blobs) = counted_fixture();
