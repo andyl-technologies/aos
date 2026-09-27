@@ -238,7 +238,7 @@ pub fn host_execution_query_content_grant_v2(
     })
 }
 
-/// Compiles a Query grant bound to the exact Apply content for this operation.
+/// Compiles the legacy version-one Query grant bound to exact Apply content.
 ///
 /// The authenticated request ID is bound by Query's checked attempt
 /// commitment, not by this stable grant shared across recovery attempts.
@@ -277,7 +277,7 @@ pub fn host_execution_query_content_grant_v1(
 /// Compiles the legacy content-free Query grant shape.
 ///
 /// Sealed-content Query requests cannot match this grant. New issuers must use
-/// [`host_execution_query_content_grant_v1`] to bind the exact content.
+/// [`host_execution_query_content_grant_v2`] to bind exact content and spec digest.
 ///
 /// # Errors
 ///
