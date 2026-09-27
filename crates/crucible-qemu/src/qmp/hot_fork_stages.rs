@@ -116,7 +116,7 @@ where
     ///
     /// Both descriptors must already have been imported through
     /// [`Self::install_descriptor`]. QEMU authenticates the control socket by
-    /// Linux `SO_COOKIE`, the wake eventfd by `/proc/self/fdinfo`, and requires
+    /// Linux `SO_COOKIE`, the wake eventfd by its one-based fdinfo token, and requires
     /// both fresh endpoints to be empty. This does not install either endpoint
     /// in a fork child or acknowledge a hot-fork readiness proof.
     ///

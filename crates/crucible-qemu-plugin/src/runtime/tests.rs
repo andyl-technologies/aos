@@ -18,6 +18,23 @@ use crucible_shmem::{KIND_VM, NodeSlot, RegionConfig, RegionHeader, RegionLayout
 mod support;
 use support::*;
 
+#[test]
+fn eventfd_identity_token_accepts_kernel_zero_and_rejects_overflow() {
+    assert_eq!(
+        hot_fork_eventfd_identity_token_from_fdinfo("eventfd-id: 0\n").unwrap(),
+        1
+    );
+    assert_eq!(
+        hot_fork_eventfd_identity_token_from_fdinfo("eventfd-id: 7\n").unwrap(),
+        8
+    );
+    assert!(
+        hot_fork_eventfd_identity_token_from_fdinfo("eventfd-id: 18446744073709551615\n").is_err()
+    );
+    assert!(hot_fork_eventfd_identity_token_from_fdinfo("eventfd-id: 0\neventfd-id: 1\n").is_err());
+    assert!(hot_fork_eventfd_identity_token_from_fdinfo("eventfd-count: 0\n").is_err());
+}
+
 mod coverage_cases;
 mod reservation_cases;
 

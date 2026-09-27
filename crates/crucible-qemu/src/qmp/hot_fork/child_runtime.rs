@@ -163,7 +163,7 @@ impl QmpHotForkChildRuntimeState {
         self.control_socket_cookie
     }
 
-    /// Returns the authenticated replacement wake-eventfd identity.
+    /// Returns the authenticated replacement wake-eventfd ID plus one.
     #[must_use]
     pub const fn wake_eventfd_id(self) -> u64 {
         self.wake_eventfd_id
@@ -426,7 +426,7 @@ mod tests {
 
     fn template_state() -> Value {
         json!({
-            "schema-version": 3,
+            "schema-version": 4,
             "generation": 2,
             "registered": true,
             "manifest-consistent": true,
@@ -467,6 +467,10 @@ mod tests {
         assert!(exact.manifest_consistent());
         assert_eq!(exact.process_generation(), 11);
         assert_eq!(exact.phase(), QmpHotForkChildRuntimePhase::Template);
+
+        let mut legacy = template_state();
+        legacy["schema-version"] = json!(3);
+        assert!(parse_hot_fork_child_runtime_state(&legacy).is_err());
 
         let mut workers_held = template_state();
         workers_held["phase"] = json!("workers-held");

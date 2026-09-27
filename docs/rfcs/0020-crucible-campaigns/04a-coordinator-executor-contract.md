@@ -2525,7 +2525,11 @@ eventfd through standard QMP descriptor transfer. QEMU authenticates the exact
 cgroup device/inode, eventfd identity, nonzero file-size ceiling, and retained
 template generation, then retains them as a one-shot process-contract
 generation. The fork request binds that thirteenth generation. On Linux the
-source main-loop coordinator MUST create the child with
+versioned control contracts carry each eventfd identity as the kernel's
+`eventfd-id` plus one. Kernel ID zero is valid; protocol zero still denotes an
+absent identity. Host, QEMU, and plugin readers reject missing, duplicate,
+malformed, or overflowing IDs before comparing the resulting tokens. The source
+main-loop coordinator MUST create the child with
 `clone3(CLONE_INTO_CGROUP)` against the retained directory, so its first
 instruction is charged to the target cgroup. Before descriptor-table or runtime
 reconstruction, the child MUST poll the non-consuming cancellation event and

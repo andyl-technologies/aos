@@ -111,7 +111,7 @@ pub const QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION: u32 = 3;
 /// Version of the QEMU-owned plugin callback-and-ring barrier contract.
 pub const QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION: u32 = 6;
 /// Version of the QEMU-owned child-runtime observation contract.
-pub const QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION: u32 = 3;
+pub const QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION: u32 = 4;
 /// Proof bitmap retained by template preparation before child-only proofs run.
 pub const QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS: u64 = (1_u64 << 7) - 1;
 

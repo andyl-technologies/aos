@@ -8,9 +8,9 @@ use crate::qmp::{QmpCommandKind, QmpDescriptorName, QmpError};
 /// QMP command that retains or releases one authenticated plugin endpoint pair.
 pub const QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND: &str = "crucible-hot-fork-plugin-endpoints";
 /// Version of the retained plugin-endpoint contract.
-pub const QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION: u32 = 4;
+pub const QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION: u32 = 5;
 
-/// Exact Linux identities for one branch-private plugin endpoint pair.
+/// Exact socket cookie and one-based eventfd token for one plugin endpoint pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QmpHotForkPluginEndpointIdentity {
     control_socket_cookie: u64,
@@ -18,9 +18,9 @@ pub struct QmpHotForkPluginEndpointIdentity {
 }
 
 impl QmpHotForkPluginEndpointIdentity {
-    /// Creates an exact nonzero Linux endpoint identity.
+    /// Creates an exact socket cookie and nonzero eventfd identity token.
     ///
-    /// Returns `None` when either kernel identity is zero.
+    /// Returns `None` when either protocol identity is zero.
     #[must_use]
     pub const fn new(control_socket_cookie: u64, wake_eventfd_id: u64) -> Option<Self> {
         if control_socket_cookie == 0 || wake_eventfd_id == 0 {
@@ -38,7 +38,7 @@ impl QmpHotForkPluginEndpointIdentity {
         self.control_socket_cookie
     }
 
-    /// Returns the exact Linux `/proc/self/fdinfo` eventfd identity.
+    /// Returns the Linux `/proc/self/fdinfo` eventfd ID plus one.
     #[must_use]
     pub const fn wake_eventfd_id(self) -> u64 {
         self.wake_eventfd_id

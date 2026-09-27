@@ -1808,6 +1808,7 @@ fn hot_fork_control_socket_cookie(descriptor: std::os::fd::RawFd) -> io::Result<
     Ok(cookie)
 }
 
+// The versioned child plan carries kernel eventfd-id plus one; zero is absent.
 fn hot_fork_wake_eventfd_id(descriptor: std::os::fd::RawFd) -> io::Result<u64> {
     let path = format!("/proc/self/fdinfo/{descriptor}");
     let mut bytes = Vec::new();
@@ -1826,6 +1827,10 @@ fn hot_fork_wake_eventfd_id(descriptor: std::os::fd::RawFd) -> io::Result<u64> {
             format!("eventfd fdinfo is not UTF-8: {error}"),
         )
     })?;
+    hot_fork_eventfd_identity_token_from_fdinfo(text)
+}
+
+fn hot_fork_eventfd_identity_token_from_fdinfo(text: &str) -> io::Result<u64> {
     let mut identity = None;
     for line in text.lines() {
         let Some(value) = line.strip_prefix("eventfd-id:") else {
@@ -1843,13 +1848,11 @@ fn hot_fork_wake_eventfd_id(descriptor: std::os::fd::RawFd) -> io::Result<u64> {
                 format!("eventfd-id is invalid: {error}"),
             )
         })?;
-        if parsed == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "eventfd-id is zero",
-            ));
-        }
-        identity = Some(parsed);
+        // Linux may allocate eventfd ID zero. The versioned plan uses a
+        // one-based token so zero can keep denoting an absent identity.
+        identity = Some(parsed.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "eventfd-id exceeds token range")
+        })?);
     }
     identity.ok_or_else(|| {
         io::Error::new(
