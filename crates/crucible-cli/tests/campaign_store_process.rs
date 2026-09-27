@@ -1181,7 +1181,8 @@ root = {objects:?}
                     format!("service announcement omitted its daemon URL: {announcement}")
                 })?;
         }
-        wait_for_campaign_socket(&self.socket, timeout)?;
+        wait_for_campaign_socket(&self.socket, timeout, &mut child)
+            .map_err(|error| format!("{error}; stderr={}", child.stderr_tail()))?;
         Ok(child)
     }
 
@@ -1448,13 +1449,25 @@ fn secure_directory(root: &Path, name: &str) -> Result<PathBuf, Box<dyn Error>> 
     Ok(path)
 }
 
-fn wait_for_campaign_socket(path: &Path, timeout: Duration) -> Result<(), Box<dyn Error>> {
+fn wait_for_campaign_socket(
+    path: &Path,
+    timeout: Duration,
+    service: &mut CampaignServiceChild,
+) -> Result<(), Box<dyn Error>> {
     let deadline = Instant::now() + timeout;
     loop {
         match fs::metadata(path) {
             Ok(metadata) if metadata.file_type().is_socket() => return Ok(()),
             Ok(_) => return Err("campaign endpoint is not a Unix socket".into()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(status) = service.child.try_wait()? {
+                    // `try_wait` reaps the process; Drop must not signal a reused PID.
+                    service.kill_on_drop = false;
+                    return Err(format!(
+                        "campaign service exited before binding its socket: {status}"
+                    )
+                    .into());
+                }
                 if Instant::now() >= deadline {
                     return Err(format!(
                         "campaign endpoint was not bound before the readiness deadline: {}",
@@ -1467,6 +1480,38 @@ fn wait_for_campaign_socket(path: &Path, timeout: Duration) -> Result<(), Box<dy
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+#[test]
+fn campaign_socket_wait_reports_exited_service_without_waiting_for_deadline()
+-> Result<(), Box<dyn Error>> {
+    let temporary = tempfile::tempdir()?;
+    let child = Command::new(std::env::current_exe()?)
+        .arg("--help")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut service = CampaignServiceChild {
+        child,
+        #[cfg(feature = "packaged-midpoint-flight")]
+        daemon_url: String::new(),
+        stderr: NamedTempFile::new_in(temporary.path())?,
+        kill_on_drop: true,
+    };
+    let error = wait_for_campaign_socket(
+        &temporary.path().join("unbound.sock"),
+        Duration::from_secs(10),
+        &mut service,
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("campaign service exited before binding its socket")
+    );
+    assert!(!service.kill_on_drop);
+    Ok(())
 }
 
 fn read_first_line(
