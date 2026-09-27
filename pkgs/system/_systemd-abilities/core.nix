@@ -520,6 +520,16 @@
         canonicalOrder = true;
       };
       enabled = types.boolean;
+      activation_owner = types.enum ["ability" "image"];
+      socket_start_units = types.list {
+        element = types.string {
+          maxLength = 255;
+          syntax = null;
+        };
+        maxItems = 128;
+        unique = true;
+        canonicalOrder = true;
+      };
       readiness_mechanism = types.optional (types.enum [
         "process-running"
         "process-signal"

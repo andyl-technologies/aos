@@ -76,6 +76,7 @@ pub(super) async fn observe(
     let mut manager_current = !manager
         .needs_daemon_reload_exact(&rendered.primary_unit, &unit_identity)
         .await?;
+    let mut socket_states_match = true;
     let mut unit_identities = vec![(rendered.primary_unit.clone(), unit_identity.clone())];
     for name in companion_units(&rendered, &primary_source) {
         let identity = manager.unit_identity(name).await?;
@@ -85,6 +86,18 @@ pub(super) async fn observe(
             Path::new(&fragment),
         ) && drop_ins.is_empty();
         manager_current &= !manager.needs_daemon_reload_exact(name, &identity).await?;
+        if realization
+            .socket_start_units
+            .iter()
+            .any(|socket| socket == name)
+        {
+            let socket_state = manager.active_state_exact(name, &identity).await?;
+            socket_states_match &= if realization.enabled {
+                socket_state.is_active()
+            } else {
+                socket_state == UnitActiveState::Inactive
+            };
+        }
         unit_identities.push((name.to_string(), identity));
     }
     let files_after = static_files_match(Path::new(STATIC_UNIT_ROOT), &rendered);
@@ -100,7 +113,8 @@ pub(super) async fn observe(
     } else {
         active_state == UnitActiveState::Inactive
     };
-    let ready = files_match && loaded_from_image && manager_current && state_matches;
+    let ready =
+        files_match && loaded_from_image && manager_current && state_matches && socket_states_match;
 
     let result = RootResourceObservationResult {
         schema: ROOT_RESOURCE_OBSERVATION_RESULT_SCHEMA.to_string(),
@@ -117,6 +131,7 @@ pub(super) async fn observe(
             "manager_current": manager_current,
             "active_state": active_state.label(),
             "own_process_running": own_process_running,
+            "socket_states_match": socket_states_match,
         }))?,
     };
     validate_root_resource_observation(&request, &result)?;

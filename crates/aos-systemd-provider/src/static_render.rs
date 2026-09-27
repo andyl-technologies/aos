@@ -259,7 +259,9 @@ mod tests {
             }],
             "prerequisites": [],
             "aliases": [],
-            "enabled": true
+            "enabled": true,
+            "activation_owner": "image",
+            "socket_start_units": []
         });
         let realization: ServiceRealization =
             serde_json::from_value(value.clone()).expect("service realization decodes");
@@ -333,7 +335,9 @@ mod tests {
             "links": [],
             "prerequisites": [],
             "aliases": [],
-            "enabled": true
+            "enabled": true,
+            "activation_owner": "ability",
+            "socket_start_units": []
         });
 
         let error = render_service_unit(value, &temporary_directory())

@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::model::{
     PackagedUnitRealization, REALIZATION_SCHEMA, SERVICE_REALIZATION_SCHEMA,
-    ServiceLinkRelationship, ServiceRealization,
+    ServiceActivationOwner, ServiceLinkRelationship, ServiceRealization,
 };
 use crate::semantic::{render_sections, render_unit_document, resolve_unit_identity};
 
@@ -112,6 +112,11 @@ pub(crate) fn render_service(realization: &ServiceRealization) -> Result<Rendere
     if realization.schema != SERVICE_REALIZATION_SCHEMA {
         bail!("systemd service realization uses an unsupported schema");
     }
+    if realization.activation_owner == ServiceActivationOwner::Ability
+        && !realization.links.is_empty()
+    {
+        bail!("ability-owned service cannot publish manager activation links");
+    }
 
     let (primary_unit, primary_source) = resolve_unit_identity(&realization.systemd_unit)?;
     let mut units = Vec::with_capacity(realization.units.len());
@@ -124,6 +129,23 @@ pub(crate) fn render_service(realization: &ServiceRealization) -> Result<Rendere
     units.sort_by(|left, right| left.name.cmp(&right.name));
     if units.windows(2).any(|pair| pair[0].name == pair[1].name) {
         bail!("systemd service realization contains duplicate unit names");
+    }
+    if realization
+        .socket_start_units
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1])
+        || realization.socket_start_units.iter().any(|name| {
+            !name.ends_with(".socket")
+                || !realization.units.iter().any(|unit| {
+                    unit.systemd_unit.unit_name == *name
+                        && unit
+                            .sections
+                            .iter()
+                            .any(|section| section.name == crate::model::SystemdSectionName::Socket)
+                })
+        })
+    {
+        bail!("systemd service realization has invalid managed socket units");
     }
 
     if realization.facets.is_empty() {
@@ -245,9 +267,9 @@ mod tests {
 
     use super::{render_service, validate_relative_path, validate_unit_name};
     use crate::model::{
-        RealizedServiceAlias, SERVICE_REALIZATION_SCHEMA, ServiceFacetIdentity, ServiceRealization,
-        ServiceUnitIdentity, SystemdSection, SystemdSectionName, SystemdUnitDocument,
-        SystemdUnitIdentity,
+        RealizedServiceAlias, SERVICE_REALIZATION_SCHEMA, ServiceActivationOwner,
+        ServiceFacetIdentity, ServiceRealization, ServiceUnitIdentity, SystemdSection,
+        SystemdSectionName, SystemdUnitDocument, SystemdUnitIdentity,
     };
 
     #[test]
@@ -296,6 +318,8 @@ mod tests {
             prerequisites: Vec::new(),
             aliases: Vec::new(),
             enabled: true,
+            activation_owner: ServiceActivationOwner::Ability,
+            socket_start_units: Vec::new(),
             readiness_mechanism: None,
         };
 
@@ -340,6 +364,8 @@ mod tests {
                 },
             }],
             enabled: true,
+            activation_owner: ServiceActivationOwner::Ability,
+            socket_start_units: Vec::new(),
             readiness_mechanism: None,
         };
 

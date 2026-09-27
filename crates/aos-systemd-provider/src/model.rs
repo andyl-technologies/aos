@@ -236,7 +236,16 @@ pub(crate) struct ServiceRealization {
     pub(crate) prerequisites: Vec<ResourceReference>,
     pub(crate) aliases: Vec<RealizedServiceAlias>,
     pub(crate) enabled: bool,
+    pub(crate) activation_owner: ServiceActivationOwner,
+    pub(crate) socket_start_units: Vec<String>,
     pub(crate) readiness_mechanism: Option<ServiceReadinessMechanism>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ServiceActivationOwner {
+    Ability,
+    Image,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -238,6 +238,16 @@ pub(crate) fn remove_service(
     Ok(())
 }
 
+pub(crate) fn validate_service_removal(
+    paths: &ServicePaths,
+    rendered: &RenderedService,
+    resource: &ResourceId,
+    revision: RevisionId,
+) -> Result<()> {
+    service_removal_presence(paths, rendered, resource, revision)?;
+    Ok(())
+}
+
 pub(crate) fn service_is_absent(paths: &ServicePaths) -> Result<bool> {
     for path in paths
         .units
