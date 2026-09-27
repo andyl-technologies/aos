@@ -10,12 +10,8 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aos_sandbox_core::format::descriptor_for_bytes;
 use aos_sandbox_core::model::CacheDomain;
-use aos_sandbox_core::{
-    MediaType, ObjectDescriptor, ObjectDigest, OperationId, PortableMediaType, ProjectId,
-    RevocationScopeId, SandboxId,
-};
+use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, RevocationScopeId, SandboxId};
 use sha2::{Digest as _, Sha256};
 
 use crate::cache_residency::{
@@ -51,10 +47,9 @@ use crate::reconciler::{
 use crate::{Journal, JournalError};
 
 use super::{
-    AdmittedSignedProjectPolicySourceV2, AuthenticatedSandboxProjectRelationV1, CacheDomainInputV1,
-    HardLimitValueV1, PolicyCompilerInputV1, PolicyDeploymentSourcesV1,
-    PolicyPublicationPrerequisitesV1, RevocationInputV1, RootV8ReleasedProofV1,
-    SandboxProjectRelationVerifierV1, SignedProjectPolicySourceV1,
+    AdmittedSignedProjectPolicySourceV2, CacheDomainInputV1, HardLimitValueV1,
+    PolicyCompilerInputV1, PolicyDeploymentSourcesV1, PolicyPublicationPrerequisitesV1,
+    RevocationInputV1, RootV8ReleasedProofV1, SignedProjectPolicySourceV1,
     VerifiedSignedProjectPolicySourceV2, normalized_policy_input_digest_v1,
 };
 
@@ -139,35 +134,6 @@ pub struct CurrentCreateProjectPolicySourceV1 {
     revocation_head: ObjectDigest,
     canonical_policy: Vec<u8>,
     commitment: ObjectDigest,
-}
-
-struct SelectedCreateRelationVerifier<'a> {
-    source: &'a CurrentCreateProjectPolicySourceV1,
-}
-
-impl SandboxProjectRelationVerifierV1 for SelectedCreateRelationVerifier<'_> {
-    fn verify(
-        &self,
-        sandbox: SandboxId,
-        project: ProjectId,
-        descriptor: &ObjectDescriptor,
-        canonical_bytes: &[u8],
-    ) -> bool {
-        if sandbox != self.source.sandbox || project != self.source.project {
-            return false;
-        }
-        let Ok(expected) = super::model::canonical_bytes(
-            b"aos.sandbox.sandbox-project-relation.v1",
-            &(self.source.sandbox, self.source.project),
-        ) else {
-            return false;
-        };
-        let Ok(media) = MediaType::new(PortableMediaType::Content.as_str()) else {
-            return false;
-        };
-
-        canonical_bytes == expected && descriptor == &descriptor_for_bytes(media, &expected)
-    }
 }
 
 impl CurrentCreateProjectPolicySourceV1 {
@@ -534,47 +500,6 @@ pub fn current_parentless_create_project_source_for_operation_v1(
         return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
     }
     Ok(source)
-}
-
-/// Selects the current parentless Create and authenticates its project relation.
-///
-/// Both values derive from the same protected operation, projection, and
-/// publisher join. They are only a query-time observation: the caller must
-/// recheck the source under the held owner cut before a binding or effect.
-///
-/// # Errors
-///
-/// Returns an error when the protected Create join fails or the selected
-/// sandbox-to-project relationship cannot be authenticated.
-pub fn current_parentless_create_compiler_relation_for_operation_v1(
-    journal: &mut Journal,
-    operation: OperationId,
-    project: ProjectId,
-    scope: ControllerRequestScopeV1,
-    effect_plan: &EffectPlan,
-) -> Result<
-    (
-        CurrentCreateProjectPolicySourceV1,
-        AuthenticatedSandboxProjectRelationV1,
-    ),
-    CurrentCreatePolicySourceErrorV1,
-> {
-    let source = current_parentless_create_project_source_for_operation_v1(
-        journal,
-        operation,
-        project,
-        scope,
-        effect_plan,
-    )?;
-    let verifier = SelectedCreateRelationVerifier { source: &source };
-    let relation = AuthenticatedSandboxProjectRelationV1::authenticate(
-        source.sandbox,
-        source.project,
-        &verifier,
-    )
-    .map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-
-    Ok((source, relation))
 }
 
 /// Joins one parentless public Create to exact current canonical policy bytes.
@@ -1684,42 +1609,6 @@ mod tests {
             canonical_policy: Vec::new(),
             commitment: operation_revision,
         }
-    }
-
-    #[test]
-    fn selected_create_relation_authenticates_only_its_admitted_pair() {
-        let source = fixture_held_source(
-            OperationId::from_bytes([1; 16]),
-            ObjectDigest::from_bytes([2; 32]),
-            1,
-        );
-        let verifier = SelectedCreateRelationVerifier { source: &source };
-
-        let relation = AuthenticatedSandboxProjectRelationV1::authenticate(
-            source.sandbox(),
-            source.project(),
-            &verifier,
-        )
-        .expect("selected relation");
-        assert_eq!(relation.sandbox(), source.sandbox());
-        assert_eq!(relation.project(), source.project());
-
-        assert!(
-            AuthenticatedSandboxProjectRelationV1::authenticate(
-                SandboxId::from_bytes([10; 16]),
-                source.project(),
-                &verifier,
-            )
-            .is_err()
-        );
-        assert!(
-            AuthenticatedSandboxProjectRelationV1::authenticate(
-                source.sandbox(),
-                ProjectId::from_bytes([11; 16]),
-                &verifier,
-            )
-            .is_err()
-        );
     }
 
     #[test]
