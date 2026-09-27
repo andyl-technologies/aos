@@ -451,6 +451,42 @@ fn sign_fields(
     Ok(bytes)
 }
 
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn sign_synthetic_controller_project_admission_v1(
+    challenge: ControllerProjectAdmissionChallengeV1,
+    project: ProjectId,
+    operation: OperationId,
+    source_commitment: ObjectDigest,
+    publisher_digest: ObjectDigest,
+    cache_domain_head: ObjectDigest,
+    revocation_scope: RevocationScopeId,
+    revocation_head: ObjectDigest,
+    signer_generation: u64,
+    key: &SigningKey,
+) -> Result<
+    [u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1],
+    ControllerProjectAdmissionReadbackErrorV1,
+> {
+    let fields = VerifiedControllerProjectAdmissionV1 {
+        controller_uid: 811,
+        journal_sequence: 1,
+        operation,
+        sandbox: SandboxId::from_bytes([2; 16]),
+        project,
+        source_commitment,
+        publisher_generation: 1,
+        publisher_digest,
+        cache_domain_head,
+        revocation_scope,
+        revocation_generation: 1,
+        revocation_head,
+        revocation_mode: RevocationMode::DenyNew,
+        revocation_grace_nanos: 0,
+    };
+    sign_fields(fields, challenge, signer_generation, key)
+}
+
 fn encode_revocation_mode(mode: RevocationMode) -> u8 {
     match mode {
         RevocationMode::DenyNew => 1,

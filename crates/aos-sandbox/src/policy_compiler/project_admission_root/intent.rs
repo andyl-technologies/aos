@@ -788,3 +788,25 @@ pub(super) fn prepare_test_intent_with_journal(
     };
     commit_intent(journal, intent)
 }
+
+#[cfg(test)]
+pub(super) fn prepare_test_exact_intent_with_journal(
+    journal: &mut Journal,
+    source: SourceProjectAdmissionReservationV1,
+    project_packet: &[u8],
+    project_input: &[u8],
+    deployment_packet: &[u8],
+) -> Result<RootProjectAdmissionIntentV1, PolicyDeploymentHeadErrorV1> {
+    let intent = RootProjectAdmissionIntentV1 {
+        client_nonce: source.client_nonce(),
+        project: source.project(),
+        source_reservation: source.record_digest(),
+        project_packet: digest(project_packet),
+        project_input: digest(project_input),
+        deployment_packet: digest(deployment_packet),
+        prior_packet: zero_digest(),
+        prior_input: zero_digest(),
+        capacity_id: [0; 32],
+    };
+    commit_intent(journal, intent)
+}

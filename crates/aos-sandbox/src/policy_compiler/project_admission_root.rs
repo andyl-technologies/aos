@@ -17,6 +17,8 @@
 //! ```
 
 mod intent;
+#[cfg(test)]
+mod positive_commit_fixture;
 pub use intent::{RootProjectAdmissionIntentV1, prepare_fixed_root_project_admission_intent_v1};
 
 use std::io;
@@ -482,6 +484,52 @@ pub fn admit_fixed_root_project_source_from_owner_proofs_v1(
     deployment_signer_generation: u64,
     now_unix_seconds: i64,
 ) -> Result<RootProjectAdmissionOutcomeV1, PolicyDeploymentHeadErrorV1> {
+    let (mut journal, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    admit_root_project_source_from_owner_proofs_with_journal(
+        &mut journal,
+        stage_digest,
+        controller_packet,
+        source_row_bytes,
+        source_packet,
+        controller_pin,
+        source_pin,
+        expected_controller_uid,
+        project_packet,
+        project_input,
+        project_key,
+        project_signer_generation,
+        deployment_packet,
+        deployment_inputs,
+        deployment_key,
+        deployment_signer_generation,
+        now_unix_seconds,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn admit_root_project_source_from_owner_proofs_with_journal(
+    journal: &mut Journal,
+    stage_digest: ObjectDigest,
+    controller_packet: &[u8],
+    source_row_bytes: &[u8],
+    source_packet: &[u8],
+    controller_pin: &[u8],
+    source_pin: &[u8],
+    expected_controller_uid: u32,
+    project_packet: &[u8],
+    project_input: &[u8],
+    project_key: &VerifyingKey,
+    project_signer_generation: u64,
+    deployment_packet: &[u8],
+    deployment_inputs: &PolicyDeploymentInputsV1<'_>,
+    deployment_key: &VerifyingKey,
+    deployment_signer_generation: u64,
+    now_unix_seconds: i64,
+) -> Result<RootProjectAdmissionOutcomeV1, PolicyDeploymentHeadErrorV1> {
     let pins = encode_policy_signer_pins_v1(
         deployment_signer_generation,
         deployment_key,
@@ -513,11 +561,6 @@ pub fn admit_fixed_root_project_source_from_owner_proofs_v1(
     }
 
     let source_row = SourceProjectAdmissionChallengeV1::from_record_bytes(source_row_bytes)?;
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     super::binding_v2::ensure_root_binding_unheld(&authority)
         .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
@@ -671,8 +714,8 @@ pub fn admit_fixed_root_project_source_from_owner_proofs_v1(
     }
     let transaction = outcome_transaction(outcome, records)?;
     drop(authority);
-    let intent = intent::require_terminal_intent(&mut journal, stage)?;
-    intent::commit_reserved_terminal(&mut journal, intent, transaction)?;
+    let intent = intent::require_terminal_intent(journal, stage)?;
+    intent::commit_reserved_terminal(journal, intent, transaction)?;
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     if authority.get(&key)? != Some(outcome.encode().as_slice())
         || authority.get(HEAD_KEY_V2)? != Some(project_packet)
@@ -1204,6 +1247,18 @@ pub fn stage_fixed_root_project_admission_v1(
         expires_at,
     };
     stage.cut = stage.expected_cut();
+    let transaction = stage_transaction(stage)?;
+    let bytes = stage.encode();
+    authority.commit(&transaction)?;
+    if authority.get(STAGE_KEY)? != Some(bytes.as_slice()) {
+        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
+    }
+    Ok(stage)
+}
+
+fn stage_transaction(
+    stage: RootProjectAdmissionStageV1,
+) -> Result<JournalTransaction, PolicyDeploymentHeadErrorV1> {
     let bytes = stage.encode();
     let transaction_digest = Sha256::new()
         .chain_update(STAGE_TRANSACTION_DOMAIN)
@@ -1212,19 +1267,14 @@ pub fn stage_fixed_root_project_admission_v1(
     let transaction_id: [u8; 16] = transaction_digest[..16]
         .try_into()
         .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    let transaction = JournalTransaction::new(
+    Ok(JournalTransaction::new(
         transaction_id,
         vec![JournalRecord::put(
             RecordNamespace::DesiredState,
             STAGE_KEY.to_vec(),
             bytes.to_vec(),
         )],
-    )?;
-    authority.commit(&transaction)?;
-    if authority.get(STAGE_KEY)? != Some(bytes.as_slice()) {
-        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-    }
-    Ok(stage)
+    )?)
 }
 
 /// Permanently rules out a Root stage for an unconsumed Source reservation.
@@ -1861,15 +1911,14 @@ mod tests {
     #[test]
     fn expired_deployment_keeps_exact_project_recovery_artifacts_replayable() {
         let signing_key = SigningKey::from_bytes(&[16; 32]);
-        let inputs = ["AOSPNI01", "AOSPSI01", "AOSPBI01", "AOSPCI01"]
-            .map(|magic| {
-                serde_json::to_vec(&serde_json::json!({
-                    "generation": 1,
-                    "input": {},
-                    "magic": magic,
-                }))
-                .unwrap()
-            });
+        let inputs = ["AOSPNI01", "AOSPSI01", "AOSPBI01", "AOSPCI01"].map(|magic| {
+            serde_json::to_vec(&serde_json::json!({
+                "generation": 1,
+                "input": {},
+                "magic": magic,
+            }))
+            .unwrap()
+        });
         let mut deployment = b"AOSPDH01".to_vec();
         deployment.extend_from_slice(&1_u64.to_be_bytes());
         deployment.extend_from_slice(&10_i64.to_be_bytes());
