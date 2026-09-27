@@ -205,7 +205,6 @@ let
     "liblinear"
     "libmaxminddb"
     "libmetalink"
-    "libpciaccess"
     "libisoburn"
     "libisofs"
     "libksba"
@@ -596,6 +595,8 @@ let
     "libnfnetlink"
     "libnftnl"
     "libnl"
+    # PCI enumeration is used by Linux libvirt, which is the only consumer.
+    "libpciaccess"
     "libseccomp"
     "libselinux"
     "libsemanage"
