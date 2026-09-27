@@ -8185,6 +8185,8 @@ impl Database {
                 .expecting(1),
             );
         }
+        // String values appear in both the inserted row and its existence
+        // fence. Cast them so PostgreSQL infers one type per placeholder.
         statements.push(
             Statement::new(
                 "INSERT INTO cache_root_reasons
@@ -8193,15 +8195,19 @@ impl Database {
               retention_lease_id, release_id, channel_id,
               partition_bucket, source_ref, source_revision, expires_at,
               refreshed_at)
-             SELECT ?1, ?2, NULL, ?3, ?4, ?5, NULL, NULL, ?6, ?7,
+             SELECT ?1, ?2, NULL, ?3, ?4, CAST(?5 AS VARCHAR(32)),
+                    NULL, NULL, CAST(?6 AS VARCHAR(64)),
+                    CAST(?7 AS VARCHAR(64)),
                     NULL, NULL, NULL, ?8, '1', ?9, ?10
              WHERE EXISTS (SELECT 1 FROM manual_retention_roots root
                LEFT JOIN manual_retention_lease_heads head
                  ON head.manual_retention_root_id = root.id
-               WHERE root.id = ?6 AND root.cache_id = ?2
+               WHERE root.id = CAST(?6 AS VARCHAR(64)) AND root.cache_id = ?2
                  AND root.deleted_at IS NULL
-                 AND ((?5 = 'manual' AND root.protection_kind = 'indefinite')
-                   OR (?5 = 'lease' AND head.current_lease_id = ?7)))",
+                 AND ((CAST(?5 AS VARCHAR(32)) = 'manual'
+                   AND root.protection_kind = 'indefinite')
+                   OR (CAST(?5 AS VARCHAR(32)) = 'lease'
+                     AND head.current_lease_id = CAST(?7 AS VARCHAR(64)))))",
                 vals![
                     input.reason_id,
                     input.cache_id,
