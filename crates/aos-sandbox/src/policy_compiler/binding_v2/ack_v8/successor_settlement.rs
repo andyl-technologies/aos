@@ -119,9 +119,10 @@ impl RootV8SuccessorSettlementV1 {
         if self.predecessor.as_bytes() == &[0; 32]
             || self.epoch == 0
             || self.next_epoch
-                != self.epoch.checked_add(1).ok_or(
-                    PolicyCompilerJournalErrorV1::UnauthenticatedCandidate,
-                )?
+                != self
+                    .epoch
+                    .checked_add(1)
+                    .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
             || [
                 self.settlement,
                 self.release_marker,
@@ -179,8 +180,16 @@ impl RootV8SuccessorSettlementV1 {
         };
         let settlement = Self {
             predecessor: digest(16)?,
-            epoch: u64::from_be_bytes(bytes[48..56].try_into().map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?),
-            next_epoch: u64::from_be_bytes(bytes[56..64].try_into().map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?),
+            epoch: u64::from_be_bytes(
+                bytes[48..56]
+                    .try_into()
+                    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
+            ),
+            next_epoch: u64::from_be_bytes(
+                bytes[56..64]
+                    .try_into()
+                    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
+            ),
             settlement: digest(64)?,
             release_marker: digest(96)?,
             cache_released: digest(128)?,
@@ -214,13 +223,15 @@ fn settlement_transaction(
         key(settlement.predecessor),
         bytes.to_vec(),
     )];
-    records.extend([
-        terminal::release::RELEASE_KEY,
-        ACK_KEY,
-        terminal::TERMINAL_KEY,
-    ]
-    .into_iter()
-    .map(|key| JournalRecord::delete(RecordNamespace::DesiredState, key.to_vec())));
+    records.extend(
+        [
+            terminal::release::RELEASE_KEY,
+            ACK_KEY,
+            terminal::TERMINAL_KEY,
+        ]
+        .into_iter()
+        .map(|key| JournalRecord::delete(RecordNamespace::DesiredState, key.to_vec())),
+    );
     Ok(JournalTransaction::new(id, records)?)
 }
 
@@ -356,10 +367,13 @@ pub(super) fn settle_in_authority(
     }
 
     let (head, next_epoch, count) = current_root_binding_chain(authority)?;
-    let hold = current_hold(authority, head, next_epoch, count)?
-        .ok_or(RootV8EffectAckErrorV1::Stale)?;
-    if head != binding || next_epoch != epoch.checked_add(1).ok_or(RootV8EffectAckErrorV1::Stale)?
-        || hold.held || hold.binding != binding || hold.epoch != epoch
+    let hold =
+        current_hold(authority, head, next_epoch, count)?.ok_or(RootV8EffectAckErrorV1::Stale)?;
+    if head != binding
+        || next_epoch != epoch.checked_add(1).ok_or(RootV8EffectAckErrorV1::Stale)?
+        || hold.held
+        || hold.binding != binding
+        || hold.epoch != epoch
         || !matches!(
             terminal::current_terminal_custody(authority, binding, epoch),
             Ok(Some(RootV8TerminalCustodyV1::Released(_)))
@@ -373,9 +387,15 @@ pub(super) fn settle_in_authority(
     if ack.controller_uid() != uid || cut.pin != credential {
         return Err(RootV8EffectAckErrorV1::Stale);
     }
-    let ack_row = authority.get(ACK_KEY)?.ok_or(RootV8EffectAckErrorV1::Stale)?;
-    let terminal_row = authority.get(terminal::TERMINAL_KEY)?.ok_or(RootV8EffectAckErrorV1::Stale)?;
-    let release_row = authority.get(terminal::release::RELEASE_KEY)?.ok_or(RootV8EffectAckErrorV1::Stale)?;
+    let ack_row = authority
+        .get(ACK_KEY)?
+        .ok_or(RootV8EffectAckErrorV1::Stale)?;
+    let terminal_row = authority
+        .get(terminal::TERMINAL_KEY)?
+        .ok_or(RootV8EffectAckErrorV1::Stale)?;
+    let release_row = authority
+        .get(terminal::release::RELEASE_KEY)?
+        .ok_or(RootV8EffectAckErrorV1::Stale)?;
     let release_marker = ObjectDigest::from_bytes(Sha256::digest(release_row).into());
     let nonce = fresh_nonce()?;
     let challenge_cut = ObjectDigest::from_bytes(
@@ -395,17 +415,12 @@ pub(super) fn settle_in_authority(
     let challenge = ControllerEffectAckChallengeV1::new(nonce, challenge_cut)?;
     let snapshot = authority.snapshot()?;
     let packet = exchange(challenge)?;
-    let settlement = verify_controller_v8_settlement_readback_v1(
-        &packet,
-        &cut.signer,
-        challenge,
-        uid,
-    )?;
+    let settlement =
+        verify_controller_v8_settlement_readback_v1(&packet, &cut.signer, challenge, uid)?;
     if settlement.binding() != binding
         || settlement.epoch() != epoch
         || settlement.ack_digest() != ack.controller_ack()
-        || settlement.root_receipt_digest()
-            != controller_v8_root_receipt_record_digest_v1(ack)?
+        || settlement.root_receipt_digest() != controller_v8_root_receipt_record_digest_v1(ack)?
         || settlement.root_release_marker_digest() != release_marker
     {
         return Err(RootV8EffectAckErrorV1::Stale);

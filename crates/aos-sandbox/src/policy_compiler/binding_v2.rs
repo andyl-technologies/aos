@@ -81,16 +81,16 @@ pub use ack::{
 };
 pub use ack_v8::{
     CONTROLLER_V8_FINAL_RELEASE_BYTES_V1, ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1,
-    RootV8EffectAckErrorV1, RootV8EffectAckV1, RootV8HeldTerminalStepV1, RootV8TerminalCustodyV1,
-    RootV8VerifiedTerminalV1, acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
+    RootV8EffectAckErrorV1, RootV8EffectAckV1, RootV8HeldTerminalStepV1,
+    RootV8SuccessorSettlementV1, RootV8TerminalCustodyV1, RootV8VerifiedTerminalV1,
+    acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
     acknowledge_fixed_closed_root_v8_effect_v1,
     acknowledge_verify_and_release_fixed_closed_root_v8_terminal_v1,
     recover_fixed_closed_root_v8_effect_ack_v1,
     recover_fixed_closed_root_v8_predecessor_settlement_v1,
     recover_fixed_closed_root_v8_terminal_custody_v1,
-    recover_fixed_closed_root_v8_verified_terminal_v1, sign_fixed_controller_v8_final_release_v1,
-    settle_fixed_closed_root_v8_predecessor_v1, verify_fixed_closed_root_v8_terminal_v1,
-    RootV8SuccessorSettlementV1,
+    recover_fixed_closed_root_v8_verified_terminal_v1, settle_fixed_closed_root_v8_predecessor_v1,
+    sign_fixed_controller_v8_final_release_v1, verify_fixed_closed_root_v8_terminal_v1,
 };
 
 pub use producer::{
@@ -1574,11 +1574,7 @@ impl ClosedPolicyRootSessionV2<'_> {
             if prior_hold.is_some_and(|hold| hold.held) {
                 return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
             }
-            ack_v8::require_settled_predecessor(
-                &self.authority,
-                predecessor,
-                next_generation,
-            )?;
+            ack_v8::require_settled_predecessor(&self.authority, predecessor, next_generation)?;
             require_unique_root_binding_identity(&self.authority, &binding)?;
             if !new_root_cas_matches(&binding, predecessor, next_generation, count)
                 || self.authority.get(&key)?.is_some()
@@ -2352,7 +2348,9 @@ fn recover_closed_binding_decision_with_proof_from_authority_inner(
     if (v8_released || v8_settled) && held_proof.is_none()
         || proof.is_some() && held_proof.is_some()
         || held_proof.is_some_and(|proof| {
-            proof.binding != binding || proof.epoch != epoch || !hold.held && !v8_released && !v8_settled
+            proof.binding != binding
+                || proof.epoch != epoch
+                || !hold.held && !v8_released && !v8_settled
         })
     {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);

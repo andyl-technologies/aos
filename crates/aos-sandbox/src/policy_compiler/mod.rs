@@ -60,8 +60,9 @@ pub use binding_v2::{
     ClosedPolicyRootCasObservationV2, ClosedPolicyRootSessionV2, ClosedPolicyRootSignerJoinV2,
     ClosedSourceTerminalClaimV1, ClosedSourceTerminalRecordV1, ROOT_EFFECT_ACK_RECORD_BYTES_V1,
     ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1, RootEffectAckErrorV1, RootEffectAckV1,
-    RootV8EffectAckErrorV1, RootV8EffectAckV1, RootV8HeldTerminalStepV1, RootV8TerminalCustodyV1,
-    RootV8VerifiedTerminalV1, StagedClosedPolicyRootBaseV2, StagedClosedPolicySignerChallengeV2,
+    RootV8EffectAckErrorV1, RootV8EffectAckV1, RootV8HeldTerminalStepV1,
+    RootV8SuccessorSettlementV1, RootV8TerminalCustodyV1, RootV8VerifiedTerminalV1,
+    StagedClosedPolicyRootBaseV2, StagedClosedPolicySignerChallengeV2,
     acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
     acknowledge_fixed_closed_root_effect_v1, acknowledge_fixed_closed_root_v8_effect_v1,
     acknowledge_verify_and_release_fixed_closed_root_v8_terminal_v1,
@@ -72,15 +73,17 @@ pub use binding_v2::{
     propose_closed_current_create_policy_binding_v2,
     read_fixed_inert_closed_policy_binding_hold_v1,
     recover_fixed_closed_policy_binding_decision_v2, recover_fixed_closed_root_effect_ack_v1,
-    recover_fixed_closed_root_v8_effect_ack_v1, recover_fixed_closed_root_v8_terminal_custody_v1,
+    recover_fixed_closed_root_v8_effect_ack_v1,
+    recover_fixed_closed_root_v8_predecessor_settlement_v1,
+    recover_fixed_closed_root_v8_terminal_custody_v1,
     recover_fixed_closed_root_v8_verified_terminal_v1,
     recover_fixed_committed_source_held_binding_v2, release_fixed_closed_policy_cache_hold_v1,
     release_fixed_closed_policy_controller_hold_v1,
     release_fixed_closed_policy_source_domain_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
-    require_no_fixed_closed_policy_binding_hold_v1, sign_fixed_controller_v8_final_release_v1,
-    staged_closed_policy_signer_challenge_v2, verify_fixed_closed_root_v8_terminal_v1,
-    with_fixed_closed_policy_binding_session_v2,
+    require_no_fixed_closed_policy_binding_hold_v1, settle_fixed_closed_root_v8_predecessor_v1,
+    sign_fixed_controller_v8_final_release_v1, staged_closed_policy_signer_challenge_v2,
+    verify_fixed_closed_root_v8_terminal_v1, with_fixed_closed_policy_binding_session_v2,
     with_fixed_explicit_closed_policy_binding_session_v2,
 };
 pub use cache_journal_readback::{
@@ -127,6 +130,9 @@ pub use controller_root_receipt_readback_v8::{
     CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1,
     sign_fixed_controller_v8_root_receipt_readback_v1,
     verify_controller_v8_root_receipt_readback_v1,
+};
+pub use controller_v8_settlement_readback::{
+    CONTROLLER_V8_SETTLEMENT_READBACK_BYTES_V1, sign_fixed_controller_v8_settlement_readback_v1,
 };
 pub use deployment_head::{
     PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1, PolicyDeploymentInputsV1,

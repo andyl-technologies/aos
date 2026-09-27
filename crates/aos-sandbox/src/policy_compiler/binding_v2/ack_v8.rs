@@ -43,17 +43,17 @@ pub use final_release::{
     CONTROLLER_V8_FINAL_RELEASE_BYTES_V1, sign_fixed_controller_v8_final_release_v1,
 };
 
+pub use successor_settlement::{
+    RootV8SuccessorSettlementV1, recover_fixed_closed_root_v8_predecessor_settlement_v1,
+    settle_fixed_closed_root_v8_predecessor_v1,
+};
+pub(super) use successor_settlement::{require_settled_predecessor, settlement_for_predecessor};
 pub use terminal::{
     RootV8TerminalCustodyV1, RootV8VerifiedTerminalV1,
     recover_fixed_closed_root_v8_terminal_custody_v1,
     recover_fixed_closed_root_v8_verified_terminal_v1, verify_fixed_closed_root_v8_terminal_v1,
 };
 pub(super) use terminal::{release_marker_matches, verify_released_terminal_without_decision};
-pub(super) use successor_settlement::{require_settled_predecessor, settlement_for_predecessor};
-pub use successor_settlement::{
-    RootV8SuccessorSettlementV1, recover_fixed_closed_root_v8_predecessor_settlement_v1,
-    settle_fixed_closed_root_v8_predecessor_v1,
-};
 
 pub(super) fn current_flight_slots_empty(
     authority: &ProtectedJournalAuthority<'_>,
@@ -1209,8 +1209,7 @@ mod tests {
             )
             .unwrap();
         assert!(
-            require_settled_predecessor(&authority, fixture.binding_head, 2)
-            .is_err(),
+            require_settled_predecessor(&authority, fixture.binding_head, 2).is_err(),
             "a lost release marker cannot turn a V8 predecessor into an inert one"
         );
     }
@@ -1457,9 +1456,11 @@ mod tests {
             identity: super::super::tests::identity(&next),
             postcommit: None,
         };
-        assert!(session
-            .commit_closed_binding_with_proof(&proposed, None, Some(next_proof))
-            .is_err());
+        assert!(
+            session
+                .commit_closed_binding_with_proof(&proposed, None, Some(next_proof))
+                .is_err()
+        );
         drop(session);
         drop(root);
 
