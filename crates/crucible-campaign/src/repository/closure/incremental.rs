@@ -237,9 +237,16 @@ impl CampaignRepository {
             }
 
             if id.kind() == ObjectKind::MerkleNode {
-                let verified = self
-                    .merkle
-                    .verify_closure_objects_cached(id, &mut verified_merkle_positions)?;
+                // A full cold walk reads every yielded leaf below. Anchored
+                // incremental walks may skip known parent leaves, so they
+                // still check leaf presence during Merkle verification.
+                let verified = if anchors.is_empty() {
+                    self.merkle
+                        .verify_closure_structure_cached(id, &mut verified_merkle_positions)?
+                } else {
+                    self.merkle
+                        .verify_closure_objects_cached(id, &mut verified_merkle_positions)?
+                };
                 if let Some(objects) = collected.as_deref_mut() {
                     objects.extend(
                         verified_merkle_positions
