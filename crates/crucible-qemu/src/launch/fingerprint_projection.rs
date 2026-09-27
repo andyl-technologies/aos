@@ -324,7 +324,6 @@ fn expected_manifest_for_shape(
             rows.extend(
                 (0..u32::from(shape.smp_vcpus)).map(|instance| X86_APIC.with_instance(instance)),
             );
-            rows.push(UI_INPUT_QUEUE);
             rows.push(TIMER);
             if shape.shmem_block {
                 rows.push(SHMEM_CONTROL);
@@ -350,7 +349,6 @@ fn expected_manifest_for_shape(
             rows.extend_from_slice(Q35_BODY_AFTER_SERIAL);
         }
         FaultCapabilityScope::Aarch64 => {
-            rows.push(UI_INPUT_QUEUE);
             rows.push(TIMER);
             if shape.shmem_block {
                 rows.push(SHMEM_CONTROL);
@@ -389,6 +387,8 @@ fn expected_manifest_for_shape(
         FaultCapabilityScope::Aarch64 => AARCH64_ACPI,
         _ => return None,
     });
+    // The sim-only queue registers at machine-done, after the realized devices.
+    rows.push(UI_INPUT_QUEUE);
 
     Some(QmpFingerprintProjectionManifest::from_rows(
         rows.into_iter().map(ProjectionRow::into_qmp).collect(),
@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(q35.sections, 39);
         assert_eq!(
             q35.digest,
-            "ee6010553d7a7d1a8ee4740b5f5f265f87539ab7ae492eaae5b8b84562d787bc"
+            "27f97617c43789906601aa79ecb32322acff7a1f6fefb59a1f710412ad8ce513"
         );
 
         let aarch64 = expected_manifest_for_shape(base_shape(FaultCapabilityScope::Aarch64))
@@ -447,7 +447,7 @@ mod tests {
         assert_eq!(aarch64.sections, 18);
         assert_eq!(
             aarch64.digest,
-            "9b3f3e1b09e31333bd6a44b4dd87b00f7cea73e06612be6ef2b41a65dd885c3a"
+            "11398adc7ed565b957d8b03466a2a40a940626720586521a2cf4f030804157a7"
         );
         Ok(())
     }
@@ -485,7 +485,7 @@ mod tests {
         assert_eq!(manifest.sections, 43);
         assert_eq!(
             manifest.digest,
-            "1ea959c79dc528bd190896d40918df1c0065fef8f451a13949d6509c0c7ffa4d"
+            "4c5cd68de0d491f3375dc3c1a764dda70207bbcc1b5398963f23129096434c81"
         );
         Ok(())
     }
@@ -563,7 +563,7 @@ mod tests {
         assert_eq!(manifest.sections, 47);
         assert_eq!(
             manifest.digest,
-            "3ae28b0d8f1e20fb1791f058a57a807b0dbe69c5c7349885e5bf6e9744a4b27c"
+            "d07cf541cc87ae7e3a8b13e46c0c2b54e45133390f839f87e3ca4c7e382b52bb"
         );
         Ok(())
     }
@@ -586,7 +586,7 @@ mod tests {
         assert_eq!(manifest.sections, 50);
         assert_eq!(
             manifest.digest,
-            "ab43c207d4f86cc2ed9f64aca69a2a6b6ffb979b37e6df0ac73cea266e1e9912"
+            "d9fe9e6ccb25d002ea42317138be742bc64e41368b80837b9778bff1548b3e60"
         );
         Ok(())
     }
@@ -609,7 +609,7 @@ mod tests {
         assert_eq!(manifest.sections, 25);
         assert_eq!(
             manifest.digest,
-            "a6461b16ae8c401844bb60ea8c0bff4b23ac4bc1a99413e4a85cf397e691fd64"
+            "d4257e1cd2fead9b2504cd6868aae0826d5ad9e6d763b5c5d33978028371e6ae"
         );
         Ok(())
     }
@@ -624,13 +624,13 @@ mod tests {
         assert_eq!(q35.sections, 48);
         assert_eq!(
             q35.digest,
-            "3a59da71dc11e4fe2f146574977be521b3cb160bc5aadd584cbef5afde25569f"
+            "08d0091dc985394a3ce85bee2f9131914018520149324ec3e760c57688452a19"
         );
 
         let identities = q35
             .rows
             .iter()
-            .take(15)
+            .take(14)
             .map(|row| (row.id.as_str(), row.instance))
             .collect::<Vec<_>>();
         assert_eq!(
@@ -640,7 +640,6 @@ mod tests {
                 ("apic", 1),
                 ("apic", 2),
                 ("apic", 3),
-                ("ui-input-queue", 0),
                 ("timer", 0),
                 ("cpu_common", 0),
                 ("cpu", 0),
@@ -653,6 +652,10 @@ mod tests {
                 ("cpu", 3),
             ]
         );
+        assert_eq!(
+            q35.rows.last().map(|row| row.id.as_str()),
+            Some("ui-input-queue")
+        );
 
         let aarch64 = expected_manifest_for_shape(ProjectionManifestShape {
             smp_vcpus: 4,
@@ -662,7 +665,11 @@ mod tests {
         assert_eq!(aarch64.sections, 24);
         assert_eq!(
             aarch64.digest,
-            "394588ec1ff0acef7dba6260f9b54b30d9802b12971bd900423b96197f6e02fc"
+            "6a2da7fa57e6b35c6aed4ba9df660e4d13442fdfd9f6b78961f938fde52dfcb3"
+        );
+        assert_eq!(
+            aarch64.rows.last().map(|row| row.id.as_str()),
+            Some("ui-input-queue")
         );
         Ok(())
     }
@@ -708,7 +715,7 @@ mod tests {
             );
         }
 
-        for (manifest, offset) in [(&envoy, 1), (&production, 10)] {
+        for (manifest, offset) in [(&envoy, 0), (&production, 9)] {
             assert_projection_row(
                 manifest,
                 5 + offset,
@@ -767,7 +774,7 @@ mod tests {
 
         assert_projection_row(
             &envoy,
-            37,
+            36,
             "0000:00:01.0/virtio-rng",
             0,
             3,
@@ -776,7 +783,7 @@ mod tests {
         );
         assert_projection_row(
             &envoy,
-            41,
+            40,
             "crucible-fault",
             0,
             1,
@@ -785,7 +792,7 @@ mod tests {
         );
         assert_projection_row(
             &production,
-            46,
+            45,
             "0000:00:01.0/virtio-rng",
             0,
             3,
@@ -794,7 +801,7 @@ mod tests {
         );
         assert_projection_row(
             &production,
-            48,
+            47,
             "crucible-fault",
             0,
             1,
