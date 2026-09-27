@@ -230,16 +230,13 @@ impl QemuReplayValidationExecutor {
             }
             _ => {}
         }
-        let runtime_id = Backend::fingerprint(node)
-            .map(|fingerprint| fingerprint.hash)
-            .map_err(|source| node_backend_error("sample guarded replay fingerprint", source))?;
-
-        runtime.id = runtime_id;
+        // The opaque observation keeps its last sampled identity while the
+        // physical count, event-log offset, and generation bind this step.
+        // The oracle takes a fresh full fingerprint at the final comparison.
         runtime
             .node_icounts
             .insert(self.node.clone(), current_icount);
         runtime.event_log = self.event_log.offset();
-        self.active_runtime_id = Some(runtime_id);
         let generation = self.issue_observation_generation()?;
         self.thin_observation_generation = Some(generation);
         Ok((

@@ -408,7 +408,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
     let mut progress = ReplayPhysicalProgress::new(Icount { retired: 5 });
     assert_eq!(
         progress.next_ceiling(Icount {
-            retired: 30_000_000
+            retired: 3_000_000_000
         })?,
         Icount {
             retired: 10_000_005
@@ -424,58 +424,78 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
             at: Icount { retired: 5 },
         },
         Some(Icount {
-            retired: 25_000_000,
+            retired: 2_500_000_000,
         }),
     )?;
     assert_eq!(
         progress.next_ceiling(Icount {
-            retired: 30_000_000
+            retired: 3_000_000_000
         })?,
         Icount {
-            retired: 20_000_005
+            retired: 1_010_000_005
         }
     );
     progress.observe(
         Icount { retired: 5 },
         Icount {
-            retired: 20_000_005,
+            retired: 1_010_000_005,
         },
         AdvanceOutcome::Paused {
             at: Icount { retired: 5 },
         },
         Some(Icount {
-            retired: 25_000_000,
+            retired: 2_500_000_000,
         }),
     )?;
     assert_eq!(
         progress.next_ceiling(Icount {
-            retired: 30_000_000
+            retired: 3_000_000_000
         })?,
         Icount {
-            retired: 30_000_000
+            retired: 2_010_000_005
         }
     );
     progress.observe(
+        Icount { retired: 5 },
         Icount {
-            retired: 30_000_000,
+            retired: 2_010_000_005,
         },
-        Icount {
-            retired: 30_000_000,
+        AdvanceOutcome::Paused {
+            at: Icount { retired: 5 },
         },
-        AdvanceOutcome::ReachedHorizon,
-        None,
+        Some(Icount {
+            retired: 2_500_000_000,
+        }),
     )?;
+    let deadline = Icount {
+        retired: 2_500_000_000,
+    };
+    assert_eq!(
+        progress.next_ceiling(Icount {
+            retired: 3_000_000_000
+        })?,
+        deadline
+    );
+    progress.observe(deadline, deadline, AdvanceOutcome::ReachedHorizon, None)?;
+    assert_eq!(
+        progress.next_ceiling(Icount {
+            retired: 3_000_000_000
+        })?,
+        Icount {
+            retired: 2_510_000_000
+        }
+    );
     assert!(
         progress
             .next_ceiling(Icount {
-                retired: 30_000_000
+                retired: 2_500_000_000
             })
             .is_err()
     );
     let mut stalled = ReplayPhysicalProgress::new(Icount { retired: 5 });
     for _ in 0..MAX_REPLAY_STALLED_REISSUES {
         let ceiling = stalled.next_ceiling(Icount {
-            retired: 30_000_000,
+            retired: 750_000_000,
         })?;
         assert_eq!(
             ceiling,
@@ -493,7 +513,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         )?;
     }
     let ceiling = stalled.next_ceiling(Icount {
-        retired: 30_000_000,
+        retired: 750_000_000,
     })?;
     assert!(
         stalled
@@ -507,6 +527,173 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
             )
             .is_err()
     );
+    Ok(())
+}
+
+fn replay_parked_timer_then_choice(
+    parked_advance: u64,
+) -> Result<(CampaignHash, Vec<Icount>), Box<dyn std::error::Error>> {
+    let mut progress =
+        ReplayPhysicalProgress::with_parked_advance(Icount { retired: 0 }, parked_advance);
+    let timer = Icount {
+        retired: 20_000_000,
+    };
+    let choice_trap = Icount {
+        retired: 70_000_000,
+    };
+    let choice_pause = Icount {
+        retired: choice_trap.retired + SELECTABLE_NATIVE_HANDOFF_TICKS_PS,
+    };
+    let mut physical = Icount { retired: 0 };
+    let mut ceilings = Vec::new();
+    let mut events = Vec::new();
+
+    loop {
+        let ceiling = progress.next_ceiling(Icount {
+            retired: 80_000_000,
+        })?;
+        ceilings.push(ceiling);
+        let (at, outcome, idle_deadline) =
+            if physical.retired == 0 && ceiling.retired < timer.retired {
+                (
+                    physical,
+                    AdvanceOutcome::Paused { at: physical },
+                    Some(timer),
+                )
+            } else if physical.retired == 0 {
+                events.push(format!("timer@{}", timer.retired));
+                (timer, AdvanceOutcome::ReachedHorizon, None)
+            } else if physical == timer && ceiling.retired < choice_trap.retired {
+                (
+                    physical,
+                    AdvanceOutcome::Paused { at: physical },
+                    Some(choice_trap),
+                )
+            } else if physical == timer {
+                (choice_trap, AdvanceOutcome::ReachedHorizon, None)
+            } else {
+                events.push(format!("choice@{}", choice_pause.retired));
+                (
+                    choice_pause,
+                    AdvanceOutcome::Paused { at: choice_pause },
+                    None,
+                )
+            };
+        progress.observe(at, ceiling, outcome, idle_deadline)?;
+        physical = at;
+        if physical == choice_pause {
+            break;
+        }
+    }
+
+    Ok((
+        CampaignHash::derive("guarded-replay-test-oracle", events.join("|").as_bytes()),
+        ceilings,
+    ))
+}
+
+#[test]
+fn parked_replay_clips_timer_and_choice_and_matches_ten_microsecond_oracle()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (reference_hash, reference_ceilings) =
+        replay_parked_timer_then_choice(MAX_GUARDED_REPLAY_ADVANCE_ICOUNT)?;
+    let (optimized_hash, optimized_ceilings) =
+        replay_parked_timer_then_choice(MAX_GUARDED_REPLAY_PARKED_ADVANCE_ICOUNT)?;
+
+    assert_eq!(optimized_hash, reference_hash);
+    assert!(optimized_ceilings.len() < reference_ceilings.len());
+    assert!(optimized_ceilings.contains(&Icount {
+        retired: 20_000_000
+    }));
+    assert!(optimized_ceilings.contains(&Icount {
+        retired: 70_000_000
+    }));
+    Ok(())
+}
+
+#[test]
+fn inbound_wake_inside_parked_ceiling_resumes_runnable_cap()
+-> Result<(), Box<dyn std::error::Error>> {
+    let target = Icount {
+        retired: 120_000_000,
+    };
+    let mut progress = ReplayPhysicalProgress::new(Icount { retired: 0 });
+    let initial = progress.next_ceiling(target)?;
+    progress.observe(
+        Icount { retired: 0 },
+        initial,
+        AdvanceOutcome::Paused {
+            at: Icount { retired: 0 },
+        },
+        Some(Icount {
+            retired: 100_000_000,
+        }),
+    )?;
+
+    let parked_ceiling = progress.next_ceiling(target)?;
+    assert_eq!(parked_ceiling.retired, 100_000_000);
+    progress.observe(
+        Icount {
+            retired: 40_000_000,
+        },
+        parked_ceiling,
+        AdvanceOutcome::Paused {
+            at: Icount {
+                retired: 40_000_000,
+            },
+        },
+        None,
+    )?;
+
+    assert_eq!(
+        progress.next_ceiling(target)?,
+        Icount {
+            retired: 50_000_000
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn runnable_replay_keeps_ring_drain_cap_and_rejects_unrecorded_choice()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_, node, _) = replay_choice_fixture()?;
+    let request = SelectablePlanPendingRequest::new(
+        SelectionRequest::new(3, "campaign.recovery-policy", "unexpected", None, 256)?,
+        300_000,
+        15_000_000,
+        0,
+        0x3000,
+    );
+    let mut replay = ScriptedPhysicalReplay {
+        node,
+        upcoming: VecDeque::from([request]),
+        pending: None,
+        replies: Vec::new(),
+        advances: Vec::new(),
+        inputs: Vec::new(),
+    };
+    let mut progress = ReplayPhysicalProgress::new(Icount { retired: 0 });
+    let first = progress.next_ceiling(Icount {
+        retired: 100_000_000,
+    })?;
+    let first_advance = replay.advance_to_ceiling(Icount { retired: 0 }, first)?;
+    progress.observe(
+        first_advance.state,
+        first,
+        first_advance.outcome,
+        first_advance.idle_deadline,
+    )?;
+
+    let second = progress.next_ceiling(Icount {
+        retired: 100_000_000,
+    })?;
+    let second_advance = replay.advance_to_ceiling(first_advance.state, second)?;
+    assert_eq!(first.retired, 10_000_000);
+    assert_eq!(second.retired, 20_000_000);
+    assert_eq!(second_advance.state.retired, 15_000_050);
+    assert!(reject_unrecorded_local_request(&mut replay).is_err());
+    assert!(replay.replies.is_empty());
     Ok(())
 }
 

@@ -29,8 +29,11 @@ mod network_inputs;
 
 use network_inputs::{ReplayStep, authenticated_replay_steps};
 
-// A physical step is charged separately and must not skip an unbounded guest span.
+// Runnable work retains the original 10us ceiling so the host can drain the
+// bounded guest TX ring. A completed idle observation may skip farther, but
+// never past its exact next deadline or the authenticated replay target.
 const MAX_GUARDED_REPLAY_ADVANCE_ICOUNT: u64 = 10_000_000;
+const MAX_GUARDED_REPLAY_PARKED_ADVANCE_ICOUNT: u64 = 1_000_000_000;
 const MAX_REPLAY_STALLED_REISSUES: u8 = 2;
 
 /// Root-bound scheduler evidence required to reconstruct physical replay.
@@ -249,8 +252,10 @@ where
             )?;
         }
 
-        self.executor
-            .finish_replay_oracle_comparison(snapshot, configuration, fat, thin)
+        let comparison =
+            self.executor
+                .finish_replay_oracle_comparison(snapshot, configuration, fat, thin);
+        self.observe_realization(comparison)
     }
 
     fn observe_realization<T>(
@@ -360,6 +365,9 @@ impl<G: QemuAttemptProcessResourceGuard> GuardedReplayPhysicalNode
         ceiling: Icount,
     ) -> Result<ReplayPhysicalAdvance<Self::Observation>, QemuVmRealizationError> {
         self.guard.check_operational_boundary()?;
+        // Each call consumes one operational quantum. A longer parked ceiling
+        // authorizes no guest work before its observed wake deadline; runnable
+        // calls retain the original short ceiling and TX-drain cadence.
         self.guard.charge_execution_quantum()?;
         let result = self
             .executor
@@ -494,6 +502,8 @@ struct ReplayPhysicalProgress {
     physical_at: Icount,
     scheduler_frontier: Icount,
     stalled_reissues: u8,
+    parked_until: Option<Icount>,
+    parked_advance_icount: u64,
 }
 
 impl ReplayPhysicalProgress {
@@ -502,6 +512,17 @@ impl ReplayPhysicalProgress {
             physical_at: at,
             scheduler_frontier: at,
             stalled_reissues: 0,
+            parked_until: None,
+            parked_advance_icount: MAX_GUARDED_REPLAY_PARKED_ADVANCE_ICOUNT,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_parked_advance(at: Icount, parked_advance_icount: u64) -> Self {
+        assert!(parked_advance_icount > 0);
+        Self {
+            parked_advance_icount,
+            ..Self::new(at)
         }
     }
 
@@ -511,12 +532,19 @@ impl ReplayPhysicalProgress {
                 "recorded physical boundary was absent by the exact target count",
             ));
         }
-        Ok(Icount {
-            retired: self
+        let ceiling = match self.parked_until {
+            Some(deadline) => self
                 .scheduler_frontier
                 .retired
-                .saturating_add(MAX_GUARDED_REPLAY_ADVANCE_ICOUNT)
-                .min(target.retired),
+                .saturating_add(self.parked_advance_icount)
+                .min(deadline.retired),
+            None => self
+                .scheduler_frontier
+                .retired
+                .saturating_add(MAX_GUARDED_REPLAY_ADVANCE_ICOUNT),
+        };
+        Ok(Icount {
+            retired: ceiling.min(target.retired),
         })
     }
 
@@ -545,12 +573,18 @@ impl ReplayPhysicalProgress {
             }
             _ => {}
         }
+        let confirmed_parked_deadline = match outcome {
+            AdvanceOutcome::Paused { at: paused } if paused == at => {
+                idle_deadline.filter(|deadline| deadline.retired > ceiling.retired)
+            }
+            _ => None,
+        };
+        self.parked_until = confirmed_parked_deadline;
+
         if at == ceiling {
             self.scheduler_frontier = ceiling;
             self.stalled_reissues = 0;
-        } else if matches!(outcome, AdvanceOutcome::Paused { at: paused } if paused == at)
-            && idle_deadline.is_some_and(|deadline| deadline.retired > ceiling.retired)
-        {
+        } else if confirmed_parked_deadline.is_some() {
             // The live node-set scheduler also completes a quantum when an
             // authenticated idle deadline lies beyond its selected ceiling.
             // Only its virtual frontier moves; QEMU stays parked until a later
