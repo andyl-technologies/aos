@@ -780,6 +780,7 @@ let
     inventory;
 
   helperInventory = {
+    "networking/envoy-patches/_antlr4-tool.nix" = "native-build-helper";
     "build-support/_accache.nix" = "cross-build-helper";
     "build-support/_perl-xs-cross-config.nix" = "cross-build-helper";
     "tools/workerd/_bazel-copy-directory.nix" = "native-build-helper";
