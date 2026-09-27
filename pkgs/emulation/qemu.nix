@@ -35,6 +35,7 @@
   findutils ? null,
   gawk ? null,
   grep ? null,
+  iproute2 ? null,
   kmod ? null,
   linux ? null,
   sed ? null,
@@ -68,6 +69,7 @@
       findutils
       gawk
       grep
+      iproute2
       kmod
       linux
       sed
@@ -375,6 +377,7 @@
       findutils
       gawk
       grep
+      iproute2
       kmod
       sed
       util-linux
@@ -1240,10 +1243,14 @@ in
               mount -t proc proc /proc
               mount -t sysfs sysfs /sys
               mount -t devtmpfs devtmpfs /dev
+              # I/O tests use Bash process substitution through /dev/fd.
+              ln -s /proc/self/fd /dev/fd
               mkdir -p /dev/pts /dev/shm
               mount -t devpts devpts /dev/pts
               mount -t tmpfs -o mode=1777 tmpfs /dev/shm
               mount -t tmpfs tmpfs /run
+              # Migration and VNC tests use guest-local TCP sockets.
+              ${iproute2}/sbin/ip link set lo up
               modprobe kvm_intel 2>/dev/null || modprobe kvm_amd 2>/dev/null
               test -c /dev/kvm
               mkdir -p /results
