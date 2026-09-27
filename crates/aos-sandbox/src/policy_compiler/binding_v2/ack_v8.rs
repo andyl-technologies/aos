@@ -36,6 +36,7 @@ use crate::policy_compiler::source_hold_readback::PinnedSourceHoldReadbackSigner
 use super::*;
 
 mod final_release;
+mod successor_settlement;
 mod terminal;
 
 pub use final_release::{
@@ -48,49 +49,11 @@ pub use terminal::{
     recover_fixed_closed_root_v8_verified_terminal_v1, verify_fixed_closed_root_v8_terminal_v1,
 };
 pub(super) use terminal::{release_marker_matches, verify_released_terminal_without_decision};
-
-pub(super) fn retirement_records_for_successor(
-    authority: &ProtectedJournalAuthority<'_>,
-    binding: ObjectDigest,
-    next_epoch: u64,
-) -> Result<Vec<JournalRecord>, PolicyCompilerJournalErrorV1> {
-    let marker = authority.get(terminal::release::RELEASE_KEY)?;
-    let ack = authority.get(ACK_KEY)?;
-    let terminal_row = authority.get(terminal::TERMINAL_KEY)?;
-    if marker.is_none() {
-        if ack.is_some()
-            || terminal_row.is_some()
-            || authority.get(&held_cas_proof_key(binding))?.is_some()
-        {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
-        return Ok(Vec::new());
-    }
-    if ack.is_none() || terminal_row.is_none() {
-        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-    }
-    let epoch = next_epoch
-        .checked_sub(1)
-        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-    if !matches!(
-        terminal::current_terminal_custody(authority, binding, epoch),
-        Ok(Some(RootV8TerminalCustodyV1::Released(..)))
-    ) {
-        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-    }
-
-    // These are current-flight slots. The per-binding held proof remains in
-    // immutable history, while the fixed proof may already name the successor.
-    // Challenge issues continue monotonically across bindings.
-    Ok([
-        terminal::release::RELEASE_KEY,
-        ACK_KEY,
-        terminal::TERMINAL_KEY,
-    ]
-    .into_iter()
-    .map(|key| JournalRecord::delete(RecordNamespace::DesiredState, key.to_vec()))
-    .collect())
-}
+pub(super) use successor_settlement::{require_settled_predecessor, settlement_for_predecessor};
+pub use successor_settlement::{
+    RootV8SuccessorSettlementV1, recover_fixed_closed_root_v8_predecessor_settlement_v1,
+    settle_fixed_closed_root_v8_predecessor_v1,
+};
 
 pub(super) fn current_flight_slots_empty(
     authority: &ProtectedJournalAuthority<'_>,
@@ -782,6 +745,7 @@ fn acknowledge_in_authority(
         future[0].clone(),
         future[1].clone(),
         terminal::release_capacity_transaction()?,
+        successor_settlement::settlement_capacity_transaction()?,
     ];
     let preflight = authority.preflight_transactions(&planned)?;
     authority.validate_preflight_for_effect(&preflight, &planned)?;
@@ -1049,6 +1013,43 @@ mod tests {
         terminal
     }
 
+    fn test_settlement_record(
+        authority: &ProtectedJournalAuthority<'_>,
+        fixture: &V8RootFixture,
+    ) -> [u8; 312] {
+        let cut = custody_cut(authority, fixture.binding_head, 1, true).unwrap();
+        let ack = current_ack_for_cut(authority, fixture.binding_head, 1, &cut)
+            .unwrap()
+            .unwrap();
+        let release = authority
+            .get(terminal::release::RELEASE_KEY)
+            .unwrap()
+            .unwrap();
+        let mut record = [0; 312];
+        record[..8].copy_from_slice(b"AOSQ8S01");
+        record[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        record[10] = 1;
+        record[16..48].copy_from_slice(fixture.binding_head.as_bytes());
+        record[48..56].copy_from_slice(&1_u64.to_be_bytes());
+        record[56..88].fill(1);
+        record[88..120].copy_from_slice(fixture.ack.record_digest().unwrap().as_bytes());
+        record[120..152].copy_from_slice(
+            crate::journal::controller_v8_root_receipt_record_digest_v1(ack)
+                .unwrap()
+                .as_bytes(),
+        );
+        record[152..184].copy_from_slice(&Sha256::digest(release));
+        record[184..216].fill(2);
+        record[216..248].fill(3);
+        record[248..280].fill(4);
+        let checksum = Sha256::new()
+            .chain_update(b"aos.sandbox.controller-policy-v8-settlement.v1\0")
+            .chain_update(&record[..280])
+            .finalize();
+        record[280..].copy_from_slice(&checksum);
+        record
+    }
+
     #[test]
     fn v8_root_ack_codec_rejects_cross_version_and_corruption() {
         let record = RootV8EffectAckV1 {
@@ -1208,7 +1209,8 @@ mod tests {
             )
             .unwrap();
         assert!(
-            retirement_records_for_successor(&authority, fixture.binding_head, 2).is_err(),
+            require_settled_predecessor(&authority, fixture.binding_head, 2)
+            .is_err(),
             "a lost release marker cannot turn a V8 predecessor into an inert one"
         );
     }
@@ -1355,7 +1357,7 @@ mod tests {
     }
 
     #[test]
-    fn released_v8_terminal_survives_successor_stage_and_retires_with_successor_cas() {
+    fn released_v8_terminal_requires_signed_settlement_before_successor_cas() {
         let directory = tempfile::tempdir().unwrap();
         let first = prepare_v8_root_fixture(directory.path());
         let mut root = super::super::tests::open_test_root(directory.path());
@@ -1433,6 +1435,7 @@ mod tests {
         drop(root);
 
         let mut root = super::super::tests::open_test_root(directory.path());
+        root.compact().unwrap();
         let authority = root
             .claim_protected_authority(RecordNamespace::DesiredState)
             .unwrap();
@@ -1449,6 +1452,62 @@ mod tests {
             .is_ok()
         );
 
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: super::super::tests::identity(&next),
+            postcommit: None,
+        };
+        assert!(session
+            .commit_closed_binding_with_proof(&proposed, None, Some(next_proof))
+            .is_err());
+        drop(session);
+        drop(root);
+
+        let mut root = super::super::tests::open_test_root(directory.path());
+        let mut authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        let record = test_settlement_record(&authority, &first);
+        let settled = successor_settlement::settle_in_authority(
+            &mut authority,
+            first.binding_head,
+            1,
+            1234,
+            &first.controller_pin,
+            || Ok([46; 16]),
+            |challenge| {
+                use crate::policy_compiler::controller_v8_readback_envelope::{
+                    ControllerV8ReadbackProtocol, sign_packet,
+                };
+
+                Ok(sign_packet::<460>(
+                    ControllerV8ReadbackProtocol::Settlement,
+                    &record,
+                    1234,
+                    7,
+                    challenge,
+                    4,
+                    &first.controller_key,
+                )
+                .unwrap()
+                .to_vec())
+            },
+        )
+        .unwrap();
+        assert_eq!(settled.predecessor(), first.binding_head);
+        assert!(current_flight_slots_empty(&authority).unwrap());
+        drop(authority);
+        drop(root);
+
+        let mut root = super::super::tests::open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        assert_eq!(
+            successor_settlement::settlement_for_predecessor(&authority, first.binding_head)
+                .unwrap(),
+            Some(settled),
+        );
         let mut session = ClosedPolicyRootSessionV2 {
             authority,
             identity: super::super::tests::identity(&next),

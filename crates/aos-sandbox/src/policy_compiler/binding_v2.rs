@@ -85,9 +85,12 @@ pub use ack_v8::{
     RootV8VerifiedTerminalV1, acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
     acknowledge_fixed_closed_root_v8_effect_v1,
     acknowledge_verify_and_release_fixed_closed_root_v8_terminal_v1,
-    recover_fixed_closed_root_v8_effect_ack_v1, recover_fixed_closed_root_v8_terminal_custody_v1,
+    recover_fixed_closed_root_v8_effect_ack_v1,
+    recover_fixed_closed_root_v8_predecessor_settlement_v1,
+    recover_fixed_closed_root_v8_terminal_custody_v1,
     recover_fixed_closed_root_v8_verified_terminal_v1, sign_fixed_controller_v8_final_release_v1,
-    verify_fixed_closed_root_v8_terminal_v1,
+    settle_fixed_closed_root_v8_predecessor_v1, verify_fixed_closed_root_v8_terminal_v1,
+    RootV8SuccessorSettlementV1,
 };
 
 pub use producer::{
@@ -1571,12 +1574,11 @@ impl ClosedPolicyRootSessionV2<'_> {
             if prior_hold.is_some_and(|hold| hold.held) {
                 return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
             }
-            let retirement = ack_v8::retirement_records_for_successor(
+            ack_v8::require_settled_predecessor(
                 &self.authority,
                 predecessor,
                 next_generation,
             )?;
-            let retires_v8 = !retirement.is_empty();
             require_unique_root_binding_identity(&self.authority, &binding)?;
             if !new_root_cas_matches(&binding, predecessor, next_generation, count)
                 || self.authority.get(&key)?.is_some()
@@ -1631,7 +1633,6 @@ impl ClosedPolicyRootSessionV2<'_> {
                     value.to_vec(),
                 ));
             }
-            records.extend(retirement);
             let transaction = JournalTransaction::new(transaction_id, records)?;
             // A qualified signer proof shares the binding/head/hold commit.
             // A lost response cannot leave a proof with no Root decision.
@@ -1643,7 +1644,6 @@ impl ClosedPolicyRootSessionV2<'_> {
                     != proof_bytes.as_ref().map(AsRef::as_ref)
                 || self.authority.get(&held_cas_proof_key(binding_head))?
                     != held_proof_bytes.as_ref().map(AsRef::as_ref)
-                || retires_v8 && !ack_v8::current_flight_slots_empty(&self.authority)?
             {
                 return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
             }
@@ -2338,16 +2338,21 @@ fn recover_closed_binding_decision_with_proof_from_authority_inner(
     let held_proof_bytes = authority.get(&held_cas_proof_key(binding))?;
     let held_proof = held_proof_bytes.map(RootHeldProofV2::decode).transpose()?;
     let v8_released = ack_v8::release_marker_matches(authority, binding, epoch, hold)?;
+    let v8_settled = ack_v8::settlement_for_predecessor(authority, binding)?
+        .is_some_and(|settlement| settlement.epoch() == epoch);
+    if v8_settled && (v8_released || hold.held || !ack_v8::current_flight_slots_empty(authority)?) {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
     if v8_released && verify_release {
         ack_v8::verify_released_terminal_without_decision(authority, binding, epoch)?;
     }
     if proof.is_some_and(|proof| proof.binding != binding || proof.epoch != epoch) {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
-    if v8_released && held_proof.is_none()
+    if (v8_released || v8_settled) && held_proof.is_none()
         || proof.is_some() && held_proof.is_some()
         || held_proof.is_some_and(|proof| {
-            proof.binding != binding || proof.epoch != epoch || !hold.held && !v8_released
+            proof.binding != binding || proof.epoch != epoch || !hold.held && !v8_released && !v8_settled
         })
     {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);

@@ -29,6 +29,7 @@ pub(super) enum ControllerV8ReadbackProtocol {
     EffectAck,
     RootReceipt,
     FinalRelease,
+    Settlement,
 }
 
 impl ControllerV8ReadbackProtocol {
@@ -37,6 +38,7 @@ impl ControllerV8ReadbackProtocol {
             Self::EffectAck => b"AOSCTE08",
             Self::RootReceipt => b"AOSCTR08",
             Self::FinalRelease => b"AOSCTF08",
+            Self::Settlement => b"AOSCTS08",
         }
     }
 
@@ -45,6 +47,7 @@ impl ControllerV8ReadbackProtocol {
             Self::EffectAck => 320,
             Self::RootReceipt => ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1,
             Self::FinalRelease => 476,
+            Self::Settlement => 312,
         }
     }
 
@@ -53,6 +56,7 @@ impl ControllerV8ReadbackProtocol {
             Self::EffectAck => b"aos.sandbox.controller-policy-v8-effect-ack.readback.v1\0/var/lib/aos/sandboxd/controller.journal\0",
             Self::RootReceipt => b"aos.sandbox.controller-policy-v8-root-receipt.readback.v1\0/var/lib/aos/sandboxd/controller.journal\0",
             Self::FinalRelease => b"aos.sandbox.controller-policy-v8-final-release.command.v1\0/var/lib/aos/sandboxd/controller.journal\0",
+            Self::Settlement => b"aos.sandbox.controller-policy-v8-settlement.readback.v1\0/var/lib/aos/sandboxd/controller.journal\0",
         }
     }
 
