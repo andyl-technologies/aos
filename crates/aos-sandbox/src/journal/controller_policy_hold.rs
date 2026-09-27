@@ -648,8 +648,19 @@ fn current(
         return Err(JournalError::ProtectedBoundary);
     }
     if attempt.is_some_and(|attempt| {
-        hold != Some(attempt.hold) || ack.is_some() || !attempt.hold.is_held()
+        hold.map(|current| ControllerPolicyHoldV1 {
+            held: true,
+            ..current
+        }) != Some(attempt.hold)
+            || ack.is_some()
+            || !attempt.hold.is_held()
     }) {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    if hold.is_some_and(|hold| !hold.is_held())
+        && attempt.is_some()
+        && (v8_ack.is_none() || v8_root_receipt.is_none())
+    {
         return Err(JournalError::ProtectedBoundary);
     }
     if v8_ack.is_some_and(|ack| attempt != Some(ack.attempt)) {
@@ -768,6 +779,7 @@ pub(super) fn require_no_mutation(
     transaction: &JournalTransaction,
 ) -> Result<(), JournalError> {
     if current(state)?.is_some_and(ControllerPolicyHoldV1::is_held)
+        || current_v8_attempt(state)?.is_some()
         || transaction
             .records()
             .iter()
@@ -781,7 +793,9 @@ pub(super) fn require_no_mutation(
 pub(super) fn require_no_compaction(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<(), JournalError> {
-    if current(state)?.is_some_and(ControllerPolicyHoldV1::is_held) {
+    if current(state)?.is_some_and(ControllerPolicyHoldV1::is_held)
+        || current_v8_attempt(state)?.is_some()
+    {
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(())
@@ -1021,7 +1035,7 @@ impl Journal {
     ///
     /// # Errors
     ///
-    /// Rejects unprotected, malformed, released, or mixed hold state.
+    /// Rejects unprotected, malformed, or mixed hold state.
     pub fn controller_policy_v8_attempt_v1(
         &self,
     ) -> Result<Option<ControllerPolicyV8AttemptV1>, JournalError> {
@@ -1068,14 +1082,14 @@ impl Journal {
         Ok(())
     }
 
-    /// Reads the exact, still-held V8 no-Apply effect acknowledgment.
+    /// Reads the exact historical V8 no-Apply effect acknowledgment.
     ///
     /// This protected local replay does not reauthenticate Root or Cache and
     /// cannot be used as a release or effect capability on its own.
     ///
     /// # Errors
     ///
-    /// Rejects unprotected, malformed, mixed, or released Controller custody.
+    /// Rejects unprotected, malformed, or mixed Controller custody.
     pub fn controller_policy_v8_effect_ack_v1(
         &self,
     ) -> Result<Option<ControllerPolicyV8EffectAckV1>, JournalError> {
@@ -1154,7 +1168,9 @@ impl Journal {
     ) -> Result<(), JournalError> {
         ensure_controller(self)?;
         let ack = current_v8_ack(&self.state)?.ok_or(JournalError::ProtectedBoundary)?;
-        if !v8_root_receipt_matches_ack(receipt, ack)? {
+        if current(&self.state)? != Some(ack.attempt().hold())
+            || !v8_root_receipt_matches_ack(receipt, ack)?
+        {
             return Err(JournalError::ProtectedBoundary);
         }
         match current_v8_root_receipt(&self.state)? {
@@ -1172,6 +1188,64 @@ impl Journal {
             false,
         )?;
         if current_v8_root_receipt(&self.state)? != Some(receipt) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
+    /// Retires only the local Controller V8 hold after earlier owners release.
+    ///
+    /// This journal primitive cannot establish Root, Cache, or Source release.
+    /// A future caller must verify those exact releases before invoking it;
+    /// no production caller exists yet. The retained V8 attempt continues to
+    /// fence ordinary Controller mutations after the local hold is released.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an incomplete or changed V8 attempt, effect ACK, Root receipt,
+    /// Controller hold, or failed durable commit and readback.
+    #[allow(dead_code)]
+    pub(crate) fn retire_controller_policy_v8_hold_local_v1(
+        &mut self,
+        expected: ControllerPolicyHoldV1,
+        receipt: RootV8EffectAckV1,
+    ) -> Result<(), JournalError> {
+        ensure_controller(self)?;
+        if !expected.is_held() || current_ack(&self.state)?.is_some() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let attempt = current_v8_attempt(&self.state)?.ok_or(JournalError::ProtectedBoundary)?;
+        let ack = current_v8_ack(&self.state)?.ok_or(JournalError::ProtectedBoundary)?;
+        if attempt.hold() != expected
+            || ack.attempt() != attempt
+            || !v8_root_receipt_matches_ack(receipt, ack)?
+            || current_v8_root_receipt(&self.state)? != Some(receipt)
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+
+        let released = ControllerPolicyHoldV1 {
+            held: false,
+            ..expected
+        };
+        match current(&self.state)? {
+            Some(prior) if prior == released => return Ok(()),
+            Some(prior) if prior == expected => {}
+            _ => return Err(JournalError::ProtectedBoundary),
+        }
+
+        self.commit_with_capacity_scope(
+            &transaction(released)?,
+            None,
+            false,
+            true,
+            false,
+            false,
+            false,
+        )?;
+        if current(&self.state)? != Some(released)
+            || current_v8_root_receipt(&self.state)? != Some(receipt)
+        {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
@@ -1841,7 +1915,136 @@ mod tests {
             .unwrap()
             .to_vec(),
         );
-        assert!(current(&state).is_err(), "released hold fails cold replay");
+        assert_eq!(
+            current(&state).unwrap(),
+            Some(ControllerPolicyHoldV1 {
+                held: false,
+                ..hold
+            }),
+            "the complete V8 chain admits exact released replay"
+        );
+        state.remove(&(
+            RecordNamespace::ControllerPolicyHold,
+            V8_ROOT_RECEIPT_KEY.to_vec(),
+        ));
+        assert!(current(&state).is_err(), "release requires Root receipt");
+    }
+
+    #[test]
+    fn v8_local_retirement_requires_complete_chain_and_replays_exactly() {
+        let directory = TestDirectory::new();
+        let hold = hold();
+        let attempt =
+            ControllerPolicyV8AttemptV1::new(hold, ObjectDigest::from_bytes([28; 32])).unwrap();
+        let ack = ControllerPolicyV8EffectAckV1::new(
+            attempt,
+            13,
+            [14; 16],
+            ObjectDigest::from_bytes([15; 32]),
+            ObjectDigest::from_bytes([16; 32]),
+        )
+        .unwrap();
+        let receipt = v8_root_receipt(ack);
+        let mut controller = directory.open();
+
+        assert!(
+            controller
+                .retire_controller_policy_v8_hold_local_v1(hold, receipt)
+                .is_err()
+        );
+        controller.acquire_controller_policy_hold_v1(hold).unwrap();
+        controller
+            .record_controller_policy_v8_attempt_v1(attempt)
+            .unwrap();
+        assert!(
+            controller
+                .retire_controller_policy_v8_hold_local_v1(hold, receipt)
+                .is_err()
+        );
+        controller
+            .acknowledge_controller_policy_v8_effect_v1(ack)
+            .unwrap();
+        assert!(
+            controller
+                .retire_controller_policy_v8_hold_local_v1(hold, receipt)
+                .is_err()
+        );
+        controller
+            .record_controller_policy_v8_root_receipt_v1(receipt)
+            .unwrap();
+
+        let changed_hold = ControllerPolicyHoldV1 {
+            binding: ObjectDigest::from_bytes([29; 32]),
+            ..hold
+        };
+        let changed_ack = ControllerPolicyV8EffectAckV1::new(
+            attempt,
+            14,
+            ack.effect_transaction(),
+            ack.root_proof(),
+            ack.cache_quota(),
+        )
+        .unwrap();
+        assert!(
+            controller
+                .retire_controller_policy_v8_hold_local_v1(changed_hold, receipt)
+                .is_err()
+        );
+        assert!(
+            controller
+                .retire_controller_policy_v8_hold_local_v1(hold, v8_root_receipt(changed_ack))
+                .is_err()
+        );
+        assert_eq!(controller.controller_policy_hold_v1().unwrap(), Some(hold));
+
+        controller
+            .retire_controller_policy_v8_hold_local_v1(hold, receipt)
+            .unwrap();
+        let released = ControllerPolicyHoldV1 {
+            held: false,
+            ..hold
+        };
+        assert_eq!(
+            controller.controller_policy_hold_v1().unwrap(),
+            Some(released)
+        );
+        assert!(controller.commit(&ordinary_transaction()).is_err());
+        assert!(require_no_compaction(&controller.state).is_err());
+        assert_eq!(controller.records(RecordNamespace::Effect).count(), 0);
+        drop(controller);
+
+        let mut reopened = directory.open();
+        assert_eq!(
+            reopened.controller_policy_hold_v1().unwrap(),
+            Some(released)
+        );
+        assert_eq!(
+            reopened.controller_policy_v8_attempt_v1().unwrap(),
+            Some(attempt)
+        );
+        assert_eq!(
+            reopened.controller_policy_v8_effect_ack_v1().unwrap(),
+            Some(ack)
+        );
+        assert_eq!(
+            reopened.controller_policy_v8_root_receipt_v1().unwrap(),
+            Some(receipt)
+        );
+        reopened
+            .retire_controller_policy_v8_hold_local_v1(hold, receipt)
+            .unwrap();
+        assert!(reopened.acquire_controller_policy_hold_v1(hold).is_err());
+        assert!(
+            reopened
+                .retire_controller_policy_v8_hold_local_v1(changed_hold, receipt)
+                .is_err()
+        );
+        assert!(
+            reopened
+                .record_controller_policy_v8_root_receipt_v1(receipt)
+                .is_err()
+        );
+        assert!(reopened.commit(&ordinary_transaction()).is_err());
     }
 
     #[test]
