@@ -116,6 +116,18 @@
       };
     };
 
+    # This unprotected service proves that mutable manager environment reaches
+    # ordinary units in the same enforcing VM.
+    systemd.services.aos-network-manager-environment-control = lib.mkIf (mode == "shadows") {
+      description = "Qualification control for mutable manager environment";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${pkgs.coreutils}/bin/printenv AOS_NETWORK_MANAGER_SENTINEL";
+        StandardOutput = "journal";
+        StandardError = "journal";
+      };
+    };
+
     # This qualification-only socket launches the exact production ELF without
     # credentials. Reaching its credential guard proves the enforcing MAC
     # transition and guarded socket activation without admitting inspection.
@@ -475,6 +487,95 @@ in
             ).splitlines()
             assert len(private_dso) == 2 and private_dso[0] == private_dso[1], private_dso
 
+        def assert_unit_refusal(machine, unit, refusal):
+            machine.wait_until_succeeds(
+                f"journalctl -b -u '{unit}' -o cat --no-pager | "
+                f"grep -Fq '{refusal}'",
+                timeout=30,
+            )
+
+        def assert_manager_environment_isolated(machine, value):
+            assignment = f"AOS_NETWORK_MANAGER_SENTINEL={value}"
+            assert assignment in machine.succeed(
+                "systemctl show-environment"
+            ).splitlines()
+
+            # The control must inherit the new value. Otherwise a missing
+            # protected value would not prove the protected-unit exception.
+            machine.succeed(
+                "systemctl restart aos-network-manager-environment-control.service"
+            )
+            machine.wait_until_succeeds(
+                "journalctl -b -u aos-network-manager-environment-control.service "
+                f"-o cat --no-pager | grep -Fxq '{value}'",
+                timeout=30,
+            )
+
+            machine.succeed("systemctl restart aos-netd.service", timeout=90)
+            machine.wait_until_succeeds(broker_process, timeout=30)
+            pid = machine.succeed("systemctl show -P MainPID aos-netd.service").strip()
+            assert pid.isdecimal() and pid != "0", pid
+            machine.succeed(
+                f"${pkgs.grep}/bin/grep -aFq 'PATH=' /proc/{pid}/environ"
+            )
+            machine.fail(
+                f"${pkgs.grep}/bin/grep -aFq 'AOS_NETWORK_MANAGER_SENTINEL=' "
+                f"/proc/{pid}/environ"
+            )
+            return pid
+
+        def assert_live_mounts_rejected(machine):
+            busctl = "${pkgs.systemd}/bin/busctl --system call org.freedesktop.systemd1"
+            unit_reply = machine.succeed(
+                f"{busctl} /org/freedesktop/systemd1 "
+                "org.freedesktop.systemd1.Manager GetUnit s aos-netd.service"
+            ).strip()
+            assert unit_reply.startswith('o "') and unit_reply.endswith('"'), unit_reply
+            unit_path = unit_reply[3:-1]
+            assert unit_path.startswith("/org/freedesktop/systemd1/unit/"), unit_path
+
+            requests = (
+                (
+                    unit_path,
+                    "org.freedesktop.systemd1.Service",
+                    "BindMount",
+                    "ssbb",
+                    "/run /run/aos-network-forbidden-live-bind true true",
+                ),
+                (
+                    unit_path,
+                    "org.freedesktop.systemd1.Service",
+                    "MountImage",
+                    "ssbba(ss)",
+                    "/run/aos-nonexistent-image.raw /run/aos-network-forbidden-live-image true true 0",
+                ),
+                (
+                    "/org/freedesktop/systemd1",
+                    "org.freedesktop.systemd1.Manager",
+                    "BindMountUnit",
+                    "sssbb",
+                    "aos-netd.service /run /run/aos-network-forbidden-manager-bind true true",
+                ),
+                (
+                    "/org/freedesktop/systemd1",
+                    "org.freedesktop.systemd1.Manager",
+                    "MountImageUnit",
+                    "sssbba(ss)",
+                    "aos-netd.service /run/aos-nonexistent-image.raw "
+                    "/run/aos-network-forbidden-manager-image true true 0",
+                ),
+            )
+            for path, interface, method, signature, arguments in requests:
+                command = (
+                    f"{busctl} {path} {interface} {method} "
+                    f"'{signature}' {arguments}"
+                )
+                status, stdout, stderr = machine.execute(command, timeout=30)
+                assert status != 0 and (
+                    "Protected Network units do not accept live mounts"
+                    in stdout + stderr
+                ), (method, status, stdout, stderr)
+
         boot_log = await_serial(
             protected,
             "Finished Prepare protected AOS sandbox Network roots",
@@ -555,6 +656,28 @@ in
         time.sleep(2)
         protected.succeed(broker_process)
 
+        assert_live_mounts_rejected(protected)
+
+        # Manager.SetEnvironment requires the broad SELinux reload permission
+        # this fixture does not add. A mutable runtime manager default reaches
+        # the same effective-environment merge after daemon-reexec.
+        protected.succeed("mkdir -p /run/systemd/system.conf.d")
+        protected.succeed(
+            "printf '%s\\n' '[Manager]' "
+            "'DefaultEnvironment=AOS_NETWORK_MANAGER_SENTINEL=after-reexec' "
+            "> /run/systemd/system.conf.d/90-aos-network-manager-environment.conf"
+        )
+        protected.succeed("systemctl daemon-reexec", timeout=90)
+        protected.wait_for_unit("multi-user.target", timeout=180)
+        assert "phase=reexec" in protected.succeed(
+            "cat /run/aos/selinux-root-handoff"
+        )
+        broker_pid = assert_manager_environment_isolated(
+            protected, "after-reexec"
+        )
+        assert_private_lower_store(protected, broker_pid, "aos-netd")
+        assert_live_mounts_rejected(protected)
+
         root_handoff = (
             "/usr/lib/systemd/aos-selinux-root-handoff --launch-runtime-roots "
             "${runtimeRoots}/bin/aos-selinux-runtime-roots --root / "
@@ -581,6 +704,69 @@ in
             "cmp -s /etc/selinux/aos/policy/policy.33 "
             "/nix.lower/store/${policyBasename}/etc/selinux/aos/policy/policy.33"
         )
+
+        # The image fragment must win even when mutable lookup paths contain
+        # a complete replacement and the canonical /etc link is whiteouted.
+        protected.succeed("test -L /etc/systemd/system/aos-netd.service")
+        protected.succeed("mkdir -p /run/systemd/system")
+        protected.succeed(
+            "printf '%s\\n' '[Service]' 'Type=oneshot' "
+            "'ExecStartPre=+${pkgs.coreutils}/bin/touch "
+            "/run/aos-forbidden-network-run-fragment' "
+            "'ExecStart=${pkgs.coreutils}/bin/true' "
+            "> /run/systemd/system/aos-netd.service"
+        )
+        protected.succeed(
+            "${pkgs.coreutils}/bin/unlink /etc/systemd/system/aos-netd.service"
+        )
+        protected.fail("test -e /etc/systemd/system/aos-netd.service")
+        protected.succeed("systemctl daemon-reexec", timeout=90)
+        protected.wait_for_unit("multi-user.target", timeout=180)
+        protected.succeed("systemctl restart aos-netd.service", timeout=90)
+        protected.wait_until_succeeds(broker_process, timeout=30)
+        fragment = protected.succeed(
+            "systemctl show -P FragmentPath aos-netd.service"
+        ).strip()
+        assert fragment.startswith("/nix/store/"), fragment
+        protected.fail("test -e /run/aos-forbidden-network-run-fragment")
+
+        # Runtime .conf drop-ins affect all three protected identities. A
+        # reexec followed by fresh activation must refuse each one; this
+        # enforcing fixture does not grant broad manager reload permission.
+        for unit in (
+            "aos-netd.service",
+            "aos-sandbox-network-namespace-inspector@.service",
+            "aos-sandbox-network-lifecycle-worker@.service",
+        ):
+            directory = f"/run/systemd/system/{unit}.d"
+            protected.succeed(f"mkdir -p {directory}")
+            protected.succeed(
+                "printf '%s\\n' '[Service]' "
+                "'ExecStartPre=+${pkgs.coreutils}/bin/touch "
+                "/run/aos-forbidden-network-run-prestart' "
+                f"> {directory}/override.conf"
+            )
+        protected.succeed("systemctl daemon-reexec", timeout=90)
+        protected.wait_for_unit("multi-user.target", timeout=180)
+        restart_status, restart_output, restart_error = protected.execute(
+            "systemctl restart aos-netd.service", timeout=90
+        )
+        assert restart_status != 0, (restart_output, restart_error)
+        protected.execute(
+            "${inspectorSocketConnector}/bin/aos-inspector-socket-connect"
+        )
+        protected.execute(
+            "${inspectorSocketConnector}/bin/aos-inspector-socket-connect --lifecycle"
+        )
+        for unit in (
+            "aos-netd.service",
+            "aos-sandbox-network-namespace-inspector@*.service",
+            "aos-sandbox-network-lifecycle-worker@*.service",
+        ):
+            assert_unit_refusal(
+                protected, unit, "Refusing Network unit configuration drop-ins"
+            )
+        protected.fail("test -e /run/aos-forbidden-network-run-prestart")
 
         failure = await_serial(
             submount,
@@ -612,12 +798,7 @@ in
                 "Refusing Network unit configuration drop-ins",
             ),
         ):
-            overridden.wait_until_succeeds(
-                "journalctl -b -u '{}' -o cat --no-pager | grep -Fq '{}'".format(
-                    unit, refusal
-                ),
-                timeout=30,
-            )
+            assert_unit_refusal(overridden, unit, refusal)
         overridden.fail("test -e /run/aos-forbidden-network-prestart")
         overridden.fail("test -e /run/aos-forbidden-network-dependency")
         fragment = overridden.succeed(
