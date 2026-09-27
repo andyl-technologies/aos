@@ -625,7 +625,7 @@ where
     )
 }
 
-fn output_reservation_response(
+pub(crate) fn output_reservation_response(
     locator: HostOutputReservationLocatorV1,
     receipt: Option<ProtectedHostOutputReservationV1>,
 ) -> Result<Vec<u8>, HostExecutionHandoffErrorV1> {

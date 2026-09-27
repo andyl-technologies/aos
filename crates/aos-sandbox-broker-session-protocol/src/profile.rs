@@ -137,8 +137,8 @@ pub const AUTHENTICATED_BROKER_METHOD_COUNT_V1: usize = AUTHENTICATED_BROKER_MET
 ///
 /// The returned methods are in registry order and include every method that
 /// production may advertise or require for the selected protocol and
-/// audience. Registered provisional carriers are deliberately excluded until
-/// their authority paths are implemented.
+/// audience. Registered provisional carriers without complete authority paths
+/// remain excluded.
 #[must_use]
 pub fn authenticated_broker_methods_for_role_v1(
     protocol: BrokerSessionProtocolV1,
@@ -151,8 +151,6 @@ pub fn authenticated_broker_methods_for_role_v1(
                 method,
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
-                    | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
-                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
                     | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
@@ -1443,7 +1441,7 @@ mod tests {
     }
 
     #[test]
-    fn provisional_output_methods_are_registered_but_not_advertised() {
+    fn protected_host_output_methods_are_advertised_to_controller() {
         let methods = [
             BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT,
             BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT,
@@ -1460,7 +1458,7 @@ mod tests {
                 BrokerSessionAuthorizationPresenceV1::Required
             );
             assert!(profile.request_descriptor_roles().is_empty());
-            assert!(!production.contains(&method));
+            assert!(production.contains(&method));
         }
 
         let hello = production_broker_client_hello_v1(
@@ -1470,7 +1468,7 @@ mod tests {
         )
         .unwrap();
         assert!(methods.iter().all(|method| {
-            !hello
+            hello
                 .required_methods
                 .iter()
                 .any(|value| value.as_known() == Some(*method))
