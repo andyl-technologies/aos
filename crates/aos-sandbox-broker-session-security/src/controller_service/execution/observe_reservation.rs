@@ -15,6 +15,9 @@ use aos_sandbox::controller_execution_observe_reservation::{
     ControllerExecutionObserveReservationV1 as ObserveReservation, ObserveReservationCodecErrorV1,
 };
 use aos_sandbox::journal::{IdempotencyKey, IdempotencyOutcome};
+use aos_sandbox::reconciler::{
+    adopt_execution_observe_child_v1, observe_child_adoption_state_v1, observe_child_identity_v1,
+};
 use aos_sandbox::{EffectFailure, Journal, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::runtime_backend::BackendExecutionPhaseV1;
 use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId, execution_spec_digest_v1};
@@ -27,14 +30,11 @@ use super::{
 };
 
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-reservation-tx.v1\0";
-const CHILD_IDEMPOTENCY_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-child-key.v1\0";
-const CHILD_REQUEST_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-child-request.v1\0";
 
 /// Reconstructs the inert child effect identity from durable Controller custody.
 ///
-/// This is not a reconciler Operation or Effect. Its stable key and request
-/// digest are reserved for a later protocol that can retain the cross-owner
-/// authority cut through effect handoff.
+/// Its stable key and request digest belong only to the private, nondispatchable
+/// child ledger. A later protocol must establish the cross-owner authority cut.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ReservedObserveChildPlanV1 {
     reservation: ObserveReservation,
@@ -147,22 +147,21 @@ pub(super) fn recover_child_plan(
         return Ok(None);
     };
     require_unique_reservation(journal, &reservation)?;
-    require_unclaimed_operation(journal, reservation.observe_operation())?;
+    let adopted = observe_child_adoption_state_v1(journal, &reservation)
+        .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+    if !adopted {
+        require_unclaimed_operation(journal, reservation.observe_operation())?;
+    }
 
-    let key_digest: [u8; 32] = Sha256::new()
-        .chain_update(CHILD_IDEMPOTENCY_DOMAIN)
-        .chain_update(reservation.observe_operation().as_bytes())
-        .finalize()
-        .into();
-    let idempotency_key = IdempotencyKey::new(key_digest.to_vec()).map_err(|_| corrupt())?;
-    let request_digest: [u8; 32] = Sha256::new()
-        .chain_update(CHILD_REQUEST_DOMAIN)
-        .chain_update(reservation.encode())
-        .finalize()
-        .into();
-    if journal.check_idempotency(&idempotency_key, request_digest) != IdempotencyOutcome::Vacant {
-        // Even an exact replay cannot assume that another ledger claim is our
-        // child until a versioned Operation/Effect adoption protocol exists.
+    let (idempotency_key, request_digest) =
+        observe_child_identity_v1(&reservation).map_err(|_| corrupt())?;
+    let expected_decision = if adopted {
+        IdempotencyOutcome::Replay(reservation.observe_operation())
+    } else {
+        IdempotencyOutcome::Vacant
+    };
+    if journal.check_idempotency(&idempotency_key, request_digest) != expected_decision {
+        // The current claim must match the exact private adoption state.
         return Err(EffectFailure::Permanent(
             "execution Observe child idempotency identity is already claimed".to_owned(),
         ));
@@ -196,10 +195,14 @@ fn require_unclaimed_operation(
 }
 
 fn retain(journal: &mut Journal, reservation: &ObserveReservation) -> Result<(), EffectFailure> {
-    require_unclaimed_operation(journal, reservation.observe_operation())?;
     if let Some(existing) = load(journal, reservation.execution())? {
         require_unique_reservation(journal, reservation)?;
         return if existing == *reservation {
+            let adopted = observe_child_adoption_state_v1(journal, reservation)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            if !adopted {
+                require_unclaimed_operation(journal, reservation.observe_operation())?;
+            }
             Ok(())
         } else {
             Err(EffectFailure::Permanent(
@@ -207,6 +210,7 @@ fn retain(journal: &mut Journal, reservation: &ObserveReservation) -> Result<(),
             ))
         };
     }
+    require_unclaimed_operation(journal, reservation.observe_operation())?;
     require_unique_reservation(journal, reservation)?;
     let digest: [u8; 32] = Sha256::new()
         .chain_update(TRANSACTION_DOMAIN)
@@ -251,6 +255,13 @@ pub(super) fn require_current(
     let plan = recover_child_plan(journal, execution)?.ok_or_else(|| {
         EffectFailure::Retryable("protected execution Observe reservation is absent".to_owned())
     })?;
+    if !observe_child_adoption_state_v1(journal, &plan.reservation)
+        .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+    {
+        return Err(EffectFailure::Retryable(
+            "execution Observe child adoption is absent".to_owned(),
+        ));
+    }
     let reservation = &plan.reservation;
     if !matches_intent(&reservation, intent)
         || retained.create_operation() != reservation.create_operation()
@@ -362,6 +373,11 @@ impl ControllerExecutionIntentV1 {
         )
         .map_err(codec_error)?;
         retain(journal, &reservation)?;
+        adopt_execution_observe_child_v1(journal, &reservation).map_err(|error| {
+            EffectFailure::Retryable(format!(
+                "execution Observe child adoption requires cold recovery: {error}"
+            ))
+        })?;
         let plan = recover_child_plan(journal, reservation.execution())?
             .ok_or_else(|| EffectFailure::Retryable("Observe child plan is absent".to_owned()))?;
         if plan.reservation != reservation {
@@ -375,6 +391,8 @@ impl ControllerExecutionIntentV1 {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
     use aos_sandbox::{EffectReceipt, JournalLimits};
     use aos_sandbox_core::{NodeId, ProjectId};
     use aos_sandbox_protocol::host_execution::HostExecutionTerminalResultV1;
@@ -546,6 +564,44 @@ mod tests {
             Err(EffectFailure::Permanent(_))
         ));
         assert_eq!(journal.snapshot_sequence(), durable_sequence);
+    }
+
+    #[test]
+    fn adopted_child_still_cannot_pass_the_host_handoff_gate() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = std::fs::metadata(directory.path()).unwrap().uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "controller.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+        let mut receipt = [3; RECEIPT_BYTES];
+        receipt[..8].copy_from_slice(RECEIPT_MAGIC);
+        let reservation = ObserveReservation::new(
+            ExecutionId::from_bytes([1; 16]),
+            OperationId::from_bytes([2; 16]),
+            ObjectDigest::from_bytes([4; 32]),
+            [5; 32],
+            &receipt,
+        )
+        .unwrap();
+
+        retain(&mut journal, &reservation).unwrap();
+        adopt_execution_observe_child_v1(&mut journal, &reservation).unwrap();
+        let plan = recover_child_plan(&journal, reservation.execution())
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.intent().action, ControllerExecutionActionV1::Observe);
+        assert!(observe_child_adoption_state_v1(&journal, &reservation).unwrap());
+
+        assert!(matches!(
+            ControllerExecutionIntentV1::await_observe_handoff(),
+            Err(EffectFailure::Retryable(message))
+                if message == "execution Observe requires protected cross-owner effect handoff"
+        ));
     }
 
     #[test]

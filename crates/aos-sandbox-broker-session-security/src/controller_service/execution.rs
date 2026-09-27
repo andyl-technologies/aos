@@ -724,6 +724,7 @@ impl ControllerExecutionIntentV1 {
         }
         if self.action == ControllerExecutionActionV1::Observe {
             observe_reservation::require_current(journal, self)?;
+            return Self::await_observe_handoff();
         }
         let signer = signer.ok_or_else(|| {
             EffectFailure::Retryable("Host execution plan signer is unavailable".to_owned())
@@ -893,6 +894,14 @@ impl ControllerExecutionIntentV1 {
             ownership_lease_signature: current.lease().canonical_signature().to_vec(),
             ..Default::default()
         })
+    }
+
+    fn await_observe_handoff() -> Result<BrokerAuthorizationArtifactsV1, EffectFailure> {
+        // An adopted child is durable evidence, not a Host grant. Keep this
+        // independent gate until the protected cross-owner handoff is qualified.
+        Err(EffectFailure::Retryable(
+            "execution Observe requires protected cross-owner effect handoff".to_owned(),
+        ))
     }
 
     fn envelope(

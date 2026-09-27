@@ -4,6 +4,8 @@
 //! The decoder retains V1 compatibility, but an opaque V1 generic effect has no
 //! dispatch identity and therefore cannot be sent to a broker. Authority-bound
 //! dispatches retain the Host boot identity paired with their BOOTTIME value.
+//! V4 is the private, planned-only Controller Observe child; it has no dispatch
+//! method and must match the retained AOSCOB01 reservation exactly.
 
 use aos_proto::aos::sandbox::local::v1::{
     ApplyAtomicStorageSnapshotRequest, ApplyMountRequest, ApplyNetworkRequest, ApplyRuntimeRequest,
@@ -21,6 +23,7 @@ use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use super::{EffectReceipt, ReconcilerError};
+use crate::controller_execution_observe_reservation::ControllerExecutionObserveReservationV1;
 use crate::{BrokerDispatchAttemptV1, BrokerDispatchSemanticIdentityV1};
 
 pub(super) const MAXIMUM_REQUEST_BYTES: usize = 1024 * 1024;
@@ -29,6 +32,7 @@ pub(super) const MAXIMUM_DIAGNOSTIC_BYTES: usize = 4096;
 const LEGACY_EFFECT_VERSION: u8 = 1;
 const EFFECT_VERSION: u8 = 2;
 const CONTROLLER_EFFECT_VERSION: u8 = 3;
+pub(super) const RESERVED_OBSERVE_EFFECT_VERSION: u8 = 4;
 const AUTHORITY_BOUND_FLAG: u8 = 1;
 const MAXIMUM_DISPATCH_PACKET_BYTES: usize = MAXIMUM_REQUEST_BYTES;
 const BODY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-body.v1\0";
@@ -360,6 +364,28 @@ pub struct EffectPlan {
 }
 
 impl EffectPlan {
+    /// Retains an Observe child without a dispatch method or effect authority.
+    #[must_use]
+    pub(super) fn reserved_observe(reservation: &ControllerExecutionObserveReservationV1) -> Self {
+        Self {
+            domain: EffectDomain::Controller,
+            method: None,
+            controller_method: None,
+            request: reservation.encode(),
+            authority: None,
+        }
+    }
+
+    pub(super) fn is_reserved_observe(&self) -> bool {
+        self.domain == EffectDomain::Controller
+            && self.method.is_none()
+            && self.controller_method.is_none()
+            && self.authority.is_none()
+            && self.request.get(8..24).is_some_and(|execution| {
+                ControllerExecutionObserveReservationV1::decode(execution, &self.request).is_ok()
+            })
+    }
+
     /// Constructs a controller effect with authenticated admission context.
     ///
     /// # Errors
@@ -1211,6 +1237,11 @@ pub(super) struct EffectLedgerRecord {
 pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, ReconcilerError> {
     let (state, attempt, receipt, diagnostic) = state_parts(&record.state);
     validate_lengths(&record.plan, receipt, diagnostic)?;
+    if record.plan.is_reserved_observe() && !matches!(record.state, EffectState::Planned) {
+        return Err(ReconcilerError::InvalidPlan(
+            "reserved Observe effect cannot advance",
+        ));
+    }
     let request_length = u32::try_from(record.plan.request.len())
         .map_err(|_| ReconcilerError::InvalidPlan("effect request exceeds bounds"))?;
     let receipt_length = u32::try_from(receipt.len())
@@ -1253,14 +1284,19 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
     } else {
         0
     };
-    let version = if record.plan.controller_method.is_some() {
+    let version = if record.plan.is_reserved_observe() {
+        RESERVED_OBSERVE_EFFECT_VERSION
+    } else if record.plan.controller_method.is_some() {
         CONTROLLER_EFFECT_VERSION
     } else if record.plan.method.is_some() {
         EFFECT_VERSION
     } else {
         LEGACY_EFFECT_VERSION
     };
-    let header_length = if version == LEGACY_EFFECT_VERSION {
+    let header_length = if matches!(
+        version,
+        LEGACY_EFFECT_VERSION | RESERVED_OBSERVE_EFFECT_VERSION
+    ) {
         18
     } else {
         22
@@ -1360,7 +1396,10 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
     if bytes.len() < 18
         || !matches!(
             bytes[0],
-            LEGACY_EFFECT_VERSION | EFFECT_VERSION | CONTROLLER_EFFECT_VERSION
+            LEGACY_EFFECT_VERSION
+                | EFFECT_VERSION
+                | CONTROLLER_EFFECT_VERSION
+                | RESERVED_OBSERVE_EFFECT_VERSION
         )
         || !matches!(bytes[3], 0 | AUTHORITY_BOUND_FLAG)
     {
@@ -1606,6 +1645,25 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
         })?;
     }
     let state = decode_state(state_code, attempt, receipt, diagnostic)?;
+    if bytes[0] == RESERVED_OBSERVE_EFFECT_VERSION
+        && (domain != EffectDomain::Controller
+            || method.is_some()
+            || controller_method.is_some()
+            || authority.is_some()
+            || !matches!(state, EffectState::Planned)
+            || !(EffectPlan {
+                domain,
+                method,
+                controller_method,
+                request: request.clone(),
+                authority: None,
+            })
+            .is_reserved_observe())
+    {
+        return Err(ReconcilerError::CorruptLedger(
+            "reserved Observe effect has invalid shape",
+        ));
+    }
     let dispatch_shape_valid = if authority.is_some() {
         matches!(
             (&state, &dispatch),
@@ -1672,7 +1730,7 @@ fn validate_lengths(
             ));
         }
         EffectPlan::public_mutation(method, plan.request.clone())?;
-    } else if plan.domain == EffectDomain::Controller {
+    } else if plan.domain == EffectDomain::Controller && !plan.is_reserved_observe() {
         return Err(ReconcilerError::InvalidPlan(
             "controller effect has no dispatch method",
         ));

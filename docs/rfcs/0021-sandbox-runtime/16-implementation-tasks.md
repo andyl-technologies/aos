@@ -9503,3 +9503,20 @@ With the provider option disabled and no namespace-40 records, the packaged
 Mount service skips source-owner recovery and does not require an undeployed
 startup policy. Either an enabled provider or retained namespace-40 state
 requires full policy replay before broker recovery can alter durable state.
+
+### Durable execution Observe child adoption (source qualified, inert)
+
+The Controller now adopts an exact `AOSCOB01` reservation into one private
+Operation, version-4 inert Effect, and idempotency decision in one journal
+transaction. The effect retains the reservation bytes and has no broker or
+public mutation method. Cold replay requires the three records to agree with
+the retained reservation; a missing, changed, or foreign claim fails closed.
+An ambiguous append requires cold reopen, where exact replay makes no second
+transaction. A partial crash tail cannot turn the child into dispatchable work.
+
+The reconciler reports an adopted child as pending without invoking its
+executor or advertising it as a public operation. The original Authorize
+classification and protected Create-spec check still precede reservation.
+This private ledger step does not complete the ordered cross-owner Create
+handoff, Storage physical output backing, Host launch, or an Observe grant.
+Public Create and Observe dispatch remain closed.

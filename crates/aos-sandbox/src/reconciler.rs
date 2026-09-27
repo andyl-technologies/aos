@@ -66,6 +66,9 @@ pub use effect::{
 use effect::{
     EffectLedgerRecord, EffectState, MAXIMUM_DIAGNOSTIC_BYTES, decode_effect, encode_effect,
 };
+pub use observe_reservation::{
+    adopt_execution_observe_child_v1, observe_child_adoption_state_v1, observe_child_identity_v1,
+};
 use public_operation::{DurablePublicOperationV1, PUBLIC_OPERATION_RECORD_BYTES};
 pub use public_operation::{PublicOperationAdmissionV1, PublicOperationAuthorizationV1};
 
@@ -847,6 +850,8 @@ pub trait SingleNodeEffectExecutor {
 pub enum ReconcileOutcome {
     /// Ownership is pending and no effect was made eligible or invoked.
     OwnershipPending,
+    /// An adopted Observe child remains inert until a separate handoff protocol exists.
+    ObserveChildPending,
     /// Durable state advanced without invoking an external effect.
     Progressed,
     /// An effect was applied or recovered and its receipt became durable.
@@ -1279,6 +1284,9 @@ where
             .check_idempotency(&plan.idempotency_key, plan.request_digest)
         {
             IdempotencyOutcome::Replay(operation_id) => {
+                if observe_reservation::is_adopted_child(&self.journal, operation_id)? {
+                    return Err(ReconcilerError::OperationAlreadyExists);
+                }
                 self.validate_operation_gate_relation(operation_id)?;
                 let recorded = self.load_operation(operation_id)?;
                 let recorded_authorization = self
@@ -1473,8 +1481,12 @@ where
 
     fn pending_operation_count(&self) -> Result<usize, ReconcilerError> {
         let mut pending = 0_usize;
+        let adopted_children = observe_reservation::adopted_operations(&self.journal)?;
         for (key, value) in self.journal.records(RecordNamespace::Operation) {
-            let _operation_id = decode_operation_key(key)?;
+            let operation_id = decode_operation_key(key)?;
+            if adopted_children.contains(&operation_id) {
+                continue;
+            }
             let operation = decode_operation(value)?;
             if !matches!(
                 operation.state,
@@ -1509,8 +1521,12 @@ where
         self.ensure_ledger_validated_read_only()?;
 
         let mut first = None;
+        let adopted_children = observe_reservation::adopted_operations(&self.journal)?;
         for (key, value) in self.journal.records(RecordNamespace::Operation) {
             let operation_id = decode_operation_key(key)?;
+            if adopted_children.contains(&operation_id) {
+                continue;
+            }
             let operation = decode_operation(value)?;
             let state = match operation.state {
                 OperationState::Accepted => UnfinishedOperationStateV1::Accepted,
@@ -1611,6 +1627,9 @@ where
     ) -> Result<ReconcileOutcome, ReconcilerError> {
         self.ensure_ledger_validated()?;
         let operation = self.load_operation(operation_id)?;
+        if observe_reservation::is_adopted_child(&self.journal, operation_id)? {
+            return Ok(ReconcileOutcome::ObserveChildPending);
+        }
         let gate = self.load_and_validate_ownership_gate(operation_id, operation)?;
         match operation.state {
             OperationState::OwnershipPending => return Ok(ReconcileOutcome::OwnershipPending),
@@ -1912,6 +1931,7 @@ where
             validate_publication_namespace(&self.journal).map_err(|_| {
                 ReconcilerError::CorruptLedger("authority publication namespace is corrupt")
             })?;
+            observe_reservation::validate_all(&self.journal)?;
             self.validate_all_ownership_gates(validate_current_boot)?;
             self.validate_public_operation_authorizations()?;
             validate_runtime_authority_operations(&self.journal)?;
