@@ -15,9 +15,9 @@
     && config.aos.abilities.environment.stage == "host";
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   milestones = serviceManagement.milestones;
-  serviceTypes = serviceManagement.types;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "control-plane";
+  manifest = config.aos.packageRuntime.configurationEvaluation.manifest;
   runtimeArtifact = lib.abilities.packageOutput {output = "packageRuntime";};
   hostStageExecuted = serviceManagement.forProducer {
     inherit consumerInstance;
@@ -150,7 +150,7 @@
       start = packageRuntimeCommand [
         "__ability-activation-preflight"
         "--manifest"
-        cfg.manifest
+        manifest
       ];
       restart = "never";
       restartDelayMillis = 0;
@@ -170,7 +170,7 @@
       {
         kind = "path";
         predicate = "exists";
-        path = cfg.manifest;
+        path = manifest;
         negated = false;
       }
     ];
@@ -196,7 +196,7 @@
         [
           "__ability-activate"
           "--manifest"
-          cfg.manifest
+          manifest
           "--module-abi"
           (builtins.toString (config.aos.system.moduleAbi or 1))
         ]
@@ -220,7 +220,7 @@
       {
         kind = "path";
         predicate = "exists";
-        path = cfg.manifest;
+        path = manifest;
         negated = false;
       }
     ];
@@ -241,11 +241,6 @@ in {
       type = abilityTypes.boolean;
       default = false;
       description = "Enable the AOS on-host configuration control plane.";
-    };
-    manifest = lib.mkOption {
-      type = serviceTypes.hostPath;
-      default = "/run/aos/manifest.json";
-      description = "The eval-produced checked activation data contract.";
     };
   };
 
