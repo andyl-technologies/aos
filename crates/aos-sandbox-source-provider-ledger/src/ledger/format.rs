@@ -1634,7 +1634,7 @@ mod native_selected_reservation_tests {
 
     #[cfg(target_os = "linux")]
     fn protected_native_terminal_replay(key: &[u8], applying: &[u8], terminal: &[u8]) {
-        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
         use aos_sandbox::{
             Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
@@ -1642,6 +1642,7 @@ mod native_selected_reservation_tests {
 
         const FILE: &str = "native-no-dispatch-record.journal";
         let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let uid = directory.path().metadata().unwrap().uid();
 
         for (transaction_id, expected) in [([1; 16], applying), ([2; 16], terminal)] {
