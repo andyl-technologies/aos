@@ -699,7 +699,9 @@ fn require_selinux_enforcing() -> Result<(), NamespaceInspectorProductionError> 
 }
 
 fn validate_selinux_enforcing_state(state: &[u8]) -> Result<(), NamespaceInspectorProductionError> {
-    if state == b"1\n" {
+    // selinuxfs exposes a bare digit; a single trailing newline is equivalent.
+    // Do not trim arbitrary whitespace or admit any disabled/malformed state.
+    if state == b"1" || state == b"1\n" {
         Ok(())
     } else {
         Err(NamespaceInspectorProductionError::Authority)
@@ -1225,8 +1227,20 @@ mod tests {
 
     #[test]
     fn selinux_must_report_the_exact_enforcing_state() {
+        assert!(validate_selinux_enforcing_state(b"1").is_ok());
         assert!(validate_selinux_enforcing_state(b"1\n").is_ok());
-        for rejected in [b"0\n".as_slice(), b"1", b"1\nextra", b""] {
+
+        for rejected in [
+            b"0".as_slice(),
+            b"0\n",
+            b"01",
+            b"1 ",
+            b" 1",
+            b"1\r\n",
+            b"1\n\n",
+            b"1\nextra",
+            b"",
+        ] {
             assert!(validate_selinux_enforcing_state(rejected).is_err());
         }
     }
