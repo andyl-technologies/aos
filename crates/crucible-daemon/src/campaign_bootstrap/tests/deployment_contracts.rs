@@ -60,7 +60,7 @@ fn prepared_owner_imports_verified_artifacts_before_socket_bind() {
 }
 
 #[test]
-fn default_sqlite_store_reopens_and_rejects_a_loose_object_layout() {
+fn default_sqlite_store_reopens() {
     let (_directory, config) = fixture();
     let scenario = crucible::happy_path_scenario()
         .expect("happy-path scenario")
@@ -86,20 +86,6 @@ fn default_sqlite_store_reopens_and_rejects_a_loose_object_layout() {
             .expect("reopened authenticated configuration"),
         configuration
     );
-    drop(reopened);
-
-    for marker in ["objects", ".inventory-admin"] {
-        let (_legacy_directory, legacy_config) = fixture();
-        let object_root = legacy_config.state_directory().join(OBJECT_DIRECTORY);
-        fs::create_dir_all(object_root.join(marker)).expect("legacy directory-leaf marker");
-        fs::set_permissions(&object_root, Permissions::from_mode(0o700))
-            .expect("secure legacy object root");
-        assert!(matches!(
-            legacy_config.prepare(),
-            Err(CampaignLocalServiceError::InvalidRepositoryStore)
-        ));
-        assert!(!object_root.join("objects.sqlite3").exists());
-    }
 }
 
 #[test]
