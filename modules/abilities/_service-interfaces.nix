@@ -74,6 +74,7 @@
     localFilesystems = "aos.system.local-filesystems";
     multiUser = "aos.system.multi-user";
     hostStageReceived = "aos.boot.host-stage-received";
+    hostStageExecuted = "aos.boot.host-stage-executed";
     imageBootCommitted = "aos.boot.image-committed";
     espReady = "aos.boot.esp-ready";
     initrdFilesystems = "aos.boot.initrd-filesystems";

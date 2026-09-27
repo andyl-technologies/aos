@@ -114,4 +114,10 @@ in
   assert (request "aos-boot-preparations" "aos-config-seed-lifecycle").activation_owner == "deferred-image";
   assert hostRequests."aos-boot-preparations:aos-ability-host-receiver-lifecycle".parameters.remain_after_exit;
   assert hostRequests."aos-boot-preparations:aos-ability-host-receiver-lifecycle".parameters.activation_owner == "image";
+  assert hostRequests."aos-boot-preparations:aos-ability-host-controller-lifecycle".parameters.activation_owner == "image";
+  assert hostRequests."aos-boot-preparations:aos-ability-host-controller-readiness".parameters.mechanism == "process-running";
+  assert builtins.elem "--received-source-stage-bundle"
+  (builtins.head hostRequests."aos-boot-preparations:aos-ability-host-controller-lifecycle".parameters.start).executable.arguments;
+  assert hostRequests."aos-boot-preparations:aos-ability-host-controller-dependencies".parameters.required_by
+  == [(output "aos-boot-preparations" "multi-user" "resource")];
   assert !(requests ? "aos-boot-preparations:boot-preparation-handoff"); true

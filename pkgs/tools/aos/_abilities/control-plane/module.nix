@@ -1,7 +1,7 @@
 ##! Package-owned on-host configuration control-plane services.
 ##!
-##! The module exposes checked-plan preflight and activation through typed
-##! service resources. Selected providers own all resource convergence.
+##! The module runs checked-plan preflight and activation after the host source
+##! stage has completed. Selected providers own all resource convergence.
 {
   config,
   lib,
@@ -19,13 +19,13 @@
   resultOf = lib.abilities.resultOf;
   consumerInstance = "control-plane";
   runtimeArtifact = lib.abilities.packageOutput {output = "packageRuntime";};
-  hostStageReceived = serviceManagement.forProducer {
+  hostStageExecuted = serviceManagement.forProducer {
     inherit consumerInstance;
-    key = "host-stage-received";
+    key = "host-stage-executed";
     interface = serviceManagement.interfaces.systemMilestoneReadiness;
-    parameters.milestone = milestones.hostStageReceived;
+    parameters.milestone = milestones.hostStageExecuted;
   };
-  hostStageReceivedReadiness = resultOf "host-stage-received" "resource";
+  hostStageExecutedReadiness = resultOf "host-stage-executed" "resource";
 
   command = artifact: entryPoint: arguments: {
     executable = {
@@ -36,21 +36,6 @@
   };
   packageRuntimeCommand = arguments:
     command runtimeArtifact "bin/aos-package-runtime" arguments;
-
-  activationGroup = key: description: after: members: requiredMembers:
-    serviceManagement.forProducer {
-      inherit consumerInstance key;
-      interface = serviceManagement.interfaces.activationGroup;
-      parameters = {
-        name = key;
-        enabled = false;
-        inherit description after members;
-        required_members = requiredMembers;
-      };
-    };
-  configGroup = activationGroup "aos-config" "AOS on-host config applied" [hostStageReceivedReadiness] [] [
-    (resultOf "aos-activate-lifecycle" "resource")
-  ];
 
   defaultDependencies = {
     after = [];
@@ -155,6 +140,7 @@
   activationPreflight = service {
     service = "aos-graph-compile";
     enabled = true;
+    activationOwner = "deferred-image";
     manager_identity = {
       name = "aos-graph-compile";
       aliases = [];
@@ -174,9 +160,9 @@
     dependencies =
       defaultDependencies
       // {
-        after = [hostStageReceivedReadiness];
+        after = [hostStageExecutedReadiness];
         prerequisites = [
-          hostStageReceivedReadiness
+          hostStageExecutedReadiness
           (resultOf "configuration-evaluation-lifecycle" "resource")
         ];
       };
@@ -199,6 +185,7 @@
   activate = service {
     service = "aos-activate";
     enabled = true;
+    activationOwner = "deferred-image";
     manager_identity = {
       name = "aos-activate";
       aliases = [];
@@ -271,13 +258,8 @@ in {
     }
     (serviceManagement.producerModule {
       inherit config lib;
-      producers = [hostStageReceived];
+      producers = [hostStageExecuted];
       enabled = graphEnabled || activationEnabled;
-    })
-    (serviceManagement.producerModule {
-      inherit config lib;
-      producers = [configGroup];
-      enabled = activationEnabled;
     })
     (lib.mkIf activationEnabled {
       assertions = [

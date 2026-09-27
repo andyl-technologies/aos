@@ -53,8 +53,11 @@ provider assignments when resuming, and checks the admitted plan and journal
 again at host receipt. The image also retains a separate host-stage source
 bundle and static contract, and its fixed point selects a distinct durable
 stage journal. The host-stage runner now receives the initrd handoff, admits
-the host bundle, and replays its own durable execution journal. Boot services
-do not yet start that runner, so host execution remains a cutover task. The
+the host bundle, and replays its own durable execution journal. The image now
+starts that runner after host receipt and before the multi-user milestone.
+Checked-plan preflight, configuration activation, and boot commit are deferred
+until the runner exits; moving their work into one ordered host transaction
+remains a cutover task. The
 typed service owner now determines installation links: image-owned services
 have boot target links, while ability-owned services and their sockets start
 through checked effects. The remaining cutover must separate services that

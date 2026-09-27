@@ -499,6 +499,7 @@
         "${milestones.localFilesystems}" = "local-fs.target";
         "${milestones.multiUser}" = "multi-user.target";
         "${milestones.hostStageReceived}" = "aos-ability-host-receiver.service";
+        "${milestones.hostStageExecuted}" = "aos-ability-host-controller.service";
         "${milestones.imageBootCommitted}" = "aos-image-boot-commit.service";
         "${milestones.espReady}" = "aos-mount-esp.service";
         "${milestones.deviceSettle}" = "systemd-udev-settle.service";

@@ -157,14 +157,15 @@
   realizedUnitNames = builtins.filter (name: name != null) (builtins.map realizedUnitName resources);
   expectedControlPlaneUnits = [
     "aos-activate.service"
-    "aos-config.target"
     "aos-graph-compile.service"
   ];
 in
   assert builtins.length (builtins.attrNames initial.config.aos.abilities.requests) > 0;
-  assert !(activationDisabled.config.aos.abilities.requests ? "aos:aos-config");
-  assert !(allDisabled.config.aos.abilities.requests ? "aos:host-stage-received");
+  assert !(activationDisabled.config.aos.abilities.requests ? "aos:aos-activate-lifecycle");
+  assert !(allDisabled.config.aos.abilities.requests ? "aos:host-stage-executed");
   assert initrd.config.aos.abilities.requests == {};
+  assert abilities.requests."aos:aos-graph-compile-lifecycle".parameters.activation_owner == "deferred-image";
+  assert abilities.requests."aos:aos-activate-lifecycle".parameters.activation_owner == "deferred-image";
   assert builtins.length (builtins.attrNames abilities.bindings) > 0;
   assert abilities.compositionPendingRequests == {};
   assert builtins.length resources > 0;

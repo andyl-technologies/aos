@@ -237,12 +237,14 @@
     command,
     serviceDependencies,
     enabled,
+    activationOwner ? "ability",
     conditions ? null,
     failurePolicy ? null,
     searchPath ? [],
   }:
     {
       inherit consumerInstance;
+      inherit activationOwner;
       service = serviceName;
       autoStart = enabled;
       lifecycle = {
@@ -282,18 +284,18 @@
   mountEsp = resultOf "esp-ready" "resource";
   activationPreflight = resultOf "aos-graph-compile-lifecycle" "resource";
   activation = resultOf "aos-activate-lifecycle" "resource";
-  configurationReady = resultOf "aos-config" "resource";
   multiUserReadiness = resultOf "multi-user" "resource";
   bootCommit = oneshot {
     serviceName = "image-boot-commit";
     managerName = "aos-image-boot-commit";
     description = "Commit a successful image transition";
+    activationOwner = "deferred-image";
     command = packageRuntimeCommand (
       ["commit"]
       ++ lib.optional cfg.measuredBoot "--require-attestation-quote"
     );
     serviceDependencies = dependencies {
-      after = [mountEsp activationPreflight activation configurationReady];
+      after = [mountEsp activationPreflight activation];
       before = [multiUserReadiness];
       requires = [mountEsp activationPreflight];
       wantedBy = [multiUserReadiness];
