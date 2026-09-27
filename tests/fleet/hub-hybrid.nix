@@ -1225,25 +1225,32 @@ in {
           "--prefix tenant --endpoint https://s3.fleet.test "
           "--region garage --access private",
       )
+      external_binding = json.loads(client.succeed(hub_command(
+          "binding show fleet:external-s3"
+      )))["data"]["binding"]
+      external_binding_id = external_binding["stable_id"]
       for purpose in ("delete", "list", "read", "write"):
           reviewed(
               f"hybrid-external-{purpose}-credential",
-              f"binding credential set fleet:external-s3 --purpose {purpose} "
+              f"binding credential set {shlex.quote(external_binding_id)} "
+              f"--purpose {purpose} "
               "--secret-version-ref native://fleet/external/storage/v1 "
               f"--credential-fingerprint {hashlib.sha256(binding_secret).hexdigest()}",
           )
       external_binding = json.loads(client.succeed(hub_command(
           "binding show fleet:external-s3"
       )))["data"]["binding"]
-      validated = reviewed(
-          "hybrid-external-credentials-validate",
-          "binding credential validate fleet:external-s3 "
-          f"--if-version {shlex.quote(external_binding['resource_version'])}",
-      )
-      validation_operation_id = validated["data"]["operation"]["operation_id"]
-      client.succeed(hub_command(
-          f"operation watch {shlex.quote(validation_operation_id)} --timeout 2m"
-      ), timeout=180)
+      for purpose in ("delete", "list", "read", "write"):
+          validated = reviewed(
+              f"hybrid-external-{purpose}-credential-validate",
+              f"binding credential validate {shlex.quote(external_binding_id)} "
+              f"--purpose {purpose} "
+              f"--if-version {shlex.quote(external_binding['resource_version'])}",
+          )
+          validation_operation_id = validated["data"]["operation"]["operation_id"]
+          client.succeed(hub_command(
+              f"operation watch {shlex.quote(validation_operation_id)} --timeout 2m"
+          ), timeout=180)
 
       reviewed(
           "hybrid-external-cache",
@@ -1251,7 +1258,8 @@ in {
       )
       reviewed(
           "hybrid-external-cache-placement",
-          "placement add cache:fleet/external primary --binding fleet:external-s3 "
+          "placement add cache:fleet/external primary "
+          f"--binding {shlex.quote(external_binding_id)} "
           "--prefix caches/fleet-external --kind complete "
           "--desired-state active --read enabled",
       )
