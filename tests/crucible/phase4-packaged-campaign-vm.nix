@@ -509,6 +509,7 @@
         else if guestChoice
         then ''
           export CRUCIBLE_INITRD=${networkChoiceInitramfs}/initrd.img
+          export CRUCIBLE_PHASE4_CLOCK_TRACE=1
           if ! ${flight}/bin/campaign-store-process-flight --ignored --list \
             > /tmp/guest-choice-flight-list.log 2>&1; then
             cat /tmp/guest-choice-flight-list.log

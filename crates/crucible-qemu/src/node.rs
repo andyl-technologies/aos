@@ -1865,6 +1865,26 @@ impl QemuNode {
             }),
         }?;
         self.last_observed_time = virtual_time_from_advance_outcome(ceiling, advance);
+        // crucible-lint: allow host-nondeterminism-state -- this opt-in diagnostic reads an already published boundary and changes no scheduler state.
+        if std::env::var_os("CRUCIBLE_PHASE4_CLOCK_TRACE").is_some()
+            && let Ok(calibration) = self.logical_time_calibration()
+            && (5_823_790_656..=5_825_708_109).contains(&calibration.raw_icount)
+            && calibration.logical_icount <= 555_385_025_750
+        {
+            eprintln!(
+                "CRUCIBLE-PHASE4-CLOCK-TRACE pid={} ceiling={} outcome={advance:?} logical={} raw={} bias={:?} raw_mod4096={} next_deadline={:?} inbound={} outputs={}",
+                self.process_id(),
+                ceiling.retired,
+                calibration.logical_icount,
+                calibration.raw_icount,
+                calibration.offset(),
+                calibration.raw_icount % 4096,
+                self.last_step_final_state
+                    .and_then(|state| state.next_deadline),
+                self.last_step_inbound_frames_consumed,
+                self.pending_network_outputs.len(),
+            );
+        }
         Ok(advance)
     }
 
