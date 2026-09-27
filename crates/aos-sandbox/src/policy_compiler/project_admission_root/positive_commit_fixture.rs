@@ -173,7 +173,7 @@ fn commit_from_signed_owner_rows(
     project_key: &SigningKey,
 ) -> Result<RootProjectAdmissionOutcomeV1, PolicyDeploymentHeadErrorV1> {
     admit_root_project_source_from_owner_proofs_with_journal(
-        root,
+        ProjectAdmissionJournalSource::held(root),
         stage.record_digest(),
         controller_packet,
         &source_row.record_bytes(),

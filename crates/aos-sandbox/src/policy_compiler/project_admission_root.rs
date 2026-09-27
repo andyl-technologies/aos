@@ -484,13 +484,8 @@ pub fn admit_fixed_root_project_source_from_owner_proofs_v1(
     deployment_signer_generation: u64,
     now_unix_seconds: i64,
 ) -> Result<RootProjectAdmissionOutcomeV1, PolicyDeploymentHeadErrorV1> {
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
     admit_root_project_source_from_owner_proofs_with_journal(
-        &mut journal,
+        ProjectAdmissionJournalSource::fixed(),
         stage_digest,
         controller_packet,
         source_row_bytes,
@@ -510,9 +505,28 @@ pub fn admit_fixed_root_project_source_from_owner_proofs_v1(
     )
 }
 
+// The held variant is constructed only by the synthetic unit fixture. The
+// production entry always opens its fixed Root owner after signature preflight.
+struct ProjectAdmissionJournalSource<'a> {
+    held: Option<&'a mut Journal>,
+}
+
+impl ProjectAdmissionJournalSource<'_> {
+    fn fixed() -> Self {
+        Self { held: None }
+    }
+
+    #[cfg(test)]
+    fn held(journal: &mut Journal) -> ProjectAdmissionJournalSource<'_> {
+        ProjectAdmissionJournalSource {
+            held: Some(journal),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn admit_root_project_source_from_owner_proofs_with_journal(
-    journal: &mut Journal,
+    journal_source: ProjectAdmissionJournalSource<'_>,
     stage_digest: ObjectDigest,
     controller_packet: &[u8],
     source_row_bytes: &[u8],
@@ -561,6 +575,24 @@ fn admit_root_project_source_from_owner_proofs_with_journal(
     }
 
     let source_row = SourceProjectAdmissionChallengeV1::from_record_bytes(source_row_bytes)?;
+    let mut fixed_journal = if journal_source.held.is_some() {
+        None
+    } else {
+        Some(
+            Journal::open_protected_at(
+                Path::new(PROTECTED_POLICY_ROOT),
+                POLICY_AUTHORITY_JOURNAL,
+                policy_authority_journal_limits(),
+            )?
+            .0,
+        )
+    };
+    let journal = match journal_source.held {
+        Some(held) => held,
+        None => fixed_journal
+            .as_mut()
+            .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?,
+    };
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     super::binding_v2::ensure_root_binding_unheld(&authority)
         .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;

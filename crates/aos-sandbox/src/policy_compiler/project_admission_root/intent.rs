@@ -775,18 +775,13 @@ pub(super) fn prepare_test_intent_with_journal(
     journal: &mut Journal,
     source: SourceProjectAdmissionReservationV1,
 ) -> Result<RootProjectAdmissionIntentV1, PolicyDeploymentHeadErrorV1> {
-    let intent = RootProjectAdmissionIntentV1 {
-        client_nonce: source.client_nonce(),
-        project: source.project(),
-        source_reservation: source.record_digest(),
-        project_packet: ObjectDigest::from_bytes([21; 32]),
-        project_input: ObjectDigest::from_bytes([22; 32]),
-        deployment_packet: ObjectDigest::from_bytes([23; 32]),
-        prior_packet: zero_digest(),
-        prior_input: zero_digest(),
-        capacity_id: [0; 32],
-    };
-    commit_intent(journal, intent)
+    prepare_test_intent_with_digests(
+        journal,
+        source,
+        ObjectDigest::from_bytes([21; 32]),
+        ObjectDigest::from_bytes([22; 32]),
+        ObjectDigest::from_bytes([23; 32]),
+    )
 }
 
 #[cfg(test)]
@@ -797,13 +792,30 @@ pub(super) fn prepare_test_exact_intent_with_journal(
     project_input: &[u8],
     deployment_packet: &[u8],
 ) -> Result<RootProjectAdmissionIntentV1, PolicyDeploymentHeadErrorV1> {
+    prepare_test_intent_with_digests(
+        journal,
+        source,
+        digest(project_packet),
+        digest(project_input),
+        digest(deployment_packet),
+    )
+}
+
+#[cfg(test)]
+fn prepare_test_intent_with_digests(
+    journal: &mut Journal,
+    source: SourceProjectAdmissionReservationV1,
+    project_packet: ObjectDigest,
+    project_input: ObjectDigest,
+    deployment_packet: ObjectDigest,
+) -> Result<RootProjectAdmissionIntentV1, PolicyDeploymentHeadErrorV1> {
     let intent = RootProjectAdmissionIntentV1 {
         client_nonce: source.client_nonce(),
         project: source.project(),
         source_reservation: source.record_digest(),
-        project_packet: digest(project_packet),
-        project_input: digest(project_input),
-        deployment_packet: digest(deployment_packet),
+        project_packet,
+        project_input,
+        deployment_packet,
         prior_packet: zero_digest(),
         prior_input: zero_digest(),
         capacity_id: [0; 32],
