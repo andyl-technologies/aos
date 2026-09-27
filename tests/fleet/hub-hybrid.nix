@@ -646,7 +646,12 @@ in {
       assert batch_result["outcome"]["objects"][0]["oid"] == git_oid
       unsupported_status, _ = external_binding_plan(
           published_revision,
-          {"kind": "list_page", "prefix": "", "cursor": None, "limit": 1},
+          {
+              "kind": "inspect_oci_range",
+              "path": "oci/blobs/sha256/" + "0" * 64,
+              "start": 0,
+              "end": 0,
+          },
           "8" * 32,
       )
       assert unsupported_status == "501", unsupported_status

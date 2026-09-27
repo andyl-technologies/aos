@@ -286,6 +286,37 @@ impl RemoteStorageWorkClient {
         Ok(())
     }
 
+    fn validate_published_binding_snapshot(
+        &self,
+        binding: &BindingRecord,
+        credentials: &[BindingCredentialRevisionRecord],
+        expected_revision: &str,
+    ) -> Result<()> {
+        let published = self
+            .published_bindings
+            .read()
+            .map_err(|_| anyhow::anyhow!("published binding state is poisoned"))?
+            .get(&binding.id)
+            .cloned()
+            .context("external binding snapshot disappeared during Worker execution")?;
+        anyhow::ensure!(
+            published.revision()? == expected_revision,
+            "external binding snapshot changed during Worker execution"
+        );
+        let current = StorageBindingSnapshot::from_binding(
+            self.deployment_id.clone(),
+            binding,
+            credentials,
+            published.issued_at,
+            published.expires_at,
+        )?;
+        anyhow::ensure!(
+            current == published,
+            "external binding credentials changed during Worker execution"
+        );
+        Ok(())
+    }
+
     /// Withdraws one exact external binding revision from the Worker.
     ///
     /// # Errors
@@ -1120,6 +1151,14 @@ impl HybridSurfaceFetch {
                 && binding.kind == plan.binding_kind,
             "storage placement or binding changed during Worker execution"
         );
+        if let Some(expected_revision) = &plan.binding_snapshot_revision {
+            let credentials = self.db.list_current_binding_credentials(binding.id).await?;
+            self.work.validate_published_binding_snapshot(
+                &binding,
+                &credentials,
+                expected_revision,
+            )?;
+        }
         Ok(result)
     }
 
@@ -2263,6 +2302,72 @@ mod tests {
             .is_err());
         assert!(client
             .plan_for_placement(&placement, &binding, operation(), 201)
+            .is_err());
+    }
+
+    #[test]
+    fn completed_external_work_rechecks_sql_credentials_and_binding_coordinates() {
+        let client = RemoteStorageWorkClient::new(
+            "https://worker.example",
+            "deployment-1".into(),
+            b"hybrid-storage-test-key-with-thirty-two-bytes",
+        )
+        .unwrap();
+        let binding = BindingRecord {
+            id: 7,
+            kind: "s3".into(),
+            stable_id: "external-7".into(),
+            object_bucket: Some("bucket".into()),
+            object_prefix: Some("tenant".into()),
+            endpoint_scheme: Some("https".into()),
+            endpoint_host_kind: Some("dns".into()),
+            endpoint_host_bytes: Some(b"s3.example.test".to_vec()),
+            endpoint_port: Some(443),
+            signing_region: Some("us-west-1".into()),
+            access_mode: Some("private".into()),
+            resource_version: 3,
+            ..BindingRecord::default()
+        };
+        let credential = BindingCredentialRevisionRecord {
+            binding_id: binding.id,
+            purpose: "read".into(),
+            generation: 2,
+            secret_version_ref: "secret://test/binding/read/v2".into(),
+            validation_state: "valid".into(),
+            validated_at: Some(100),
+            validation_error: None,
+            credential_fingerprint: "a".repeat(64),
+            created_by: "fleet".into(),
+            created_at: 100,
+            head_resource_version: 2,
+        };
+        let snapshot = StorageBindingSnapshot::from_binding(
+            "deployment-1".into(),
+            &binding,
+            &[credential.clone()],
+            100,
+            200,
+        )
+        .unwrap();
+        let revision = snapshot.revision().unwrap();
+        client
+            .published_bindings
+            .write()
+            .unwrap()
+            .insert(binding.id, snapshot);
+
+        assert!(client
+            .validate_published_binding_snapshot(&binding, &[credential.clone()], &revision)
+            .is_ok());
+        let mut rotated = credential.clone();
+        rotated.generation += 1;
+        assert!(client
+            .validate_published_binding_snapshot(&binding, &[rotated], &revision)
+            .is_err());
+        let mut moved = binding.clone();
+        moved.object_prefix = Some("other-tenant".into());
+        assert!(client
+            .validate_published_binding_snapshot(&moved, &[credential], &revision)
             .is_err());
     }
 
