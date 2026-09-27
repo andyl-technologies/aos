@@ -9504,6 +9504,27 @@ Mount service skips source-owner recovery and does not require an undeployed
 startup policy. Either an enabled provider or retained namespace-40 state
 requires full policy replay before broker recovery can alter durable state.
 
+### Mount source negative manager readback (in progress)
+
+The Mount keeper now uses the same bounded read-only systemd FD-store inspector
+as Network. On removal of a present source name, it reads the complete manager
+store before `FDSTOREREMOVE`, sends the notification and waits for its barrier,
+then reads the complete store again. Exact capacity and count, the complete
+retained mount/source name set, disappearance of the target, and unchanged
+metadata for every unrelated row are required before it reports manager-
+confirmed absence. An unchanged dump remains unconfirmed. A failed or divergent
+post-mutation readback poisons the keeper until restart. Startup orphan cleanup
+and live `Reaping` retirement consume this negative evidence through their
+existing calls. A missing bus fails before mutation and does not turn a
+barrier into proof.
+
+The dump reports device and inode but not a kernel-unique mount ID. Fresh
+`FDSTORE` therefore remains unconfirmed, and no positive SourceRoot custody,
+source acquisition, or public Create method is enabled. Mount's exact SELinux
+service `status` permission and real-systemd enforcing VM readback still need
+qualification; this increment changes neither the production unit nor its
+SELinux policy or any readiness checkbox.
+
 ### Durable execution Observe child adoption (source qualified, inert)
 
 The Controller now adopts an exact `AOSCOB01` reservation into one private

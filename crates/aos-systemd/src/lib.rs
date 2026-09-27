@@ -5,11 +5,14 @@
 //! can propagate job results, classify outcomes, and read unit properties
 //! without shelling out to `systemctl`. It has no apm- or apr-specific
 //! knowledge and deliberately does not depend on `aos-core`.
+//! [`fd_store`] provides bounded, read-only inspection of a service's manager
+//! descriptor store for callers that validate the returned metadata.
 //!
 //! Entry point: [`SystemdClient::connect`].
 
 mod client;
 mod error;
+pub mod fd_store;
 mod manager_proxy;
 mod sandbox;
 

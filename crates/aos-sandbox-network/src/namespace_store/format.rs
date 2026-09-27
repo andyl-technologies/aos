@@ -107,7 +107,7 @@ pub unsafe fn claim_network_activation()
     })
 }
 
-pub(super) type RawSystemdStoreRow = (String, u32, u32, u32, u64, u32, u32, String, u32);
+pub(super) type RawSystemdStoreRow = aos_systemd::fd_store::RawFdStoreRow;
 
 /// Names one namespace descriptor retained for a Network handle.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
