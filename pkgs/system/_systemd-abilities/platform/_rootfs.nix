@@ -14,10 +14,14 @@
   runtimeClosureAudit,
 }: let
   config = system.config;
-  stageInputPaths = config.aos.boot.stageInputPaths.host;
-  stageBundleDestination = lib.escapeShellArg ("rootfs" + stageInputPaths.bundle);
-  stageIdentityDestination = lib.escapeShellArg ("rootfs" + stageInputPaths.identity);
-  stageContractDestination = lib.escapeShellArg ("rootfs" + stageInputPaths.contract);
+  receivedInitrdPaths = config.aos.boot.stageInputPaths.receivedInitrd;
+  receivedInitrdBundleDestination = lib.escapeShellArg ("rootfs" + receivedInitrdPaths.bundle);
+  receivedInitrdIdentityDestination = lib.escapeShellArg ("rootfs" + receivedInitrdPaths.identity);
+  receivedInitrdContractDestination = lib.escapeShellArg ("rootfs" + receivedInitrdPaths.contract);
+  hostStagePaths = config.aos.boot.stageInputPaths.host;
+  hostStageBundleDestination = lib.escapeShellArg ("rootfs" + hostStagePaths.bundle);
+  hostStageIdentityDestination = lib.escapeShellArg ("rootfs" + hostStagePaths.identity);
+  hostStageContractDestination = lib.escapeShellArg ("rootfs" + hostStagePaths.contract);
   sb = config.aos.boot.secureBoot;
   externalFinalization = sb.externalFinalization.enable;
   localSecureBootSigning = sb.enable && !externalFinalization;
@@ -78,13 +82,22 @@
       postPopulate = ''
         ${lib.optionalString config.aos.boot.initrd.abilityHandoff.enable ''
           install -D -m 0444 ${config.system.build.initrdStaticAbilityContract}/contract.json \
-            ${stageContractDestination}
-          mkdir -p "$(dirname ${stageIdentityDestination})"
+            ${receivedInitrdContractDestination}
+          mkdir -p "$(dirname ${receivedInitrdIdentityDestination})"
           printf '%s' '${config.system.build.initrdStaticAbilityContract}/contract.json' \
-            > ${stageIdentityDestination}
-          chmod 0444 ${stageIdentityDestination}
+            > ${receivedInitrdIdentityDestination}
+          chmod 0444 ${receivedInitrdIdentityDestination}
           install -D -m 0444 ${config.system.build.initrdSourceStageBundle}/source-stage-bundle.json \
-            ${stageBundleDestination}
+            ${receivedInitrdBundleDestination}
+
+          install -D -m 0444 ${config.system.build.staticAbilityContract}/contract.json \
+            ${hostStageContractDestination}
+          mkdir -p "$(dirname ${hostStageIdentityDestination})"
+          printf '%s' '${config.system.build.staticAbilityContract}/contract.json' \
+            > ${hostStageIdentityDestination}
+          chmod 0444 ${hostStageIdentityDestination}
+          install -D -m 0444 ${config.system.build.hostSourceStageBundle}/source-stage-bundle.json \
+            ${hostStageBundleDestination}
         ''}
 
         ${lib.optionalString sb.enable ''

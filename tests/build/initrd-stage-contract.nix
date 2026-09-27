@@ -442,6 +442,14 @@ in
             cmp "$host_source_stage/source-stage-bundle.json" \
               ${system.config.system.build.hostSourceStageBundle}/source-stage-bundle.json
             cmp "$host_static_contract/contract.json" "$host_abilities"
+            cmp "$host_source_stage/source-stage-bundle.json" \
+              root-tree/usr/lib/aos/host/source-stage-bundle.json
+            cmp "$host_abilities" \
+              root-tree/usr/lib/aos/host/static-ability-contract.json
+            test "$(cat root-tree/usr/lib/aos/host/static-ability-contract-identity)" = \
+              "$host_abilities"
+            ${pkgs.jq}/bin/jq -e '.environment.stage == "host"' \
+              root-tree/usr/lib/aos/host/source-stage-bundle.json >/dev/null
             root_system_units=$(resolve_archived_store_path root-tree/nix.lower \
               "$(readlink "$root_toplevel/systemd-units")")
             receiver_unit="$root_system_units/aos-ability-host-receiver.service"
