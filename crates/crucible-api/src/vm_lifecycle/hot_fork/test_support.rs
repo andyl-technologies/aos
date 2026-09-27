@@ -2,6 +2,9 @@
 
 use super::*;
 
+const SCRIPTED_SCHEDULER_QUANTUM_BUDGET: u64 = 4;
+const SCRIPTED_SCHEDULER_TIME_LIMIT_TICKS: u64 = 4;
+
 std::thread_local! {
     static COMPLETED_ADOPTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
@@ -139,7 +142,56 @@ pub fn prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_f
     ),
     LifecycleApiError,
 > {
-    let mut lifecycle = lifecycle_with_permanently_failed_nodes(source)?;
+    prepared_multi_node_hot_fork_source_world_with_time_limit_and_powered_off_for_test(
+        source,
+        source_nodes,
+        powered_off_nodes,
+        SCRIPTED_SCHEDULER_TIME_LIMIT_TICKS,
+    )
+}
+
+/// Builds a prepared source world with an explicit synthetic time limit.
+///
+/// The limit lets a test reach a guest boundary beyond the ordinary short
+/// scripted world's horizon while preserving the production scheduler path.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError::LoopFactory`] when the scenario or source-world
+/// boundary cannot be constructed under the requested time limit.
+pub fn prepared_multi_node_hot_fork_source_world_with_time_limit_for_scenario_for_test(
+    source: &ScenarioDefForm,
+    source_nodes: Vec<QemuNode>,
+    time_limit_ticks: u64,
+) -> Result<
+    (
+        Vec<(NodeId, ProductionVmNodeGeneration)>,
+        ProductionVmHotForkSourceWorld,
+    ),
+    LifecycleApiError,
+> {
+    prepared_multi_node_hot_fork_source_world_with_time_limit_and_powered_off_for_test(
+        source,
+        source_nodes,
+        &BTreeSet::new(),
+        time_limit_ticks,
+    )
+}
+
+fn prepared_multi_node_hot_fork_source_world_with_time_limit_and_powered_off_for_test(
+    source: &ScenarioDefForm,
+    source_nodes: Vec<QemuNode>,
+    powered_off_nodes: &BTreeSet<NodeId>,
+    time_limit_ticks: u64,
+) -> Result<
+    (
+        Vec<(NodeId, ProductionVmNodeGeneration)>,
+        ProductionVmHotForkSourceWorld,
+    ),
+    LifecycleApiError,
+> {
+    let mut lifecycle =
+        lifecycle_with_permanently_failed_nodes_with_time_limit(source, time_limit_ticks)?;
     if source_nodes.is_empty() || source_nodes.len() > source.world().vm_nodes().len() {
         return Err(loop_factory_error(
             "scripted source count is outside the built-in scenario World",
@@ -249,7 +301,17 @@ pub fn production_permanently_failed_loop_for_test()
 fn lifecycle_with_permanently_failed_nodes(
     source: &ScenarioDefForm,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
-    let mut lifecycle = lifecycle_without_backends(source)?;
+    lifecycle_with_permanently_failed_nodes_with_time_limit(
+        source,
+        SCRIPTED_SCHEDULER_TIME_LIMIT_TICKS,
+    )
+}
+
+fn lifecycle_with_permanently_failed_nodes_with_time_limit(
+    source: &ScenarioDefForm,
+    time_limit_ticks: u64,
+) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+    let mut lifecycle = lifecycle_without_backends(source, time_limit_ticks)?;
     for vm in source.world().vm_nodes() {
         let root_image = &lifecycle.config.guest_assets[&vm.arch].root_image;
         let root_image = std::fs::File::open(root_image)
@@ -296,6 +358,7 @@ fn lifecycle_with_permanently_failed_nodes(
 
 fn lifecycle_without_backends(
     source: &ScenarioDefForm,
+    time_limit_ticks: u64,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
     let scenario = source.scenario_def();
     if source.world().vm_nodes().is_empty() {
@@ -303,8 +366,10 @@ fn lifecycle_without_backends(
     }
     let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
         &scenario.id().to_hex(),
-        4,
-        SimInstant { ticks: 4 },
+        SCRIPTED_SCHEDULER_QUANTUM_BUDGET,
+        SimInstant {
+            ticks: time_limit_ticks,
+        },
         0,
         source.world(),
     )

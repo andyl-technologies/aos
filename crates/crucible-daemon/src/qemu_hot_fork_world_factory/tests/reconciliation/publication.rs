@@ -1,6 +1,48 @@
 //! Adoption, publication, preflight, and routing regressions.
 
 use super::*;
+use crucible_api::vm_lifecycle::prepared_multi_node_hot_fork_source_world_with_time_limit_for_scenario_for_test;
+use crucible_protocol::selectable_catalog_plan::SELECTABLE_NATIVE_HANDOFF_TICKS_PS;
+
+#[test]
+fn short_source_horizon_refuses_budget_before_guest_choice_handoff() {
+    let scenario = guest_selectable_scenario();
+    let (selectable_plan, pending_request) = pending_guest_selectable_plan();
+    let first = scripted_hot_fork_source_with_state_for_test(
+        QemuTestHotForkOutcome::Forked,
+        Vec::new(),
+        Some((selectable_plan, pending_request)),
+    )
+    .expect("first source");
+    let second =
+        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("second source");
+    let (_nodes, source_world) = prepared_multi_node_hot_fork_source_world_for_scenario_for_test(
+        &scenario,
+        vec![first, second],
+    )
+    .expect("short-horizon source world");
+    let input = execution_input_for_scenario_with_stop(scenario, StopCondition::NextChoice);
+    let context = execution_context(&input, 0x72);
+    let run_state = tempfile::tempdir().expect("run state");
+    let mut runner = QemuHotForkWorldExecutionRunner::new(
+        factory(
+            source_world,
+            input.lineage(),
+            run_state.path().to_path_buf(),
+            ScriptedWorldObservations::new(),
+        ),
+        QemuFreshModeledDriver::new(),
+    );
+
+    assert!(matches!(
+        runner.try_execute(&input, &context),
+        Err(AttemptWorkerFailure::Terminal(
+            QemuHotForkWorldExecutionRunnerError::Driver(
+                crate::QemuFreshModeledDriverError::ResourceRefusal(_)
+            )
+        ))
+    ));
+}
 
 #[test]
 fn second_adoption_failure_retains_first_adoption_and_complete_world() {
@@ -99,6 +141,11 @@ fn poisoned_source_owner_cannot_be_recovered_on_retry() {
 fn published_observation_reconciliation_makes_the_exact_source_world_reusable() {
     let (repository, store, lineage, attempt, _result, scenario) = repository_execution_fixture();
     let (selectable_plan, pending_request) = pending_guest_selectable_plan();
+    let source_time_limit_ticks = pending_request
+        .trap_tick_ps()
+        .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
+        .and_then(|stop_tick_ps| stop_tick_ps.checked_add(1))
+        .expect("finite source horizon after selectable stop");
     let expected_discovery = crate::guest_selectable::resolve_guest_selectable(
         lineage.scenario(),
         &scenario,
@@ -117,11 +164,13 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
     .expect("first source");
     let second =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("second source");
-    let (_nodes, source_world) = prepared_multi_node_hot_fork_source_world_for_scenario_for_test(
-        &scenario,
-        vec![first, second],
-    )
-    .expect("prepared source world");
+    let (_nodes, source_world) =
+        prepared_multi_node_hot_fork_source_world_with_time_limit_for_scenario_for_test(
+            &scenario,
+            vec![first, second],
+            source_time_limit_ticks,
+        )
+        .expect("prepared source world");
     let run_state = tempfile::tempdir().expect("run state");
     let observations = ScriptedWorldObservations::new();
     let fallback_calls = Arc::new(AtomicUsize::new(0));
@@ -152,10 +201,8 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
     )
     .expect("compatibility profile");
     let epoch = DaemonEpoch::from_bytes([0x72; 16]).expect("daemon epoch");
-    // The three-node scheduler must advance every node to the 100 ps
-    // guest-choice stop before publishing the observation.
-    let resources =
-        AttemptResourceLimits::new(8, 8 << 30, 8 << 30, 512).expect("attempt resources");
+    // Both runnable nodes must pass the exact 100 ps guest-choice stop.
+    let resources = AttemptResourceLimits::new(8, 8 << 30, 8 << 30, 64).expect("attempt resources");
     let request = SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0x73; 16]).expect("assignment"),
         epoch,
@@ -171,7 +218,7 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
         MemoryAssignmentLedger::default(),
         admission,
         epoch,
-        ExecutorCapacity::new(1, 8, 8 << 30, 8 << 30, 512).expect("executor capacity"),
+        ExecutorCapacity::new(1, 8, 8 << 30, 8 << 30, 64).expect("executor capacity"),
     );
     let submitted =
         ExecutorService::submit_attempt(&mut supervisor, &request).expect("submit exact discovery");
