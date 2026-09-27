@@ -594,7 +594,11 @@ mod tests {
         let directory = TestDirectory::new();
         let expected = hold();
         let mut source = directory.open();
-        assert!(source.retire_source_domain_policy_hold_v8(expected).is_err());
+        assert!(
+            source
+                .retire_source_domain_policy_hold_v8(expected)
+                .is_err()
+        );
         source
             .acquire_source_domain_policy_hold_v1(expected)
             .expect("held Source custody");
@@ -607,15 +611,34 @@ mod tests {
             held: false,
             ..expected
         };
-        assert!(source.retire_source_domain_policy_hold_v8(wrong_binding).is_err());
-        assert!(source.retire_source_domain_policy_hold_v8(released_argument).is_err());
-        assert_eq!(source.source_domain_policy_hold_v1().unwrap(), Some(expected));
+        assert!(
+            source
+                .retire_source_domain_policy_hold_v8(wrong_binding)
+                .is_err()
+        );
+        assert!(
+            source
+                .retire_source_domain_policy_hold_v8(released_argument)
+                .is_err()
+        );
+        assert_eq!(
+            source.source_domain_policy_hold_v1().unwrap(),
+            Some(expected)
+        );
 
         source
             .retire_source_domain_policy_hold_v8(expected)
             .expect("exact V8 retirement transition");
-        assert!(source.retire_source_domain_policy_hold_v8(wrong_binding).is_err());
-        assert!(source.retire_source_domain_policy_hold_v8(released_argument).is_err());
+        assert!(
+            source
+                .retire_source_domain_policy_hold_v8(wrong_binding)
+                .is_err()
+        );
+        assert!(
+            source
+                .retire_source_domain_policy_hold_v8(released_argument)
+                .is_err()
+        );
     }
 
     #[test]
