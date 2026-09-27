@@ -3907,7 +3907,7 @@ fn require_current_parentless_create_source(
     effect_plan: &EffectPlan,
     journal: &mut Journal,
 ) -> Result<(), EffectFailure> {
-    aos_sandbox::policy_compiler::current_parentless_create_project_source_for_operation_v1(
+    aos_sandbox::policy_compiler::current_parentless_create_compiler_relation_for_operation_v1(
         journal,
         operation,
         project,

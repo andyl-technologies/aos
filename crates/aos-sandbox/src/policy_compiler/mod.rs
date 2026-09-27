@@ -207,6 +207,7 @@ pub use public_create_source::{
     CurrentCreatePolicyBarrierHeadsV2, CurrentCreatePolicySourceErrorV1,
     CurrentCreateProjectPolicySourceV1, checked_parentless_create_policy_draft_v1,
     checked_parentless_create_policy_draft_v2, checked_parentless_create_verified_policy_draft_v2,
+    current_parentless_create_compiler_relation_for_operation_v1,
     current_parentless_create_project_source_for_operation_v1,
     current_parentless_create_project_source_v1, with_current_create_policy_source_barrier_v2,
     with_current_create_policy_source_barrier_v3, with_current_create_policy_source_barrier_v4,

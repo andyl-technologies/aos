@@ -1721,17 +1721,13 @@ impl PolicyAuthorityExplicitHeadReceiptV4 {
         &self.project
     }
 
-    /// Checks a candidate input against the signed sources and current Create.
+    /// Checks signed Root sources against one protected Create observation.
     ///
-    /// The caller must still construct the exact project cache-domain binding
-    /// from protected publisher custody and prove the all-owner cut. This
-    /// check only rejects substitutions before a closed proposal.
+    /// The observation must be reacquired under the held Controller, Source,
+    /// and Cache cut before it can contribute to a Root-last proposal. This
+    /// check neither grants that cut nor authenticates a compiler request layer.
     #[must_use]
-    pub fn matches_compiler_input(
-        &self,
-        create: &CurrentCreateProjectPolicySourceV1,
-        input: &PolicyCompilerInputV1,
-    ) -> bool {
+    pub fn matches_create_source(&self, create: &CurrentCreateProjectPolicySourceV1) -> bool {
         let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else {
             return false;
         };
@@ -1747,6 +1743,20 @@ impl PolicyAuthorityExplicitHeadReceiptV4 {
             && self.project.cache_domain() == create.cache_domain()
             && project_head.prerequisite_claims()[2] == create.cache_domain_head()
             && project_head.prerequisite_claims()[3] == create.revocation_head()
+    }
+
+    /// Checks a candidate input against the signed sources and current Create.
+    ///
+    /// The caller must still construct the exact project cache-domain binding
+    /// from protected publisher custody and prove the all-owner cut. This
+    /// check only rejects substitutions before a closed proposal.
+    #[must_use]
+    pub fn matches_compiler_input(
+        &self,
+        create: &CurrentCreateProjectPolicySourceV1,
+        input: &PolicyCompilerInputV1,
+    ) -> bool {
+        self.matches_create_source(create)
             && input.sandbox() == create.sandbox()
             && input.project().project() == create.project()
             && self
@@ -1756,8 +1766,8 @@ impl PolicyAuthorityExplicitHeadReceiptV4 {
             && input.site() == self.sources.site()
             && input.backend() == self.sources.backend()
             && input.ancestors().is_empty()
-            && input.endpoints().entries().is_empty()
-            && input.destinations().entries().is_empty()
+            && input.endpoints() == self.sources.endpoints()
+            && input.destinations() == self.sources.destinations()
     }
 }
 
