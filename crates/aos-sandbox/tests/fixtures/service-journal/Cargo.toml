@@ -8,6 +8,9 @@ publish = false
 [dependencies]
 aos-sandbox = { workspace = true, features = ["cache-physical-join-vm-fixture"] }
 aos-sandbox-core.workspace = true
+aos-sandbox-source-provider-ledger.workspace = true
+aos-sandbox-source-provider-protocol.workspace = true
+aos-sandbox-source-provider-security.workspace = true
 ed25519-dalek.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
 serde_json.workspace = true

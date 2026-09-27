@@ -1155,6 +1155,9 @@ version = "0.0.0"
 dependencies = [
  "aos-sandbox",
  "aos-sandbox-core",
+ "aos-sandbox-source-provider-ledger",
+ "aos-sandbox-source-provider-protocol",
+ "aos-sandbox-source-provider-security",
  "ed25519-dalek",
  "rustix 1.1.4",
  "serde_json",
