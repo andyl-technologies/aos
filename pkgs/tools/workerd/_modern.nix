@@ -224,7 +224,7 @@ in
         ++ lib.optionals isArmCross ["+local_repository+aos_arm64_toolchain"];
       # Native and ARM64 analysis produce the same pinned dependency snapshot;
       # local toolchain repositories are regenerated for the selected target.
-      depsHash = "sha256-W+UNuGP5iVKCl8xXowDLG135m/MgbUHV2jhCOx3Cp5Q=";
+      depsHash = "sha256-FGjai5OCbqKGqWMdBnDrpcNsH7MfSk0WaVNPWbrDSqw=";
       bazelTarget = "//src/workerd/server:workerd";
       bazelFlags =
         [
