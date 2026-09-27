@@ -71,6 +71,7 @@ in
               ssl=${openssl}/lib/libssl.${sharedExtension}
             fi
             cmake -S "$src" -B "cmake-$mode" \
+              $cmakeFlags \
               -DCMAKE_C_COMPILER="$CC" \
               -DOpenSSL_DIR=${openssl.static}/lib/cmake/OpenSSL \
               -DOPENSSL_USE_STATIC_LIBS="$mode" \
