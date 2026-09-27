@@ -55,7 +55,7 @@ in
       export AOS_NATIVE_VM_PRECUT_SEEDER=${fixtures}/bin/aos-sandbox-source-provider-precut-vm-seed
       ${fixtures}/bin/aos-sandbox-mount-native-recovery-vm-tests \
         --ignored --exact \
-        source_acquisition::tests::native_recovery_fixture::installed_vm::fixed_owner_native_recovery_vm_cut \
+        source_acquisition::reservation::native_recovery_fixture::installed_vm::fixed_owner_native_recovery_vm_cut \
         --nocapture
     '';
   }
