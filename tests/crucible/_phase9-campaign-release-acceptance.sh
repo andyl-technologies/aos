@@ -8,9 +8,10 @@ fail() {
 field() {
     key=$1
     file=$2
-    value=$(sed -n "s/^$key=//p" "$file")
-    test "$(printf '%s\n' "$value" | grep -c . || true)" -eq 1 \
+    test "$(grep -c "^$key=" "$file" || true)" -eq 1 \
         || fail "$file must contain exactly one $key field"
+    value=$(sed -n "s/^$key=//p" "$file")
+    test -n "$value" || fail "$file has an empty $key field"
     printf '%s\n' "$value"
 }
 

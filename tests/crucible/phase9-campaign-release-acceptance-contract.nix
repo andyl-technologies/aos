@@ -202,6 +202,18 @@ in
             fi
             cp "$test_root/result.original" "$evidence/evidence/result"
 
+            cp "$evidence/evidence/manifest.env" "$test_root/manifest.original"
+            printf 'profile_matrix=\n' >> "$evidence/evidence/manifest.env"
+            manifest_sha="$(sha256sum "$evidence/evidence/manifest.env" | cut -d ' ' -f 1)"
+            sed "s/^manifest_sha256=.*/manifest_sha256=$manifest_sha/" \
+              "$test_root/result.original" > "$evidence/evidence/result"
+            if ${pkgs.bash}/bin/bash ${runner} --probe-e2e-evidence "$evidence"; then
+              echo 'release acceptance accepted a duplicate empty profile matrix' >&2
+              exit 1
+            fi
+            cp "$test_root/manifest.original" "$evidence/evidence/manifest.env"
+            cp "$test_root/result.original" "$evidence/evidence/result"
+
             mv "$evidence/evidence/manifest.env" "$test_root/manifest.missing"
             if ${pkgs.bash}/bin/bash ${runner} --probe-e2e-evidence "$evidence"; then
               echo 'release acceptance accepted missing local e2e evidence' >&2
