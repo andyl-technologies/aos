@@ -310,9 +310,9 @@ mod tests {
         assert_eq!(&bytes[..8], b"CRUCSUP2");
         assert_eq!(&bytes[8..12], &[0, 0, 0, 2]);
         assert_eq!(&bytes[12..16], &[0, 0, 0, 28]);
-        assert_eq!(&bytes[16..20], &[0, 0, 0, 148]);
+        assert_eq!(&bytes[16..20], &[0, 0, 0, 156]);
         assert_eq!(&bytes[20..24], &[0, 0, 0, 16]);
-        assert_eq!(&bytes[24..28], &[0, 0, 0, 104]);
+        assert_eq!(&bytes[24..28], &[0, 0, 0, 112]);
         assert_eq!(PluginSetupPlan::decode(&bytes), Ok(plan));
     }
 

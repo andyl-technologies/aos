@@ -27,7 +27,8 @@ impl LiveWhiteboxState {
         &mut self,
         reader: &mut LiveGuestMemoryReader,
         event: WhiteboxDoorbellTrapEvent,
-        current_icount: u64,
+        raw_icount: u64,
+        trap_tick_ps: u64,
         vcpu_index: usize,
     ) -> Result<(), LiveWhiteboxError> {
         let app_random = self
@@ -36,7 +37,7 @@ impl LiveWhiteboxState {
             .ok_or(LiveWhiteboxError::AppRandomNotConfigured)?;
         let mut writer = LiveGuestMemoryWriter {
             apis: self.apis,
-            current_icount,
+            current_icount: raw_icount,
         };
         let node_name = app_random.decisions.node_name().to_owned();
         let outcome = handle_whitebox_app_random_callback(
@@ -59,7 +60,7 @@ impl LiveWhiteboxState {
             .map_err(callback_error)?;
             self.marker_sink
                 .output
-                .record_app_random(current_icount, vcpu_index as u32, &record)
+                .record_app_random(trap_tick_ps, vcpu_index as u32, &record)
                 .map_err(callback_error)?;
         }
         Ok(())
@@ -75,12 +76,12 @@ fn callback_error(source: impl ToString) -> LiveWhiteboxError {
 impl LiveWhiteboxMarkerShmemProducer {
     fn record_app_random(
         &mut self,
-        current_icount: u64,
+        tick_ps: u64,
         vcpu_index: u32,
         record: &BackendRngEvidenceTransportRecord,
     ) -> Result<(), WhiteboxMarkerSinkError> {
         self.record(
-            current_icount,
+            tick_ps,
             vcpu_index,
             WHITEBOX_SHMEM_KIND_APP_RANDOM_DECISION,
             &record.encode(),

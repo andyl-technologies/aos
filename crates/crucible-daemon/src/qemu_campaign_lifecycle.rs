@@ -2686,7 +2686,7 @@ fn apply_replayed_guest_selectables<F, D>(
                         selectable: request.selectable_id().to_owned(),
                         request_instance: request.instance_key().to_owned(),
                         request_sequence: request.sequence(),
-                        request_icount: pending.pending().icount(),
+                        request_icount: pending.pending().raw_icount(),
                         request_vcpu_index: pending.pending().vcpu_index(),
                         expected_opportunity,
                         replayed_opportunity:

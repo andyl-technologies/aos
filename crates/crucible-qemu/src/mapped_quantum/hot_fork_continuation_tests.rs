@@ -64,7 +64,7 @@ fn hot_fork_clone_copies_host_state_onto_an_independent_private_mapping()
     source.next_marker_sequence = 13;
     source.next_guest_introspection_request_sequence = 17;
     source.next_guest_introspection_response_sequence = 19;
-    source.last_marker_icount = Some(23);
+    source.last_marker_tick_ps = Some(23);
     source
         .pending_marker_events
         .push(ObservableEvent::network_delivered(
@@ -86,6 +86,7 @@ fn hot_fork_clone_copies_host_state_onto_an_independent_private_mapping()
         .push(SelectablePlanPendingRequest::new(
             SelectionRequest::new(53, "network.policy", "epoch/7", None, 192)?,
             59,
+            (59) * 50,
             0,
             0xfeed_4000,
         ));
@@ -114,7 +115,7 @@ fn hot_fork_clone_copies_host_state_onto_an_independent_private_mapping()
         child.next_guest_introspection_response_sequence,
         source.next_guest_introspection_response_sequence
     );
-    assert_eq!(child.last_marker_icount, source.last_marker_icount);
+    assert_eq!(child.last_marker_tick_ps, source.last_marker_tick_ps);
     assert_eq!(child.pending_marker_events, source.pending_marker_events);
     assert_eq!(child.pending_rng_evidence, source.pending_rng_evidence);
     assert_eq!(

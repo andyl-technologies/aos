@@ -434,25 +434,31 @@ pending request before acknowledging restore. Immutable declarations are
 shared, but pending tokens are incarnation-specific and cannot cross the swap.
 
 After retaining the request and successfully requesting VMStop, the plugin
-publishes one `crucible.guest-selectable.pending-request` version-1 record
+publishes one `crucible.guest-selectable.pending-request` version-2 record
 through the existing lossless plugin-to-host white-box marker ring. The marker
-entry supplies the trap icount and vCPU index. Its canonical body is:
+entry supplies the pre-instruction simulation tick in picoseconds and vCPU
+index; the body supplies the distinct raw replay coordinate. Every marker on
+this shared ring uses a simulation tick in sim mode, including ordinary guest
+markers and app-random decisions. This keeps ring order and host observations
+in one physical unit without changing the raw coordinate used to identify a
+guest instruction for replay. The canonical pending body is:
 
 ```text
 offset  size  field
 ------  ----  ----------------------------------------------------------
-  0      8   magic = "CRUCSPQ1"
-  8      2   version = 1, little-endian
- 10      2   header_len = 32, little-endian
+  0      8   magic = "CRUCSPQ2"
+  8      2   version = 2, little-endian
+ 10      2   header_len = 40, little-endian
  12      4   total_len, little-endian
  16      8   guest_virtual_reply_address, little-endian
  24      4   selection_request_len, little-endian
  28      4   reserved = 0
- 32      N   canonical SelectionRequestV1
+ 32      8   raw_pre_instruction_icount, little-endian
+ 40      N   canonical SelectionRequestV1
 ```
 
 The complete body remains within the marker ring's 4,608-byte payload, so a
-deferred request is limited to 4,576 nested bytes. A larger standalone request
+deferred request is limited to 4,568 nested bytes. A larger standalone request
 fails before catalog mutation or VMStop. The host drain reconstructs the exact
 process-neutral pending-plan coordinate but does not grant semantic choice
 authority. Before deriving a guest opportunity, the daemon requires the marker
@@ -497,15 +503,15 @@ emission and reply-validation helpers over the architecture-specific doorbell
 transport.
 
 The launch-authenticated node-local catalog and checkpoint continuation use the
-independent `crucible.guest-selectable.catalog-plan` version-3 descriptor body.
-Every integer is big-endian. Its 104-byte header is:
+independent `crucible.guest-selectable.catalog-plan` version-4 descriptor body.
+Every integer is big-endian. Its 112-byte header is:
 
 ```text
 offset  size  field
 ------  ----  ----------------------------------------------------------
-  0      8   magic = "CRUCSCP3"
-  8      4   schema_version = 3
- 12      4   header_len = 104
+  0      8   magic = "CRUCSCP4"
+  8      4   schema_version = 4
+ 12      4   header_len = 112
  16      4   total_len
  20      4   flags: bit 0 frozen, bit 1 last registration present,
                   bit 2 last completed request present, bit 3 pending
@@ -518,10 +524,11 @@ offset  size  field
  56      8   total_completed_requests
  64      8   last_registration_sequence, or zero when absent
  72      8   last_completed_request_sequence, or zero when absent
- 80      8   pending_trap_icount, or zero when absent
+ 80      8   pending_raw_pre_instruction_icount, or zero when absent
  88      4   pending_vcpu_index, or zero when absent
  92      4   pending_request_len, or zero when absent
  96      8   pending_guest_virtual_address, or zero when absent
+104      8   pending_pre_instruction_tick_ps, or zero when absent
 ```
 
 The header is followed by strictly identifier-ordered expected declarations,
@@ -533,7 +540,7 @@ completed counter is `len:u16 | bytes | count:u64`. The pending body is one
 complete canonical `SelectionRequestV1`, including its zero-filled reply
 reservation. The process-neutral guest virtual address is the exact reservation
 target restored by VMState; native pointers and QEMU-private objects never enter
-the descriptor. The current decoder admits only version 3. The encoded total and
+the descriptor. The current decoder admits only version 4. The encoded total and
 per-collection counts are exact, absent optional header fields are zero, every
 continuation identifier is declared, every completed/pending identifier is
 registered, required frozen declarations are present, request counts respect

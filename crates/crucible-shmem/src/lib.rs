@@ -203,8 +203,10 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// The current layout includes logical-time restore, typed fault transports,
 /// guest introspection, accelerator traffic, selectable replies, reversible
 /// hot-fork admission, coverage reset, timer witnesses, and advance-stop
-/// publication. The generated C view and golden vectors pin every offset.
-pub const ABI_VERSION: u32 = 29;
+/// publication. Version 30 binds selectable marker and reply coordinates to
+/// picosecond ticks; raw retirement remains in the versioned pending payload.
+/// The generated C view and golden vectors pin every offset.
+pub const ABI_VERSION: u32 = 30;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of simulation ticks in one QEMU virtual nanosecond.
 pub const TICKS_PER_NS: u64 = 1_000;

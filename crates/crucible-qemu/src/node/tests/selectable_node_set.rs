@@ -16,7 +16,7 @@ use crate::{QemuNode, QemuNodeSet};
 
 #[test]
 fn selectable_pause_returns_before_reissue_and_reply_reaches_the_next_choice() {
-    let (plan, requests) = scripted_selectable_plan_and_requests(&[41, 61]);
+    let (plan, requests) = scripted_selectable_plan_and_requests(&[2_050, 3_050]);
     let node = NodeId {
         name: String::from("node-a"),
     };
@@ -28,11 +28,11 @@ fn selectable_pause_returns_before_reissue_and_reply_reaches_the_next_choice() {
             requests.clone(),
             [
                 QemuTestQuantumBoundary::Paused {
-                    at: 41,
-                    next_deadline: Some(200),
+                    at: 2_050,
+                    next_deadline: Some(10_000),
                 },
                 QemuTestQuantumBoundary::Paused {
-                    at: 61,
+                    at: 3_050,
                     next_deadline: None,
                 },
                 QemuTestQuantumBoundary::Reached,
@@ -40,16 +40,16 @@ fn selectable_pause_returns_before_reissue_and_reply_reaches_the_next_choice() {
         ),
     );
 
-    let first = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 100 })
+    let first = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 5_000 })
         .expect("step to first selectable");
-    assert_eq!(first.reached, VirtualTime { ticks: 100 });
+    assert_eq!(first.reached, VirtualTime { ticks: 5_000 });
     assert_eq!(
         first.outcome,
         AdvanceOutcome::Paused {
-            at: Icount { retired: 41 }
+            at: Icount { retired: 2_050 }
         }
     );
-    let blocked = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 100 })
+    let blocked = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 5_000 })
         .expect_err("unanswered selectable must block another node step");
     assert!(
         blocked
@@ -61,7 +61,7 @@ fn selectable_pause_returns_before_reissue_and_reply_reaches_the_next_choice() {
         .expect("drain first selectable");
     assert_eq!(first_pending.len(), 1);
     assert_eq!(first_pending[0].pending(), &requests[0]);
-    assert_eq!(first_pending[0].pending().icount(), 40);
+    assert_eq!(first_pending[0].pending().raw_icount(), 40);
 
     let first_reply =
         SelectionReply::selected(7, [1; 32], [2; 32], vec![1]).expect("first selected reply");
@@ -69,13 +69,13 @@ fn selectable_pause_returns_before_reissue_and_reply_reaches_the_next_choice() {
         .enqueue_selectable_reply(&first_pending[0], &first_reply)
         .expect("enqueue first reply");
 
-    let second = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 100 })
+    let second = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 5_000 })
         .expect("step to second selectable");
-    assert_eq!(second.reached, VirtualTime { ticks: 100 });
+    assert_eq!(second.reached, VirtualTime { ticks: 5_000 });
     assert_eq!(
         second.outcome,
         AdvanceOutcome::Paused {
-            at: Icount { retired: 61 }
+            at: Icount { retired: 3_050 }
         }
     );
     let second_pending = nodes
@@ -89,9 +89,10 @@ fn selectable_pause_returns_before_reissue_and_reply_reaches_the_next_choice() {
     nodes
         .enqueue_selectable_reply(&second_pending[0], &second_reply)
         .expect("enqueue second reply");
-    let completed = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 100 })
-        .expect("step after both replies");
-    assert_eq!(completed.reached, VirtualTime { ticks: 100 });
+    let completed =
+        SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 5_000 })
+            .expect("step after both replies");
+    assert_eq!(completed.reached, VirtualTime { ticks: 5_000 });
     assert_eq!(completed.outcome, AdvanceOutcome::ReachedHorizon);
 
     shutdown_scripted_nodes(&mut nodes, &[node]);
@@ -135,7 +136,7 @@ fn ordinary_idle_pause_still_reissues_to_the_requested_ceiling() {
 
 #[test]
 fn selectable_projection_requires_the_exact_physical_pause_boundary() {
-    let (plan, requests) = scripted_selectable_plan_and_requests(&[40]);
+    let (plan, requests) = scripted_selectable_plan_and_requests(&[2_000]);
     let node = NodeId {
         name: String::from("node-a"),
     };
@@ -146,18 +147,18 @@ fn selectable_projection_requires_the_exact_physical_pause_boundary() {
             Some(plan),
             requests,
             [QemuTestQuantumBoundary::Paused {
-                at: 41,
+                at: 2_050,
                 next_deadline: None,
             }],
         ),
     );
 
-    let error = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 100 })
+    let error = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 5_000 })
         .expect_err("mismatched selectable boundary must fail closed");
     assert!(
         error
             .to_string()
-            .contains("selectable boundary 40 differs from physical pause 41")
+            .contains("selectable boundary 2000 differs from physical pause 2050")
     );
 
     shutdown_scripted_nodes(&mut nodes, &[node]);
@@ -165,7 +166,7 @@ fn selectable_projection_requires_the_exact_physical_pause_boundary() {
 
 #[test]
 fn selectable_at_the_exact_ceiling_is_retained_before_the_fast_path_returns() {
-    let (plan, requests) = scripted_selectable_plan_and_requests(&[100]);
+    let (plan, requests) = scripted_selectable_plan_and_requests(&[5_000]);
     let node = NodeId {
         name: String::from("node-a"),
     };
@@ -176,24 +177,24 @@ fn selectable_at_the_exact_ceiling_is_retained_before_the_fast_path_returns() {
             Some(plan),
             requests.clone(),
             [QemuTestQuantumBoundary::Paused {
-                at: 100,
+                at: 5_000,
                 next_deadline: None,
             }],
         ),
     );
 
     let observation =
-        SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 100 })
+        SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 5_000 })
             .expect("step to exact-ceiling selectable");
-    assert_eq!(observation.reached, VirtualTime { ticks: 100 });
+    assert_eq!(observation.reached, VirtualTime { ticks: 5_000 });
     assert_eq!(
         observation.outcome,
         AdvanceOutcome::Paused {
-            at: Icount { retired: 100 }
+            at: Icount { retired: 5_000 }
         }
     );
 
-    let blocked = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 101 })
+    let blocked = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 5_001 })
         .expect_err("exact-ceiling selectable must be retained before another step");
     assert!(
         blocked
@@ -217,7 +218,7 @@ fn one_nodes_choice_does_not_project_a_peer_step() {
     let second = NodeId {
         name: String::from("node-b"),
     };
-    let (plan, requests) = scripted_selectable_plan_and_requests(&[41]);
+    let (plan, requests) = scripted_selectable_plan_and_requests(&[2_050]);
     let mut nodes = QemuNodeSet::new();
     nodes.insert(
         first.clone(),
@@ -225,7 +226,7 @@ fn one_nodes_choice_does_not_project_a_peer_step() {
             Some(plan),
             requests,
             [QemuTestQuantumBoundary::Paused {
-                at: 41,
+                at: 2_050,
                 next_deadline: None,
             }],
         ),
@@ -246,28 +247,28 @@ fn one_nodes_choice_does_not_project_a_peer_step() {
     );
 
     let first_observation =
-        SimulationBackend::step_node_to(&mut nodes, &first, VirtualTime { ticks: 100 })
+        SimulationBackend::step_node_to(&mut nodes, &first, VirtualTime { ticks: 5_000 })
             .expect("step first node to choice");
-    assert_eq!(first_observation.reached, VirtualTime { ticks: 100 });
+    assert_eq!(first_observation.reached, VirtualTime { ticks: 5_000 });
     assert_eq!(
         first_observation.outcome,
         AdvanceOutcome::Paused {
-            at: Icount { retired: 41 }
+            at: Icount { retired: 2_050 }
         }
     );
 
     let second_observation =
-        SimulationBackend::step_node_to(&mut nodes, &second, VirtualTime { ticks: 100 })
+        SimulationBackend::step_node_to(&mut nodes, &second, VirtualTime { ticks: 5_000 })
             .expect("reissue peer ordinary pause");
-    assert_eq!(second_observation.reached, VirtualTime { ticks: 100 });
+    assert_eq!(second_observation.reached, VirtualTime { ticks: 5_000 });
     assert_eq!(second_observation.outcome, AdvanceOutcome::ReachedHorizon);
     assert_eq!(
         SimulationBackend::node_now(&nodes, &first).expect("first node coordinate"),
-        VirtualTime { ticks: 41 }
+        VirtualTime { ticks: 2_050 }
     );
     assert_eq!(
         SimulationBackend::node_now(&nodes, &second).expect("second node coordinate"),
-        VirtualTime { ticks: 100 }
+        VirtualTime { ticks: 5_000 }
     );
 
     let pending = nodes
@@ -324,10 +325,10 @@ fn scripted_selectable_plan_and_requests(
                 192,
             )
             .expect("selection request");
-            let trap = boundary
-                .checked_sub(1)
-                .expect("scripted selectable boundary follows its trap");
-            SelectablePlanPendingRequest::new(request, trap, 0, 0x1000)
+            assert_eq!(boundary % 50, 0);
+            let trap_raw = boundary / 50 - 1;
+            let trap_tick_ps = boundary - 50;
+            SelectablePlanPendingRequest::new(request, trap_raw, trap_tick_ps, 0, 0x1000)
         })
         .collect();
     (plan, requests)

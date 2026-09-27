@@ -241,7 +241,7 @@ pub(super) fn capture_boundary_evidence(
     );
     assert!(pending.pending().request().narrowed_domain().is_some());
     assert!(pending.pending().request().reply_capacity() > 0);
-    assert!(pending.pending().icount() > 0);
+    assert!(pending.pending().raw_icount() > 0);
     assert_eq!(pending.pending().vcpu_index(), 0);
     assert!(pending.pending().guest_virtual_address() > 0);
     let fingerprints: BTreeMap<NodeId, FingerprintSample> = source

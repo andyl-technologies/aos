@@ -35,8 +35,8 @@ crucible.campaign.selection	1	crucible-campaign::object	campaign-fact	gate:typed
 crucible.guest-selectable.register	1	crucible-protocol::selectable	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.guest-selectable.request	1	crucible-protocol::selectable	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.guest-selectable.reply	1	crucible-protocol::selectable	process-protocol-message	gate:typed-choice,gate:abi-conformance
-crucible.guest-selectable.catalog-plan	3	crucible-protocol::selectable_catalog_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
-crucible.guest-selectable.pending-request	1	crucible-protocol::selectable_transport	process-protocol-message	gate:typed-choice,gate:abi-conformance
+crucible.guest-selectable.catalog-plan	4	crucible-protocol::selectable_catalog_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
+crucible.guest-selectable.pending-request	2	crucible-protocol::selectable_transport	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.qemu-plugin.setup-plan	2	crucible-protocol::plugin_setup_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.qemu.hot-fork.template	29	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-equivalence,gate:hot-fork-isolation
 crucible.qemu.hot-fork.template-resource-stage	13	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
@@ -365,7 +365,7 @@ crucible.shmem.node-event-envelope	1	crucible-qemu-plugin::fault_command::event_
 crucible.shmem.node-fault-evidence	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
 crucible.shmem.node-fault-payload	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
 crucible.shmem.node-fault-policy-json	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
-crucible.shmem.region	29	crucible-shmem::region	process-protocol-message	gate:abi-conformance
+crucible.shmem.region	30	crucible-shmem::region	process-protocol-message	gate:abi-conformance
 crucible.whitebox-doorbell.frame	3	crucible-protocol::doorbell_frame	process-protocol-message	gate:abi-conformance
 crucible.whitebox-doorbell.instruction	4	crucible-protocol::doorbell_abi	process-protocol-message	gate:abi-conformance
 

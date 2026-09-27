@@ -72,6 +72,7 @@ fn pending(
     Ok(SelectablePlanPendingRequest::new(
         SelectionRequest::new(9, selectable, "routing-epoch-7", narrowed, 256)?,
         41,
+        (41) * 50,
         2,
         0x1000,
     ))
@@ -86,6 +87,7 @@ fn scenario_request_resolves_and_builds_exact_default_reply() -> Result<(), Box<
     let another_transport_incarnation = SelectablePlanPendingRequest::new(
         SelectionRequest::new(10, "product.recovery", "routing-epoch-7", None, 256)?,
         41,
+        (41) * 50,
         2,
         0x2000,
     );
@@ -147,6 +149,7 @@ fn request_rejects_unknown_source_and_broadened_domain() -> Result<(), Box<dyn E
     let invalid_vcpu = SelectablePlanPendingRequest::new(
         SelectionRequest::new(9, "product.recovery", "routing-epoch-7", None, 256)?,
         41,
+        (41) * 50,
         4,
         0x1000,
     );
@@ -360,7 +363,7 @@ fn atomic_guest_group_crosses_registration_discovery_and_one_reply() -> Result<(
     assert_eq!(scenario.selectables().declarations().len(), 1);
 
     let request = SelectionRequest::new(2, "recovery.response", "transport/one", None, 4096)?;
-    let pending = SelectablePlanPendingRequest::new(request.clone(), 41, 2, 0x1000);
+    let pending = SelectablePlanPendingRequest::new(request.clone(), 41, (41) * 50, 2, 0x1000);
     let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.id().bytes));
     let discovery = resolve_guest_selectable(scenario_id, &scenario, &node, &pending)?;
     let selection = Selection::new(

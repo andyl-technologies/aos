@@ -51,7 +51,7 @@ impl GuardedReplayPhysicalNode for ScriptedPhysicalReplay {
         }
         self.advances.push(ceiling);
         if let Some(request) = self.upcoming.front() {
-            let paused = request.icount().saturating_add(1);
+            let paused = request.trap_tick_ps().saturating_add(50);
             if paused <= ceiling.retired {
                 self.pending = self.upcoming.pop_front();
                 return Ok(ReplayPhysicalAdvance {
@@ -151,12 +151,14 @@ fn replay_choice_fixture()
     let first = SelectablePlanPendingRequest::new(
         SelectionRequest::new(1, "campaign.recovery-policy", "first", None, 256)?,
         41,
+        (41) * 50,
         0,
         0x1000,
     );
     let second = SelectablePlanPendingRequest::new(
         SelectionRequest::new(2, "campaign.recovery-policy", "second", None, 256)?,
         81,
+        (81) * 50,
         0,
         0x2000,
     );
@@ -292,13 +294,13 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
     let after_rng_icount = replay_one_nonselection_boundary(
         &mut replay,
         Icount { retired: 0 },
-        Icount { retired: 100 },
+        Icount { retired: 5_000 },
     )?;
     assert_eq!(after_rng_icount.retired, 1);
     let after_first_icount = replay_one_local_guest_choice(
         &mut replay,
         after_rng_icount,
-        Icount { retired: 100 },
+        Icount { retired: 5_000 },
         &source,
         &after_rng,
         first_record,
@@ -306,12 +308,12 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
     let after_second_icount = replay_one_local_guest_choice(
         &mut replay,
         after_first_icount,
-        Icount { retired: 100 },
+        Icount { retired: 5_000 },
         &source,
         &after_first,
         second_record,
     )?;
-    assert_eq!(after_second_icount.retired, 82);
+    assert_eq!(after_second_icount.retired, 4_100);
     assert_eq!(replay.advances.len(), 3);
     assert_eq!(replay.replies.len(), 2);
     assert_eq!(replay.replies[0].sequence(), 1);
@@ -323,7 +325,8 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
 
     let divergent = SelectablePlanPendingRequest::new(
         second.request().clone(),
-        second.icount() + 1,
+        second.raw_icount() + 1,
+        second.trap_tick_ps() + 50,
         second.vcpu_index(),
         second.guest_virtual_address(),
     );
@@ -339,7 +342,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         replay_one_local_guest_choice(
             &mut divergent_replay,
             after_first_icount,
-            Icount { retired: 100 },
+            Icount { retired: 5_000 },
             &source,
             &after_first,
             second_record,
@@ -360,7 +363,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         replay_one_local_guest_choice(
             &mut missing_replay,
             after_first_icount,
-            Icount { retired: 100 },
+            Icount { retired: 5_000 },
             &source,
             &after_first,
             second_record,
@@ -381,7 +384,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         replay_one_nonselection_boundary(
             &mut extra_replay,
             Icount { retired: 0 },
-            Icount { retired: 100 },
+            Icount { retired: 5_000 },
         )
         .is_err()
     );
@@ -389,17 +392,17 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
     assert!(reject_unrecorded_local_request(&mut extra_replay).is_err());
     extra_replay.pending = Some(first.clone());
     assert!(
-        verify_target_pending_request(&mut extra_replay, Icount { retired: 42 }, Some(&first))
+        verify_target_pending_request(&mut extra_replay, Icount { retired: 2_100 }, Some(&first))
             .is_ok()
     );
     extra_replay.pending = Some(first.clone());
     assert!(
-        verify_target_pending_request(&mut extra_replay, Icount { retired: 43 }, Some(&first))
+        verify_target_pending_request(&mut extra_replay, Icount { retired: 2_101 }, Some(&first))
             .is_err()
     );
     extra_replay.pending = Some(second);
     assert!(
-        verify_target_pending_request(&mut extra_replay, Icount { retired: 82 }, Some(&first))
+        verify_target_pending_request(&mut extra_replay, Icount { retired: 4_100 }, Some(&first))
             .is_err()
     );
     let mut progress = ReplayPhysicalProgress::new(Icount { retired: 5 });

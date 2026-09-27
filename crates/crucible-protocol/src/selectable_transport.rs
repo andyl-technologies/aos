@@ -7,19 +7,21 @@
 //!
 //! ```text
 //! offset  size  field
-//! 0       8     magic `CRUCSPQ1`
-//! 8       2     version, little-endian (`1`)
-//! 10      2     header length, little-endian (`32`)
+//! 0       8     magic `CRUCSPQ2`
+//! 8       2     version, little-endian (`2`)
+//! 10      2     header length, little-endian (`40`)
 //! 12      4     total record length, little-endian
 //! 16      8     guest virtual reply address, little-endian
 //! 24      4     SelectionRequestV1 byte length, little-endian
 //! 28      4     reserved, zero
-//! 32      N     canonical SelectionRequestV1 bytes
+//! 32      8     raw pre-instruction retirement count, little-endian
+//! 40      N     canonical SelectionRequestV1 bytes
 //! ```
 //!
-//! The outer shared-memory marker supplies the exact retired-instruction count
-//! and vCPU index. The nested request retains its complete zero-filled reply
-//! reservation. Consequently this transport admits request bodies up to 4,576
+//! The outer shared-memory marker supplies the pre-instruction simulation tick
+//! in picoseconds and vCPU index. The distinct raw retirement count retains
+//! replay identity. The nested request retains its complete zero-filled reply
+//! reservation. Consequently this transport admits request bodies up to 4,568
 //! bytes, slightly below the standalone guest ABI's 4,608-byte ceiling.
 //!
 //! Two additional internal marker kinds carry an already-canonical
@@ -57,16 +59,16 @@ pub const WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED: u16 = 0xff08;
 pub const WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED: u16 = 0xff09;
 
 /// Magic prefix for the deferred selectable request transport.
-pub const SELECTABLE_PENDING_TRANSPORT_MAGIC: [u8; 8] = *b"CRUCSPQ1";
+pub const SELECTABLE_PENDING_TRANSPORT_MAGIC: [u8; 8] = *b"CRUCSPQ2";
 
 /// Current deferred selectable request transport version.
-pub const SELECTABLE_PENDING_TRANSPORT_VERSION: u16 = 1;
+pub const SELECTABLE_PENDING_TRANSPORT_VERSION: u16 = 2;
 
 /// Required golden-vector maintenance rule for this transport.
 pub const SELECTABLE_PENDING_TRANSPORT_REGENERATION_RULE: &str = "changing SELECTABLE_PENDING_TRANSPORT_VERSION requires regenerating the deferred-request ABI vector";
 
 /// Fixed header bytes preceding the nested request.
-pub const SELECTABLE_PENDING_TRANSPORT_HEADER_BYTES: usize = 32;
+pub const SELECTABLE_PENDING_TRANSPORT_HEADER_BYTES: usize = 40;
 
 /// Maximum nested request bytes that fit one white-box marker payload.
 pub const SELECTABLE_PENDING_TRANSPORT_MAX_REQUEST_BYTES: usize =
@@ -77,6 +79,7 @@ pub const SELECTABLE_PENDING_TRANSPORT_MAX_REQUEST_BYTES: usize =
 pub struct SelectablePendingTransportRecord {
     request: SelectionRequest,
     guest_virtual_address: u64,
+    raw_icount: u64,
 }
 
 impl SelectablePendingTransportRecord {
@@ -89,6 +92,7 @@ impl SelectablePendingTransportRecord {
     pub fn new(
         request: SelectionRequest,
         guest_virtual_address: u64,
+        raw_icount: u64,
     ) -> Result<Self, SelectablePendingTransportError> {
         let request_len = request.encode()?.len();
         if request_len > SELECTABLE_PENDING_TRANSPORT_MAX_REQUEST_BYTES {
@@ -100,6 +104,7 @@ impl SelectablePendingTransportRecord {
         Ok(Self {
             request,
             guest_virtual_address,
+            raw_icount,
         })
     }
 
@@ -165,7 +170,8 @@ impl SelectablePendingTransportRecord {
         }
         let request =
             SelectionRequest::decode(&bytes[SELECTABLE_PENDING_TRANSPORT_HEADER_BYTES..])?;
-        Self::new(request, guest_virtual_address)
+        let raw_icount = read_u64(bytes, 32);
+        Self::new(request, guest_virtual_address, raw_icount)
     }
 
     /// Encodes this record for one shared-memory marker payload.
@@ -198,6 +204,7 @@ impl SelectablePendingTransportRecord {
         bytes[12..16].copy_from_slice(&total_len.to_le_bytes());
         bytes[16..24].copy_from_slice(&self.guest_virtual_address.to_le_bytes());
         bytes[24..28].copy_from_slice(&request_len.to_le_bytes());
+        bytes[32..40].copy_from_slice(&self.raw_icount.to_le_bytes());
         bytes.extend_from_slice(&request);
         Ok(bytes)
     }
@@ -212,6 +219,12 @@ impl SelectablePendingTransportRecord {
     #[must_use]
     pub const fn guest_virtual_address(&self) -> u64 {
         self.guest_virtual_address
+    }
+
+    /// Returns the raw retirement count before the guest doorbell instruction.
+    #[must_use]
+    pub const fn raw_icount(&self) -> u64 {
+        self.raw_icount
     }
 }
 
@@ -252,7 +265,7 @@ pub enum SelectablePendingTransportError {
         /// Minimum fixed-header bytes.
         minimum: usize,
     },
-    /// The transport magic did not match the v1 namespace.
+    /// The transport magic did not match the v2 namespace.
     #[error("selectable pending record magic is invalid")]
     InvalidMagic,
     /// The record used an unsupported transport version.
@@ -319,12 +332,19 @@ mod tests {
     #[test]
     fn pending_request_round_trips_with_exact_reply_target()
     -> Result<(), Box<dyn std::error::Error>> {
-        let record = SelectablePendingTransportRecord::new(request(256)?, 0xfeed_2000)?;
+        let record = SelectablePendingTransportRecord::new(request(256)?, 0xfeed_2000, 17)?;
         let encoded = record.encode()?;
         assert_eq!(SelectablePendingTransportRecord::decode(&encoded)?, record);
         assert_eq!(&encoded[..8], &SELECTABLE_PENDING_TRANSPORT_MAGIC);
         assert_eq!(record.guest_virtual_address(), 0xfeed_2000);
         assert_eq!(record.request().sequence(), 71);
+        assert_eq!(record.raw_icount(), 17);
+        let mut legacy = encoded.clone();
+        legacy[..8].copy_from_slice(b"CRUCSPQ1");
+        assert_eq!(
+            SelectablePendingTransportRecord::decode(&legacy),
+            Err(SelectablePendingTransportError::InvalidMagic)
+        );
         Ok(())
     }
 
@@ -334,13 +354,14 @@ mod tests {
         let boundary = SelectablePendingTransportRecord::new(
             request(SELECTABLE_PENDING_TRANSPORT_MAX_REQUEST_BYTES)?,
             0x1000,
+            17,
         )?;
         assert_eq!(boundary.encode()?.len(), SELECTABLE_MESSAGE_MAX_BYTES);
 
         let request = request(SELECTABLE_MESSAGE_MAX_BYTES)?;
         assert_eq!(request.encode()?.len(), SELECTABLE_MESSAGE_MAX_BYTES);
         assert!(matches!(
-            SelectablePendingTransportRecord::new(request, 0x1000),
+            SelectablePendingTransportRecord::new(request, 0x1000, 17),
             Err(SelectablePendingTransportError::RequestTooLarge {
                 len: SELECTABLE_MESSAGE_MAX_BYTES,
                 maximum: SELECTABLE_PENDING_TRANSPORT_MAX_REQUEST_BYTES,
@@ -352,7 +373,7 @@ mod tests {
     #[test]
     fn decoder_rejects_reserved_and_nested_length_mutations()
     -> Result<(), Box<dyn std::error::Error>> {
-        let record = SelectablePendingTransportRecord::new(request(256)?, 0x4000)?;
+        let record = SelectablePendingTransportRecord::new(request(256)?, 0x4000, 17)?;
         let mut reserved = record.encode()?;
         reserved[28] = 1;
         assert_eq!(

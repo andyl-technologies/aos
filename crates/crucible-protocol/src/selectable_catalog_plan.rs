@@ -8,9 +8,9 @@
 //!
 //! ```text
 //! offset  size  field
-//! 0       8     magic = "CRUCSCP3"
-//! 8       4     schema version = 3, big-endian
-//! 12      4     header length = 104
+//! 0       8     magic = "CRUCSCP4"
+//! 8       4     schema version = 4, big-endian
+//! 12      4     header length = 112
 //! 16      4     total byte length
 //! 20      4     flags: frozen, last-registration, last-request, pending
 //! 24      4     declaration limit
@@ -22,11 +22,12 @@
 //! 56      8     total completed requests
 //! 64      8     last registration sequence or zero
 //! 72      8     last completed request sequence or zero
-//! 80      8     pending trap icount or zero
+//! 80      8     pending raw pre-instruction icount or zero
 //! 88      4     pending vCPU index or zero
 //! 92      4     pending SelectionRequestV1 byte length or zero
 //! 96      8     pending guest virtual reply address or zero
-//! 104     ...   expected entries, registered IDs, completed counters, pending
+//! 104     8     pending pre-instruction simulation tick (ps) or zero
+//! 112     ...   expected entries, registered IDs, completed counters, pending
 //! ```
 //!
 //! Expected entries are `presence:u8`, three zero bytes, `length:u32`, and one
@@ -44,11 +45,11 @@ use crate::{
 };
 
 /// Frozen magic at the start of every selectable catalog plan.
-pub const SELECTABLE_CATALOG_PLAN_MAGIC: [u8; 8] = *b"CRUCSCP3";
+pub const SELECTABLE_CATALOG_PLAN_MAGIC: [u8; 8] = *b"CRUCSCP4";
 /// Canonical selectable catalog plan schema version.
-pub const SELECTABLE_CATALOG_PLAN_VERSION: u32 = 3;
+pub const SELECTABLE_CATALOG_PLAN_VERSION: u32 = 4;
 /// Fixed plan header bytes.
-pub const SELECTABLE_CATALOG_PLAN_HEADER_BYTES: usize = 104;
+pub const SELECTABLE_CATALOG_PLAN_HEADER_BYTES: usize = 112;
 /// Maximum canonical bytes in one node-local plan.
 pub const SELECTABLE_CATALOG_PLAN_MAX_BYTES: usize = 32 * 1024 * 1024;
 /// Maximum expected or registered declarations in one node-local plan.
@@ -60,6 +61,9 @@ pub const SELECTABLE_CATALOG_PLAN_MAX_REQUESTS: u64 = 1_000_000;
 /// Pending plans retain the trap coordinate for semantic opportunity identity.
 /// Reply transport derives the stopped boundary with this fixed handoff distance.
 pub const SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS: u64 = 1;
+
+/// Picoseconds elapsed by the native doorbell handoff in the current clock ABI.
+pub const SELECTABLE_NATIVE_HANDOFF_TICKS_PS: u64 = 50;
 
 const FLAG_FROZEN: u32 = 1 << 0;
 const FLAG_LAST_REGISTRATION: u32 = 1 << 1;
@@ -244,27 +248,30 @@ pub enum SelectablePlanPhase {
     Frozen,
 }
 
-/// Exact pending request and trap coordinate retained across restore.
+/// Exact pending request with distinct raw replay and simulation-tick coordinates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SelectablePlanPendingRequest {
     request: SelectionRequest,
-    icount: u64,
+    raw_icount: u64,
+    trap_tick_ps: u64,
     vcpu_index: u32,
     guest_virtual_address: u64,
 }
 
 impl SelectablePlanPendingRequest {
-    /// Builds one retained request coordinate.
+    /// Builds one retained raw replay coordinate and pre-instruction tick.
     #[must_use]
     pub const fn new(
         request: SelectionRequest,
-        icount: u64,
+        raw_icount: u64,
+        trap_tick_ps: u64,
         vcpu_index: u32,
         guest_virtual_address: u64,
     ) -> Self {
         Self {
             request,
-            icount,
+            raw_icount,
+            trap_tick_ps,
             vcpu_index,
             guest_virtual_address,
         }
@@ -276,10 +283,16 @@ impl SelectablePlanPendingRequest {
         &self.request
     }
 
-    /// Returns the logical trap instruction count.
+    /// Returns the raw retirement count before the guest doorbell instruction.
     #[must_use]
-    pub const fn icount(&self) -> u64 {
-        self.icount
+    pub const fn raw_icount(&self) -> u64 {
+        self.raw_icount
+    }
+
+    /// Returns the pre-instruction simulation tick in picoseconds.
+    #[must_use]
+    pub const fn trap_tick_ps(&self) -> u64 {
+        self.trap_tick_ps
     }
 
     /// Returns the vCPU that owns the pending request.
@@ -393,11 +406,28 @@ impl SelectablePlanContinuation {
         }
         if let Some(pending) = &pending {
             pending
-                .icount()
+                .raw_icount()
                 .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
                 .ok_or(SelectableCatalogPlanError::InvalidContinuation {
-                    reason: "pending trap coordinate cannot represent its stopped boundary",
+                    reason: "pending raw trap cannot represent its stopped boundary",
                 })?;
+            pending
+                .trap_tick_ps()
+                .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
+                .ok_or(SelectableCatalogPlanError::InvalidContinuation {
+                    reason: "pending simulation tick cannot represent its stopped boundary",
+                })?;
+            let raw_tick_ps = pending
+                .raw_icount()
+                .checked_mul(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
+                .ok_or(SelectableCatalogPlanError::InvalidContinuation {
+                    reason: "pending raw trap cannot represent a simulation tick",
+                })?;
+            if pending.trap_tick_ps() < raw_tick_ps {
+                return Err(SelectableCatalogPlanError::InvalidContinuation {
+                    reason: "pending simulation tick precedes raw retirement time",
+                });
+            }
             if last_completed_request_sequence
                 .is_some_and(|sequence| pending.request.sequence() <= sequence)
             {
@@ -884,7 +914,7 @@ impl SelectableCatalogPlan {
             self.continuation
                 .pending
                 .as_ref()
-                .map_or(0, SelectablePlanPendingRequest::icount),
+                .map_or(0, SelectablePlanPendingRequest::raw_icount),
         )?;
         write_u32(
             &mut bytes,
@@ -902,6 +932,14 @@ impl SelectableCatalogPlan {
                 .pending
                 .as_ref()
                 .map_or(0, SelectablePlanPendingRequest::guest_virtual_address),
+        )?;
+        write_u64(
+            &mut bytes,
+            104,
+            self.continuation
+                .pending
+                .as_ref()
+                .map_or(0, SelectablePlanPendingRequest::trap_tick_ps),
         )?;
 
         for declaration in self.declarations.values() {
@@ -992,15 +1030,17 @@ impl SelectableCatalogPlan {
             read_u64(bytes, 72)?,
             "last_completed_request_sequence",
         )?;
-        let pending_icount = read_u64(bytes, 80)?;
+        let pending_raw_icount = read_u64(bytes, 80)?;
         let pending_vcpu = read_u32(bytes, 88)?;
         let pending_len = usize_from_u32(read_u32(bytes, 92)?)?;
         let pending_guest_virtual_address = read_u64(bytes, 96)?;
+        let pending_trap_tick_ps = read_u64(bytes, 104)?;
         if flags & FLAG_PENDING == 0
-            && (pending_icount != 0
+            && (pending_raw_icount != 0
                 || pending_vcpu != 0
                 || pending_len != 0
-                || pending_guest_virtual_address != 0)
+                || pending_guest_virtual_address != 0
+                || pending_trap_tick_ps != 0)
         {
             return Err(SelectableCatalogPlanError::InvalidContinuation {
                 reason: "absent pending request has nonzero header fields",
@@ -1066,7 +1106,8 @@ impl SelectableCatalogPlan {
             let request = SelectionRequest::decode(take(bytes, &mut cursor, pending_len)?)?;
             Some(SelectablePlanPendingRequest::new(
                 request,
-                pending_icount,
+                pending_raw_icount,
+                pending_trap_tick_ps,
                 pending_vcpu,
                 pending_guest_virtual_address,
             ))

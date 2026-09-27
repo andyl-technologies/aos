@@ -21,7 +21,7 @@ use crucible::{ContentHash, EventLog};
 use crucible_protocol::SelectionReply;
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_protocol::selectable_catalog_plan::{
-    SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SelectablePlanPendingRequest,
+    SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectablePlanPendingRequest,
 };
 use crucible_shmem::{
     DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1, MAX_FRAME_DELIVERY_ATTEMPTS,
@@ -722,7 +722,7 @@ struct QemuFaultEventStagingBudget {
 enum PendingSelectableRetention {
     Absent,
     AlreadyRetained,
-    NewlyRetained { boundary_icount: u64 },
+    NewlyRetained { boundary_tick_ps: u64 },
 }
 
 impl QemuNodeSet {
@@ -1319,19 +1319,19 @@ impl QemuNodeSet {
             return Ok(PendingSelectableRetention::Absent);
         };
 
-        let boundary_icount = pending
-            .icount()
-            .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
+        let boundary_tick_ps = pending
+            .trap_tick_ps()
+            .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
             .ok_or_else(|| BackendError::Rejected {
                 message: format!(
-                    "QEMU node `{}` selectable trap {} cannot represent its physical pause boundary",
+                    "QEMU node `{}` selectable trap tick {} cannot represent its physical pause boundary",
                     node.name,
-                    pending.icount(),
+                    pending.trap_tick_ps(),
                 ),
             })?;
         self.pending_selectable_requests
             .insert(node.clone(), pending);
-        Ok(PendingSelectableRetention::NewlyRetained { boundary_icount })
+        Ok(PendingSelectableRetention::NewlyRetained { boundary_tick_ps })
     }
 
     fn retain_campaign_marker_if_paused(
@@ -2039,8 +2039,8 @@ impl SimulationBackend for QemuNodeSet {
             };
             if let crucible::AdvanceOutcome::Paused { at } = observation.outcome {
                 match self.retain_pending_selectable_request(node)? {
-                    PendingSelectableRetention::NewlyRetained { boundary_icount }
-                        if boundary_icount == at.retired =>
+                    PendingSelectableRetention::NewlyRetained { boundary_tick_ps }
+                        if boundary_tick_ps == at.retired =>
                     {
                         // The plugin retains the exact request while native
                         // VMStop prevents more guest execution. Return to the
@@ -2048,11 +2048,11 @@ impl SimulationBackend for QemuNodeSet {
                         observation.reached = ceiling;
                         return Ok(observation);
                     }
-                    PendingSelectableRetention::NewlyRetained { boundary_icount } => {
+                    PendingSelectableRetention::NewlyRetained { boundary_tick_ps } => {
                         return Err(BackendError::Rejected {
                             message: format!(
                                 "QEMU node `{}` selectable boundary {} differs from physical pause {}",
-                                node.name, boundary_icount, at.retired,
+                                node.name, boundary_tick_ps, at.retired,
                             ),
                         });
                     }
@@ -2378,7 +2378,7 @@ mod tests {
         };
         let request = SelectionRequest::new(7, "product.test.selectable", "instance-a", None, 128)
             .expect("selection request");
-        let pending = SelectablePlanPendingRequest::new(request, 41, 0, 0x1000);
+        let pending = SelectablePlanPendingRequest::new(request, 41, 2_050, 0, 0x1000);
         let mut nodes = QemuNodeSet::new();
         nodes
             .pending_selectable_requests

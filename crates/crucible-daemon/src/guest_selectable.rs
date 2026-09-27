@@ -46,7 +46,7 @@ pub(crate) fn record_guest_selectable_boundary_diagnostic(
         return;
     }
     let Some(stopped_icount) = pending
-        .icount()
+        .raw_icount()
         .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
     else {
         return;
@@ -63,7 +63,7 @@ pub(crate) fn record_guest_selectable_boundary_diagnostic(
         decision_index,
         node.name.clone(),
         pending.request().sequence(),
-        pending.icount(),
+        pending.raw_icount(),
         stopped_icount,
         pending.vcpu_index(),
         opportunity,
@@ -478,7 +478,7 @@ fn scheduler_coordinate(node: &NodeId, pending: &SelectablePlanPendingRequest) -
     let mut material = Vec::with_capacity(8 + node.name.len() + 8 + 4);
     material.extend_from_slice(&(node.name.len() as u64).to_be_bytes());
     material.extend_from_slice(node.name.as_bytes());
-    material.extend_from_slice(&pending.icount().to_be_bytes());
+    material.extend_from_slice(&pending.raw_icount().to_be_bytes());
     material.extend_from_slice(&pending.vcpu_index().to_be_bytes());
     CampaignHash::derive(
         "crucible.guest-selectable.scheduler-coordinate.v1",

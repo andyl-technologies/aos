@@ -3602,7 +3602,7 @@ fn pending_guest_request(
         .expect("guest selection request");
     crucible_qemu::QemuNodeSelectablePendingRequest::from_test_parts(
         node,
-        SelectablePlanPendingRequest::new(request, 41, 0, 0x1000),
+        SelectablePlanPendingRequest::new(request, 41, (41) * 50, 0, 0x1000),
     )
 }
 

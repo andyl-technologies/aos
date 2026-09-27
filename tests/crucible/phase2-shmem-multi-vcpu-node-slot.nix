@@ -63,7 +63,7 @@
     failuresFor "crates/crucible-shmem source modules" shmemContract [
       {
         label = "ABI version unchanged for multi-vCPU nodes";
-        needle = "pub const ABI_VERSION: u32 = 29;";
+        needle = "pub const ABI_VERSION: u32 = 30;";
       }
       {
         label = "region config uses VM node count";

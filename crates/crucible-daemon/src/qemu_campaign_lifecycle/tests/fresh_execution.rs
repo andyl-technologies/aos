@@ -117,7 +117,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
     let parent = Configuration::genesis(source.scenario_def());
     let request = SelectionRequest::new(9, "product.recovery", "routing-epoch-7", None, 256)
         .expect("guest request");
-    let pending = SelectablePlanPendingRequest::new(request, 41, 0, 0x1000);
+    let pending = SelectablePlanPendingRequest::new(request, 41, (41) * 50, 0, 0x1000);
     let discovery =
         crate::guest_selectable::resolve_guest_selectable(scenario, &source, &node, &pending)
             .expect("runtime opportunity");
@@ -271,7 +271,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
 
     let drift_request = SelectionRequest::new(9, "product.recovery", "routing-epoch-7", None, 256)
         .expect("drifted guest request");
-    let drift_pending = SelectablePlanPendingRequest::new(drift_request, 42, 0, 0x1000);
+    let drift_pending = SelectablePlanPendingRequest::new(drift_request, 42, (42) * 50, 0, 0x1000);
     let drift_replies = Arc::new(Mutex::new(Vec::new()));
     let mut drift_lifecycle = FakeFreshLifecycle {
         order: Arc::new(Mutex::new(Vec::new())),

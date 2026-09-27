@@ -694,10 +694,14 @@ ring. A runtime request is retained with its exact icount/vCPU coordinate and
 zero-filled reply reservation before QEMU is asked to enter VMStop; no reply
 byte becomes guest-visible until separate semantic authority supplies it. The
 retained request is then published through the lossless white-box marker ring as
-the independently versioned `CRUCSPQ1` process record. Its marker coordinate and
+the independently versioned `CRUCSPQ2` process record. Its marker coordinate and
 body identify the exact request and process-neutral guest virtual reply target;
 the host treats the record as untrusted until campaign authority validates it.
-The nested request is capped at 4,576 bytes so the transport remains within one
+In sim mode ordinary guest markers, app-random decisions, and pending requests
+carry pre-instruction picosecond ticks on the shared marker ring. The pending
+body's raw retirement count remains the replay identity, and the host validates
+both coordinates against the exact stopped boundary.
+The nested request is capped at 4,568 bytes so the transport remains within one
 4,608-byte marker payload. The
 logical-restore boundary swaps the preallocated exact continuation once, before
 the restore acknowledgement, so priming registrations or requests cannot leak

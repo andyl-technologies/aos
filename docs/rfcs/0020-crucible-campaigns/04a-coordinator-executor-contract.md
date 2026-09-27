@@ -2162,7 +2162,7 @@ Checkpoint V4 and fails closed on noncurrent checkpoint schemas.
 Scenario V7 owns the complete bounded selectable declaration component. Its
 identity commits to non-default ceilings even when the declaration map is
 empty. Before a fresh white-box node launch, the production lifecycle projects
-only that node's guest declarations into the sealed `CRUCSCP3` catalog plan,
+only that node's guest declarations into the sealed `CRUCSCP4` catalog plan,
 including exact domain/default/tag bytes, required/optional presence, and the
 scenario request ceilings. Black-box nodes receive no guest-selectable plan.
 Until the exact selectable continuation is composed into the production

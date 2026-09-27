@@ -61,7 +61,7 @@ fn mapped_catalog_retains_pending_until_exact_reply_completion()
         continuation,
     )?;
     let request = SelectionRequest::new(2, "network.policy", "epoch/4", None, 192)?;
-    let record = SelectablePendingTransportRecord::new(request.clone(), 0xfeed_4000)?;
+    let record = SelectablePendingTransportRecord::new(request.clone(), 0xfeed_4000, 10)?;
 
     let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
@@ -74,13 +74,13 @@ fn mapped_catalog_retains_pending_until_exact_reply_completion()
         ring.header.enqueue_whitebox_marker(
             ring.entries,
             WhiteboxMarkerEntry::new(
-                10,
+                537,
                 0,
                 WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
                 &record.encode()?,
             )?,
         )?;
-        producer.node_slot(0)?.publish_pause_quiesced(11, 0)?;
+        producer.node_slot(0)?.publish_pause_quiesced(587, 11)?;
     }
 
     let region = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
@@ -97,7 +97,8 @@ fn mapped_catalog_retains_pending_until_exact_reply_completion()
         plan,
     )?;
     let pending = hot_path.drain_pending_selectable_requests()?.remove(0);
-    assert_eq!(pending.icount(), 10);
+    assert_eq!(pending.raw_icount(), 10);
+    assert_eq!(pending.trap_tick_ps(), 537);
     let reply = SelectionReply::selected(2, [1; 32], [2; 32], vec![1])?;
     hot_path.enqueue_selectable_reply(&pending, &reply)?;
     assert!(!hot_path.selectable_reply_is_checkpoint_quiescent());
@@ -116,14 +117,14 @@ fn mapped_catalog_retains_pending_until_exact_reply_completion()
             .dequeue_whitebox_marker(reply_ring.entries)?
             .ok_or("selectable reply ring remained empty")?
             .validate()?;
-        assert_eq!(reply_entry.current_icount(), 11);
+        assert_eq!(reply_entry.current_icount(), 587);
         assert_eq!(reply_entry.kind(), WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY);
 
         let ring = producer.whitebox_marker_ring_mut(0)?;
         ring.header.enqueue_whitebox_marker(
             ring.entries,
             WhiteboxMarkerEntry::new(
-                11,
+                587,
                 0,
                 WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
                 &reply.encode()?,
@@ -143,7 +144,7 @@ fn mapped_catalog_retains_pending_until_exact_reply_completion()
 #[test]
 fn mapped_marker_yields_one_exact_pending_request() -> Result<(), Box<dyn std::error::Error>> {
     let request = SelectionRequest::new(19, "network.policy", "epoch/4", Some(vec![2]), 192)?;
-    let record = SelectablePendingTransportRecord::new(request.clone(), 0xfeed_4000)?;
+    let record = SelectablePendingTransportRecord::new(request.clone(), 0xfeed_4000, 0)?;
 
     let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
@@ -152,7 +153,7 @@ fn mapped_marker_yields_one_exact_pending_request() -> Result<(), Box<dyn std::e
     shmem.write_all(&allocation.setup_region_bytes()?)?;
     {
         let mut producer = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
-        producer.node_slot(0)?.publish_pause_quiesced(1, 0)?;
+        producer.node_slot(0)?.publish_pause_quiesced(50, 1)?;
         let ring = producer.whitebox_marker_ring_mut(0)?;
         let setup = WhiteboxMarkerPayload::Lifecycle(WhiteboxLifecycleMarkerEvent::SetupComplete);
         ring.header.enqueue_whitebox_marker(
@@ -189,7 +190,7 @@ fn mapped_marker_yields_one_exact_pending_request() -> Result<(), Box<dyn std::e
     let pending = hot_path.drain_pending_selectable_requests()?;
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].request(), &request);
-    assert_eq!(pending[0].icount(), 0);
+    assert_eq!(pending[0].raw_icount(), 0);
     assert_eq!(pending[0].vcpu_index(), 3);
     assert_eq!(pending[0].guest_virtual_address(), 0xfeed_4000);
     assert!(hot_path.drain_pending_selectable_requests()?.is_empty());
@@ -200,7 +201,7 @@ fn mapped_marker_yields_one_exact_pending_request() -> Result<(), Box<dyn std::e
 #[test]
 fn mapped_pending_rejects_a_nonquiesced_boundary() -> Result<(), Box<dyn std::error::Error>> {
     let request = SelectionRequest::new(19, "network.policy", "epoch/4", Some(vec![2]), 192)?;
-    let record = SelectablePendingTransportRecord::new(request, 0xfeed_4000)?;
+    let record = SelectablePendingTransportRecord::new(request, 0xfeed_4000, 0)?;
     let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let mut shmem = tempfile::tempfile()?;
@@ -242,7 +243,7 @@ fn mapped_pending_rejects_a_nonquiesced_boundary() -> Result<(), Box<dyn std::er
 fn mapped_pending_rejects_a_quiesced_boundary_beyond_the_native_handoff()
 -> Result<(), Box<dyn std::error::Error>> {
     let request = SelectionRequest::new(19, "network.policy", "epoch/4", Some(vec![2]), 192)?;
-    let record = SelectablePendingTransportRecord::new(request, 0xfeed_4000)?;
+    let record = SelectablePendingTransportRecord::new(request, 0xfeed_4000, 0)?;
     let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let mut shmem = tempfile::tempfile()?;
@@ -250,7 +251,7 @@ fn mapped_pending_rejects_a_quiesced_boundary_beyond_the_native_handoff()
     shmem.write_all(&allocation.setup_region_bytes()?)?;
     {
         let mut producer = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
-        producer.node_slot(0)?.publish_pause_quiesced(2, 0)?;
+        producer.node_slot(0)?.publish_pause_quiesced(100, 2)?;
         let ring = producer.whitebox_marker_ring_mut(0)?;
         ring.header.enqueue_whitebox_marker(
             ring.entries,
@@ -279,7 +280,7 @@ fn mapped_pending_rejects_a_quiesced_boundary_beyond_the_native_handoff()
     assert!(
         error
             .to_string()
-            .contains("trap icount 0 requires stopped boundary 1, observed 2")
+            .contains("trap raw 0 tick 0 requires stopped raw 1 tick 50, observed raw 2 tick 100")
     );
     Ok(())
 }
