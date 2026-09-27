@@ -1,11 +1,11 @@
-##! November 2013 Kotlin JVM compiler built from the August source stage.
+##! December 2013 Kotlin JVM compiler built from the November source stage.
 {
   mkDerivation,
   fetchgit,
   fetchurl,
   buildPackages,
 }: let
-  version = "2013-11-29";
+  version = "2013-12-12";
   buildJdk = buildPackages.openjdk-8;
   classpathJdk = buildPackages.openjdk-7;
   seed = import ./_kotlin-bootstrap-2011.nix {
@@ -26,18 +26,18 @@
   protobufLite = import ./_protobuf-java-lite-2_5.nix {
     inherit mkDerivation fetchurl buildPackages;
   };
-  augustCompiler = import ./_kotlin-bootstrap-serialized-2013.nix {
+  previousCompiler = import ./_kotlin-bootstrap-november-2013.nix {
     inherit mkDerivation fetchgit fetchurl buildPackages;
   };
-  novemberStdlib = import ./_kotlin-stdlib-november-2013.nix {
+  decemberStdlib = import ./_kotlin-stdlib-december-2013.nix {
     inherit mkDerivation fetchgit fetchurl buildPackages;
   };
 
   source = fetchgit {
     url = "https://github.com/JetBrains/kotlin.git";
-    rev = "08befe02eecc608ed4566d5d6950075389afcb62";
-    name = "kotlin-2013-november-compiler-source-only";
-    hash = "sha256-qkDfSn63HIqrdnRYqp7BiD0AZqwKkI7QWSm9SdLU++s=";
+    rev = "13214d2dece4637710b73fe4058926a16832a322";
+    name = "kotlin-2013-december-compiler-source-only";
+    hash = "sha256-q33fIgauKqlGEsN88w59/ye0iRg/ugDdkYtcI+OsNmQ=";
     git = buildPackages.git-minimal;
     caCertificates = buildPackages.ca-certificates;
     coreutils = buildPackages.coreutils;
@@ -97,8 +97,8 @@ in
       octoberApi
       ideaCore
       protobufLite
-      augustCompiler
-      novemberStdlib
+      previousCompiler
+      decemberStdlib
     ];
     runtimeDeps = [
       buildJdk
@@ -108,7 +108,8 @@ in
       octoberApi
       ideaCore
       protobufLite
-      novemberStdlib
+      previousCompiler
+      decemberStdlib
     ];
 
     phases = [
@@ -141,7 +142,7 @@ in
                       raise SystemExit(f"Compiled bootstrap input: {path}")
           PY
 
-          patch -d kotlin -p1 < ${./kotlin-bootstrap/patches/november-compiler.patch}
+          patch -d kotlin -p1 < ${./kotlin-december/patches/december-compiler.patch}
           patch -d kotlin -p1 < ${./kotlin-bootstrap/patches/november-builtins-generator.patch}
         '';
       }
@@ -156,12 +157,11 @@ in
           apiRoot=${octoberApi}/share/kotlin-idea-api
           coreRoot=${ideaCore}/share/kotlin-idea-core
           protobufRoot=${protobufLite}/share/protobuf-java-lite
-          augustRoot=${augustCompiler}/share/kotlin-bootstrap
-          stdlibRoot=${novemberStdlib}/share/kotlin-stdlib
+          previousRoot=${previousCompiler}/share/kotlin-bootstrap
+          stdlibRoot=${decemberStdlib}/share/kotlin-stdlib
 
           mkdir -p classes/parser classes/seed/org/jetbrains classes/storage \
-            classes/core classes/plugin classes/cli classes/metadata/jet \
-            classes/converted
+            classes/core classes/plugin classes/cli classes/metadata/jet
           ln -s "$seedRoot/dist/classes/runtime/com" classes/seed/com
           ln -s "$seedRoot/dist/classes/runtime/org/jetbrains/annotations" \
             classes/seed/org/jetbrains/annotations
@@ -176,15 +176,15 @@ in
             baseClasspath="$baseClasspath:$seedRoot/deps/$dependency"
           done
 
-          augustClasspath="classes/parser:$augustRoot/kotlin:$baseClasspath:$augustRoot/seed"
-          java -cp "$augustClasspath" org.jetbrains.jet.cli.jvm.K2JVMCompiler \
+          previousClasspath="classes/parser:$previousRoot/metadata:$previousRoot/cli:$previousRoot/core:$previousRoot/plugin:$previousRoot/light:$previousRoot/storage:$baseClasspath"
+          java -cp "$previousClasspath" org.jetbrains.jet.cli.jvm.K2JVMCompiler \
             -noStdlib -noJdk -noJdkAnnotations \
-            -classpath "$stdlibRoot/modules:${classpathJdk}/jre/lib/rt.jar:$augustRoot/kotlin" \
+            -classpath "$stdlibRoot/modules:${classpathJdk}/jre/lib/rt.jar:$previousRoot/core" \
             -annotations "$PWD/kotlin/jdk-annotations" \
             -src "$PWD/kotlin/libraries/stdlib/src:$PWD/kotlin/core/util.runtime/src/org/jetbrains/jet/storage/storage.kt:$PWD/kotlin/compiler/backend-common/src/output.kt" \
             -output "$PWD/classes/storage" > storage.log 2>&1
 
-          coreClasspath="classes/storage:$baseClasspath"
+          coreClasspath="classes/storage:$previousRoot/core:$baseClasspath"
           sourcepath=
           for root in \
             core/descriptors/src \
@@ -213,10 +213,33 @@ in
             idea/java/java-psi-impl/src/com/intellij/psi/impl/light/LightTypeParameterListBuilder.java \
             >> core-files
 
+          # The December frontend introduces Kotlin classes referenced by its
+          # Java sources. Compile signatures first, then replace them with the
+          # classes compiled from the matching Kotlin sources below.
+          find ${./kotlin-december/stubs} -name '*.java' \
+            | LC_ALL=C sort >> core-files
+
           javac -encoding UTF-8 -source 7 -target 7 -proc:none -Xprefer:source \
             -cp "$coreClasspath" -sourcepath "$sourcepath" \
             -d classes/core @core-files > core.log 2>&1
           cp -R kotlin/compiler/frontend.java/src/META-INF classes/core/
+
+          mkdir -p classes/core-kotlin
+          kotlinCoreClasspath="classes/core:classes/storage:$stdlibRoot/classes:$stdlibRoot/modules:${classpathJdk}/jre/lib/rt.jar:$coreRoot/classes:$apiRoot/classes:$protobufRoot/classes:classes/seed:$seedRoot/deps/asm:$seedRoot/deps/asm4:$seedRoot/deps/guava"
+          java -cp "$previousClasspath" org.jetbrains.jet.cli.jvm.K2JVMCompiler \
+            -noStdlib -noJdk -noJdkAnnotations \
+            -classpath "$kotlinCoreClasspath" \
+            -annotations "$PWD/kotlin/jdk-annotations" \
+            -src "$PWD/kotlin/core/descriptors/src/org/jetbrains/jet/lang/resolve/descriptorUtils.kt:$PWD/kotlin/compiler/frontend/src/org/jetbrains/jet/lang/psi/stubs/impl/Utils.kt:$PWD/kotlin/compiler/frontend/src/org/jetbrains/jet/lang/psi/psiUtil/jetPsiUtil.kt:$PWD/kotlin/compiler/frontend/src/org/jetbrains/jet/lang/cfg/pseudocode/instructions.kt:$PWD/kotlin/compiler/frontend/src/org/jetbrains/jet/lang/evaluate/OperationsMapGenerated.kt:$PWD/kotlin/compiler/frontend/src/org/jetbrains/jet/lang/evaluate/ConstantExpressionEvaluator.kt" \
+            -output "$PWD/classes/core-kotlin" > core-kotlin.log 2>&1
+          cp -R classes/core-kotlin/. classes/core/
+
+          # Recompile Java against the real Kotlin classes so no bootstrap
+          # signatures survive in the installed compiler.
+          sed '\|^${./kotlin-december/stubs}/|d' core-files > core-real-files
+          javac -encoding UTF-8 -source 7 -target 7 -proc:none -Xprefer:source \
+            -cp "classes/core-kotlin:$coreClasspath" -sourcepath "$sourcepath" \
+            -d classes/core @core-real-files > core-real.log 2>&1
 
           mkdir -p classes/light classes/storage-api/org/jetbrains/jet
           javac -encoding UTF-8 -source 7 -target 7 -proc:none \
@@ -234,14 +257,14 @@ in
             classes/storage/org/jetbrains/jet/SimpleOutputFileCollection.class \
             classes/storage-api/org/jetbrains/jet/
 
-          # The August reader requires JDK 7 class files and one source module
-          # for the November library and Kotlin light-method implementation.
-          pluginClasspath="classes/light:classes/storage-api:classes/core:classes/seed:$coreRoot/classes:$apiRoot/classes:$protobufRoot/classes:$stdlibRoot/modules:${classpathJdk}/jre/lib/rt.jar:$augustRoot/kotlin"
-          java -cp "$augustClasspath" org.jetbrains.jet.cli.jvm.K2JVMCompiler \
+          # The November reader requires JDK 7 class files and one source
+          # module for the December library and Kotlin light methods.
+          pluginClasspath="classes/light:classes/storage-api:classes/core:classes/seed:$coreRoot/classes:$apiRoot/classes:$protobufRoot/classes:$stdlibRoot/modules:${classpathJdk}/jre/lib/rt.jar:$previousRoot/core:$previousRoot/cli"
+          java -cp "$previousClasspath" org.jetbrains.jet.cli.jvm.K2JVMCompiler \
             -noStdlib -noJdk -noJdkAnnotations \
             -classpath "$pluginClasspath" \
             -annotations "$PWD/kotlin/jdk-annotations" \
-            -src "$PWD/kotlin/libraries/stdlib/src:$PWD/kotlin/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinLightMethodForDeclaration.kt:$PWD/kotlin/compiler/cli/src/org/jetbrains/jet/cli/common/output/outputDirectors.kt:$PWD/kotlin/compiler/cli/src/org/jetbrains/jet/cli/common/output/outputUtils.kt:$PWD/kotlin/compiler/cli/src/org/jetbrains/jet/cli/jvm/compiler/ChunkAsOneModule.kt" \
+            -src "$PWD/kotlin/libraries/stdlib/src:$PWD/kotlin/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/KotlinLightMethodForDeclaration.kt:$PWD/kotlin/compiler/jet.as.java.psi/src/org/jetbrains/jet/asJava/GeneratedLightClassData.kt:$PWD/kotlin/compiler/cli/src/org/jetbrains/jet/cli/common/output/outputDirectors.kt:$PWD/kotlin/compiler/cli/src/org/jetbrains/jet/cli/common/output/outputUtils.kt:$PWD/kotlin/compiler/cli/src/org/jetbrains/jet/cli/jvm/compiler/ChunkAsOneModule.kt" \
             -output "$PWD/classes/plugin" > plugin.log 2>&1
 
           cliClasspath="classes/core:classes/light:classes/plugin:classes/storage:$baseClasspath"
@@ -264,19 +287,7 @@ in
             -cp "$cliClasspath" -sourcepath "$sourcepath" \
             -d classes/cli @cli-files > cli.log 2>&1
 
-          cp "$augustRoot/kotlin/jet/"*.kotlin_class classes/metadata/jet/
-          cp "$augustRoot/kotlin/jet/.kotlin_name_table" \
-            "$augustRoot/kotlin/jet/.kotlin_class_names" \
-            "$augustRoot/kotlin/jet/.kotlin_package" \
-            classes/metadata/jet/
-          chmod -R u+w classes/metadata/jet
-          cp ${./kotlin-bootstrap/ConvertNovemberBuiltinClasses.java} \
-            ConvertNovemberBuiltinClasses.java
-          javac -encoding UTF-8 -source 8 -target 8 -proc:none \
-            -cp "classes/cli:$cliClasspath" -sourcepath "" \
-            -d classes/converted ConvertNovemberBuiltinClasses.java
-          java -cp "classes/converted:classes/cli:$cliClasspath" \
-            ConvertNovemberBuiltinClasses classes/metadata > metadata.log 2>&1
+          cp -R "$previousRoot/metadata/jet/." classes/metadata/jet/
 
           mkdir -p classes/generator
           javac -encoding UTF-8 -source 7 -target 7 -proc:none \
@@ -288,8 +299,8 @@ in
             org.jetbrains.jet.generators.builtins.BuiltInsSerializer \
             > generated.log 2>&1
 
-          # The seed index permits the serializer to initialize. Publish only
-          # metadata serialized from the November textual builtins sources.
+          # The previous index permits the serializer to initialize. Publish
+          # metadata serialized from the December textual builtins sources.
           rm -R classes/metadata/jet
           cp -R classes/generated-builtins/jet classes/metadata/jet
         '';
@@ -297,6 +308,14 @@ in
       {
         name = "check";
         script = ''
+          python3 - <<'PY'
+          from pathlib import Path
+
+          for path in Path("classes/core").rglob("*.class"):
+              if b"build-only signature" in path.read_bytes():
+                  raise SystemExit(f"Bootstrap signature survived: {path}")
+          PY
+
           cat > smoke.kt <<'KOTLIN'
           fun answer(): Int = 40 + 2
           KOTLIN
@@ -309,8 +328,7 @@ in
             > smoke.log 2>&1
           test -s classes/smoke/_DefaultPackage.class
           test "$(find classes/core classes/cli -name '*.class' | wc -l)" -ge 2100
-          test "$(cat metadata.log)" = "Converted 197 builtin classes"
-          test "$(find classes/metadata/jet -name '*.kotlin_class' | wc -l)" -eq 204
+          test "$(find classes/metadata/jet -name '*.kotlin_class' | wc -l)" -eq 207
           test -s classes/metadata/jet/inline.kotlin_class
           test -s classes/metadata/jet/noinline.kotlin_class
 
@@ -340,7 +358,7 @@ in
     ];
 
     meta = {
-      description = "November 2013 Kotlin JVM compiler compiled from source";
+      description = "December 2013 Kotlin JVM compiler compiled from source";
       homepage = "https://github.com/JetBrains/kotlin";
       license = "Apache-2.0";
     };
