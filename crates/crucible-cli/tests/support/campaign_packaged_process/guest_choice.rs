@@ -1779,7 +1779,20 @@ fn capture_checkpoint_after_progress(
         // The caller waits for a scheduler-observed marker after each resume.
         // A different promoted root remains the durable proof of advancement.
         pause_for_exact_checkpoint(fixture, &next_command_identity(command_sequence)?)?;
-        let checkpoint = wait_for_promoted_checkpoint(fixture, key)?;
+        let checkpoint = match wait_for_promoted_checkpoint(fixture, key) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                match service.stderr_lines_with_prefix("CRUCIBLE-PHASE4-CLOCK-TRACE ", 65536, 512) {
+                    Ok(records) => {
+                        for record in records {
+                            println!("{record}");
+                        }
+                    }
+                    Err(trace_error) => eprintln!("phase4 clock trace unavailable: {trace_error}"),
+                }
+                return Err(error);
+            }
+        };
         last_observed = Some(checkpoint);
         println!(
             "guest_choice_progress_capture iteration={iterations} elapsed_secs={} prior={previous_checkpoint:?} observed={checkpoint} new_root={}",
