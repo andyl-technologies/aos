@@ -179,6 +179,19 @@
     then buildPackages.bazel-bootstrap
     else bazel-bootstrap;
   buildProguard = buildBazelBootstrap.passthru.offlineProguard;
+  sourceRemoteJavaTools = import ./_bazel-remote-java-tools.nix {
+    inherit mkDerivation buildPackages;
+    bazelSource = src;
+    bazelBootstrap = buildBazelBootstrap;
+    bazelAsm = buildBazelBootstrap.passthru.offlineAsm;
+    bazelJacoco = buildBazelBootstrap.passthru.offlineJacoco;
+    bazelProguard = buildProguard;
+    bazelErrorProne = buildBazelBootstrap.passthru.offlineErrorProne;
+    mavenRepositories = builtins.attrValues (lib.filterAttrs (
+        name: path: path != null && lib.strings.hasPrefix "rules_jvm_external++maven+" name
+      )
+      buildBazelBootstrap.passthru.offlineRepositories);
+  };
   buildQemuImg =
     if isCross
     then buildPackages.qemu-img
@@ -188,12 +201,29 @@
     then []
     else
       builtins.filter (flag: flag != null) (lib.mapAttrsToList (
-          name: path:
-            if !lib.strings.hasPrefix "rules_jvm_external++maven+" name
+          name: path: let
+            canonicalName =
+              if builtins.compareVersions version "8.0.0" >= 0
+              then name
+              else builtins.replaceStrings ["+"] ["~"] name;
+          in
+            if path == null || lib.strings.hasPrefix "+" name
             then null
-            else "--override_repository=${builtins.replaceStrings ["+"] ["~"] name}=${path}"
+            else "--override_repository=${canonicalName}=${path}"
         )
-        buildBazelBootstrap.passthru.offlineRepositories);
+        buildBazelBootstrap.passthru.offlineRepositories)
+      ++ lib.optional (builtins.compareVersions version "8.0.0" >= 0) "--override_repository=rules_java++toolchains+remote_java_tools=${sourceRemoteJavaTools}";
+  sourceModuleFlags =
+    if source == null || builtins.compareVersions version "9.0.0" >= 0
+    then []
+    else
+      builtins.filter (flag: flag != null) (lib.mapAttrsToList (
+          name: path:
+            if path == null
+            then null
+            else "--override_module=${name}=${path}"
+        )
+        buildBazelBootstrap.passthru.offlineModules);
   buildBootstrapTools =
     if isCross
     then buildPackages.bootstrapTools
@@ -1117,19 +1147,24 @@
                 VENDOR_FLAGS=(
                   --check_direct_dependencies=off
                   --check_bazel_compatibility=off
+                  --repository_disable_download
+                  --override_repository=rules_java_builtin=${buildBazelBootstrap.passthru.offlineModules.rules_java}
                   --repo_env=JAVA_HOME=${buildOpenjdk}
                   --repo_env=PATH="$PATH"
                   --repo_env=CC=${buildGcc}/bin/gcc
                 )
                 ${builtins.concatStringsSep "\n" (map (flag: "VENDOR_FLAGS+=(\"${flag}\")") sourceRepositoryFlags)}
+                ${builtins.concatStringsSep "\n" (map (flag: "VENDOR_FLAGS+=(\"${flag}\")") sourceModuleFlags)}
 
                 # Fetch module metadata first — triggers rules_java repo setup so
                 # we can patch _detect_java_version before the actual vendor step.
-                bazel --batch --ignore_all_rc_files \
-                  --output_user_root="$TMPDIR/bazel_cache" \
-                  --server_javabase="${buildOpenjdk}" \
-                  mod deps --curses=no \
-                  "''${VENDOR_FLAGS[@]}" 2>&1 || true
+                if [ "${buildBazelBootstrap.version}" = "7.7.1" ]; then
+                  bazel --batch --ignore_all_rc_files \
+                    --output_user_root="$TMPDIR/bazel_cache" \
+                    --server_javabase="${buildOpenjdk}" \
+                    mod deps --curses=no \
+                    "''${VENDOR_FLAGS[@]}" 2>&1 || true
+                fi
 
                 # Patch rules_java: replace _detect_java_version to read release file
                 # instead of running java -XshowSettings:properties (which fails under
@@ -1668,6 +1703,7 @@ in
               --vendor_dir=$VENDOR_ABS
               --repository_disable_download
               ${builtins.concatStringsSep "\n" sourceRepositoryFlags}
+              ${builtins.concatStringsSep "\n" sourceModuleFlags}
               --repo_env=JAVA_HOME=${buildOpenjdk}
               --nobuild_python_zip
               --incompatible_strict_action_env

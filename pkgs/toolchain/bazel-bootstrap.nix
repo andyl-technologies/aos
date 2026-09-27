@@ -197,6 +197,14 @@ in
     passthru.offlineSource = source;
     passthru.offlineMavenJars = mavenJars;
     passthru.offlineProguard = helperScope.bazelProguard;
+    passthru.offlineAsm = helperScope.bazelAsm;
+    passthru.offlineJacoco = helperScope.bazelJacoco;
+    passthru.offlineErrorProne = [
+      helperScope.bazelErrorProneCore
+      helperScope.bazelErrorProneCheckApi
+      helperScope.bazelErrorProneDataflow
+      helperScope.bazelGoogleJavaFormat
+    ];
     passthru.offlineSource8Prepared = helperScope.bazelSource8Prepared;
     passthru.offlineNettyModules = helperScope.bazelNetty119;
     passthru.offlineNettyNativeRepositories = helperScope.bazelNetty119NativeRepositories;
@@ -335,10 +343,13 @@ in
           sed -i '1s|^#!/usr/bin/env bash$|#!${bash}/bin/bash|' \
             src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
             tools/jdk/java_stub_template.txt
-          sed -i \
-            's|#!/usr/bin/env python3|#!${python3}/bin/python3|' \
+          for pythonSource in \
             src/main/java/com/google/devtools/build/lib/rules/python/PyRuntimeInfo.java \
-            tools/python/toolchain.bzl
+            tools/python/toolchain.bzl; do
+            if [ -f "$pythonSource" ]; then
+              sed -i 's|#!/usr/bin/env python3|#!${python3}/bin/python3|' "$pythonSource"
+            fi
+          done
           ${lib.optionalString (bootstrapVersion == "9.2.0") ''
             # This Bazel source tag omits the Protolark option definition.
             # Removing only its annotations preserves the project message
@@ -414,6 +425,12 @@ in
           install -Dm644 "$OUTPUT_DIR/archive/libblaze.jar" \
             "$out/share/java/libblaze.jar"
           cp -rL "$OUTPUT_DIR/archive" "$out/share/bazel-bootstrap-archive"
+          ${lib.optionalString (builtins.compareVersions bootstrapVersion "8.0.0" >= 0) ''
+            # The bootstrap archive runs with @bazel_tools, whose root BUILD
+            # uses the generated host platform alias from BUILD.tools.
+            cp "$out/share/bazel-bootstrap-archive/embedded_tools/tools/BUILD.tools" \
+              "$out/share/bazel-bootstrap-archive/embedded_tools/tools/BUILD"
+          ''}
           ${lib.optionalString (platformsSource != null) ''
             cp -rL ${platformsSource} "$out/share/bazel-bootstrap-archive/platforms"
           ''}
