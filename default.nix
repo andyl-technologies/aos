@@ -1438,6 +1438,11 @@ in {
       inherit (lib) fetchgit fetchurl;
       inherit buildPackages;
     };
+    bootstrap.kotlin-february = import ./pkgs/toolchain/_kotlin-bootstrap-february-2014.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
     bootstrap.kotlin-stdlib-february = import ./pkgs/toolchain/_kotlin-stdlib-february-2014.nix {
       inherit (buildPackages) mkDerivation;
       inherit (lib) fetchgit fetchurl;
