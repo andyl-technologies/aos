@@ -465,9 +465,10 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                     vm.id.name
                 )));
             }
-            launch = launch
-                .with_campaign_marker_parking()
-                .with_rr_control_boundary_trace();
+            launch = launch.with_campaign_marker_parking();
+        }
+        if campaign_marker_parking || config.rr_control_boundary_trace {
+            launch = launch.with_rr_control_boundary_trace();
         }
         if let Some(capabilities) = source
             .world()

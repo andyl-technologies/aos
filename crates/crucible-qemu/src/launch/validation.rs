@@ -6,10 +6,10 @@ use super::{
     DEFAULT_ACCEL, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, InputPolicy,
     MAX_RR_SWITCH_QUANTUM, MachineResetMode, QEMU_CONSOLE_CHARDEV_ID,
     QEMU_CONSOLE_SOCKET_FILE_NAME, QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
-    QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME, QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
-    QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION, QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
-    QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION, QEMU_RUNTIME_LIVENESS_TRACE_SELECTION,
-    entropy::GUEST_ENTROPY_RNG_ID,
+    QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME, QEMU_IDLE_PREFIX_TRACE_SELECTION,
+    QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME, QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION,
+    QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME, QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION,
+    QEMU_RUNTIME_LIVENESS_TRACE_SELECTION, entropy::GUEST_ENTROPY_RNG_ID,
 };
 
 mod values;
@@ -406,6 +406,10 @@ pub(in crate::launch) fn validate_optional_diagnostic_trace(
         QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
         QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION,
     );
+    let idle_prefix = (
+        QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+        QEMU_IDLE_PREFIX_TRACE_SELECTION,
+    );
     let runtime = (
         QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
         QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION,
@@ -414,7 +418,7 @@ pub(in crate::launch) fn validate_optional_diagnostic_trace(
         QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
         QEMU_RUNTIME_LIVENESS_TRACE_SELECTION,
     );
-    if ![control, runtime, liveness].contains(&(*log_file, *selection)) {
+    if ![control, idle_prefix, runtime, liveness].contains(&(*log_file, *selection)) {
         return Err(QemuPreSpawnLaunchValidationError::InvalidDiagnosticTrace {
             option: "-D/-trace",
             value: format!("{log_file} {selection}"),
@@ -941,6 +945,19 @@ fn validate_pre_spawn_rtc(rtc: &str) -> Result<(), QemuPreSpawnLaunchValidationE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_prefix_trace_is_one_fixed_whitelisted_pair() {
+        let accepted = [
+            "-D",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            "-trace",
+            QEMU_IDLE_PREFIX_TRACE_SELECTION,
+        ]
+        .map(str::to_owned);
+
+        assert_eq!(validate_optional_diagnostic_trace(&accepted), Ok(()));
+    }
 
     #[test]
     fn qmp_monitor_trace_is_one_fixed_whitelisted_pair() {

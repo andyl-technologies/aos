@@ -74,6 +74,16 @@ impl ProductionVmLifecycleConfig {
         self.coverage
     }
 
+    /// Enables the fixed diagnostic trace for QEMU RR control boundaries.
+    ///
+    /// The trace is observation-only and enters the authenticated launch
+    /// identity. A fixture may select idle-prefix events through the launcher.
+    #[must_use]
+    pub const fn with_rr_control_boundary_trace(mut self) -> Self {
+        self.rr_control_boundary_trace = true;
+        self
+    }
+
     /// Returns the authoritative signal artifact store, when configured.
     #[must_use]
     pub fn signal_artifacts(&self) -> Option<&dyn DagStore> {
@@ -157,6 +167,7 @@ impl ProductionVmLifecycleConfig {
             completion_timeout: Duration::from_secs(240),
             unbounded_advance_completion: false,
             coverage: QemuLaunchPluginSwitch::Off,
+            rr_control_boundary_trace: false,
             debug_gateway_executable: None,
             debug: None,
             branch: None,
