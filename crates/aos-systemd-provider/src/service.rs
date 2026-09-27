@@ -21,10 +21,11 @@ use serde_json::{Map, Value};
 use crate::materialize::{
     ServicePaths, materialize_service, publish_service_consumer, remove_service,
     service_consumer_matches, service_is_absent, service_matches, service_paths_for,
+    validate_service_removal,
 };
 use crate::model::{
-    PROVIDER_CONTEXT_SCHEMA, ProviderContext, ServiceEffectsRequest, ServiceFacetIdentity,
-    ServiceRealization, empty_outputs,
+    PROVIDER_CONTEXT_SCHEMA, ProviderContext, ServiceActivationOwner, ServiceEffectsRequest,
+    ServiceFacetIdentity, ServiceRealization, empty_outputs,
 };
 use crate::render::{RenderedService, render_service};
 use crate::{decode_value, provider_context, require_resource_contexts, target_context, value};
@@ -121,6 +122,11 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
 
     let realization: ServiceRealization = decode_value(&bound.resource_spec.realization)?;
     let rendered = render_service(&realization)?;
+    if invocation.purpose == InvocationPurpose::Effect
+        && realization.activation_owner == ServiceActivationOwner::Image
+    {
+        bail!("image-owned service cannot be mutated by an ability effect");
+    }
     require_effect_method(&invocation.method, &invocation.semantics)?;
     require_effect_method(&invocation.request.method, &invocation.request.semantics)?;
     let primary_facet = lifecycle_facet(&realization)?;
@@ -267,31 +273,54 @@ async fn apply_method(
             materialize_service(Path::new(ETC_ROOT), unit_name, revision, resource, rendered)?;
             manager.daemon_reload().await?;
         }
-        "release" => {
+        "release" | "stop" => {
+            if method == "release" {
+                validate_service_removal(paths, rendered, resource, revision)?;
+            }
+            stop_unit_if_loaded(manager, unit_name).await?;
+            for socket in realization.socket_start_units.iter().rev() {
+                stop_unit_if_loaded(manager, socket).await?;
+            }
+            if method == "stop" {
+                return publish_service_consumer(paths, resource, revision, rendered);
+            }
             remove_service(paths, rendered, resource, revision)?;
             manager.daemon_reload().await?;
             return Ok(());
         }
-        "stop" => {}
         _ => bail!("unsupported systemd service effect method"),
     }
 
     let identity = match manager.unit_identity(unit_name).await {
         Ok(identity) => identity,
-        Err(error) if error.is_no_such_unit() && method == "stop" => return Ok(()),
         Err(error) => return Err(error.into()),
     };
     if method == "materialize" {
         return publish_service_consumer(paths, resource, revision, rendered);
     }
-    if !realization.enabled && method != "stop" {
-        if manager.is_active_exact(unit_name, &identity).await? {
-            let outcome = manager.stop_unit_exact(unit_name, &identity).await?;
-            if !outcome.result.is_done() {
-                bail!("systemd stop job completed as {}", outcome.result.label());
-            }
+    if !realization.enabled {
+        stop_unit_if_loaded(manager, unit_name).await?;
+        for socket in realization.socket_start_units.iter().rev() {
+            stop_unit_if_loaded(manager, socket).await?;
         }
         return publish_service_consumer(paths, resource, revision, rendered);
+    }
+    for socket in &realization.socket_start_units {
+        let socket_identity = manager.unit_identity(socket).await?;
+        let outcome = if method == "start" {
+            manager
+                .start_unit_exact_current(socket, &socket_identity)
+                .await?
+        } else {
+            manager.restart_unit_exact(socket, &socket_identity).await?
+        };
+        if !outcome.result.is_done() {
+            bail!(
+                "systemd socket {} job completed as {}",
+                socket,
+                outcome.result.label()
+            );
+        }
     }
     let outcome = match method {
         "start" => {
@@ -301,7 +330,6 @@ async fn apply_method(
         }
         "restart" => manager.restart_unit_exact(unit_name, &identity).await?,
         "reload" => manager.reload_unit_exact(unit_name, &identity).await?,
-        "stop" => manager.stop_unit_exact(unit_name, &identity).await?,
         _ => return Ok(()),
     };
     if !outcome.result.is_done() {
@@ -314,6 +342,22 @@ async fn apply_method(
         bail!("systemd service bytes changed during the manager operation");
     }
     publish_service_consumer(paths, resource, revision, rendered)
+}
+
+async fn stop_unit_if_loaded(manager: &PinnedSystemdManager, name: &str) -> Result<()> {
+    let identity = match manager.unit_identity(name).await {
+        Ok(identity) => identity,
+        Err(error) if error.is_no_such_unit() => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let outcome = manager.stop_unit_exact(name, &identity).await?;
+    if !outcome.result.is_done() {
+        bail!(
+            "systemd {name} stop job completed as {}",
+            outcome.result.label()
+        );
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -362,19 +406,31 @@ async fn inspect(
     } else {
         (None, false)
     };
+    let mut socket_active_states = Vec::with_capacity(realization.socket_start_units.len());
+    for socket in &realization.socket_start_units {
+        let active = match manager.unit_identity(socket).await {
+            Ok(identity) => manager.is_active_exact(socket, &identity).await?,
+            Err(error) if error.is_no_such_unit() => false,
+            Err(error) => return Err(error.into()),
+        };
+        socket_active_states.push(active);
+    }
     let files_after = service_matches(paths, rendered, resource, revision)?;
     let absent_after = service_is_absent(paths)?;
     let files_match = files_before && files_after;
     let consumer_is_current = service_consumer_matches(paths, resource, revision, rendered)?;
     let files_absent = absent_before && absent_after;
-    let active = active_state
+    let primary_active = active_state
         .as_ref()
         .is_some_and(UnitActiveState::is_active);
+    let sockets_active = socket_active_states.iter().all(|active| *active);
+    let sockets_inactive = socket_active_states.iter().all(|active| !active);
+    let active = primary_active && sockets_active;
     let failed = matches!(active_state, Some(UnitActiveState::Failed));
     let state_matches = match goal {
         Goal::Desired if realization.enabled => active,
-        Goal::Desired | Goal::Stopped => !active,
-        Goal::Absent => unit_identity.is_none(),
+        Goal::Desired | Goal::Stopped => !primary_active && sockets_inactive,
+        Goal::Absent => unit_identity.is_none() && sockets_inactive,
     };
     let complete = match goal {
         Goal::Desired | Goal::Stopped => {
@@ -736,8 +792,8 @@ mod tests {
         service_resource_references,
     };
     use crate::model::{
-        SERVICE_REALIZATION_SCHEMA, ServiceFacetIdentity, ServiceRealization, ServiceUnitIdentity,
-        SystemdUnitDocument, SystemdUnitIdentity,
+        SERVICE_REALIZATION_SCHEMA, ServiceActivationOwner, ServiceFacetIdentity,
+        ServiceRealization, ServiceUnitIdentity, SystemdUnitDocument, SystemdUnitIdentity,
     };
 
     fn interface(name: &str, digest_byte: u8) -> InterfaceKey {
@@ -777,6 +833,8 @@ mod tests {
             prerequisites: Vec::new(),
             aliases: Vec::new(),
             enabled: true,
+            activation_owner: ServiceActivationOwner::Ability,
+            socket_start_units: Vec::new(),
             readiness_mechanism: None,
         }
     }

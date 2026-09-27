@@ -316,6 +316,7 @@
   };
   resources = builtins.attrValues evaluation.config.aos.abilities.desiredResources;
   resource = builtins.head resources;
+  imageOwnedResource = builtins.head (builtins.attrValues imageOwnedEvaluation.config.aos.abilities.desiredResources);
   unitName = resource.realization.systemd_unit.unit_name;
   primary = builtins.head (builtins.filter
     (unit: unit.systemd_unit.unit_name == unitName)
@@ -452,13 +453,13 @@
   duplicateActivation =
     duplicateActivationRenderer.realizationFor
     serviceManagement.interfaces.lifecycle.identity
-    (resource
+    (imageOwnedResource
       // {
         value =
-          resource.value
+          imageOwnedResource.value
           // {
             dependencies =
-              (resource.value.dependencies or {})
+              (imageOwnedResource.value.dependencies or {})
               // {
                 wanted_by = [defaultTargetReference];
               };
@@ -547,7 +548,11 @@ in
       unit_name = "example-api.socket";
     }
   ];
-  assert resource.realization.links
+  assert resource.realization.activation_owner == "ability";
+  assert resource.realization.socket_start_units == ["example-api-admin.socket" "example-api.socket"];
+  assert resource.realization.links == [];
+  assert imageOwnedResource.realization.activation_owner == "image";
+  assert imageOwnedResource.realization.links
   == [
     {
       parent = {
@@ -576,7 +581,7 @@ in
         kind = "unit";
         unit_name = "multi-user.target";
       };
-      child = resource.realization.systemd_unit;
+      child = imageOwnedResource.realization.systemd_unit;
       relationship = "wants";
     }
   ];
@@ -615,7 +620,7 @@ in
   != (builtins.head (directives "User" matchedDirectoryService)).value;
   assert !unrepresentedDependency.success;
   assert neutralPrerequisite.schema == "aos.systemd.service-realization/v1";
-  assert duplicateActivation.links == resource.realization.links;
+  assert duplicateActivation.links == imageOwnedResource.realization.links;
   assert effectsRequest.parameters.kind == "service";
   assert effectsRequest.parameters.desired.service == "main";
   assert conditionImplementation.guarantees

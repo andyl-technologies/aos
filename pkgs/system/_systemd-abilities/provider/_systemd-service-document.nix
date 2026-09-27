@@ -829,7 +829,7 @@
     ++ devicePolicyDirectives value
     ++ terminalDirectives value;
 
-  installationLinks = child: value: let
+  installationLinks = child: value: activationOwner: let
     dependencies = value.dependencies or {};
     targets = relationship: values:
       builtins.map (target: {
@@ -846,7 +846,7 @@
       relationship = "wants";
     };
   in
-    if !value.enabled
+    if !value.enabled || activationOwner != "image"
     then []
     else
       [defaultActivation]
@@ -987,6 +987,7 @@
 
   realizationFor = controllerInterface: resource: let
     value = resource.value;
+    activationOwner = resource.activationOwner or "ability";
     selection = value.instantiation or {kind = "singleton";};
     managerIdentity = value.manager_identity or null;
     serviceIdentity = serviceIdentityFor resource;
@@ -1054,7 +1055,7 @@
         unit_name = socket.systemd_unit.unit_name;
       };
     in
-      if value.enabled && (socket.enabled or true)
+      if activationOwner == "image" && value.enabled && (socket.enabled or true)
       then [
         {
           parent = {
@@ -1070,7 +1071,10 @@
     # The implicit boot target may also be requested by a service feature.
     links = lib.unique (builtins.sort
       (left: right: builtins.toJSON left < builtins.toJSON right)
-      (installationLinks serviceIdentity value ++ socketInstallationLinks));
+      (installationLinks serviceIdentity value activationOwner ++ socketInstallationLinks));
+    socketStartUnits = builtins.sort builtins.lessThan (builtins.map
+      (socket: (socketIdentity resource socketsByName socket.name).unit_name)
+      (builtins.filter (socket: socket.enabled or true) sockets));
     aliases =
       if managerIdentity == null
       then []
@@ -1089,6 +1093,8 @@
       inherit aliases facets links;
       inherit units;
       enabled = value.enabled;
+      activation_owner = activationOwner;
+      socket_start_units = socketStartUnits;
       readiness_mechanism =
         if (value.readiness or null) == null
         then null

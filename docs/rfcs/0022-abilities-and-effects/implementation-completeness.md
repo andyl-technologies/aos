@@ -55,14 +55,15 @@ bundle and static contract, and its fixed point selects a distinct durable
 stage journal. The host-stage runner now receives the initrd handoff, admits
 the host bundle, and replays its own durable execution journal. Boot services
 do not yet start that runner, so host execution remains a cutover task. The
-cutover must distinguish image-owned boot services from ability-owned services
-in the same typed service configuration, observe the live boot roots at stage
-entry, and remove their duplicate transitions before the host runner owns the
-remaining effects. Image-owned service roots now require a selected native
+typed service owner now determines installation links: image-owned services
+have boot target links, while ability-owned services and their sockets start
+through checked effects. The remaining cutover must separate services that
+start after a stage controller exits from the effects executed inside that
+controller and replace the current activation service. Image-owned service
+roots now require a selected native
 handler to confirm the rendered unit files, loaded definitions, manager
 freshness, active state, and exact resource revision before admission. The
-host runner must also replace the current activation service so it cannot
-schedule its own creation. The root-observation protocol, initrd source-plan
+root-observation protocol, initrd source-plan
 replay, and journal state machine have focused Rust tests. The
 [`ability-initrd-activation` VM flight](../../../tests/fleet/ability-initrd-activation.nix)
 selects a protected observer in the initrd fixed point, interrupts a returned
