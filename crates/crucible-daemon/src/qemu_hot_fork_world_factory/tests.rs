@@ -1309,7 +1309,7 @@ fn pending_guest_selectable_plan() -> (SelectableCatalogPlan, SelectablePlanPend
         continuation,
     )
     .expect("pending selectable catalog plan");
-    let pending = SelectablePlanPendingRequest::new(request, 1, (1) * 50, 0, 0x1000);
+    let pending = SelectablePlanPendingRequest::new(request, 1, 50, 0, 0x1000);
     (plan, pending)
 }
 
