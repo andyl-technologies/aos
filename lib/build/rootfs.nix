@@ -255,7 +255,6 @@ in
               chmod 0700 rootfs/root/.config
               chmod 0755 rootfs/root/.config/apm
               chmod 0755 rootfs/root/.config/apm/registries.d
-              mkdir -p rootfs/run/current-system
 
               # ── 2. Copy the closure into /nix/store ─────────────────────────
               total=$(wc -l < store-paths)
@@ -339,10 +338,7 @@ in
               # ── 6. Systemd preset policy ────────────────────────────────────
               cp -a "$SYSTEMD_PRESETS"/. rootfs/usr/lib/systemd/system-preset/
 
-              # ── 7. /run/current-system → toplevel ───────────────────────────
-              ln -sfn "$TOPLEVEL" rootfs/run/current-system
-
-              # ── 8. /aos-toplevel seed pointer ──────────────────────────────
+              # ── 7. /aos-toplevel seed pointer ──────────────────────────────
               # First-boot bootstrap: aos-seed-profiles.service reads this
               # symlink to populate /var/lib/profiles/system/gen-1/toplevel
               # without referencing config.system.build.toplevel directly
@@ -352,7 +348,7 @@ in
               # edge. See spec v12 §6.1.
               ln -sfn "$TOPLEVEL" rootfs/aos-toplevel
 
-              # ── 9. /aos-registration Nix DB seed ───────────────────────────
+              # ── 8. /aos-registration Nix DB seed ───────────────────────────
               # Stage-2 loads this plain text `nix-store --load-db` stream to
               # register the image closure without canonicalising/chowning store
               # contents. Copy the bytes instead of symlinking the derivation.
@@ -366,10 +362,10 @@ in
               # file on the wrong side of the overlay (and on every
               # rebuild's $TOPLEVEL, defeating per-host persistence).
 
-              # ── 10. Symlink farm for caller-supplied packages ───────────────
+              # ── 9. Symlink farm for caller-supplied packages ────────────────
               ${symlinkFarmScript}
 
-              # ── 11. Caller-supplied postPopulate hook ──────────────────────
+              # ── 10. Caller-supplied postPopulate hook ───────────────────────
               ${postPopulate}
             '';
           }

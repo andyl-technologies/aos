@@ -124,7 +124,8 @@
       import shlex
 
       mode = ${builtins.toJSON mode}
-      expected_toplevel = ${builtins.toJSON (toString toplevel)}
+      expected_toplevel = ${builtins.toJSON (toString fleet.machineSystems.primary.config.system.build.toplevel)}
+      composition_toplevel = ${builtins.toJSON (toString toplevel)}
       primary.wait_for_unit("multi-user.target", timeout=180)
       actual_toplevel = primary.succeed("readlink -f /run/current-system").strip()
       assert actual_toplevel == expected_toplevel, (actual_toplevel, expected_toplevel)
@@ -184,7 +185,8 @@
           "verified_model_owned_objective=PASS",
           f"campaign_mode={mode}",
           f"campaign_configuration_identity={identity}",
-          f"campaign_toplevel={actual_toplevel}",
+          f"campaign_toplevel={composition_toplevel}",
+          f"machine_toplevel={actual_toplevel}",
       ]) + "\n"
       transcript = "\n--- command ---\n".join(transcripts)
       transcript += "\nCAMPAIGN_GATE_RESULT_BEGIN\n"
@@ -236,6 +238,7 @@ in
             test "$(grep -Fxc 'gate=gate:campaign-model' "$TMPDIR/gate-evidence")" -eq 1
             test "$(grep -Fxc 'campaign_mode=${mode}' "$TMPDIR/gate-evidence")" -eq 1
             test "$(grep -Fxc 'campaign_toplevel=${toplevel}' "$TMPDIR/gate-evidence")" -eq 1
+            test "$(grep -Fxc 'machine_toplevel=${fleet.machineSystems.primary.config.system.build.toplevel}' "$TMPDIR/gate-evidence")" -eq 1
 
             configuration_identity=$(sed -n \
               's/^campaign_configuration_identity=//p' "$TMPDIR/gate-evidence")

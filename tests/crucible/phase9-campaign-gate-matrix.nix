@@ -183,7 +183,7 @@ in
               cp "$adapter/raw-result" "$destination/raw-result"
               cp "$adapter/transcript" "$destination/transcript"
               grep -Ev \
-                '^(campaign_mode|campaign_configuration_identity|campaign_runtime_identity|campaign_toplevel|executor_derivation)=' \
+                '^(campaign_mode|campaign_configuration_identity|campaign_runtime_identity|campaign_toplevel|machine_toplevel|executor_derivation)=' \
                 "$destination/raw-result" > "$TMPDIR/$mode-$safe_gate.bound-result"
               normalize_campaign_matrix_semantic_result \
                 "$gate" \

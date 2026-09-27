@@ -102,7 +102,8 @@
       mode = ${builtins.toJSON mode}
       executor_derivation = os.environ["out"]
       expected_identity = ${builtins.toJSON expectedConfigurationIdentity}
-      expected_toplevel = ${builtins.toJSON (toString toplevel)}
+      expected_toplevel = ${builtins.toJSON (toString fleet.machineSystems.primary.config.system.build.toplevel)}
+      composition_toplevel = ${builtins.toJSON (toString toplevel)}
       primary.wait_for_unit("multi-user.target", timeout=180)
       actual_toplevel = primary.succeed("readlink -f /run/current-system").strip()
       assert actual_toplevel == expected_toplevel, (actual_toplevel, expected_toplevel)
@@ -163,7 +164,8 @@
           *evidence,
           f"campaign_mode={mode}",
           f"campaign_configuration_identity={identity}",
-          f"campaign_toplevel={actual_toplevel}",
+          f"campaign_toplevel={composition_toplevel}",
+          f"machine_toplevel={actual_toplevel}",
           f"executor_derivation={executor_derivation}",
           ${builtins.toJSON "test_executor_derivation=${executor}"},
       ]) + "\n"
@@ -247,6 +249,7 @@ in
             test "$(grep -Fxc ${lib.escapeShellArg "campaign_mode=${mode}"} "$out/raw-result")" -eq 1
             test "$(grep -c '^campaign_configuration_identity=' "$out/raw-result")" -eq 1
             test "$(grep -Fxc ${lib.escapeShellArg "campaign_toplevel=${toplevel}"} "$out/raw-result")" -eq 1
+            test "$(grep -Fxc ${lib.escapeShellArg "machine_toplevel=${fleet.machineSystems.primary.config.system.build.toplevel}"} "$out/raw-result")" -eq 1
             test "$(grep -Fxc ${lib.escapeShellArg "executor_derivation=${fleet}"} "$out/raw-result")" -eq 1
 
             configuration_identity=$(sed -n \
