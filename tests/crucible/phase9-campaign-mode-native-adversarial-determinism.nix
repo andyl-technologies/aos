@@ -11,6 +11,7 @@ in
       authoritativeAttr = "checks.crucible.phase3.gates.adversarialDeterminism";
       inherit authority;
       name = "native-adversarial-determinism";
+      sqliteRequired = true;
       cargoBuildCommands = [
         "test --frozen --offline --no-run -p crucible-harness --test gate_adversarial_determinism"
         "test --frozen --offline --no-run -p crucible --test gate_adversarial_determinism"
