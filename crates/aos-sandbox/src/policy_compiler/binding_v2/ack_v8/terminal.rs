@@ -176,8 +176,7 @@ fn current_released_terminal_without_public_decision(
 ) -> Result<RootV8VerifiedTerminalV1, RootV8EffectAckErrorV1> {
     let released = custody_cut(authority, binding, epoch, true)?;
     let ack = current_ack_for_cut(authority, binding, epoch, &released)?;
-    current_terminal_for_cut(authority, ack, &released)?
-        .ok_or(RootV8EffectAckErrorV1::Stale)
+    current_terminal_for_cut(authority, ack, &released)?.ok_or(RootV8EffectAckErrorV1::Stale)
 }
 
 fn current_terminal_for_cut(
