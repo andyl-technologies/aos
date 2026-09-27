@@ -1206,6 +1206,18 @@ in {
 
       external_cache_bytes = b"fleet external S3 delivery through Worker\n"
       external_cache_path = "nar/fleet-external-probe.nar.zst"
+      external_store_hash = "a" * 32
+      external_narinfo_path = f"{external_store_hash}.narinfo"
+      external_cache_digest = hashlib.sha256(external_cache_bytes).hexdigest()
+      external_narinfo = (
+          f"StorePath: /nix/store/{external_store_hash}-fleet-external-probe\n"
+          f"URL: {external_cache_path}\n"
+          "Compression: none\n"
+          f"FileHash: sha256:{external_cache_digest}\n"
+          f"FileSize: {len(external_cache_bytes)}\n"
+          f"NarHash: sha256:{external_cache_digest}\n"
+          f"NarSize: {len(external_cache_bytes)}\n"
+      )
       client.succeed(
           f"printf '%s' {shlex.quote(base64.b64encode(external_cache_bytes).decode())} | "
           "${pkgs.coreutils}/bin/base64 -d > /tmp/hybrid-external-cache-object"
@@ -1216,6 +1228,14 @@ in {
           "-X PUT -H 'content-type: application/octet-stream' "
           "--data-binary @/tmp/hybrid-external-cache-object "
           f"https://s3.fleet.test/fleet-s3/tenant/caches/fleet-external/{external_cache_path}",
+          timeout=60,
+      )
+      client.succeed(
+          f"{CURL} -fsS --aws-sigv4 'aws:amz:garage:s3' "
+          f"-u {shlex.quote(access_key.group(1) + ':' + secret_key.group(1))} "
+          "-X PUT -H 'content-type: text/x-nix-narinfo' "
+          f"--data-binary {shlex.quote(external_narinfo)} "
+          f"https://s3.fleet.test/fleet-s3/tenant/caches/fleet-external/{external_narinfo_path}",
           timeout=60,
       )
       reviewed(
