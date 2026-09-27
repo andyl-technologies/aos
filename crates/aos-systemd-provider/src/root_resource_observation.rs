@@ -13,7 +13,7 @@ use aos_provider_protocol::{
 use aos_systemd::{PinnedSystemdManager, UnitActiveState};
 
 use crate::HandlerRole;
-use crate::model::{ServiceReadinessMechanism, ServiceRealization};
+use crate::model::{ServiceActivationOwner, ServiceReadinessMechanism, ServiceRealization};
 use crate::render::{RenderedService, render_service};
 use crate::semantic::resolve_unit_identity;
 
@@ -36,6 +36,10 @@ pub(super) async fn observe(
             .context("image-owned service realization depends on a runtime result")?;
     let realization: ServiceRealization = serde_json::from_value(realization.as_json().clone())
         .context("decoding image-owned service realization")?;
+    ensure!(
+        realization.activation_owner == ServiceActivationOwner::Image,
+        "stage-entry observation requires an image-owned service root"
+    );
     let (_, primary_source) = resolve_unit_identity(&realization.systemd_unit)?;
     let rendered = render_service(&realization)?;
 

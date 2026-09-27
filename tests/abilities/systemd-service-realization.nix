@@ -193,6 +193,15 @@
         consumerModule.config.aos.abilities.requests;
       };
   };
+  deferredImageConsumerModule = {
+    config.aos.abilities =
+      consumerModule.config.aos.abilities
+      // {
+        requests = builtins.mapAttrs (_: request:
+          request // {parameters = request.parameters // {activation_owner = "deferred-image";};})
+        consumerModule.config.aos.abilities.requests;
+      };
+  };
   conflictingOwnerConsumerModule = {
     config.aos.abilities =
       imageOwnedConsumerModule.config.aos.abilities
@@ -309,6 +318,11 @@
     requirements.${effectsChild.declaration.requirement} =
       initial.config.aos.abilities.compositionRequirements.${effectsChild.declaration.requirement};
   };
+  deferredImageEvaluation = evaluateWith deferredImageConsumerModule resolvedBindings {
+    requests.${serviceEffectsRequest} = effectsChild.declaration;
+    requirements.${effectsChild.declaration.requirement} =
+      initial.config.aos.abilities.compositionRequirements.${effectsChild.declaration.requirement};
+  };
   conflictingOwnerEvaluation = evaluateWith conflictingOwnerConsumerModule resolvedBindings {
     requests.${serviceEffectsRequest} = effectsChild.declaration;
     requirements.${effectsChild.declaration.requirement} =
@@ -317,6 +331,11 @@
   resources = builtins.attrValues evaluation.config.aos.abilities.desiredResources;
   resource = builtins.head resources;
   imageOwnedResource = builtins.head (builtins.attrValues imageOwnedEvaluation.config.aos.abilities.desiredResources);
+  imageOwnedStageResources =
+    (lib.abilities.sourceStageFixedPoint imageOwnedEvaluation.config.aos.abilities).resolvedResources;
+  deferredImageResource = builtins.head (builtins.attrValues deferredImageEvaluation.config.aos.abilities.desiredResources);
+  deferredStageResources =
+    (lib.abilities.sourceStageFixedPoint deferredImageEvaluation.config.aos.abilities).resolvedResources;
   unitName = resource.realization.systemd_unit.unit_name;
   primary = builtins.head (builtins.filter
     (unit: unit.systemd_unit.unit_name == unitName)
@@ -552,6 +571,10 @@ in
   assert resource.realization.socket_start_units == ["example-api-admin.socket" "example-api.socket"];
   assert resource.realization.links == [];
   assert imageOwnedResource.realization.activation_owner == "image";
+  assert builtins.length (builtins.attrNames imageOwnedStageResources) == 1;
+  assert deferredImageResource.realization.activation_owner == "deferred-image";
+  assert deferredImageResource.realization.links == imageOwnedResource.realization.links;
+  assert deferredStageResources == {};
   assert imageOwnedResource.realization.links
   == [
     {

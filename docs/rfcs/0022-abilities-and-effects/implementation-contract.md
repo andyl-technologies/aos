@@ -391,6 +391,11 @@ a second owner. An ability-owned service instead starts through its checked
 effect path and cannot be started independently by an image preset. The host
 stage runner and its executor, manager, and storage prerequisites are
 image-owned roots; the runner cannot create or restart itself through the plan.
+An image-owned service ordered after the controller's successful exit is
+deferred to the image manager. It remains in the same typed fixed point and
+rendered boot graph, but is excluded from the controller's source-stage plan
+and stage-entry inventory. It cannot be treated as a ready prerequisite of an
+effect executing inside that controller.
 At stage handoff, journal ownership and a durable checkpoint transfer before
 the next controller admits conflicting work. The receiving controller
 revalidates identities, grants, and continuation formats. An initrd without

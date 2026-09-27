@@ -416,8 +416,8 @@
   in
     {inherit (declaration) service;}
     // (
-      if (declaration.activation_owner or "ability") == "image"
-      then {activation_owner = "image";}
+      if (declaration.activation_owner or "ability") != "ability"
+      then {activation_owner = declaration.activation_owner;}
       else {}
     )
     // (
@@ -703,8 +703,8 @@
               inherit (checked) service enabled;
             }
             // (
-              if (checked.activation_owner or "ability") == "image"
-              then {activation_owner = "image";}
+              if (checked.activation_owner or "ability") != "ability"
+              then {activation_owner = checked.activation_owner;}
               else {}
             )
             // feature.parameters;

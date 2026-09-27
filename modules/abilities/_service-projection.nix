@@ -17,8 +17,8 @@
       inherit (service) service;
       enabled = service.autoStart;
     }
-    // lib.optionalAttrs (service.activationOwner == "image") {
-      activation_owner = "image";
+    // lib.optionalAttrs (service.activationOwner != "ability") {
+      activation_owner = service.activationOwner;
     }
     // lib.filterAttrs
     (field: value:
