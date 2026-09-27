@@ -4,8 +4,10 @@
 //! Its body carries the exact Controller-held method-46 attempt identity, not
 //! caller-selected output-claim fields. Structural parsing alone is not proof:
 //! only a signed client-received terminal retained under the protected session
-//! can attest Host's current AOSEOR02/AOSHOP01 readback. No production hello
-//! advertises this method yet.
+//! can attest Host's current AOSEOR02/AOSHOP01 readback. Production advertises
+//! this method only on the Storage-facing Host listener. Storage cannot issue a
+//! production request until the Controller signs it from the protected
+//! original AOSCST01 attempt.
 
 use aos_proto::aos::sandbox::local::v1::{
     Audience, ObserveHostStorageOutputRequestV1, ObserveHostStorageOutputResponseV1,

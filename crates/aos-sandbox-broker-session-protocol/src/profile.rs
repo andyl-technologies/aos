@@ -162,7 +162,6 @@ pub fn authenticated_broker_methods_for_role_v1(
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
                     | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
                     | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
-                    | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
             )
         })
         .filter(|method| {
@@ -1602,20 +1601,29 @@ mod tests {
             &HOST_CONSUMER_CGROUP_RESPONSE_DESCRIPTOR_ROLES
         );
         assert!(profile.request_descriptor_roles().is_empty());
-        assert!(
+        assert_eq!(
             authenticated_broker_methods_for_role_v1(
                 BrokerSessionProtocolV1::Host,
                 Audience::AUDIENCE_STORAGE_BROKER,
-            )
-            .is_empty()
+            ),
+            vec![BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT]
+        );
+        let hello = production_broker_client_hello_v1(
+            BrokerSessionProtocolV1::Host,
+            Audience::AUDIENCE_STORAGE_BROKER,
+            RESPONSE_MAXIMUM,
+        )
+        .unwrap();
+        assert!(
+            !hello
+                .required_methods
+                .iter()
+                .any(|value| value.as_known() == Some(method))
         );
         assert!(
-            production_broker_client_hello_v1(
-                BrokerSessionProtocolV1::Host,
-                Audience::AUDIENCE_STORAGE_BROKER,
-                RESPONSE_MAXIMUM,
-            )
-            .is_err()
+            !hello.required_features.iter().any(|value| {
+                value.namespace == HOST_CONSUMER_CGROUP_READBACK_FEATURE_NAMESPACE
+            })
         );
 
         let authentication = FeatureRef::new(
@@ -1644,7 +1652,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_output_host_readback_has_its_own_closed_signed_role() {
+    fn storage_output_host_readback_has_its_own_signed_production_role() {
         let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT;
         let profile = authenticated_broker_method_profile_v1(method).unwrap();
         assert_eq!(profile.protocol(), BrokerSessionProtocolV1::Host);
@@ -1656,20 +1664,40 @@ mod tests {
         assert_eq!(profile.required_features(), &SIGNED_PLAN_LEASE_FEATURES);
         assert!(profile.request_descriptor_roles().is_empty());
         assert!(profile.success_response_descriptor_roles().is_empty());
-        assert!(
+        assert_eq!(
             authenticated_broker_methods_for_role_v1(
                 BrokerSessionProtocolV1::Host,
                 Audience::AUDIENCE_STORAGE_BROKER,
+            ),
+            vec![method]
+        );
+        let hello = production_broker_client_hello_v1(
+            BrokerSessionProtocolV1::Host,
+            Audience::AUDIENCE_STORAGE_BROKER,
+            RESPONSE_MAXIMUM,
+        )
+        .unwrap();
+        assert_eq!(hello.required_methods, vec![buffa::EnumValue::from(method)]);
+        let server = production_broker_server_hello_v1(
+            BrokerSessionProtocolV1::Host,
+            Audience::AUDIENCE_STORAGE_BROKER,
+            RESPONSE_MAXIMUM,
+        )
+        .unwrap();
+        assert_eq!(server.methods, vec![buffa::EnumValue::from(method)]);
+        assert!(
+            !authenticated_broker_methods_for_role_v1(
+                BrokerSessionProtocolV1::Host,
+                Audience::AUDIENCE_NODE_CONTROLLER,
             )
-            .is_empty()
+            .contains(&method)
         );
         assert!(
-            production_broker_client_hello_v1(
+            !authenticated_broker_methods_for_role_v1(
                 BrokerSessionProtocolV1::Host,
-                Audience::AUDIENCE_STORAGE_BROKER,
-                RESPONSE_MAXIMUM,
+                Audience::AUDIENCE_ROOT_MOUNT,
             )
-            .is_err()
+            .contains(&method)
         );
     }
 }

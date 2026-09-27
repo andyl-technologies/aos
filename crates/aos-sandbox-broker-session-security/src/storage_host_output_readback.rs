@@ -1,9 +1,9 @@
 //! Protected, same-session Storage readback of a Host output reservation.
 //!
-//! This is a necessary observation, never Storage writer admission. Method 48
-//! remains absent from production hello; a future Controller issuer must sign
-//! it from AOSCST01 before the closed Host responder can participate in any
-//! AOSEOR03 admission.
+//! This is a necessary observation, never Storage writer admission. The Host
+//! advertises method 48 only to Storage. A future Controller issuer must sign
+//! it from AOSCST01 before Storage can obtain a genuine readback or admit an
+//! AOSEOR03 row.
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox_linux::boot::KernelBootId;

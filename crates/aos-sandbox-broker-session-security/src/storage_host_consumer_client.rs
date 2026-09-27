@@ -77,9 +77,8 @@ impl StorageHostConsumerClientV1 {
     ///
     /// The method profile is checked before connecting and after the handshake.
     /// No method-34 request can be sent while the grant path remains incomplete.
-    /// Today the Storage role has no other advertised method, so this returns
-    /// `ProfileClosed` before opening a socket. No empty-method handshake is
-    /// substituted for the existing signed BSA profile.
+    /// The Storage role advertises only method 48; opening that signed session
+    /// does not make the separate method-34 consumer readback available.
     ///
     /// # Errors
     ///
@@ -270,30 +269,29 @@ fn open_host_peer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_sandbox_broker_session_protocol::{
-        BrokerSessionNegotiationError, production_broker_client_hello_v1,
-    };
+    use aos_sandbox_broker_session_protocol::production_broker_client_hello_v1;
 
     #[test]
     fn storage_host_consumer_client_stays_closed_in_production_profile() {
-        assert!(matches!(
-            require_closed_profile(),
-            Err(StorageHostConsumerClientErrorV1::ProfileClosed)
-        ));
-        assert!(
-            !authenticated_broker_methods_for_role_v1(
+        assert!(require_closed_profile().is_ok());
+        assert_eq!(
+            authenticated_broker_methods_for_role_v1(
                 BrokerSessionProtocolV1::Host,
                 Audience::AUDIENCE_STORAGE_BROKER,
-            )
-            .contains(&BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP)
-        );
-        assert!(matches!(
-            production_broker_client_hello_v1(
-                BrokerSessionProtocolV1::Host,
-                Audience::AUDIENCE_STORAGE_BROKER,
-                8192,
             ),
-            Err(BrokerSessionNegotiationError::Methods)
-        ));
+            vec![BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT]
+        );
+        let hello = production_broker_client_hello_v1(
+            BrokerSessionProtocolV1::Host,
+            Audience::AUDIENCE_STORAGE_BROKER,
+            8192,
+        )
+        .unwrap();
+        assert_eq!(
+            hello.required_methods,
+            vec![buffa::EnumValue::from(
+                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
+            )]
+        );
     }
 }
