@@ -41,7 +41,7 @@
     s3_region = "garage"
   '';
   s3ProxyConfig = writeFixture "hub-hybrid-fleet-s3-nginx.conf" ''
-    # The disposable S3 VM does not provision nginx's package-default account.
+    # The disposable S3 VM does not provision nginx's default account or state dirs.
     user root;
     pid /var/lib/hybrid-s3/nginx.pid;
     error_log /var/lib/hybrid-s3/nginx-error.log info;
@@ -50,6 +50,9 @@
       access_log off;
       client_body_temp_path /var/lib/hybrid-s3/client-body;
       proxy_temp_path /var/lib/hybrid-s3/proxy-temp;
+      fastcgi_temp_path /var/lib/hybrid-s3/fastcgi-temp;
+      uwsgi_temp_path /var/lib/hybrid-s3/uwsgi-temp;
+      scgi_temp_path /var/lib/hybrid-s3/scgi-temp;
       server {
         listen 443 ssl;
         server_name s3.fleet.test;
