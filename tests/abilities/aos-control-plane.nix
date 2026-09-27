@@ -45,8 +45,18 @@
       timeout_millis = 90000;
     };
   };
+  aosAbilitiesModule = {
+    imports = [
+      ../../pkgs/tools/aos/_abilities/control-plane/module.nix
+      ../../pkgs/tools/aos/_abilities/configuration-evaluation.nix
+    ];
+    options.aos.packageRuntime.artifacts.apm = lib.mkOption {
+      type = lib.abilities.types.packageOutputSelector;
+    };
+    config.aos.packageRuntime.artifacts.apm = lib.abilities.packageOutput {output = "apm";};
+  };
   aosModule = {
-    imports = [../../pkgs/tools/aos/_abilities/control-plane/module.nix];
+    imports = [aosAbilitiesModule];
     config.aos.services = {
       "readiness-owners.configuration-evaluation" = ownerService "configuration-evaluation";
       "readiness-owners.package-profile-convergence" = ownerService "package-profile-convergence";
@@ -74,6 +84,7 @@
               inherit (selection) bindings;
             };
             aos.config.unitGraph.enable = true;
+            aos.packageRuntime.configurationEvaluation.manifest = "/run/aos/test-manifest.json";
           };
         }
         serviceOverrides
@@ -142,12 +153,13 @@
     packageModules = [
       {
         name = "aos";
-        module = ../../pkgs/tools/aos/_abilities/control-plane/module.nix;
+        module = aosAbilitiesModule;
       }
     ];
   };
   abilities = complete.config.aos.abilities;
   resources = builtins.attrValues abilities.desiredResources;
+  sourceResources = builtins.attrValues (lib.abilities.sourceStageFixedPoint abilities).resolvedResources;
   realizedUnitName = resource: let
     identity = resource.realization.systemd_unit or null;
   in
@@ -166,6 +178,11 @@ in
   assert initrd.config.aos.abilities.requests == {};
   assert abilities.requests."aos:aos-graph-compile-lifecycle".parameters.activation_owner == "deferred-image";
   assert abilities.requests."aos:aos-activate-lifecycle".parameters.activation_owner == "deferred-image";
+  assert builtins.elem "/run/aos/test-manifest.json"
+  (builtins.head abilities.requests."aos:aos-activate-lifecycle".parameters.start).executable.arguments;
+  assert builtins.all (resource:
+    !builtins.elem (resource.value.service or null) ["aos-graph-compile" "aos-activate"])
+  sourceResources;
   assert builtins.length (builtins.attrNames abilities.bindings) > 0;
   assert abilities.compositionPendingRequests == {};
   assert builtins.length resources > 0;
