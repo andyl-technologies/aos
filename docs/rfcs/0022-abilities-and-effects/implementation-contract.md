@@ -378,6 +378,19 @@ The template is not executable until stage entry obtains fresh root evidence,
 instantiates the exact binding and effect plan, and passes whole-plan
 validation. Merely changing a planned provider to available in the image
 document is not admission.
+The same rule applies to resources established by the image's boot manager.
+The service's typed module configuration names its activation owner. An
+image-owned boot service is rendered into the image and may ground the source
+stage, but it has no competing create, update, or remove effect in that stage.
+Before admission, the selected manager observes the live service through its
+package-owned adapter and attests to the exact resource identity and revision,
+the current boot, and bounded freshness. A provider-availability probe alone
+does not establish service readiness. An absent or changed boot service fails
+admission; the planner does not infer it from a unit file or silently schedule
+a second owner. An ability-owned service instead starts through its checked
+effect path and cannot be started independently by an image preset. The host
+stage runner and its executor, manager, and storage prerequisites are
+image-owned roots; the runner cannot create or restart itself through the plan.
 At stage handoff, journal ownership and a durable checkpoint transfer before
 the next controller admits conflicting work. The receiving controller
 revalidates identities, grants, and continuation formats. An initrd without
