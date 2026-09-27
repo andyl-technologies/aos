@@ -48,7 +48,8 @@ mod validation;
 pub(crate) use completion::complete_acquire;
 pub(crate) use reservation::reserve_acquire;
 pub(crate) use validation::{
-    derive_acquire_effect_id, derive_backend_plan_id, derive_lease_id, validate_backend_selection,
+    derive_acquire_effect_id, derive_backend_plan_id, derive_lease_id,
+    derive_native_no_dispatch_id, is_native_no_dispatch_acquisition, validate_backend_selection,
 };
 use validation::{enforce_acquire_limits, normalized_intent};
 
@@ -199,6 +200,9 @@ impl ProviderLedgerV1<'_> {
         {
             return Err(ProviderLedgerError::Equivocation);
         }
+        if is_native_no_dispatch_acquisition(&acquisition) {
+            return Err(ProviderLedgerError::Unavailable);
+        }
         let (permit, source) = if permit.pending_claim {
             let prior_attempt = self
                 .recovered
@@ -296,6 +300,17 @@ impl ProviderLedgerV1<'_> {
             .validate_source_provider_authority_snapshot(&permit.journal_snapshot)?;
         permit.completion_capacity.validate(&self.journal)?;
         let acquisition_id = permit.plan.acquisition_id;
+        let acquisition = self
+            .recovered
+            .acquisitions
+            .values()
+            .find(|record| record.acquisition_id == acquisition_id)
+            .ok_or(ProviderLedgerError::InvalidTransition(
+                "missing reserved acquisition",
+            ))?;
+        if is_native_no_dispatch_acquisition(acquisition) {
+            return Err(ProviderLedgerError::Unavailable);
+        }
         let observation = backend.observe_acquire(&permit.plan);
         let (permit, observed) = match self.poison_backend_result(acquisition_id, observation)? {
             AcquireObservationV1::NotApplied => {

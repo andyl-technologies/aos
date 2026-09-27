@@ -1422,17 +1422,18 @@ impl FixedProviderOwnerV1 {
         self.prepare_catalog_currentness_query(canonical_catalog_publication, query)
     }
 
-    /// Advances one catalog query, kernel-coupled Acquire, or holder Inventory.
+    /// Advances one catalog query, selected Acquire, or holder Inventory.
     ///
     /// The exact source packet is received from live carrier custody and is
     /// branded before leaving this owner. Its signature and durable sequence
     /// are still verified by the reservation reducer. Release and
-    /// non-kernel-coupled Acquire remain closed in the production service.
+    /// non-catalog Acquire remain closed in the production service. A native
+    /// selected Acquire still receives only a descriptor-free Unavailable.
     ///
     /// # Errors
     ///
-    /// Rejects malformed frames, source methods other than kernel-coupled
-    /// Acquire or Inventory, stale currentness, or changed peer/journal custody.
+    /// Rejects malformed frames, methods other than Acquire or Inventory,
+    /// stale currentness, or changed peer/journal custody.
     pub fn advance_authenticated_ingress(
         &mut self,
         canonical_catalog_publication: &[u8],
@@ -2186,9 +2187,6 @@ fn validate_production_source_request(
         SourceProviderMethod::Acquire => {
             let request = decode_acquire_request(signed.subject())
                 .map_err(|_| ProviderLedgerError::Unavailable)?;
-            if !request.kernel_coupled() {
-                return Err(ProviderLedgerError::Unavailable);
-            }
         }
         SourceProviderMethod::Inventory => {
             decode_inventory_request(signed.subject())

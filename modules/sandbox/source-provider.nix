@@ -26,7 +26,7 @@ in {
     credentials.catalogManifest = lib.mkOption {
       type = lib.types.nullOr lib.serviceTypes.credentialName;
       default = null;
-      description = "External canonical row manifest whose digest is the signed catalog head; it cannot authorize effects without protected journal and attempt proof.";
+      description = "External canonical LocalLive or native row catalog whose digest is the signed catalog head; it cannot authorize effects without protected journal and attempt proof.";
     };
   };
 
@@ -60,7 +60,7 @@ in {
     };
 
     systemd.services.aos-source-providerd = {
-      description = "AOS authenticated catalog and closed LocalLive SourceProvider";
+      description = "AOS authenticated catalog and closed SourceProvider";
       requires = ["aos-source-providerd.socket"];
       after = ["aos-source-providerd.socket" "local-fs.target"];
       unitConfig = {

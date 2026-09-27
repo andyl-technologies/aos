@@ -1263,13 +1263,12 @@ fn decode_acquisition_body(
         && lease_history.is_empty()
         && release_effect_id.is_none()
         && signed_lease.is_empty();
-    // A kernel-coupled attempt may durably select a Provider row before any
-    // Storage or kernel effect. It still has no proof, lease, or descriptor.
+    // Either protected catalog family may durably select a Provider row before
+    // any backend effect. Selection is not proof, lease, or descriptor custody.
     let selected_reserved_shape = lease_id.is_none()
         && lease_digest.is_none()
         && lease_attempt_digest.is_none()
         && lease_issue_generation == 0
-        && intent.kernel_coupled()
         && resource_namespace_digest.as_bytes() != &[0; 32]
         && resource_id != [0; 32]
         && resource_generation > 0
@@ -1417,6 +1416,173 @@ fn decode_acquisition_body(
         release_effect_id,
         signed_lease,
     })
+}
+
+#[cfg(test)]
+mod native_selected_reservation_tests {
+    use aos_sandbox_source_provider_protocol::{
+        AcquireSourceRequestV1, ProviderHeldSnapshotCatalogV1, ProviderHeldSnapshotRowV1,
+        SourceProviderAuthorityV1, SourceUseV1, ZfsHeldSnapshotProofV1,
+        digest_logical_binding_bytes, prospective_mount_apply_template_digest_v1,
+    };
+
+    use super::*;
+
+    fn digest(byte: u8) -> ObjectDigest {
+        ObjectDigest::from_bytes([byte; 32])
+    }
+
+    #[test]
+    fn native_selected_applying_record_remains_proofless_until_completion() {
+        let provider = SourceProviderAuthorityV1::new([21; 16], 22, digest(23)).unwrap();
+        let holder = SourceProviderAuthorityV1::new([7; 16], 8, digest(9)).unwrap();
+        let mut template = Vec::new();
+        for tag in 1u8..=27 {
+            let value = match tag {
+                1 => b"AOSMSEM1".to_vec(),
+                2 => 1u16.to_be_bytes().to_vec(),
+                _ => vec![tag, tag.wrapping_add(1)],
+            };
+            template.push(tag);
+            template.extend_from_slice(&(value.len() as u32).to_be_bytes());
+            template.extend_from_slice(&value);
+        }
+        let template_digest = prospective_mount_apply_template_digest_v1(&template).unwrap();
+        let binding = b"native-held-snapshot-attachment".to_vec();
+        let binding_digest = digest_logical_binding_bytes(&binding);
+        let request = AcquireSourceRequestV1::new_v2(
+            digest(1),
+            2,
+            [3; 16],
+            4,
+            template,
+            template_digest,
+            SourceUseV1::MountCreate,
+            [5; 16],
+            [6; 16],
+            holder.authority_id(),
+            holder.authority_generation(),
+            holder.authority_digest(),
+            binding,
+            binding_digest,
+            1_000,
+            60,
+            digest(10),
+            false,
+            0,
+            false,
+        )
+        .unwrap();
+        let namespace = digest(27);
+        let intent = NormalizedAcquisitionIntentV1::from_acquire_request(
+            &request,
+            provider.clone(),
+            holder.clone(),
+            [5; 16],
+            [6; 16],
+            [24; 16],
+            25,
+            digest(26),
+            namespace,
+            28,
+            digest(10),
+        )
+        .unwrap();
+        let snapshot = ZfsHeldSnapshotProofV1::new(
+            [11; 32],
+            12,
+            13,
+            14,
+            15,
+            [16; 16],
+            17,
+            digest(18),
+            digest(19),
+            digest(20),
+        )
+        .unwrap();
+        let row = ProviderHeldSnapshotRowV1::new(
+            binding_digest,
+            [30; 32],
+            31,
+            digest(32),
+            33,
+            digest(34),
+            snapshot,
+        )
+        .unwrap();
+        let catalog = ProviderHeldSnapshotCatalogV1::new(29, namespace, vec![row]).unwrap();
+        let (resource, _) = catalog
+            .select_under_head(29, catalog.digest(), namespace, binding_digest)
+            .unwrap();
+        let native_backend_id = crate::identity::acquire_native_no_dispatch_id_v1(
+            intent.digest(),
+            resource.catalog_generation(),
+            resource.catalog_digest(),
+        );
+        assert_ne!(
+            native_backend_id,
+            crate::identity::acquire_backend_plan_id_v1(
+                intent.digest(),
+                resource.catalog_generation(),
+                resource.catalog_digest(),
+            )
+        );
+
+        let acquisition = AcquisitionRecordV1 {
+            revision: 1,
+            state: ProviderAcquisitionStateV1::Applying,
+            provider: provider.clone(),
+            holder: holder.clone(),
+            acquisition_id: request.acquisition_id(),
+            acquisition_sequence: request.acquisition_sequence(),
+            effect_id: [35; 16],
+            normalized_intent: intent,
+            effect_attempt_digest: digest(36),
+            current_attempt_digest: digest(36),
+            lease_attempt_digest: None,
+            lease_issue_generation: 0,
+            lease_id: None,
+            lease_digest: None,
+            lease_history: Vec::new(),
+            resource_namespace_digest: resource.resource_namespace_digest(),
+            resource_id: resource.resource_id(),
+            resource_generation: resource.resource_generation(),
+            resource_digest: resource.resource_digest(),
+            catalog_generation: resource.catalog_generation(),
+            catalog_digest: resource.catalog_digest(),
+            selection_generation: resource.selection_generation(),
+            selection_digest: resource.selection_digest(),
+            proof_class: 0,
+            proof_digest: digest(0),
+            resource_commitment: digest(0),
+            backend_id: native_backend_id,
+            backend_lineage_digest: digest(38),
+            backend_evidence: None,
+            reopen_identity: None,
+            source_root: None,
+            release_effect_id: None,
+            signed_lease: Vec::new(),
+        };
+        let key = acquisition_key(&AcquisitionKeyV1 {
+            provider_id: provider.authority_id(),
+            holder_id: holder.authority_id(),
+            acquisition_id: request.acquisition_id(),
+        });
+        let bytes = encode_acquisition(&acquisition);
+        let DecodedRecordV1::Acquisition(decoded) = decode_record(&key, &bytes).unwrap() else {
+            panic!("fixture decoded as another record kind");
+        };
+        assert_eq!(decoded, acquisition);
+
+        let mut premature_proof = acquisition.clone();
+        premature_proof.proof_class = 1;
+        assert!(decode_record(&key, &encode_acquisition(&premature_proof)).is_err());
+
+        let mut missing_selection = acquisition;
+        missing_selection.resource_id = [0; 32];
+        assert!(decode_record(&key, &encode_acquisition(&missing_selection)).is_err());
+    }
 }
 
 fn decode_release_body(envelope: Envelope<'_>) -> Result<ReleaseRecordV1, LedgerFormatErrorV1> {

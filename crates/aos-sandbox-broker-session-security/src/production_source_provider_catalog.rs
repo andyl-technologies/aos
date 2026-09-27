@@ -1,7 +1,7 @@
 //! Fail-closed installation of the nonauthorizing SourceProvider catalog pair.
 //!
-//! PID 1 supplies the canonical signed publication and matching row manifest
-//! as separate named credentials. The content-addressed manifest is synced
+//! PID 1 supplies the canonical signed publication and matching row catalog
+//! as separate named credentials. The content-addressed catalog is synced
 //! first, then the publication locator is atomically replaced. A crash between
 //! them can only leave an unusable pair; the fixed owner still authenticates
 //! the signature and exact protected journal head after RootMount handshake.
@@ -12,8 +12,11 @@ use std::io::{Read as _, Write as _};
 use std::os::fd::AsFd as _;
 use std::path::Path;
 
+use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
-use aos_sandbox_source_provider_protocol::ProviderCatalogManifestV1;
+use aos_sandbox_source_provider_protocol::{
+    ProviderCatalogManifestV1, ProviderHeldSnapshotCatalogV1,
+};
 use rustix::fs::{
     AtFlags, FileType, Mode, OFlags, Stat, fchmod, fstat, fsync, open, openat, renameat, unlinkat,
 };
@@ -23,7 +26,7 @@ const STATE_ROOT: &str = "/var/lib/aos/source-provider";
 const CREDENTIAL_NAME: &str = "current-catalog-publication";
 const MANIFEST_CREDENTIAL_NAME: &str = "current-catalog-manifest";
 const PUBLICATION_BYTES: usize = 520;
-const MAXIMUM_MANIFEST_BYTES: usize = 54 + 64 * 232;
+pub(crate) const MAXIMUM_CATALOG_ROWS_BYTES: usize = 54 + 64 * 328;
 
 /// Reports rejection while installing the nonauthorizing catalog locator.
 #[derive(Debug, thiserror::Error)]
@@ -62,31 +65,45 @@ pub fn install_fixed_source_provider_catalog_credential()
     }
 
     let publication = read_systemd_credential(CREDENTIAL_NAME, PUBLICATION_BYTES)?;
-    let manifest_bytes = read_systemd_credential(MANIFEST_CREDENTIAL_NAME, MAXIMUM_MANIFEST_BYTES)?;
-    let manifest =
-        ProviderCatalogManifestV1::from_canonical_bytes(&manifest_bytes).map_err(|_| {
-            ProductionSourceProviderCatalogInstallErrorV1::Credential("manifest is noncanonical")
-        })?;
-    if !publication_matches_manifest(&publication, &manifest) {
+    let manifest_bytes =
+        read_systemd_credential(MANIFEST_CREDENTIAL_NAME, MAXIMUM_CATALOG_ROWS_BYTES)?;
+    let (generation, namespace, digest) = catalog_rows_head(&manifest_bytes).ok_or(
+        ProductionSourceProviderCatalogInstallErrorV1::Credential("catalog rows are noncanonical"),
+    )?;
+    if !publication_matches_rows(&publication, generation, namespace, digest) {
         return Err(ProductionSourceProviderCatalogInstallErrorV1::Credential(
             "manifest does not match publication head",
         ));
     }
     let state = open_private_state_directory()?;
-    let manifest_name = manifest_filename(manifest.digest());
+    let manifest_name = manifest_filename(digest);
     install_in_directory(state.as_fd(), &manifest_name, &manifest_bytes, 0)?;
     install_in_directory(state.as_fd(), CREDENTIAL_NAME, &publication, 0)
 }
 
-fn publication_matches_manifest(publication: &[u8], manifest: &ProviderCatalogManifestV1) -> bool {
+fn publication_matches_rows(
+    publication: &[u8],
+    generation: u64,
+    namespace: ObjectDigest,
+    digest: ObjectDigest,
+) -> bool {
     publication.len() == PUBLICATION_BYTES
         && publication[0..8] == *b"AOSPCP01"
-        && publication[72..104] == *manifest.namespace_digest().as_bytes()
-        && publication[104..112] == manifest.generation().to_be_bytes()
-        && publication[112..144] == *manifest.digest().as_bytes()
+        && publication[72..104] == *namespace.as_bytes()
+        && publication[104..112] == generation.to_be_bytes()
+        && publication[112..144] == *digest.as_bytes()
 }
 
-pub(crate) fn manifest_filename(digest: aos_sandbox_core::ObjectDigest) -> String {
+/// Parses either supported canonical row family without promoting it to authority.
+pub(crate) fn catalog_rows_head(bytes: &[u8]) -> Option<(u64, ObjectDigest, ObjectDigest)> {
+    if let Ok(rows) = ProviderCatalogManifestV1::from_canonical_bytes(bytes) {
+        return Some((rows.generation(), rows.namespace_digest(), rows.digest()));
+    }
+    let rows = ProviderHeldSnapshotCatalogV1::from_canonical_bytes(bytes).ok()?;
+    Some((rows.generation(), rows.namespace_digest(), rows.digest()))
+}
+
+pub(crate) fn manifest_filename(digest: ObjectDigest) -> String {
     let mut filename = String::from("catalog-manifest-");
     for octet in digest.as_bytes() {
         use std::fmt::Write as _;
@@ -252,7 +269,7 @@ fn install_in_directory(
     bytes: &[u8],
     expected_uid: u32,
 ) -> Result<(), ProductionSourceProviderCatalogInstallErrorV1> {
-    if bytes.is_empty() || bytes.len() > MAXIMUM_MANIFEST_BYTES {
+    if bytes.is_empty() || bytes.len() > MAXIMUM_CATALOG_ROWS_BYTES {
         return Err(ProductionSourceProviderCatalogInstallErrorV1::Credential(
             "publication length",
         ));
@@ -348,7 +365,10 @@ fn install_in_directory(
 mod tests {
     use super::*;
     use aos_sandbox_core::ObjectDigest;
-    use aos_sandbox_source_provider_protocol::{ProviderCatalogRowV1, StorageLiveExportSelectorV1};
+    use aos_sandbox_source_provider_protocol::{
+        ProviderCatalogRowV1, ProviderHeldSnapshotRowV1, StorageLiveExportSelectorV1,
+        ZfsHeldSnapshotProofV1,
+    };
 
     fn manifest() -> ProviderCatalogManifestV1 {
         let selector = StorageLiveExportSelectorV1::new(
@@ -371,6 +391,66 @@ mod tests {
         ProviderCatalogManifestV1::new(2, ObjectDigest::from_bytes([8; 32]), vec![row]).unwrap()
     }
 
+    fn held_catalog() -> ProviderHeldSnapshotCatalogV1 {
+        let snapshot = ZfsHeldSnapshotProofV1::new(
+            [9; 32],
+            10,
+            11,
+            12,
+            13,
+            [14; 16],
+            15,
+            ObjectDigest::from_bytes([16; 32]),
+            ObjectDigest::from_bytes([17; 32]),
+            ObjectDigest::from_bytes([18; 32]),
+        )
+        .unwrap();
+        let row = ProviderHeldSnapshotRowV1::new(
+            ObjectDigest::from_bytes([4; 32]),
+            [5; 32],
+            1,
+            ObjectDigest::from_bytes([6; 32]),
+            1,
+            ObjectDigest::from_bytes([7; 32]),
+            snapshot,
+        )
+        .unwrap();
+        ProviderHeldSnapshotCatalogV1::new(2, ObjectDigest::from_bytes([8; 32]), vec![row]).unwrap()
+    }
+
+    #[test]
+    fn native_rows_install_under_exact_publication_head() {
+        let catalog = held_catalog();
+        let bytes = catalog.to_canonical_bytes();
+        let (generation, namespace, digest) = catalog_rows_head(&bytes).unwrap();
+        assert_eq!(generation, catalog.generation());
+        assert_eq!(namespace, catalog.namespace_digest());
+        assert_eq!(digest, catalog.digest());
+
+        let mut publication = vec![0; PUBLICATION_BYTES];
+        publication[0..8].copy_from_slice(b"AOSPCP01");
+        publication[72..104].copy_from_slice(namespace.as_bytes());
+        publication[104..112].copy_from_slice(&generation.to_be_bytes());
+        publication[112..144].copy_from_slice(digest.as_bytes());
+        assert!(publication_matches_rows(
+            &publication,
+            generation,
+            namespace,
+            digest
+        ));
+
+        publication[112] ^= 1;
+        assert!(!publication_matches_rows(
+            &publication,
+            generation,
+            namespace,
+            digest
+        ));
+        let mut malformed = bytes;
+        malformed[0] ^= 1;
+        assert!(catalog_rows_head(&malformed).is_none());
+    }
+
     #[test]
     fn manifest_pair_rejects_downgrade_and_fork_before_installation() {
         let manifest = manifest();
@@ -379,13 +459,28 @@ mod tests {
         publication[72..104].copy_from_slice(manifest.namespace_digest().as_bytes());
         publication[104..112].copy_from_slice(&manifest.generation().to_be_bytes());
         publication[112..144].copy_from_slice(manifest.digest().as_bytes());
-        assert!(publication_matches_manifest(&publication, &manifest));
+        assert!(publication_matches_rows(
+            &publication,
+            manifest.generation(),
+            manifest.namespace_digest(),
+            manifest.digest(),
+        ));
 
         publication[104..112].copy_from_slice(&1_u64.to_be_bytes());
-        assert!(!publication_matches_manifest(&publication, &manifest));
+        assert!(!publication_matches_rows(
+            &publication,
+            manifest.generation(),
+            manifest.namespace_digest(),
+            manifest.digest(),
+        ));
         publication[104..112].copy_from_slice(&manifest.generation().to_be_bytes());
         publication[112] ^= 1;
-        assert!(!publication_matches_manifest(&publication, &manifest));
+        assert!(!publication_matches_rows(
+            &publication,
+            manifest.generation(),
+            manifest.namespace_digest(),
+            manifest.digest(),
+        ));
     }
 
     #[test]

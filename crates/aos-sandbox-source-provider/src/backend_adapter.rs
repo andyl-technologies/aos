@@ -816,7 +816,7 @@ impl FixedProviderOwnerV1 {
         }
     }
 
-    /// Borrows a current publication and manifest for pre-effect LocalLive inspection.
+    /// Borrows a current publication and selected row set for pre-effect inspection.
     ///
     /// The bytes are not authority until each reservation independently
     /// verifies them against live custody and the protected Provider journal.
@@ -953,6 +953,44 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
             .inspect_storage_live_export_request(&signed)
             .map_err(map_transport_error)?;
         Ok(signed.digest())
+    }
+
+    /// Settles an original native attempt whose durable plan forbids dispatch.
+    ///
+    /// The returned protected record digests identify the original reservation
+    /// and its terminal acquisition, attempt, and holder session. None is a
+    /// signed Storage plan or SourceRoot.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a different pending recovery, changed native row, or any
+    /// attempt that could have reached a backend effect. Exact terminal replay
+    /// also works after the owner has rebuilt its recovery index.
+    pub fn settle_native_no_dispatch_recovery_for_query(
+        &mut self,
+        query: &RecoveryCurrentnessQueryV1,
+    ) -> Result<[ObjectDigest; 4], ProviderLedgerError> {
+        if let Some(recovery) = self.owner.pending_backend_recovery.first() {
+            if !matches!(
+                &recovery.work,
+                ProviderRecoveryWorkV1::ObserveApplying { acquisition_id, .. }
+                    if *acquisition_id == query.acquisition_id()
+            ) {
+                return Err(ProviderLedgerError::Unavailable);
+            }
+        }
+        let (publication, rows) = self
+            .current_catalog
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let (provider_id, holder_id) = query.authorities();
+        self.owner.settle_native_no_dispatch_recovery(
+            query.acquisition_id(),
+            provider_id,
+            holder_id,
+            query.original_signed_request_digest(),
+            publication,
+            rows,
+        )
     }
 
     fn retain_backend_recovery(
@@ -1537,6 +1575,18 @@ fn execute_disposition(
             // Storage's only current reply is descriptor-free Unavailable. An
             // inspection failure cannot promote the request to an effect.
             let _ = backend.inspect_storage_live_export_request(&signed);
+            ledger
+                .complete_acquire_disposition(
+                    permit,
+                    aos_sandbox_source_provider_protocol::SourceProviderStatus::Unavailable,
+                )
+                .map(PreparedFixedProviderBackendOutcomeV1::Reply)
+        }
+        ProviderAdmissionDispositionV1::Acquire(permit)
+            if current_catalog.is_some_and(|(_, rows)| rows.starts_with(b"AOSPCZ01")) =>
+        {
+            // A protected native row is only selection. No Storage receipt or
+            // SourceRoot descriptor is available to complete this attempt.
             ledger
                 .complete_acquire_disposition(
                     permit,

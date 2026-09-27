@@ -3,7 +3,8 @@
 //! Startup installs a signed catalog locator from a named systemd credential.
 //! The service retains the fixed authenticated owner and answers fresh catalog
 //! challenges. A selected LocalLive Acquire may reach authenticated Storage
-//! readback. Holder Inventory uses the fixed owner's durable admission and
+//! readback; a native selected Acquire remains unavailable. Holder Inventory
+//! uses the fixed owner's durable admission and
 //! reopens every active source before claiming completeness. A cold selected
 //! reservation retries only its original signed plan; production backend
 //! effects and SourceRoot descriptors remain unavailable.

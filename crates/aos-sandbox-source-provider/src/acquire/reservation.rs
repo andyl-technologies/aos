@@ -88,9 +88,7 @@ pub(crate) fn reserve_acquire(
         }
     };
     let normalized_intent = normalized_intent(&verified)?;
-    let selected_live_resource = if normalized_intent.kernel_coupled() {
-        let (canonical_publication, canonical_manifest) =
-            current_catalog.ok_or(ProviderLedgerError::Unavailable)?;
+    let selected_resource = if let Some((canonical_publication, canonical_rows)) = current_catalog {
         let configuration = security_session.revalidated_provider_configuration()?;
         let publication = aos_sandbox_source_provider_security::verify_catalog_publication(
             &configuration,
@@ -102,20 +100,37 @@ pub(crate) fn reserve_acquire(
             journal_snapshot,
             publication,
         )?;
-        let selected = current.select_manifest_row(
-            &ledger.journal,
-            canonical_manifest,
-            normalized_intent.binding_digest(),
-        )?;
-        let row = selected.selected();
-        if !selected.is_current(&ledger.journal)
-            || row.0.resource_namespace_digest() != projection.resource_namespace_digest()
-            || row.0.catalog_generation() != ledger.recovered.catalog.catalog_generation
-            || row.0.catalog_digest() != ledger.recovered.catalog.catalog_digest
+        let (resource, is_current) = if normalized_intent.kernel_coupled() {
+            let selected = current.select_manifest_row(
+                &ledger.journal,
+                canonical_rows,
+                normalized_intent.binding_digest(),
+            )?;
+            (
+                selected.selected().0.clone(),
+                selected.is_current(&ledger.journal),
+            )
+        } else {
+            let selected = current.select_held_snapshot_row(
+                &ledger.journal,
+                canonical_rows,
+                normalized_intent.binding_digest(),
+            )?;
+            (
+                selected.selected().0.clone(),
+                selected.is_current(&ledger.journal),
+            )
+        };
+        if !is_current
+            || resource.resource_namespace_digest() != projection.resource_namespace_digest()
+            || resource.catalog_generation() != ledger.recovered.catalog.catalog_generation
+            || resource.catalog_digest() != ledger.recovered.catalog.catalog_digest
         {
             return Err(ProviderLedgerError::ConfigurationMismatch);
         }
-        Some((row.0.clone(), row.1))
+        Some(resource)
+    } else if normalized_intent.kernel_coupled() {
+        return Err(ProviderLedgerError::Unavailable);
     } else {
         None
     };
@@ -190,11 +205,19 @@ pub(crate) fn reserve_acquire(
 
     let effect_id =
         derive_acquire_effect_id(request.acquisition_id(), attempt_evidence.attempt_digest())?;
-    let backend_id = derive_backend_plan_id(
-        normalized_intent.digest(),
-        ledger.recovered.catalog.catalog_generation,
-        ledger.recovered.catalog.catalog_digest,
-    );
+    let backend_id = if selected_resource.is_some() && !normalized_intent.kernel_coupled() {
+        derive_native_no_dispatch_id(
+            normalized_intent.digest(),
+            ledger.recovered.catalog.catalog_generation,
+            ledger.recovered.catalog.catalog_digest,
+        )
+    } else {
+        derive_backend_plan_id(
+            normalized_intent.digest(),
+            ledger.recovered.catalog.catalog_generation,
+            ledger.recovered.catalog.catalog_digest,
+        )
+    };
     let attempt = reserved_attempt(
         projection.provider_authority().clone(),
         projection.root_mount_authority().clone(),
@@ -262,25 +285,25 @@ pub(crate) fn reserve_acquire(
         lease_digest: None,
         lease_history: Vec::new(),
         resource_namespace_digest: projection.resource_namespace_digest(),
-        resource_id: selected_live_resource
+        resource_id: selected_resource
             .as_ref()
-            .map_or([0; 32], |(resource, _)| resource.resource_id()),
-        resource_generation: selected_live_resource
+            .map_or([0; 32], |resource| resource.resource_id()),
+        resource_generation: selected_resource
             .as_ref()
-            .map_or(0, |(resource, _)| resource.resource_generation()),
-        resource_digest: selected_live_resource
+            .map_or(0, |resource| resource.resource_generation()),
+        resource_digest: selected_resource
             .as_ref()
-            .map_or(ObjectDigest::from_bytes([0; 32]), |(resource, _)| {
+            .map_or(ObjectDigest::from_bytes([0; 32]), |resource| {
                 resource.resource_digest()
             }),
         catalog_generation: ledger.recovered.catalog.catalog_generation,
         catalog_digest: ledger.recovered.catalog.catalog_digest,
-        selection_generation: selected_live_resource
+        selection_generation: selected_resource
             .as_ref()
-            .map_or(0, |(resource, _)| resource.selection_generation()),
-        selection_digest: selected_live_resource
+            .map_or(0, |resource| resource.selection_generation()),
+        selection_digest: selected_resource
             .as_ref()
-            .map_or(ObjectDigest::from_bytes([0; 32]), |(resource, _)| {
+            .map_or(ObjectDigest::from_bytes([0; 32]), |resource| {
                 resource.selection_digest()
             }),
         proof_class: 0,

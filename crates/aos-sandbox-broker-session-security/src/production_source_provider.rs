@@ -4,8 +4,9 @@
 //! pathname. Each accepted child retains kernel record subjects and enters the
 //! existing fixed provider owner, which must finish its protected handshake
 //! before signing a current-head response, inspecting a selected LocalLive
-//! plan through Storage, or admitting holder Inventory. Backend effects remain
-//! closed.
+//! plan through Storage, or admitting holder Inventory. A protected native
+//! catalog can select an Applying attempt, but returns only Unavailable;
+//! backend effects remain closed.
 
 use std::fs::File;
 use std::io::Read as _;
@@ -20,7 +21,6 @@ use aos_sandbox_source_provider::{
     FixedProviderCatalogProgressV1, FixedProviderIngressProgressV1, FixedProviderOpenReportV1,
     FixedProviderOwnerStatusV1, FixedProviderOwnerV1, ProviderLedgerError,
 };
-use aos_sandbox_source_provider_protocol::ProviderCatalogManifestV1;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{FileType, Mode, OFlags, Stat, fstat, open, openat};
 
@@ -28,14 +28,15 @@ use crate::ProductionBrokerSessionActivationErrorV1;
 use crate::production_activation::{
     activation_names, remaining_duration, validate_activation_process,
 };
-use crate::production_source_provider_catalog::same_stable_metadata;
+use crate::production_source_provider_catalog::{
+    MAXIMUM_CATALOG_ROWS_BYTES, catalog_rows_head, same_stable_metadata,
+};
 
 const LISTENER_NAME: &str = "aos-source-provider";
 const LISTENER_PATH: &str = "/run/aos/source-provider/control.sock";
 const STATE_ROOT: &str = "/var/lib/aos/source-provider";
 const CATALOG_PUBLICATION: &str = "current-catalog-publication";
 const CATALOG_PUBLICATION_BYTES: usize = 520;
-const MAXIMUM_CATALOG_MANIFEST_BYTES: usize = 54 + 64 * 232;
 
 /// Reports failure before a SourceProvider owner becomes authenticated.
 #[derive(Debug, thiserror::Error)]
@@ -210,7 +211,7 @@ impl ProductionSourceProviderIngressV1 {
             .map_err(Into::into)
     }
 
-    /// Reads the content-addressed row manifest under the protected fixed root.
+    /// Reads the content-addressed row catalog under the protected fixed root.
     ///
     /// The returned bytes are nonauthorizing. The fixed owner must compare the
     /// canonical digest and row against its signed publication and journal
@@ -218,7 +219,7 @@ impl ProductionSourceProviderIngressV1 {
     ///
     /// # Errors
     ///
-    /// Rejects a missing, replaced, public, malformed, or forked manifest.
+    /// Rejects missing, replaced, public, malformed, or forked catalog rows.
     pub fn read_current_catalog_manifest(
         &self,
     ) -> Result<(Vec<u8>, Vec<u8>), ProductionSourceProviderIngressErrorV1> {
@@ -229,12 +230,13 @@ impl ProductionSourceProviderIngressV1 {
                 |_| ProductionSourceProviderIngressErrorV1::Catalog("publication digest"),
             )?);
         let name = crate::production_source_provider_catalog::manifest_filename(digest);
-        let manifest_bytes = read_protected_catalog_file(&name, MAXIMUM_CATALOG_MANIFEST_BYTES)?;
-        let manifest = ProviderCatalogManifestV1::from_canonical_bytes(&manifest_bytes)
-            .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("manifest format"))?;
-        if manifest.digest() != digest
-            || publication[72..104] != *manifest.namespace_digest().as_bytes()
-            || publication[104..112] != manifest.generation().to_be_bytes()
+        let manifest_bytes = read_protected_catalog_file(&name, MAXIMUM_CATALOG_ROWS_BYTES)?;
+        let (generation, namespace, rows_digest) = catalog_rows_head(&manifest_bytes).ok_or(
+            ProductionSourceProviderIngressErrorV1::Catalog("catalog rows format"),
+        )?;
+        if rows_digest != digest
+            || publication[72..104] != *namespace.as_bytes()
+            || publication[104..112] != generation.to_be_bytes()
         {
             return Err(ProductionSourceProviderIngressErrorV1::Catalog(
                 "manifest does not match publication",
