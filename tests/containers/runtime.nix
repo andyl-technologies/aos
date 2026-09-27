@@ -347,8 +347,9 @@ in
           test ! -e production-facade/usr/bin/.aos-unwrapped
           test ! -e production-facade/usr/bin/.apm-unwrapped
           test ! -e production-facade/usr/bin/.apr-unwrapped
-          test "$(readlink production-facade/usr/bin/kill)" = ${pkgs.util-linux}/bin/kill \
-            || fail "production facade changed the reviewed kill provider"
+          jq -r '.packageRoots[]' ${productionFacade}/facade.json > facade-baked-roots
+          cmp expected-production-baked-roots facade-baked-roots \
+            || fail "production facade uses different package roots"
           jq -e '
               .expectedCollisions == []
               and .collisions == []
