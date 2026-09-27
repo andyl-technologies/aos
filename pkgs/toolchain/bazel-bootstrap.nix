@@ -92,6 +92,12 @@
       includeModernLibraries = true;
     };
   };
+  grpcNettyRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelGrpcNetty;
+  };
+  asyncProfilerMavenRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelAsyncProfilerJar;
+  };
   googleHttpRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelGoogleHttp;
   };
@@ -194,6 +200,8 @@ in
     passthru.offlineNettyNativeRepositories = helperScope.bazelNetty119NativeRepositories;
     passthru.offlineCommonProtos = helperScope.bazelCommonProtos241;
     passthru.offlineMavenSourceRepositories = mavenSourceRepositories;
+    passthru.offlineGrpcNettyRepositories = grpcNettyRepositories;
+    passthru.offlineAsyncProfilerMavenRepositories = asyncProfilerMavenRepositories;
     passthru.offlineGoogleHttpRepositories = googleHttpRepositories;
     passthru.offlineTomcatAnnotationRepositories = tomcatAnnotationRepositories;
     passthru.offlineGoogleAuthRepositories = googleAuthRepositories;
@@ -210,6 +218,8 @@ in
     passthru.offlineNettyTcnative2061NativeRepositories = helperScope.bazelNettyTcnative2061Repositories;
     passthru.offlineRepositories =
       mavenSourceRepositories
+      // grpcNettyRepositories
+      // asyncProfilerMavenRepositories
       // googleHttpRepositories
       // tomcatAnnotationRepositories
       // googleAuthRepositories
