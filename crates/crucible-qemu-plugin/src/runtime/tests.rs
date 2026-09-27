@@ -19,13 +19,13 @@ mod support;
 use support::*;
 
 #[test]
-fn eventfd_identity_token_accepts_kernel_zero_and_rejects_overflow() {
+fn eventfd_identity_token_accepts_kernel_zero_and_rejects_overflow() -> std::io::Result<()> {
     assert_eq!(
-        hot_fork_eventfd_identity_token_from_fdinfo("eventfd-id: 0\n").unwrap(),
+        hot_fork_eventfd_identity_token_from_fdinfo("eventfd-id: 0\n")?,
         1
     );
     assert_eq!(
-        hot_fork_eventfd_identity_token_from_fdinfo("eventfd-id: 7\n").unwrap(),
+        hot_fork_eventfd_identity_token_from_fdinfo("eventfd-id: 7\n")?,
         8
     );
     assert!(
@@ -33,6 +33,7 @@ fn eventfd_identity_token_accepts_kernel_zero_and_rejects_overflow() {
     );
     assert!(hot_fork_eventfd_identity_token_from_fdinfo("eventfd-id: 0\neventfd-id: 1\n").is_err());
     assert!(hot_fork_eventfd_identity_token_from_fdinfo("eventfd-count: 0\n").is_err());
+    Ok(())
 }
 
 mod coverage_cases;
