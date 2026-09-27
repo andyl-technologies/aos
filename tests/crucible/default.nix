@@ -437,6 +437,7 @@ in rec {
     qemuAarch64DetIpiAdapter = import ./phase2-qemu-aarch64-det-ipi-adapter.nix {inherit pkgs lib;};
     qemuVcpuIntrospect = import ./phase2-qemu-vcpu-introspect.nix {inherit pkgs lib;};
     qemuPreemptionInject = import ./phase2-qemu-preemption-inject.nix {inherit pkgs lib;};
+    qemuExactPreemptionLive = import ./phase2-qemu-exact-preemption-live.nix {inherit pkgs;};
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
     qemuNodeFactory = import ./phase2-qemu-node-factory.nix {inherit pkgs lib;};
     qemuNodeWrapper = import ./phase2-qemu-node-wrapper.nix {inherit pkgs lib;};

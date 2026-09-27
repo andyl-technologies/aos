@@ -1,7 +1,7 @@
 //! Logical preemption projection for the live sim-loop ceiling callback.
 //!
-//! The callback converts scheduler-owned logical ticks to raw retired
-//! instructions before injecting and acknowledging a pending mailbox command.
+//! The callback passes scheduler-owned logical ticks directly to QEMU's exact
+//! preemption API before acknowledging a pending mailbox command.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -106,24 +106,23 @@ impl LiveVcpuTimeCallbackState {
             return Ok(raw_ceiling);
         };
         let command = published.command;
-        let raw_at = logical_preemption_icount_to_raw("at", command.at_tick, offset)?;
-        let raw_deadline = logical_preemption_deadline_to_raw(command.deadline_tick, offset)?;
-        let raw_command_ceiling = logical_preemption_ceiling_to_raw(command.ceiling_tick, offset)?;
-        if raw_command_ceiling > raw_ceiling {
+        if command.ceiling_tick > effective_ceiling {
             // The mailbox is published before the RUN that owns it. Keep the
             // command pending until that RUN's ceiling is visible, then inject
             // it before QEMU may retire past the commanded coordinate.
             return Ok(raw_ceiling);
         }
-        let window =
-            PreemptionWindow::new(raw_deadline, SchedulerCeiling::new(raw_command_ceiling))
-                .map_err(|source| LiveVcpuTimeCallbackError::Preemption { source })?;
+        let window = PreemptionWindow::new(
+            command.deadline_tick,
+            SchedulerCeiling::new(command.ceiling_tick),
+        )
+        .map_err(|source| LiveVcpuTimeCallbackError::Preemption { source })?;
         let decision = match command.kind {
             SchedulerPreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
-                PluginPreemptionDecision::vcpu_switch(raw_at, from_vcpu, to_vcpu)
+                PluginPreemptionDecision::vcpu_switch(command.at_tick, from_vcpu, to_vcpu)
             }
             SchedulerPreemptionKind::InterruptAt { target_vcpu, irq } => {
-                PluginPreemptionDecision::interrupt_at(raw_at, target_vcpu, irq)
+                PluginPreemptionDecision::interrupt_at(command.at_tick, target_vcpu, irq)
             }
         };
         self.preemption_injector
@@ -133,57 +132,8 @@ impl LiveVcpuTimeCallbackState {
             .get()
             .acknowledge_preemption_command(published.sequence)
             .map_err(|source| LiveVcpuTimeCallbackError::PreemptionMailbox { source })?;
-        Ok(raw_ceiling.min(raw_at))
+        // A fractional command is enforced by QEMU's exact boundary. The raw
+        // budget must retain the scheduler grant, not round the command down.
+        Ok(raw_ceiling)
     }
-}
-
-fn logical_preemption_icount_to_raw(
-    field: &'static str,
-    logical_icount: u64,
-    logical_icount_offset: u64,
-) -> Result<u64, LiveVcpuTimeCallbackError> {
-    let raw_tick = preemption_tick_since_raw_origin(field, logical_icount, logical_icount_offset)?;
-    if !raw_tick.is_multiple_of(crucible_shmem::TICKS_PER_INSTRUCTION) {
-        return Err(
-            LiveVcpuTimeCallbackError::PreemptionIcountBetweenRetirements {
-                field,
-                logical_icount,
-            },
-        );
-    }
-    Ok(raw_tick / crucible_shmem::TICKS_PER_INSTRUCTION)
-}
-
-pub(super) fn logical_preemption_deadline_to_raw(
-    logical_icount: u64,
-    logical_icount_offset: u64,
-) -> Result<u64, LiveVcpuTimeCallbackError> {
-    let raw_tick =
-        preemption_tick_since_raw_origin("deadline", logical_icount, logical_icount_offset)?;
-    // Rounding the lower bound up cannot authorize an earlier preemption.
-    Ok(raw_tick.div_ceil(crucible_shmem::TICKS_PER_INSTRUCTION))
-}
-
-pub(super) fn logical_preemption_ceiling_to_raw(
-    logical_icount: u64,
-    logical_icount_offset: u64,
-) -> Result<u64, LiveVcpuTimeCallbackError> {
-    let raw_tick =
-        preemption_tick_since_raw_origin("ceiling", logical_icount, logical_icount_offset)?;
-    // Rounding the upper bound down cannot pass the scheduler's RUN ceiling.
-    Ok(raw_tick / crucible_shmem::TICKS_PER_INSTRUCTION)
-}
-
-fn preemption_tick_since_raw_origin(
-    field: &'static str,
-    logical_icount: u64,
-    logical_icount_offset: u64,
-) -> Result<u64, LiveVcpuTimeCallbackError> {
-    logical_icount.checked_sub(logical_icount_offset).ok_or(
-        LiveVcpuTimeCallbackError::PreemptionIcountBeforeRawOrigin {
-            field,
-            logical_icount,
-            logical_icount_offset,
-        },
-    )
 }

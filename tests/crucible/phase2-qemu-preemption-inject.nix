@@ -13,7 +13,8 @@
   pluginPackage = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
   qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   defaultChecks = builtins.readFile ./default.nix;
-  microtestSource = builtins.readFile ./phase2-qemu-preemption-inject.c;
+  livePluginSource = builtins.readFile ./phase2-qemu-exact-preemption-plugin.c;
+  exactLive = import ./phase2-qemu-exact-preemption-live.nix {inherit pkgs qemuPackage;};
   taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -67,20 +68,20 @@
         needle = "crucible_sim_shmem_logical_ceiling()";
       }
       {
-        label = "raw window rejection";
+        label = "exact-tick window rejection";
         needle = "at_tick < deadline_tick";
       }
       {
-        label = "raw current rejection";
-        needle = "at_tick < (uint64_t)current_raw";
+        label = "exact-tick current rejection";
+        needle = "at_tick < (uint64_t)current_tick";
       }
       {
-        label = "raw retired-instruction observation";
-        needle = "icount_get_raw_observed()";
+        label = "exact logical-tick observation";
+        needle = "icount_crucible_sim_tick_observed()";
       }
       {
-        label = "dynamic logical deadline projection";
-        needle = "crucible_sim_preemption_next_logical_tick";
+        label = "exact preemption deadline";
+        needle = "crucible_sim_preemption_next_tick";
       }
       {
         label = "single pending command";
@@ -100,33 +101,21 @@
       }
       {
         label = "missed command fails loud";
-        needle = "Crucible preemption missed commanded raw icount";
+        needle = "crucible preemption missed commanded tick";
       }
     ]
-    ++ failuresFor "tests/crucible/phase2-qemu-preemption-inject.c" microtestSource [
+    ++ failuresFor "tests/crucible/phase2-qemu-exact-preemption-plugin.c" livePluginSource [
       {
-        label = "switch cross-run assertion";
-        needle = "vcpu_switch_cross_run_icount_match=true";
+        label = "fractional exact preemption command";
+        needle = "qemu_plugin_inject_preemption(10, 10, 10";
       }
       {
-        label = "interrupt cross-run assertion";
-        needle = "interrupt_cross_run_icount_match=true";
+        label = "pending command snapshot at tick seven";
+        needle = "qemu_plugin_request_vmstop()";
       }
       {
-        label = "out-of-window assertion";
-        needle = "out_of_window_rejected_distinctly=true";
-      }
-      {
-        label = "before-deadline assertion";
-        needle = "before_deadline_rejected_distinctly=true";
-      }
-      {
-        label = "budget clamp assertion";
-        needle = "preemption_budget_clamped_to_commanded_icount=true";
-      }
-      {
-        label = "stock negative assertion";
-        needle = "stock_negative_control=true";
+        label = "zero-retirement handoff";
+        needle = "tick == 10 && retired == 0";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -144,8 +133,8 @@ in
       version = "0";
       src = null;
 
-      inherit microtestSource patchSource;
-      passAsFile = ["microtestSource" "patchSource"];
+      inherit patchSource;
+      passAsFile = ["patchSource"];
 
       # qemuPackage / referenceQemu are consumed only via explicit paths
       # (`${qemuPackage.src}` for the patched-source positive build and
@@ -226,17 +215,20 @@ in
               -c patched-preemption-positive.c \
               -o patched-preemption-positive.o
 
-            cp "$microtestSourcePath" phase2-qemu-preemption-inject.c
-            cc -std=c11 -O2 -Wall -Wextra -Werror \
-              phase2-qemu-preemption-inject.c \
-              -o phase2-qemu-preemption-inject
-
             mkdir -p "$out"
-            ./phase2-qemu-preemption-inject > "$out/result"
+            cp ${exactLive}/result "$out/result"
+            chmod u+w "$out/result"
             cat >> "$out/result" <<RESULT
             check=${attrPath}
             tasks=${taskList}
             gate=gate:patch-microtests
+            formal_preemption_export=qemu_plugin_inject_preemption
+            vcpu_switch_exact_tick=true
+            pending_command_migration=true
+            invalid_commands_rejected=true
+            commanded_interrupt_delivered_as_apic_fixed_vector=true
+            zero_retirement=true
+            stock_negative_control=true
             gate=gate:layer1-injection
             gate=gate:layer0-determinism
             gate=gate:qemu-inert
@@ -249,20 +241,13 @@ in
             stock_negative_control_symbols_absent=true
             RESULT
 
-            grep -q '^PASS$' "$out/result"
+            grep -q '^PASS exact preemption at 10 ps with raw 0, restored pending command, and LAPIC interrupt$' "$out/result"
             grep -q '^formal_preemption_export=qemu_plugin_inject_preemption$' "$out/result"
-            grep -q '^vcpu_switch_cross_run_icount_match=true$' "$out/result"
-            grep -q '^interrupt_cross_run_icount_match=true$' "$out/result"
-            grep -q '^out_of_window_rejected_distinctly=true$' "$out/result"
-            grep -q '^before_deadline_rejected_distinctly=true$' "$out/result"
-            grep -q '^past_icount_rejected_distinctly=true$' "$out/result"
-            grep -q '^invalid_window_rejected_distinctly=true$' "$out/result"
-            grep -q '^duplicate_pending_rejected_distinctly=true$' "$out/result"
-            grep -q '^invalid_kind_rejected_distinctly=true$' "$out/result"
-            grep -q '^preemption_budget_clamped_to_commanded_icount=true$' "$out/result"
-            grep -q '^preemption_no_clamp_no_defer_on_invalid_window=true$' "$out/result"
+            grep -q '^vcpu_switch_exact_tick=true$' "$out/result"
+            grep -q '^pending_command_migration=true$' "$out/result"
+            grep -q '^invalid_commands_rejected=true$' "$out/result"
             grep -q '^commanded_interrupt_delivered_as_apic_fixed_vector=true$' "$out/result"
-            grep -q '^patched_fixture_exercised=true$' "$out/result"
+            grep -q '^zero_retirement=true$' "$out/result"
             grep -q '^stock_negative_control=true$' "$out/result"
             grep -q '^real_qemu_patch_apply_clean=true$' "$out/result"
             grep -q '^patched_header_positive_control=true$' "$out/result"
