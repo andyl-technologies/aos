@@ -32,6 +32,21 @@ impl QemuRuntimeDeterminismTraceRecord {
             Self::Timer(record) => record.raw_icount,
         }
     }
+
+    /// Returns the canonical row with its process-local sequence set to zero.
+    #[must_use]
+    pub fn normalized_canonical_row(self) -> String {
+        match self {
+            Self::Idle(mut record) => {
+                record.sequence = 0;
+                canonical_idle(record)
+            }
+            Self::Timer(mut record) => {
+                record.sequence = 0;
+                canonical_timer(record)
+            }
+        }
+    }
 }
 
 /// Phase of one plugin-owned idle-time advance.
@@ -157,6 +172,83 @@ pub enum QemuRuntimeDeterminismTraceError {
     },
 }
 
+/// Validates a runtime trace one canonical row at a time without retaining it.
+#[derive(Debug, Default)]
+pub struct QemuRuntimeDeterminismTraceValidator {
+    previous_sequence: Option<u64>,
+    pending_idle_target: Option<i64>,
+    rows: usize,
+}
+
+impl QemuRuntimeDeterminismTraceValidator {
+    /// Decodes the next complete row and checks global sequence and idle pairing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuRuntimeDeterminismTraceError`] for a malformed row,
+    /// noncontiguous sequence, or invalid idle transition.
+    pub fn push_row(
+        &mut self,
+        row: &str,
+    ) -> Result<QemuRuntimeDeterminismTraceRecord, QemuRuntimeDeterminismTraceError> {
+        let line = self.rows + 1;
+        let record = parse_row(line, row)?;
+        let current = record.sequence();
+        let follows = self
+            .previous_sequence
+            .map_or(current == 1, |prior| prior.checked_add(1) == Some(current));
+        if !follows {
+            return Err(QemuRuntimeDeterminismTraceError::NonContiguousSequence {
+                line,
+                previous: self.previous_sequence.unwrap_or(0),
+                current,
+            });
+        }
+
+        if let QemuRuntimeDeterminismTraceRecord::Idle(idle) = record {
+            self.pending_idle_target = match (self.pending_idle_target, idle.phase) {
+                (None, QemuRuntimeDeterminismIdlePhase::Request) => Some(idle.target_tick),
+                (Some(target), QemuRuntimeDeterminismIdlePhase::Complete)
+                    if idle.target_tick == target =>
+                {
+                    None
+                }
+                _ => {
+                    return Err(QemuRuntimeDeterminismTraceError::InvalidIdleSequence { line });
+                }
+            };
+        }
+
+        self.previous_sequence = Some(current);
+        self.rows = line;
+        Ok(record)
+    }
+
+    /// Confirms that the trace contains rows and has no incomplete idle pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuRuntimeDeterminismTraceError`] for an empty trace or an
+    /// unmatched idle request.
+    pub fn finish(&self) -> Result<(), QemuRuntimeDeterminismTraceError> {
+        if self.rows == 0 {
+            return Err(QemuRuntimeDeterminismTraceError::Unterminated);
+        }
+        if self.pending_idle_target.is_some() {
+            return Err(QemuRuntimeDeterminismTraceError::InvalidIdleSequence {
+                line: self.rows + 1,
+            });
+        }
+        Ok(())
+    }
+
+    /// Returns the number of validated rows.
+    #[must_use]
+    pub const fn rows(&self) -> usize {
+        self.rows
+    }
+}
+
 /// Decodes a complete fixed runtime-determinism trace.
 ///
 /// # Errors
@@ -171,59 +263,13 @@ pub fn parse_qemu_runtime_determinism_trace(
         return Err(QemuRuntimeDeterminismTraceError::Unterminated);
     }
 
-    let mut previous: Option<u64> = None;
+    let mut validator = QemuRuntimeDeterminismTraceValidator::default();
     let records = trace
         .split_terminator('\n')
-        .enumerate()
-        .map(|(index, row)| {
-            let line = index + 1;
-            let record = parse_row(line, row)?;
-            let current = record.sequence();
-            let follows =
-                previous.map_or(current == 1, |prior| prior.checked_add(1) == Some(current));
-            if !follows {
-                return Err(QemuRuntimeDeterminismTraceError::NonContiguousSequence {
-                    line,
-                    previous: previous.unwrap_or(0),
-                    current,
-                });
-            }
-            previous = Some(current);
-            Ok(record)
-        })
+        .map(|row| validator.push_row(row))
         .collect::<Result<Vec<_>, _>>()?;
-    validate_idle_sequences(&records)?;
+    validator.finish()?;
     Ok(records)
-}
-
-fn validate_idle_sequences(
-    records: &[QemuRuntimeDeterminismTraceRecord],
-) -> Result<(), QemuRuntimeDeterminismTraceError> {
-    let mut pending = None;
-    for (index, record) in records.iter().enumerate() {
-        let QemuRuntimeDeterminismTraceRecord::Idle(record) = record else {
-            continue;
-        };
-        pending = match (pending, record.phase) {
-            (None, QemuRuntimeDeterminismIdlePhase::Request) => Some(record.target_tick),
-            (Some(target), QemuRuntimeDeterminismIdlePhase::Complete)
-                if record.target_tick == target =>
-            {
-                None
-            }
-            _ => {
-                return Err(QemuRuntimeDeterminismTraceError::InvalidIdleSequence {
-                    line: index + 1,
-                });
-            }
-        };
-    }
-    if pending.is_some() {
-        return Err(QemuRuntimeDeterminismTraceError::InvalidIdleSequence {
-            line: records.len() + 1,
-        });
-    }
-    Ok(())
 }
 
 fn parse_row(

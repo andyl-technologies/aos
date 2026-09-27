@@ -77,5 +77,6 @@ pub use runtime_determinism_trace::{
     QemuRuntimeDeterminismIdlePhase, QemuRuntimeDeterminismIdleRecord,
     QemuRuntimeDeterminismTimerOwner, QemuRuntimeDeterminismTimerRecord,
     QemuRuntimeDeterminismTimerScope, QemuRuntimeDeterminismTraceError,
-    QemuRuntimeDeterminismTraceRecord, parse_qemu_runtime_determinism_trace,
+    QemuRuntimeDeterminismTraceRecord, QemuRuntimeDeterminismTraceValidator,
+    parse_qemu_runtime_determinism_trace,
 };

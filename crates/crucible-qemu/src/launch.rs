@@ -95,6 +95,7 @@ pub(crate) const QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION: &str =
 pub(crate) const QEMU_RUNTIME_LIVENESS_TRACE_SELECTION: &str = "enable=*qmp*";
 pub(crate) const MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES: u64 = 32 * 1024 * 1024;
 pub(crate) const MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES: usize = 131_072;
+pub(crate) const MAXIMUM_STREAMED_RUNTIME_DETERMINISM_TRACE_BYTES: u64 = 256 * 1024 * 1024;
 /// Stable QEMU chardev identifier for fork-time debug guest activation.
 pub const QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID: &str = "crucible-debug-activation";
 /// Stable run-directory socket used to inject the fork-time activation token.
@@ -601,6 +602,7 @@ pub struct QemuLaunchCommandBuilder {
     debug_guest_activation_endpoint: bool,
     rr_control_boundary_trace: bool,
     runtime_determinism_trace: bool,
+    runtime_determinism_trace_budget_bytes: u64,
     runtime_liveness_trace: bool,
 }
 
@@ -628,6 +630,7 @@ impl QemuLaunchCommandBuilder {
             debug_guest_activation_endpoint: false,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
+            runtime_determinism_trace_budget_bytes: MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES,
             runtime_liveness_trace: false,
         }
     }
@@ -736,6 +739,13 @@ impl QemuLaunchCommandBuilder {
         self
     }
 
+    /// Admits a fixed, caller-selected runtime trace ceiling before launch.
+    #[must_use]
+    pub(crate) const fn with_runtime_determinism_trace_budget(mut self, bytes: u64) -> Self {
+        self.runtime_determinism_trace_budget_bytes = bytes;
+        self
+    }
+
     /// Enables the fixed QMP monitor trace in the launch directory.
     ///
     /// The monitor receive, queue, dispatch, and response events distinguish
@@ -837,7 +847,10 @@ impl QemuLaunchCommandBuilder {
         if self.rr_control_boundary_trace {
             resource_requirements = resource_requirements
                 .with_diagnostic_trace_bytes(MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES);
-        } else if self.runtime_determinism_trace || self.runtime_liveness_trace {
+        } else if self.runtime_determinism_trace {
+            resource_requirements = resource_requirements
+                .with_diagnostic_trace_bytes(self.runtime_determinism_trace_budget_bytes);
+        } else if self.runtime_liveness_trace {
             resource_requirements = resource_requirements
                 .with_diagnostic_trace_bytes(MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES);
         }

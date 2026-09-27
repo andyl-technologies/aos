@@ -145,6 +145,37 @@ fn runtime_trace_capacity_is_present_in_pre_directory_admission() {
 }
 
 #[test]
+fn runtime_trace_budget_rejects_unbounded_or_empty_admission()
+-> Result<(), QemuLiveNodeStepGateError> {
+    let config = QemuLiveNodeStepGateConfig::new(
+        "/aos/bin/qemu-system-x86_64",
+        "/aos/lib/crucible-plugin.so",
+        "/aos/kernel",
+        "/aos/firmware",
+        "/run/crucible",
+    )
+    .with_runtime_determinism_trace();
+    let maximum = crate::launch::MAXIMUM_STREAMED_RUNTIME_DETERMINISM_TRACE_BYTES;
+
+    assert!(matches!(
+        config.clone().with_runtime_determinism_trace_budget(0),
+        Err(QemuLiveNodeStepGateError::InvalidRuntimeTraceBudget { requested: 0, .. })
+    ));
+    assert!(matches!(
+        config
+            .clone()
+            .with_runtime_determinism_trace_budget(u64::MAX),
+        Err(QemuLiveNodeStepGateError::InvalidRuntimeTraceBudget {
+            requested: u64::MAX,
+            ..
+        })
+    ));
+    let admitted = config.with_runtime_determinism_trace_budget(maximum)?;
+    assert_eq!(admitted.runtime_determinism_trace_budget_bytes, maximum);
+    Ok(())
+}
+
+#[test]
 fn coverage_switch_reaches_plugin_and_host_drain_configuration() {
     let config = QemuLiveNodeStepGateConfig::new_with_root_image(
         "/aos/bin/qemu-system-x86_64",
