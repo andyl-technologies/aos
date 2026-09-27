@@ -1545,11 +1545,20 @@ in
       pname = "crucible-phase1-harness-lint";
       version = "0";
       src = null;
+      # Use Nix's realized graph because the sandbox has no store database.
+      outputChecks =
+        if campaignComposition == null
+        then null
+        else {out = {};};
+      exportReferencesGraph =
+        if campaignComposition == null
+        then []
+        else {campaign = [campaignToplevel];};
 
       buildDeps =
         [pkgs.coreutils pkgs.crucible]
         ++ dependencies
-        ++ lib.optionals (campaignComposition != null) [pkgs.nix campaignToplevel];
+        ++ lib.optionals (campaignComposition != null) [pkgs.jq campaignToplevel];
 
       phases =
         [
@@ -1584,8 +1593,10 @@ in
             set -eu
             test ${lib.escapeShellArg campaignMode} = enabled \
               -o ${lib.escapeShellArg campaignMode} = disabled
-            nix-store --query --requisites ${campaignToplevel} \
+            jq -e -r '.campaign[].path' "$NIX_ATTRS_JSON_FILE" \
               > "$out/campaign-system-closure"
+            sort -u "$out/campaign-system-closure" \
+              -o "$out/campaign-system-closure"
             grep -Fxq ${lib.escapeShellArg (toString campaignToplevel)} \
               "$out/campaign-system-closure"
             if test ${lib.escapeShellArg campaignMode} = enabled; then
