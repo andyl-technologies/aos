@@ -380,6 +380,15 @@ in
       LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
       runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
+      # Use Nix's realized graph because the sandbox has no store database.
+      outputChecks =
+        if campaignComposition == null
+        then null
+        else {out = {};};
+      exportReferencesGraph =
+        if campaignComposition == null
+        then []
+        else {campaign = [campaignToplevel];};
 
       buildDeps =
         [
@@ -391,7 +400,7 @@ in
           pkgs.sqlite
         ]
         ++ dependencies
-        ++ lib.optionals (campaignComposition != null) [pkgs.nix campaignToplevel];
+        ++ lib.optionals (campaignComposition != null) [pkgs.jq campaignToplevel];
 
       phases =
         [
@@ -615,8 +624,10 @@ in
             set -eu
             test ${lib.escapeShellArg campaignMode} = enabled \
               -o ${lib.escapeShellArg campaignMode} = disabled
-            nix-store --query --requisites ${campaignToplevel} \
+            jq -e -r '.campaign[].path' "$NIX_ATTRS_JSON_FILE" \
               > "$out/campaign-system-closure"
+            sort -u "$out/campaign-system-closure" \
+              -o "$out/campaign-system-closure"
             grep -Fxq ${lib.escapeShellArg (toString campaignToplevel)} \
               "$out/campaign-system-closure"
             if test ${lib.escapeShellArg campaignMode} = enabled; then
