@@ -437,6 +437,45 @@ impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
             let mut run_directories = self.run_directories.lock().map_err(|_| {
                 launcher_message("QEMU generation run-directory registry is poisoned")
             })?;
+            if std::env::var_os("CRUCIBLE_RR_CLAMP_TAIL").is_some() {
+                let identity = self.inner.identity();
+                let trace = run_directories
+                    .get(identity)
+                    .ok_or_else(|| {
+                        launcher_message(
+                            "QEMU generation lost its retained run-directory authority",
+                        )
+                    })?
+                    .summarize_rr_control_boundary_trace_after_reap();
+                match trace {
+                    Ok(summary) => {
+                        for (index, row) in summary.lines().enumerate() {
+                            if index == 0 {
+                                // crucible-lint: allow direct-diagnostic -- record the authenticated full-file digest and row count.
+                                eprintln!(
+                                    "CRUCIBLE-RR-CLAMP-TAIL-V2 node={} generation={} authenticated_full=true {row}",
+                                    identity.node().name,
+                                    identity.generation(),
+                                );
+                            } else {
+                                // crucible-lint: allow direct-diagnostic -- retain only the last 32 parsed control rows per node.
+                                eprintln!(
+                                    "CRUCIBLE-RR-CLAMP-ROW-V2 node={} {row}",
+                                    identity.node().name
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        // crucible-lint: allow direct-diagnostic -- a failed trace admission must remain visible.
+                        eprintln!(
+                            "CRUCIBLE-RR-CLAMP-TAIL-V2 node={} generation={} error={error}",
+                            identity.node().name,
+                            identity.generation()
+                        );
+                    }
+                }
+            }
             if run_directories.remove(self.inner.identity()).is_none() {
                 return Err(launcher_message(
                     "QEMU generation lost its retained run-directory authority",

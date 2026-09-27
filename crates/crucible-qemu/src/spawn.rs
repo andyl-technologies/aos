@@ -716,6 +716,16 @@ pub enum QemuSpawnError {
         /// Fixed maximum newline count.
         maximum: usize,
     },
+    /// A streamed diagnostic trace contained an invalid complete row.
+    #[error("diagnostic trace `{file}` row {line} is malformed: {reason}")]
+    DiagnosticTraceMalformed {
+        /// Fixed trace file name.
+        file: &'static str,
+        /// One-based row number.
+        line: usize,
+        /// Failed row invariant.
+        reason: &'static str,
+    },
     /// The fixed trace and launch artifacts exceeded aggregate storage admission.
     #[error(
         "diagnostic trace `{file}` uses {trace_bytes} bytes outside aggregate writable maximum {maximum}"

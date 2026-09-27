@@ -1114,6 +1114,7 @@ pub(super) fn start_packaged_network_service(
     };
     let mut invocation = fixture.service_command(None);
     invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "256");
+    invocation.env("CRUCIBLE_RR_CLAMP_TAIL", "1");
     invocation
         .arg("--qemu")
         .arg(required_path("CRUCIBLE_FLIGHT_QEMU")?)
