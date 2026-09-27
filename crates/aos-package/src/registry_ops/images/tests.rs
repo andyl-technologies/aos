@@ -150,50 +150,58 @@ fn image_publisher_binds_exact_disk_and_metadata_bytes() {
 
 #[test]
 fn image_publisher_accepts_only_exact_target_platform_metadata() {
-    let accepted = TempDir::new().unwrap();
+    let temp = TempDir::new().unwrap();
     let store = write_direct_image_output(
-        accepted.path(),
+        temp.path(),
         "qcow2",
         serde_json::json!(["qemu-kvm", "openstack"]),
     );
+    let (disk_store, info_store) = write_test_image_projections(&store).unwrap();
+    let uki_path = temp.path().join("uki-output/aos-test.efi");
     let support = Path::new(&store.path).join("nix-support");
     fs::create_dir(&support).unwrap();
+
+    // Only the derivation metadata changes between cases. Reuse the same disk
+    // projections while exercising the complete publisher entrypoint each time.
+    let inspect = || {
+        inspect_published_image_with(
+            "qcow2",
+            store.clone(),
+            disk_store.clone(),
+            info_store.clone(),
+            &uki_path,
+            "test",
+            "2026.08",
+            "x86_64-linux",
+            None,
+            |_uki, _db_cert| Ok(SbFacts::default()),
+        )
+    };
+
     fs::write(support.join("aos-target-platform"), "x86_64-linux\n").unwrap();
-    inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").unwrap();
+    assert!(inspect().is_ok());
 
-    let wrong = TempDir::new().unwrap();
-    let store = write_direct_image_output(
-        wrong.path(),
-        "qcow2",
-        serde_json::json!(["qemu-kvm", "openstack"]),
-    );
-    let support = Path::new(&store.path).join("nix-support");
-    fs::create_dir(&support).unwrap();
     fs::write(support.join("aos-target-platform"), "aarch64-linux\n").unwrap();
-    assert!(inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").is_err());
-
-    let extra = TempDir::new().unwrap();
-    let store = write_direct_image_output(
-        extra.path(),
-        "qcow2",
-        serde_json::json!(["qemu-kvm", "openstack"]),
+    let error = inspect().err().unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("disagrees with published platform")
     );
-    let support = Path::new(&store.path).join("nix-support");
-    fs::create_dir(&support).unwrap();
+
     fs::write(support.join("aos-target-platform"), "x86_64-linux\n").unwrap();
     fs::write(support.join("unexpected"), "metadata\n").unwrap();
-    assert!(inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").is_err());
-
-    let oversized = TempDir::new().unwrap();
-    let store = write_direct_image_output(
-        oversized.path(),
-        "qcow2",
-        serde_json::json!(["qemu-kvm", "openstack"]),
+    let error = inspect().err().unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("must contain only aos-target-platform")
     );
-    let support = Path::new(&store.path).join("nix-support");
-    fs::create_dir(&support).unwrap();
+
+    fs::remove_file(support.join("unexpected")).unwrap();
     fs::write(support.join("aos-target-platform"), "x".repeat(129)).unwrap();
-    assert!(inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").is_err());
+    let error = inspect().err().unwrap();
+    assert!(error.to_string().contains("exceeds 128 bytes"));
 }
 
 #[test]
