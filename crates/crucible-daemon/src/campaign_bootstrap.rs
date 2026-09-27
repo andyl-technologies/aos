@@ -379,15 +379,6 @@ impl CampaignLocalServiceConfig {
             true,
         )?;
         let object_root = self.state_directory.join(OBJECT_DIRECTORY);
-        // A prior directory leaf can contain objects or only inventory state.
-        // Reject either layout before opening a new database beside it.
-        for marker in ["objects", ".inventory-admin"] {
-            match fs::symlink_metadata(object_root.join(marker)) {
-                Ok(_) => return Err(CampaignLocalServiceError::InvalidRepositoryStore),
-                Err(source) if source.kind() == io::ErrorKind::NotFound => {}
-                Err(_) => return Err(CampaignLocalServiceError::InvalidRepositoryStore),
-            }
-        }
         let root = StoreNodeId::new("campaign-primary")
             .map_err(|_| CampaignLocalServiceError::InvalidRepositoryStore)?;
         let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
