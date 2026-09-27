@@ -56,8 +56,9 @@ stage journal. The host-stage runner now receives the initrd handoff, admits
 the host bundle, and replays its own durable execution journal. The image now
 starts that runner after host receipt and before the multi-user milestone.
 Checked-plan preflight, configuration activation, and boot commit are deferred
-until the runner exits; moving their work into one ordered host transaction
-remains a cutover task. Typed ownership separates observed image roots,
+until the runner exits. Activation consumes the evaluator's manifest through
+its own checked durable transaction; it does not rerun the host source plan.
+Typed ownership separates observed image roots,
 manager-started boot units, and ability effects. Manager-owned initrd storage,
 identity, verification, and post-controller services stay in the rendered boot
 graph but outside the source plan. Their target links come from explicit

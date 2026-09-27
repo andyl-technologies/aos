@@ -491,6 +491,15 @@ that exact admitted plan and journal at handoff. Source sealing, boot-time
 admission, and receiving-stage continuation are distinct checks of one
 source-authored configuration.
 
+The image manager runs bootstrap services outside a stage controller's effect
+transaction. Services that must already be active at stage entry are observed
+as image-owned roots; manager-owned services remain in the same typed boot
+graph but are not scheduled as effects inside the controller. The host source
+stage completes before configuration activation consumes the evaluator's
+manifest. Configuration activation has its own checked plan and durable
+transaction; boot finalization follows its committed evidence. This ordering
+does not start a second copy of the source-stage plan.
+
 Image modules are source-backed paths retained with the in-image evaluator, so
 the evaluator replays the exact system graph that produced the image. Inline
 module values are limited to evaluation-only callers and explicitly
