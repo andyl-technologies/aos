@@ -549,7 +549,7 @@ impl QemuReplayValidationExecutor {
         snapshot: &QemuVmSnapshot,
         configuration: &Configuration,
         fat: QemuReplayOracleExactObservation,
-        thin: QemuReplayOracleThinObservation,
+        mut thin: QemuReplayOracleThinObservation,
     ) -> Result<QemuReplayOracleMatch, QemuVmRealizationError> {
         if snapshot.id() != self.launcher.exact_snapshot() {
             return Err(QemuVmRealizationError::InvalidCheckpoint {
@@ -614,6 +614,18 @@ impl QemuReplayValidationExecutor {
                 ),
             });
         }
+        // Intermediate replay observations carry only an opaque executor
+        // binding. Sample the complete live state once at the exact target,
+        // including input and reply effects that need no physical advance.
+        thin.runtime.id = Backend::fingerprint(self.active_node.as_mut().ok_or_else(|| {
+            QemuVmRealizationError::Executor {
+                operation: "fingerprint final guarded replay state",
+                message: String::from("no QEMU replay node is active"),
+            }
+        })?)
+        .map(|fingerprint| fingerprint.hash)
+        .map_err(|source| node_backend_error("fingerprint final guarded replay state", source))?;
+        self.active_runtime_id = Some(thin.runtime.id);
         self.exact_observation_generation = None;
         self.thin_observation_generation = None;
         if fat.runtime.id != thin.runtime.id {

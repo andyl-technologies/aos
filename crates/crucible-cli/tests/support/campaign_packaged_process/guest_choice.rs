@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
+use std::io::Read;
 use std::sync::Arc;
 
 use super::*;
@@ -24,7 +25,7 @@ pub(crate) const FAST_ALTERNATIVE: &str =
 const SAFE_ALTERNATIVE: &str = "0202020202020202020202020202020202020202020202020202020202020202";
 const GUEST_CHOICE_RENDEZVOUS_TICKS: &str = "250000000";
 const GUEST_CHOICE_ATTEMPT_WAIT: Duration = Duration::from_secs(600);
-const GUEST_CHOICE_PROGRESS_CAPTURE_WAIT: Duration = Duration::from_secs(900);
+const GUEST_CHOICE_PROGRESS_CAPTURE_WAIT: Duration = Duration::from_secs(2600);
 const MAX_GUEST_CHOICE_ATTEMPT_RECORDS: usize = 65_536;
 const MAX_DIAGNOSTIC_ATTEMPTS: usize = 16;
 const MAX_DIAGNOSTIC_ENTRIES: usize = 256;
@@ -1767,8 +1768,8 @@ fn capture_checkpoint_after_progress(
     command_sequence: &mut u64,
     previous_checkpoint: Option<ExactCheckpointId>,
 ) -> Result<ExactCheckpointId, Box<dyn Error>> {
-    // One promotion check can take 480 seconds. Leave room for a same-root
-    // pause/resume retry within the selected flight's 1800-second bound.
+    // A two-node promotion can take about 1,000 host seconds at the bounded
+    // runnable step. Leave room for one same-root pause/resume retry.
     let started = Instant::now();
     let deadline = started + GUEST_CHOICE_PROGRESS_CAPTURE_WAIT;
     let mut iterations = 0_u64;
@@ -1839,16 +1840,26 @@ fn wait_for_promoted_checkpoint(
     fixture: &FlightFixture,
     key: AttemptExecutionKey,
 ) -> Result<ExactCheckpointId, Box<dyn Error>> {
-    // The two-node oracle replays roughly 750 bounded QEMU advances. A 180s
-    // wait stopped during the first node; a 360s diagnostic reached the peer
-    // comparison. Allow margin for the strict comparison and publication.
-    let deadline = Instant::now() + Duration::from_secs(480);
+    // The two-node oracle replays about 58,200 runnable 10us steps plus idle
+    // jumps. At the measured 17ms median advance, allow comparison and
+    // publication margin beyond the roughly 1,000s physical replay.
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(1200);
+    let mut next_probe = started;
     let backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
         "guest-choice-checkpoint-inspection",
         &fixture.objects,
     ));
     let checkpoints = ExactCheckpointStore::new(backend, 1024 * 1024 * 1024)?;
     let checkpoint = wait_for_process_observation(deadline, || {
+        if Instant::now() >= next_probe {
+            println!(
+                "guest_choice_promotion_probe elapsed_secs={}",
+                started.elapsed().as_secs()
+            );
+            diagnose_promotion_qemu_shmem();
+            next_probe = Instant::now() + Duration::from_secs(30);
+        }
         if let Some(AttemptRuntimeState::Paused { checkpoint, .. }) =
             attempt_states(fixture)?.get(&key).copied()
             && checkpoints
@@ -1869,6 +1880,106 @@ fn wait_for_promoted_checkpoint(
         attempt_states(fixture)?
     )
     .into())
+}
+
+fn diagnose_promotion_qemu_shmem() {
+    let Ok(processes) = fs::read_dir("/proc") else {
+        println!("guest_choice_promotion_shmem proc_unavailable");
+        return;
+    };
+    for process in processes.flatten() {
+        let Ok(pid) = process.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let path = process.path();
+        if !fs::read_to_string(path.join("comm"))
+            .is_ok_and(|comm| comm.trim().starts_with("qemu-system"))
+        {
+            continue;
+        }
+        let Ok(descriptors) = fs::read_dir(path.join("fd")) else {
+            println!("guest_choice_promotion_shmem pid={pid} fd_unavailable");
+            continue;
+        };
+        for descriptor in descriptors.flatten() {
+            if !fs::read_link(descriptor.path()).is_ok_and(|backing| {
+                backing
+                    .to_string_lossy()
+                    .contains("memfd:crucible-qemu-shmem")
+            }) {
+                continue;
+            }
+            let Ok(mut region) = fs::File::open(descriptor.path()) else {
+                println!("guest_choice_promotion_shmem pid={pid} open_failed");
+                continue;
+            };
+            let mut header = [0u8; crucible_shmem::REGION_HEADER_SIZE];
+            if region.read_exact(&mut header).is_err() {
+                println!("guest_choice_promotion_shmem pid={pid} header_read_failed");
+                continue;
+            }
+            let Some(magic) = shmem_u64(&header, 0) else {
+                continue;
+            };
+            let Some(version) = shmem_u32(&header, 8) else {
+                continue;
+            };
+            let Some(node_count) = shmem_u32(&header, 12) else {
+                continue;
+            };
+            if magic != crucible_shmem::REGION_MAGIC
+                || version != crucible_shmem::ABI_VERSION
+                || node_count == 0
+                || node_count > 64
+            {
+                println!(
+                    "guest_choice_promotion_shmem pid={pid} invalid_header magic={magic:x} version={version} nodes={node_count}"
+                );
+                continue;
+            }
+            let mut slots = vec![0u8; node_count as usize * crucible_shmem::NODE_SLOT_SIZE];
+            if region.read_exact(&mut slots).is_err() {
+                println!("guest_choice_promotion_shmem pid={pid} slots_read_failed");
+                continue;
+            }
+            for (slot_index, slot) in slots
+                .chunks_exact(crucible_shmem::NODE_SLOT_SIZE)
+                .enumerate()
+            {
+                let Some(generation) = shmem_u32(slot, 40) else {
+                    continue;
+                };
+                if generation == 0 {
+                    continue;
+                }
+                let Some(tick_ps) = shmem_u64(slot, 0) else {
+                    continue;
+                };
+                let Some(raw_retired) = shmem_u64(slot, 104) else {
+                    continue;
+                };
+                let Some(ceiling_ps) = shmem_u64(slot, 16) else {
+                    continue;
+                };
+                println!(
+                    "guest_choice_promotion_shmem pid={pid} slot={slot_index} generation={generation} tick_ps={tick_ps} raw_retired={raw_retired} ceiling_ps={ceiling_ps} status={} kind={}",
+                    slot[36], slot[37],
+                );
+            }
+        }
+    }
+}
+
+fn shmem_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        bytes.get(offset..offset + 4)?.try_into().ok()?,
+    ))
+}
+
+fn shmem_u64(bytes: &[u8], offset: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(
+        bytes.get(offset..offset + 8)?.try_into().ok()?,
+    ))
 }
 
 fn resume_campaign(fixture: &FlightFixture, command_identity: &str) -> Result<(), Box<dyn Error>> {

@@ -145,6 +145,10 @@
     maximum_execution_quanta = ${
       if envoyProduct
       then "250000"
+      # The choice promotion charges each 10us runnable replay step across
+      # both nodes. The measured source has about 58,200 such steps.
+      else if guestChoice
+      then "75000"
       else "10000"
     }
     maximum_checkpoint_bytes = ${
@@ -519,9 +523,9 @@
             exit 1
           fi
 
-          # Cold QEMU boots in every branch replay can take several minutes
-          # apiece under TCG; the host guard covers all independent waits.
-          if ! ${pkgs.coreutils}/bin/timeout -k 5 3600 \
+          # Three cold branch replays and two source-bound checkpoint captures
+          # have independent finite waits; the host guard covers their sum.
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 6000 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
             packaged::guest_choice::public_guest_choices_survive_exact_checkpoint_and_daemon_restart \
             --nocapture > /tmp/guest-choice-flight.log 2>&1; then
