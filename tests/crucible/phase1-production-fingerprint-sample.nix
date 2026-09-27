@@ -29,24 +29,36 @@
     if campaignSystem == null
     then null
     else campaignSystem.config.aos.services.crucibleCampaign._runtimeIdentity;
-  productionFlightResult =
+  productionFlightEvidenceSource =
     if campaignComposition == null
-    then "${productionFlight}/result"
+    then "${productionFlight}/serial.log"
     else "${productionFlight}/raw-result";
 in
   pkgs.mkDerivation {
     pname = "crucible-production-fingerprint-sample";
     version = "0";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.grep productionFlight projectionManifest] ++ dependencies;
+    buildDeps = [pkgs.coreutils pkgs.gawk pkgs.grep productionFlight projectionManifest] ++ dependencies;
 
     phases = [
       {
         name = "verify-production-fingerprint-evidence";
         script = ''
           set -eu
-          flight=${lib.escapeShellArg productionFlightResult}
+          flight=${lib.escapeShellArg productionFlightEvidenceSource}
           manifest="${projectionManifest}/result"
+
+          ${lib.optionalString (campaignComposition == null) ''
+            # The VM result is only PASS; retain the unique authenticated result frame.
+            tr -d '\r' < "$flight" > "$TMPDIR/flight-serial"
+            . ${./_phase9-campaign-mode-frame.sh}
+            extract_campaign_mode_result_frame \
+              "$TMPDIR/flight-serial" \
+              PRODUCTION_PLUGIN_RESULT_BEGIN \
+              PRODUCTION_PLUGIN_RESULT_END \
+              "$TMPDIR/flight-evidence"
+            flight="$TMPDIR/flight-evidence"
+          ''}
 
           for line in \
             PASS \
@@ -73,7 +85,7 @@ in
             per_vcpu_register_files_present=true \
             sample_logical_picoseconds_equal_target=true
           do
-            grep -Fxq "$line" "$flight"
+            test "$(grep -Fxc "$line" "$flight")" -eq 1
           done
           grep -Fxq PASS "$manifest"
           grep -Fxq gate=gate:qemu-fingerprint-projection-manifest "$manifest"
