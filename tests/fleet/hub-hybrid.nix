@@ -1689,6 +1689,9 @@ in {
       ).strip())
       assert completed == len(parallel_paths), completed
 
+      # Parallel uploads can outlast the console token used by reviewed CLI calls.
+      session_token = refresh_session_token()
+
       reviewed(
           "hybrid-cache-replica-placement",
           "placement add cache:fleet/objects replica --binding instance-default "
