@@ -1541,6 +1541,12 @@ impl ClosedPolicyRootSessionV2<'_> {
             if prior_hold.is_some_and(|hold| hold.held) {
                 return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
             }
+            let retirement = ack_v8::retirement_records_for_successor(
+                &self.authority,
+                predecessor,
+                next_generation,
+            )?;
+            let retires_v8 = !retirement.is_empty();
             require_unique_root_binding_identity(&self.authority, &binding)?;
             if !new_root_cas_matches(&binding, predecessor, next_generation, count)
                 || self.authority.get(&key)?.is_some()
@@ -1595,6 +1601,7 @@ impl ClosedPolicyRootSessionV2<'_> {
                     value.to_vec(),
                 ));
             }
+            records.extend(retirement);
             let transaction = JournalTransaction::new(transaction_id, records)?;
             // A qualified signer proof shares the binding/head/hold commit.
             // A lost response cannot leave a proof with no Root decision.
@@ -1606,6 +1613,7 @@ impl ClosedPolicyRootSessionV2<'_> {
                     != proof_bytes.as_ref().map(AsRef::as_ref)
                 || self.authority.get(&held_cas_proof_key(binding_head))?
                     != held_proof_bytes.as_ref().map(AsRef::as_ref)
+                || retires_v8 && !ack_v8::current_flight_slots_empty(&self.authority)?
             {
                 return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
             }

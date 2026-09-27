@@ -47,7 +47,8 @@ pub(in crate::policy_compiler::binding_v2) fn verify_released_terminal_without_d
     Ok(())
 }
 
-const TERMINAL_KEY: &[u8] = b"\0aos-policy-compiler-root-v8-verified-terminal-v1\0";
+pub(in crate::policy_compiler::binding_v2) const TERMINAL_KEY: &[u8] =
+    b"\0aos-policy-compiler-root-v8-verified-terminal-v1\0";
 const CHALLENGE_KEY: &[u8] = b"\0aos-policy-compiler-root-v8-verified-terminal-challenge-v1\0";
 const MAGIC: &[u8; 8] = b"AOSPC88T";
 const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.root-v8-verified-terminal.v1\0";
@@ -283,9 +284,12 @@ pub(super) fn current_terminal_custody(
     }
 }
 
-/// Replays Root's verified V8 terminal under its protected journal writer.
+/// Replays Root's verified V8 terminal only while its binding remains held.
 ///
-/// A historical AOSPC88A without this terminal returns `None`.
+/// A historical AOSPC88A without this terminal returns `None`. After a
+/// legitimate release this held-only entry point returns stale; use
+/// [`recover_fixed_closed_root_v8_terminal_custody_v1`] to inspect either
+/// terminal custody state.
 ///
 /// # Errors
 ///

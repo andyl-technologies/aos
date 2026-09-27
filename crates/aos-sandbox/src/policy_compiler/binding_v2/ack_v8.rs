@@ -44,6 +44,57 @@ pub use terminal::{
 };
 pub(super) use terminal::{release_marker_matches, verify_released_terminal_without_decision};
 
+pub(super) fn retirement_records_for_successor(
+    authority: &ProtectedJournalAuthority<'_>,
+    binding: ObjectDigest,
+    next_epoch: u64,
+) -> Result<Vec<JournalRecord>, PolicyCompilerJournalErrorV1> {
+    let marker = authority.get(terminal::release::RELEASE_KEY)?;
+    let ack = authority.get(ACK_KEY)?;
+    let terminal_row = authority.get(terminal::TERMINAL_KEY)?;
+    if marker.is_none() {
+        if ack.is_some()
+            || terminal_row.is_some()
+            || authority.get(&held_cas_proof_key(binding))?.is_some()
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        return Ok(Vec::new());
+    }
+    if ack.is_none() || terminal_row.is_none() {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    let epoch = next_epoch
+        .checked_sub(1)
+        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    if !matches!(
+        terminal::current_terminal_custody(authority, binding, epoch),
+        Ok(Some(RootV8TerminalCustodyV1::Released(_)))
+    ) {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+
+    // These are current-flight slots. The per-binding held proof remains in
+    // immutable history, while the fixed proof may already name the successor.
+    // Challenge issues continue monotonically across bindings.
+    Ok([
+        terminal::release::RELEASE_KEY,
+        ACK_KEY,
+        terminal::TERMINAL_KEY,
+    ]
+    .into_iter()
+    .map(|key| JournalRecord::delete(RecordNamespace::DesiredState, key.to_vec()))
+    .collect())
+}
+
+pub(super) fn current_flight_slots_empty(
+    authority: &ProtectedJournalAuthority<'_>,
+) -> Result<bool, PolicyCompilerJournalErrorV1> {
+    Ok(authority.get(terminal::release::RELEASE_KEY)?.is_none()
+        && authority.get(ACK_KEY)?.is_none()
+        && authority.get(terminal::TERMINAL_KEY)?.is_none())
+}
+
 /// Identifies one step of the Root-held V8 terminal socket exchange.
 pub enum RootV8HeldTerminalStepV1 {
     /// Requests Controller's signed no-Apply effect ACK.
@@ -361,7 +412,10 @@ fn custody_cut(
     let bytes = authority
         .get(&held_cas_proof_key(binding))?
         .ok_or(RootV8EffectAckErrorV1::Stale)?;
-    if authority.get(HELD_PROOF_KEY)? != Some(bytes) {
+    // The fixed slot is successor staging state. A released predecessor stays
+    // current until successor CAS, even after that successor writes its proof.
+    // Its immutable per-binding proof and signer pins still authenticate replay.
+    if !released && authority.get(HELD_PROOF_KEY)? != Some(bytes) {
         return Err(RootV8EffectAckErrorV1::Stale);
     }
     let proof = RootHeldProofV2::decode(bytes)?;
@@ -865,54 +919,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn v8_root_ack_codec_rejects_cross_version_and_corruption() {
-        let record = RootV8EffectAckV1 {
-            binding: ObjectDigest::from_bytes([1; 32]),
-            epoch: 2,
-            operation: OperationId::from_bytes([3; 16]),
-            sandbox: SandboxId::from_bytes([4; 16]),
-            accepted_generation: 5,
-            effect_transaction: [6; 16],
-            terminal: ObjectDigest::from_bytes([7; 32]),
-            proof: ObjectDigest::from_bytes([8; 32]),
-            quota: ObjectDigest::from_bytes([9; 32]),
-            controller_ack: ObjectDigest::from_bytes([10; 32]),
-            receipt: ObjectDigest::from_bytes([11; 32]),
-            signer_generation: 12,
-            controller_uid: 13,
-            nonce: [14; 16],
-        };
-        let bytes = record.encode().unwrap();
-        assert_eq!(RootV8EffectAckV1::decode(&bytes).unwrap(), record);
-        for offset in [
-            0, 8, 16, 48, 56, 72, 88, 96, 112, 144, 176, 208, 240, 272, 280, 284, 300,
-        ] {
-            let mut altered = bytes;
-            altered[offset] ^= 1;
-            assert!(RootV8EffectAckV1::decode(&altered).is_err());
-        }
-    }
-
-    #[test]
-    fn fresh_v8_ack_and_terminal_complete_under_one_root_writer() {
-        let directory = tempfile::tempdir().unwrap();
-        let fixture = prepare_v8_root_fixture(directory.path());
-        let mut root = super::super::tests::open_test_root(directory.path());
-        let mut authority = root
-            .claim_protected_authority(RecordNamespace::DesiredState)
-            .unwrap();
+    fn complete_test_terminal(
+        authority: &mut ProtectedJournalAuthority<'_>,
+        fixture: &V8RootFixture,
+        ack_nonce: [u8; 16],
+        terminal_nonce: [u8; 16],
+    ) -> RootV8VerifiedTerminalV1 {
         let mut stage = 0;
         let mut committed = None;
-
         let terminal = acknowledge_and_verify_in_authority(
-            &mut authority,
+            authority,
             fixture.binding_head,
             fixture.binding.handoff_epoch,
             1234,
             &fixture.controller_pin,
-            || Ok([21; 16]),
-            || Ok([22; 16]),
+            || Ok(ack_nonce),
+            || Ok(terminal_nonce),
             |step| match step {
                 RootV8HeldTerminalStepV1::EffectAck(challenge) => {
                     assert_eq!(stage, 0);
@@ -952,6 +974,47 @@ mod tests {
         .unwrap();
         assert_eq!(stage, 3);
         assert_eq!(Some(terminal.ack()), committed);
+        terminal
+    }
+
+    #[test]
+    fn v8_root_ack_codec_rejects_cross_version_and_corruption() {
+        let record = RootV8EffectAckV1 {
+            binding: ObjectDigest::from_bytes([1; 32]),
+            epoch: 2,
+            operation: OperationId::from_bytes([3; 16]),
+            sandbox: SandboxId::from_bytes([4; 16]),
+            accepted_generation: 5,
+            effect_transaction: [6; 16],
+            terminal: ObjectDigest::from_bytes([7; 32]),
+            proof: ObjectDigest::from_bytes([8; 32]),
+            quota: ObjectDigest::from_bytes([9; 32]),
+            controller_ack: ObjectDigest::from_bytes([10; 32]),
+            receipt: ObjectDigest::from_bytes([11; 32]),
+            signer_generation: 12,
+            controller_uid: 13,
+            nonce: [14; 16],
+        };
+        let bytes = record.encode().unwrap();
+        assert_eq!(RootV8EffectAckV1::decode(&bytes).unwrap(), record);
+        for offset in [
+            0, 8, 16, 48, 56, 72, 88, 96, 112, 144, 176, 208, 240, 272, 280, 284, 300,
+        ] {
+            let mut altered = bytes;
+            altered[offset] ^= 1;
+            assert!(RootV8EffectAckV1::decode(&altered).is_err());
+        }
+    }
+
+    #[test]
+    fn fresh_v8_ack_and_terminal_complete_under_one_root_writer() {
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = prepare_v8_root_fixture(directory.path());
+        let mut root = super::super::tests::open_test_root(directory.path());
+        let mut authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        let terminal = complete_test_terminal(&mut authority, &fixture, [21; 16], [22; 16]);
         assert_eq!(
             terminal::current_terminal(
                 &authority,
@@ -1046,6 +1109,178 @@ mod tests {
                 fixture.binding.handoff_epoch,
             )
             .is_err()
+        );
+
+        authority
+            .commit(
+                &JournalTransaction::new(
+                    [30; 16],
+                    vec![JournalRecord::delete(
+                        RecordNamespace::DesiredState,
+                        terminal::release::RELEASE_KEY.to_vec(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            retirement_records_for_successor(&authority, fixture.binding_head, 2).is_err(),
+            "a lost release marker cannot turn a V8 predecessor into an inert one"
+        );
+    }
+
+    #[test]
+    fn released_v8_terminal_survives_successor_stage_and_retires_with_successor_cas() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = prepare_v8_root_fixture(directory.path());
+        let mut root = super::super::tests::open_test_root(directory.path());
+        let mut authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        let first_terminal = complete_test_terminal(&mut authority, &first, [21; 16], [22; 16]);
+        let first_released = terminal::release::release_verified_terminal_in_authority(
+            &mut authority,
+            first.binding_head,
+            first.binding.handoff_epoch,
+            first_terminal,
+        )
+        .unwrap();
+        drop(authority);
+        drop(root);
+
+        let mut next = first.binding.clone();
+        next.operation = OperationId::from_bytes([41; 16]);
+        next.effect_transaction = [42; 16];
+        next.root_predecessor = first.binding_head;
+        next.root_generation = 2;
+        next.barrier_epoch = 2;
+        next.handoff_epoch = 2;
+        let proposed = next.encode().unwrap();
+        let next_head = closed_policy_binding_digest_v2(&proposed).unwrap();
+        let mut next_proof = RootHeldProofV2::decode(&first.proof_bytes).unwrap();
+        next_proof.binding = next_head;
+        next_proof.epoch = 2;
+        next_proof.terminal = ObjectDigest::from_bytes([43; 32]);
+        next_proof.stage_nonce = [31; 16];
+        next_proof.stage_issue = 1;
+        next_proof.source_nonce = [44; 16];
+        next_proof.source_issue = 1;
+        let next_proof_bytes = next_proof.encode().unwrap();
+
+        // A stage or failed signer leaves the old released head current.
+        let mut root = super::super::tests::open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: super::super::tests::identity(&next),
+            postcommit: None,
+        };
+        session.stage_closed_binding_base(|| Ok([31; 16])).unwrap();
+        drop(session);
+        drop(root);
+
+        let mut root = super::super::tests::open_test_root(directory.path());
+        let mut authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        assert_eq!(
+            terminal::current_terminal_custody(&authority, first.binding_head, 1).unwrap(),
+            Some(first_released)
+        );
+
+        // A successor AOSPCP02 may replace the fixed staging slot before CAS.
+        authority
+            .commit(
+                &JournalTransaction::new(
+                    [45; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        HELD_PROOF_KEY.to_vec(),
+                        next_proof_bytes.to_vec(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(authority);
+        drop(root);
+
+        let mut root = super::super::tests::open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        assert_eq!(
+            terminal::current_terminal_custody(&authority, first.binding_head, 1).unwrap(),
+            Some(first_released)
+        );
+        assert!(
+            recover_closed_binding_decision_with_proof_from_authority(
+                &authority,
+                first.binding_head,
+                1,
+            )
+            .is_ok()
+        );
+
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: super::super::tests::identity(&next),
+            postcommit: None,
+        };
+        session
+            .commit_closed_binding_with_proof(&proposed, None, Some(next_proof))
+            .unwrap();
+        drop(session);
+        drop(root);
+
+        let mut root = super::super::tests::open_test_root(directory.path());
+        let mut authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        assert!(current_flight_slots_empty(&authority).unwrap());
+        assert_eq!(
+            authority.get(HELD_PROOF_KEY).unwrap(),
+            Some(next_proof_bytes.as_slice())
+        );
+        assert!(matches!(
+            recover_closed_binding_decision_with_proof_from_authority(&authority, next_head, 2)
+                .unwrap()
+                .0,
+            ClosedPolicyBindingDecisionV2::CommittedHeld(_)
+        ));
+        assert_eq!(current_ack(&authority, next_head, 2).unwrap(), None);
+
+        let hold = ControllerPolicyHoldV1::new(
+            next.operation,
+            next.sandbox,
+            ObjectDigest::from_bytes([14; 32]),
+            next_head,
+            2,
+        )
+        .unwrap();
+        let attempt = ControllerPolicyV8AttemptV1::new(hold, next_proof.terminal).unwrap();
+        let next_ack = ControllerPolicyV8EffectAckV1::new(
+            attempt,
+            next.accepted_generation,
+            next.effect_transaction,
+            ObjectDigest::from_bytes(Sha256::digest(&next_proof_bytes).into()),
+            next_proof.quota,
+        )
+        .unwrap();
+        let second = V8RootFixture {
+            binding: next,
+            binding_head: next_head,
+            controller_key: first.controller_key,
+            controller_pin: first.controller_pin,
+            proof_bytes: next_proof_bytes.to_vec(),
+            ack: next_ack,
+        };
+        let second_terminal = complete_test_terminal(&mut authority, &second, [51; 16], [52; 16]);
+        assert_eq!(
+            terminal::current_terminal(&authority, next_head, 2).unwrap(),
+            Some(second_terminal)
         );
     }
 
