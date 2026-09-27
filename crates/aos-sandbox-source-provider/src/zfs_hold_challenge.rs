@@ -123,7 +123,7 @@ impl ProtectedZfsHoldChallengesV1 {
     }
 
     #[cfg(test)]
-    fn open_fixture(directory: &Path) -> Result<Self, ProviderLedgerError> {
+    pub(crate) fn open_fixture(directory: &Path) -> Result<Self, ProviderLedgerError> {
         let uid = rustix::process::geteuid().as_raw();
         let (journal, _) = Journal::open_protected_at_uid(directory, FILE, limits(), uid)?;
         let mut owner = Self {
@@ -218,9 +218,19 @@ impl ProtectedZfsHoldChallengesV1 {
         if receipt_digest.as_bytes() == &[0; 32] {
             return Err(ProviderLedgerError::Unavailable);
         }
-        let actual = self.issued_for(expected.challenge.nonce)?;
-        if actual != expected {
+        let actual = self.retained_for(expected.challenge.nonce)?;
+        if !actual.same_subject(expected) {
             return Err(ProviderLedgerError::Equivocation);
+        }
+        if actual.state == SPENT {
+            return if actual.receipt_digest == receipt_digest {
+                Ok(())
+            } else {
+                Err(ProviderLedgerError::Equivocation)
+            };
+        }
+        if !actual.is_issued_now(current_seconds()?) {
+            return Err(ProviderLedgerError::Unavailable);
         }
         let mut spent = actual;
         spent.state = SPENT;
@@ -238,6 +248,23 @@ impl ProtectedZfsHoldChallengesV1 {
             return Err(ProviderLedgerError::RuntimePoisoned);
         }
         Ok(())
+    }
+
+    /// Reads historical one-shot custody without renewing its validity.
+    pub(crate) fn retained_for(
+        &mut self,
+        nonce: [u8; 32],
+    ) -> Result<ChallengeRecordV1, ProviderLedgerError> {
+        self.validate_records()?;
+        let key = key(nonce);
+        let authority = self
+            .journal
+            .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+        validate_location(self.location, &authority)?;
+        let value = authority
+            .get(&key)?
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        ChallengeRecordV1::decode(&key, value)
     }
 
     fn validate_records(
@@ -544,6 +571,19 @@ mod tests {
 }
 
 impl ChallengeRecordV1 {
+    pub(crate) fn spent_receipt(self) -> Option<ObjectDigest> {
+        (self.state == SPENT).then_some(self.receipt_digest)
+    }
+
+    fn same_subject(self, other: Self) -> bool {
+        let mut left = self;
+        let mut right = other;
+        left.state = ISSUED;
+        right.state = ISSUED;
+        left.receipt_digest = ObjectDigest::from_bytes([0; 32]);
+        right.receipt_digest = ObjectDigest::from_bytes([0; 32]);
+        left == right
+    }
     pub(crate) fn matches_current(self, current: CurrentZfsHoldChallengeContextV1) -> bool {
         self.challenge.nonce == current.nonce
             && self.provider_id == current.provider_id

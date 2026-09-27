@@ -30,6 +30,7 @@ mod held_snapshot_selection;
 mod inventory;
 mod limits;
 mod migration;
+mod native_completion;
 mod owner;
 mod pending;
 mod recovery;
@@ -86,6 +87,7 @@ pub use model::{
     ProviderRecoveryWorkV1, ProviderReleaseStateV1, RecoveredProviderLedgerV1,
     SourceRootIdentityV1,
 };
+pub use native_completion::ProtectedProviderNativeCleanupObservationV2;
 pub use owner::{
     FixedMountStateMigrationRecoveryOutcomeV2, FixedProviderAcquireReopenV1,
     FixedProviderAuthenticatedSourceRequestV1, FixedProviderCatalogProgressV1,

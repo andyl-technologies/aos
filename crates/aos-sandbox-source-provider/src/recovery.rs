@@ -111,6 +111,7 @@ pub(crate) fn recover_records<'record>(
     let mut attempts = BTreeMap::new();
     let mut acquisitions = BTreeMap::new();
     let mut releases = BTreeMap::new();
+    let mut native_completions = BTreeMap::new();
     let mut aggregate_bytes = 0_usize;
     let mut record_count = 0_usize;
 
@@ -188,6 +189,14 @@ pub(crate) fn recover_records<'record>(
                 };
                 if releases.insert(identity, record).is_some() {
                     return Err(ProviderLedgerError::Corrupt("duplicate release"));
+                }
+            }
+            DecodedRecordV1::NativeCompletion(record) => {
+                if native_completions
+                    .insert(record.acquisition_id, record)
+                    .is_some()
+                {
+                    return Err(ProviderLedgerError::Corrupt("duplicate native completion"));
                 }
             }
         }
@@ -279,7 +288,24 @@ pub(crate) fn recover_records<'record>(
         ));
     }
 
-    let recovery_work = recovery_work(&attempts, &acquisitions);
+    let recovery_work = recovery_work(&attempts, &acquisitions, &native_completions);
+    for record in native_completions.values() {
+        let attempt = attempts
+            .values()
+            .find(|attempt| attempt.attempt_digest == record.attempt_digest)
+            .ok_or(ProviderLedgerError::Corrupt(
+                "orphan native completion attempt",
+            ))?;
+        let acquisition = acquisitions
+            .values()
+            .find(|acquisition| acquisition.acquisition_id == record.acquisition_id)
+            .ok_or(ProviderLedgerError::Corrupt(
+                "orphan native completion acquisition",
+            ))?;
+        record
+            .validate_provider_graph(attempt, acquisition)
+            .map_err(crate::transaction::map_pure_ledger_error)?;
+    }
     Ok(RecoveredProviderLedgerV1 {
         authority,
         catalog,
@@ -289,6 +315,7 @@ pub(crate) fn recover_records<'record>(
         attempts,
         acquisitions,
         releases,
+        native_completions,
         recovery_work,
     })
 }

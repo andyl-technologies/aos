@@ -8,6 +8,10 @@ pub(crate) fn complete_acquire(
     observed: ObservedBackendAcquisitionV1,
     custody: &mut CurrentProviderIngressSessionV1,
 ) -> Result<DurableProviderReplyV1, ProviderLedgerError> {
+    crate::native_completion::require_original_native_custody_closed(
+        ledger,
+        permit.plan.acquisition_id,
+    )?;
     ledger
         .journal
         .validate_source_provider_authority_snapshot(&permit.journal_snapshot)?;

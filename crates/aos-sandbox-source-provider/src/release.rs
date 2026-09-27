@@ -62,6 +62,10 @@ impl ProviderLedgerV1<'_> {
         backend: &mut B,
     ) -> Result<(DurableProviderReplyV1, DurableReleaseTombstoneV1), ProviderLedgerError> {
         self.ensure_open()?;
+        crate::native_completion::require_original_native_custody_closed(
+            self,
+            permit.plan.acquisition_id,
+        )?;
         self.journal
             .validate_source_provider_authority_snapshot(&permit.journal_snapshot)?;
         permit.completion_capacity.validate(&self.journal)?;
@@ -105,6 +109,10 @@ impl ProviderLedgerV1<'_> {
         status: SourceProviderStatus,
     ) -> Result<DurableProviderReplyV1, ProviderLedgerError> {
         self.ensure_open()?;
+        crate::native_completion::require_original_native_custody_closed(
+            self,
+            permit.plan.acquisition_id,
+        )?;
         self.journal
             .validate_source_provider_authority_snapshot(&permit.journal_snapshot)?;
         permit.completion_capacity.validate(&self.journal)?;
@@ -134,6 +142,7 @@ impl ProviderLedgerV1<'_> {
         backend: &mut B,
     ) -> Result<(), ProviderLedgerError> {
         self.ensure_open()?;
+        crate::native_completion::require_original_native_custody_closed(self, acquisition_id)?;
         let progress = self.pending_releases.remove(&acquisition_id).ok_or(
             ProviderLedgerError::InvalidTransition("no live Pending release continuation"),
         )?;
@@ -1198,6 +1207,10 @@ pub(crate) fn complete_release(
     observed: ObservedBackendReleaseV1,
     custody: &mut CurrentProviderIngressSessionV1,
 ) -> Result<(DurableProviderReplyV1, DurableReleaseTombstoneV1), ProviderLedgerError> {
+    crate::native_completion::require_original_native_custody_closed(
+        ledger,
+        permit.plan.acquisition_id,
+    )?;
     ledger
         .journal
         .validate_source_provider_authority_snapshot(&permit.journal_snapshot)?;
