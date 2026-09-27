@@ -83,6 +83,24 @@ fn run() -> Result<(), Box<dyn Error>> {
 }
 
 fn provision(credentials: &CredentialBundle) -> Result<(), Box<dyn Error>> {
+    // Both fixed journal openers require their final state directory to be
+    // root-owned mode 0700, independently of the role-local custody mode.
+    for root in [
+        Path::new("/var/lib/aos/sandbox-mount"),
+        Path::new("/var/lib/aos/source-provider"),
+    ] {
+        fs::create_dir_all(root)?;
+        let metadata = fs::symlink_metadata(root)?;
+        if !metadata.file_type().is_dir() || metadata.uid() != 0 {
+            return Err("fixed state directory is not root-owned ordinary directory".into());
+        }
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
+        let metadata = fs::symlink_metadata(root)?;
+        if metadata.uid() != 0 || metadata.mode() & 0o7777 != 0o700 {
+            return Err("fixed state directory has incorrect ownership or mode".into());
+        }
+    }
+
     install_role(
         Path::new(ROOT_DIRECTORY),
         SourceProviderSecurityRoleV1::RootMount,

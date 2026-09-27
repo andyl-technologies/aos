@@ -1154,7 +1154,10 @@ name = "aos-sandbox-service-journal-probe"
 version = "0.0.0"
 dependencies = [
  "aos-sandbox",
+ "aos-sandbox-broker-session-security",
  "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "aos-sandbox-source-provider",
  "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",
  "aos-sandbox-source-provider-security",
