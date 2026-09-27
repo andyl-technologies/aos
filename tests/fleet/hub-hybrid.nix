@@ -1531,10 +1531,19 @@ in {
           ${pkgs.coreutils}/bin/head -c {publication_size} /dev/zero \\
             > /tmp/hybrid-publication-surface/{publication_path}
       """), timeout=180)
-      publication = json.loads(client.succeed(hub_command(
-          "registry publish upload fleet/containers "
-          "--root /tmp/hybrid-publication-surface"
-      ), timeout=600))["data"]
+      try:
+          publication = json.loads(client.succeed(hub_command(
+              "registry publish upload fleet/containers "
+              "--root /tmp/hybrid-publication-surface"
+          ), timeout=600))["data"]
+      except Exception:
+          print("hybrid Worker runtime log after publication upload failure:", worker.succeed(
+              "tail -n 100 /var/lib/hybrid-worker/wrangler.log"
+          ))
+          print("Native errors after publication upload failure:", native.succeed(
+              "journalctl -u aos-hub.service -p warning --no-pager -n 60"
+          ))
+          raise
       assert publication["state"] == "ready", publication
       large_object = next(
           obj for obj in publication["objects"] if obj["path"] == publication_path
