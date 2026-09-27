@@ -1955,10 +1955,8 @@ fn diagnose_promotion_qemu_shmem() {
                 println!("guest_choice_promotion_shmem pid={pid} slots_read_failed");
                 continue;
             }
-            for (slot_index, slot) in slots
-                .chunks_exact(crucible_shmem::NODE_SLOT_SIZE)
-                .enumerate()
-            {
+            let (slot_records, _) = slots.as_chunks::<{ crucible_shmem::NODE_SLOT_SIZE }>();
+            for (slot_index, slot) in slot_records.iter().enumerate() {
                 let Some(generation) = shmem_u32(slot, 40) else {
                     continue;
                 };
