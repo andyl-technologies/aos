@@ -11,11 +11,14 @@
   serviceFields =
     builtins.removeAttrs
     serviceManagement.types.serviceDeclarationFields
-    ["service" "enabled"];
+    ["service" "enabled" "activation_owner"];
   declaration =
     {
       inherit (service) service;
       enabled = service.autoStart;
+    }
+    // lib.optionalAttrs (service.activationOwner == "image") {
+      activation_owner = "image";
     }
     // lib.filterAttrs
     (field: value:
