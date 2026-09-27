@@ -344,6 +344,11 @@ in
   assert runtimeRoots.passthru.expectedPolicyReadback == protectedConfig.aos.boot.initrd.stage0.passthru.expectedPolicy;
   assert protectedConfig.aos.boot.initrd.stage0.passthru.expectedPolicyKernel == protectedConfig.system.build.kernel;
   assert protectedConfig.aos.boot.initrd.stage0.passthru.runtimeRootsProvisioner == runtimeRoots;
+  assert protectedConfig.systemd.services.systemd-journald.requires == ["aos-journald-runtime-prep.service"];
+  assert protectedConfig.systemd.services.systemd-journald.after == ["aos-journald-runtime-prep.service"];
+  assert !(protectedConfig.systemd.services.systemd-journald.serviceConfig ? RestrictSUIDSGID);
+  assert protectedConfig.systemd.services.aos-journald-runtime-prep.serviceConfig.ExecStart
+  == ''${pkgs.systemd}/bin/systemd-tmpfiles --create --inline "d /run/log/journal 2755 root systemd-journal -" "d /run/log/journal/%%m 2750 root systemd-journal -"'';
   # `+` restores root credentials for this systemd-spawned preflight; the
   # labeled helper still performs the only SELinux domain transition.
   assert protectedConfig.systemd.services.aos-netd.serviceConfig.ExecStartPre
@@ -377,6 +382,7 @@ in
       # python
       ''
         import json
+        import re
         import time
         from pathlib import Path
 
@@ -457,6 +463,67 @@ in
                 observed[path] = (fields[3], fields[4])
 
             return observed
+
+        def journald_pids(machine):
+            command = (
+                "for process in /proc/[0-9]*; do "
+                "case \"$(readlink \"$process/exe\" 2>/dev/null)\" in "
+                "*/lib/systemd/systemd-journald) basename \"$process\";; "
+                "esac; done"
+            )
+            return machine.succeed(command).splitlines()
+
+        def wait_for_journald_restart(machine, old_pid):
+            deadline = time.monotonic() + 30
+
+            while time.monotonic() < deadline:
+                pids = journald_pids(machine)
+                if len(pids) == 1 and pids[0] != old_pid:
+                    return pids[0]
+                time.sleep(1)
+
+            raise AssertionError(f"journald did not restart from PID {old_pid}")
+
+        def assert_stage2_journal(machine):
+            machine_id = machine.succeed("cat /etc/machine-id").strip()
+            assert re.fullmatch(r"[0-9a-f]{32}", machine_id), machine_id
+
+            # The flush to persistent storage removes the runtime child, so
+            # inspect the current-ID journal that remains after full boot.
+            current_directory = f"/var/log/journal/{machine_id}"
+            assert machine.succeed(
+                f"stat -c '%U|%G|%a' {current_directory}"
+            ).strip() == "root|systemd-journal|2755"
+            label = machine.succeed(
+                f"${pkgs.attr}/bin/getfattr -n security.selinux "
+                f"--only-values {current_directory}"
+            ).strip("\x00\n")
+            assert label.split(":", 3)[2] == "systemd_journal_t", label
+
+            journal_ids = machine.succeed("ls -1 /var/log/journal").splitlines()
+            assert journal_ids == [machine_id], journal_ids
+
+            prep_unit = machine.succeed(
+                "cat /etc/systemd/system/aos-journald-runtime-prep.service"
+            )
+            journald_dropin = machine.succeed(
+                "cat /etc/systemd/system/systemd-journald.service.d/overrides.conf"
+            )
+            stock_journald = machine.succeed(
+                "cat ${pkgs.systemd}/lib/systemd/system/systemd-journald.service"
+            )
+            assert "DefaultDependencies=no" in prep_unit, prep_unit
+            assert "Before=systemd-journald.service" in prep_unit, prep_unit
+            assert "--inline" in prep_unit and "/run/log/journal/%%m" in prep_unit
+            assert "ReadWritePaths=/run" in prep_unit.splitlines(), prep_unit
+            assert "Requires=aos-journald-runtime-prep.service" in journald_dropin
+            assert "After=aos-journald-runtime-prep.service" in journald_dropin
+            assert "RestrictSUIDSGID=yes" in stock_journald
+            assert "RestrictSUIDSGID=no" not in journald_dropin
+
+            pids = journald_pids(machine)
+            assert len(pids) == 1, pids
+            return pids[0]
 
         def assert_private_lower_store(machine, pid, executable):
             mountinfo = machine.succeed(f"cat /proc/{pid}/mountinfo")
@@ -624,15 +691,18 @@ in
                     in stdout + stderr
                 ), (method, status, stdout, stderr)
 
-        await_serial(
-            protected,
-            "Finished Prepare protected AOS sandbox Network roots",
-        )
+        # Prep reports success before journald starts. After journald starts,
+        # PID 1 may route later unit outcomes to the journal instead of serial.
+        await_serial(protected, "Finished Prepare the current machine's runtime journal directory")
         protected.wait_until_succeeds(
             "test -f /run/aos-protected-root-adversary.ok"
         )
-        await_serial(protected, "Reached target Multi-User System")
+        # The fresh broker socket Requires/After the protected roots service.
         protected.wait_until_succeeds("test -S /run/aos/sandbox-network/control.sock")
+        journald_pid = assert_stage2_journal(protected)
+        protected.succeed(f"kill -TERM {journald_pid}")
+        wait_for_journald_restart(protected, journald_pid)
+        assert_stage2_journal(protected)
         protected.wait_until_succeeds(
             "test -S /run/aos/sandbox-network-namespace-inspector/control.sock"
         )
