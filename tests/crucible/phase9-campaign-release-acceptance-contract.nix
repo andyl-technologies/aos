@@ -69,6 +69,7 @@ in
         [
           pkgs.bash
           pkgs.coreutils
+          pkgs.findutils
           pkgs.grep
           pkgs.sed
         ]
@@ -89,12 +90,12 @@ in
             tcg_only=true
             required_system_features=none
             RESULT
-            printf 'canonical result\n' > "$evidence/evidence/canonical-results.tsv"
+            printf 'quiet-single-core\tevent-log\tfingerprint\nrandomized-worker-two-core\tevent-log\tfingerprint\nloaded-io-stall-four-core\tevent-log\tfingerprint\n' \
+              > "$evidence/evidence/canonical-results.tsv"
             printf 'command journal\n' > "$evidence/evidence/command-journal.tsv"
             printf 'reproduction artifact\n' > "$evidence/evidence/reproduction.crucible"
             printf '24\n25\n26\n27\n' > "$evidence/evidence/allowed-cpus"
-            printf 'canonical identity\n' > "$evidence/evidence/canonical-identities.tsv"
-            printf 'artifact digest\n' > "$evidence/evidence/reproduction-artifacts.sha256"
+            printf 'event-log\tfingerprint\n' > "$evidence/evidence/canonical-identities.tsv"
             printf 'replay transcript\n' > "$evidence/evidence/replay.jsonl"
             mkdir -p "$evidence/evidence/replay-pressure"
             printf 'replay worker\n' > "$evidence/evidence/replay-pressure/pids"
@@ -108,9 +109,17 @@ in
               : > "$profile_evidence/store-populate.log"
               printf 'verify transcript\n' > "$profile_evidence/verify.jsonl"
               printf 'reduction artifact digest\n' > "$profile_evidence/reduction-artifacts.sha256"
-              printf 'reduction artifact\n' > "$profile_evidence/reproduction.crucible"
+              cp "$evidence/evidence/reproduction.crucible" \
+                "$profile_evidence/reproduction.crucible"
               : > "$profile_evidence/pressure/pids"
               : > "$profile_evidence/pressure/status"
+            done
+            artifact_sha="$(sha256sum "$evidence/evidence/reproduction.crucible" | cut -d ' ' -f 1)"
+            for profile in \
+              quiet-single-core randomized-worker-two-core loaded-io-stall-four-core
+            do
+              printf '%s\t%s\n' "$profile" "$artifact_sha" \
+                >> "$evidence/evidence/reproduction-artifacts.sha256"
             done
             canonical_sha="$(sha256sum "$evidence/evidence/canonical-results.tsv" | cut -d ' ' -f 1)"
             journal_sha="$(sha256sum "$evidence/evidence/command-journal.tsv" | cut -d ' ' -f 1)"
@@ -168,6 +177,42 @@ in
               exit 1
             fi
             mv "$test_root/replay.missing" "$evidence/evidence/replay.jsonl"
+
+            printf 'altered profile artifact\n' \
+              > "$evidence/evidence/profiles/randomized-worker-two-core/reproduction.crucible"
+            if ${pkgs.bash}/bin/bash ${runner} --probe-e2e-evidence "$evidence"; then
+              echo 'release acceptance accepted a changed profile artifact' >&2
+              exit 1
+            fi
+            cp "$evidence/evidence/reproduction.crucible" \
+              "$evidence/evidence/profiles/randomized-worker-two-core/reproduction.crucible"
+
+            cp "$evidence/evidence/reproduction-artifacts.sha256" \
+              "$test_root/artifacts.original"
+            printf 'forged artifact inventory\n' \
+              > "$evidence/evidence/reproduction-artifacts.sha256"
+            if ${pkgs.bash}/bin/bash ${runner} --probe-e2e-evidence "$evidence"; then
+              echo 'release acceptance accepted a forged artifact inventory' >&2
+              exit 1
+            fi
+            cp "$test_root/artifacts.original" \
+              "$evidence/evidence/reproduction-artifacts.sha256"
+
+            printf 'other-event-log\tfingerprint\n' \
+              > "$evidence/evidence/canonical-identities.tsv"
+            if ${pkgs.bash}/bin/bash ${runner} --probe-e2e-evidence "$evidence"; then
+              echo 'release acceptance accepted altered canonical identities' >&2
+              exit 1
+            fi
+            printf 'event-log\tfingerprint\n' \
+              > "$evidence/evidence/canonical-identities.tsv"
+
+            ln -s "$evidence/evidence/result" "$evidence/evidence/unlisted-symlink"
+            if ${pkgs.bash}/bin/bash ${runner} --probe-e2e-evidence "$evidence"; then
+              echo 'release acceptance accepted an unlisted evidence symlink' >&2
+              exit 1
+            fi
+            rm "$evidence/evidence/unlisted-symlink"
 
             profile_verify="$evidence/evidence/profiles/loaded-io-stall-four-core/verify.jsonl"
             mv "$profile_verify" "$test_root/profile-verify.missing"

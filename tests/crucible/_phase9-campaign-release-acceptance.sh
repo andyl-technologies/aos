@@ -34,6 +34,14 @@ require_regular_file() {
         || fail "required input is not a regular non-symlink file: $1"
 }
 
+require_regular_tree() {
+    root=$1
+    invalid_entry="$TMPDIR/campaign-release-invalid-evidence-entry"
+    find "$root" ! -type d ! -type f -print -quit > "$invalid_entry"
+    test ! -s "$invalid_entry" \
+        || fail "evidence contains a symlink or non-regular entry: $root"
+}
+
 require_digest() {
     printf '%s\n' "$1" | grep -Eq '^[0-9a-f]{64}$' \
         || fail "evidence digest is not lowercase SHA-256: $1"
@@ -66,6 +74,7 @@ verify_e2e_evidence() {
 
     evidence="$fleet_gate/evidence"
     require_directory "$evidence"
+    require_regular_tree "$evidence"
     result="$evidence/result"
     manifest="$evidence/manifest.env"
     canonical="$evidence/canonical-results.tsv"
@@ -103,6 +112,41 @@ verify_e2e_evidence() {
         require_regular_file "$profile_evidence/pressure/pids"
         require_regular_file "$profile_evidence/pressure/status"
     done
+
+    artifact_inventory="$TMPDIR/campaign-release-artifact-inventory.tsv"
+    : > "$artifact_inventory"
+    for profile in \
+        quiet-single-core \
+        randomized-worker-two-core \
+        loaded-io-stall-four-core
+    do
+        profile_artifact="$evidence/profiles/$profile/reproduction.crucible"
+        printf '%s\t%s\n' "$profile" "$(digest_file "$profile_artifact")" \
+            >> "$artifact_inventory"
+    done
+    cmp "$artifact_inventory" "$evidence/reproduction-artifacts.sha256" \
+        || fail "per-profile artifact inventory differs from retained artifacts"
+    test "$(cut -f 2 "$artifact_inventory" | sort -u | wc -l | tr -d ' ')" -eq 1 \
+        || fail "profile reproduction artifacts are not byte-identical"
+    cmp "$artifact" "$evidence/profiles/quiet-single-core/reproduction.crucible" \
+        || fail "release reproduction artifact differs from the quiet profile"
+
+    printf '%s\n' \
+        quiet-single-core \
+        randomized-worker-two-core \
+        loaded-io-stall-four-core \
+        > "$TMPDIR/campaign-release-canonical-profiles.txt"
+    cut -f 1 "$canonical" > "$TMPDIR/campaign-release-observed-profiles.txt"
+    cmp "$TMPDIR/campaign-release-canonical-profiles.txt" \
+        "$TMPDIR/campaign-release-observed-profiles.txt" \
+        || fail "canonical results do not cover the exact profile matrix"
+    cut -f 2- "$canonical" | sort -u \
+        > "$TMPDIR/campaign-release-canonical-identities.tsv"
+    test "$(wc -l < "$TMPDIR/campaign-release-canonical-identities.tsv" | tr -d ' ')" -eq 1 \
+        || fail "profile canonical results are not byte-identical"
+    cmp "$TMPDIR/campaign-release-canonical-identities.tsv" \
+        "$evidence/canonical-identities.tsv" \
+        || fail "canonical identity inventory differs from retained results"
 
     test "$(sed -n '1p' "$result")" = PASS \
         || fail "e2e native evidence does not report PASS"
@@ -212,6 +256,7 @@ verify_required_gates() {
     require_file "$manifest"
     require_file "$declared_gates"
     require_file "$expected_gates"
+    require_regular_tree "$required_gates"
     expected_claim_count=$(wc -l < "$expected_gates" | tr -d ' ')
 
     test "$(field required_claim_count "$required_gates/result")" -eq "$expected_claim_count" \
