@@ -14,11 +14,11 @@ use std::sync::{Arc, Mutex};
 use crucible::model::MeasurementTerminalState;
 use crucible::{
     AssertionPhase, Configuration, ContentHash, Decision, EngineError, EventLogCoverageObservation,
-    FailureClusterReportDivergence, FailureClusterReportFailure, FailurePropertyViolationRecord,
-    FailureTimeoutBudgetKind, FailureTimeoutRecord, FingerprintSample, HostAssertionOutcomeKind,
-    NetworkFaultPhase, NodeId, ObservableEventPayload, OfflineAssertionCheckError,
-    OfflineAssertionChecker, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
-    SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    EventLogOffset, FailureClusterReportDivergence, FailureClusterReportFailure,
+    FailurePropertyViolationRecord, FailureTimeoutBudgetKind, FailureTimeoutRecord,
+    FingerprintSample, HostAssertionOutcomeKind, NetworkFaultPhase, NodeId, ObservableEventPayload,
+    OfflineAssertionCheckError, OfflineAssertionChecker, QuantumOutcome, QuantumRequest,
+    QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
     SchedulerOperationalFailureClass, SchedulerQuiescence, SelectionDecision, VirtualTime,
     compare_event_log_determinism, coverage_fingerprint_from_event_log, try_step,
 };
@@ -596,7 +596,7 @@ impl QemuFreshPendingObservation {
     }
 }
 
-/// Compact proof of the modeled boundary reached by an independent replay.
+/// Compact proof of the modeled boundary and causal log reached by replay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QemuSavepointReplayProof {
     configuration: ContentHash,
@@ -604,6 +604,10 @@ pub struct QemuSavepointReplayProof {
     frontier: VirtualTime,
     event_count: u64,
     event_digest: [u8; 32],
+    causal_digest: ContentHash,
+    causal_bytes: usize,
+    causal_events: usize,
+    event_log_offset: Option<EventLogOffset>,
     attempt_event_count: Option<u64>,
 }
 
@@ -647,8 +651,8 @@ impl QemuAttemptStartReplayProof {
 }
 
 impl QemuSavepointReplayProof {
-    /// Binds a reached configuration to its scheduler coordinate and complete
-    /// event prefix.
+    /// Binds a reached configuration to its scheduler coordinate, complete
+    /// event prefix, and canonical causal subsequence.
     ///
     /// # Errors
     ///
@@ -662,14 +666,58 @@ impl QemuSavepointReplayProof {
     ) -> Result<Self, QemuFreshModeledDriverError> {
         let event_count = u64::try_from(entries.len())
             .map_err(|_| QemuFreshModeledDriverError::SavepointReplayProof)?;
+        let causal = crucible::event_log_causal_projection(entries);
         Ok(Self {
             configuration: configuration.id(),
             completed_quanta,
             frontier,
             event_count,
             event_digest: savepoint_event_prefix_digest(entries),
+            causal_digest: causal.content_hash(),
+            causal_bytes: causal.canonical_bytes().len(),
+            causal_events: causal.len(),
+            event_log_offset: None,
             attempt_event_count: None,
         })
+    }
+
+    /// Seals the private replay boundary before teardown changes its log.
+    ///
+    /// # Errors
+    ///
+    /// Returns a mismatch unless modeled driving stopped at the requested
+    /// checkpoint boundary.
+    pub(crate) fn from_checkpoint_replay_boundary(
+        pending: QemuFreshPendingObservation,
+        event_log_offset: EventLogOffset,
+    ) -> Result<Self, QemuFreshModeledDriverError> {
+        if !matches!(pending.stop, ModeledStop::ReplayBoundary) {
+            return Err(QemuFreshModeledDriverError::SelectedResumeBoundaryMismatch);
+        }
+        Self::from_reached_boundary(
+            &pending.configuration,
+            pending.completed_quanta,
+            pending.terminal_at,
+            &pending.event_log,
+        )?
+        .with_event_log_offset(event_log_offset)
+    }
+
+    /// Binds the independently produced segment-chain offset to this proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns a proof error when the offset's event count differs from the
+    /// independently retained entries.
+    pub(crate) fn with_event_log_offset(
+        mut self,
+        event_log_offset: EventLogOffset,
+    ) -> Result<Self, QemuFreshModeledDriverError> {
+        if event_log_offset.events != self.event_count {
+            return Err(QemuFreshModeledDriverError::SavepointReplayProof);
+        }
+        self.event_log_offset = Some(event_log_offset);
+        Ok(self)
     }
 
     pub(crate) fn with_attempt_event_count(
@@ -695,6 +743,10 @@ impl QemuSavepointReplayProof {
             && self.frontier == other.frontier
             && self.event_count == other.event_count
             && self.event_digest == other.event_digest
+            && self.causal_digest == other.causal_digest
+            && self.causal_bytes == other.causal_bytes
+            && self.causal_events == other.causal_events
+            && self.event_log_offset == other.event_log_offset
     }
 
     /// Returns whether one restored checkpoint has this exact modeled boundary.
@@ -704,13 +756,20 @@ impl QemuSavepointReplayProof {
         configuration: &Configuration,
         scheduler: &crucible::SingleSchedulerCheckpoint,
     ) -> bool {
-        self.matches_boundary(
-            configuration,
-            scheduler.quanta(),
-            scheduler.frontier(),
-            scheduler.retained_event_log_base_events(),
-            scheduler.retained_event_log_entries(),
-        )
+        // The live replay offset authenticates the ordered segment chain,
+        // encoded byte count, and event count. Flat retained entries alone
+        // cannot reconstruct segment boundaries or their prefix hash.
+        scheduler.event_log_offset().events == self.event_count
+            && self
+                .event_log_offset
+                .is_none_or(|offset| offset == scheduler.event_log_offset())
+            && self.matches_boundary(
+                configuration,
+                scheduler.quanta(),
+                scheduler.frontier(),
+                scheduler.retained_event_log_base_events(),
+                scheduler.retained_event_log_entries(),
+            )
     }
 
     /// Returns the cumulative scheduler work required to reconstruct the boundary.
@@ -730,12 +789,16 @@ impl QemuSavepointReplayProof {
         let Ok(event_count) = u64::try_from(entries.len()) else {
             return false;
         };
+        let causal = crucible::event_log_causal_projection(entries);
         self.configuration == configuration.id()
             && self.completed_quanta == completed_quanta
             && self.frontier == frontier
             && event_base == 0
             && self.event_count == event_count
             && self.event_digest == savepoint_event_prefix_digest(entries)
+            && self.causal_digest == causal.content_hash()
+            && self.causal_bytes == causal.canonical_bytes().len()
+            && self.causal_events == causal.len()
     }
 }
 

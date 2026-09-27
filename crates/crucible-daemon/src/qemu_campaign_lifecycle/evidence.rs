@@ -176,6 +176,10 @@ where
         self.lifecycle.completed_quanta()
     }
 
+    fn event_log_offset(&self) -> Result<crucible::EventLogOffset, SchedulerError> {
+        self.lifecycle.event_log_offset()
+    }
+
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
         self.lifecycle.terminal_verdict_for_stop()
     }

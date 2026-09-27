@@ -443,6 +443,21 @@ impl ProductionPausedCheckpointReplayFactory for CountingProductionReplayFactory
             message: String::from("counted test factory stops before QEMU launch"),
         })
     }
+
+    fn replay_checkpoint_boundary(
+        &mut self,
+        _attempt: &crate::CrucibleAttemptExecution,
+        _run_state_root: &std::path::Path,
+        _cancellation: &ExecutionCancellation,
+        _resources: AttemptResourceLimits,
+        _target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
+    ) -> Result<crate::QemuSavepointReplayProof, crucible_qemu::QemuVmRealizationError> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        Err(crucible_qemu::QemuVmRealizationError::Executor {
+            operation: "enter counted production checkpoint replay",
+            message: String::from("counted test factory stops before QEMU launch"),
+        })
+    }
 }
 
 impl LocalAttemptWorker for SequencedFailureWorker {
@@ -2868,7 +2883,7 @@ fn production_restart_dispatch_replays_raw_roots_and_rejects_invalid_sources() {
         ExecutionCancellation::default(),
         &mut factory,
     )
-    .expect_err("counted production replay target must reject launch");
+    .expect_err("counted full-world replay must reject launch");
     assert!(
         matches!(
             &error,
@@ -2877,7 +2892,7 @@ fn production_restart_dispatch_replays_raw_roots_and_rejects_invalid_sources() {
                     error.as_ref(),
                     crate::PausedCheckpointPromotionPreparationError::Realization(
                         crucible_qemu::QemuVmRealizationError::Executor {
-                            operation: "enter counted production replay target",
+                            operation: "enter counted production checkpoint replay",
                             ..
                         }
                     )

@@ -2710,8 +2710,8 @@ fn pending_default_reply_at_start_reaches_event_count_without_an_extra_quantum()
         outcomes: VecDeque::new(),
         completed_coordinates: VecDeque::new(),
         pending: VecDeque::new(),
-        active_pending: vec![pending_guest_request(node, None)],
-        reply_entries: VecDeque::from([reply_event.entries]),
+        active_pending: vec![pending_guest_request(node.clone(), None)],
+        reply_entries: VecDeque::from([reply_event.entries.clone()]),
         replies: Vec::new(),
         completed_quanta: 0,
         drives: 0,
@@ -2738,6 +2738,51 @@ fn pending_default_reply_at_start_reaches_event_count_without_an_extra_quantum()
         pending.stop,
         ModeledStop::Reached(StopCondition::EventCount(1))
     ));
+
+    let target_proof = QemuSavepointReplayProof::from_reached_boundary(
+        &pending.configuration,
+        pending.completed_quanta,
+        pending.terminal_at,
+        &pending.event_log,
+    )
+    .expect("selected guest boundary proof");
+    let target = QemuSelectedResumeBoundary::new(pending.configuration.clone(), target_proof);
+    let mut replay_owner = PendingSelectableLifecycle {
+        frontier: starting_configuration(&input),
+        outcomes: VecDeque::new(),
+        completed_coordinates: VecDeque::new(),
+        pending: VecDeque::new(),
+        active_pending: vec![pending_guest_request(node, None)],
+        reply_entries: VecDeque::from([reply_event.entries]),
+        replies: Vec::new(),
+        completed_quanta: 0,
+        drives: 0,
+    };
+    let replayed = {
+        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut replay_owner);
+        expect_observation(
+            replay_modeled_attempt_to_boundary(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+                &target,
+            )
+            .expect("guest selection must reproduce the exact private boundary"),
+        )
+    };
+    let replay_proof =
+        QemuSavepointReplayProof::from_checkpoint_replay_boundary(replayed, reply_event.offset)
+            .expect("selected guest replay has the same segmented offset");
+
+    assert_eq!(
+        replay_proof,
+        target_proof
+            .with_event_log_offset(reply_event.offset)
+            .expect("source segmented offset")
+    );
+    assert_eq!(replay_owner.drives, 0);
+    assert_eq!(replay_owner.replies.len(), 1);
 }
 
 #[test]

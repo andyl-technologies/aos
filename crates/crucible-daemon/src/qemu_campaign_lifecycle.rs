@@ -246,6 +246,18 @@ pub trait QemuFreshAttemptLifecycleOwner {
     #[must_use]
     fn completed_quanta(&self) -> u64;
 
+    /// Returns the segmented event-log offset retained by the live scheduler.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when this lifecycle cannot expose an exact
+    /// replay boundary.
+    fn event_log_offset(&self) -> Result<crucible::EventLogOffset, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("lifecycle has no exact event-log offset"),
+        })
+    }
+
     /// Observes the terminal verdict without consuming checkpoint ownership.
     #[must_use]
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict>;
@@ -468,6 +480,10 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
 
     fn completed_quanta(&self) -> u64 {
         ProductionVmLifecycleLoop::completed_quanta(self)
+    }
+
+    fn event_log_offset(&self) -> Result<crucible::EventLogOffset, SchedulerError> {
+        Ok(ProductionVmLifecycleLoop::event_log_offset(self))
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {

@@ -194,6 +194,53 @@ fn promotion_boundary_check_rejects_mismatched_progress_before_store_work() {
 }
 
 #[test]
+fn checkpoint_replay_requires_the_exact_segmented_event_offset() {
+    let scenario = ScenarioDef::from_canonical_material(
+        "crucible.test.checkpoint-causal-offset",
+        "quiet-offset",
+    );
+    let configuration = Configuration::genesis(scenario.clone());
+    let scheduler = SingleScheduler::new(
+        SchedulerLivenessScenario::from_canonical_material(
+            "quiet-offset",
+            1,
+            SimInstant { ticks: 1 },
+            Vec::new(),
+            Vec::new(),
+        )
+        .with_scenario_def(scenario),
+    )
+    .expect("quiet scheduler");
+    let checkpoint = scheduler.checkpoint().expect("quiet checkpoint");
+    let proof = crate::QemuSavepointReplayProof::from_reached_boundary(
+        &configuration,
+        checkpoint.quanta(),
+        checkpoint.frontier(),
+        checkpoint.retained_event_log_entries(),
+    )
+    .expect("checkpoint boundary proof");
+    let offset = checkpoint.event_log_offset();
+
+    assert!(
+        proof
+            .with_event_log_offset(offset)
+            .expect("matching live offset")
+            .matches_checkpoint(&configuration, &checkpoint)
+    );
+
+    let changed_prefix = crucible::EventLogOffset {
+        prefix: ContentHash::from_bytes(b"different-segment-prefix"),
+        ..offset
+    };
+    assert!(
+        !proof
+            .with_event_log_offset(changed_prefix)
+            .expect("well-formed but foreign live offset")
+            .matches_checkpoint(&configuration, &checkpoint)
+    );
+}
+
+#[test]
 fn repository_evidence_seals_stages_and_reconciles_after_native_retirement() {
     let repository = tempfile::tempdir().expect("create repository checkpoint fixture");
     let backend = Arc::new(DirectoryBlobBackend::new(
