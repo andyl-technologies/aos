@@ -272,6 +272,24 @@ pub(crate) struct StorageHeldSnapshotReadbackV1 {
     pub(crate) post_measurement_observation_digest: ObjectDigest,
 }
 
+/// Pins a measured detached mount only for the current Storage readback call.
+pub(crate) struct StorageHeldSnapshotReadbackWithMountV1 {
+    pub(crate) readback: StorageHeldSnapshotReadbackV1,
+    mount: OwnedFd,
+}
+
+impl StorageHeldSnapshotReadbackWithMountV1 {
+    /// Rechecks that the retained mount is the exact read-only measured root.
+    pub(crate) fn verify_mount(&self) -> Result<(), StorageRuntimeError> {
+        crate::process::verify_received_mount_fd(
+            self.mount.as_fd(),
+            &self.readback.measured_tree,
+            self.readback.pool_guid,
+        )
+        .map_err(|_| StorageRuntimeError::Recovery)
+    }
+}
+
 fn identity_observation_matches_snapshot_metadata(
     observed: crate::held_snapshot_tree::HeldSnapshotIdentityObservationV1,
     metadata: CheckedSnapshotMetadataRecordV1,
@@ -382,6 +400,18 @@ impl StorageBrokerRuntime {
         &mut self,
         selector: StorageHeldSnapshotSelectorV1,
     ) -> Result<StorageHeldSnapshotReadbackV1, StorageRuntimeError> {
+        let (readback, mount) = self.observe_held_snapshot_readback_inner(selector, false)?;
+        if mount.is_some() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        Ok(readback)
+    }
+
+    fn observe_held_snapshot_readback_inner(
+        &mut self,
+        selector: StorageHeldSnapshotSelectorV1,
+        retain_mount: bool,
+    ) -> Result<(StorageHeldSnapshotReadbackV1, Option<OwnedFd>), StorageRuntimeError> {
         let _dispatch = self
             .worker_dispatch
             .enter()
@@ -421,8 +451,9 @@ impl StorageBrokerRuntime {
             return Err(StorageRuntimeError::Recovery);
         }
 
-        // The reader exits with its detached mount before Storage accepts a
-        // second physical hold observation and the final protected journal cut.
+        // The reader must exit before Storage accepts the second hold and
+        // final protected cut. The versioned path keeps only its verified
+        // read-only mount FD alive across those checks.
         let mut reader = crate::process::SystemdHeldSnapshotReaderV1::new(
             crate::process::open_cgroup_root().map_err(|_| StorageRuntimeError::Recovery)?,
             self.held_reader_state_directory
@@ -430,12 +461,27 @@ impl StorageBrokerRuntime {
                 .ok_or(StorageRuntimeError::Recovery)?,
         )
         .map_err(|_| StorageRuntimeError::Recovery)?;
-        let measured_tree = match reader.measure(
-            &initial.snapshot,
-            expected_pool_guid,
-            initial.materialized_state_digest,
-            random_challenge()?,
-        ) {
+        let nonce = random_challenge()?;
+        let measurement = if retain_mount {
+            reader
+                .measure_with_mount(
+                    &initial.snapshot,
+                    expected_pool_guid,
+                    initial.materialized_state_digest,
+                    nonce,
+                )
+                .map(|(measured, mount)| (measured, Some(mount)))
+        } else {
+            reader
+                .measure(
+                    &initial.snapshot,
+                    expected_pool_guid,
+                    initial.materialized_state_digest,
+                    nonce,
+                )
+                .map(|measured| (measured, None))
+        };
+        let (measured_tree, mount) = match measurement {
             Ok(measured) => measured,
             Err(ZfsWorkerError::Quiescence(_)) => {
                 self.readiness = StorageRuntimeReadiness::ReopenRequired;
@@ -485,13 +531,24 @@ impl StorageBrokerRuntime {
         ) {
             return Err(StorageRuntimeError::Recovery);
         }
-        Ok(StorageHeldSnapshotReadbackV1 {
-            cut: final_cut,
-            pool_guid,
-            physical_observation_digest: digest,
-            measured_tree,
-            post_measurement_observation_digest,
-        })
+        if let Some(descriptor) = mount.as_ref() {
+            crate::process::verify_received_mount_fd(
+                descriptor.as_fd(),
+                &measured_tree,
+                expected_pool_guid,
+            )
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        }
+        Ok((
+            StorageHeldSnapshotReadbackV1 {
+                cut: final_cut,
+                pool_guid,
+                physical_observation_digest: digest,
+                measured_tree,
+                post_measurement_observation_digest,
+            },
+            mount,
+        ))
     }
 
     /// Checks a native Provider row against Storage's unchanged protected cut and measured bytes.
@@ -518,6 +575,27 @@ impl StorageBrokerRuntime {
             return Err(StorageRuntimeError::Admission(StorageBrokerError::Request));
         }
         Ok(readback)
+    }
+
+    /// Retains one read-only mount while joining a native claim to Storage's final cut.
+    pub(crate) fn observe_native_held_snapshot_claim_with_mount(
+        &mut self,
+        claim: &ZfsHeldSnapshotProofV1,
+    ) -> Result<StorageHeldSnapshotReadbackWithMountV1, StorageRuntimeError> {
+        let selector = StorageHeldSnapshotSelectorV1::from_native_claim(claim)?;
+        let (readback, mount) = self.observe_held_snapshot_readback_inner(selector, true)?;
+        if !readback.cut.matches_native_claim(
+            claim,
+            readback.pool_guid,
+            readback.measured_tree.content_digest,
+            readback.measured_tree.mounted_snapshot_guid,
+        ) {
+            return Err(StorageRuntimeError::Admission(StorageBrokerError::Request));
+        }
+        let mount = mount.ok_or(StorageRuntimeError::Recovery)?;
+        let held = StorageHeldSnapshotReadbackWithMountV1 { readback, mount };
+        held.verify_mount()?;
+        Ok(held)
     }
 
     /// Observes one authenticated, read-only method-41 candidate.

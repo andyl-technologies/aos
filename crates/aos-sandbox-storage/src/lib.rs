@@ -161,6 +161,7 @@ mod workspace_repair_admission;
 mod workspace_repair_observer;
 mod workspace_repair_worker;
 pub mod zfs;
+pub mod zfs_hold_transport;
 
 pub use authorization::{
     AuthorizedStorageResolutionV1, StorageAdmissionError, StorageAuthorityConfigError,

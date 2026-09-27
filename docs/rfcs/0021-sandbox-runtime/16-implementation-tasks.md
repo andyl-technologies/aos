@@ -8669,15 +8669,18 @@ bounded portable tree beneath a detached ZFS snapshot mount. The one-shot
 service has a fixed root-only socket, verifies the live `aos-storaged` peer and
 request-record subject, and refuses to run outside a private mount namespace.
 It applies read-only, nodev, nosuid, and noexec attributes before reading, and
-returns only a request-bound digest and mount identity. Storage's dormant held
-readback keeps its sole journal cut while it observes the GUID and hold and
+returns a request-bound digest and mount identity on its original measurement
+wire. A distinct versioned reply can transfer exactly one GUID-verified,
+read-only detached mount FD to Storage, without exposing it to Provider.
+Storage's dormant held readback keeps its sole journal cut while it observes the GUID and hold and
 measures the bytes. A successful path observes the GUID and hold again after
 reader quiescence and rechecks the protected catalog and policy heads.
 The private native-claim bridge now derives the opaque snapshot version handle
 from Storage's authenticated Snapshot result, not the Provider row, and checks
 the row's handle, format version, GUIDs, hold lineage, root policy, and portable
 content digest against that unchanged cut and the confined reader. It returns
-only a nonauthorizing Storage sample; no production socket consumes it.
+only a nonauthorizing Storage sample. A separate Provider-only Storage socket
+now consumes one exact native claim but can return only `Unavailable`.
 The separately provisioned `AOSZHK01` Storage role key can derive an unsigned
 `AOSZHR01` head only after exact credential recheck. That head binds the
 unchanged catalog and materialized-journal cut to both ZFS hold observations
@@ -8685,8 +8688,9 @@ and the confined reader's complete measured tree, identity fields, and mount
 identity at observation time. A retained head does not prove currentness after
 a hold release or journal change. Any later receipt issuance must rejoin the
 live held cut, current protected journal, and policy. No receipt is signed:
-the Provider attempt is not authenticated to Storage, and the reader has
-already detached its mount without transferring a SourceRoot descriptor.
+the socket authenticates the Provider process, but Storage cannot independently
+prove the durable Provider attempt or retain a SourceRoot delivery across a
+crash. The transferred mount is dropped after the final Storage readback.
 
 Storage writes and fsyncs a single exclusive launch marker in its root-owned,
 mode-0700 StateDirectory before connecting to the reader socket. A restart
@@ -8698,7 +8702,9 @@ admission closed; offline recovery needs independent proof that no accepted
 activation can still run. This trades availability after an uncertain launch
 for the absence of overlapping reader attempts.
 
-The reader has no receipt key or descriptor-transfer path. A scoped OpenZFS 2.4.4
+The reader has no receipt key and its descriptor reply is limited to the
+Storage-only, exact-one-FD version; the prior descriptor-free format is unchanged.
+A scoped OpenZFS 2.4.4
 patch for the pinned Linux 7.2 kernel now binds the mounted superblock's UUID
 to the immutable pool and snapshot GUIDs. The reader checks `FS_IOC_GETFSUUID` on a
 readable descriptor of the detached root before and after the complete byte
@@ -8712,9 +8718,11 @@ mount namespace do not change the fact that CAP_SYS_ADMIN remains an
 initial-user-namespace capability. The syscall and descriptor boundary still
 requires a confinement review before activation of any authority. The Q04
 Source-journal signer cannot substitute for the distinct Storage ZFS-hold role.
-No authenticated broker carrier yet conveys the owner-minted Provider challenge,
-attempt, holder session, and trusted Storage current head. The signed receipt,
-read-only SourceRoot descriptor custody, and Provider replay/MAC gates do not
+The closed Provider-to-Storage request carries the owner-minted challenge,
+attempt, and holder-session assertions from an authenticated live process, but
+the Provider production owner does not yet dispatch it, and Storage still has
+no independent cross-owner durable attempt/current-head acceptance. The signed
+receipt, read-only SourceRoot descriptor custody, and Provider replay/MAC gates do not
 yet compose. The Provider's one-way durable spend transition remains
 behind the future trusted currentness and positive acceptance cut; inspection
 that returns Unavailable does not invoke it. Production positive Acquire remains

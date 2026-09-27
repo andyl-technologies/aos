@@ -3,8 +3,10 @@
 //! The request is selected by the protected Storage owner, never by a public
 //! broker method. The reader mounts only that snapshot in its private mount
 //! namespace, applies read-only, nodev, nosuid, and noexec attributes while
-//! detached, and returns a bounded physical measurement without a descriptor,
-//! signature, or SourceRoot receipt.
+//! detached, and returns a bounded physical measurement. The original reply
+//! carries no descriptor; the separate versioned reply transfers exactly one
+//! read-only detached mount FD to Storage. Neither reply carries a signature
+//! or SourceRoot receipt.
 //!
 //! ```text
 //! AOSHSR01 request = version:u16 | snapshot-guid:u64 | pool-guid:u64 |
@@ -15,10 +17,13 @@
 //!                    mounted-snapshot-guid:u64 | root-uid:u32 | root-gid:u32 |
 //!                    root-mode:u16 | maximum-uid:u32 | maximum-gid:u32 |
 //!                    distinct-inodes:u64 | directory-entries:u64 | identity-tree-digest:32
+//! AOSHSR02 request = AOSHSR01 fields with version 2 and a distinct magic
+//! AOSHSM03 result  = AOSHSM02 fields with version 3 and exactly one detached
+//!                    read-only mount FD in the same authenticated record
 //! ```
 
 use std::fs;
-use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
+use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 use std::time::Duration;
@@ -26,6 +31,7 @@ use std::time::Duration;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::cgroup::{CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::inventory::MountId;
+use aos_sandbox_linux::mount::filesystem_uuid;
 use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketSocket};
 use rustix::fs::{
     AtFlags, FileType, Mode, OFlags, StatVfsMountFlags, fstat, fsync, openat, unlinkat,
@@ -35,22 +41,28 @@ use sha2::{Digest as _, Sha256};
 use crate::ResolvedSnapshot;
 use crate::held_snapshot_tree::{
     HeldSnapshotIdentityObservationV1, measure_bound_detached_snapshot,
+    measure_bound_detached_snapshot_with_mount, verify_mounted_snapshot_uuid,
 };
 use crate::live_export_key::open_protected_directory;
 use crate::root_policy::PortableRootAttributesV1;
 
 use super::{
     Deadline, ZfsWorkerError, current_cgroup_path, decode_ack, decode_ready_frame, encode_ack,
-    encode_ready_frame, open_cgroup_root, quiesce_worker, receive_before, send_before,
+    encode_ready_frame, open_cgroup_root, quiesce_worker, receive_before,
+    receive_one_descriptor_before, send_before, send_with_descriptor_before,
     verify_same_live_subject, verify_same_subject, verify_storaged_peer,
     verify_systemd_activation_peer, wait_for_worker_quiescence,
 };
 
 const REQUEST_MAGIC: &[u8; 8] = b"AOSHSR01";
 const RESULT_MAGIC: &[u8; 8] = b"AOSHSM02";
+const MOUNT_REQUEST_MAGIC: &[u8; 8] = b"AOSHSR02";
+const MOUNT_RESULT_MAGIC: &[u8; 8] = b"AOSHSM03";
 const READY_MAGIC: &[u8; 8] = b"AOSHSRD1";
 const VERSION: u16 = 1;
 const RESULT_VERSION: u16 = 2;
+const MOUNT_REQUEST_VERSION: u16 = 2;
+const MOUNT_RESULT_VERSION: u16 = 3;
 const REQUEST_DOMAIN: &[u8] = b"aos.sandbox.storage.held-snapshot-reader.v1\0";
 const SOCKET_PATH: &str = "/run/aos/sandbox-held-snapshot-reader/control.sock";
 const NAMESPACE_MARKER: &str = "/run/aos-held-reader-namespace";
@@ -65,6 +77,12 @@ const MAXIMUM_REQUEST_BYTES: usize = 1024;
 const MAXIMUM_READY_BYTES: usize = 512;
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(45);
 const LAUNCH_FENCE_NAME: &str = "held-snapshot-reader.launch";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReaderReplyMode {
+    MeasurementOnly,
+    WithMount,
+}
 
 /// Retains a measured byte identity and mount identity, without authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -230,6 +248,50 @@ impl SystemdHeldSnapshotReaderV1 {
         protected_cut_digest: ObjectDigest,
         nonce: [u8; 16],
     ) -> Result<HeldSnapshotReaderObservationV1, ZfsWorkerError> {
+        let (measured, mount) = self.measure_inner(
+            snapshot,
+            expected_pool_guid,
+            protected_cut_digest,
+            nonce,
+            ReaderReplyMode::MeasurementOnly,
+        )?;
+        if mount.is_some() {
+            return Err(ZfsWorkerError::Protocol(
+                "measurement-only reader returned a mount",
+            ));
+        }
+        Ok(measured)
+    }
+
+    /// Retains one GUID-verified detached mount through reader quiescence.
+    pub(crate) fn measure_with_mount(
+        &mut self,
+        snapshot: &ResolvedSnapshot,
+        expected_pool_guid: u64,
+        protected_cut_digest: ObjectDigest,
+        nonce: [u8; 16],
+    ) -> Result<(HeldSnapshotReaderObservationV1, OwnedFd), ZfsWorkerError> {
+        let (measured, mount) = self.measure_inner(
+            snapshot,
+            expected_pool_guid,
+            protected_cut_digest,
+            nonce,
+            ReaderReplyMode::WithMount,
+        )?;
+        let mount = mount.ok_or(ZfsWorkerError::Protocol(
+            "mount reader returned no descriptor",
+        ))?;
+        Ok((measured, mount))
+    }
+
+    fn measure_inner(
+        &mut self,
+        snapshot: &ResolvedSnapshot,
+        expected_pool_guid: u64,
+        protected_cut_digest: ObjectDigest,
+        nonce: [u8; 16],
+        mode: ReaderReplyMode,
+    ) -> Result<(HeldSnapshotReaderObservationV1, Option<OwnedFd>), ZfsWorkerError> {
         if self.fail_stopped {
             return Err(ZfsWorkerError::Quiescence(
                 "held snapshot reader is fail-stopped".to_owned(),
@@ -238,7 +300,13 @@ impl SystemdHeldSnapshotReaderV1 {
         if let Err(error) = self.prove_prior_readers_empty() {
             return fail_stop_unproved_setup(&mut self.fail_stopped, error, None);
         }
-        let request = encode_request(snapshot, expected_pool_guid, protected_cut_digest, nonce)?;
+        let request = encode_request_for(
+            snapshot,
+            expected_pool_guid,
+            protected_cut_digest,
+            nonce,
+            mode,
+        )?;
         let request_digest = digest_request(&request);
         let deadline = Deadline::after(EXCHANGE_TIMEOUT);
         // The directory entry is durable before connect can queue an activation.
@@ -282,23 +350,52 @@ impl SystemdHeldSnapshotReaderV1 {
         };
         let exchange = (|| {
             send_before(&mut socket, &request, deadline)?;
-            let response = receive_before(&mut socket, RESULT_BYTES, deadline)?;
-            verify_same_live_subject(&reader_subject, response.subject())?;
-            reader_cgroup.verify_exact_membership(response.subject().pidfd())?;
-            let measured = decode_result(response.payload(), request_digest, snapshot.guid())?;
+            let result = match mode {
+                ReaderReplyMode::MeasurementOnly => {
+                    let response = receive_before(&mut socket, RESULT_BYTES, deadline)?;
+                    verify_same_live_subject(&reader_subject, response.subject())?;
+                    reader_cgroup.verify_exact_membership(response.subject().pidfd())?;
+                    (
+                        decode_result(response.payload(), request_digest, snapshot.guid())?,
+                        None,
+                    )
+                }
+                ReaderReplyMode::WithMount => {
+                    let response =
+                        receive_one_descriptor_before(&mut socket, RESULT_BYTES, deadline)?;
+                    verify_same_live_subject(&reader_subject, response.subject())?;
+                    reader_cgroup.verify_exact_membership(response.subject().pidfd())?;
+                    let (bytes, _subject, descriptors) = response.into_parts();
+                    let (measured, mount) = decode_result_with_mount(
+                        &bytes,
+                        request_digest,
+                        snapshot.guid(),
+                        expected_pool_guid,
+                        descriptors,
+                    )?;
+                    (measured, Some(mount))
+                }
+            };
             send_before(&mut socket, &encode_ack(), deadline)?;
-            Ok(measured)
+            Ok::<_, ZfsWorkerError>(result)
         })();
 
         match exchange {
-            Ok(measured) => {
+            Ok((measured, mount)) => {
                 if wait_for_worker_quiescence(&reader_subject, &population, Duration::from_secs(1))
                     .is_ok()
                 {
                     launch.retire().or_else(|error| {
                         fail_stop_unproved_setup(&mut self.fail_stopped, error, None)
                     })?;
-                    return Ok(measured);
+                    if let Some(descriptor) = mount.as_ref() {
+                        verify_received_mount_fd(
+                            descriptor.as_fd(),
+                            &measured,
+                            expected_pool_guid,
+                        )?;
+                    }
+                    return Ok((measured, mount));
                 }
                 if quiesce_worker(&reader_subject, &reader_cgroup, &population).is_err() {
                     self.fail_stopped = true;
@@ -437,12 +534,29 @@ pub fn run_inherited_held_snapshot_reader() -> Result<(), ZfsWorkerError> {
     let record = receive_before(&mut socket, MAXIMUM_REQUEST_BYTES, deadline)?;
     verify_same_subject(socket.peer(), record.subject())?;
     storaged.verify_exact_membership(record.subject().pidfd())?;
-    let (snapshot_name, expected_pool_guid, expected_snapshot_guid, request_digest) =
+    let (snapshot_name, expected_pool_guid, expected_snapshot_guid, request_digest, mode) =
         decode_request(record.payload())?;
 
-    let measured =
-        measure_bound_detached_snapshot(snapshot_name, expected_pool_guid, expected_snapshot_guid)
+    let (measured, mount) = match mode {
+        ReaderReplyMode::MeasurementOnly => (
+            measure_bound_detached_snapshot(
+                snapshot_name,
+                expected_pool_guid,
+                expected_snapshot_guid,
+            )
+            .map_err(|error| ZfsWorkerError::Executable(error.to_string()))?,
+            None,
+        ),
+        ReaderReplyMode::WithMount => {
+            let (measured, mount) = measure_bound_detached_snapshot_with_mount(
+                snapshot_name,
+                expected_pool_guid,
+                expected_snapshot_guid,
+            )
             .map_err(|error| ZfsWorkerError::Executable(error.to_string()))?;
+            (measured, Some(mount))
+        }
+    };
     let observation = HeldSnapshotReaderObservationV1 {
         content_digest: measured.content_digest,
         tree_digest: measured.tree.digest(),
@@ -459,11 +573,19 @@ pub fn run_inherited_held_snapshot_reader() -> Result<(), ZfsWorkerError> {
         mounted_snapshot_guid: expected_snapshot_guid,
         identity: measured.identity,
     };
-    send_before(
-        &mut socket,
-        &encode_result(request_digest, observation),
-        deadline,
-    )?;
+    match mount.as_ref() {
+        Some(mount) => send_with_descriptor_before(
+            &mut socket,
+            &encode_result_with_mount(request_digest, observation),
+            mount.as_fd(),
+            deadline,
+        )?,
+        None => send_before(
+            &mut socket,
+            &encode_result(request_digest, observation),
+            deadline,
+        )?,
+    }
     let acknowledgement = receive_before(&mut socket, 10, deadline)?;
     verify_same_subject(socket.peer(), acknowledgement.subject())?;
     storaged.verify_exact_membership(acknowledgement.subject().pidfd())?;
@@ -502,11 +624,12 @@ fn require_private_mount_namespace() -> Result<(), ZfsWorkerError> {
     Ok(())
 }
 
-fn encode_request(
+fn encode_request_for(
     snapshot: &ResolvedSnapshot,
     expected_pool_guid: u64,
     cut_digest: ObjectDigest,
     nonce: [u8; 16],
+    mode: ReaderReplyMode,
 ) -> Result<Vec<u8>, ZfsWorkerError> {
     let name = snapshot.name().as_bytes();
     validate_name(name)?;
@@ -520,8 +643,12 @@ fn encode_request(
         ));
     }
     let mut bytes = Vec::with_capacity(76 + name.len());
-    bytes.extend_from_slice(REQUEST_MAGIC);
-    bytes.extend_from_slice(&VERSION.to_be_bytes());
+    let (magic, version) = match mode {
+        ReaderReplyMode::MeasurementOnly => (REQUEST_MAGIC, VERSION),
+        ReaderReplyMode::WithMount => (MOUNT_REQUEST_MAGIC, MOUNT_REQUEST_VERSION),
+    };
+    bytes.extend_from_slice(magic);
+    bytes.extend_from_slice(&version.to_be_bytes());
     bytes.extend_from_slice(&snapshot.guid().to_be_bytes());
     bytes.extend_from_slice(&expected_pool_guid.to_be_bytes());
     bytes.extend_from_slice(cut_digest.as_bytes());
@@ -535,14 +662,30 @@ fn encode_request(
     Ok(bytes)
 }
 
-fn decode_request(bytes: &[u8]) -> Result<(&str, u64, u64, ObjectDigest), ZfsWorkerError> {
-    if bytes.len() < 76 || bytes.len() > MAXIMUM_REQUEST_BYTES || &bytes[..8] != REQUEST_MAGIC {
+fn decode_request(
+    bytes: &[u8],
+) -> Result<(&str, u64, u64, ObjectDigest, ReaderReplyMode), ZfsWorkerError> {
+    if bytes.len() < 76 || bytes.len() > MAXIMUM_REQUEST_BYTES {
         return Err(ZfsWorkerError::Protocol(
             "reader request length or magic is invalid",
         ));
     }
-    if bytes[8..10] != VERSION.to_be_bytes()
-        || bytes[10..18] == [0; 8]
+    let mode = match (&bytes[..8], &bytes[8..10]) {
+        (magic, version) if magic == REQUEST_MAGIC && version == VERSION.to_be_bytes() => {
+            ReaderReplyMode::MeasurementOnly
+        }
+        (magic, version)
+            if magic == MOUNT_REQUEST_MAGIC && version == MOUNT_REQUEST_VERSION.to_be_bytes() =>
+        {
+            ReaderReplyMode::WithMount
+        }
+        _ => {
+            return Err(ZfsWorkerError::Protocol(
+                "reader request version is invalid",
+            ));
+        }
+    };
+    if bytes[10..18] == [0; 8]
         || bytes[18..26] == [0; 8]
         || bytes[26..58] == [0; 32]
         || bytes[58..74] == [0; 16]
@@ -568,6 +711,7 @@ fn decode_request(bytes: &[u8]) -> Result<(&str, u64, u64, ObjectDigest), ZfsWor
         u64::from_be_bytes(pool),
         u64::from_be_bytes(guid),
         digest_request(bytes),
+        mode,
     ))
 }
 
@@ -615,9 +759,28 @@ fn encode_result(
     digest: ObjectDigest,
     measured: HeldSnapshotReaderObservationV1,
 ) -> [u8; RESULT_BYTES] {
+    encode_result_for(digest, measured, ReaderReplyMode::MeasurementOnly)
+}
+
+fn encode_result_with_mount(
+    digest: ObjectDigest,
+    measured: HeldSnapshotReaderObservationV1,
+) -> [u8; RESULT_BYTES] {
+    encode_result_for(digest, measured, ReaderReplyMode::WithMount)
+}
+
+fn encode_result_for(
+    digest: ObjectDigest,
+    measured: HeldSnapshotReaderObservationV1,
+    mode: ReaderReplyMode,
+) -> [u8; RESULT_BYTES] {
     let mut bytes = [0; RESULT_BYTES];
-    bytes[..8].copy_from_slice(RESULT_MAGIC);
-    bytes[8..10].copy_from_slice(&RESULT_VERSION.to_be_bytes());
+    let (magic, version) = match mode {
+        ReaderReplyMode::MeasurementOnly => (RESULT_MAGIC, RESULT_VERSION),
+        ReaderReplyMode::WithMount => (MOUNT_RESULT_MAGIC, MOUNT_RESULT_VERSION),
+    };
+    bytes[..8].copy_from_slice(magic);
+    bytes[8..10].copy_from_slice(&version.to_be_bytes());
     bytes[10..42].copy_from_slice(digest.as_bytes());
     bytes[42..74].copy_from_slice(measured.content_digest.as_bytes());
     bytes[74..106].copy_from_slice(measured.tree_digest.as_bytes());
@@ -644,9 +807,47 @@ fn decode_result(
     expected: ObjectDigest,
     expected_snapshot_guid: u64,
 ) -> Result<HeldSnapshotReaderObservationV1, ZfsWorkerError> {
+    decode_result_for(
+        bytes,
+        expected,
+        expected_snapshot_guid,
+        ReaderReplyMode::MeasurementOnly,
+    )
+}
+
+fn decode_result_with_mount(
+    bytes: &[u8],
+    expected: ObjectDigest,
+    expected_snapshot_guid: u64,
+    expected_pool_guid: u64,
+    descriptors: Vec<OwnedFd>,
+) -> Result<(HeldSnapshotReaderObservationV1, OwnedFd), ZfsWorkerError> {
+    let [mount]: [OwnedFd; 1] = descriptors.try_into().map_err(|_| {
+        ZfsWorkerError::Protocol("reader descriptor result requires exactly one mount")
+    })?;
+    let measured = decode_result_for(
+        bytes,
+        expected,
+        expected_snapshot_guid,
+        ReaderReplyMode::WithMount,
+    )?;
+    verify_received_mount_fd(mount.as_fd(), &measured, expected_pool_guid)?;
+    Ok((measured, mount))
+}
+
+fn decode_result_for(
+    bytes: &[u8],
+    expected: ObjectDigest,
+    expected_snapshot_guid: u64,
+    mode: ReaderReplyMode,
+) -> Result<HeldSnapshotReaderObservationV1, ZfsWorkerError> {
+    let (magic, version) = match mode {
+        ReaderReplyMode::MeasurementOnly => (RESULT_MAGIC, RESULT_VERSION),
+        ReaderReplyMode::WithMount => (MOUNT_RESULT_MAGIC, MOUNT_RESULT_VERSION),
+    };
     if bytes.len() != RESULT_BYTES
-        || &bytes[..8] != RESULT_MAGIC
-        || bytes[8..10] != RESULT_VERSION.to_be_bytes()
+        || &bytes[..8] != magic
+        || bytes[8..10] != version.to_be_bytes()
         || bytes[10..42] != *expected.as_bytes()
     {
         return Err(ZfsWorkerError::Protocol("reader result header is invalid"));
@@ -713,6 +914,52 @@ fn decode_result(
         ));
     }
     Ok(measured)
+}
+
+pub(crate) fn verify_received_mount_fd(
+    mount: BorrowedFd<'_>,
+    measured: &HeldSnapshotReaderObservationV1,
+    expected_pool_guid: u64,
+) -> Result<(), ZfsWorkerError> {
+    let metadata = fstat(mount)?;
+    let mount_id = MountId::from_fd(mount)?;
+    let flags = rustix::fs::fstatvfs(mount)?.f_flag;
+    if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
+        || mount_id.get() != measured.mount_id
+        || metadata.st_dev != measured.root_device
+        || metadata.st_ino != measured.root_inode
+        || metadata.st_uid != measured.identity.root_attributes.uid()
+        || metadata.st_gid != measured.identity.root_attributes.gid()
+        || metadata.st_mode & 0o7777 != u32::from(measured.identity.root_attributes.mode())
+        || !flags.contains(
+            StatVfsMountFlags::RDONLY
+                | StatVfsMountFlags::NOSUID
+                | StatVfsMountFlags::NODEV
+                | StatVfsMountFlags::NOEXEC,
+        )
+    {
+        return Err(ZfsWorkerError::Protocol(
+            "reader mount descriptor differs from measured read-only root",
+        ));
+    }
+
+    let readable = rustix::fs::openat(
+        mount,
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    if MountId::from_fd(readable.as_fd())? != mount_id {
+        return Err(ZfsWorkerError::Protocol(
+            "reader mount descriptor changed after transfer",
+        ));
+    }
+    verify_mounted_snapshot_uuid(
+        filesystem_uuid(readable.as_fd())?,
+        expected_pool_guid,
+        measured.mounted_snapshot_guid,
+    )
+    .map_err(|_| ZfsWorkerError::Protocol("reader mount UUID differs from selected snapshot"))
 }
 
 #[cfg(test)]
@@ -983,13 +1230,24 @@ mod tests {
         request.extend_from_slice(&(name.len() as u16).to_be_bytes());
         request.extend_from_slice(name);
 
-        let (decoded_name, pool_guid, snapshot_guid, digest) = decode_request(&request).unwrap();
+        let (decoded_name, pool_guid, snapshot_guid, digest, mode) =
+            decode_request(&request).unwrap();
         assert_eq!(decoded_name, "pool/data@snap");
         assert_eq!(pool_guid, 13);
         assert_eq!(snapshot_guid, 11);
         assert_eq!(digest, digest_request(&request));
+        assert_eq!(mode, ReaderReplyMode::MeasurementOnly);
 
         request[18..26].fill(0);
+        assert!(decode_request(&request).is_err());
+        request[18..26].copy_from_slice(&13_u64.to_be_bytes());
+        request[..8].copy_from_slice(MOUNT_REQUEST_MAGIC);
+        request[8..10].copy_from_slice(&MOUNT_REQUEST_VERSION.to_be_bytes());
+        assert_eq!(
+            decode_request(&request).unwrap().4,
+            ReaderReplyMode::WithMount
+        );
+        request[8..10].copy_from_slice(&VERSION.to_be_bytes());
         assert!(decode_request(&request).is_err());
     }
 
@@ -1068,6 +1326,92 @@ mod tests {
             },
         );
         assert!(decode_result(&unbound, digest, 7).is_err());
+    }
+
+    #[test]
+    fn descriptor_result_requires_one_fd_and_its_own_wire_version() {
+        let digest = ObjectDigest::from_bytes([1; 32]);
+        let measured = HeldSnapshotReaderObservationV1 {
+            content_digest: ObjectDigest::from_bytes([2; 32]),
+            tree_digest: ObjectDigest::from_bytes([3; 32]),
+            tree_size: 1,
+            mount_id: 2,
+            root_device: 3,
+            root_inode: 4,
+            nodes: 1,
+            file_bytes: 5,
+            mounted_snapshot_guid: 7,
+            identity: HeldSnapshotIdentityObservationV1 {
+                root_attributes: PortableRootAttributesV1::new(0, 0, 0o755).unwrap(),
+                maximum_portable_uid: 0,
+                maximum_portable_gid: 0,
+                distinct_inode_count: 1,
+                directory_entry_count: 0,
+                identity_tree_digest: ObjectDigest::from_bytes([8; 32]),
+            },
+        };
+        let version_three = encode_result_with_mount(digest, measured);
+        let version_two = encode_result(digest, measured);
+        let temporary = tempfile::tempfile().unwrap();
+        let descriptor = rustix::io::dup(temporary.as_fd()).unwrap();
+
+        assert!(decode_result_with_mount(&version_three, digest, 7, 9, Vec::new()).is_err());
+        assert!(
+            decode_result_with_mount(
+                &version_three,
+                digest,
+                7,
+                9,
+                vec![rustix::io::dup(temporary.as_fd()).unwrap(), descriptor],
+            )
+            .is_err()
+        );
+        assert!(
+            decode_result_with_mount(
+                &version_two,
+                digest,
+                7,
+                9,
+                vec![rustix::io::dup(temporary.as_fd()).unwrap()],
+            )
+            .is_err()
+        );
+        assert!(
+            decode_result_with_mount(
+                &version_three,
+                ObjectDigest::from_bytes([9; 32]),
+                7,
+                9,
+                vec![rustix::io::dup(temporary.as_fd()).unwrap()],
+            )
+            .is_err()
+        );
+        assert!(
+            decode_result_with_mount(
+                &version_three,
+                digest,
+                7,
+                9,
+                vec![rustix::io::dup(temporary.as_fd()).unwrap()],
+            )
+            .is_err()
+        ); // A regular file cannot impersonate a detached snapshot mount.
+    }
+
+    #[test]
+    fn descriptor_result_transport_rejects_missing_or_extra_rights() {
+        let (mut receiver, sender_fd) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut sender = SeqpacketSocket::from_owned(sender_fd).unwrap();
+        sender.send(b"AOSHSM03").unwrap();
+        assert!(receiver.receive_with_descriptors(RESULT_BYTES, 1).is_err());
+
+        let (mut receiver, sender_fd) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut sender = SeqpacketSocket::from_owned(sender_fd).unwrap();
+        let file = tempfile::tempfile().unwrap();
+        sender
+            .send_with_descriptors(b"AOSHSM03", &[file.as_fd(), file.as_fd()])
+            .unwrap();
+        assert!(receiver.receive_with_descriptors(RESULT_BYTES, 1).is_err());
     }
 
     #[test]

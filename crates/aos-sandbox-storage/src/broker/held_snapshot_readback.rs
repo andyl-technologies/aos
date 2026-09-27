@@ -798,6 +798,10 @@ mod tests {
         changed_hold.active_hold_digest = ObjectDigest::from_bytes([17; 32]);
         assert!(initial.ensure_unchanged(&changed_hold).is_err());
 
+        let mut replaced_hold = initial.clone();
+        replaced_hold.hold_id = HoldId::from_bytes([19; 16]).unwrap();
+        assert!(initial.ensure_unchanged(&replaced_hold).is_err());
+
         let mut changed_policy = initial.clone();
         changed_policy.root_policy_digest = ObjectDigest::from_bytes([18; 32]);
         assert!(initial.ensure_unchanged(&changed_policy).is_err());
