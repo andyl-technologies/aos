@@ -9,10 +9,12 @@
 //! ```text
 //! AOSHSR01 request = version:u16 | snapshot-guid:u64 | pool-guid:u64 |
 //!                    cut-digest:32 | nonce:16 | name-length:u16 | snapshot-name
-//! AOSHSM01 result  = version:u16 | request-digest:32 | content-digest:32 |
+//! AOSHSM02 result  = version:u16 | request-digest:32 | content-digest:32 |
 //!                    tree-digest:32 | tree-size:u64 | mount-id:u64 |
 //!                    root-device:u64 | root-inode:u64 | nodes:u32 | file-bytes:u64 |
-//!                    mounted-snapshot-guid:u64
+//!                    mounted-snapshot-guid:u64 | root-uid:u32 | root-gid:u32 |
+//!                    root-mode:u16 | maximum-uid:u32 | maximum-gid:u32 |
+//!                    distinct-inodes:u64 | directory-entries:u64 | identity-tree-digest:32
 //! ```
 
 use std::fs;
@@ -31,8 +33,11 @@ use rustix::fs::{
 use sha2::{Digest as _, Sha256};
 
 use crate::ResolvedSnapshot;
-use crate::held_snapshot_tree::measure_bound_detached_snapshot;
+use crate::held_snapshot_tree::{
+    HeldSnapshotIdentityObservationV1, measure_bound_detached_snapshot,
+};
 use crate::live_export_key::open_protected_directory;
+use crate::root_policy::PortableRootAttributesV1;
 
 use super::{
     Deadline, ZfsWorkerError, current_cgroup_path, decode_ack, decode_ready_frame, encode_ack,
@@ -42,9 +47,10 @@ use super::{
 };
 
 const REQUEST_MAGIC: &[u8; 8] = b"AOSHSR01";
-const RESULT_MAGIC: &[u8; 8] = b"AOSHSM01";
+const RESULT_MAGIC: &[u8; 8] = b"AOSHSM02";
 const READY_MAGIC: &[u8; 8] = b"AOSHSRD1";
 const VERSION: u16 = 1;
+const RESULT_VERSION: u16 = 2;
 const REQUEST_DOMAIN: &[u8] = b"aos.sandbox.storage.held-snapshot-reader.v1\0";
 const SOCKET_PATH: &str = "/run/aos/sandbox-held-snapshot-reader/control.sock";
 const NAMESPACE_MARKER: &str = "/run/aos-held-reader-namespace";
@@ -54,7 +60,7 @@ const READER_CGROUP_PREFIX: &str = "aos.slice/aos-control.slice/aos-sandbox-held
 const READER_UNIT_PREFIX: &str = "aos-sandbox-held-snapshot-reader@";
 const READER_CGROUP_SUFFIX: &str = ".service";
 const MAXIMUM_RECOVERED_READERS: usize = 128;
-const RESULT_BYTES: usize = 158;
+const RESULT_BYTES: usize = 224;
 const MAXIMUM_REQUEST_BYTES: usize = 1024;
 const MAXIMUM_READY_BYTES: usize = 512;
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(45);
@@ -73,6 +79,8 @@ pub(crate) struct HeldSnapshotReaderObservationV1 {
     pub(crate) file_bytes: u64,
     /// Zero until the mounted descriptor itself proves the immutable ZFS GUID.
     pub(crate) mounted_snapshot_guid: u64,
+    /// A bounded observation of the admitted tree's portable identities.
+    pub(crate) identity: HeldSnapshotIdentityObservationV1,
 }
 
 /// A single durable marker covers activation before systemd creates a cgroup.
@@ -449,6 +457,7 @@ pub fn run_inherited_held_snapshot_reader() -> Result<(), ZfsWorkerError> {
         // This is asserted only after the mounted root FD's UUID matched both
         // immutable GUIDs before and after the complete byte walk.
         mounted_snapshot_guid: expected_snapshot_guid,
+        identity: measured.identity,
     };
     send_before(
         &mut socket,
@@ -608,7 +617,7 @@ fn encode_result(
 ) -> [u8; RESULT_BYTES] {
     let mut bytes = [0; RESULT_BYTES];
     bytes[..8].copy_from_slice(RESULT_MAGIC);
-    bytes[8..10].copy_from_slice(&VERSION.to_be_bytes());
+    bytes[8..10].copy_from_slice(&RESULT_VERSION.to_be_bytes());
     bytes[10..42].copy_from_slice(digest.as_bytes());
     bytes[42..74].copy_from_slice(measured.content_digest.as_bytes());
     bytes[74..106].copy_from_slice(measured.tree_digest.as_bytes());
@@ -619,6 +628,14 @@ fn encode_result(
     bytes[138..142].copy_from_slice(&measured.nodes.to_be_bytes());
     bytes[142..150].copy_from_slice(&measured.file_bytes.to_be_bytes());
     bytes[150..158].copy_from_slice(&measured.mounted_snapshot_guid.to_be_bytes());
+    bytes[158..162].copy_from_slice(&measured.identity.root_attributes.uid().to_be_bytes());
+    bytes[162..166].copy_from_slice(&measured.identity.root_attributes.gid().to_be_bytes());
+    bytes[166..168].copy_from_slice(&measured.identity.root_attributes.mode().to_be_bytes());
+    bytes[168..172].copy_from_slice(&measured.identity.maximum_portable_uid.to_be_bytes());
+    bytes[172..176].copy_from_slice(&measured.identity.maximum_portable_gid.to_be_bytes());
+    bytes[176..184].copy_from_slice(&measured.identity.distinct_inode_count.to_be_bytes());
+    bytes[184..192].copy_from_slice(&measured.identity.directory_entry_count.to_be_bytes());
+    bytes[192..224].copy_from_slice(measured.identity.identity_tree_digest.as_bytes());
     bytes
 }
 
@@ -629,7 +646,7 @@ fn decode_result(
 ) -> Result<HeldSnapshotReaderObservationV1, ZfsWorkerError> {
     if bytes.len() != RESULT_BYTES
         || &bytes[..8] != RESULT_MAGIC
-        || bytes[8..10] != VERSION.to_be_bytes()
+        || bytes[8..10] != RESULT_VERSION.to_be_bytes()
         || bytes[10..42] != *expected.as_bytes()
     {
         return Err(ZfsWorkerError::Protocol("reader result header is invalid"));
@@ -639,10 +656,23 @@ fn decode_result(
         value.copy_from_slice(&bytes[start..start + 8]);
         value
     };
+    let array4 = |start: usize| -> [u8; 4] {
+        let mut value = [0; 4];
+        value.copy_from_slice(&bytes[start..start + 4]);
+        value
+    };
     let mut content = [0; 32];
     content.copy_from_slice(&bytes[42..74]);
     let mut tree = [0; 32];
     tree.copy_from_slice(&bytes[74..106]);
+    let mut identity_tree_digest = [0; 32];
+    identity_tree_digest.copy_from_slice(&bytes[192..224]);
+    let root_attributes = PortableRootAttributesV1::new(
+        u32::from_be_bytes(array4(158)),
+        u32::from_be_bytes(array4(162)),
+        u32::from(u16::from_be_bytes([bytes[166], bytes[167]])),
+    )
+    .map_err(|_| ZfsWorkerError::Protocol("reader identity root is invalid"))?;
     let measured = HeldSnapshotReaderObservationV1 {
         content_digest: ObjectDigest::from_bytes(content),
         tree_digest: ObjectDigest::from_bytes(tree),
@@ -653,6 +683,14 @@ fn decode_result(
         nodes: u32::from_be_bytes([bytes[138], bytes[139], bytes[140], bytes[141]]),
         file_bytes: u64::from_be_bytes(array(142)),
         mounted_snapshot_guid: u64::from_be_bytes(array(150)),
+        identity: HeldSnapshotIdentityObservationV1 {
+            root_attributes,
+            maximum_portable_uid: u32::from_be_bytes(array4(168)),
+            maximum_portable_gid: u32::from_be_bytes(array4(172)),
+            distinct_inode_count: u64::from_be_bytes(array(176)),
+            directory_entry_count: u64::from_be_bytes(array(184)),
+            identity_tree_digest: ObjectDigest::from_bytes(identity_tree_digest),
+        },
     };
     if measured.content_digest.as_bytes() == &[0; 32]
         || measured.tree_digest.as_bytes() == &[0; 32]
@@ -661,6 +699,14 @@ fn decode_result(
         || measured.root_inode == 0
         || measured.nodes == 0
         || measured.mounted_snapshot_guid != expected_snapshot_guid
+        || measured.identity.maximum_portable_uid == u32::MAX
+        || measured.identity.maximum_portable_gid == u32::MAX
+        || measured.identity.maximum_portable_uid < measured.identity.root_attributes.uid()
+        || measured.identity.maximum_portable_gid < measured.identity.root_attributes.gid()
+        || measured.identity.distinct_inode_count != u64::from(measured.nodes)
+        || measured.identity.directory_entry_count.checked_add(1)
+            != Some(measured.identity.distinct_inode_count)
+        || measured.identity.identity_tree_digest.as_bytes() == &[0; 32]
     {
         return Err(ZfsWorkerError::Protocol(
             "reader result has no exact mounted snapshot GUID proof",
@@ -960,12 +1006,57 @@ mod tests {
             nodes: 1,
             file_bytes: 5,
             mounted_snapshot_guid: 7,
+            identity: HeldSnapshotIdentityObservationV1 {
+                root_attributes: PortableRootAttributesV1::new(0, 0, 0o755).unwrap(),
+                maximum_portable_uid: 0,
+                maximum_portable_gid: 0,
+                distinct_inode_count: 1,
+                directory_entry_count: 0,
+                identity_tree_digest: ObjectDigest::from_bytes([8; 32]),
+            },
         };
         let bytes = encode_result(digest, measured);
         assert_eq!(decode_result(&bytes, digest, 7).unwrap(), measured);
         assert!(decode_result(&bytes, ObjectDigest::from_bytes([9; 32]), 7).is_err());
-        assert!(decode_result(&bytes[..157], digest, 7).is_err());
+        assert!(decode_result(&bytes[..223], digest, 7).is_err());
         assert!(decode_result(&bytes, digest, 8).is_err());
+
+        let mut old_version = bytes;
+        old_version[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        assert!(decode_result(&old_version, digest, 7).is_err());
+        old_version = bytes;
+        old_version[..8].copy_from_slice(b"AOSHSM01");
+        assert!(decode_result(&old_version, digest, 7).is_err());
+
+        let mut invalid_summary = bytes;
+        invalid_summary[168..172].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(decode_result(&invalid_summary, digest, 7).is_err());
+        invalid_summary = bytes;
+        invalid_summary[138..142].copy_from_slice(&2_u32.to_be_bytes());
+        assert!(decode_result(&invalid_summary, digest, 7).is_err());
+        invalid_summary = bytes;
+        invalid_summary[184..192].copy_from_slice(&u64::MAX.to_be_bytes());
+        assert!(decode_result(&invalid_summary, digest, 7).is_err());
+
+        let mut request = Vec::new();
+        request.extend_from_slice(REQUEST_MAGIC);
+        request.extend_from_slice(&VERSION.to_be_bytes());
+        request.extend_from_slice(&7_u64.to_be_bytes());
+        request.extend_from_slice(&9_u64.to_be_bytes());
+        request.extend_from_slice(&[3; 32]);
+        request.extend_from_slice(&[4; 16]);
+        request.extend_from_slice(&1_u16.to_be_bytes());
+        request.push(b'x');
+        let original_request_digest = digest_request(&request);
+        let bound_result = encode_result(original_request_digest, measured);
+        request[26] ^= 1; // Protected cut digest substitution.
+        assert!(decode_result(&bound_result, digest_request(&request), 7).is_err());
+        request[26] ^= 1;
+        request[58] ^= 1; // One-shot nonce substitution.
+        assert!(decode_result(&bound_result, digest_request(&request), 7).is_err());
+        invalid_summary = bytes;
+        invalid_summary[192..224].fill(0);
+        assert!(decode_result(&invalid_summary, digest, 7).is_err());
 
         // A missing mounted GUID remains invalid even when the request names
         // the expected snapshot.
@@ -1041,6 +1132,19 @@ mod tests {
                 assert_eq!(measured.mounted_snapshot_guid, snapshot_guid);
                 assert_ne!(measured.content_digest.as_bytes(), &[0; 32]);
                 assert!(measured.mount_id > 0 && measured.nodes > 0);
+                assert_eq!(measured.identity.root_attributes.uid(), 0);
+                assert_eq!(measured.identity.root_attributes.gid(), 0);
+                assert_eq!(measured.identity.maximum_portable_uid, 42);
+                assert_eq!(measured.identity.maximum_portable_gid, 43);
+                assert_eq!(
+                    measured.identity.distinct_inode_count,
+                    u64::from(measured.nodes)
+                );
+                assert_eq!(
+                    measured.identity.directory_entry_count + 1,
+                    measured.identity.distinct_inode_count
+                );
+                assert_ne!(measured.identity.identity_tree_digest.as_bytes(), &[0; 32]);
             }
             "wrong-pool" | "wrong-snapshot" => {
                 assert!(observation.is_err());

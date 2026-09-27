@@ -166,6 +166,7 @@ in {
         "aosproof/aos/project/workspace"
     )
     vm.succeed("printf 'held reader service payload\\n' > /var/tmp/aos-held-reader-root/payload")
+    vm.succeed("${pkgs.coreutils}/bin/chown 42:43 /var/tmp/aos-held-reader-root/payload")
     vm.succeed(f"{ZFS} snapshot {SNAPSHOT}")
     vm.succeed(f"{ZFS} hold aos-sbx-reader-vm {SNAPSHOT}")
 

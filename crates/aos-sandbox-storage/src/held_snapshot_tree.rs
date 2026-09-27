@@ -4,11 +4,16 @@
 //! Every descendant is resolved beneath that root without following symlinks
 //! or crossing mounts. Unsupported portable state closes measurement; this
 //! module neither acquires the root nor signs an AOSPCZ01 receipt.
+//!
+//! The identity digest hashes a domain tag followed by each accepted inode in
+//! sorted depth-first order. Every node contributes its kind, length-prefixed
+//! root-relative byte path, portable UID, GID, and low twelve mode bits.
+//! Unsupported identity-bearing xattrs, symlinks, and hardlinks close the walk.
 
 use std::ffi::OsString;
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
-use std::os::unix::ffi::OsStringExt as _;
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::Path;
 
 use aos_sandbox_core::format::{encode_directory, encode_tree};
@@ -25,11 +30,15 @@ use aos_sandbox_linux::mount::{
 use aos_sandbox_linux::path::{BeneathRoot, FileType, ResolveOptions};
 use aos_sandbox_source_provider_protocol::held_snapshot_content_digest_v1;
 use rustix::fs::{Mode, OFlags, SeekFrom, Stat, StatVfsMountFlags};
+use sha2::{Digest as _, Sha256};
+
+use crate::root_policy::PortableRootAttributesV1;
 
 const MAXIMUM_DEPTH: usize = 64;
 const MAXIMUM_NODES: usize = 4096;
 const MAXIMUM_FILE_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+const IDENTITY_TREE_DOMAIN: &[u8] = b"aos.sandbox.storage.held-snapshot-identity-tree.v1\0";
 
 /// Reports a physical state that cannot establish one exact portable tree.
 #[derive(Debug, thiserror::Error)]
@@ -64,6 +73,18 @@ pub(crate) struct MeasuredHeldSnapshotTreeV1 {
     pub(crate) content_digest: ObjectDigest,
     pub(crate) nodes: usize,
     pub(crate) file_bytes: usize,
+    pub(crate) identity: HeldSnapshotIdentityObservationV1,
+}
+
+/// Describes only identities physically observed in the accepted tree subset.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct HeldSnapshotIdentityObservationV1 {
+    pub(crate) root_attributes: PortableRootAttributesV1,
+    pub(crate) maximum_portable_uid: u32,
+    pub(crate) maximum_portable_gid: u32,
+    pub(crate) distinct_inode_count: u64,
+    pub(crate) directory_entry_count: u64,
+    pub(crate) identity_tree_digest: ObjectDigest,
 }
 
 /// Measures every byte in the supported tree beneath one read-only root FD.
@@ -112,6 +133,7 @@ fn measure_secure_root(
     }
     let content_digest =
         held_snapshot_content_digest_v1(&tree).map_err(|_| HeldSnapshotTreeErrorV1::Unsupported)?;
+    let identity = walker.identity_observation()?;
     Ok(MeasuredHeldSnapshotTreeV1 {
         mount_id,
         root_device: root_stat.st_dev,
@@ -120,6 +142,7 @@ fn measure_secure_root(
         content_digest,
         nodes: walker.nodes,
         file_bytes: walker.file_bytes,
+        identity,
     })
 }
 
@@ -264,6 +287,14 @@ fn fixture_report(
         "content_digest": measured.content_digest.to_string(),
         "nodes": measured.nodes,
         "file_bytes": measured.file_bytes,
+        "root_uid": measured.identity.root_attributes.uid(),
+        "root_gid": measured.identity.root_attributes.gid(),
+        "root_mode": measured.identity.root_attributes.mode(),
+        "maximum_portable_uid": measured.identity.maximum_portable_uid,
+        "maximum_portable_gid": measured.identity.maximum_portable_gid,
+        "distinct_inode_count": measured.identity.distinct_inode_count,
+        "directory_entry_count": measured.identity.directory_entry_count,
+        "identity_tree_digest": measured.identity.identity_tree_digest.to_string(),
     })
     .to_string())
 }
@@ -273,6 +304,11 @@ struct PhysicalTreeWalker {
     nodes: usize,
     file_bytes: usize,
     object_bytes: usize,
+    root_attributes: Option<PortableRootAttributesV1>,
+    maximum_portable_uid: u32,
+    maximum_portable_gid: u32,
+    directory_entry_count: u64,
+    identity_hasher: Sha256,
 }
 
 impl PhysicalTreeWalker {
@@ -280,6 +316,7 @@ impl PhysicalTreeWalker {
         &mut self,
         root: &BeneathRoot,
     ) -> Result<ObjectDescriptor, HeldSnapshotTreeErrorV1> {
+        self.identity_hasher.update(IDENTITY_TREE_DOMAIN);
         let directory = self.measure_directory(root, Path::new(""), 0)?;
         let tree =
             Tree::new(directory, Vec::new()).map_err(|_| HeldSnapshotTreeErrorV1::Unsupported)?;
@@ -312,6 +349,7 @@ impl PhysicalTreeWalker {
             Mode::empty(),
         )?;
         let metadata = portable_metadata(readable.as_fd(), &before)?;
+        self.record_identity_node(relative, b'd', &before)?;
         let mut names = Vec::new();
         for entry in rustix::fs::Dir::new(readable)? {
             let entry = entry?;
@@ -345,6 +383,10 @@ impl PhysicalTreeWalker {
                     return Err(HeldSnapshotTreeErrorV1::Unsupported);
                 }
             };
+            self.directory_entry_count = self
+                .directory_entry_count
+                .checked_add(1)
+                .ok_or(HeldSnapshotTreeErrorV1::Unsupported)?;
             entries.push(DirectoryEntry { name, node });
         }
         if !same_inode_state(&before, &rustix::fs::fstat(directory.as_fd())?) {
@@ -379,6 +421,7 @@ impl PhysicalTreeWalker {
             return Err(HeldSnapshotTreeErrorV1::Unsupported);
         }
         let metadata = portable_metadata(file.as_fd(), &before)?;
+        self.record_identity_node(relative, b'f', &before)?;
         if size != 0
             && (rustix::fs::seek(file.as_fd(), SeekFrom::Data(0))? != 0
                 || rustix::fs::seek(file.as_fd(), SeekFrom::Hole(0))? != size as u64)
@@ -414,6 +457,57 @@ impl PhysicalTreeWalker {
             return Err(HeldSnapshotTreeErrorV1::Unsupported);
         }
         Ok(())
+    }
+
+    fn record_identity_node(
+        &mut self,
+        relative: &Path,
+        kind: u8,
+        stat: &Stat,
+    ) -> Result<(), HeldSnapshotTreeErrorV1> {
+        let attributes =
+            PortableRootAttributesV1::new(stat.st_uid, stat.st_gid, stat.st_mode & 0o7777)
+                .map_err(|_| HeldSnapshotTreeErrorV1::Unsupported)?;
+        if relative.as_os_str().is_empty() {
+            self.root_attributes = Some(attributes);
+        }
+
+        let path = relative.as_os_str().as_bytes();
+        let path_length =
+            u32::try_from(path.len()).map_err(|_| HeldSnapshotTreeErrorV1::Unsupported)?;
+        self.identity_hasher.update([kind]);
+        self.identity_hasher.update(path_length.to_be_bytes());
+        self.identity_hasher.update(path);
+        self.identity_hasher.update(attributes.uid().to_be_bytes());
+        self.identity_hasher.update(attributes.gid().to_be_bytes());
+        self.identity_hasher.update(attributes.mode().to_be_bytes());
+        self.maximum_portable_uid = self.maximum_portable_uid.max(attributes.uid());
+        self.maximum_portable_gid = self.maximum_portable_gid.max(attributes.gid());
+        Ok(())
+    }
+
+    fn identity_observation(
+        &self,
+    ) -> Result<HeldSnapshotIdentityObservationV1, HeldSnapshotTreeErrorV1> {
+        let root_attributes = self
+            .root_attributes
+            .ok_or(HeldSnapshotTreeErrorV1::Unsupported)?;
+        let distinct_inode_count =
+            u64::try_from(self.nodes).map_err(|_| HeldSnapshotTreeErrorV1::Unsupported)?;
+        if distinct_inode_count == 0 || self.directory_entry_count != distinct_inode_count - 1 {
+            return Err(HeldSnapshotTreeErrorV1::Unsupported);
+        }
+
+        Ok(HeldSnapshotIdentityObservationV1 {
+            root_attributes,
+            maximum_portable_uid: self.maximum_portable_uid,
+            maximum_portable_gid: self.maximum_portable_gid,
+            distinct_inode_count,
+            directory_entry_count: self.directory_entry_count,
+            identity_tree_digest: ObjectDigest::from_bytes(
+                self.identity_hasher.clone().finalize().into(),
+            ),
+        })
     }
 
     fn object(
@@ -476,6 +570,7 @@ fn same_inode_state(before: &Stat, after: &Stat) -> bool {
 #[cfg(test)]
 mod tests {
     use std::os::fd::OwnedFd;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     use super::*;
 
@@ -501,6 +596,63 @@ mod tests {
         assert_ne!(
             held_snapshot_content_digest_v1(&first),
             held_snapshot_content_digest_v1(&second),
+        );
+    }
+
+    #[test]
+    fn identity_summary_covers_every_accepted_inode_and_path() {
+        let directory = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(directory.path().join("nested")).unwrap();
+        std::fs::write(directory.path().join("nested/payload"), b"alpha").unwrap();
+
+        let mut walker = PhysicalTreeWalker::default();
+        walker.measure_tree(&root(&directory)).unwrap();
+        let original = walker.identity_observation().unwrap();
+        let root_stat = std::fs::metadata(directory.path()).unwrap();
+        assert_eq!(original.root_attributes.uid(), root_stat.uid());
+        assert_eq!(original.root_attributes.gid(), root_stat.gid());
+        assert_eq!(
+            original.root_attributes.mode(),
+            (root_stat.mode() & 0o7777) as u16
+        );
+        assert_eq!(original.maximum_portable_uid, root_stat.uid());
+        assert_eq!(original.maximum_portable_gid, root_stat.gid());
+        assert_eq!(original.distinct_inode_count, 3);
+        assert_eq!(original.directory_entry_count, 2);
+
+        std::fs::write(directory.path().join("nested/payload"), b"bravo").unwrap();
+        let mut content_changed = PhysicalTreeWalker::default();
+        content_changed.measure_tree(&root(&directory)).unwrap();
+        assert_eq!(content_changed.identity_observation().unwrap(), original);
+
+        std::fs::rename(
+            directory.path().join("nested/payload"),
+            directory.path().join("nested/renamed"),
+        )
+        .unwrap();
+        let mut path_changed = PhysicalTreeWalker::default();
+        path_changed.measure_tree(&root(&directory)).unwrap();
+        assert_ne!(
+            path_changed
+                .identity_observation()
+                .unwrap()
+                .identity_tree_digest,
+            original.identity_tree_digest
+        );
+
+        let file = directory.path().join("nested/renamed");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut mode_changed = PhysicalTreeWalker::default();
+        mode_changed.measure_tree(&root(&directory)).unwrap();
+        assert_ne!(
+            mode_changed
+                .identity_observation()
+                .unwrap()
+                .identity_tree_digest,
+            path_changed
+                .identity_observation()
+                .unwrap()
+                .identity_tree_digest,
         );
     }
 
