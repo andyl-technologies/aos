@@ -1071,12 +1071,12 @@ mod tests {
 
         let first = clock
             .advance_guest_instructions(1, SchedulerCeiling::new(1_075))
-            .expect("tick 1025 should be reachable");
+            .unwrap_or_else(|error| panic!("tick 1025 should be reachable: {error}"));
         assert_eq!(first.virtual_ns(), 1);
 
         let second = clock
             .advance_guest_instructions(1, SchedulerCeiling::new(1_075))
-            .expect("tick 1075 should be reachable");
+            .unwrap_or_else(|error| panic!("tick 1075 should be reachable: {error}"));
         assert_eq!(second.virtual_ns(), 1);
         assert_eq!(clock.current_icount(), 1_075);
     }
@@ -1086,18 +1086,18 @@ mod tests {
         let mut clock = owned_clock(970);
         let authorization = clock
             .authorize_idle_jump(995, SchedulerCeiling::new(1_045))
-            .expect("scheduler ceiling admits tick 995");
+            .unwrap_or_else(|error| panic!("scheduler ceiling admits tick 995: {error}"));
         assert_eq!(authorization.target_tick(), 995);
 
         let idle = clock
             .advance_authorized_idle_jump(authorization)
-            .expect("idle advance preserves the exact target");
+            .unwrap_or_else(|error| panic!("idle advance preserves the exact target: {error}"));
         assert_eq!(idle.virtual_ns(), 0);
         assert_eq!(clock.current_icount(), 995);
 
         let guest = clock
             .advance_guest_instructions(1, SchedulerCeiling::new(1_045))
-            .expect("guest retires from tick 995 to 1045");
+            .unwrap_or_else(|error| panic!("guest retires from tick 995 to 1045: {error}"));
         assert_eq!(guest.virtual_ns(), 1);
         assert_eq!(clock.current_icount(), 1_045);
     }

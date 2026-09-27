@@ -256,7 +256,7 @@ fn continuation_rejects_runtime_state_before_freeze_and_stale_pending_sequence()
             Some(SelectablePlanPendingRequest::new(
                 SelectionRequest::new(1, "network.policy", "epoch/1", None, 128)?,
                 1,
-                (1) * 50,
+                50,
                 0,
                 0x4000
             )),
@@ -274,7 +274,7 @@ fn continuation_rejects_runtime_state_before_freeze_and_stale_pending_sequence()
             Some(SelectablePlanPendingRequest::new(
                 SelectionRequest::new(7, "network.policy", "epoch/1", None, 128)?,
                 1,
-                (1) * 50,
+                50,
                 0,
                 0x4000
             )),

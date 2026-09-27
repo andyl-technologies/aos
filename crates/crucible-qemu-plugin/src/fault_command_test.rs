@@ -620,7 +620,9 @@ fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
     assert_eq!(header.emitted_tick, emission_tick);
     assert_eq!(evidence.observed_icount, source_tick);
     assert_eq!(
-        u64::from_le_bytes(raw[160..168].try_into().unwrap()),
+        u64::from_le_bytes(raw[160..168].try_into().unwrap_or_else(|error| {
+            panic!("register evidence tick must occupy eight bytes: {error}")
+        })),
         source_tick
     );
 

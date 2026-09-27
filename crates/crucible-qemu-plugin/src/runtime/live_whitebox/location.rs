@@ -179,8 +179,18 @@ mod tests {
             icount: 100,
         };
 
-        assert_eq!(location.current_icount(entry).unwrap(), 101);
-        assert_eq!(location.tb_end_icount(entry).unwrap(), 104);
+        assert_eq!(
+            location
+                .current_icount(entry)
+                .unwrap_or_else(|error| panic!("marker raw coordinate should resolve: {error}")),
+            101
+        );
+        assert_eq!(
+            location
+                .tb_end_icount(entry)
+                .unwrap_or_else(|error| panic!("TB-end raw coordinate should resolve: {error}")),
+            104
+        );
         assert!(location.validate_observed_icount(entry, 104).is_ok());
         assert!(matches!(
             location.validate_observed_icount(entry, 103),

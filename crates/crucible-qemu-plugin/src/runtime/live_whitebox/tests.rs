@@ -99,7 +99,8 @@ fn two_markers_without_fault_keep_raw_identity_and_zero_logical_bias() {
         );
 
         assert_eq!(
-            marker_logical_offset(observed_raw, observed_tick).unwrap(),
+            marker_logical_offset(observed_raw, observed_tick)
+                .unwrap_or_else(|error| panic!("unbiased marker tick should resolve: {error}")),
             0
         );
         assert_eq!(marker.current_icount(), marker_raw);
@@ -116,14 +117,16 @@ fn fault_advance_changes_only_logical_bias_after_marker_instruction() {
     let first_observed_raw = first_marker + 1;
     let first_tick = first_observed_raw * tick_scale;
     assert_eq!(
-        marker_logical_offset(first_observed_raw, first_tick).unwrap(),
+        marker_logical_offset(first_observed_raw, first_tick)
+            .unwrap_or_else(|error| panic!("first marker bias should resolve: {error}")),
         0
     );
 
     let second_observed_raw = second_marker + 2;
     let second_tick = second_observed_raw * tick_scale + fault_advance_ticks;
     assert_eq!(
-        marker_logical_offset(second_observed_raw, second_tick).unwrap(),
+        marker_logical_offset(second_observed_raw, second_tick)
+            .unwrap_or_else(|error| panic!("advanced marker bias should resolve: {error}")),
         fault_advance_ticks
     );
     assert_eq!(tick_scale, 50);
