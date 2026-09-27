@@ -152,6 +152,81 @@ fn failed_batched_trie_publication_never_advances_ref_and_retries_after_reopen()
 }
 
 #[test]
+fn failed_request_spending_batch_retries_after_cold_reopen() {
+    let storage = tempfile::tempdir().expect("durable request index store");
+    let blob_root = storage.path().join("blobs");
+    let ref_root = storage.path().join("refs");
+    let backend = Arc::new(FailOneBatchBackend {
+        inner: Arc::new(
+            SqliteBlobBackend::open("request-index-batch-test", &blob_root).expect("blobs"),
+        ),
+        fail_next_batch: AtomicBool::new(true),
+        target_id: Mutex::new(None),
+    });
+    let repository = CampaignRepository::new(
+        backend.clone(),
+        Arc::new(DirectoryRefBackend::new(&ref_root)),
+    );
+    let prior = repository
+        .merkle
+        .empty()
+        .expect("empty request index")
+        .content_id();
+    let upserts = (0_u64..16)
+        .map(|ordinal| {
+            let bytes = ordinal.to_be_bytes();
+            (
+                CampaignHash::derive("test.request-spending-batch", &bytes),
+                ContentId::for_bytes(
+                    crucible_cas::content_store::ObjectKind::CampaignFact,
+                    1,
+                    &bytes,
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let expected = repository
+        .update_request_spending_map(prior, &upserts, false)
+        .expect("preflight final root");
+
+    assert!(matches!(
+        repository.update_request_spending_map(prior, &upserts, true),
+        Err(CampaignRepositoryError::Merkle(
+            crate::CampaignStoreError::Store(StoreError::Unavailable)
+        ))
+    ));
+    assert!(!backend.fail_next_batch.load(Ordering::SeqCst));
+    drop(repository);
+    drop(backend);
+
+    let reopened = CampaignRepository::new(
+        Arc::new(
+            SqliteBlobBackend::open("request-index-batch-test", &blob_root).expect("reopen blobs"),
+        ),
+        Arc::new(DirectoryRefBackend::new(&ref_root)),
+    );
+    let retried = reopened
+        .update_request_spending_map(prior, &upserts, true)
+        .expect("retry after partial immutable publication");
+    assert_eq!(retried, expected);
+    drop(reopened);
+
+    let cold = CampaignRepository::new(
+        Arc::new(
+            SqliteBlobBackend::open("request-index-batch-test", &blob_root)
+                .expect("cold committed blobs"),
+        ),
+        Arc::new(DirectoryRefBackend::new(&ref_root)),
+    );
+    for (key, value) in &upserts {
+        assert_eq!(
+            cold.merkle.get(retried, *key).expect("authenticated entry"),
+            Some(*value)
+        );
+    }
+}
+
+#[test]
 fn failed_planner_issue_record_batch_keeps_prior_head_and_retries_after_reopen() {
     let storage = tempfile::tempdir().expect("durable planner issue store");
     let blob_root = storage.path().join("blobs");
