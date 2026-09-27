@@ -498,7 +498,7 @@ in
         def activated_instance_since(machine, template, cursor):
             command = (
                 f"journalctl -b --after-cursor='{cursor}' "
-                f"-u '{template}@*.service' -o json --no-pager"
+                f"-u '{template}@*.service' -o json --no-pager --quiet"
             )
             deadline = time.monotonic() + 30
 
@@ -525,6 +525,17 @@ in
                 time.sleep(1)
 
             raise AssertionError(f"no new activated instance for {template}")
+
+        def assert_image_fragment(machine, unit, image_unit):
+            expected = machine.succeed(
+                "${pkgs.coreutils}/bin/readlink "
+                f"/aos-toplevel/systemd-units/{image_unit}"
+            ).strip()
+            actual = machine.succeed(
+                f"systemctl show -P FragmentPath '{unit}'"
+            ).strip()
+            assert expected.startswith("/nix/store/"), (image_unit, expected)
+            assert actual == expected, (unit, actual, expected)
 
         def assert_manager_environment_isolated(machine, value):
             assignment = f"AOS_NETWORK_MANAGER_SENTINEL={value}"
@@ -769,14 +780,19 @@ in
         protected.wait_for_unit("multi-user.target", timeout=180)
         protected.succeed("systemctl restart aos-netd.service", timeout=90)
         protected.wait_until_succeeds(broker_process, timeout=30)
-        fragment = protected.succeed(
-            "systemctl show -P FragmentPath aos-netd.service"
-        ).strip()
-        assert fragment.startswith("/nix/store/"), fragment
+        assert_image_fragment(protected, "aos-netd.service", "aos-netd.service")
 
-        for template, option in (
-            ("aos-sandbox-network-namespace-inspector", ""),
-            ("aos-sandbox-network-lifecycle-worker", " --lifecycle"),
+        for template, option, production_signal in (
+            (
+                "aos-sandbox-network-namespace-inspector",
+                "",
+                "CREDENTIALS_DIRECTORY is absent",
+            ),
+            (
+                "aos-sandbox-network-lifecycle-worker",
+                " --lifecycle",
+                "aos-sandbox-network-lifecycle-worker:",
+            ),
         ):
             protected.succeed(
                 "${inspectorSocketConnector}/bin/aos-inspector-socket-connect"
@@ -785,10 +801,13 @@ in
             instance = activated_instance_since(
                 protected, template, activation_cursor
             )
-            fragment = protected.succeed(
-                f"systemctl show -P FragmentPath '{instance}'"
-            ).strip()
-            assert fragment.startswith("/nix/store/"), (instance, fragment)
+            assert_image_fragment(protected, instance, f"{template}@.service")
+            protected.wait_until_succeeds(
+                f"journalctl -b --after-cursor='{activation_cursor}' "
+                f"-u '{instance}' -o cat --no-pager --quiet | "
+                f"grep -Fq '{production_signal}'",
+                timeout=30,
+            )
 
         for _, role in replacement_units:
             protected.fail(
