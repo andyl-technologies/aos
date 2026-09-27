@@ -311,6 +311,7 @@ pub(crate) fn reserve_acquire(
         resource_commitment: ObjectDigest::from_bytes([0; 32]),
         backend_id,
         backend_lineage_digest: acquire_plan.lineage_digest(),
+        native_no_dispatch_reservation_digest: None,
         backend_evidence: None,
         reopen_identity: None,
         source_root: None,

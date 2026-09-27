@@ -11,8 +11,9 @@ use std::sync::Arc;
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    RecoveryCurrentnessQueryV1, SignedSourceProviderRequestV1, SignedStorageLiveExportRequestV1,
-    SourceProviderDescriptorRole, SourceProviderProofV1, SourceResourceV1, digest_signed_request,
+    NativeRecoveryTerminalDigestsV1, RecoveryCurrentnessQueryV1, SignedSourceProviderRequestV1,
+    SignedStorageLiveExportRequestV1, SourceProviderDescriptorRole, SourceProviderProofV1,
+    SourceResourceV1, digest_signed_request,
 };
 
 use crate::backend_verifier::{
@@ -969,7 +970,7 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
     pub fn settle_native_no_dispatch_recovery_for_query(
         &mut self,
         query: &RecoveryCurrentnessQueryV1,
-    ) -> Result<[ObjectDigest; 4], ProviderLedgerError> {
+    ) -> Result<NativeRecoveryTerminalDigestsV1, ProviderLedgerError> {
         if let Some(recovery) = self.owner.pending_backend_recovery.first() {
             if !matches!(
                 &recovery.work,

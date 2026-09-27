@@ -6,8 +6,9 @@
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    ACQUIRE_SOURCE_REQUEST_VERSION_V2, SignedSourceProviderRequestV1, SourceProviderMethod,
-    decode_acquire_request, digest_acquire_request, digest_signed_request,
+    ACQUIRE_SOURCE_REQUEST_VERSION_V2, NativeRecoveryTerminalDigestsV1,
+    SignedSourceProviderRequestV1, SourceProviderMethod, decode_acquire_request,
+    digest_acquire_request, digest_signed_request,
 };
 
 use crate::acquire::derive_native_no_dispatch_id;
@@ -38,7 +39,7 @@ impl FixedProviderOwnerV1 {
         expected_signed_request_digest: ObjectDigest,
         canonical_publication: &[u8],
         canonical_rows: &[u8],
-    ) -> Result<[ObjectDigest; 4], ProviderLedgerError> {
+    ) -> Result<NativeRecoveryTerminalDigestsV1, ProviderLedgerError> {
         self.with_ledger(|ledger| {
             let journal_snapshot = ledger.journal.snapshot()?;
             let mut acquisitions = ledger
@@ -93,6 +94,8 @@ impl FixedProviderOwnerV1 {
                 || acquisition.normalized_intent.kernel_coupled()
                 || acquisition.proof_class != 0
                 || acquisition.backend_id != closed_id
+                || (applying && acquisition.native_no_dispatch_reservation_digest.is_some())
+                || (settled && acquisition.native_no_dispatch_reservation_digest.is_none())
                 || acquisition.resource_id == [0; 32]
                 || acquisition.lease_id.is_some()
                 || acquisition.backend_evidence.is_some()
@@ -139,8 +142,7 @@ impl FixedProviderOwnerV1 {
                 )?;
                 let resource = claim.resource();
                 if claim.provider() != &acquisition.provider
-                    || resource.resource_namespace_digest()
-                        != acquisition.resource_namespace_digest
+                    || resource.resource_namespace_digest() != acquisition.resource_namespace_digest
                     || resource.resource_id() != acquisition.resource_id
                     || resource.resource_generation() != acquisition.resource_generation
                     || resource.resource_digest() != acquisition.resource_digest
@@ -173,15 +175,13 @@ impl FixedProviderOwnerV1 {
             {
                 return Err(ProviderLedgerError::ConfigurationMismatch);
             }
-            let mut original = acquisition.clone();
-            if settled {
-                original.revision = original
-                    .revision
-                    .checked_sub(1)
-                    .ok_or(ProviderLedgerError::Unavailable)?;
-                original.state = ProviderAcquisitionStateV1::Applying;
-            }
-            let reservation_digest = record_digest(&encode_acquisition(&original))?;
+            let reservation_digest = if settled {
+                acquisition
+                    .native_no_dispatch_reservation_digest
+                    .ok_or(ProviderLedgerError::Unavailable)?
+            } else {
+                record_digest(&encode_acquisition(&acquisition))?
+            };
             let post_records = if applying {
                 let mut faulted = acquisition;
                 faulted.revision = faulted
@@ -189,6 +189,7 @@ impl FixedProviderOwnerV1 {
                     .checked_add(1)
                     .ok_or(ProviderLedgerError::Unavailable)?;
                 faulted.state = ProviderAcquisitionStateV1::Faulted;
+                faulted.native_no_dispatch_reservation_digest = Some(reservation_digest);
 
                 let mut retired = attempt;
                 retired.revision = retired
@@ -251,12 +252,12 @@ impl FixedProviderOwnerV1 {
                     return Err(ProviderLedgerError::ConfigurationMismatch);
                 }
             }
-            let digests = [
-                reservation_digest,
-                record_digest(faulted)?,
-                record_digest(retired)?,
-                record_digest(cleared)?,
-            ];
+            let digests = NativeRecoveryTerminalDigestsV1 {
+                reservation: reservation_digest,
+                faulted_acquisition: record_digest(faulted)?,
+                retired_attempt: record_digest(retired)?,
+                cleared_session: record_digest(cleared)?,
+            };
             ledger.journal.validate_source_provider_authority()?;
             if settled {
                 ledger

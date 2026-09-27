@@ -1,12 +1,12 @@
 //! Canonical AOSSPL01 record envelopes, keys, and bodies.
 //!
 //! ```text
-//! AOSSPL01 | version:u16be=4 | kind:u8 | state:u8 | flags:u16be |
+//! AOSSPL01 | version:u16be=5 | kind:u8 | state:u8 | flags:u16be |
 //! reserved:u16be | body_len:u32be | reserved:u32be | revision:u64be |
 //! record_digest[32] | body[body_len]
 //! ```
 //!
-//! Version 4 is the only accepted family member. Older versions are not decoded or
+//! Version 5 is the only accepted family member. Older versions are not decoded or
 //! upgraded in place: opening a namespace containing them fails before graph
 //! allocation with an explicit offline-migration error. This prevents an
 //! ambiguous dual interpretation of records without protected completion time.
@@ -37,9 +37,10 @@
 //! optional old-attempt/session/fence recovery bridge including fence class
 //! and authenticated current revocation head, frame lengths/digests,
 //! descriptor/result, response catalog, signed-request/completed-response
-//! Acquisition(792+artifacts): provider, holder, acquisition sequence/effect/intent,
+//! Acquisition(824+artifacts): provider, holder, acquisition sequence/effect/intent,
 //! effect/current/lease attempts, lease generation/id/digest, resource/catalog/
-//! selection/proof commitments, backend-id, release-effect, artifact lengths,
+//! selection/proof commitments, backend-id, native terminal reservation digest,
+//! release-effect, artifact lengths,
 //! lease-history, normalized-intent, evidence, reopen-identity, signed-lease
 //! Release(464+artifacts): provider, holder, acquisition sequence/lease/effect,
 //! release-generation, effect/current attempts, backend-id, evidence/observation/time,
@@ -82,9 +83,9 @@ use crate::limits::{
 };
 
 const MAGIC: &[u8; 8] = b"AOSSPL01";
-// Version 4 binds the protected response-completion time into each terminal
-// attempt so historical replay never substitutes request-admission time.
-const VERSION: u16 = 4;
+// Version 5 also retains the original native no-dispatch reservation digest.
+// The earlier completion-time field still prevents historical time substitution.
+const VERSION: u16 = 5;
 const ENVELOPE_BYTES: usize = 64;
 const HEADER_BYTES: usize = 32;
 
@@ -101,13 +102,13 @@ const CATALOG_FIXED_BYTES: usize = 476;
 const MAXIMUM_CATALOG_PUBLICATION_BYTES: usize = 520;
 const SESSION_FIXED_BYTES: usize = 1_232;
 const ATTEMPT_FIXED_BYTES: usize = 960;
-const ACQUISITION_FIXED_BYTES: usize = 792;
+const ACQUISITION_FIXED_BYTES: usize = 824;
 const LEASE_LINEAGE_BYTES: usize = 88;
 const RELEASE_FIXED_BYTES: usize = 464;
 const AUTHORITY_SEMANTIC_BYTES: usize = 592;
 const SESSION_SEMANTIC_BYTES: usize = 1_232;
 const ATTEMPT_SEMANTIC_BYTES: usize = 864;
-const ACQUISITION_SEMANTIC_BYTES: usize = 788;
+const ACQUISITION_SEMANTIC_BYTES: usize = 820;
 const RELEASE_SEMANTIC_BYTES: usize = 464;
 const ATTEMPT_RESERVED_BYTES: usize = ATTEMPT_FIXED_BYTES - ATTEMPT_SEMANTIC_BYTES;
 const ACQUISITION_RESERVED_BYTES: usize = ACQUISITION_FIXED_BYTES - ACQUISITION_SEMANTIC_BYTES;
@@ -140,7 +141,7 @@ const _: () =
 const _: () = assert!(RELEASE_SEMANTIC_BYTES == RELEASE_FIXED_BYTES);
 const _: () = assert!(SESSION_RECORD_MAXIMUM_BYTES == 9_488);
 const _: () = assert!(ATTEMPT_RECORD_MAXIMUM_BYTES == 2_098_176);
-const _: () = assert!(ACQUISITION_RECORD_MAXIMUM_BYTES == 487_020);
+const _: () = assert!(ACQUISITION_RECORD_MAXIMUM_BYTES == 487_052);
 const _: () = assert!(8 + 16 + 32 + 32 == LEASE_LINEAGE_BYTES);
 const _: () = assert!(RELEASE_RECORD_MAXIMUM_BYTES == 131_720);
 
@@ -412,6 +413,7 @@ pub fn encode_acquisition(value: &AcquisitionRecordV1) -> Vec<u8> {
     body.digest(value.resource_commitment);
     body.array(&value.backend_id);
     body.digest(value.backend_lineage_digest);
+    body.optional_digest(value.native_no_dispatch_reservation_digest);
     body.digest(optional_bytes_digest(&evidence));
     body.u8(u8::from(value.backend_evidence.is_some()));
     body.u8(u8::from(value.reopen_identity.is_some()));
@@ -1154,6 +1156,7 @@ fn decode_acquisition_body(
     let resource_commitment = body.digest()?;
     let backend_id = body.array()?;
     let backend_lineage_digest = body.nonzero_digest()?;
+    let native_no_dispatch_reservation_digest = body.optional_digest()?;
     let evidence_digest = body.digest()?;
     let evidence_present = body.boolean()?;
     let reopen_present = body.boolean()?;
@@ -1381,7 +1384,7 @@ fn decode_acquisition_body(
             ));
         }
     }
-    Ok(AcquisitionRecordV1 {
+    let value = AcquisitionRecordV1 {
         revision: envelope.revision,
         state,
         provider,
@@ -1410,12 +1413,38 @@ fn decode_acquisition_body(
         resource_commitment,
         backend_id,
         backend_lineage_digest,
+        native_no_dispatch_reservation_digest,
         backend_evidence,
         reopen_identity,
         source_root,
         release_effect_id,
         signed_lease,
-    })
+    };
+    if let Some(reservation_digest) = value.native_no_dispatch_reservation_digest {
+        let mut original = value.clone();
+        original.revision = original
+            .revision
+            .checked_sub(1)
+            .ok_or(LedgerFormatErrorV1::Corrupt("native settlement revision"))?;
+        original.state = ProviderAcquisitionStateV1::Applying;
+        original.native_no_dispatch_reservation_digest = None;
+        if value.state != ProviderAcquisitionStateV1::Faulted
+            || value.backend_id
+                != crate::identity::acquire_native_no_dispatch_id_v1(
+                    value.normalized_intent.digest(),
+                    value.catalog_generation,
+                    value.catalog_digest,
+                )
+            || value.proof_class != 0
+            || !selected_reserved_shape
+            || record_digest(&encode_acquisition(&original))? != reservation_digest
+        {
+            return Err(LedgerFormatErrorV1::Corrupt(
+                "native settlement reservation provenance",
+            ));
+        }
+    }
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -1558,6 +1587,7 @@ mod native_selected_reservation_tests {
             resource_commitment: digest(0),
             backend_id: native_backend_id,
             backend_lineage_digest: digest(38),
+            native_no_dispatch_reservation_digest: None,
             backend_evidence: None,
             reopen_identity: None,
             source_root: None,
@@ -1574,6 +1604,21 @@ mod native_selected_reservation_tests {
             panic!("fixture decoded as another record kind");
         };
         assert_eq!(decoded, acquisition);
+
+        let mut terminal = acquisition.clone();
+        terminal.revision = 2;
+        terminal.state = ProviderAcquisitionStateV1::Faulted;
+        terminal.native_no_dispatch_reservation_digest = Some(record_digest(&bytes).unwrap());
+        let terminal_bytes = encode_acquisition(&terminal);
+        let DecodedRecordV1::Acquisition(decoded_terminal) =
+            decode_record(&key, &terminal_bytes).unwrap()
+        else {
+            panic!("terminal fixture decoded as another record kind");
+        };
+        assert_eq!(decoded_terminal, terminal);
+
+        terminal.native_no_dispatch_reservation_digest = Some(digest(99));
+        assert!(decode_record(&key, &encode_acquisition(&terminal)).is_err());
 
         let mut premature_proof = acquisition.clone();
         premature_proof.proof_class = 1;
