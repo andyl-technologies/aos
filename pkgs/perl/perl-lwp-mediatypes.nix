@@ -1,12 +1,13 @@
 ##! perl-lwp-mediatypes — MIME type inference for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
 }: let
   version = "6.04";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-lwp-mediatypes";
     inherit version;
     src = fetchurl {

@@ -1,13 +1,14 @@
 ##! perl-mozilla-ca — CA certificate bundle interface for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
   ca-certificates,
 }: let
   version = "20230821";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-mozilla-ca";
     inherit version;
     src = fetchurl {
