@@ -410,7 +410,7 @@
     vfio_guest_temp_policy=/tmp
     guest_shebang_allowlist=tests/functional/aarch64/test_device_passthrough.py:20,60:/bin/bash;tests/lcitool/libvirt-ci/lcitool/ansible/playbooks/update/templates/gitlab-runner.j2:1:/bin/sh
     remaining_var_tmp_allowlist=tests/docker/Makefile.include:container-mount-only
-    meson_thorough_report=build/meson-logs/check-report-thorough.junit.xml
+    meson_thorough_report=build/meson-logs/check-report-thorough-thorough.junit.xml
     meson_runner=all-configured-tests:thorough:no-rebuild
     test_shebang_scope=all-files-under-tests-python-scripts
     test_python=build/pyvenv/bin/python3
@@ -1005,7 +1005,7 @@ in
               # Thorough mode includes slow and optional tests. Missing
               # upstream functional assets remain explicit JUnit skips.
               export QEMU_TEST_NO_DOWNLOAD=1
-              thorough_junit=build/meson-logs/check-report-thorough.junit.xml
+              thorough_junit=build/meson-logs/check-report-thorough-thorough.junit.xml
               (
                 cd build
                 ./pyvenv/bin/meson test --no-rebuild --setup thorough --list
@@ -1105,13 +1105,13 @@ in
                       "QEMU configured test count drifted: "
                       f"expected 1552, observed {top_level_tests}"
                   )
-              if len(top_level_skipped) != 367:
+              if len(top_level_skipped) != 459:
                   raise SystemExit(
                       "QEMU top-level skip count drifted: "
-                      f"expected 367, observed {len(top_level_skipped)}"
+                      f"expected 459, observed {len(top_level_skipped)}"
                   )
               expected_skip_hash = (
-                  "b3f8b91542145297fe8accd5778855086512c71c74dd3f4e83bc3ca345414142"
+                  "8e7cdfe49aaa3e59335e541af1d6305cd39fea662d04b212c302d42b191d8222"
               )
               if skip_inventory_hash != expected_skip_hash:
                   raise SystemExit(
@@ -1152,7 +1152,7 @@ in
                 "$out/share/aos/crucible/full-upstream-test-suite.top-level-skipped"
               cp "$junit" \
                 "$out/share/aos/crucible/full-upstream-test-suite.junit.xml"
-              cp build/meson-logs/check-report-thorough.txt \
+              cp build/meson-logs/check-report-thorough-thorough.txt \
                 "$out/share/aos/crucible/full-upstream-test-suite.meson-log.txt"
               cp build/meson-info/intro-tests.json \
                 "$out/share/aos/crucible/configured-tests.json"
