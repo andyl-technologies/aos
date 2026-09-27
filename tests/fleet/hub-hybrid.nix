@@ -41,6 +41,8 @@
     s3_region = "garage"
   '';
   s3ProxyConfig = writeFixture "hub-hybrid-fleet-s3-nginx.conf" ''
+    # The disposable S3 VM does not provision nginx's package-default account.
+    user root;
     pid /var/lib/hybrid-s3/nginx.pid;
     error_log /var/lib/hybrid-s3/nginx-error.log info;
     events { worker_connections 128; }
@@ -344,6 +346,8 @@ in {
             > /var/lib/hybrid-s3/garage.log 2>&1 < /dev/null &
           echo $! > /var/lib/hybrid-s3/garage.pid
           cp ${s3ProxyConfig}/value /var/lib/hybrid-s3/nginx.conf
+          ${pkgs.nginx}/bin/nginx -t -c /var/lib/hybrid-s3/nginx.conf \
+            -p /var/lib/hybrid-s3/
           ${pkgs.nginx}/bin/nginx -c /var/lib/hybrid-s3/nginx.conf \
             -p /var/lib/hybrid-s3/ -g 'daemon off;' \
             > /var/lib/hybrid-s3/nginx.log 2>&1 < /dev/null &
@@ -360,6 +364,22 @@ in {
           {GARAGE} key create fleet-s3-key > /dev/null
           {GARAGE} bucket allow --read --write fleet-s3 --key fleet-s3-key
       """), timeout=90)
+      try:
+          s3.wait_until_succeeds(
+              f"{CURL} --resolve s3.fleet.test:443:127.0.0.1 "
+              "-sS -o /dev/null -w '%{http_code}' "
+              "https://s3.fleet.test/fleet-s3/absent | "
+              f"{GREP} -Eq '^(403|404)$'",
+              timeout=30,
+          )
+      except Exception:
+          print("Garage HTTPS proxy diagnostics:", s3.succeed(
+              "cat /var/lib/hybrid-s3/nginx.log; "
+              "cat /var/lib/hybrid-s3/nginx-error.log; "
+              "cat /var/lib/hybrid-s3/nginx-process.pid; "
+              "ls -l /var/lib/hybrid-s3/nginx.pid; true"
+          ))
+          raise
       client.wait_until_succeeds(
           f"{CURL} -sS -o /dev/null -w '%{{http_code}}' "
           "https://s3.fleet.test/fleet-s3/absent | "
