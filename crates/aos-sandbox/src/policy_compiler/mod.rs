@@ -40,6 +40,8 @@ mod source_hold_readback;
 mod source_hold_readback_v2;
 #[cfg(target_os = "linux")]
 mod source_signer_readback;
+#[cfg(target_os = "linux")]
+mod v8_successor_clear;
 
 pub use advisory::{
     AdvisoryActionV1, AdvisoryDecisionV1, AdvisoryDegradationV1, AdvisoryKindV1, AdvisoryPlanV1,
@@ -238,3 +240,5 @@ pub use source_signer_readback::{
     SourceSignerReadbackErrorV1, sign_fixed_source_signer_readback_v1,
     sign_fixed_source_signer_readback_v2,
 };
+#[cfg(target_os = "linux")]
+pub use v8_successor_clear::clear_current_create_v8_successor_fences_v1;

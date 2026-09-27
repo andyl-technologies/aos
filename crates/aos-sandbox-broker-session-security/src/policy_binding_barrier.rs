@@ -25,11 +25,11 @@ use aos_sandbox::policy_compiler::{
     ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, ClosedPolicyRootCasObservationV2,
     PolicyCompilerInputV1, RootEffectAckV1, RootV8EffectAckV1, RootV8ReleasedProofV1,
     StagedClosedPolicyRootBaseV2, StagedClosedPolicySignerChallengeV2,
-    closed_policy_binding_digest_v2, closed_policy_effect_handoff_v2,
-    compare_closed_policy_binding_hold_claims_v2,
+    clear_current_create_v8_successor_fences_v1, closed_policy_binding_digest_v2,
+    closed_policy_effect_handoff_v2, compare_closed_policy_binding_hold_claims_v2,
     compare_closed_policy_binding_released_cache_claims_v2,
     current_parentless_create_project_source_v1,
-    propose_closed_current_create_explicit_policy_binding_v2,
+    propose_closed_current_create_explicit_policy_binding_v2, query_fixed_root_v8_settled_grant_v1,
     record_current_source_signer_challenge_v1, require_current_source_signer_challenge_v1,
     with_current_create_cache_signer_barrier_v5,
     with_current_create_cache_signer_release_barrier_v7,
@@ -1057,6 +1057,49 @@ pub(crate) fn settle_fixed_parentless_create_v8_owners_v1(
                 .map_err(cache_bridge_error)?
                 .ok_or_else(|| cache_bridge_error(invalid_cut()))
         },
+    )
+    .map_err(io::Error::other)
+}
+
+/// Couriers Root's settled V8 grant through the ordered owner marker clear.
+///
+/// The fixed Root socket authenticates the Controller peer and returns an
+/// opaque immutable AOSPC88S grant. The local barrier compares Controller's
+/// AOSQ8S01 and both released owner rows before Cache clears AOSCPP08, then
+/// Source clears AOSSDP08. Exact retries replay the owner readbacks after an
+/// ambiguous commit. This private path grants no public Create or Apply.
+///
+/// # Errors
+///
+/// Rejects a missing or changed V8 settlement, Root peer or transport failure,
+/// a changed owner row, or failed marker deletion and readback.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn clear_fixed_parentless_create_v8_successor_fences_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<()> {
+    let released = controller
+        .controller_policy_hold_v1()
+        .map_err(io::Error::other)?
+        .filter(|hold| {
+            !hold.is_held() && hold.operation() == operation && hold.sandbox() == sandbox
+        })
+        .ok_or_else(invalid_cut)?;
+
+    let grant = query_fixed_root_v8_settled_grant_v1(released.binding(), released.epoch())?
+        .ok_or_else(invalid_cut)?;
+    clear_current_create_v8_successor_fences_v1(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        grant,
     )
     .map_err(io::Error::other)
 }
