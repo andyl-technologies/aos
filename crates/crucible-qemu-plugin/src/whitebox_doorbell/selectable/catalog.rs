@@ -15,9 +15,10 @@ use crucible_protocol::{
     SelectableProtocolError, SelectableRegister, SelectionReply, SelectionRequest,
     selectable_catalog_plan::{
         SELECTABLE_CATALOG_PLAN_MAX_DECLARATIONS, SELECTABLE_CATALOG_PLAN_MAX_REQUESTS,
-        SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SelectableCatalogPlan, SelectableCatalogPlanError,
-        SelectablePlanContinuation, SelectablePlanDeclaration, SelectablePlanLimits,
-        SelectablePlanPendingRequest, SelectablePlanPhase, SelectablePlanPresence,
+        SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SELECTABLE_NATIVE_HANDOFF_TICKS_PS,
+        SelectableCatalogPlan, SelectableCatalogPlanError, SelectablePlanContinuation,
+        SelectablePlanDeclaration, SelectablePlanLimits, SelectablePlanPendingRequest,
+        SelectablePlanPhase, SelectablePlanPresence,
     },
 };
 use thiserror::Error;
@@ -483,7 +484,8 @@ impl SelectableCatalog {
                 incarnation: Arc::clone(&catalog.incarnation),
                 request: pending.request().clone(),
                 coordinate: SelectableCallbackCoordinate::new(
-                    pending.icount(),
+                    pending.raw_icount(),
+                    pending.trap_tick_ps(),
                     pending.vcpu_index(),
                 ),
                 reply_range: GuestMemoryRange::new(
@@ -531,7 +533,8 @@ impl SelectableCatalog {
         let pending = self.pending.as_ref().map(|pending| {
             SelectablePlanPendingRequest::new(
                 pending.request.clone(),
-                pending.coordinate.icount(),
+                pending.coordinate.raw_icount(),
+                pending.coordinate.tick_ps(),
                 pending.coordinate.vcpu_index(),
                 pending.reply_range.guest_address(),
             )
@@ -804,25 +807,45 @@ impl SelectableCatalog {
         }
         let expected_boundary_icount = pending
             .coordinate
-            .icount()
+            .raw_icount()
             .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
             .ok_or(SelectableCatalogError::PendingBoundaryOverflow {
-                trap_icount: pending.coordinate.icount(),
+                trap_icount: pending.coordinate.raw_icount(),
+            })?;
+        let expected_boundary_tick = pending
+            .coordinate
+            .tick_ps()
+            .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
+            .ok_or(SelectableCatalogError::PendingBoundaryTickOverflow {
+                trap_tick_ps: pending.coordinate.tick_ps(),
             })?;
         if self.pending_boundary_sealed {
-            if coordinate.icount() != expected_boundary_icount {
+            if coordinate.raw_icount() != expected_boundary_icount {
                 return Err(SelectableCatalogError::PendingBoundaryAlreadySealed {
                     expected_icount: expected_boundary_icount,
-                    actual_icount: coordinate.icount(),
+                    actual_icount: coordinate.raw_icount(),
+                });
+            }
+            if coordinate.tick_ps() != expected_boundary_tick {
+                return Err(SelectableCatalogError::PendingBoundaryTickAlreadySealed {
+                    expected_tick_ps: expected_boundary_tick,
+                    actual_tick_ps: coordinate.tick_ps(),
                 });
             }
             return Ok(pending.clone());
         }
-        if coordinate.icount() != expected_boundary_icount {
+        if coordinate.raw_icount() != expected_boundary_icount {
             return Err(SelectableCatalogError::PendingBoundaryDistance {
-                trap_icount: pending.coordinate.icount(),
-                boundary_icount: coordinate.icount(),
+                trap_icount: pending.coordinate.raw_icount(),
+                boundary_icount: coordinate.raw_icount(),
                 expected_boundary_icount,
+            });
+        }
+        if coordinate.tick_ps() != expected_boundary_tick {
+            return Err(SelectableCatalogError::PendingBoundaryTickDistance {
+                trap_tick_ps: pending.coordinate.tick_ps(),
+                boundary_tick_ps: coordinate.tick_ps(),
+                expected_boundary_tick_ps: expected_boundary_tick,
             });
         }
         self.pending_boundary_sealed = true;
@@ -1151,6 +1174,24 @@ pub enum SelectableCatalogError {
         /// Retained trap coordinate.
         trap_icount: u64,
     },
+    /// The trap tick cannot represent the following native stop boundary.
+    #[error("selectable trap tick {trap_tick_ps} cannot represent its stopped boundary")]
+    PendingBoundaryTickOverflow {
+        /// Retained trap tick in picoseconds.
+        trap_tick_ps: u64,
+    },
+    /// The exact stop tick differs from the native handoff distance.
+    #[error(
+        "selectable trap tick {trap_tick_ps} stopped at {boundary_tick_ps}, expected {expected_boundary_tick_ps}"
+    )]
+    PendingBoundaryTickDistance {
+        /// Retained pre-instruction trap tick.
+        trap_tick_ps: u64,
+        /// Rejected stop tick.
+        boundary_tick_ps: u64,
+        /// Expected stop tick.
+        expected_boundary_tick_ps: u64,
+    },
     /// A restored or already-sealed request named another stop coordinate.
     #[error(
         "selectable stop icount {actual_icount} differs from sealed pending boundary {expected_icount}"
@@ -1160,6 +1201,16 @@ pub enum SelectableCatalogError {
         expected_icount: u64,
         /// Conflicting resume boundary.
         actual_icount: u64,
+    },
+    /// A restored or already-sealed request named another stop tick.
+    #[error(
+        "selectable stop tick {actual_tick_ps} differs from sealed pending boundary {expected_tick_ps}"
+    )]
+    PendingBoundaryTickAlreadySealed {
+        /// Authenticated retained stop tick.
+        expected_tick_ps: u64,
+        /// Conflicting stop tick.
+        actual_tick_ps: u64,
     },
     /// A request names no registered declaration.
     #[error("selectable request names unknown catalog entry `{selectable_id}`")]

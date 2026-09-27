@@ -394,7 +394,7 @@ selectable family owns its own golden vectors, byte ceiling, and version bump
 rule in `crucible-protocol::selectable`; wiring that dispatcher and catalog
 authority is RFC-0020 T-CAM-2.5. A retained runtime request crosses the existing
 plugin-to-host marker ring under the internal kind `0xff06` and the independent
-`CRUCSPQ1` codec owned by `crucible-protocol::selectable_transport`; it is not a
+`CRUCSPQ2` codec owned by `crucible-protocol::selectable_transport`; it is not a
 guest-originated marker kind and cannot enter the observational marker decoder.
 The same internal ring carries an admitted canonical `SelectableRegisterV1`
 under kind `0xff08` and a consumed canonical `SelectionReplyV1` under kind

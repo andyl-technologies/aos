@@ -94,7 +94,8 @@ pub(super) fn restore_selectable_continuation() -> Result<(), LiveWhiteboxError>
 
 /// Validates a deferred selectable request against its published VM-stop boundary.
 pub(super) fn rebind_selectable_pending_boundary(
-    current_icount: u64,
+    raw_icount: u64,
+    tick_ps: u64,
 ) -> Result<(), LiveWhiteboxError> {
     let Some(mut state) = NonNull::new(LIVE_WHITEBOX_STATE.load(Ordering::Acquire)) else {
         return Ok(());
@@ -104,7 +105,7 @@ pub(super) fn rebind_selectable_pending_boundary(
     // white-box instruction and resume callbacks that mutate the same catalog.
     let state = unsafe { state.as_mut() };
     state.selectable.as_mut().map_or(Ok(()), |selectable| {
-        selectable.rebind_pending_boundary(current_icount)
+        selectable.rebind_pending_boundary(raw_icount, tick_ps)
     })
 }
 
@@ -338,6 +339,20 @@ fn marker_logical_offset(observed_raw: u64, observed_tick: u64) -> Result<u64, L
     observed_raw
         .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
         .and_then(|retired_tick| observed_tick.checked_sub(retired_tick))
+        .ok_or(LiveWhiteboxError::IcountObservation)
+}
+
+// The observer reports the TB-end pair. Subtracting the reserved instruction
+// distance preserves any fractional or idle-advance bias in the tick clock.
+fn pre_instruction_tick_ps(
+    raw_icount: u64,
+    observed_raw_icount: u64,
+    observed_tick_ps: u64,
+) -> Result<u64, LiveWhiteboxError> {
+    observed_raw_icount
+        .checked_sub(raw_icount)
+        .and_then(|distance| distance.checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION))
+        .and_then(|distance_ps| observed_tick_ps.checked_sub(distance_ps))
         .ok_or(LiveWhiteboxError::IcountObservation)
 }
 
@@ -623,12 +638,15 @@ impl LiveWhiteboxState {
             |observe_raw| Ok(observe_raw()),
         )?;
         location.validate_observed_icount(entry, observed_raw_icount)?;
-        if let Some(observe_tick) = self.sim_tick_observed {
-            let observed_tick = u64::try_from(observe_tick())
-                .map_err(|_source| LiveWhiteboxError::IcountObservation)?;
-            let offset = marker_logical_offset(observed_raw_icount, observed_tick)?;
-            self.logical_icount_offset.store(offset, Ordering::Release);
-        }
+        let observe_tick = self
+            .sim_tick_observed
+            .ok_or(LiveWhiteboxError::IcountObservation)?;
+        let observed_tick_ps = u64::try_from(observe_tick())
+            .map_err(|_source| LiveWhiteboxError::IcountObservation)?;
+        let offset = marker_logical_offset(observed_raw_icount, observed_tick_ps)?;
+        self.logical_icount_offset.store(offset, Ordering::Release);
+        let trap_tick_ps =
+            pre_instruction_tick_ps(raw_icount, observed_raw_icount, observed_tick_ps)?;
         let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(
             vcpu_index as u32,
             raw_icount,
@@ -647,19 +665,20 @@ impl LiveWhiteboxState {
         if guest_introspection::is_exchange(&payload) {
             self.handle_guest_introspection(&mut reader, event, &payload)
         } else if app_random::is_request(&payload) {
-            self.handle_app_random(&mut reader, event, raw_icount, vcpu_index)
+            self.handle_app_random(&mut reader, event, raw_icount, trap_tick_ps, vcpu_index)
         } else if selectable::is_message(&payload) {
             let selectable = self
                 .selectable
                 .as_mut()
                 .ok_or(LiveWhiteboxError::SelectableNotConfigured)?;
-            let outcome = selectable.handle(&self.doorbell, self.apis, &mut reader, event)?;
+            let outcome =
+                selectable.handle(&self.doorbell, self.apis, &mut reader, event, trap_tick_ps)?;
             match outcome {
                 crate::SelectableDoorbellOutcome::Registered { registration, .. }
                     if selectable.catalog_events_enabled() =>
                 {
                     self.marker_sink.output.record_selectable_registration(
-                        raw_icount,
+                        trap_tick_ps,
                         vcpu_index as u32,
                         &registration,
                     )?;
@@ -667,7 +686,7 @@ impl LiveWhiteboxState {
                 crate::SelectableDoorbellOutcome::Pending { .. } => {
                     let record = selectable.pending_transport_record()?;
                     self.marker_sink.output.record_selectable_pending(
-                        raw_icount,
+                        trap_tick_ps,
                         vcpu_index as u32,
                         &record,
                     )?;
@@ -683,13 +702,16 @@ impl LiveWhiteboxState {
                 // can enter the host-observable output ring.
                 selectable.freeze()?;
             }
-            let marker = handle_whitebox_doorbell_callback(
+            self.marker_sink
+                .bind_callback_coordinate(raw_icount, trap_tick_ps);
+            let marker_result = handle_whitebox_doorbell_callback(
                 &self.doorbell,
                 &mut reader,
                 &mut self.marker_sink,
                 event,
-            )
-            .map_err(|source| LiveWhiteboxError::Callback {
+            );
+            self.marker_sink.clear_callback_coordinate();
+            let marker = marker_result.map_err(|source| LiveWhiteboxError::Callback {
                 message: source.to_string(),
             })?;
             if let WhiteboxMarkerPayload::Event(event) = marker.decoded_payload() {

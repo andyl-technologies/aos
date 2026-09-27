@@ -4,6 +4,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
 
+#[test]
+fn selectable_pre_instruction_tick_preserves_fractional_phase() -> Result<(), LiveWhiteboxError> {
+    assert_eq!(pre_instruction_tick_ps(100, 110, 5_537)?, 5_037);
+    assert_eq!(pre_instruction_tick_ps(100, 110, 1_000_537)?, 1_000_037);
+    assert!(pre_instruction_tick_ps(111, 110, 5_537).is_err());
+    assert!(pre_instruction_tick_ps(100, 110, 499).is_err());
+    assert!(pre_instruction_tick_ps(0, u64::MAX, u64::MAX).is_err());
+    Ok(())
+}
+
 static REGISTER_ZERO_READ: AtomicBool = AtomicBool::new(false);
 static REGISTER_BYTES: [u8; 8] = 0x1122_3344_5566_7788_u64.to_le_bytes();
 

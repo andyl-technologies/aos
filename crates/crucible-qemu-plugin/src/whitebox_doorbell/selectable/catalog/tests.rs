@@ -51,7 +51,7 @@ fn catalog(
 }
 
 fn coordinate(icount: u64) -> SelectableCallbackCoordinate {
-    SelectableCallbackCoordinate::new(icount, 0)
+    SelectableCallbackCoordinate::new(icount, (icount) * 50, 0)
 }
 
 fn reply_range() -> GuestMemoryRange {
@@ -317,6 +317,14 @@ fn pending_stop_seal_retains_the_trap_and_rejects_a_changed_boundary()
         reply_range(),
     )?;
 
+    assert_eq!(
+        catalog.rebind_pending_boundary(SelectableCallbackCoordinate::new(101, 5_051, 0)),
+        Err(SelectableCatalogError::PendingBoundaryTickDistance {
+            trap_tick_ps: 5_000,
+            boundary_tick_ps: 5_051,
+            expected_boundary_tick_ps: 5_050,
+        })
+    );
     assert_eq!(catalog.rebind_pending_boundary(coordinate(101))?, retained);
     assert_eq!(catalog.rebind_pending_boundary(coordinate(101))?, retained);
     assert_eq!(retained.coordinate(), coordinate(100));
@@ -347,12 +355,12 @@ fn pending_stop_seal_rejects_a_trap_coordinate_that_cannot_advance()
     catalog.freeze()?;
     catalog.begin_request(
         &request(7, "network.policy")?,
-        coordinate(u64::MAX),
+        SelectableCallbackCoordinate::new(u64::MAX, 0, 0),
         reply_range(),
     )?;
 
     assert_eq!(
-        catalog.rebind_pending_boundary(coordinate(u64::MAX)),
+        catalog.rebind_pending_boundary(SelectableCallbackCoordinate::new(u64::MAX, 0, 0)),
         Err(SelectableCatalogError::PendingBoundaryOverflow {
             trap_icount: u64::MAX,
         })
@@ -451,7 +459,7 @@ fn canonical_plan_round_trip_restores_exact_state_with_fresh_token()
     catalog.complete_request(&completed, &reply(7)?)?;
     let old_pending = catalog.begin_request(
         &request(8, "network.policy")?,
-        coordinate(120),
+        SelectableCallbackCoordinate::new(120, 6_037, 0),
         reply_range(),
     )?;
 
@@ -473,8 +481,22 @@ fn canonical_plan_round_trip_restores_exact_state_with_fresh_token()
         .cloned()
         .ok_or_else(|| std::io::Error::other("restored pending request is missing"))?;
     assert_eq!(restored_pending.request().sequence(), 8);
-    assert_eq!(restored_pending.coordinate(), coordinate(120));
+    assert_eq!(
+        restored_pending.coordinate(),
+        SelectableCallbackCoordinate::new(120, 6_037, 0)
+    );
     assert_eq!(restored_pending.reply_range(), reply_range());
+    assert_eq!(
+        restored.rebind_pending_boundary(SelectableCallbackCoordinate::new(121, 6_087, 0))?,
+        restored_pending
+    );
+    assert_eq!(
+        restored.rebind_pending_boundary(SelectableCallbackCoordinate::new(121, 6_088, 0)),
+        Err(SelectableCatalogError::PendingBoundaryTickAlreadySealed {
+            expected_tick_ps: 6_087,
+            actual_tick_ps: 6_088,
+        })
+    );
 
     assert_eq!(
         restored.complete_request(&old_pending, &reply(8)?),

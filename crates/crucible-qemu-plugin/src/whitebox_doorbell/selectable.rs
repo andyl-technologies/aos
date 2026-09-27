@@ -29,33 +29,38 @@ pub use catalog::{
 /// Exact execution coordinate attached to one selectable callback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SelectableCallbackCoordinate {
-    icount: u64,
+    raw_icount: u64,
+    tick_ps: u64,
     vcpu_index: u32,
 }
 
 impl SelectableCallbackCoordinate {
-    /// Builds one exact callback coordinate for authenticated continuation state.
+    /// Builds one raw replay coordinate and its observed simulation tick.
     #[must_use]
-    pub const fn new(icount: u64, vcpu_index: u32) -> Self {
-        Self { icount, vcpu_index }
+    pub const fn new(raw_icount: u64, tick_ps: u64, vcpu_index: u32) -> Self {
+        Self {
+            raw_icount,
+            tick_ps,
+            vcpu_index,
+        }
     }
 
-    /// Returns the aggregate instruction count at the guest doorbell.
+    /// Returns the raw retirement count before the guest doorbell instruction.
     #[must_use]
-    pub const fn icount(self) -> u64 {
-        self.icount
+    pub const fn raw_icount(self) -> u64 {
+        self.raw_icount
+    }
+
+    /// Returns the pre-instruction simulation tick in picoseconds.
+    #[must_use]
+    pub const fn tick_ps(self) -> u64 {
+        self.tick_ps
     }
 
     /// Returns the vCPU that executed the guest doorbell.
     #[must_use]
     pub const fn vcpu_index(self) -> u32 {
         self.vcpu_index
-    }
-}
-
-impl From<WhiteboxDoorbellTrapEvent> for SelectableCallbackCoordinate {
-    fn from(event: WhiteboxDoorbellTrapEvent) -> Self {
-        Self::new(event.current_icount(), event.vcpu_index())
     }
 }
 
@@ -137,6 +142,7 @@ pub fn handle_whitebox_selectable_callback<R, S, W>(
     service: &mut S,
     writer: &mut W,
     event: WhiteboxDoorbellTrapEvent,
+    coordinate: SelectableCallbackCoordinate,
 ) -> Result<SelectableDoorbellOutcome, SelectableDoorbellError>
 where
     R: GuestMemoryReader + ?Sized,
@@ -145,7 +151,11 @@ where
 {
     let payload = read_doorbell_payload(doorbell, reader, event)
         .map_err(SelectableDoorbellError::Doorbell)?;
-    let coordinate = SelectableCallbackCoordinate::from(event);
+    if coordinate.raw_icount() != event.current_icount()
+        || coordinate.vcpu_index() != event.vcpu_index()
+    {
+        return Err(SelectableDoorbellError::CoordinateMismatch);
+    }
     match decode_selectable_message_kind(&payload)? {
         SelectableMessageKind::Register => {
             let registration = SelectableRegister::decode(&payload)?;
@@ -258,6 +268,9 @@ impl SelectableDoorbellServiceError {
 /// Failure while dispatching one selectable doorbell message.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SelectableDoorbellError {
+    /// The supplied unit-bearing coordinate does not name this raw callback.
+    #[error("selectable coordinate differs from the guest doorbell callback")]
+    CoordinateMismatch,
     /// The shared doorbell read or same-icount injection contract failed.
     #[error("white-box doorbell failed while serving a selectable: {0}")]
     Doorbell(WhiteboxDoorbellError),

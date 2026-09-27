@@ -1579,6 +1579,7 @@ fn lifecycle_wire_restores_terminal_branch_and_controls() {
             crucible_protocol::SelectionRequest::new(9, "network.policy", "epoch/1", None, 128)
                 .expect("build pending request"),
             700,
+            (700) * 50,
             2,
             0x8000,
         );

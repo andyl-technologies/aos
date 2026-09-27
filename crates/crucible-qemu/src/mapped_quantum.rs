@@ -14,8 +14,10 @@ use crucible_protocol::app_random_transport::{
 };
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_protocol::selectable_catalog_plan::{
-    SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SelectableCatalogPlan, SelectablePlanPendingRequest,
+    SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SELECTABLE_NATIVE_HANDOFF_TICKS_PS,
+    SelectableCatalogPlan, SelectablePlanPendingRequest,
 };
+const _: () = assert!(SELECTABLE_NATIVE_HANDOFF_TICKS_PS == crucible_shmem::TICKS_PER_INSTRUCTION);
 use crucible_protocol::selectable_transport::{
     SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
     WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING, WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED,
@@ -67,7 +69,7 @@ pub struct QemuMappedQuantumShmemHotPath {
     next_marker_sequence: u64,
     next_guest_introspection_request_sequence: u64,
     next_guest_introspection_response_sequence: u64,
-    last_marker_icount: Option<u64>,
+    last_marker_tick_ps: Option<u64>,
     pending_marker_events: Vec<ObservableEvent>,
     // crucible-lint: allow host-nondeterminism-state -- pending values cross only to the authoritative scheduler validator.
     pending_rng_evidence: Vec<BackendRngEvidence>,
@@ -217,7 +219,7 @@ impl QemuMappedQuantumShmemHotPath {
             next_marker_sequence,
             next_guest_introspection_request_sequence: 1,
             next_guest_introspection_response_sequence: 1,
-            last_marker_icount: None,
+            last_marker_tick_ps: None,
             pending_marker_events: Vec::new(),
             pending_rng_evidence: Vec::new(),
             pending_selectable_requests,
@@ -261,7 +263,7 @@ impl QemuMappedQuantumShmemHotPath {
                 .next_guest_introspection_request_sequence,
             next_guest_introspection_response_sequence: self
                 .next_guest_introspection_response_sequence,
-            last_marker_icount: self.last_marker_icount,
+            last_marker_tick_ps: self.last_marker_tick_ps,
             pending_marker_events: self.pending_marker_events.clone(),
             pending_rng_evidence: self.pending_rng_evidence.clone(),
             pending_selectable_requests: self.pending_selectable_requests.clone(),
@@ -949,32 +951,32 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
                 ),
             ));
         }
-        let boundary_icount = self.with_hot_path("selectable reply boundary", |hot_path| {
+        let boundary_tick_ps = self.with_hot_path("selectable reply boundary", |hot_path| {
             Ok(hot_path.node_snapshot().current_icount)
         })?;
-        let stopped_icount = pending
-            .icount()
-            .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
+        let stopped_tick_ps = pending
+            .trap_tick_ps()
+            .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
             .ok_or_else(|| {
                 QemuNodeChannelError::new(
                     "enqueue selectable reply",
                     format!(
-                        "pending request trap icount {} cannot represent its stopped boundary",
-                        pending.icount()
+                        "pending request trap tick {} cannot represent its stopped boundary",
+                        pending.trap_tick_ps()
                     ),
                 )
             })?;
-        if boundary_icount != stopped_icount {
+        if boundary_tick_ps != stopped_tick_ps {
             return Err(QemuNodeChannelError::new(
                 "enqueue selectable reply",
                 format!(
-                    "pending request trap icount {} requires stopped boundary {stopped_icount}, observed {boundary_icount}",
-                    pending.icount(),
+                    "pending request trap tick {} requires stopped boundary {stopped_tick_ps}, observed {boundary_tick_ps}",
+                    pending.trap_tick_ps(),
                 ),
             ));
         }
         let entry = WhiteboxMarkerEntry::new(
-            stopped_icount,
+            stopped_tick_ps,
             pending.vcpu_index(),
             WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
             &payload,

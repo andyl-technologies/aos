@@ -28,7 +28,7 @@ use crucible::{
     VcpuId, VirtualTime,
 };
 use crucible_protocol::selectable_catalog_plan::{
-    SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SelectableCatalogPlan, SelectablePlanContinuation,
+    SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectableCatalogPlan, SelectablePlanContinuation,
     SelectablePlanDeclaration, SelectablePlanLimits, SelectablePlanPresence,
 };
 use crucible_protocol::{SelectionReply, SelectionReplyStatus};
@@ -885,8 +885,7 @@ fn post_final_busy_boundary(
                 QemuRuntimeDeterminismTraceRecord::Idle(record) => record.virtual_ps,
                 QemuRuntimeDeterminismTraceRecord::Timer(record) => record.current_ps,
             };
-            record.raw_icount() >= raw_boundary
-                && virtual_ps >= TARGETS[TARGETS.len() - 1] as i64
+            record.raw_icount() >= raw_boundary && virtual_ps >= TARGETS[TARGETS.len() - 1] as i64
         })
         .collect()
 }
@@ -1171,8 +1170,8 @@ fn probe_idle_wake(node: &mut QemuNode) -> Result<IdleEvidence, Box<dyn Error>> 
     };
     let request = pending.request();
     let expected_boundary = pending
-        .icount()
-        .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
+        .trap_tick_ps()
+        .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
         .ok_or("readiness boundary overflowed")?;
     if readiness.reached.ticks != readiness_at.retired
         || readiness_at.retired != expected_boundary

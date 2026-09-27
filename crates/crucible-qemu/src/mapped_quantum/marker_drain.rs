@@ -7,7 +7,7 @@ impl QemuMappedQuantumShmemHotPath {
         &mut self,
         boundary: NodeSlotSnapshot,
     ) -> Result<(), QemuNodeChannelError> {
-        let boundary_icount = boundary.current_icount;
+        let boundary_tick_ps = boundary.current_icount;
         let node = self.config.node.clone();
         let ring = self
             .region
@@ -36,23 +36,23 @@ impl QemuMappedQuantumShmemHotPath {
             let entry = entry.validate().map_err(|error| {
                 QemuNodeChannelError::new("drain white-box markers", error.to_string())
             })?;
-            if entry.current_icount() > boundary_icount {
+            if entry.current_icount() > boundary_tick_ps {
                 return Err(QemuNodeChannelError::new(
                     "drain white-box markers",
                     format!(
-                        "marker icount {} exceeds completed quantum boundary {}",
+                        "marker tick {} exceeds completed quantum boundary {}",
                         entry.current_icount(),
-                        boundary_icount
+                        boundary_tick_ps
                     ),
                 ));
             }
-            if let Some(previous) = self.last_marker_icount
+            if let Some(previous) = self.last_marker_tick_ps
                 && entry.current_icount() < previous
             {
                 return Err(QemuNodeChannelError::new(
                     "drain white-box markers",
                     format!(
-                        "marker icount regressed from {previous} to {}",
+                        "marker tick regressed from {previous} to {}",
                         entry.current_icount()
                     ),
                 ));
@@ -96,7 +96,7 @@ impl QemuMappedQuantumShmemHotPath {
                     return Err(QemuNodeChannelError::new(
                         "drain selectable pending requests",
                         format!(
-                            "pending selectable requires an exact quiesced boundary, observed status {} current icount {} idle wake icount {}",
+                            "pending selectable requires an exact quiesced boundary, observed status {} current tick {} idle wake tick {}",
                             boundary.status, boundary.current_icount, boundary.idle_wake_icount,
                         ),
                     ));
@@ -108,29 +108,43 @@ impl QemuMappedQuantumShmemHotPath {
                             error.to_string(),
                         )
                     })?;
-                let expected_boundary_icount = entry
-                    .current_icount()
+                let expected_boundary_raw = record
+                    .raw_icount()
                     .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
                     .ok_or_else(|| {
                         QemuNodeChannelError::new(
                             "drain selectable pending requests",
                             format!(
-                                "selectable trap icount {} cannot represent its stopped boundary",
-                                entry.current_icount()
+                                "selectable trap raw icount {} cannot represent its stopped boundary",
+                                record.raw_icount()
                             ),
                         )
                     })?;
-                if boundary_icount != expected_boundary_icount {
+                let expected_boundary_tick_ps = entry
+                    .current_icount()
+                    .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
+                    .ok_or_else(|| {
+                        QemuNodeChannelError::new(
+                            "drain selectable pending requests",
+                            "selectable trap tick cannot represent its stopped boundary",
+                        )
+                    })?;
+                if boundary.logical_time_raw_icount != expected_boundary_raw
+                    || boundary_tick_ps != expected_boundary_tick_ps
+                {
                     return Err(QemuNodeChannelError::new(
                         "drain selectable pending requests",
                         format!(
-                            "selectable trap icount {} requires stopped boundary {expected_boundary_icount}, observed {boundary_icount}",
-                            entry.current_icount()
+                            "selectable trap raw {} tick {} requires stopped raw {expected_boundary_raw} tick {expected_boundary_tick_ps}, observed raw {} tick {boundary_tick_ps}",
+                            record.raw_icount(),
+                            entry.current_icount(),
+                            boundary.logical_time_raw_icount,
                         ),
                     ));
                 }
                 let pending = SelectablePlanPendingRequest::new(
                     record.request().clone(),
+                    record.raw_icount(),
                     entry.current_icount(),
                     entry.vcpu_index(),
                     record.guest_virtual_address(),
@@ -199,7 +213,7 @@ impl QemuMappedQuantumShmemHotPath {
                 })?;
                 self.pending_marker_events.push(event);
             }
-            self.last_marker_icount = Some(entry.current_icount());
+            self.last_marker_tick_ps = Some(entry.current_icount());
             self.next_marker_sequence =
                 self.next_marker_sequence.checked_add(1).ok_or_else(|| {
                     QemuNodeChannelError::new(

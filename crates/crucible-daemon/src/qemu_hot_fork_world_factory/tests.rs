@@ -1309,7 +1309,7 @@ fn pending_guest_selectable_plan() -> (SelectableCatalogPlan, SelectablePlanPend
         continuation,
     )
     .expect("pending selectable catalog plan");
-    let pending = SelectablePlanPendingRequest::new(request, 1, 0, 0x1000);
+    let pending = SelectablePlanPendingRequest::new(request, 1, (1) * 50, 0, 0x1000);
     (plan, pending)
 }
 
@@ -1490,7 +1490,7 @@ fn branch_replay_guest_pending(
         .expect("guest replay selection request");
     QemuNodeSelectablePendingRequest::from_test_parts(
         crucible::NodeId { name: node.clone() },
-        SelectablePlanPendingRequest::new(request, 11, 0, 0x1000),
+        SelectablePlanPendingRequest::new(request, 11, (11) * 50, 0, 0x1000),
     )
 }
 

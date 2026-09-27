@@ -163,6 +163,7 @@ fn registration_is_observational_and_keeps_exact_coordinate()
         &mut service,
         &mut Memory::new(Vec::new()),
         event(bytes.len()),
+        SelectableCallbackCoordinate::new(77, 3_850, 2),
     )?;
 
     assert!(matches!(
@@ -173,10 +174,7 @@ fn registration_is_observational_and_keeps_exact_coordinate()
         service.registrations,
         vec![(
             registration,
-            SelectableCallbackCoordinate {
-                icount: 77,
-                vcpu_index: 2
-            }
+            SelectableCallbackCoordinate::new(77, 3_850, 2)
         )]
     );
     assert!(service.requests.is_empty());
@@ -207,18 +205,13 @@ fn request_writes_one_sequence_bound_zero_padded_reply_at_trap()
         &mut service,
         &mut writer,
         event(request_bytes.len()),
+        SelectableCallbackCoordinate::new(77, 3_850, 2),
     )?;
 
     assert!(matches!(outcome, SelectableDoorbellOutcome::Replied { .. }));
     assert_eq!(
         service.requests,
-        vec![(
-            request,
-            SelectableCallbackCoordinate {
-                icount: 77,
-                vcpu_index: 2
-            }
-        )]
+        vec![(request, SelectableCallbackCoordinate::new(77, 3_850, 2))]
     );
     assert_eq!(writer.writes.len(), 1);
     let (icount, range, written) = &writer.writes[0];
@@ -247,18 +240,19 @@ fn pending_request_keeps_the_zero_filled_guest_reservation_untouched()
         &mut service,
         &mut writer,
         event(request_bytes.len()),
+        SelectableCallbackCoordinate::new(77, 3_850, 2),
     )?;
 
     assert_eq!(
         outcome,
         SelectableDoorbellOutcome::Pending {
             request: request.clone(),
-            coordinate: SelectableCallbackCoordinate::new(77, 2),
+            coordinate: SelectableCallbackCoordinate::new(77, (77) * 50, 2),
         }
     );
     assert_eq!(
         service.request,
-        Some((request, SelectableCallbackCoordinate::new(77, 2)))
+        Some((request, SelectableCallbackCoordinate::new(77, (77) * 50, 2)))
     );
     assert!(writer.writes.is_empty());
     Ok(())
@@ -285,6 +279,7 @@ fn callback_rejects_guest_reply_stale_service_reply_and_oversized_value()
             &mut service,
             &mut writer,
             event(guest_reply.len()),
+            SelectableCallbackCoordinate::new(77, 3_850, 2),
         ),
         Err(SelectableDoorbellError::GuestSuppliedReply)
     );
@@ -301,6 +296,7 @@ fn callback_rejects_guest_reply_stale_service_reply_and_oversized_value()
             &mut service,
             &mut writer,
             event(request_bytes.len()),
+            SelectableCallbackCoordinate::new(77, 3_850, 2),
         ),
         Err(SelectableDoorbellError::ReplySequenceMismatch {
             expected: 7,
@@ -317,6 +313,7 @@ fn callback_rejects_guest_reply_stale_service_reply_and_oversized_value()
             &mut service,
             &mut writer,
             event(request_bytes.len()),
+            SelectableCallbackCoordinate::new(77, 3_850, 2),
         ),
         Err(SelectableDoorbellError::ReplyExceedsReservation {
             reply_len: 129,

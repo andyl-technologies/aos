@@ -7,7 +7,8 @@
 
 use crucible_protocol::SelectionReply;
 use crucible_protocol::selectable_catalog_plan::{
-    SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SelectableCatalogPlan,
+    SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SELECTABLE_NATIVE_HANDOFF_TICKS_PS,
+    SelectableCatalogPlan,
 };
 use crucible_protocol::selectable_transport::{
     SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
@@ -24,6 +25,8 @@ use crate::{
     SelectableReplyDisposition, SelectableReplyService, WhiteboxGuestInputCapability,
     WhiteboxGuestInputWriter, handle_whitebox_selectable_callback,
 };
+
+const _: () = assert!(SELECTABLE_NATIVE_HANDOFF_TICKS_PS == crucible_shmem::TICKS_PER_INSTRUCTION);
 
 /// Returns whether bytes claim the standalone selectable-v1 namespace.
 pub(super) fn is_message(payload: &[u8]) -> bool {
@@ -197,20 +200,20 @@ impl LiveSelectableState {
                 callback_error("selectable reply arrived without a pending request")
             })?;
         let trap_coordinate = pending.coordinate();
-        let stopped_icount = trap_coordinate
-            .icount()
-            .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
-            .ok_or_else(|| callback_error("selectable stopped-boundary icount overflowed"))?;
+        let stopped_tick_ps = trap_coordinate
+            .tick_ps()
+            .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
+            .ok_or_else(|| callback_error("selectable stopped-boundary tick overflowed"))?;
         // The host binds its reply to the stopped request boundary. QEMU's
         // resume callback may report a later raw reservation boundary even
         // though no subsequent guest TB has executed, so the memory write can
         // occur later while the authenticated catalog token remains sealed
         // against the stop derived from its retained trap coordinate.
-        if entry.current_icount() != stopped_icount
+        if entry.current_icount() != stopped_tick_ps
             || entry.vcpu_index() != trap_coordinate.vcpu_index()
         {
             return Err(callback_error(format!(
-                "selectable reply coordinate ({}, {}) differs from pending request stopped boundary ({stopped_icount}, {})",
+                "selectable reply coordinate ({}, {}) differs from pending request stopped tick ({stopped_tick_ps}, {})",
                 entry.current_icount(),
                 entry.vcpu_index(),
                 trap_coordinate.vcpu_index()
@@ -219,9 +222,9 @@ impl LiveSelectableState {
         if vcpu_index != trap_coordinate.vcpu_index() {
             return Ok(None);
         }
-        if current_icount < stopped_icount {
+        if current_icount < stopped_tick_ps {
             return Err(callback_error(format!(
-                "selectable reply resume icount {current_icount} precedes stopped request boundary {stopped_icount}"
+                "selectable reply resume tick {current_icount} precedes stopped request boundary {stopped_tick_ps}"
             )));
         }
         let consumed = self.reply_input.dequeue()?.ok_or_else(|| {
@@ -254,7 +257,7 @@ impl LiveSelectableState {
             .map_err(|error| {
                 callback_error(format!(
                     "selectable guest reply write failed at retained coordinate ({}, {}) during resume ({current_icount}, {vcpu_index}): {error}",
-                    trap_coordinate.icount(),
+                    trap_coordinate.raw_icount(),
                     trap_coordinate.vcpu_index(),
                 ))
             })?;
@@ -271,11 +274,25 @@ impl LiveSelectableState {
         apis: LiveWhiteboxApis,
         reader: &mut LiveGuestMemoryReader,
         event: WhiteboxDoorbellTrapEvent,
+        trap_tick_ps: u64,
     ) -> Result<SelectableDoorbellOutcome, LiveWhiteboxError> {
         let capability = self.capability;
         let mut writer = app_random::LiveGuestMemoryWriter::new(apis, event.current_icount());
-        handle_whitebox_selectable_callback(doorbell, &capability, reader, self, &mut writer, event)
-            .map_err(callback_error)
+        let coordinate = SelectableCallbackCoordinate::new(
+            event.current_icount(),
+            trap_tick_ps,
+            event.vcpu_index(),
+        );
+        handle_whitebox_selectable_callback(
+            doorbell,
+            &capability,
+            reader,
+            self,
+            &mut writer,
+            event,
+            coordinate,
+        )
+        .map_err(callback_error)
     }
 
     /// Freezes the exact setup catalog at the guest readiness marker.
@@ -300,23 +317,31 @@ impl LiveSelectableState {
     /// Seals the in-TB request against the deferred stop boundary.
     pub(super) fn rebind_pending_boundary(
         &mut self,
-        current_icount: u64,
+        raw_icount: u64,
+        tick_ps: u64,
     ) -> Result<(), LiveWhiteboxError> {
         let pending = self
             .catalog
             .pending_request()
             .ok_or_else(|| callback_error("selectable VM stop has no pending request"))?;
-        let request_icount = pending.coordinate().icount();
+        let request_icount = pending.coordinate().raw_icount();
         let expected_stop_icount = request_icount
             .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
             .ok_or_else(|| callback_error("selectable native handoff icount overflowed"))?;
-        if current_icount != expected_stop_icount {
+        let request_tick_ps = pending.coordinate().tick_ps();
+        let expected_stop_tick_ps = request_tick_ps
+            .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
+            .ok_or_else(|| callback_error("selectable native handoff tick overflowed"))?;
+        if raw_icount != expected_stop_icount || tick_ps != expected_stop_tick_ps {
             return Err(callback_error(format!(
-                "selectable request at icount {request_icount} stopped at {current_icount}, expected exactly {expected_stop_icount} after the doorbell instruction boundary"
+                "selectable request at raw icount {request_icount} tick {request_tick_ps} stopped at raw {raw_icount} tick {tick_ps}, expected exactly raw {expected_stop_icount} tick {expected_stop_tick_ps} after the doorbell instruction boundary"
             )));
         }
-        let coordinate =
-            SelectableCallbackCoordinate::new(current_icount, pending.coordinate().vcpu_index());
+        let coordinate = SelectableCallbackCoordinate::new(
+            raw_icount,
+            tick_ps,
+            pending.coordinate().vcpu_index(),
+        );
         self.catalog
             .rebind_pending_boundary(coordinate)
             .map(|_pending| ())
@@ -343,6 +368,7 @@ impl LiveSelectableState {
         SelectablePendingTransportRecord::new(
             pending.request().clone(),
             pending.reply_range().guest_address(),
+            pending.coordinate().raw_icount(),
         )
         .map_err(callback_error)
     }
@@ -374,8 +400,12 @@ impl SelectableReplyService for LiveSelectableState {
         // catalog or asking QEMU to stop. A standalone guest request may use
         // the full doorbell buffer, while a deferred request must also carry
         // its process-neutral reply address to the host.
-        SelectablePendingTransportRecord::new(request.clone(), reply_range.guest_address())
-            .map_err(|error| SelectableDoorbellServiceError::new(error.to_string()))?;
+        SelectablePendingTransportRecord::new(
+            request.clone(),
+            reply_range.guest_address(),
+            coordinate.raw_icount(),
+        )
+        .map_err(|error| SelectableDoorbellServiceError::new(error.to_string()))?;
         self.catalog
             .begin_request(request, coordinate, reply_range)
             .map_err(service_error)?;

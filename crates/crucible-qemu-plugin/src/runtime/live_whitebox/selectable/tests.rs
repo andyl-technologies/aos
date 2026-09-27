@@ -121,6 +121,7 @@ fn restored_plan() -> Result<SelectableCatalogPlan, Box<dyn std::error::Error>> 
         Some(SelectablePlanPendingRequest::new(
             request(9)?,
             700,
+            1_000_037,
             2,
             0x4000,
         )),
@@ -169,14 +170,17 @@ fn live_catalog_retains_request_before_deferring_stop_to_exact_callback()
         Arc::clone(&vmstop_handoff),
         reply_input(),
     )?;
-    state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
+    state.register_selectable(
+        &registration(1)?,
+        SelectableCallbackCoordinate::new(10, (10) * 50, 0),
+    )?;
     state.freeze()?;
 
     let request = request(2)?;
     assert_eq!(
         state.serve_selection(
             &request,
-            SelectableCallbackCoordinate::new(50, 1),
+            SelectableCallbackCoordinate::new(50, (50) * 50, 1),
             crate::GuestMemoryRange::new(
                 crate::GuestMemoryAddressSpace::Virtual,
                 0x4000,
@@ -196,7 +200,7 @@ fn live_catalog_retains_request_before_deferring_stop_to_exact_callback()
     assert_eq!(pending.reply_range().len(), request.reply_capacity());
     assert_eq!(
         pending.coordinate(),
-        SelectableCallbackCoordinate::new(50, 1)
+        SelectableCallbackCoordinate::new(50, (50) * 50, 1)
     );
     assert_eq!(state.catalog().total_completed_requests(), 0);
     let transport = state.pending_transport_record()?;
@@ -211,7 +215,10 @@ fn deferred_transport_bound_rejects_before_catalog_mutation_or_forced_exit()
     FORCE_EXIT_CALLS.set(0);
     let plan = cold_plan()?;
     let mut state = live_state(&plan, reply_input())?;
-    state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
+    state.register_selectable(
+        &registration(1)?,
+        SelectableCallbackCoordinate::new(10, (10) * 50, 0),
+    )?;
     state.freeze()?;
     let request = SelectionRequest::new(
         2,
@@ -225,7 +232,7 @@ fn deferred_transport_bound_rejects_before_catalog_mutation_or_forced_exit()
         state
             .serve_selection(
                 &request,
-                SelectableCallbackCoordinate::new(50, 1),
+                SelectableCallbackCoordinate::new(50, (50) * 50, 1),
                 crate::GuestMemoryRange::new(
                     crate::GuestMemoryAddressSpace::Virtual,
                     0x4000,
@@ -244,7 +251,10 @@ fn logical_restore_discards_priming_catalog_and_recovers_exact_continuation()
 -> Result<(), Box<dyn std::error::Error>> {
     let plan = restored_plan()?;
     let mut state = live_state(&plan, reply_input())?;
-    state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
+    state.register_selectable(
+        &registration(1)?,
+        SelectableCallbackCoordinate::new(10, (10) * 50, 0),
+    )?;
     state.freeze()?;
     assert_eq!(state.catalog().total_completed_requests(), 0);
 
@@ -273,19 +283,20 @@ fn resume_delivery_binds_reply_to_pending_coordinate_and_zero_fills_reservation(
     };
     let reply = SelectionReply::selected(9, [0x11; 32], [0x22; 32], vec![2])?;
     let payload = reply.encode()?;
-    let entry = WhiteboxMarkerEntry::new(701, 2, WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY, &payload)?;
+    let entry =
+        WhiteboxMarkerEntry::new(1_000_087, 2, WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY, &payload)?;
     header.enqueue_whitebox_marker(&mut entries, entry)?;
 
     let plan = restored_plan()?;
     let mut state = live_state(&plan, reply_input)?;
     state.restore_continuation()?;
     let mut writer = RecordingWriter::default();
-    state.deliver_reply(701, 1, &mut writer)?;
+    state.deliver_reply(1_000_137, 1, &mut writer)?;
     assert!(writer.payload.is_empty());
     assert!(state.catalog().pending_request().is_some());
-    state.deliver_reply(701, 2, &mut writer)?;
+    state.deliver_reply(1_000_137, 2, &mut writer)?;
 
-    assert_eq!(writer.delivery_icount, Some(701));
+    assert_eq!(writer.delivery_icount, Some(1_000_137));
     assert_eq!(
         writer.range,
         Some(crate::GuestMemoryRange::new(
@@ -323,7 +334,7 @@ fn live_reply_uses_stopped_boundary_while_writing_at_later_pre_execution_boundar
     header.enqueue_whitebox_marker(
         &mut entries,
         WhiteboxMarkerEntry::new(
-            51,
+            2_550,
             1,
             WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
             &reply.encode()?,
@@ -332,31 +343,34 @@ fn live_reply_uses_stopped_boundary_while_writing_at_later_pre_execution_boundar
 
     let plan = cold_plan()?;
     let mut state = live_state(&plan, reply_input)?;
-    state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
+    state.register_selectable(
+        &registration(1)?,
+        SelectableCallbackCoordinate::new(10, (10) * 50, 0),
+    )?;
     state.freeze()?;
     let request = request(2)?;
     state.serve_selection(
         &request,
-        SelectableCallbackCoordinate::new(50, 1),
+        SelectableCallbackCoordinate::new(50, (50) * 50, 1),
         crate::GuestMemoryRange::new(
             crate::GuestMemoryAddressSpace::Virtual,
             0x4000,
             request.reply_capacity(),
         ),
     )?;
-    state.rebind_pending_boundary(51)?;
+    state.rebind_pending_boundary(51, 2_550)?;
     assert_eq!(
         state
             .catalog()
             .pending_request()
             .map(|pending| pending.coordinate()),
-        Some(SelectableCallbackCoordinate::new(50, 1))
+        Some(SelectableCallbackCoordinate::new(50, (50) * 50, 1))
     );
 
     let mut writer = RecordingWriter::default();
-    state.deliver_reply(70, 1, &mut writer)?;
+    state.deliver_reply(2_600, 1, &mut writer)?;
 
-    assert_eq!(writer.delivery_icount, Some(70));
+    assert_eq!(writer.delivery_icount, Some(2_600));
     assert!(state.catalog().pending_request().is_none());
     assert_eq!(state.catalog().total_completed_requests(), 1);
     Ok(())
@@ -367,12 +381,15 @@ fn native_handoff_rejects_any_instruction_drift_before_vmstop()
 -> Result<(), Box<dyn std::error::Error>> {
     let plan = cold_plan()?;
     let mut state = live_state(&plan, reply_input())?;
-    state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
+    state.register_selectable(
+        &registration(1)?,
+        SelectableCallbackCoordinate::new(10, (10) * 50, 0),
+    )?;
     state.freeze()?;
     let request = request(2)?;
     state.serve_selection(
         &request,
-        SelectableCallbackCoordinate::new(50, 1),
+        SelectableCallbackCoordinate::new(50, (50) * 50, 1),
         crate::GuestMemoryRange::new(
             crate::GuestMemoryAddressSpace::Virtual,
             0x4000,
@@ -380,17 +397,21 @@ fn native_handoff_rejects_any_instruction_drift_before_vmstop()
         ),
     )?;
 
-    let Err(error) = state.rebind_pending_boundary(52) else {
+    let Err(error) = state.rebind_pending_boundary(52, 2_550) else {
         panic!("a chained guest instruction must fail the selectable stop fence");
     };
 
-    assert!(error.to_string().contains("expected exactly 51"));
+    assert!(
+        error
+            .to_string()
+            .contains("expected exactly raw 51 tick 2550")
+    );
     assert_eq!(
         state
             .catalog()
             .pending_request()
             .map(|pending| pending.coordinate()),
-        Some(SelectableCallbackCoordinate::new(50, 1))
+        Some(SelectableCallbackCoordinate::new(50, (50) * 50, 1))
     );
     Ok(())
 }
@@ -444,7 +465,10 @@ fn occupied_vmstop_handoff_keeps_the_exact_request_pending()
         Arc::clone(&vmstop_handoff),
         reply_input(),
     )?;
-    state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
+    state.register_selectable(
+        &registration(1)?,
+        SelectableCallbackCoordinate::new(10, (10) * 50, 0),
+    )?;
     state.freeze()?;
     let request = request(2)?;
 
@@ -452,7 +476,7 @@ fn occupied_vmstop_handoff_keeps_the_exact_request_pending()
         state
             .serve_selection(
                 &request,
-                SelectableCallbackCoordinate::new(50, 1),
+                SelectableCallbackCoordinate::new(50, (50) * 50, 1),
                 crate::GuestMemoryRange::new(
                     crate::GuestMemoryAddressSpace::Virtual,
                     0x4000,
@@ -485,13 +509,16 @@ fn rejected_tb_exit_releases_the_vmstop_handoff() -> Result<(), Box<dyn std::err
         Arc::clone(&vmstop_handoff),
         reply_input(),
     )?;
-    state.register_selectable(&registration(1)?, SelectableCallbackCoordinate::new(10, 0))?;
+    state.register_selectable(
+        &registration(1)?,
+        SelectableCallbackCoordinate::new(10, (10) * 50, 0),
+    )?;
     state.freeze()?;
     let request = request(2)?;
 
     let Err(error) = state.serve_selection(
         &request,
-        SelectableCallbackCoordinate::new(50, 1),
+        SelectableCallbackCoordinate::new(50, (50) * 50, 1),
         crate::GuestMemoryRange::new(
             crate::GuestMemoryAddressSpace::Virtual,
             0x4000,

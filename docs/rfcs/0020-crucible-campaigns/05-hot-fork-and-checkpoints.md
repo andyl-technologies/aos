@@ -540,7 +540,7 @@ contains at most 4,096 objects and has this canonical body and child mapping:
 
 The current manifest carries strictly node-ordered selectable catalog plans in
 the bounded lifecycle-continuation object. Each plan remains the canonical
-`CRUCSCP3` process-neutral body, is at most 32 MiB, and must be frozen and bound
+`CRUCSCP4` process-neutral body, is at most 32 MiB, and must be frozen and bound
 to a live checkpoint target. Every live target is bound to the BLAKE3 identity of
 the immutable root-image bytes supplied to QEMU. Lifecycle construction hashes
 the selected image, and capture includes that identity in both the target record

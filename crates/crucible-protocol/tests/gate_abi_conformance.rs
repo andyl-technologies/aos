@@ -57,8 +57,8 @@ fn protocol_abi_conformance_runs_named_checks() {
     assert_doorbell_marker_kind_vocabulary();
     assert_doorbell_marker_subvocabularies();
     assert_selectable_v1_golden_vectors();
-    assert_selectable_catalog_plan_v3_golden_vector();
-    assert_selectable_pending_transport_v1_golden_vector();
+    assert_selectable_catalog_plan_v4_golden_vector();
+    assert_selectable_pending_transport_v2_golden_vector();
     assert_plugin_setup_plan_v2_golden_vector();
     assert_doorbell_decoder_fuzz_corpus();
     assert_structure_aware_fuzz_corpus();
@@ -66,11 +66,11 @@ fn protocol_abi_conformance_runs_named_checks() {
 }
 
 #[test]
-fn guest_selectable_pending_transport_v1_golden_vector_matches_live_codec() {
-    assert_selectable_pending_transport_v1_golden_vector();
+fn guest_selectable_pending_transport_v2_golden_vector_matches_live_codec() {
+    assert_selectable_pending_transport_v2_golden_vector();
 }
 
-fn assert_selectable_pending_transport_v1_golden_vector() {
+fn assert_selectable_pending_transport_v2_golden_vector() {
     assert!(
         SELECTABLE_PENDING_TRANSPORT_REGENERATION_RULE
             .contains("SELECTABLE_PENDING_TRANSPORT_VERSION")
@@ -80,8 +80,12 @@ fn assert_selectable_pending_transport_v1_golden_vector() {
     let request_bytes = request
         .encode()
         .unwrap_or_else(|error| panic!("selection request vector must encode: {error}"));
-    let record = SelectablePendingTransportRecord::new(request, 0x1122_3344_5566_7788)
-        .unwrap_or_else(|error| panic!("pending request vector must build: {error}"));
+    let record = SelectablePendingTransportRecord::new(
+        request,
+        0x1122_3344_5566_7788,
+        0x99aa_bbcc_ddee_ff00,
+    )
+    .unwrap_or_else(|error| panic!("pending request vector must build: {error}"));
     let bytes = record
         .encode()
         .unwrap_or_else(|error| panic!("pending request vector must encode: {error}"));
@@ -89,8 +93,9 @@ fn assert_selectable_pending_transport_v1_golden_vector() {
     assert_eq!(
         &bytes[..SELECTABLE_PENDING_TRANSPORT_HEADER_BYTES],
         &[
-            b'C', b'R', b'U', b'C', b'S', b'P', b'Q', b'1', 1, 0, 32, 0, 136, 0, 0, 0, 0x88, 0x77,
-            0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 104, 0, 0, 0, 0, 0, 0, 0,
+            b'C', b'R', b'U', b'C', b'S', b'P', b'Q', b'2', 2, 0, 40, 0, 144, 0, 0, 0, 0x88, 0x77,
+            0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 104, 0, 0, 0, 0, 0, 0, 0, 0x00, 0xff, 0xee, 0xdd,
+            0xcc, 0xbb, 0xaa, 0x99,
         ]
     );
     assert_eq!(
@@ -149,11 +154,11 @@ fn assert_plugin_setup_plan_v2_golden_vector() {
 }
 
 #[test]
-fn guest_selectable_catalog_plan_v3_golden_vector_matches_live_codec() {
-    assert_selectable_catalog_plan_v3_golden_vector();
+fn guest_selectable_catalog_plan_v4_golden_vector_matches_live_codec() {
+    assert_selectable_catalog_plan_v4_golden_vector();
 }
 
-fn assert_selectable_catalog_plan_v3_golden_vector() {
+fn assert_selectable_catalog_plan_v4_golden_vector() {
     let plan = SelectableCatalogPlan::new(
         SelectablePlanLimits::new(1, 1, 1)
             .unwrap_or_else(|error| panic!("catalog plan limits must validate: {error}")),
@@ -278,9 +283,14 @@ fn guest_selectable_current_schemas_are_registered_exactly() {
         registry.lines().any(|line| line == catalog_plan.as_str()),
         "missing exact selectable catalog-plan schema row"
     );
-    let pending_request = "crucible.guest-selectable.pending-request\t1\tcrucible-protocol::selectable_transport\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
+    let pending_request = format!(
+        "crucible.guest-selectable.pending-request\t{}\tcrucible-protocol::selectable_transport\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance",
+        SELECTABLE_PENDING_TRANSPORT_VERSION,
+    );
     assert!(
-        registry.lines().any(|line| line == pending_request),
+        registry
+            .lines()
+            .any(|line| line == pending_request.as_str()),
         "missing exact selectable pending-request schema row"
     );
     let setup_plan = "crucible.qemu-plugin.setup-plan\t2\tcrucible-protocol::plugin_setup_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";

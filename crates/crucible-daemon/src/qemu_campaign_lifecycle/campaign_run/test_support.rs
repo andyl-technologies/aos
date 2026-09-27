@@ -570,7 +570,7 @@ fn pending_guest_request(
     Ok(
         crucible_qemu::QemuNodeSelectablePendingRequest::from_test_parts(
             node,
-            SelectablePlanPendingRequest::new(request, 1, 0, 0x1000),
+            SelectablePlanPendingRequest::new(request, 1, 50, 0, 0x1000),
         ),
     )
 }

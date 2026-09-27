@@ -78,6 +78,7 @@ fn selectable_reply_pairing_rejects_another_valid_selection() {
         SelectionRequest::new(23, "app.random", "pairing", None, 256)
             .unwrap_or_else(|error| panic!("pending request should encode: {error}")),
         41,
+        (41) * 50,
         0,
         0x1000,
     );
@@ -1581,7 +1582,6 @@ fn production_selected_preselection_returns_only_its_new_event_append() {
         selected[0].sequence(),
         reserved.event_log_entries.len() as u64
     );
-
 }
 
 #[test]

@@ -11,7 +11,9 @@ use crucible::{
 };
 use crucible_campaign::{CampaignHash, ConfigurationId, ScenarioDefId, SelectionOrigin};
 use crucible_protocol::SelectionReply;
-use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
+use crucible_protocol::selectable_catalog_plan::{
+    SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectablePlanPendingRequest,
+};
 use crucible_qemu::{
     QemuBakedGenesisSnapshot, QemuReplayOracleMatch, QemuReplayOracleThinObservation,
     QemuReplayValidationExecutor, QemuVmRealizationError, QemuVmReplayRequest, QemuVmSnapshot,
@@ -606,11 +608,15 @@ fn validate_guest_request_at_boundary(
     request: &SelectablePlanPendingRequest,
     at: Icount,
 ) -> Result<(), QemuVmRealizationError> {
-    if request.icount().checked_add(1) == Some(at.retired) {
+    if request
+        .trap_tick_ps()
+        .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
+        == Some(at.retired)
+    {
         Ok(())
     } else {
         Err(invalid_replay_selection(
-            "guest request trap count does not match the physical pause",
+            "guest request trap tick does not match the physical pause",
         ))
     }
 }

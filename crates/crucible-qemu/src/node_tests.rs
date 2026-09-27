@@ -1744,7 +1744,11 @@ fn selectable_reply_and_ceiling_are_published_before_qemu_resumes() -> Result<()
         128,
     )?;
     let pending = crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest::new(
-        request, 41, 0, 0x1000,
+        request,
+        41,
+        (41) * 50,
+        0,
+        0x1000,
     );
     let reply = crucible_protocol::SelectionReply::rejected(
         7,
@@ -1796,7 +1800,11 @@ fn selectable_reply_is_not_published_before_qemu_confirms_pause() -> Result<(), 
         128,
     )?;
     let pending = crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest::new(
-        request, 41, 0, 0x1000,
+        request,
+        41,
+        (41) * 50,
+        0,
+        0x1000,
     );
     let reply = crucible_protocol::SelectionReply::rejected(
         7,

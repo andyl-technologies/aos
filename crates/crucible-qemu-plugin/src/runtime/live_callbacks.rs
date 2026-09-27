@@ -1822,11 +1822,11 @@ impl LiveVcpuTimeCallbackState {
                 });
             }
             if kind == DeferredVmstopKind::Selectable {
-                rebind_selectable_pending_boundary(current_icount).map_err(|source| {
-                    LiveVcpuTimeCallbackError::WhiteboxCallback {
+                rebind_selectable_pending_boundary(raw_icount, current_icount).map_err(
+                    |source| LiveVcpuTimeCallbackError::WhiteboxCallback {
                         message: source.to_string(),
-                    }
-                })?;
+                    },
+                )?;
             }
             PluginShmemOrdering::publish_pause_quiesced(
                 self.slot.get(),
