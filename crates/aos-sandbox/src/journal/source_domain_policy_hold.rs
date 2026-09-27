@@ -555,6 +555,25 @@ impl Journal {
         current_with_v8_pending(&self.state).map(|(_, pending)| pending)
     }
 
+    /// Reads the marker-anchored held predecessor and current released row.
+    ///
+    /// # Errors
+    ///
+    /// Rejects foreign custody or a missing, malformed, or mismatched V8 marker.
+    pub(crate) fn source_domain_policy_v8_release_pair_v1(
+        &self,
+    ) -> Result<(SourceDomainPolicyHoldV1, SourceDomainPolicyHoldV1), JournalError> {
+        ensure_source_domain(self)?;
+        let (Some(released), Some(_)) = current_with_v8_pending(&self.state)? else {
+            return Err(JournalError::ProtectedBoundary);
+        };
+        let held = SourceDomainPolicyHoldV1 {
+            held: true,
+            ..released
+        };
+        Ok((held, released))
+    }
+
     pub(crate) fn release_source_domain_policy_hold_after_root_readback_v1(
         &mut self,
         expected: SourceDomainPolicyHoldV1,
@@ -837,6 +856,16 @@ mod tests {
             .record_digest()
             .unwrap()
         );
+        assert_eq!(
+            reopened.closed_policy_source_v8_release_pair_v1().unwrap(),
+            (
+                expected,
+                SourceDomainPolicyHoldV1 {
+                    held: false,
+                    ..expected
+                }
+            )
+        );
         reopened
             .retire_closed_policy_source_hold_v8(expected)
             .expect("exact released replay is idempotent");
@@ -877,6 +906,14 @@ mod tests {
                 .pending_closed_policy_source_v8_settlement_v1()
                 .unwrap(),
             Some(marker)
+        );
+        assert_eq!(
+            reopened
+                .closed_policy_source_v8_release_pair_v1()
+                .unwrap()
+                .0,
+            expected,
+            "compaction retains the typed historical predecessor"
         );
     }
 
@@ -1020,6 +1057,7 @@ mod tests {
                 .retire_source_domain_policy_hold_v8(expected)
                 .is_err()
         );
+        assert!(reopened.source_domain_policy_v8_release_pair_v1().is_err());
         let successor = SourceDomainPolicyHoldV1 {
             binding: ObjectDigest::from_bytes([6; 32]),
             epoch: expected.epoch() + 1,

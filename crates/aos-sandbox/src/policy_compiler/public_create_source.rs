@@ -32,7 +32,10 @@ use crate::hierarchy::protected_journal::{
     HierarchyProtectedJournalErrorV1, HierarchyProtectedJournalOwnerV1,
 };
 #[cfg(target_os = "linux")]
-use crate::journal::{CachePolicyHoldV1, ControllerPolicyHoldV1, SourceDomainPolicyHoldV1};
+use crate::journal::{
+    CachePolicyHoldV1, ControllerPolicyHoldV1, ControllerPolicyV8ReleaseEvidenceV1,
+    SourceDomainPolicyHoldV1,
+};
 #[cfg(target_os = "linux")]
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
@@ -1064,6 +1067,167 @@ pub fn with_current_create_cache_signer_released_barrier_v8<Prepared>(
             }))
         })
         .map_err(CurrentCreatePolicySourceErrorV1::from)
+}
+
+/// Settles released Root and Cache custody under retained owner writers.
+///
+/// `replay` must return a typed proof from the fixed Root peer. The Controller
+/// floor and both owner-local pending markers bind exact historical held rows;
+/// Source ancestry is never rejoined after Source retirement. Source release
+/// precedes the atomic Controller settlement. Both transitions admit exact
+/// cold replay, but neither grants Root successor, public Create, or Apply.
+///
+/// # Errors
+///
+/// Rejects missing or changed Root, floor, Cache, Source, or Controller
+/// evidence, failed writer postflight, or failed durable owner settlement.
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+pub fn with_current_create_v8_owner_settlement_barrier_v9(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    replay: impl FnOnce(
+        &mut Journal,
+        ControllerPolicyHoldV1,
+    ) -> Result<RootV8ReleasedProofV1, CacheResidencyProtectedJournalErrorV1>,
+) -> Result<(), CurrentCreatePolicySourceErrorV1> {
+    let controller_uid = controller.protected_owner_uid()?;
+    HeldCreateSourceCut::require_controller_name(controller, controller_uid)?;
+    source_domains.require_fixed_named_writer_v1()?;
+    let attempt = controller
+        .controller_policy_v8_attempt_v1()?
+        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    let held_controller = attempt.hold();
+    if held_controller.operation() != operation || held_controller.sandbox() != sandbox {
+        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+    }
+
+    cache
+        .with_released_cache_owner_readback_v5(physical, |readback, cache_held| {
+            let cache_released = readback.hold();
+            let quota = readback.quota_digest();
+            Ok(((), move |_| {
+                HeldCreateSourceCut::require_controller_name(controller, controller_uid)?;
+                source_domains.require_fixed_named_writer_v1()?;
+                let ack = controller
+                    .controller_policy_v8_effect_ack_v1()?
+                    .filter(|ack| ack.attempt() == attempt && ack.cache_quota() == quota)
+                    .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+                let receipt = controller
+                    .controller_policy_v8_root_receipt_v1()?
+                    .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+                let proof = replay(controller, held_controller)?;
+                if !proof.matches_controller_ack(ack, controller_uid) || proof.ack() != receipt {
+                    return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+                }
+
+                settle_released_v8_owner_rows(
+                    controller,
+                    source_domains,
+                    held_controller,
+                    receipt,
+                    proof,
+                    cache_held,
+                    cache_released,
+                    controller_uid,
+                )
+            }))
+        })
+        .map(|_| ())
+        .map_err(CurrentCreatePolicySourceErrorV1::from)
+}
+
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+fn settle_released_v8_owner_rows(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    held_controller: ControllerPolicyHoldV1,
+    receipt: super::RootV8EffectAckV1,
+    proof: RootV8ReleasedProofV1,
+    cache_held: CachePolicyHoldV1,
+    cache_released: CachePolicyHoldV1,
+    controller_uid: u32,
+) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+    let floor = controller
+        .controller_policy_v8_pre_release_floor_v1()?
+        .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+    let current_source = source_domains
+        .closed_policy_source_hold_v1()?
+        .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+    let source_held = if current_source.is_held() {
+        current_source
+    } else {
+        let (held, released) = source_domains.closed_policy_source_v8_release_pair_v1()?;
+        if released != current_source {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        held
+    };
+    if floor.root_release_marker_digest() != proof.release_marker_digest()
+        || floor.cache_held_digest() != cache_held.record_digest()?
+        || floor.source_held_digest() != source_held.record_digest()?
+    {
+        return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+    }
+
+    let current_controller = controller
+        .controller_policy_hold_v1()?
+        .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+    if current_controller.is_held() {
+        if current_controller != held_controller
+            || controller.controller_policy_v8_settlement_v1()?.is_some()
+        {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+    } else {
+        let settlement = controller
+            .controller_policy_v8_settlement_v1()?
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        if current_source.is_held()
+            || settlement.controller_released_digest() != current_controller.record_digest()?
+        {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+    }
+
+    // A durable Source release may have preceded a lost reply; its marker is
+    // the only historical predecessor accepted on that replay path.
+    source_domains.require_fixed_named_writer_v1()?;
+    if current_source.is_held() {
+        source_domains.retire_closed_policy_source_hold_v8(source_held)?;
+    }
+    let (prior_source, released_source) =
+        source_domains.closed_policy_source_v8_release_pair_v1()?;
+    if prior_source != source_held {
+        return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+    }
+    let evidence = ControllerPolicyV8ReleaseEvidenceV1::new(
+        held_controller,
+        proof.release_marker_digest(),
+        cache_held,
+        cache_released,
+        source_held,
+        released_source,
+    )?;
+    HeldCreateSourceCut::require_controller_name(controller, controller_uid)?;
+    source_domains.require_fixed_named_writer_v1()?;
+    // The Controller journal checks exact typed S readback after its atomic commit.
+    controller.retire_controller_policy_v8_hold_with_settlement_v1(
+        held_controller,
+        receipt,
+        evidence,
+    )?;
+    if source_domains.closed_policy_source_v8_release_pair_v1()? != (source_held, released_source) {
+        return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+    }
+    source_domains.require_fixed_named_writer_v1()?;
+    HeldCreateSourceCut::require_controller_name(controller, controller_uid)?;
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]

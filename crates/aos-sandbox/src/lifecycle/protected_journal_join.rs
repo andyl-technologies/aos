@@ -145,6 +145,20 @@ impl ProtectedSourceDomainJournalOwnerV1 {
         self.journal.source_domain_policy_v8_pending_settlement_v1()
     }
 
+    /// Reads the exact V8 predecessor and release under retained Source custody.
+    ///
+    /// The historical held row is derived only from the canonical pending
+    /// marker and released row, never from current ancestry after retirement.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent or mismatched V8 release evidence.
+    pub(crate) fn closed_policy_source_v8_release_pair_v1(
+        &self,
+    ) -> Result<(SourceDomainPolicyHoldV1, SourceDomainPolicyHoldV1), JournalError> {
+        self.journal.source_domain_policy_v8_release_pair_v1()
+    }
+
     /// Rechecks the fixed journal and lock names against this retained writer.
     pub(crate) fn require_fixed_named_writer_v1(&self) -> Result<(), JournalError> {
         self.require_named_writer_at(

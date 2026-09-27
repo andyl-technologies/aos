@@ -43,8 +43,9 @@ use v8_pre_release_floor::{
     KEY as V8_FLOOR_KEY, RECORD_BYTES as V8_FLOOR_RECORD_BYTES,
     TRANSACTION_DOMAIN as V8_FLOOR_TRANSACTION_DOMAIN,
 };
-use v8_settlement::ControllerPolicyV8ReleaseEvidenceV1;
-pub(crate) use v8_settlement::ControllerPolicyV8SettlementV1;
+pub(crate) use v8_settlement::{
+    ControllerPolicyV8ReleaseEvidenceV1, ControllerPolicyV8SettlementV1,
+};
 
 const KEY: &[u8] = b"\0aos-controller-policy-hold-v1\0";
 const MAGIC: &[u8; 8] = b"AOSCTH01";
@@ -561,6 +562,17 @@ impl ControllerPolicyHoldV1 {
     #[must_use]
     pub const fn is_held(self) -> bool {
         self.held
+    }
+
+    /// Returns the digest of this exact held or released Controller row.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed local hold fields.
+    pub(crate) fn record_digest(self) -> Result<ObjectDigest, JournalError> {
+        Ok(ObjectDigest::from_bytes(
+            Sha256::digest(self.encode()?).into(),
+        ))
     }
 
     fn validate(self) -> Result<(), JournalError> {
@@ -1710,18 +1722,18 @@ mod tests {
         .unwrap();
         Journal::acquire_cache_policy_hold_at(cache_directory.path(), cache_uid, cache_held)
             .unwrap();
-        let cache_held = Journal::read_cache_policy_hold_at(cache_directory.path(), cache_uid)
-            .unwrap()
-            .unwrap();
-        Journal::release_cache_policy_hold_if_at::<JournalError>(
+        let (mut cache_writer, _) = Journal::open_protected_at_uid(
             cache_directory.path(),
+            crate::journal::CACHE_POLICY_HOLD_JOURNAL,
+            Journal::cache_policy_hold_limits(),
             cache_uid,
-            cache_held,
-            || Ok(()),
         )
         .unwrap();
-        let cache_released = Journal::read_cache_policy_hold_at(cache_directory.path(), cache_uid)
-            .unwrap()
+        cache_writer
+            .release_v8_held_cache_policy_hold_for_writer(cache_held)
+            .unwrap();
+        let (cache_held, cache_released) = cache_writer
+            .v8_pending_cache_policy_release_for_writer()
             .unwrap();
 
         let source_directory = tempfile::tempdir().unwrap();
@@ -1750,7 +1762,8 @@ mod tests {
         source
             .retire_source_domain_policy_hold_v8(source_held)
             .unwrap();
-        let source_released = source.source_domain_policy_hold_v1().unwrap().unwrap();
+        let (source_held, source_released) =
+            source.source_domain_policy_v8_release_pair_v1().unwrap();
 
         ControllerPolicyV8ReleaseEvidenceV1::new(
             controller,

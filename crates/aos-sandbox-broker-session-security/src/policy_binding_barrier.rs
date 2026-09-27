@@ -36,6 +36,7 @@ use aos_sandbox::policy_compiler::{
     with_current_create_cache_signer_released_barrier_v8,
     with_current_create_cache_signer_terminal_barrier_v6,
     with_current_create_policy_source_barrier_v4,
+    with_current_create_v8_owner_settlement_barrier_v9,
 };
 use aos_sandbox::{
     ControllerPolicyEffectAckV1, ControllerPolicyHoldV1, Journal, JournalError,
@@ -876,9 +877,9 @@ pub(crate) fn release_fixed_parentless_create_root_cache_v8_v1(
 /// This path starts only from Root's protected Released replay and repeats
 /// that exact replay after Cache postflight. It never signs a new final
 /// command, and a held/absent Root phase cannot release Cache. Controller
-/// and Source remain held afterward. It cannot return a historical held Cache
-/// row after a cold released-row replay, so Controller settlement must remain
-/// closed until that predecessor has a separate durable evidence surface.
+/// and Source remain held afterward. The returned value omits the historical
+/// held Cache row; the separate V8 settlement barrier recovers it only through
+/// Cache's validated pending marker under its retained writer.
 ///
 /// # Errors
 ///
@@ -941,6 +942,43 @@ pub(crate) fn recover_fixed_parentless_create_root_cache_v8_release_v1(
         },
         |controller, _, prepared| {
             require_same_root_release_after_postflight(controller, prepared, controller_hold)
+        },
+    )
+    .map_err(io::Error::other)
+}
+
+/// Retires Source, then Controller, after exact Root and Cache V8 release.
+///
+/// The fixed Root socket supplies typed Released custody. The sandbox barrier
+/// verifies the Controller floor and both owner-local pending markers before
+/// Source or Controller changes phase. A lost Source or Controller reply is
+/// retried from their durable rows, without rejoining live Source ancestry.
+/// This private path does not grant Root successor, Create, or Apply.
+///
+/// # Errors
+///
+/// Rejects changed owner evidence, an absent Root release, or failed durable
+/// Source or Controller retirement.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn settle_fixed_parentless_create_v8_owners_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<()> {
+    with_current_create_v8_owner_settlement_barrier_v9(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |_, hold| {
+            recover_root_v8_terminal_custody(hold.binding(), hold.epoch())
+                .map_err(cache_bridge_error)?
+                .ok_or_else(|| cache_bridge_error(invalid_cut()))
         },
     )
     .map_err(io::Error::other)
