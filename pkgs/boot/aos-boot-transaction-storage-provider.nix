@@ -98,7 +98,7 @@ in
     '';
 
     meta = {
-      description = "Checked ESP-backed initrd transaction-storage provider";
+      description = "Checked ESP-backed boot stage transaction-storage provider";
       homepage = "https://github.com/andyl/andyl-os";
       license = "Apache-2.0";
     };

@@ -1,4 +1,4 @@
-##! Pure controller for the ESP-backed initrd transaction-storage view.
+##! Pure controller for the ESP-backed boot transaction-storage view.
 {
   config,
   lib,
@@ -15,7 +15,7 @@
   effectsIdentity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration effects
   );
-  transactionStoragePath = "/run/aos-boot-transaction-storage/aos/initrd-stage-journal";
+  transactionStoragePath = purpose: "${config.aos.boot.storageServices.transactionStorageRoot}/aos/${purpose}";
   emptyProvision = {
     requests = {};
     outputs = {};
@@ -60,7 +60,7 @@
       outputs = builtins.listToAttrs (builtins.map (entry: {
           name = entry.requestName;
           value = {
-            storage-path = transactionStoragePath;
+            storage-path = transactionStoragePath entry.parameters.purpose;
             storage-resource = entry.reference;
           };
         })
@@ -87,9 +87,9 @@
         })
         resources;
       realizations =
-        builtins.mapAttrs (_: _: {
+        builtins.mapAttrs (_: resource: {
           schema = "aos.boot.transaction-storage-realization/v1";
-          path = transactionStoragePath;
+          path = transactionStoragePath resource.value.purpose;
         })
         resources;
     };

@@ -4,7 +4,12 @@
   pkgs,
 }: let
   packageModule = lib.abilities.authenticatedPackageModuleRecordFor;
-  evaluate = stage: modules: packages:
+  transactionStorageProvider = import ./_selected-package-provider.nix {
+    inherit lib;
+    package = pkgs.aos-boot-transaction-storage-provider;
+    implementation = "boot-transaction-storage-view";
+  };
+  evaluate = stage: modules: packages: selectedProviderModules:
     lib.evalModules {
       inherit lib;
       modules =
@@ -20,12 +25,14 @@
         ]
         ++ modules;
       packageModules = builtins.map packageModule packages;
+      inherit selectedProviderModules;
     };
-  host = evaluate "host" [] [pkgs.aos-boot-storage];
+  host = evaluate "host" [] [pkgs.aos-boot-storage pkgs.aos-boot-transaction-storage-provider] [transactionStorageProvider];
   initrd =
     evaluate "initrd" [
       {
         aos.boot.storageServices = {
+          transactionStorageRoot = "/run/test-boot-journals";
           espDevices = ["/dev/disk/by-partlabel/ESP-A" "/dev/disk/by-partlabel/ESP-B"];
           zfs = {
             enable = true;
@@ -41,7 +48,7 @@
       pkgs.aos-boot-transaction-storage-provider
       pkgs.aos-boot-preparations
       pkgs.systemd
-    ];
+    ] [transactionStorageProvider];
   hostRequests = host.config.aos.abilities.requests;
   initrdRequests = initrd.config.aos.abilities.requests;
   initrdImplementations = initrd.config.aos.abilities.implementations;
@@ -75,16 +82,27 @@
     resultOf "aos-boot-storage:aos-stage-zfs-credential-lifecycle" "resource";
   transactionStorageRequest =
     request initrdRequests "aos-boot-storage" "boot-transaction-storage-view";
+  hostTransactionStorageRequest =
+    request hostRequests "aos-boot-storage" "boot-transaction-storage-view";
   transactionStorageLifecycle =
     request initrdRequests "aos-boot-storage" "aos-boot-transaction-storage-lifecycle";
   transactionStorageDependencies =
     request initrdRequests "aos-boot-storage" "aos-boot-transaction-storage-dependencies";
   transactionStorageImplementation =
     initrdImplementations."aos-boot-transaction-storage-provider:boot-transaction-storage-view";
+  hostJournalRealization =
+    (host.config.aos.abilities.implementations."aos-boot-transaction-storage-provider:boot-transaction-storage-view".compose {
+      resources.host.value = hostTransactionStorageRequest;
+    }).realizations.host;
+  initrdJournalRealization =
+    (transactionStorageImplementation.compose {
+      resources.initrd.value = transactionStorageRequest;
+    }).realizations.initrd;
   transactionStorageEffects =
     initrdImplementations."aos-boot-transaction-storage-provider:boot-transaction-storage-view-effects";
   seedDependencies = request initrdRequests "aos-boot-preparations" "aos-config-seed-dependencies";
   installerScript = builtins.readFile ../../pkgs/system/_systemd-abilities/platform/install-zfs.sh.in;
+  transactionStorageMountScript = builtins.readFile ../../pkgs/boot/_aos-boot-storage/mount-transaction-storage.sh.in;
   unlockScript = builtins.readFile ../../pkgs/boot/_aos-boot-storage/zfs-unlock.sh.in;
   systemdSealAdapter = builtins.readFile ../../pkgs/system/aos-systemd-boot-credential-seal.sh.in;
 in
@@ -102,7 +120,6 @@ in
   assert mountDependencies.before
   == [
     (storageMilestone "local-filesystems")
-    (storageMilestone "esp-ready")
   ];
   assert mountDependencies.wanted_by == [(storageMilestone "local-filesystems")];
   assert !mountDependencies.implicit_dependencies;
@@ -188,12 +205,21 @@ in
     name = "initrd-stage-journal";
     purpose = "initrd-stage-journal";
   };
+  assert hostTransactionStorageRequest
+  == {
+    name = "host-stage-journal";
+    purpose = "host-stage-journal";
+  };
+  assert hostJournalRealization.path == "/run/aos-boot-transaction-storage/aos/host-stage-journal";
+  assert initrdJournalRealization.path == "/run/test-boot-journals/aos/initrd-stage-journal";
+  assert lib.hasInfix ''"$target/aos/initrd-stage-journal"'' transactionStorageMountScript;
+  assert lib.hasInfix ''"$target/aos/host-stage-journal"'' transactionStorageMountScript;
   assert (builtins.head transactionStorageLifecycle.start).executable
   == {
     artifact = lib.abilities.packageOutput {package = "aos-boot-storage";};
     entry_point = "bin/aos-mount-transaction-storage";
     arguments = [
-      "/run/aos-boot-transaction-storage"
+      "/run/test-boot-journals"
       "/dev/disk/by-partlabel/ESP-A"
       "/dev/disk/by-partlabel/ESP-B"
     ];

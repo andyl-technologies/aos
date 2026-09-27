@@ -23,7 +23,7 @@ in {
 
     implementations = {
       ${view.alias} = {
-        description = "Selects the exact ESP-backed initrd transaction journal.";
+        description = "Selects the exact ESP-backed boot transaction journal.";
         interface = view.identity;
         inherit artifact;
         inherit (view) methods;

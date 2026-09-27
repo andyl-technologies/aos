@@ -162,7 +162,10 @@ in {
       aos.filesystems.espDevice = lib.mkDefault (builtins.head cfg.espDevices);
     }
     (lib.mkIf config.aos.image.enable {
-      environment.systemPackages = [pkgs.aos-boot-storage];
+      environment.systemPackages = [
+        pkgs.aos-boot-storage
+        pkgs.aos-boot-transaction-storage-provider
+      ];
       aos.boot.initrd.packageRoots = [
         pkgs.aos-boot-storage
         pkgs.aos-boot-transaction-storage-provider

@@ -12,7 +12,7 @@
   consumerInstance = "boot-storage";
   transactionStorage = lib.abilities.interfaces.bootTransactionStorage.interfaces.view;
   transactionStorageAlias = transactionStorage.alias;
-  transactionStorageRoot = "/run/aos-boot-transaction-storage";
+  transactionStorageRoot = cfg.transactionStorageRoot;
   stagedZfsCredential = "/run/aos/boot-credentials/zfs-key.cred";
   stage =
     if config.aos.abilities.environment == null
@@ -240,7 +240,7 @@
   };
   transactionStorageMount = service {
     key = "aos-boot-transaction-storage";
-    description = "Materialize the ESP-backed initrd transaction journal";
+    description = "Materialize the ESP-backed boot stage transaction journals";
     entryPoint = "aos-mount-transaction-storage";
     arguments = [transactionStorageRoot] ++ cfg.espDevices;
     dependencies = {
@@ -270,6 +270,12 @@
   };
 in {
   options.aos.boot.storageServices = {
+    transactionStorageRoot = lib.mkOption {
+      type = lib.abilities.types.executionPath;
+      default = "/run/aos-boot-transaction-storage";
+      internal = true;
+      description = "Mount root for the package-owned boot stage journals.";
+    };
     espDevices = lib.mkOption {
       type = lib.abilities.types.list {
         element = lib.abilities.types.executionPath;
@@ -337,7 +343,7 @@ in {
         "boot-storage.aos-boot-transaction-storage" = transactionStorageMount // {enable = stage == "initrd";};
       };
       aos.abilities.requirementTemplates.${transactionStorageAlias} = {
-        description = "Requires the selected ESP-backed initrd transaction journal.";
+        description = "Requires the selected ESP-backed boot transaction journal.";
         abi = transactionStorage.identity.abi;
         descriptor = null;
         interface = transactionStorage.identity.name;
@@ -362,14 +368,14 @@ in {
       producers = [earlySystem kernelModules];
       enabled = stage == "initrd" && cfg.zfs.enable;
     })
-    (lib.mkIf (stage == "initrd") {
+    (lib.mkIf (builtins.elem stage ["initrd" "host"]) {
       aos.abilities.requests.${transactionStorageAlias} = {
         requirement = transactionStorageAlias;
         consumer = consumerInstance;
-        scope = ["initrd-stage-journal"];
+        scope = ["${stage}-stage-journal"];
         parameters = {
-          name = "initrd-stage-journal";
-          purpose = "initrd-stage-journal";
+          name = "${stage}-stage-journal";
+          purpose = "${stage}-stage-journal";
         };
       };
     })
