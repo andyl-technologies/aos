@@ -39,7 +39,7 @@ impl StoreObjectProfiler for CampaignObjectProfiler {
             ));
         }
 
-        Ok(profile_opaque(id.kind(), source.logical_length()))
+        profile_opaque(id.kind(), source.logical_length())
     }
 }
 
@@ -53,7 +53,7 @@ pub(crate) fn profile_authenticated_exact_leaf(
     {
         return Err(StoreError::Corrupt { id });
     }
-    Ok(profile_opaque(id.kind(), source.logical_length()))
+    profile_opaque(id.kind(), source.logical_length())
 }
 
 fn is_campaign_envelope_kind(kind: ObjectKind) -> bool {
@@ -145,56 +145,29 @@ fn profile_record(kind: CampaignRecordKind, logical_length: u64) -> ObjectProfil
     )
 }
 
-fn profile_opaque(kind: ObjectKind, logical_length: u64) -> ObjectProfile {
-    match kind {
+fn profile_opaque(kind: ObjectKind, logical_length: u64) -> Result<ObjectProfile, StoreError> {
+    let (sensitivity, reconstructibility, retention) = match kind {
         ObjectKind::ExactManifest
         | ObjectKind::RamExtent
         | ObjectKind::DiskExtent
-        | ObjectKind::DeviceState => ObjectProfile::new(
-            kind,
-            logical_length,
+        | ObjectKind::DeviceState => (
             SensitivityClass::GuestState,
             Reconstructibility::Canonical,
             RetentionRole::ExactState,
         ),
-        ObjectKind::Trace => ObjectProfile::new(
-            kind,
-            logical_length,
+        ObjectKind::Trace | ObjectKind::Observation => (
             SensitivityClass::Evidence,
             Reconstructibility::Canonical,
             RetentionRole::Evidence,
         ),
-        ObjectKind::Projection => ObjectProfile::new(
-            kind,
-            logical_length,
-            SensitivityClass::Metadata,
-            Reconstructibility::Rebuildable,
-            RetentionRole::ProjectionCache,
-        ),
-        ObjectKind::Observation | ObjectKind::Finding => ObjectProfile::new(
-            kind,
-            logical_length,
-            SensitivityClass::Evidence,
-            Reconstructibility::Canonical,
-            RetentionRole::Evidence,
-        ),
-        ObjectKind::Configuration => ObjectProfile::new(
-            kind,
-            logical_length,
-            SensitivityClass::GuestState,
-            Reconstructibility::Canonical,
-            RetentionRole::ExactState,
-        ),
-        ObjectKind::CampaignFact
-        | ObjectKind::CampaignSnapshot
-        | ObjectKind::MerkleNode
-        | ObjectKind::Scenario
-        | ObjectKind::Policy => ObjectProfile::new(
-            kind,
-            logical_length,
-            SensitivityClass::Metadata,
-            Reconstructibility::Canonical,
-            RetentionRole::CampaignMetadata,
-        ),
-    }
+        _ => return Err(StoreError::Incompatible),
+    };
+
+    Ok(ObjectProfile::new(
+        kind,
+        logical_length,
+        sensitivity,
+        reconstructibility,
+        retention,
+    ))
 }
