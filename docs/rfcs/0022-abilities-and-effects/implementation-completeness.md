@@ -46,12 +46,15 @@ projection. They deliberately contain no package, interface, method, or cell
 inventory that could drift from the fixed point.
 
 The image-time source bundle is a validated template, not an executable plan.
-At stage entry, the runner probes selected package-owned root handlers and
+At initrd entry, the runner probes selected package-owned root handlers and
 reconstructs a checked executable plan from their fresh observations. It
 retains the admission record before journaling effects, requires the same
 provider assignments when resuming, and checks the admitted plan and journal
-again at host receipt. The root-observation protocol, source-plan replay, and
-journal state machine have focused Rust tests. The
+again at host receipt. The image also retains a separate host-stage source
+bundle and static contract, but the host receiver currently authenticates only
+the initrd handoff; executing the host-stage bundle remains a cutover task. The
+root-observation protocol, initrd source-plan replay, and journal state machine
+have focused Rust tests. The
 [`ability-initrd-activation` VM flight](../../../tests/fleet/ability-initrd-activation.nix)
 selects a protected observer in the initrd fixed point, interrupts a returned
 provider effect once, and checks reconciliation and host receipt. Its source
