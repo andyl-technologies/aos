@@ -37,7 +37,7 @@
     url = "https://github.com/JetBrains/kotlin.git";
     rev = "08befe02eecc608ed4566d5d6950075389afcb62";
     name = "kotlin-2013-november-compiler-source-only";
-    hash = "sha256-wYuy/jJol4dsxiATf6w5g12f4oYrvQU3THwQguYHGNg=";
+    hash = "sha256-qkDfSn63HIqrdnRYqp7BiD0AZqwKkI7QWSm9SdLU++s=";
     git = buildPackages.git-minimal;
     caCertificates = buildPackages.ca-certificates;
     coreutils = buildPackages.coreutils;
@@ -51,7 +51,10 @@
       "/compiler/frontend/src/"
       "/compiler/frontend/serialization/src/"
       "/compiler/jet.as.java.psi/src/"
+      "/compiler/tests/org/jetbrains/jet/descriptors/serialization/ClassSerializationUtil.java"
       "/compiler/util/src/"
+      "/generators/src/org/jetbrains/jet/generators/builtins/BuiltInsSerializer.java"
+      "/idea/builtinsSrc/"
       "/core/descriptors/src/"
       "/core/descriptor.loader.java/src/"
       "/core/serialization.java/src/"
@@ -139,6 +142,7 @@ in
           PY
 
           patch -d kotlin -p1 < ${./kotlin-bootstrap/patches/november-compiler.patch}
+          patch -d kotlin -p1 < ${./kotlin-bootstrap/patches/november-builtins-generator.patch}
         '';
       }
       {
@@ -212,6 +216,7 @@ in
           javac -encoding UTF-8 -source 7 -target 7 -proc:none -Xprefer:source \
             -cp "$coreClasspath" -sourcepath "$sourcepath" \
             -d classes/core @core-files > core.log 2>&1
+          cp -R kotlin/compiler/frontend.java/src/META-INF classes/core/
 
           mkdir -p classes/light classes/storage-api/org/jetbrains/jet
           javac -encoding UTF-8 -source 7 -target 7 -proc:none \
@@ -272,6 +277,21 @@ in
             -d classes/converted ConvertNovemberBuiltinClasses.java
           java -cp "classes/converted:classes/cli:$cliClasspath" \
             ConvertNovemberBuiltinClasses classes/metadata > metadata.log 2>&1
+
+          mkdir -p classes/generator
+          javac -encoding UTF-8 -source 7 -target 7 -proc:none \
+            -cp "classes/cli:$cliClasspath" -sourcepath "" \
+            -d classes/generator \
+            kotlin/compiler/tests/org/jetbrains/jet/descriptors/serialization/ClassSerializationUtil.java \
+            kotlin/generators/src/org/jetbrains/jet/generators/builtins/BuiltInsSerializer.java
+          java -cp "classes/generator:classes/metadata:classes/cli:$cliClasspath" \
+            org.jetbrains.jet.generators.builtins.BuiltInsSerializer \
+            > generated.log 2>&1
+
+          # The seed index permits the serializer to initialize. Publish only
+          # metadata serialized from the November textual builtins sources.
+          rm -R classes/metadata/jet
+          cp -R classes/generated-builtins/jet classes/metadata/jet
         '';
       }
       {
@@ -290,6 +310,9 @@ in
           test -s classes/smoke/_DefaultPackage.class
           test "$(find classes/core classes/cli -name '*.class' | wc -l)" -ge 2100
           test "$(cat metadata.log)" = "Converted 197 builtin classes"
+          test "$(find classes/metadata/jet -name '*.kotlin_class' | wc -l)" -eq 204
+          test -s classes/metadata/jet/inline.kotlin_class
+          test -s classes/metadata/jet/noinline.kotlin_class
 
           cat > KotlinStageCheck.java <<'JAVA'
           public final class KotlinStageCheck {
