@@ -93,6 +93,22 @@ in
             --features test-double \
             --test gate_campaign_store_composition \
             -- --test-threads=1
+          socket_listing=$(cargo test \
+            --frozen --offline --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-cli --test campaign_store_process \
+            campaign_socket_wait_ -- --list)
+          for socket_test in \
+            campaign_socket_wait_reports_exited_service_without_waiting_for_deadline \
+            campaign_socket_wait_rejects_a_stale_socket_inode
+          do
+            printf '%s\n' "$socket_listing" | grep -Fqx "$socket_test: test"
+          done
+          cargo test \
+            --frozen --offline --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-cli --test campaign_store_process \
+            campaign_socket_wait_ -- --test-threads=1
           sqlite_deployment_test=cli_campaign_store::tests::strict_sqlite_store_loads_and_reopens_with_physical_admin
           sqlite_deployment_listing=$(cargo test \
             --frozen --offline --target-dir "$target" \
