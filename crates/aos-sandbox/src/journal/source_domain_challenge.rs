@@ -242,8 +242,17 @@ impl Journal {
             )],
         )?;
         let release = source_domain_policy_hold::release_transaction(expected_hold)?;
+        let [v8_release, v8_clear] =
+            source_domain_policy_hold::v8_retirement_and_clear_transactions(expected_hold)?;
+        // This challenge spends held-writer capacity before either release path.
         self.preflight_transactions_with_capacity_scope(
             &[transaction.clone(), release],
+            None,
+            false,
+            true,
+        )?;
+        self.preflight_transactions_with_capacity_scope(
+            &[transaction.clone(), v8_release, v8_clear],
             None,
             false,
             true,
@@ -267,7 +276,55 @@ mod tests {
     use aos_sandbox_core::{OperationId, SandboxId};
 
     use super::*;
+    use crate::journal::JournalLimits;
     use crate::lifecycle::protected_journal_join::source_domain_journal_limits;
+
+    #[test]
+    fn challenge_preserves_capacity_for_v8_release_and_marker_clear() {
+        let directory = tempfile::tempdir().expect("protected Source directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let uid = fs::metadata(directory.path()).expect("owner").uid();
+        let limits = JournalLimits {
+            maximum_transactions: 3,
+            ..source_domain_journal_limits()
+        };
+        let (mut writer, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "source-domains-v1.journal",
+            limits,
+            uid,
+        )
+        .expect("Source writer");
+        let hold = SourceDomainPolicyHoldV1::new(
+            OperationId::from_bytes([1; 16]),
+            SandboxId::from_bytes([2; 16]),
+            ObjectDigest::from_bytes([3; 32]),
+            ObjectDigest::from_bytes([4; 32]),
+            ObjectDigest::from_bytes([5; 32]),
+            6,
+        )
+        .expect("held Source");
+        writer.acquire_source_domain_policy_hold_v1(hold).unwrap();
+
+        let names = writer.protected_writer_physical_names_v1().unwrap();
+        assert!(
+            writer
+                .record_source_domain_challenge_v1(
+                    hold,
+                    ProjectId::from_bytes([7; 16]),
+                    [9; 16],
+                    ObjectDigest::from_bytes([8; 32]),
+                    names,
+                )
+                .is_err()
+        );
+        writer.retire_source_domain_policy_hold_v8(hold).unwrap();
+        let released = writer.source_domain_policy_hold_v1().unwrap().unwrap();
+        writer
+            .clear_source_domain_policy_v8_pending_settlement_v1(released)
+            .expect("reserved final marker clear");
+    }
 
     #[test]
     fn held_source_challenge_survives_reopen_and_rejects_replay_or_replaced_names() {

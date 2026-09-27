@@ -11,6 +11,8 @@ use std::sync::Arc;
 use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId};
 use sha2::{Digest as _, Sha256};
 
+#[cfg(target_os = "linux")]
+use crate::cache_residency::CacheV8SettledClearV1;
 use crate::environment::protected_journal::{
     EnvironmentProtectedJournalEnvelopeV1, EnvironmentProtectedJournalSchemaV1,
 };
@@ -29,6 +31,8 @@ use crate::journal::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
     RecoveryReport, SourceDomainPolicyHoldV1,
 };
+#[cfg(target_os = "linux")]
+use crate::policy_compiler::RootV8SettledGrantV1;
 
 use super::LifecycleJournalVerifierV1;
 use super::protected_journal::{
@@ -225,6 +229,40 @@ impl ProtectedSourceDomainJournalOwnerV1 {
         expected: SourceDomainPolicyHoldV1,
     ) -> Result<(), JournalError> {
         self.journal.retire_source_domain_policy_hold_v8(expected)
+    }
+
+    /// Clears the Source V8 pending marker after the exact Cache settlement.
+    ///
+    /// The Cache proof establishes the required final-owner ordering. Root's
+    /// authenticated grant and the local released row must name the same
+    /// predecessor and canonical Source digest on initial clear and replay.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign grant, missing Cache clearance, changed Source row,
+    /// unsafe fixed writer names, or failed durable marker removal.
+    #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
+    pub(crate) fn clear_closed_policy_source_v8_settlement_v1(
+        &mut self,
+        expected_released: SourceDomainPolicyHoldV1,
+        grant: RootV8SettledGrantV1,
+        cache_clear: CacheV8SettledClearV1,
+    ) -> Result<(), JournalError> {
+        if expected_released.is_held()
+            || expected_released.binding() != grant.predecessor()
+            || expected_released.epoch() != grant.epoch()
+            || expected_released.record_digest()? != grant.source_released()
+            || !cache_clear.matches_grant(grant)
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+
+        self.require_fixed_named_writer_v1()?;
+        self.journal
+            .clear_source_domain_policy_v8_pending_settlement_v1(expected_released)?;
+        self.require_fixed_named_writer_v1()?;
+        Ok(())
     }
 }
 

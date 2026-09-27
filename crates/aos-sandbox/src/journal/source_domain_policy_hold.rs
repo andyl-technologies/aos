@@ -16,7 +16,8 @@
 //!
 //! The one protected source-domain journal owns hierarchy, environment, Git,
 //! and lifecycle records. This hold freezes all of their writes after process
-//! death, but grants no publication or effect authority.
+//! death; the V8 pending marker preserves that freeze until Root settlement.
+//! Neither record grants publication or effect authority.
 
 use std::collections::BTreeMap;
 
@@ -35,6 +36,8 @@ const V8_PENDING_CHECKSUM_DOMAIN: &[u8] =
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.source-domain-policy-hold-transaction.v1\0";
 const V8_PENDING_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.source-domain-policy-v8-retirement-transaction.v1\0";
+const V8_CLEAR_TRANSACTION_DOMAIN: &[u8] =
+    b"aos.sandbox.source-domain-policy-v8-settlement-clear-transaction.v1\0";
 const RECORD_BYTES: usize = 184;
 const V8_PENDING_RECORD_BYTES: usize = 152;
 const JOURNAL_NAME: &str = "source-domains-v1.journal";
@@ -384,7 +387,9 @@ pub(super) fn require_no_mutation(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     transaction: &JournalTransaction,
 ) -> Result<(), JournalError> {
-    if current(state)?.is_some_and(SourceDomainPolicyHoldV1::is_held)
+    let (hold, pending) = current_with_v8_pending(state)?;
+    if hold.is_some_and(SourceDomainPolicyHoldV1::is_held)
+        || pending.is_some()
         || transaction
             .records()
             .iter()
@@ -473,6 +478,46 @@ fn v8_retirement_transaction(
     )
 }
 
+fn v8_clear_transaction(
+    released: SourceDomainPolicyHoldV1,
+) -> Result<JournalTransaction, JournalError> {
+    if released.is_held() {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    let held = SourceDomainPolicyHoldV1 {
+        held: true,
+        ..released
+    };
+    let marker = SourceDomainPolicyV8PendingSettlementV1::new(held)?;
+    let digest = Sha256::new()
+        .chain_update(V8_CLEAR_TRANSACTION_DOMAIN)
+        .chain_update(released.encode()?)
+        .chain_update(marker.encode()?)
+        .finalize();
+    let id: [u8; 16] = digest[..16]
+        .try_into()
+        .map_err(|_| JournalError::ProtectedBoundary)?;
+    JournalTransaction::new(
+        id,
+        vec![JournalRecord::delete(
+            RecordNamespace::SourceDomainPolicyHold,
+            V8_PENDING_KEY.to_vec(),
+        )],
+    )
+}
+
+pub(super) fn v8_retirement_and_clear_transactions(
+    held: SourceDomainPolicyHoldV1,
+) -> Result<[JournalTransaction; 2], JournalError> {
+    Ok([
+        v8_retirement_transaction(held)?,
+        v8_clear_transaction(SourceDomainPolicyHoldV1 {
+            held: false,
+            ..held
+        })?,
+    ])
+}
+
 pub(super) fn ensure_source_domain(journal: &Journal) -> Result<(), JournalError> {
     journal.ensure_protected_authority()?;
     if journal
@@ -510,7 +555,7 @@ impl Journal {
         }
         let acquire = transaction(hold)?;
         let legacy_release = release_transaction(hold)?;
-        let v8_release = v8_retirement_transaction(hold)?;
+        let [v8_release, v8_clear] = v8_retirement_and_clear_transactions(hold)?;
         // No ordinary source-domain commit can race after acquisition.
         self.preflight_transactions_with_capacity_scope(
             &[acquire.clone(), legacy_release],
@@ -519,7 +564,7 @@ impl Journal {
             true,
         )?;
         self.preflight_transactions_with_capacity_scope(
-            &[acquire.clone(), v8_release],
+            &[acquire.clone(), v8_release, v8_clear],
             None,
             false,
             true,
@@ -633,6 +678,46 @@ impl Journal {
             }
             _ => Err(JournalError::ProtectedBoundary),
         }
+    }
+
+    /// Clears only the pending V8 marker after the caller verifies Root
+    /// settlement and Cache clearance under the retained owner writers.
+    ///
+    /// Exact replay may observe an absent marker after an ambiguous commit.
+    /// The caller must still supply the same authenticated Root grant and
+    /// Cache-clear proof; this local journal row grants neither authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed Source custody, malformed release evidence, or failed
+    /// durable deletion and readback.
+    pub(crate) fn clear_source_domain_policy_v8_pending_settlement_v1(
+        &mut self,
+        expected_released: SourceDomainPolicyHoldV1,
+    ) -> Result<(), JournalError> {
+        ensure_source_domain(self)?;
+        if expected_released.is_held() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        match current_with_v8_pending(&self.state)? {
+            (Some(current), Some(_)) if current == expected_released => {
+                self.commit_with_capacity_scope(
+                    &v8_clear_transaction(expected_released)?,
+                    None,
+                    false,
+                    true,
+                    false,
+                    false,
+                    false,
+                )?;
+            }
+            (Some(current), None) if current == expected_released => {}
+            _ => return Err(JournalError::ProtectedBoundary),
+        }
+        if current_with_v8_pending(&self.state)? != (Some(expected_released), None) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
     }
 
     fn commit_released_source_domain_policy_hold(
@@ -886,10 +971,12 @@ mod tests {
             reopened.journal().commit(&erase_marker),
             Err(JournalError::ProtectedBoundary)
         ));
-        reopened
-            .journal()
-            .commit(&ordinary_transaction(RecordNamespace::DesiredState, 9))
-            .expect("Source writes resume after release");
+        assert!(matches!(
+            reopened
+                .journal()
+                .commit(&ordinary_transaction(RecordNamespace::DesiredState, 9)),
+            Err(JournalError::ProtectedBoundary)
+        ));
         reopened.journal().compact().expect("typed pair compacts");
         drop(reopened);
 
@@ -914,6 +1001,86 @@ mod tests {
                 .0,
             expected,
             "compaction retains the typed historical predecessor"
+        );
+    }
+
+    #[test]
+    fn v8_settlement_clear_survives_reopen_and_rejects_stale_replay() {
+        let directory = TestDirectory::new();
+        let expected = hold();
+        let released = SourceDomainPolicyHoldV1 {
+            held: false,
+            ..expected
+        };
+        let wrong = SourceDomainPolicyHoldV1 {
+            ancestry: ObjectDigest::from_bytes([9; 32]),
+            ..released
+        };
+        let mut source = directory.open();
+        source
+            .acquire_source_domain_policy_hold_v1(expected)
+            .unwrap();
+        source
+            .retire_source_domain_policy_hold_v8(expected)
+            .unwrap();
+        drop(source);
+
+        let mut recovered = directory.open();
+        assert!(
+            recovered
+                .clear_source_domain_policy_v8_pending_settlement_v1(wrong)
+                .is_err()
+        );
+        assert!(
+            recovered
+                .source_domain_policy_v8_pending_settlement_v1()
+                .unwrap()
+                .is_some()
+        );
+        recovered
+            .clear_source_domain_policy_v8_pending_settlement_v1(released)
+            .unwrap();
+        recovered
+            .commit(&ordinary_transaction(RecordNamespace::DesiredState, 9))
+            .expect("Source writes resume only after settlement");
+        drop(recovered);
+
+        let mut recovered = directory.open();
+        assert_eq!(
+            recovered.source_domain_policy_hold_v1().unwrap(),
+            Some(released)
+        );
+        assert_eq!(
+            recovered
+                .source_domain_policy_v8_pending_settlement_v1()
+                .unwrap(),
+            None
+        );
+        recovered
+            .clear_source_domain_policy_v8_pending_settlement_v1(released)
+            .expect("same released Source row replays after an ambiguous clear");
+        recovered
+            .compact()
+            .expect("settled Source journal compacts");
+        drop(recovered);
+
+        let mut recovered = directory.open();
+        recovered
+            .clear_source_domain_policy_v8_pending_settlement_v1(released)
+            .expect("exact replay survives compaction");
+        let successor = SourceDomainPolicyHoldV1 {
+            binding: ObjectDigest::from_bytes([6; 32]),
+            epoch: expected.epoch() + 1,
+            held: true,
+            ..expected
+        };
+        recovered
+            .acquire_source_domain_policy_hold_v1(successor)
+            .expect("settled Source permits the successor");
+        assert!(
+            recovered
+                .clear_source_domain_policy_v8_pending_settlement_v1(released)
+                .is_err()
         );
     }
 
@@ -1096,6 +1263,24 @@ mod tests {
         let uid = fs::metadata(&directory.0).unwrap().uid();
         let limits = JournalLimits {
             maximum_records_per_transaction: 1,
+            ..JournalLimits::default()
+        };
+        let (mut journal, _) =
+            Journal::open_protected_at_uid(&directory.0, JOURNAL_NAME, limits, uid).unwrap();
+        assert!(
+            journal
+                .acquire_source_domain_policy_hold_v1(hold())
+                .is_err()
+        );
+        assert_eq!(journal.source_domain_policy_hold_v1().unwrap(), None);
+    }
+
+    #[test]
+    fn acquisition_reserves_v8_marker_clear_after_release() {
+        let directory = TestDirectory::new();
+        let uid = fs::metadata(&directory.0).unwrap().uid();
+        let limits = JournalLimits {
+            maximum_transactions: 2,
             ..JournalLimits::default()
         };
         let (mut journal, _) =
