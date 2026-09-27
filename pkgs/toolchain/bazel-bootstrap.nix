@@ -75,6 +75,44 @@
     if builtins.compareVersions bootstrapVersion "8.0.0" >= 0
     then callHelper ./_bazel-maven-bootstrap.nix {includeModernLibraries = true;}
     else helperScope.bazelMavenBootstrap;
+  mavenSourceRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = callHelper ./_bazel-maven-bootstrap.nix {
+      includeModernLibraries = true;
+    };
+  };
+  googleHttpRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelGoogleHttp;
+  };
+  tomcatAnnotationRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelTomcatAnnotations6053;
+  };
+  googleAuthRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelGoogleAuth123;
+  };
+  googleHttpModernRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelGoogleHttp1433;
+  };
+  nettyHttp2Repositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelNettyHttp2119;
+  };
+  modernAnnotationRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelMavenModernAnnotations;
+  };
+  guavaModernRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelGuava3345;
+  };
+  nettyDnsProxyRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelNettyDnsProxy119;
+  };
+  log4jCoreRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelLog4jCore;
+  };
+  velocityRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelVelocity;
+  };
+  nettyTcnativeClassesRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = helperScope.bazelNettyTcnativeClasses2061;
+  };
   protobufJava = helperScope.bazelProtobufJava;
   protobufJavaUtil = helperScope.bazelProtobufJavaUtil;
   grpcJavaPlugin =
@@ -137,17 +175,51 @@ in
     # overrides while fetching the remaining graph with downloads disabled.
     passthru.offlineModules = helperScope.bazelOfflineModules;
     passthru.offlineSource = source;
+    passthru.offlineSource8Prepared = helperScope.bazelSource8Prepared;
     passthru.offlineNettyModules = helperScope.bazelNetty119;
+    passthru.offlineNettyNativeRepositories = helperScope.bazelNetty119NativeRepositories;
     passthru.offlineCommonProtos = helperScope.bazelCommonProtos241;
+    passthru.offlineMavenSourceRepositories = mavenSourceRepositories;
+    passthru.offlineGoogleHttpRepositories = googleHttpRepositories;
+    passthru.offlineTomcatAnnotationRepositories = tomcatAnnotationRepositories;
+    passthru.offlineGoogleAuthRepositories = googleAuthRepositories;
+    passthru.offlineGoogleHttpModernRepositories = googleHttpModernRepositories;
+    passthru.offlineNettyHttp2Repositories = nettyHttp2Repositories;
+    passthru.offlineModernAnnotationRepositories = modernAnnotationRepositories;
+    passthru.offlineGuavaModernRepositories = guavaModernRepositories;
+    passthru.offlineNettyDnsProxyRepositories = nettyDnsProxyRepositories;
+    passthru.offlineLog4jCoreRepositories = log4jCoreRepositories;
+    passthru.offlineVelocityRepositories = velocityRepositories;
+    passthru.offlineNettyTcnativeClassesRepositories = nettyTcnativeClassesRepositories;
+    passthru.offlineNettyBoringssl2061 = helperScope.bazelNettyBoringssl2061;
+    passthru.offlineNettyTcnativeNative2061 = helperScope.bazelNettyTcnativeNative2061;
+    passthru.offlineNettyTcnative2061NativeRepositories = helperScope.bazelNettyTcnative2061Repositories;
     passthru.offlineRepositories =
-      {platforms = helperScope.bazelPlatformsSource;}
+      mavenSourceRepositories
+      // googleHttpRepositories
+      // tomcatAnnotationRepositories
+      // googleAuthRepositories
+      // googleHttpModernRepositories
+      // nettyHttp2Repositories
+      // modernAnnotationRepositories
+      // guavaModernRepositories
+      // nettyDnsProxyRepositories
+      // log4jCoreRepositories
+      // velocityRepositories
+      // nettyTcnativeClassesRepositories
+      // helperScope.bazelNettyTcnative2061Repositories.repositories
+      // {platforms = helperScope.bazelPlatformsSource;}
       // helperScope.bazelAsyncProfilerRepositories
       // helperScope.bazelNetty119.repositories
+      // helperScope.bazelNetty119NativeRepositories.repositories
       // {
         "rules_jvm_external++maven+com_google_api_grpc_proto_google_common_protos_2_41_0" = helperScope.bazelCommonProtos241.repository;
         "rules_jvm_external++maven+com_google_guava_listenablefuture_9999_0_empty_to_avoid_conflict_with_guava" = helperScope.bazelCommonProtos241.emptyListenableFuture;
       }
-      // {"grpc++grpc_repo_deps_ext+com_github_cncf_xds" = helperScope.bazelGrpcXdsSource;};
+      // {
+        "grpc++grpc_repo_deps_ext+com_github_cncf_xds" = helperScope.bazelGrpcXdsSource;
+        "grpc++grpc_repo_deps_ext+com_envoyproxy_protoc_gen_validate" = helperScope.bazelProtocGenValidateSource;
+      };
 
     buildDeps =
       [
