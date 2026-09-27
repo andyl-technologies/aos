@@ -18,8 +18,8 @@ use std::sync::Arc;
 use crate::node_factory::QemuNodeCheckpointAssertion;
 use crate::{
     QemuChildProcessContract, QemuGuardedBakedRestoreAdmission, QemuGuardedProbeRestoreAdmission,
-    QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError, QemuNode,
-    QemuPreparedRunDirectory,
+    QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError,
+    QemuLogicalTimeCalibration, QemuNode, QemuPreparedRunDirectory,
 };
 #[cfg(target_os = "linux")]
 use crate::{
@@ -39,6 +39,8 @@ struct QemuReplayObservationAuthority;
 pub struct QemuReplayOracleExactObservation {
     runtime: RuntimeState,
     components: String,
+    sample: Option<FingerprintSample>,
+    calibration: Option<QemuLogicalTimeCalibration>,
     authority: Arc<QemuReplayObservationAuthority>,
     generation: u64,
 }
@@ -95,6 +97,43 @@ fn oracle_component_details(sample: &FingerprintSample) -> String {
         sample.vcpu_count,
         vcpus,
     )
+}
+
+fn oracle_calibration_details(calibration: Option<QemuLogicalTimeCalibration>) -> String {
+    match calibration {
+        Some(calibration) => {
+            let bias = calibration.offset().map_or_else(
+                |error| format!("invalid:{error}"),
+                |offset| offset.to_string(),
+            );
+            format!(
+                "logical={} raw={} bias={bias}",
+                calibration.logical_icount, calibration.raw_icount
+            )
+        }
+        None => String::from("unavailable"),
+    }
+}
+
+fn oracle_component_matches(
+    fat: Option<FingerprintSample>,
+    thin: Option<FingerprintSample>,
+) -> String {
+    match (fat, thin) {
+        (Some(fat), Some(thin)) => format!(
+            "ram={} device={} schema={} vcpus={} rr={}",
+            fat.ram_bytes == thin.ram_bytes && fat.ram_digest == thin.ram_digest,
+            fat.device_state_bytes == thin.device_state_bytes
+                && fat.device_state_digest == thin.device_state_digest,
+            fat.device_state_sections == thin.device_state_sections
+                && fat.device_state_schema_digest == thin.device_state_schema_digest,
+            fat.vcpu_count == thin.vcpu_count && fat.vcpus == thin.vcpus,
+            fat.rr_current_vcpu == thin.rr_current_vcpu
+                && fat.rr_position_in_quantum == thin.rr_position_in_quantum
+                && fat.rr_switch_quantum == thin.rr_switch_quantum,
+        ),
+        _ => String::from("unavailable"),
+    }
 }
 
 /// Backend operations required after a QEMU node has been restored.
@@ -484,10 +523,11 @@ impl QemuReplayValidationExecutor {
             })?;
         // The fat process is replaced before comparison, so retain its bounded
         // component digests while the exact sample is still available.
-        let components = match node.fingerprint_sample() {
-            Ok(sample) => oracle_component_details(&sample),
-            Err(error) => format!("unavailable ({error})"),
+        let (components, sample) = match node.fingerprint_sample() {
+            Ok(sample) => (oracle_component_details(&sample), Some(sample)),
+            Err(error) => (format!("unavailable ({error})"), None),
         };
+        let calibration = node.logical_time_calibration().ok();
         self.active_node = Some(node);
         let runtime = runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)?;
         self.retain_runtime_basis(&runtime, config);
@@ -496,6 +536,8 @@ impl QemuReplayValidationExecutor {
         Ok(QemuReplayOracleExactObservation {
             runtime,
             components,
+            sample,
+            calibration,
             authority: Arc::clone(&self.authority),
             generation,
         })
@@ -629,19 +671,32 @@ impl QemuReplayValidationExecutor {
         self.exact_observation_generation = None;
         self.thin_observation_generation = None;
         if fat.runtime.id != thin.runtime.id {
-            let thin_components = match self.active_node.as_mut() {
-                Some(node) => match node.fingerprint_sample() {
-                    Ok(sample) => oracle_component_details(&sample),
-                    Err(error) => format!("unavailable ({error})"),
-                },
-                None => String::from("unavailable (no active QEMU node)"),
+            let (thin_components, thin_sample, thin_calibration) = match self.active_node.as_mut() {
+                Some(node) => {
+                    let calibration = node.logical_time_calibration().ok();
+                    match node.fingerprint_sample() {
+                        Ok(sample) => {
+                            (oracle_component_details(&sample), Some(sample), calibration)
+                        }
+                        Err(error) => (format!("unavailable ({error})"), None, calibration),
+                    }
+                }
+                None => (
+                    String::from("unavailable (no active QEMU node)"),
+                    None,
+                    None,
+                ),
             };
             return Err(QemuVmRealizationError::ReplayOracleMismatch {
                 fat_hash: fat.runtime.id,
                 thin_hash: thin.runtime.id,
                 detail: format!(
-                    "node={} fat_components={} thin_components={thin_components}",
-                    self.node.name, fat.components,
+                    "node={} fat_time={} thin_time={} component_match={} fat_components={} thin_components={thin_components}",
+                    self.node.name,
+                    oracle_calibration_details(fat.calibration),
+                    oracle_calibration_details(thin_calibration),
+                    oracle_component_matches(fat.sample, thin_sample),
+                    fat.components,
                 )
                 .into_boxed_str(),
             });
