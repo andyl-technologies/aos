@@ -642,6 +642,9 @@
     scheduling = value.scheduling or null;
     terminal = value.terminal or null;
     signalReadiness = readiness != null && readiness.mechanism == "process-signal";
+    remainAfterExit =
+      lifecycle.remain_after_exit
+      || (readiness != null && readiness.mechanism == "successful-exit");
     notificationAccess =
       if signalReadiness
       then
@@ -738,7 +741,7 @@
       lifecycle.restart
     }
     ++ one "RestartSec" (millis lifecycle.restart_delay_millis)
-    ++ one "RemainAfterExit" (yesNo lifecycle.remain_after_exit)
+    ++ one "RemainAfterExit" (yesNo remainAfterExit)
     ++ one "TimeoutStartSec" (
       if lifecycle.start_timeout_unbounded or false
       then "infinity"
@@ -824,10 +827,7 @@
     ++ isolationDirectives value
     ++ hardeningDirectives value
     ++ devicePolicyDirectives value
-    ++ terminalDirectives value
-    ++ lib.optional (readiness != null && readiness.mechanism == "successful-exit") (
-      semantic.directive "RemainAfterExit" "yes"
-    );
+    ++ terminalDirectives value;
 
   installationLinks = child: value: let
     dependencies = value.dependencies or {};
