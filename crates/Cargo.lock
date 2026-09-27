@@ -1182,9 +1182,11 @@ dependencies = [
 name = "aos-sandbox-source-provider-ledger"
 version = "0.1.0"
 dependencies = [
+ "aos-sandbox",
  "aos-sandbox-core",
  "aos-sandbox-source-provider-protocol",
  "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]

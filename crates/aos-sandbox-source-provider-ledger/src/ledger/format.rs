@@ -1627,6 +1627,64 @@ mod native_selected_reservation_tests {
         let mut missing_selection = acquisition;
         missing_selection.resource_id = [0; 32];
         assert!(decode_record(&key, &encode_acquisition(&missing_selection)).is_err());
+
+        #[cfg(target_os = "linux")]
+        protected_native_terminal_replay(&key, &bytes, &terminal_bytes);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn protected_native_terminal_replay(key: &[u8], applying: &[u8], terminal: &[u8]) {
+        use std::os::unix::fs::MetadataExt;
+
+        use aos_sandbox::{
+            Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
+        };
+
+        const FILE: &str = "native-no-dispatch-record.journal";
+        let directory = tempfile::tempdir().unwrap();
+        let uid = directory.path().metadata().unwrap().uid();
+
+        for (transaction_id, expected) in [([1; 16], applying), ([2; 16], terminal)] {
+            let (mut journal, _) = Journal::open_protected_at_uid(
+                directory.path(),
+                FILE,
+                JournalLimits::default(),
+                uid,
+            )
+            .unwrap();
+            let mut authority = journal
+                .claim_protected_authority(RecordNamespace::SourceProviderAuthority)
+                .unwrap();
+            let transaction = JournalTransaction::new(
+                transaction_id,
+                vec![JournalRecord::put(
+                    RecordNamespace::SourceProviderAuthority,
+                    key.to_vec(),
+                    expected.to_vec(),
+                )],
+            )
+            .unwrap();
+            authority.commit(&transaction).unwrap();
+            drop(authority);
+            drop(journal);
+
+            let (mut reopened, _) = Journal::open_protected_at_uid(
+                directory.path(),
+                FILE,
+                JournalLimits::default(),
+                uid,
+            )
+            .unwrap();
+            let authority = reopened
+                .claim_protected_authority(RecordNamespace::SourceProviderAuthority)
+                .unwrap();
+            let retained = authority.get(key).unwrap().unwrap();
+            assert_eq!(retained, expected);
+            assert!(matches!(
+                decode_record(key, retained).unwrap(),
+                DecodedRecordV1::Acquisition(_)
+            ));
+        }
     }
 }
 
