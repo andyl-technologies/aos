@@ -18,6 +18,13 @@
   needsAssembler = stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isx86_64;
   assembler = import ./_highway-assembler.nix {inherit buildPackages fetchurl;};
   sources = callPackage ./_libjxl-sources.nix {};
+  # The cross compiler accepts the fuzzer flag but cannot link the target
+  # libFuzzer entry point. Fuzzers are not installed.
+  crossFuzzerFlag =
+    if stdenv.isCross
+    then "-DJPEGXL_ENABLE_FUZZERS=OFF"
+    else "";
+
   # The tools link Imath directly through OpenEXR's imported CMake targets.
   # Retain its runtime path as a direct dependency of the installed tools.
   dependencies = [highway brotli lcms2 libpng zlib mozjpeg openexr imath];
@@ -86,6 +93,7 @@ in
               -DCMAKE_PREFIX_PATH="${builtins.concatStringsSep ";" (map toString dependencies)}" \
               -DJPEGXL_FORCE_SYSTEM_BROTLI=ON -DJPEGXL_FORCE_SYSTEM_HWY=ON \
               -DJPEGXL_FORCE_SYSTEM_LCMS2=ON -DBUILD_TESTING=ON \
+              ${crossFuzzerFlag} \
               -DFETCHCONTENT_FULLY_DISCONNECTED=ON
           '';
         }
