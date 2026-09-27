@@ -426,8 +426,10 @@ in
               echo "initrd stage validation still depends on the post-mount image profile" >&2
               exit 1
             fi
+            # The archive assertions inspect paths and content; preserving
+            # ownership would require chown inside the unprivileged sandbox.
             ${pkgs.erofs-utils}/bin/fsck.erofs \
-              --extract=root-tree --xattrs --preserve \
+              --extract=root-tree --xattrs \
               ${assembly}/inputs/root.img >/dev/null
             cmp "$initrd_abilities" \
               root-tree/usr/lib/aos/initrd/static-ability-contract.json
@@ -448,7 +450,8 @@ in
               root-tree/usr/lib/aos/host/static-ability-contract.json
             test "$(cat root-tree/usr/lib/aos/host/static-ability-contract-identity)" = \
               "$host_abilities"
-            ${pkgs.jq}/bin/jq -e '.environment.stage == "host"' \
+            ${pkgs.jq}/bin/jq -e \
+              '.environment.environment.stage == "host" and .fixed_point.environment.stage == "host"' \
               root-tree/usr/lib/aos/host/source-stage-bundle.json >/dev/null
             root_system_units=$(resolve_archived_store_path root-tree/nix.lower \
               "$(readlink "$root_toplevel/systemd-units")")
