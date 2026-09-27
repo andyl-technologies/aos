@@ -216,7 +216,7 @@ impl PluginSetupCompletion {
         &self.app_random_branch_plan
     }
 
-    /// Returns the v3 catalog plan until the live callback owner takes it.
+    /// Returns the v4 catalog plan until the live callback owner takes it.
     #[must_use]
     pub const fn selectable_catalog_plan(&self) -> Option<&SelectableCatalogPlan> {
         self.selectable_catalog_plan.as_ref()
