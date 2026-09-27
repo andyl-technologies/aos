@@ -218,9 +218,12 @@
     dependencies,
     logging ? null,
     environment ? null,
+    activationOwner ? "ability",
+    readinessMechanism ? "successful-exit",
   }:
     {
       inherit consumerInstance;
+      inherit activationOwner;
       service = key;
       manager_identity = managerIdentity key;
       lifecycle = {
@@ -242,7 +245,7 @@
       };
       inherit dependencies;
       readiness = {
-        mechanism = "successful-exit";
+        mechanism = readinessMechanism;
         signal_scope = "none";
         timeout_millis = 90000;
       };
@@ -295,6 +298,8 @@
   initrdController = handoffService {
     key = "aos-ability-initrd-controller";
     description = "Execute and release initrd-stage ability ownership";
+    activationOwner = "image";
+    readinessMechanism = "process-running";
     environment = {
       variables = {
         AOS_NIX_INSTANTIATE = "/bin/nix-instantiate";
@@ -363,6 +368,7 @@
   hostReceiver = handoffService {
     key = "aos-ability-host-receiver";
     description = "Revalidate and receive initrd ability ownership";
+    activationOwner = "image";
     arguments =
       [
         "__ability-stage-receive"
