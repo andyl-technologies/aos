@@ -13098,6 +13098,9 @@ impl Database {
         {
             bail!("operation finish time cannot precede its start time");
         }
+
+        // A claimed controller may checkpoint evidence while staying running;
+        // the version and monotonic-progress predicates still fence stale writers.
         let affected = self
             .backend
             .execute(
@@ -13111,7 +13114,7 @@ impl Database {
                AND (?3 <> 'succeeded' OR COALESCE(?5, progress_total) IS NULL
                     OR ?4 = COALESCE(?5, progress_total))
                AND ((state = 'pending' AND ?3 IN ('running', 'cancelled'))
-                 OR (state = 'running' AND ?3 IN ('succeeded', 'failed', 'cancelled'))) ",
+                 OR (state = 'running' AND ?3 IN ('running', 'succeeded', 'failed', 'cancelled'))) ",
                 &vals![
                     operation_id,
                     expected_version,
