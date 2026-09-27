@@ -158,7 +158,7 @@
         StandardInput = "socket";
         StandardOutput = "socket";
         # Keep loader failures visible when stage-2 journald is unavailable.
-        StandardError = "console";
+        StandardError = "kmsg+console";
         RuntimeMaxSec = "5s";
         User = "root";
         Group = "root";
