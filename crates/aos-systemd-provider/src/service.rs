@@ -123,7 +123,7 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     let realization: ServiceRealization = decode_value(&bound.resource_spec.realization)?;
     let rendered = render_service(&realization)?;
     if invocation.purpose == InvocationPurpose::Effect
-        && realization.activation_owner == ServiceActivationOwner::Image
+        && realization.activation_owner != ServiceActivationOwner::Ability
     {
         bail!("image-owned service cannot be mutated by an ability effect");
     }

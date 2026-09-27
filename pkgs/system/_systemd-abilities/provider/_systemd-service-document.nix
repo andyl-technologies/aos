@@ -846,7 +846,7 @@
       relationship = "wants";
     };
   in
-    if !value.enabled || activationOwner != "image"
+    if !value.enabled || activationOwner == "ability"
     then []
     else
       [defaultActivation]
@@ -1055,7 +1055,7 @@
         unit_name = socket.systemd_unit.unit_name;
       };
     in
-      if activationOwner == "image" && value.enabled && (socket.enabled or true)
+      if activationOwner != "ability" && value.enabled && (socket.enabled or true)
       then [
         {
           parent = {

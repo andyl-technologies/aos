@@ -59,7 +59,10 @@ typed service owner now determines installation links: image-owned services
 have boot target links, while ability-owned services and their sockets start
 through checked effects. The remaining cutover must separate services that
 start after a stage controller exits from the effects executed inside that
-controller and replace the current activation service. Image-owned service
+controller and replace the current activation service. Initrd services ordered
+after controller exit now use deferred image ownership and are omitted from
+the controller's source plan while retaining their manager boot links. Other
+post-controller services still need the same cutover. Image-owned service
 roots now require a selected native
 handler to confirm the rendered unit files, loaded definitions, manager
 freshness, active state, and exact resource revision before admission. The

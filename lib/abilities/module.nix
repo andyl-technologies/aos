@@ -1398,7 +1398,7 @@
       description = "Retention lifetime declared by the owning interface.";
     };
     activationOwner = mkOption {
-      type = abilityTypes.enum ["ability" "image"];
+      type = abilityTypes.enum ["ability" "image" "deferred-image"];
       default = "ability";
       description = "Owner responsible for establishing this resource at stage entry.";
     };
@@ -1428,7 +1428,7 @@
       type = lifetimeType;
     };
     activationOwner = mkOption {
-      type = abilityTypes.enum ["ability" "image"];
+      type = abilityTypes.enum ["ability" "image" "deferred-image"];
       default = "ability";
     };
     value = mkOption {

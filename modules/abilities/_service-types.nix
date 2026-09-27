@@ -99,7 +99,7 @@
     service = localKey;
     enabled = types.boolean;
     activation_owner = {
-      type = types.enum ["ability" "image"];
+      type = types.enum ["ability" "image" "deferred-image"];
       optional = true;
     };
   };

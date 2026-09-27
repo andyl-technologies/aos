@@ -109,6 +109,9 @@ in
   assert (request "aos-boot-preparations" "aos-ability-initrd-controller-lifecycle").activation_owner == "image";
   assert (request "aos-boot-preparations" "aos-ability-initrd-controller-readiness").mechanism == "process-running";
   assert (request "aos-boot-preparations" "aos-ability-initrd-handoff-barrier-lifecycle").remain_after_exit;
+  assert (request "aos-boot-preparations" "aos-ability-initrd-handoff-barrier-lifecycle").activation_owner == "deferred-image";
+  assert (request "aos-boot-preparations" "mount-var-lifecycle").activation_owner == "deferred-image";
+  assert (request "aos-boot-preparations" "aos-config-seed-lifecycle").activation_owner == "deferred-image";
   assert hostRequests."aos-boot-preparations:aos-ability-host-receiver-lifecycle".parameters.remain_after_exit;
   assert hostRequests."aos-boot-preparations:aos-ability-host-receiver-lifecycle".parameters.activation_owner == "image";
   assert !(requests ? "aos-boot-preparations:boot-preparation-handoff"); true
