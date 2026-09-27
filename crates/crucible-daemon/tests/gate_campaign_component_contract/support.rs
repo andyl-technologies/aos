@@ -589,6 +589,7 @@ impl FixturePaths {
 }
 
 pub(super) struct ProcessGuard {
+    helper: String,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     output: Receiver<String>,
@@ -644,13 +645,14 @@ impl ProcessGuard {
             }
         });
         let mut guard = Self {
+            helper: helper.to_owned(),
             child: Some(child),
             stdin: Some(stdin),
             output,
             reader: Some(reader),
             socket,
         };
-        assert_eq!(guard.read_protocol_reply(), "READY");
+        assert_eq!(guard.read_protocol_reply("READY"), "READY");
         guard
     }
 
@@ -658,10 +660,10 @@ impl ProcessGuard {
         let stdin = self.stdin.as_mut().expect("live component input");
         writeln!(stdin, "{command}").expect("write component command");
         stdin.flush().expect("flush component command");
-        self.read_protocol_reply()
+        self.read_protocol_reply(command)
     }
 
-    pub(super) fn read_protocol_reply(&mut self) -> String {
+    pub(super) fn read_protocol_reply(&mut self, command: &str) -> String {
         let deadline = Instant::now() + PROCESS_RESPONSE_TIMEOUT;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -673,14 +675,20 @@ impl ProcessGuard {
                         .child
                         .as_mut()
                         .and_then(|child| child.try_wait().expect("inspect component process"));
-                    panic!("component protocol response timed out; status={status:?}");
+                    panic!(
+                        "component {} did not reply to {command} within {PROCESS_RESPONSE_TIMEOUT:?}; status={status:?}",
+                        self.helper
+                    );
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     let status = self
                         .child
                         .as_mut()
                         .and_then(|child| child.try_wait().expect("inspect component process"));
-                    panic!("component protocol closed before response; status={status:?}");
+                    panic!(
+                        "component {} closed before replying to {command}; status={status:?}",
+                        self.helper
+                    );
                 }
             }
         }

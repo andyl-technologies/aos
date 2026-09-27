@@ -63,7 +63,8 @@ use support::*;
 const CAMPAIGN_NAME: &str = "component-contract-flight";
 const COORDINATOR_HELPER: &str = "coordinator_process_helper";
 const EXECUTOR_HELPER: &str = "executor_process_helper";
-const PROCESS_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+// A helper can finish a 30-second loopback RPC before replying to its parent.
+const PROCESS_RESPONSE_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[test]
 fn same_campaign_survives_direct_rpc_and_independent_component_restarts() {
