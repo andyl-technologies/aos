@@ -154,7 +154,6 @@ let
     "help2man"
     "latex2man"
     "libfontenc"
-    "libunwind"
     "libxau"
     "libxcb"
     "libxdmcp"
@@ -603,6 +602,8 @@ let
     "libsepol"
     "liburcu"
     "liburing"
+    # Darwin obtains libunwind from the AOS-built LLVM runtime instead.
+    "libunwind"
     "libutempter"
     "libvirt"
     "lksctp-tools"
