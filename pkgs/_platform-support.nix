@@ -398,8 +398,6 @@ let
     "chrony"
     "bottom"
     "crictl"
-    "crucible-controller"
-    "crucible-fleet-store"
     "etcd"
     "direnv"
     "docutils"
@@ -480,6 +478,10 @@ let
     "aos-hub-cloudflare"
     "aos-vm"
     "cairo"
+    # The controller compiles the Linux QEMU launcher; the fleet store shares
+    # its Cargo artifacts. Both remain in the complete Linux inventory.
+    "crucible-controller"
+    "crucible-fleet-store"
     "gdk-pixbuf"
     "gi-docgen"
     "glib"
@@ -979,7 +981,7 @@ in rec {
       if entry.disposition == "build-only"
       then "This derivation is a build or test input, not a public package root."
       else if entry.disposition == "linux-scoped" && isDarwin system
-      then "This package belongs to the GNOME image, documentation, or local Cloudflare tooling closure outside the first Darwin release."
+      then "This package is outside the first Darwin release scope."
       else if entry.disposition == "linux-only" && isDarwin system
       then "This package implements a Linux-specific interface."
       else if entry.disposition == "darwin-only" && isLinux system
