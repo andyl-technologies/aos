@@ -58,29 +58,44 @@ const PLAN_EVIDENCE_SCHEMA: &str = "aos.ability.plan-retention/v1";
 const ROOT_EVIDENCE_SCHEMA: &str = "aos.ability.root-retention/v1";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Locates the durable initrd execution directory selected by stage handoff.
-pub(super) fn source_stage_directory(transaction_root: &Path) -> PathBuf {
-    transaction_root
-        .join("ability-stage-runtime")
-        .join("initrd")
+/// Returns the stable directory and transaction prefix of a boot stage.
+pub(super) fn boot_stage_name(
+    stage: aos_ability_validate::StaticAbilityExecutionStage,
+) -> &'static str {
+    match stage {
+        aos_ability_validate::StaticAbilityExecutionStage::Initrd => "initrd",
+        aos_ability_validate::StaticAbilityExecutionStage::Host => "host",
+    }
 }
 
-/// Locates the exact admitted plan retained by an initrd transaction.
+/// Locates the durable execution directory selected by a boot stage.
+pub(super) fn source_stage_directory(
+    transaction_root: &Path,
+    stage: aos_ability_validate::StaticAbilityExecutionStage,
+) -> PathBuf {
+    transaction_root
+        .join("ability-stage-runtime")
+        .join(boot_stage_name(stage))
+}
+
+/// Locates the exact admitted plan retained by a boot-stage transaction.
 pub(super) fn source_stage_transaction_directory(
     transaction_root: &Path,
+    stage: aos_ability_validate::StaticAbilityExecutionStage,
     transaction: &TransactionId,
 ) -> PathBuf {
-    source_stage_directory(transaction_root)
+    source_stage_directory(transaction_root, stage)
         .join(TRANSACTION_ROOT)
         .join(transaction.0.as_str())
 }
 
-/// Locates the exact admitted plan retained by an initrd transaction.
+/// Locates the exact admitted plan retained by a boot-stage transaction.
 pub(super) fn source_stage_plan_bundle_path(
     transaction_root: &Path,
+    stage: aos_ability_validate::StaticAbilityExecutionStage,
     transaction: &TransactionId,
 ) -> PathBuf {
-    source_stage_transaction_directory(transaction_root, transaction).join(PLAN_BUNDLE_FILE)
+    source_stage_transaction_directory(transaction_root, stage, transaction).join(PLAN_BUNDLE_FILE)
 }
 
 /// Reports why a config generation could not retain or reload ability state.
