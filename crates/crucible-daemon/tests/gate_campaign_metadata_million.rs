@@ -75,8 +75,10 @@ const fn ancestry_for_admissions(admissions: usize) -> usize {
 fn million_admission_ancestry_capacity_probe() {
     assert_eq!(REQUIRED_ADMISSIONS % REQUEST_SIZE, 0);
     assert_eq!(ancestry_for_admissions(REQUIRED_ADMISSIONS), 187_503);
+
+    // Libtest prefixes the first output line with the test name.
     println!(
-        "campaign_million_capacity required={REQUIRED_ANCESTRY} limit={MAX_CAMPAIGN_SNAPSHOT_ANCESTRY}"
+        "\ncampaign_million_capacity required={REQUIRED_ANCESTRY} limit={MAX_CAMPAIGN_SNAPSHOT_ANCESTRY}"
     );
 }
 
