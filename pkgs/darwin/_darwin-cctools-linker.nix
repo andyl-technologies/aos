@@ -55,7 +55,13 @@ in
           export CC="${llvm}/bin/clang --gcc-toolchain=${gcc} -B${glibc}/lib -idirafter ${glibc.dev}/include"
           export CXX="${llvm}/bin/clang++ --gcc-toolchain=${gcc} -B${glibc}/lib -idirafter ${glibc.dev}/include"
           export CPPFLAGS="$CPPFLAGS -I${appleLibTapi}/include"
-          export LDFLAGS="$LDFLAGS -L${glibc}/lib -Wl,-dynamic-linker,${glibc}/lib/ld-linux-x86-64.so.2 -Wl,-rpath,${glibc}/lib -L${appleLibTapi}/lib -L${darwinDtraceCompiler}/lib -Wl,-rpath,${appleLibTapi}/lib -Wl,-rpath,${darwinDtraceCompiler}/lib"
+          # ld64 links libuuid directly and runs as a native build tool.
+          export LDFLAGS="$LDFLAGS \
+            -L${glibc}/lib -Wl,-dynamic-linker,${glibc}/lib/ld-linux-x86-64.so.2 \
+            -Wl,-rpath,${glibc}/lib \
+            -L${appleLibTapi}/lib -Wl,-rpath,${appleLibTapi}/lib \
+            -L${darwinDtraceCompiler}/lib -Wl,-rpath,${darwinDtraceCompiler}/lib \
+            -L${util-linux}/lib -Wl,-rpath,${util-linux}/lib"
           ./configure \
             --prefix="$out" \
             --target=aarch64-apple-darwin \
