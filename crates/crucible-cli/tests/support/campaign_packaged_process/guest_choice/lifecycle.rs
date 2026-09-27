@@ -11,6 +11,10 @@ const LIFECYCLE_SELECTABLE_WAIT: Duration = Duration::from_secs(600);
 // Cold replay of one guest-choice branch takes 341-400 host seconds on TCG.
 const LIFECYCLE_BRANCH_OBSERVATION_WAIT: Duration = Duration::from_secs(600);
 
+// The public service classifies Unavailable as retryable after bounded backoff.
+const LIFECYCLE_ALL_BRANCH_RETRY_WAIT: Duration = Duration::from_secs(60);
+const LIFECYCLE_ALL_BRANCH_RETRY_BACKOFF: Duration = Duration::from_millis(250);
+
 #[test]
 #[ignore = "requires packaged QEMU, cgroup-v2, and ext4 project quota inside the VM check"]
 fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Error>> {
@@ -474,36 +478,72 @@ fn submit_all_choices(
     fixture: &FlightFixture,
     choice: &PublicChoice,
 ) -> Result<Value, Box<dyn Error>> {
-    for _ in 0..MAX_STALE_BRANCH_RETRIES {
-        let head = campaign_status(fixture)?;
-        let output = connected_campaign(fixture)
-            .args([
-                "branch",
-                CAMPAIGN,
-                "--expected",
-                &json_string(&head, "snapshot")?,
-                "--branch-point",
-                &choice.branch_point,
-                "--parent",
-                &choice.parent,
-                "--opportunity",
-                &choice.opportunity,
-                "--domain",
-                &choice.domain,
-                "--all",
-                "--attempts",
-                "1",
-                "--stop",
-                "next-choice",
-            ])
-            .output()?;
+    retry_finite_branch_submission(
+        || json_string(&campaign_status(fixture)?, "snapshot"),
+        |snapshot| {
+            Ok(connected_campaign(fixture)
+                .args([
+                    "branch",
+                    CAMPAIGN,
+                    "--expected",
+                    snapshot,
+                    "--branch-point",
+                    &choice.branch_point,
+                    "--parent",
+                    &choice.parent,
+                    "--opportunity",
+                    &choice.opportunity,
+                    "--domain",
+                    &choice.domain,
+                    "--all",
+                    "--attempts",
+                    "1",
+                    "--stop",
+                    "next-choice",
+                ])
+                .output()?)
+        },
+        LIFECYCLE_ALL_BRANCH_RETRY_WAIT,
+        LIFECYCLE_ALL_BRANCH_RETRY_BACKOFF,
+    )
+}
+
+fn retry_finite_branch_submission(
+    mut read_snapshot: impl FnMut() -> Result<String, Box<dyn Error>>,
+    mut submit: impl FnMut(&str) -> Result<std::process::Output, Box<dyn Error>>,
+    wait: Duration,
+    backoff: Duration,
+) -> Result<Value, Box<dyn Error>> {
+    let deadline = Instant::now() + wait;
+    let mut snapshot = read_snapshot()?;
+    let mut stale_retries = 0;
+
+    loop {
+        let output = submit(&snapshot)?;
         if is_stale_snapshot_response(&output) {
+            stale_retries += 1;
+            if stale_retries == MAX_STALE_BRANCH_RETRIES {
+                return Err("finite branch remained stale across bounded snapshot reads".into());
+            }
+            snapshot = read_snapshot()?;
             continue;
         }
+
+        if is_finite_branch_temporarily_unavailable(&output) && Instant::now() < deadline {
+            // Keep the same canonical request and snapshot. If it was accepted
+            // before the response failed, the repository returns its prior result.
+            std::thread::sleep(backoff.min(deadline.saturating_duration_since(Instant::now())));
+            continue;
+        }
+
         return parse_json_output(output, "submit authenticated finite domain");
     }
+}
 
-    Err("finite branch remained stale across bounded snapshot reads".into())
+fn is_finite_branch_temporarily_unavailable(output: &std::process::Output) -> bool {
+    output.status.code() == Some(4)
+        && String::from_utf8_lossy(&output.stderr).trim_end()
+            == "crucible: campaign branch failed: campaign service is temporarily unavailable"
 }
 
 fn submit_bounded_choices(
@@ -556,5 +596,97 @@ fn acceptance_count_minimum(count: &Value) -> Result<u64, Box<dyn Error>> {
         Some("exact") => json_u64(count, "count"),
         Some("range") => json_u64(count, "minimum"),
         _ => Err(format!("branch acceptance omitted a bounded count: {count}").into()),
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    fn output(status: i32, stdout: &str, stderr: &str) -> std::process::Output {
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(status << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn finite_branch_retries_unavailable_with_same_snapshot() {
+        let mut snapshots = 0;
+        let mut submitted = Vec::new();
+        let result = retry_finite_branch_submission(
+            || {
+                snapshots += 1;
+                Ok("snapshot-a".to_owned())
+            },
+            |snapshot| {
+                submitted.push(snapshot.to_owned());
+                Ok(if submitted.len() == 1 {
+                    output(
+                        4,
+                        "",
+                        "crucible: campaign branch failed: campaign service is temporarily unavailable\n",
+                    )
+                } else {
+                    output(0, "{\"accepted\":true}\n", "")
+                })
+            },
+            Duration::from_secs(1),
+            Duration::ZERO,
+        )
+        .expect("bounded unavailable retry should recover");
+
+        assert_eq!(result["accepted"], true);
+        assert_eq!(snapshots, 1);
+        assert_eq!(submitted, ["snapshot-a", "snapshot-a"]);
+    }
+
+    #[test]
+    fn finite_branch_preserves_persistent_unavailable_response() {
+        let mut submissions = 0;
+        let error = retry_finite_branch_submission(
+            || Ok("snapshot-a".to_owned()),
+            |_| {
+                submissions += 1;
+                Ok(output(
+                    4,
+                    "last response",
+                    "crucible: campaign branch failed: campaign service is temporarily unavailable\n",
+                ))
+            },
+            Duration::from_millis(30),
+            Duration::from_millis(1),
+        )
+        .expect_err("persistent unavailable must fail after the bound");
+
+        assert!(submissions > 1);
+        assert!(error.to_string().contains("stdout=`last response`"));
+        assert!(error
+            .to_string()
+            .contains("campaign service is temporarily unavailable"));
+    }
+
+    #[test]
+    fn finite_branch_does_not_retry_other_failures() {
+        let mut submissions = 0;
+        let error = retry_finite_branch_submission(
+            || Ok("snapshot-a".to_owned()),
+            |_| {
+                submissions += 1;
+                Ok(output(
+                    4,
+                    "",
+                    "crucible: campaign branch failed: integrity error\n",
+                ))
+            },
+            Duration::from_secs(1),
+            Duration::ZERO,
+        )
+        .expect_err("non-transient failure must fail immediately");
+
+        assert_eq!(submissions, 1);
+        assert!(error.to_string().contains("integrity error"));
     }
 }
