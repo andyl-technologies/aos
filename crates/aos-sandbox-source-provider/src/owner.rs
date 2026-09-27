@@ -14,16 +14,19 @@ use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_ledger::ledger::model::AttemptRecordV1;
 use aos_sandbox_source_provider_protocol::{
-    CatalogCurrentnessQueryV1, InventoryReadbackQueryV1, RecoveryCurrentnessQueryV1,
-    SignedCatalogCurrentnessV1, SignedSourceProviderRequestV1, SourceProviderMethod,
-    decode_acquire_request, decode_inventory_request,
+    CatalogCurrentnessQueryV1, InventoryReadbackQueryV1, NativeRecoveryTerminalDigestsV1,
+    RecoveryCurrentnessQueryV1, SignedCatalogCurrentnessV1, SignedSourceProviderRequestV1,
+    SourceProviderMethod, decode_acquire_request, decode_inventory_request,
 };
 use aos_sandbox_source_provider_security::{
     ProviderSourceProviderHandshakeStatusV1, ProviderSourceProviderOwnerV1,
 };
 
 use crate::state::{DetachedProviderLedgerV1, ProtectedProviderConfigurationV1};
-use crate::{DurableProviderReplyV1, ProviderLedgerError, ProviderLedgerLimits, ProviderLedgerV1};
+use crate::{
+    DurableProviderReplyV1, NativeNoDispatchSettlementV1, ProviderLedgerError,
+    ProviderLedgerLimits, ProviderLedgerV1,
+};
 use sha2::{Digest as _, Sha256};
 
 const FIXED_PROVIDER_STATE_ROOT: &str = "/var/lib/aos/source-provider";
@@ -270,6 +273,7 @@ pub struct FixedProviderOwnerV1 {
     last_recovery_sequence: u64,
     pending_recovery_query_digest: Option<ObjectDigest>,
     pending_recovery_plan_digest: Option<ObjectDigest>,
+    pending_recovery_terminal_digests: Option<NativeRecoveryTerminalDigestsV1>,
     pending_inventory_readback_digest: Option<ObjectDigest>,
 }
 
@@ -331,6 +335,7 @@ impl FixedProviderOwnerV1 {
                 last_recovery_sequence: 0,
                 pending_recovery_query_digest: None,
                 pending_recovery_plan_digest: None,
+                pending_recovery_terminal_digests: None,
                 pending_inventory_readback_digest: None,
             },
             FixedProviderOpenReportV1 { journal: recovery },
@@ -707,6 +712,7 @@ impl FixedProviderOwnerV1 {
         self.last_recovery_sequence = 0;
         self.pending_recovery_query_digest = None;
         self.pending_recovery_plan_digest = None;
+        self.pending_recovery_terminal_digests = None;
         self.pending_inventory_readback_digest = None;
         if let Some(recovery) = self.pending_backend_recovery.first_mut() {
             recovery.mark_successor_session_ready();
@@ -1506,6 +1512,7 @@ impl FixedProviderOwnerV1 {
             self.last_recovery_sequence = query.sequence();
             self.pending_recovery_query_digest = Some(query.digest());
             self.pending_recovery_plan_digest = None;
+            self.pending_recovery_terminal_digests = None;
             return Ok(FixedProviderIngressProgressV1::Recovery(query));
         }
         if packet.starts_with(b"AOSSPI01") {
@@ -1547,6 +1554,7 @@ impl FixedProviderOwnerV1 {
     ) -> Result<bool, ProviderLedgerError> {
         if self.pending_recovery_query_digest != Some(query.digest())
             || self.last_recovery_sequence != query.sequence()
+            || self.pending_recovery_terminal_digests.is_some()
             || self
                 .pending_recovery_plan_digest
                 .is_some_and(|digest| digest != signed_plan_digest)
@@ -1571,6 +1579,54 @@ impl FixedProviderOwnerV1 {
         if sent {
             self.pending_recovery_query_digest = None;
             self.pending_recovery_plan_digest = None;
+        }
+        Ok(sent)
+    }
+
+    /// Sends a native no-dispatch recovery settlement under its exact journal cut.
+    ///
+    /// The move-only settlement was minted only after the protected Provider
+    /// terminal transition. The journal snapshot is revalidated immediately
+    /// before the current session signs or sends its descriptor-free answer.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale query, changed settlement, journal, signer, peer, or send.
+    pub fn send_native_recovery_unavailable(
+        &mut self,
+        query: &RecoveryCurrentnessQueryV1,
+        settlement: &NativeNoDispatchSettlementV1,
+    ) -> Result<bool, ProviderLedgerError> {
+        if self.pending_recovery_query_digest != Some(query.digest())
+            || self.last_recovery_sequence != query.sequence()
+            || self.pending_recovery_plan_digest.is_some()
+            || self
+                .pending_recovery_terminal_digests
+                .is_some_and(|digests| digests != settlement.digests)
+        {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        self.pending_recovery_terminal_digests = Some(settlement.digests);
+        let sent = self.with_ledger(|ledger| {
+            ledger
+                .journal
+                .validate_source_provider_authority_snapshot(&settlement.snapshot)?;
+            let installed = ledger
+                .current_sessions
+                .values_mut()
+                .next()
+                .ok_or(ProviderLedgerError::Unavailable)?;
+            let response = installed
+                .session
+                .sign_native_recovery_unavailable(query, settlement.digests)?;
+            installed
+                .session
+                .send_native_recovery_unavailable(query, &response)
+                .map_err(Into::into)
+        })?;
+        if sent {
+            self.pending_recovery_query_digest = None;
+            self.pending_recovery_terminal_digests = None;
         }
         Ok(sent)
     }

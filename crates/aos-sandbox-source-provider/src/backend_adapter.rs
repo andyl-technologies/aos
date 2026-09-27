@@ -11,9 +11,8 @@ use std::sync::Arc;
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    NativeRecoveryTerminalDigestsV1, RecoveryCurrentnessQueryV1, SignedSourceProviderRequestV1,
-    SignedStorageLiveExportRequestV1, SourceProviderDescriptorRole, SourceProviderProofV1,
-    SourceResourceV1, digest_signed_request,
+    RecoveryCurrentnessQueryV1, SignedSourceProviderRequestV1, SignedStorageLiveExportRequestV1,
+    SourceProviderDescriptorRole, SourceProviderProofV1, SourceResourceV1, digest_signed_request,
 };
 
 use crate::backend_verifier::{
@@ -25,11 +24,11 @@ use crate::{
     AcquireObservationV1, AcquirePlanV1, ActiveAcquisitionSnapshotV1, BackendEvidenceClassV1,
     BackendEvidenceStateV1, BackendEvidenceV1, DurableAcquireEffectPermitV1,
     DurableProviderReplyV1, DurableReleaseEffectPermitV1, DurableReleaseTombstoneV1,
-    FixedProviderOwnerV1, ObservedBackendAcquisitionV1, ObservedBackendReleaseV1,
-    ProviderAdmissionDispositionV1, ProviderLedgerError, ProviderRecoveryContinuationV1,
-    ProviderRecoveryObservationV1, ProviderRecoveryWorkV1, RecoveryAcquireNotAppliedV1,
-    RecoveryReleaseStillPresentV1, ReleaseObservationV1, ReleasePlanV1, ReopenIdentityV1,
-    ReopenObservationV1, SourceProviderBackendV1,
+    FixedProviderOwnerV1, NativeNoDispatchSettlementV1, ObservedBackendAcquisitionV1,
+    ObservedBackendReleaseV1, ProviderAdmissionDispositionV1, ProviderLedgerError,
+    ProviderRecoveryContinuationV1, ProviderRecoveryObservationV1, ProviderRecoveryWorkV1,
+    RecoveryAcquireNotAppliedV1, RecoveryReleaseStillPresentV1, ReleaseObservationV1,
+    ReleasePlanV1, ReopenIdentityV1, ReopenObservationV1, SourceProviderBackendV1,
 };
 
 /// Reports an operational result from an authority-free backend transport.
@@ -964,22 +963,13 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
     ///
     /// # Errors
     ///
-    /// Rejects a different pending recovery, changed native row, or any
-    /// attempt that could have reached a backend effect. Exact terminal replay
-    /// also works after the owner has rebuilt its recovery index.
+    /// Rejects a changed native row or any attempt that could have reached a
+    /// backend effect. Exact terminal replay works even after the owner has
+    /// rebuilt or reordered its recovery index.
     pub fn settle_native_no_dispatch_recovery_for_query(
         &mut self,
         query: &RecoveryCurrentnessQueryV1,
-    ) -> Result<NativeRecoveryTerminalDigestsV1, ProviderLedgerError> {
-        if let Some(recovery) = self.owner.pending_backend_recovery.first() {
-            if !matches!(
-                &recovery.work,
-                ProviderRecoveryWorkV1::ObserveApplying { acquisition_id, .. }
-                    if *acquisition_id == query.acquisition_id()
-            ) {
-                return Err(ProviderLedgerError::Unavailable);
-            }
-        }
+    ) -> Result<NativeNoDispatchSettlementV1, ProviderLedgerError> {
         let (publication, rows) = self
             .current_catalog
             .ok_or(ProviderLedgerError::Unavailable)?;

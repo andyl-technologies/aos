@@ -19,13 +19,19 @@ use aos_sandbox_broker_session_security::{
     install_fixed_source_provider_catalog_credential, production_deadline_after,
 };
 use aos_sandbox_source_provider::{
-    FixedProviderBackendRequestOutcomeV1, FixedProviderIngressProgressV1, ProviderLedgerError,
+    FixedProviderBackendRequestOutcomeV1, FixedProviderIngressProgressV1,
+    NativeNoDispatchSettlementV1, ProviderLedgerError,
 };
 use aos_sandbox_source_provider_security::{
     SourceProviderSecurityError, validate_fixed_provider_authority_v1,
 };
 
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
+
+enum RecoveryAnswerV1 {
+    Native(NativeNoDispatchSettlementV1),
+    LocalLive(aos_sandbox_core::ObjectDigest),
+}
 
 #[derive(Debug, thiserror::Error)]
 enum SourceProviderDaemonErrorV1 {
@@ -102,15 +108,36 @@ fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
                                 &publication,
                                 &manifest,
                             );
-                            let signed_plan_digest =
-                                session.inspect_selected_storage_recovery_for_query(&query)?;
+                            let answer = match session
+                                .settle_native_no_dispatch_recovery_for_query(&query)
+                            {
+                                Ok(settlement) => RecoveryAnswerV1::Native(settlement),
+                                Err(ProviderLedgerError::Unavailable) => {
+                                    RecoveryAnswerV1::LocalLive(
+                                        session
+                                            .inspect_selected_storage_recovery_for_query(&query)?,
+                                    )
+                                }
+                                Err(error) => return Err(error.into()),
+                            };
                             drop(session);
 
-                            // The answer is a fresh-session, descriptor-free
-                            // observation. Applying stays pending for a later
-                            // explicit resolution; no old response is replayed.
-                            while !owner.send_recovery_unavailable(&query, signed_plan_digest)? {
-                                std::thread::sleep(Duration::from_millis(2));
+                            match answer {
+                                RecoveryAnswerV1::Native(settlement) => {
+                                    while !owner
+                                        .send_native_recovery_unavailable(&query, &settlement)?
+                                    {
+                                        std::thread::sleep(Duration::from_millis(2));
+                                    }
+                                }
+                                RecoveryAnswerV1::LocalLive(signed_plan_digest) => {
+                                    // LocalLive readback remains nonterminal pending evidence.
+                                    while !owner
+                                        .send_recovery_unavailable(&query, signed_plan_digest)?
+                                    {
+                                        std::thread::sleep(Duration::from_millis(2));
+                                    }
+                                }
                             }
                         }
                         FixedProviderIngressProgressV1::InventoryReadback(query) => loop {

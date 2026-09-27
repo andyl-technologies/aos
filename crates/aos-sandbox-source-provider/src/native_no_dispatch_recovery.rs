@@ -4,6 +4,7 @@
 //! descriptor-free recovery observation. It cannot be reused for a future
 //! positive Storage or SourceRoot path.
 
+use aos_sandbox::ProtectedJournalSnapshot;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
     ACQUIRE_SOURCE_REQUEST_VERSION_V2, NativeRecoveryTerminalDigestsV1,
@@ -19,6 +20,16 @@ use crate::format::{
 use crate::held_snapshot_selection::select_current_held_snapshot_claim;
 use crate::model::{ProviderAcquisitionStateV1, ProviderAttemptStateV1};
 use crate::{FixedProviderOwnerV1, ProviderLedgerError};
+
+/// Carries exact durable native terminal records and their protected snapshot.
+///
+/// Construction is restricted to the fixed Provider owner after full typed
+/// replay. The snapshot must still be current when a response is signed.
+#[must_use = "a native settlement is not a Mount terminal outcome until sent and consumed"]
+pub struct NativeNoDispatchSettlementV1 {
+    pub(crate) digests: NativeRecoveryTerminalDigestsV1,
+    pub(crate) snapshot: ProtectedJournalSnapshot,
+}
 
 impl FixedProviderOwnerV1 {
     /// Durably retires one proofless native reservation that forbids dispatch.
@@ -39,7 +50,7 @@ impl FixedProviderOwnerV1 {
         expected_signed_request_digest: ObjectDigest,
         canonical_publication: &[u8],
         canonical_rows: &[u8],
-    ) -> Result<NativeRecoveryTerminalDigestsV1, ProviderLedgerError> {
+    ) -> Result<NativeNoDispatchSettlementV1, ProviderLedgerError> {
         self.with_ledger(|ledger| {
             let journal_snapshot = ledger.journal.snapshot()?;
             let mut acquisitions = ledger
@@ -283,7 +294,10 @@ impl FixedProviderOwnerV1 {
                     cleared,
                 );
             }
-            Ok(digests)
+            Ok(NativeNoDispatchSettlementV1 {
+                digests,
+                snapshot: ledger.journal.snapshot()?,
+            })
         })
     }
 }
