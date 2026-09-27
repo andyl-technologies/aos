@@ -1218,13 +1218,14 @@ component that makes that purity true *inside* the QEMU process.
   mode off the plugin is not loaded and has zero effect on QEMU behavior. This
   contributes plugin-half evidence for [PLUG-49]; the full real-QEMU corpus is
   completed by T-HARN-21/T-PATCH-3. — satisfies [PLUG-49]; spec §12.10.4.
-- [x] **T-PLUG-24** Implement the deterministic round-robin sub-division within a
+- [ ] **T-PLUG-24** Implement the deterministic round-robin sub-division within a
   RUN (fixed `rr_switch_quantum`, fixed ascending vCPU rotation), per-vCPU halt
   tracking, and the all-vCPUs-halted node-idle predicate with
   `idle_wake_icount = min` over vCPUs of the next armed deadline. — satisfies
   [PLUG-3], [PLUG-10], [PLUG-50], [PLUG-52]; spec §12.1.2, §12.3.2,
   §12.3.6.
-  Completed by `checks.crucible.phase2.qemuRrQuantumIcount`, together with
+  Focused implementation evidence comes from
+  `checks.crucible.phase2.qemuRrQuantumIcount`, together with
   `checks.crucible.phase0.s11MultiVcpuFingerprint`,
   `checks.crucible.phase3.schedulerRrSubdivision`, and
   `checks.crucible.phase3.schedulerAllVcpusIdle`. The
@@ -1242,40 +1243,22 @@ component that makes that purity true *inside* the QEMU process.
   `checks.crucible.phase3.schedulerRrSubdivision` /
   `schedulerAllVcpusIdle`. The RR sub-division behavior is live at `-smp N`:
   `checks.crucible.phase0.s11MultiVcpuFingerprint` samples the authoritative
-  RR cursor deterministically over two runs at `-smp 4`. The dedicated SMP
-  quantum gate boots a hermetic multiboot guest with the same production plugin
-  at `-smp 4`. The guest starts APIC IDs 1-3 with directed INIT-SIPI-SIPI,
-  then runs a lock-handoff AP/BSP rendezvous whose exact `AAABPPPR` console
-  record requires a waiting AP to acquire the BSP-released lock between the
-  BSP's `PAUSE` and its immediately following reacquire instruction. A failed
-  early handoff emits `F` and parks forever. A test-only QEMU traps precisely
-  the still-partial early-yield branch while retaining ordinary full-quantum
-  and HLT behavior, and the same live workload must reach that trap; eventual
-  rotation at the ordinary RR quantum cannot false-green the proof. The
-  remaining APs acquire
-  in turn before the guest parks all four vCPUs in HLT and arms a periodic PIT
-  deadline on the BSP.
-  Patched QEMU reports each halted vCPU; the fourth transition fires the all-idle
-  hot loop, whose minimum live timer deadline is the BSP's PIT deadline because
-  the parked APs have none. The gate performs the authorized idle jump, observes
-  the BSP wake and re-halt, then uses the production host-I/O runtime to request,
-  wake, and await the exact all-halted fingerprint control boundary. Production
-  `QemuNode::execution_fingerprint` owns the same bounded refresh whenever its
-  first sample is absent or stale; it does not poll for a callback that an
-  all-halted executor will never publish. Because fault-result polling uses the
-  same control wake, the callback pumps every same-coordinate fault command
-  before clearing and synchronously recapturing the requested fingerprint. It
-  withholds the release acknowledgement while the lossless occurrence-event
-  ring is backpressured; the host drains that ring into scheduler-owned staging
-  under the same finite supervision deadline and wakes the callback again.
-  Consequently the acknowledgement orders both the result and every queued
-  occurrence event as well as a post-mutation hash, never a stale pre-mutation
-  sample with the same icount. The live hardware gate proves this
-  with a one-byte conventional-RAM mutation whose writable-RAM component makes
-  the pre/post hashes differ without guest progress; its separate clock fault
-  remains authenticated by the typed clock evidence.
-  The scenario repeats under bounded scheduler preemption with an identical
-  idle observation, execution fingerprint, and host-observable schedule.
+  RR cursor deterministically over two runs at `-smp 4`; its contention guest
+  now executes `PAUSE` in the spin loop. In precise `sim`, `PAUSE` is a counted
+  hint. The fixed quantum bounds peer waiting, and an earlier exact timer or
+  event deadline stops the current turn. A directed APIC IPI asks the source
+  vCPU to exit at the next TB boundary so the queued delivery is drained
+  before another RR selection. The multiboot SMP guest fixture can start APs
+  with directed INIT-SIPI-SIPI, contend on the BSP lock, and park all vCPUs
+  before a PIT deadline. `checks.crucible.phase2.qemuPauseIpiLive` runs that
+  AP-starting variant with `startAps = true` and passed two same-source runs:
+  directed SIPI delivery reached the AP within four configured RR quanta, both
+  vCPUs executed `PAUSE`, and the BSP reached HLT before all-vCPU idle. The
+  separate `checks.crucible.phase0.s2HltBusyPoll` companion covers exact idle
+  advancement and periodic LAPIC timer delivery. The exact-snapshot gate still
+  uses `startAps = false`; full packaged release and replay evidence under the
+  current policy remains unqualified, so this task stays open. The previous
+  zero-instruction PAUSE handoff is not part of the scheduling contract.
 - [x] **T-PLUG-25** Implement application of `Decision::Preemption`: force the
   vCPU switch / deliver the interrupt at the commanded node-icount via the
   preemption-injection capability (11/[PATCH-47]), failing loud and localizing an
