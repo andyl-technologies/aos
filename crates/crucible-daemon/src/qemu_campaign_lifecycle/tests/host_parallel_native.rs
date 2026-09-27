@@ -351,9 +351,13 @@ fn replay_validate_checkpoint(
         SharedQemuAttemptHostResourceFactory::new(open_host(paths, "host-replay-oracle", 24_260)),
     );
     let mut replay_factory = ProductionBakedGenesisReplayCatalogFactory::new([baked], resources)
-        .expect("build production baked-genesis replay catalog");
+        .expect("build production baked-genesis replay catalog")
+        .with_savepoint_replay_config(lifecycle_config(paths, "host-replay-oracle", 2));
 
-    promote_test_checkpoint_for_resume(
+    let raw_closure = checkpoints
+        .load_attempt_checkpoint(raw)
+        .expect("authenticate captured native checkpoint before replay");
+    let promoted = promote_test_checkpoint_for_resume(
         checkpoints,
         raw,
         input,
@@ -362,7 +366,13 @@ fn replay_validate_checkpoint(
         &paths.run_state_root.join("host-replay-oracle"),
         context,
         &mut replay_factory,
-    )
+    );
+    checkpoints
+        .load_attempt_checkpoint(promoted)
+        .expect("authenticate replay-promoted checkpoint")
+        .authenticate_replay_oracle_promotion(&raw_closure)
+        .expect("native causal replay preserves the source closure and evidence");
+    promoted
 }
 
 fn drive_until_host_round(
