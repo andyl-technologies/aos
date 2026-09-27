@@ -329,8 +329,8 @@
         after = [
           sysrootReadiness
         ];
+        # The manager-owned mount-var unit orders after the handoff barrier.
         before = [
-          (serviceResource "mount-var")
           initrdFilesystemsReadiness
           switchRootReadiness
         ];

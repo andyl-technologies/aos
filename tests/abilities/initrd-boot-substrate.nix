@@ -112,6 +112,9 @@ in
   assert (request "aos-boot-preparations" "aos-ability-initrd-handoff-barrier-lifecycle").remain_after_exit;
   assert (request "aos-boot-preparations" "aos-ability-initrd-handoff-barrier-lifecycle").activation_owner == "manager";
   assert (request "aos-boot-preparations" "mount-var-lifecycle").activation_owner == "manager";
+  assert !(builtins.elem
+    (output "aos-boot-preparations" "mount-var-lifecycle" "resource")
+    (request "aos-boot-preparations" "aos-ability-initrd-controller-dependencies").before);
   assert !(sourceGraph.requests ? "aos-boot-preparations:mount-var-lifecycle");
   assert builtins.deepSeq sourceGraph true;
   assert (request "aos-boot-preparations" "aos-config-seed-lifecycle").activation_owner == "manager";
