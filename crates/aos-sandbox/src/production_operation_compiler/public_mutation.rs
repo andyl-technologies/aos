@@ -2158,6 +2158,9 @@ fn timestamp(seconds: i64) -> Timestamp {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
     use aos_proto::aos::sandbox::v1::{
         Command, DeleteSandboxRequest, Duration, Execution, ExecutionControlAction,
         ExecutionControlRequest, ExecutionIoMode, ExecutionPhase, Feature, MutationContext,
@@ -2176,11 +2179,13 @@ mod tests {
     #[test]
     fn public_delete_rejects_every_plan_and_force_shape_before_journal_mutation() {
         let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let owner = fs::metadata(directory.path()).unwrap().uid();
         let (mut journal, _) = Journal::open_protected_at_uid(
             directory.path(),
             "delete-admission.journal",
             JournalLimits::default(),
-            rustix::process::getuid().as_raw(),
+            owner,
         )
         .unwrap();
         let initial_sequence = journal.snapshot_sequence();
