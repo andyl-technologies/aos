@@ -207,7 +207,12 @@ impl CampaignRepository {
         self.update_request_spending_map(prior, &outer, publish)
     }
 
-    fn update_request_spending_map(
+    /// Computes or publishes one request-local index from a validated set of entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the prior root is invalid or immutable publication fails.
+    pub(super) fn update_request_spending_map(
         &self,
         prior: ContentId,
         upserts: &BTreeMap<CampaignHash, ContentId>,
@@ -216,11 +221,8 @@ impl CampaignRepository {
         if !publish {
             return Ok(self.merkle.root_after_upserts(prior, upserts)?);
         }
-        let mut root = prior;
-        for (key, content) in upserts {
-            root = self.merkle.insert(root, *key, *content)?.content_id();
-        }
-        Ok(root)
+        // Only the final request index becomes reachable through the ref CAS.
+        Ok(self.merkle.insert_many(prior, upserts)?.content_id())
     }
 
     pub(crate) fn scan_request_attempt_page(
