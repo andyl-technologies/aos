@@ -344,6 +344,7 @@ where
         let request =
             decode_publisher_admission_request_v1(holder.payload(), challenge::request_limits())
                 .map_err(PublisherControlError::from)?;
+        validate_live_request_profile(&request)?;
         let instance = request.plan().fields().target.instance;
         let store = PublisherIngressStore::load(journal, config.control.ingress_limits)
             .map_err(PublisherControlError::from)?;
