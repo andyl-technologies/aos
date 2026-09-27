@@ -16,7 +16,11 @@
     filter = path: _type: let
       base = baseNameOf path;
     in
-      base != "target" && base != "result" && base != ".git";
+      base
+      != "target"
+      && base != "result"
+      && base != ".git"
+      && base != ".crucible";
   };
   rfcDocs = builtins.path {
     path = ../../docs/rfcs/0010-crucible;

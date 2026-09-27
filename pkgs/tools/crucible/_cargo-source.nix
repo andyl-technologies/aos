@@ -12,6 +12,7 @@ in
     in
       base
       != ".git"
+      && base != ".crucible"
       && base != "target"
       && pathString != "${repoRootString}/result"
       && (
