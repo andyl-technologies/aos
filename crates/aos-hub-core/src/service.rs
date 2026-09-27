@@ -26303,14 +26303,34 @@ impl RpcService {
 
     /// Reconciles the derived registry index after a publication is visible.
     ///
-    /// Publication readiness is the durable source of truth. Indexing is a
-    /// recoverable derived-state update, so failure is logged without making a
-    /// completed publication ambiguous to its producer.
+    /// Publication readiness is the durable source of truth. Hybrid returns
+    /// after that commit and refreshes the derived index independently, so a
+    /// full remote index walk cannot outlive the producer's control timeout.
+    /// The Native periodic reindex pass recovers a canceled background task.
     async fn refresh_registry_index_after_publication(
         &self,
         registry: &crate::db::RegistryRecord,
         publication_id: &str,
     ) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.hybrid_delivery {
+            let reindexer = Arc::clone(&self.reindexer);
+            let registry = registry.clone();
+            let publication_id = publication_id.to_owned();
+
+            tokio::spawn(async move {
+                if let Err(error) = reindexer.reindex(&registry).await {
+                    tracing::warn!(
+                        registry = %registry.slug,
+                        publication_id,
+                        error = %format!("{error:#}"),
+                        "hybrid publication index refresh failed"
+                    );
+                }
+            });
+            return;
+        }
+
         if let Err(error) = self.reindexer.reindex(registry).await {
             tracing::warn!(
                 registry = %registry.slug,
@@ -36865,6 +36885,22 @@ mod cache_upload_tests {
         }
     }
 
+    struct PausedReindexer {
+        started: Arc<tokio::sync::Notify>,
+        resume: Arc<tokio::sync::Notify>,
+        completed: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl Reindexer for PausedReindexer {
+        async fn reindex(&self, _registry: &RegistryRecord) -> Result<Option<String>> {
+            self.started.notify_one();
+            self.resume.notified().await;
+            self.completed.notify_one();
+            Ok(None)
+        }
+    }
+
     #[derive(Clone, Copy)]
     enum SealerBehavior {
         Credential,
@@ -37873,6 +37909,44 @@ mod cache_upload_tests {
             .await;
 
         assert_eq!(reindex_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn hybrid_publication_commit_does_not_wait_for_derived_index() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let completed = Arc::new(tokio::sync::Notify::new());
+        let reindexer = Arc::new(PausedReindexer {
+            started: Arc::clone(&started),
+            resume: Arc::clone(&resume),
+            completed: Arc::clone(&completed),
+        });
+        let (service, db, _lease, _auth) = injected_service_with_reindexer(reindexer).await;
+        let service = service.with_hybrid_delivery();
+        let org_id = db.create_org("hybrid-index", "Hybrid index").await.unwrap();
+        db.create_managed_registry(org_id, "", "packages", "public", &[], true)
+            .await
+            .unwrap();
+        let registry = db
+            .registry_by_slug("hybrid-index/packages")
+            .await
+            .unwrap()
+            .unwrap();
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            service.refresh_registry_index_after_publication(&registry, "ready-publication"),
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+            .await
+            .unwrap();
+
+        resume.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), completed.notified())
+            .await
+            .unwrap();
     }
 
     #[test]
