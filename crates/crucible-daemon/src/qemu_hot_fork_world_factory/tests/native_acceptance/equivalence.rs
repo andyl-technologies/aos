@@ -25,6 +25,11 @@ struct ExactResume<'a> {
     boundary: &'a Configuration,
 }
 
+struct ReplayCheckpoint<'a> {
+    genesis: &'a ProductionBakedGenesisCheckpoint,
+    raw: ExactCheckpointId,
+}
+
 #[path = "equivalence/campaign_perf.rs"]
 mod campaign_perf;
 #[path = "equivalence/child.rs"]
@@ -156,9 +161,11 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
         "equivalence-replay-oracle-reference",
         6_275,
         &input,
-        &baked,
         Arc::clone(&artifacts),
-        checkpoint,
+        ReplayCheckpoint {
+            genesis: &baked,
+            raw: checkpoint,
+        },
         0x98,
     );
     let exact_context =
@@ -199,9 +206,11 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
         "equivalence-replay-oracle-template",
         6_375,
         &input,
-        &baked,
         Arc::clone(&artifacts),
-        checkpoint,
+        ReplayCheckpoint {
+            genesis: &baked,
+            raw: checkpoint,
+        },
         0x99,
     );
     let exact_template_context = native_execution_context(&exact_input, 0x93)
@@ -403,9 +412,11 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         "single-replay-oracle-reference",
         7_275,
         &input,
-        &baked,
         Arc::clone(&artifacts),
-        checkpoint,
+        ReplayCheckpoint {
+            genesis: &baked,
+            raw: checkpoint,
+        },
         0xa8,
     );
     let exact_context =
@@ -446,9 +457,11 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         "single-replay-oracle-template",
         7_375,
         &input,
-        &baked,
         Arc::clone(&artifacts),
-        checkpoint,
+        ReplayCheckpoint {
+            genesis: &baked,
+            raw: checkpoint,
+        },
         0xa9,
     );
     let exact_template_context = native_execution_context(&exact_input, 0xa3)
@@ -1057,9 +1070,11 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
             &replay_lane,
             9_275 + u32::try_from(index).expect("corpus project") * 100,
             &input,
-            &baked,
             Arc::clone(&artifacts),
-            checkpoint,
+            ReplayCheckpoint {
+                genesis: &baked,
+                raw: checkpoint,
+            },
             0xd0 + u8::try_from(index).expect("corpus byte"),
         );
         let exact_context = native_execution_context(
@@ -1302,9 +1317,8 @@ fn promote_exact_checkpoint(
     lane: &str,
     project_id_start: u32,
     source_input: &CrucibleAttemptExecution,
-    baked: &ProductionBakedGenesisCheckpoint,
     artifacts: Arc<dyn DagStore>,
-    raw: ExactCheckpointId,
+    replay: ReplayCheckpoint<'_>,
     execution_byte: u8,
 ) -> (ExactCheckpointStore, ExactCheckpointId) {
     let checkpoints = checkpoint_store();
@@ -1314,12 +1328,12 @@ fn promote_exact_checkpoint(
     );
     let replay_config = lifecycle_config(paths, paths.run_state_root.join(lane), artifacts);
     let mut replay_factory =
-        ProductionBakedGenesisReplayCatalogFactory::new([baked.clone()], resources)
+        ProductionBakedGenesisReplayCatalogFactory::new([replay.genesis.clone()], resources)
             .expect("build production baked-genesis replay catalog")
             .with_savepoint_replay_config(replay_config);
     let promoted = promote_test_checkpoint_for_resume(
         &checkpoints,
-        raw,
+        replay.raw,
         source_input,
         source_input.start().configuration(),
         None,
