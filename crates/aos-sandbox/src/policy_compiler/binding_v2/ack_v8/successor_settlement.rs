@@ -236,7 +236,7 @@ fn settlement_transaction(
 }
 
 /// Reads and validates the immutable marker for one predecessor.
-pub(super) fn settlement_for_predecessor(
+pub(in crate::policy_compiler::binding_v2) fn settlement_for_predecessor(
     authority: &ProtectedJournalAuthority<'_>,
     predecessor: ObjectDigest,
 ) -> Result<Option<RootV8SuccessorSettlementV1>, PolicyCompilerJournalErrorV1> {
@@ -251,7 +251,7 @@ pub(super) fn settlement_for_predecessor(
 }
 
 /// Requires an old V8 binding to be settled before a successor CAS.
-pub(super) fn require_settled_predecessor(
+pub(in crate::policy_compiler::binding_v2) fn require_settled_predecessor(
     authority: &ProtectedJournalAuthority<'_>,
     predecessor: ObjectDigest,
     next_epoch: u64,
@@ -326,8 +326,8 @@ pub fn settle_fixed_closed_root_v8_predecessor_v1(
 ///
 /// # Errors
 ///
-/// Rejects a malformed marker, inconsistent fixed V8 slots, or failed Root
-/// journal custody.
+/// Rejects a malformed marker, missing historical binding, inconsistent slots
+/// while that predecessor is still current, or failed Root journal custody.
 pub fn recover_fixed_closed_root_v8_predecessor_settlement_v1(
     binding: ObjectDigest,
     epoch: u64,
@@ -338,9 +338,29 @@ pub fn recover_fixed_closed_root_v8_predecessor_settlement_v1(
         policy_authority_journal_limits(),
     )?;
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    recover_from_authority(&authority, binding, epoch)
+}
+
+pub(super) fn recover_from_authority(
+    authority: &ProtectedJournalAuthority<'_>,
+    binding: ObjectDigest,
+    epoch: u64,
+) -> Result<Option<RootV8SuccessorSettlementV1>, RootV8EffectAckErrorV1> {
     let marker = settlement_for_predecessor(&authority, binding)?;
     if let Some(marker) = marker {
-        if marker.epoch != epoch || !current_flight_slots_empty(&authority)? {
+        let mut binding_key = BINDING_V2_KEY_PREFIX.to_vec();
+        binding_key.extend_from_slice(binding.as_bytes());
+        let row = authority
+            .get(&binding_key)?
+            .ok_or(RootV8EffectAckErrorV1::Stale)?;
+        let historical = ClosedPolicyRootBindingV2::decode(row)?;
+        let (head, next_epoch, _) = current_root_binding_chain(&authority)?;
+        if marker.epoch != epoch
+            || historical.root_generation != epoch
+            || historical.handoff_epoch != epoch
+            || head == binding
+                && (next_epoch != marker.next_epoch || !current_flight_slots_empty(&authority)?)
+        {
             return Err(RootV8EffectAckErrorV1::Stale);
         }
     }
@@ -376,7 +396,7 @@ pub(super) fn settle_in_authority(
         || hold.epoch != epoch
         || !matches!(
             terminal::current_terminal_custody(authority, binding, epoch),
-            Ok(Some(RootV8TerminalCustodyV1::Released(_)))
+            Ok(Some(RootV8TerminalCustodyV1::Released(..)))
         )
     {
         return Err(RootV8EffectAckErrorV1::Stale);
@@ -384,7 +404,7 @@ pub(super) fn settle_in_authority(
     let cut = custody_cut(authority, binding, epoch, true)?;
     let ack = current_ack_for_cut(authority, binding, epoch, &cut)?
         .ok_or(RootV8EffectAckErrorV1::Stale)?;
-    if ack.controller_uid() != uid || cut.pin != credential {
+    if ack.controller_uid() != uid || cut.pin.as_slice() != credential {
         return Err(RootV8EffectAckErrorV1::Stale);
     }
     let ack_row = authority
@@ -447,4 +467,33 @@ pub(super) fn settle_in_authority(
         return Err(RootV8EffectAckErrorV1::Stale);
     }
     Ok(marker)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_settlement_record_rejects_changed_owner_or_release_digests() {
+        let marker = RootV8SuccessorSettlementV1 {
+            predecessor: ObjectDigest::from_bytes([1; 32]),
+            epoch: 2,
+            next_epoch: 3,
+            settlement: ObjectDigest::from_bytes([4; 32]),
+            release_marker: ObjectDigest::from_bytes([5; 32]),
+            cache_released: ObjectDigest::from_bytes([6; 32]),
+            source_released: ObjectDigest::from_bytes([7; 32]),
+            signed_receipt: ObjectDigest::from_bytes([8; 32]),
+        };
+        let encoded = marker.record_bytes().unwrap();
+        assert_eq!(
+            RootV8SuccessorSettlementV1::from_record_bytes(&encoded).unwrap(),
+            marker,
+        );
+        for offset in [0, 8, 16, 48, 56, 64, 96, 128, 160, 192, 224] {
+            let mut changed = encoded;
+            changed[offset] ^= 1;
+            assert!(RootV8SuccessorSettlementV1::from_record_bytes(&changed).is_err());
+        }
+    }
 }

@@ -192,6 +192,16 @@ mod tests {
             &key,
         )
         .unwrap();
+        let settlement = sign_packet::<{ HEADER_BYTES + 312 + SIGNATURE_BYTES }>(
+            ControllerV8ReadbackProtocol::Settlement,
+            &[10; 312],
+            6,
+            7,
+            challenge,
+            2,
+            &key,
+        )
+        .unwrap();
 
         assert!(
             verify_packet(
@@ -250,6 +260,26 @@ mod tests {
                 &signer,
                 challenge,
                 6
+            )
+            .is_err()
+        );
+        assert!(
+            verify_packet(
+                ControllerV8ReadbackProtocol::Settlement,
+                &settlement,
+                &signer,
+                challenge,
+                6,
+            )
+            .is_ok()
+        );
+        assert!(
+            verify_packet(
+                ControllerV8ReadbackProtocol::RootReceipt,
+                &settlement,
+                &signer,
+                challenge,
+                6,
             )
             .is_err()
         );

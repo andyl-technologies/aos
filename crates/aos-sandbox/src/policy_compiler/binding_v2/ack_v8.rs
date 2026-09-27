@@ -1497,10 +1497,24 @@ mod tests {
         .unwrap();
         assert_eq!(settled.predecessor(), first.binding_head);
         assert!(current_flight_slots_empty(&authority).unwrap());
+        assert_eq!(
+            successor_settlement::settle_in_authority(
+                &mut authority,
+                first.binding_head,
+                1,
+                1234,
+                &first.controller_pin,
+                || panic!("settled replay must not mint a new challenge"),
+                |_| panic!("settled replay must not request another receipt"),
+            )
+            .unwrap(),
+            settled,
+        );
         drop(authority);
         drop(root);
 
         let mut root = super::super::tests::open_test_root(directory.path());
+        root.compact().unwrap();
         let authority = root
             .claim_protected_authority(RecordNamespace::DesiredState)
             .unwrap();
@@ -1509,6 +1523,16 @@ mod tests {
                 .unwrap(),
             Some(settled),
         );
+        assert!(matches!(
+            recover_closed_binding_decision_with_proof_from_authority(
+                &authority,
+                first.binding_head,
+                1,
+            )
+            .unwrap()
+            .0,
+            ClosedPolicyBindingDecisionV2::CommittedReleased(_)
+        ));
         let mut session = ClosedPolicyRootSessionV2 {
             authority,
             identity: super::super::tests::identity(&next),
@@ -1566,6 +1590,11 @@ mod tests {
         assert_eq!(
             terminal::current_terminal(&authority, next_head, 2).unwrap(),
             Some(second_terminal)
+        );
+        assert_eq!(
+            successor_settlement::recover_from_authority(&authority, first.binding_head, 1)
+                .unwrap(),
+            Some(settled),
         );
     }
 
