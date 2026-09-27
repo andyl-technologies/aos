@@ -251,6 +251,7 @@ in
           mkdir -p "$destination/home" "$destination/surface"
           export HOME="$destination/home"
           export USER=aos-image-producer
+          export NIX_CONFIG='extra-experimental-features = nix-command'
           export GIT_AUTHOR_NAME='AOS Image E2E'
           export GIT_AUTHOR_EMAIL='image-e2e@aos.invalid'
           export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
