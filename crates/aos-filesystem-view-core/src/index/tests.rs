@@ -17,6 +17,46 @@ const DIRECTORY_SLOTS_OFFSET: usize = 216;
 const DIRECTORY_SLOT_BYTES_OFFSET: usize = 224;
 const ROOT_NLINK_OFFSET: usize = 232;
 
+#[test]
+fn table_slot_readers_preserve_bytes_and_reject_invalid_offsets() {
+    let lookup = LookupSlot {
+        parent: 3,
+        name_hash: [0xa5; 32],
+        record_offset: 17,
+        record_id: 5,
+    };
+    let directory = DirectorySlot {
+        parent: 3,
+        record_offset: 17,
+        record_id: 5,
+        nlink: 2,
+    };
+    let lookup_bytes = [
+        vec![0; LOOKUP_SLOT_BYTES],
+        encode_lookup_slot(lookup).to_vec(),
+    ]
+    .concat();
+    let directory_bytes = [
+        vec![0; DIRECTORY_SLOT_BYTES],
+        encode_directory_slot(directory).to_vec(),
+    ]
+    .concat();
+
+    assert_eq!(read_lookup_slot(&lookup_bytes, 0, 1).ok(), Some(lookup));
+    assert_eq!(
+        read_directory_slot(&directory_bytes, 0, 1).ok(),
+        Some(directory)
+    );
+    assert!(matches!(
+        read_lookup_slot(&lookup_bytes, 0, 2),
+        Err(IndexError::InvalidRecord)
+    ));
+    assert!(matches!(
+        read_directory_slot(&directory_bytes, u64::MAX, 1),
+        Err(IndexError::InvalidRecord)
+    ));
+}
+
 fn descriptor() -> ObjectDescriptor {
     ObjectDescriptor::new(
         MediaType::new("application/vnd.aos.sandbox.tree.v1+cbor")
