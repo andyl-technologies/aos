@@ -52,6 +52,32 @@ const MAX_PARALLEL_GIT_INSPECTION_BATCHES: usize = 8;
 // same Worker. Keep their combined request pressure below the executor's
 // capacity, including time spent reading each response.
 const MAX_IN_FLIGHT_STORAGE_PLANS: usize = 4;
+const MAX_READ_WORK_ATTEMPTS: usize = 3;
+
+fn retryable_read_operation(operation: &StorageWorkOperation) -> bool {
+    matches!(
+        operation,
+        StorageWorkOperation::Head { .. }
+            | StorageWorkOperation::ListPage { .. }
+            | StorageWorkOperation::InspectSha256 { .. }
+            | StorageWorkOperation::InspectGitObject { .. }
+            | StorageWorkOperation::InspectGitObjects { .. }
+            | StorageWorkOperation::InspectMetadata { .. }
+            | StorageWorkOperation::InspectDocumentation { .. }
+            | StorageWorkOperation::InspectOciRange { .. }
+            | StorageWorkOperation::HashOciRange { .. }
+    )
+}
+
+fn retryable_worker_status(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR
+            | reqwest::StatusCode::BAD_GATEWAY
+            | reqwest::StatusCode::SERVICE_UNAVAILABLE
+            | reqwest::StatusCode::GATEWAY_TIMEOUT
+    )
+}
 
 /// Authenticated Native-to-Worker executor client.
 pub struct RemoteStorageWorkClient {
@@ -575,34 +601,68 @@ impl RemoteStorageWorkClient {
         let request_bytes = body.len();
         let started = Instant::now();
 
-        let mut request = self
-            .http
-            .post(&self.endpoint)
-            .header("content-type", "application/json")
-            .header(STORAGE_WORK_SIGNATURE_HEADER, signature)
-            .body(body);
-        if matches!(&plan.operation, StorageWorkOperation::ComposeOciBlob { .. })
-            || matches!(
-                &plan.operation,
-                StorageWorkOperation::InspectSha256 { max_source_bytes, .. }
-                    if *max_source_bytes > 64 * 1024 * 1024
-            )
-        {
-            request = request.timeout(Duration::from_secs(10 * 60));
-        }
-        let response = match request.send().await {
-            Ok(response) => response,
-            Err(error) => {
+        // A lost response may follow a committed mutation; retry only reads.
+        let max_attempts = if retryable_read_operation(&plan.operation) {
+            MAX_READ_WORK_ATTEMPTS
+        } else {
+            1
+        };
+        let mut attempt = 0;
+        let response = loop {
+            attempt += 1;
+            plan.validate(&self.deployment_id, aos_hub_core::clock::now_unix_secs())?;
+            let mut request = self
+                .http
+                .post(&self.endpoint)
+                .header("content-type", "application/json")
+                .header(STORAGE_WORK_SIGNATURE_HEADER, signature.clone())
+                .body(body.clone());
+            if matches!(&plan.operation, StorageWorkOperation::ComposeOciBlob { .. })
+                || matches!(
+                    &plan.operation,
+                    StorageWorkOperation::InspectSha256 { max_source_bytes, .. }
+                        if *max_source_bytes > 64 * 1024 * 1024
+                )
+            {
+                request = request.timeout(Duration::from_secs(10 * 60));
+            }
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(error) if attempt < max_attempts => {
+                    tracing::warn!(
+                        plan_id = %plan.plan_id,
+                        operation = plan.operation.kind(),
+                        attempt,
+                        error = %error,
+                        "retrying read-only hybrid storage transport"
+                    );
+                    tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        plan_id = %plan.plan_id,
+                        operation = plan.operation.kind(),
+                        request_bytes,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        error = %error,
+                        "hybrid storage boundary transport failed"
+                    );
+                    return Err(error).context("sending storage work plan");
+                }
+            };
+            if attempt < max_attempts && retryable_worker_status(response.status()) {
                 tracing::warn!(
                     plan_id = %plan.plan_id,
                     operation = plan.operation.kind(),
-                    request_bytes,
-                    elapsed_ms = started.elapsed().as_millis() as u64,
-                    error = %error,
-                    "hybrid storage boundary transport failed"
+                    attempt,
+                    http_status = response.status().as_u16(),
+                    "retrying read-only hybrid storage work"
                 );
-                return Err(error).context("sending storage work plan");
+                tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
+                continue;
             }
+            break response;
         };
         let status = response.status();
         if status != reqwest::StatusCode::OK {
