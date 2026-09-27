@@ -1,6 +1,7 @@
 //! Public CLI campaign lifecycle against packaged QEMU and the campaign daemon.
 
 use super::*;
+use crucible_cas::content_store::{ContentId, ObjectKind};
 
 #[test]
 #[ignore = "requires packaged QEMU, cgroup-v2, and ext4 project quota inside the VM check"]
@@ -302,7 +303,12 @@ fn wait_for_public_discovery(
             .as_array()
             .ok_or("public graph omitted entries")?;
         let mut discovered = None;
+        let mut choice_index_anchors = 0;
         for entry in entries {
+            if is_choice_index_anchor(entry)? {
+                choice_index_anchors += 1;
+                continue;
+            }
             let key = json_string(entry, "key")?;
             let object_output = connected_campaign(fixture)
                 .args([
@@ -330,9 +336,47 @@ fn wait_for_public_discovery(
                 return Err("public discovery produced multiple child configurations".into());
             }
         }
+        assert_eq!(choice_index_anchors, 1);
         Ok(discovered)
     })?
     .ok_or_else(|| "public discovery did not publish a child configuration".into())
+}
+
+fn is_choice_index_anchor(entry: &Value) -> Result<bool, Box<dyn Error>> {
+    let key = CampaignHash::parse(&json_string(entry, "key")?)?;
+    let object = ContentId::parse(&json_string(entry, "object")?)?;
+    let anchor = CampaignHash::derive("crucible.campaign-graph-choice-index.v1", b"");
+    let is_anchor = key == anchor;
+
+    // QueryGraph proves the complete Merkle page, including its internal index
+    // anchor. GraphObject only exposes configuration and opportunity envelopes.
+    if is_anchor != (object.kind() == ObjectKind::MerkleNode) {
+        return Err("public graph choice-index anchor has an unexpected key or object kind".into());
+    }
+    Ok(is_anchor)
+}
+
+#[test]
+fn public_graph_object_selection_skips_only_the_choice_index_anchor() -> Result<(), Box<dyn Error>>
+{
+    let anchor = CampaignHash::derive("crucible.campaign-graph-choice-index.v1", b"");
+    let other_key = CampaignHash::derive("crucible.test-public-graph-key.v1", b"");
+    let merkle = ContentId::for_bytes(ObjectKind::MerkleNode, 1, b"index");
+    let configuration = ContentId::for_bytes(ObjectKind::Configuration, 1, b"configuration");
+
+    let anchor_entry = serde_json::json!({ "key": anchor.to_hex(), "object": merkle.encode() });
+    let public_entry =
+        serde_json::json!({ "key": other_key.to_hex(), "object": configuration.encode() });
+    let wrong_anchor =
+        serde_json::json!({ "key": anchor.to_hex(), "object": configuration.encode() });
+    let unexpected_index =
+        serde_json::json!({ "key": other_key.to_hex(), "object": merkle.encode() });
+
+    assert!(is_choice_index_anchor(&anchor_entry)?);
+    assert!(!is_choice_index_anchor(&public_entry)?);
+    assert!(is_choice_index_anchor(&wrong_anchor).is_err());
+    assert!(is_choice_index_anchor(&unexpected_index).is_err());
+    Ok(())
 }
 
 fn wait_for_public_request_observation(
