@@ -40,6 +40,7 @@
   coreutils,
   diffutils,
   grep,
+  iproute2,
   nodejs,
   nix,
   workerd-source,
@@ -178,10 +179,18 @@
       return { status: r.status, body: await r.text() };
     }
     let last = null;
+    let lastError = null;
     for (let i = 0; i < 240; i++) {
-      try { last = await bootstrap(); break; } catch { await new Promise((r) => setTimeout(r, 250)); }
+      try { last = await bootstrap(); break; }
+      catch (error) {
+        lastError = String(error?.cause ?? error);
+        await new Promise((r) => setTimeout(r, 250));
+      }
     }
-    if (!last) { console.error("workerd never accepted a connection"); process.exit(1); }
+    if (!last) {
+      console.error(`workerd never accepted a connection: ''${lastError}`);
+      process.exit(1);
+    }
     if (last.status !== 200) { console.error(last.body); process.exit(1); }
     const deploymentIdentity = await fetch(BASE + "/.well-known/aos-deployment");
     if (deploymentIdentity.status !== 200
@@ -1081,7 +1090,9 @@ in
           if ! ${nodejs}/bin/node driver.mjs; then
             if kill -0 "\$WPID" 2>/dev/null; then
               echo "workerd remained alive during the failed probe"
-              ${grep}/bin/grep -E '^(State|VmPeak|VmRSS):' "/proc/\$WPID/status" || true
+              ${grep}/bin/grep -E '^(State|Threads|VmPeak|VmRSS):' "/proc/\$WPID/status" || true
+              ${coreutils}/bin/cat "/proc/\$WPID/wchan" || true
+              ${grep}/bin/grep -E ':(225F|2260) ' /proc/net/tcp /proc/net/tcp6 || true
             else
               wait "\$WPID" || echo "workerd exited with status \$?"
               WPID=""
@@ -1119,11 +1130,12 @@ in
     }: {
       live-worker-topology = testing.mkVMTest {
         name = "aos-hub-worker-do-e2e-live";
-        rootfsDeps = [self];
+        rootfsDeps = [self iproute2];
         memory = 4096;
         testScript = ''
           ${nix}/bin/nix-store --load-db < /aos-registration
           export NIX_REMOTE=""
+          ${iproute2}/sbin/ip link set lo up
           ${self}/bin/aos-hub-worker-do-e2e
         '';
       };
