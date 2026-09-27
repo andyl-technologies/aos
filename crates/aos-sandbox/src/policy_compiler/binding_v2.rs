@@ -353,11 +353,39 @@ pub fn compare_closed_policy_binding_hold_claims_v2(
     source: SourceDomainPolicyHoldV1,
     cache: CachePolicyHoldV1,
 ) -> Result<(), PolicyCompilerJournalErrorV1> {
+    compare_closed_policy_binding_claims_with_cache_phase_v2(
+        proposed, controller, source, cache, true,
+    )
+}
+
+/// Compares a released Cache row to still-held Controller and Source claims.
+///
+/// # Errors
+///
+/// Rejects any noncanonical proposal or mismatched owner identity or phase.
+pub fn compare_closed_policy_binding_released_cache_claims_v2(
+    proposed: &[u8],
+    controller: ControllerPolicyHoldV1,
+    source: SourceDomainPolicyHoldV1,
+    cache: CachePolicyHoldV1,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    compare_closed_policy_binding_claims_with_cache_phase_v2(
+        proposed, controller, source, cache, false,
+    )
+}
+
+fn compare_closed_policy_binding_claims_with_cache_phase_v2(
+    proposed: &[u8],
+    controller: ControllerPolicyHoldV1,
+    source: SourceDomainPolicyHoldV1,
+    cache: CachePolicyHoldV1,
+    cache_held: bool,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
     let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
     let head = closed_policy_binding_digest_v2(proposed)?;
     if !controller.is_held()
         || !source.is_held()
-        || !cache.is_held()
+        || cache.is_held() != cache_held
         || controller.operation() != binding.operation
         || controller.sandbox() != binding.sandbox
         || controller.binding() != head

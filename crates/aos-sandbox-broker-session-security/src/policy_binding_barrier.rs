@@ -16,24 +16,29 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox::cache_residency::{
     CLOSED_CACHE_OWNER_READBACK_BYTES_V2, CacheOwnerReadbackChallengeV1,
-    CacheResidencyProtectedOwnerV1, CacheResidencyWriterReadbackV2, DormantCacheOwnerV1,
-    PinnedCacheOwnerReadbackSignerV1, verify_closed_cache_owner_readback_v2,
+    CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedOwnerV1,
+    CacheResidencyWriterReadbackV2, DormantCacheOwnerV1, PinnedCacheOwnerReadbackSignerV1,
+    verify_closed_cache_owner_readback_v2,
 };
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, ClosedPolicyRootCasObservationV2,
-    PolicyCompilerInputV1, RootEffectAckV1, RootV8EffectAckV1, StagedClosedPolicyRootBaseV2,
-    StagedClosedPolicySignerChallengeV2, closed_policy_binding_digest_v2,
-    closed_policy_effect_handoff_v2, compare_closed_policy_binding_hold_claims_v2,
+    PolicyCompilerInputV1, RootEffectAckV1, RootV8EffectAckV1, RootV8ReleasedProofV1,
+    StagedClosedPolicyRootBaseV2, StagedClosedPolicySignerChallengeV2,
+    closed_policy_binding_digest_v2, closed_policy_effect_handoff_v2,
+    compare_closed_policy_binding_hold_claims_v2,
+    compare_closed_policy_binding_released_cache_claims_v2,
     current_parentless_create_project_source_v1,
     propose_closed_current_create_explicit_policy_binding_v2,
     record_current_source_signer_challenge_v1, require_current_source_signer_challenge_v1,
     with_current_create_cache_signer_barrier_v5,
+    with_current_create_cache_signer_release_barrier_v7,
+    with_current_create_cache_signer_released_barrier_v8,
     with_current_create_cache_signer_terminal_barrier_v6,
     with_current_create_policy_source_barrier_v4,
 };
 use aos_sandbox::{
-    ControllerPolicyEffectAckV1, ControllerPolicyHoldV1, Journal,
+    ControllerPolicyEffectAckV1, ControllerPolicyHoldV1, Journal, JournalError,
     journal::{
         CachePolicyHoldV1, ControllerPolicyV8AttemptV1, ControllerPolicyV8EffectAckV1,
         SourceDomainPolicyHoldV1,
@@ -58,7 +63,9 @@ use crate::policy_authority_client::{
 };
 use crate::policy_root_ack_client::acknowledge_held_root_effect_v1;
 use crate::policy_root_ack_v8_client::{
-    acknowledge_held_root_v8_effect, complete_held_root_v8_terminal,
+    acknowledge_held_root_v8_effect, begin_held_root_v8_terminal_release,
+    complete_held_root_v8_terminal, recover_root_v8_terminal_custody,
+    require_exact_released_root_v8_replay, verify_exact_released_root_v8_custody,
 };
 
 /// Commits one held Q04 cut without opening public Create or effect handoff.
@@ -793,6 +800,269 @@ pub fn verify_fixed_parentless_create_root_v8_terminal_v1(
     )
 }
 
+/// Releases Root, then the exact Cache hold, under the still-held owner cut.
+///
+/// The Root-last Q8V socket opens in Cache's inspection phase. Its writer and
+/// socket survive Cache's final postflight, after which Controller rechecks
+/// its exact ACK and Root receipt before signing AOSCTF08. Only a typed Root
+/// Released reply (or exact released replay after an ambiguous submission)
+/// permits Cache's already-open hold journal to retire its own hold. Source
+/// and Controller remain held; public Create and Apply remain closed. The
+/// result is `(Root proof, actual held Cache row, exact released Cache row)`.
+///
+/// # Errors
+///
+/// Rejects any changed owner claim, failed final postflight, Root transport
+/// loss without exact released replay, or failed durable Cache retirement.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn release_fixed_parentless_create_root_cache_v8_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<(RootV8ReleasedProofV1, CachePolicyHoldV1, CachePolicyHoldV1)> {
+    let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
+    with_current_create_cache_signer_release_barrier_v7(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |controller, _, source, _, held| {
+            let ack = exact_root_v8_ack_at_held_cut(
+                controller,
+                source,
+                held,
+                controller_hold,
+                source_hold,
+                operation,
+                sandbox,
+            )
+            .map_err(cache_bridge_error)?;
+            let pending = with_process_controller_hold_signer_v1(|generation, key| {
+                begin_held_root_v8_terminal_release(controller, ack, generation, key)
+            })
+            .map_err(cache_bridge_error)?;
+            Ok((pending, ack, held.clone()))
+        },
+        |controller, _, (pending, ack, held)| {
+            with_process_controller_hold_signer_v1(|generation, key| {
+                pending.finish(controller, &held, generation, key, |controller, row| {
+                    if controller
+                        .controller_policy_v8_effect_ack_v1()
+                        .map_err(io::Error::other)?
+                        != Some(ack)
+                        || controller
+                            .controller_policy_v8_root_receipt_v1()
+                            .map_err(io::Error::other)?
+                            != Some(row)
+                    {
+                        return Err(invalid_cut());
+                    }
+                    Ok(())
+                })
+            })
+            .map_err(cache_bridge_error)
+        },
+    )
+    .map_err(io::Error::other)
+}
+
+/// Completes Cache retirement after a crash following exact Root release.
+///
+/// This path starts only from Root's protected Released replay and repeats
+/// that exact replay after Cache postflight. It never signs a new final
+/// command, and a held/absent Root phase cannot release Cache. Controller
+/// and Source remain held afterward. It cannot return a historical held Cache
+/// row after a cold released-row replay, so Controller settlement must remain
+/// closed until that predecessor has a separate durable evidence surface.
+///
+/// # Errors
+///
+/// Rejects changed Root release evidence, owner claims, Cache quota, or
+/// Controller's durable ACK/receipt before retiring Cache's exact hold.
+pub(crate) fn recover_fixed_parentless_create_root_cache_v8_release_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<(RootV8ReleasedProofV1, CachePolicyHoldV1)> {
+    let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
+    let held_result = with_current_create_cache_signer_release_barrier_v7(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |controller, _, source, _, held| {
+            recover_root_released_at_cut(
+                controller,
+                source,
+                held,
+                controller_hold,
+                source_hold,
+                operation,
+                sandbox,
+            )
+        },
+        |controller, _, prepared| {
+            require_same_root_release_after_postflight(controller, prepared, controller_hold)
+        },
+    );
+    if let Ok((proof, _, released)) = held_result {
+        return Ok((proof, released));
+    }
+
+    // A lost post-commit readback can leave Cache released despite an error.
+    // Only an exact released-row replay under the same owners can settle it.
+    with_current_create_cache_signer_released_barrier_v8(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |controller, _, source, _, held| {
+            recover_root_released_at_cut(
+                controller,
+                source,
+                held,
+                controller_hold,
+                source_hold,
+                operation,
+                sandbox,
+            )
+        },
+        |controller, _, prepared| {
+            require_same_root_release_after_postflight(controller, prepared, controller_hold)
+        },
+    )
+    .map_err(io::Error::other)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn recover_root_released_at_cut(
+    controller: &mut Journal,
+    source: &aos_sandbox::policy_compiler::CurrentCreateProjectPolicySourceV1,
+    held: &CacheResidencyWriterReadbackV2,
+    controller_hold: ControllerPolicyHoldV1,
+    source_hold: SourceDomainPolicyHoldV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> Result<
+    (ControllerPolicyV8EffectAckV1, RootV8ReleasedProofV1),
+    CacheResidencyProtectedJournalErrorV1,
+> {
+    let ack = exact_root_v8_ack_at_released_cut(
+        controller,
+        source,
+        held,
+        controller_hold,
+        source_hold,
+        operation,
+        sandbox,
+    )
+    .map_err(cache_bridge_error)?;
+    let proof =
+        recover_root_v8_terminal_custody(controller_hold.binding(), controller_hold.epoch())
+            .map_err(cache_bridge_error)?
+            .ok_or_else(|| cache_bridge_error(invalid_cut()))?;
+    with_process_controller_hold_signer_v1(|generation, _| {
+        verify_exact_released_root_v8_custody(controller, ack, generation, proof)
+    })
+    .map_err(cache_bridge_error)?;
+    Ok((ack, proof))
+}
+
+fn require_same_root_release_after_postflight(
+    controller: &mut Journal,
+    (ack, prior): (ControllerPolicyV8EffectAckV1, RootV8ReleasedProofV1),
+    hold: ControllerPolicyHoldV1,
+) -> Result<RootV8ReleasedProofV1, CacheResidencyProtectedJournalErrorV1> {
+    let current = recover_root_v8_terminal_custody(hold.binding(), hold.epoch())
+        .map_err(cache_bridge_error)?
+        .ok_or_else(|| cache_bridge_error(invalid_cut()))?;
+    require_exact_released_root_v8_replay(prior, current).map_err(cache_bridge_error)?;
+    with_process_controller_hold_signer_v1(|generation, _| {
+        verify_exact_released_root_v8_custody(controller, ack, generation, current)
+    })
+    .map_err(cache_bridge_error)?;
+    Ok(current)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exact_root_v8_ack_at_released_cut(
+    controller: &mut Journal,
+    source: &aos_sandbox::policy_compiler::CurrentCreateProjectPolicySourceV1,
+    held: &CacheResidencyWriterReadbackV2,
+    controller_hold: ControllerPolicyHoldV1,
+    source_hold: SourceDomainPolicyHoldV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<ControllerPolicyV8EffectAckV1> {
+    let ack = controller
+        .controller_policy_v8_effect_ack_v1()
+        .map_err(io::Error::other)?
+        .ok_or_else(invalid_cut)?;
+    if ack.attempt().hold() != controller_hold
+        || controller
+            .controller_policy_v8_attempt_v1()
+            .map_err(io::Error::other)?
+            != Some(ack.attempt())
+        || ack.accepted_generation() != source.accepted_generation()
+        || ack.cache_quota() != held.quota_digest()
+    {
+        return Err(invalid_cut());
+    }
+    let (decision, proposed, _) = recover_closed_policy_binding_decision_v5(
+        controller_hold.binding(),
+        controller_hold.epoch(),
+    )?;
+    if !matches!(
+        decision,
+        ClosedPolicyBindingDecisionV2::CommittedReleased(_)
+    ) {
+        return Err(invalid_cut());
+    }
+    let proposed = proposed.ok_or_else(invalid_cut)?;
+    if held.hold().is_held() {
+        compare_closed_policy_binding_hold_claims_v2(
+            &proposed,
+            controller_hold,
+            source_hold,
+            held.hold(),
+        )
+    } else {
+        compare_closed_policy_binding_released_cache_claims_v2(
+            &proposed,
+            controller_hold,
+            source_hold,
+            held.hold(),
+        )
+    }
+    .map_err(io::Error::other)?;
+    let handoff = closed_policy_effect_handoff_v2(&proposed).map_err(io::Error::other)?;
+    if handoff.operation != operation
+        || handoff.sandbox != sandbox
+        || handoff.epoch != controller_hold.epoch()
+        || handoff.accepted_generation != ack.accepted_generation()
+        || handoff.effect_transaction != ack.effect_transaction()
+    {
+        return Err(invalid_cut());
+    }
+    Ok(ack)
+}
+
+fn cache_bridge_error(error: io::Error) -> CacheResidencyProtectedJournalErrorV1 {
+    JournalError::Io(error).into()
+}
+
 fn with_exact_root_v8_ack_barrier<T>(
     controller: &mut Journal,
     source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
@@ -811,34 +1081,15 @@ fn with_exact_root_v8_ack_barrier<T>(
         operation,
         sandbox,
         |controller, _, source, _, held| -> io::Result<_> {
-            let ack = controller
-                .controller_policy_v8_effect_ack_v1()
-                .map_err(io::Error::other)?
-                .ok_or_else(invalid_cut)?;
-            let attempt = ack.attempt();
-            if attempt.hold() != controller_hold
-                || controller
-                    .controller_policy_v8_attempt_v1()
-                    .map_err(io::Error::other)?
-                    != Some(attempt)
-                || ack.accepted_generation() != source.accepted_generation()
-            {
-                return Err(invalid_cut());
-            }
-            let (proposed, replay) =
-                replay_exact_held_v8_cut(controller_hold, source_hold, held, attempt)?;
-            let handoff = closed_policy_effect_handoff_v2(&proposed).map_err(io::Error::other)?;
-            if handoff.operation != operation
-                || handoff.sandbox != sandbox
-                || handoff.epoch != controller_hold.epoch()
-                || handoff.accepted_generation != ack.accepted_generation()
-                || handoff.effect_transaction != ack.effect_transaction()
-                || replay.proof() != ack.root_proof()
-                || replay.quota() != ack.cache_quota()
-            {
-                return Err(invalid_cut());
-            }
-            Ok(ack)
+            exact_root_v8_ack_at_held_cut(
+                controller,
+                source,
+                held,
+                controller_hold,
+                source_hold,
+                operation,
+                sandbox,
+            )
         },
         |controller, _, prepared| -> io::Result<_> {
             let ack = prepared?;
@@ -846,6 +1097,45 @@ fn with_exact_root_v8_ack_barrier<T>(
         },
     )
     .map_err(io::Error::other)?
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exact_root_v8_ack_at_held_cut(
+    controller: &mut Journal,
+    source: &aos_sandbox::policy_compiler::CurrentCreateProjectPolicySourceV1,
+    held: &CacheResidencyWriterReadbackV2,
+    controller_hold: ControllerPolicyHoldV1,
+    source_hold: SourceDomainPolicyHoldV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<ControllerPolicyV8EffectAckV1> {
+    let ack = controller
+        .controller_policy_v8_effect_ack_v1()
+        .map_err(io::Error::other)?
+        .ok_or_else(invalid_cut)?;
+    let attempt = ack.attempt();
+    if attempt.hold() != controller_hold
+        || controller
+            .controller_policy_v8_attempt_v1()
+            .map_err(io::Error::other)?
+            != Some(attempt)
+        || ack.accepted_generation() != source.accepted_generation()
+    {
+        return Err(invalid_cut());
+    }
+    let (proposed, replay) = replay_exact_held_v8_cut(controller_hold, source_hold, held, attempt)?;
+    let handoff = closed_policy_effect_handoff_v2(&proposed).map_err(io::Error::other)?;
+    if handoff.operation != operation
+        || handoff.sandbox != sandbox
+        || handoff.epoch != controller_hold.epoch()
+        || handoff.accepted_generation != ack.accepted_generation()
+        || handoff.effect_transaction != ack.effect_transaction()
+        || replay.proof() != ack.root_proof()
+        || replay.quota() != ack.cache_quota()
+    {
+        return Err(invalid_cut());
+    }
+    Ok(ack)
 }
 
 fn replay_exact_held_v8_cut(

@@ -28,6 +28,15 @@ const TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.policy-compiler.root-v8-terminal-release-transaction.v1\0";
 const RECORD_BYTES: usize = 152;
 
+pub(super) fn replayed_release_marker_digest(
+    authority: &ProtectedJournalAuthority<'_>,
+) -> Result<ObjectDigest, RootV8EffectAckErrorV1> {
+    let marker = authority
+        .get(RELEASE_KEY)?
+        .ok_or(RootV8EffectAckErrorV1::Stale)?;
+    Ok(ObjectDigest::from_bytes(Sha256::digest(marker).into()))
+}
+
 fn release_record(
     binding: ObjectDigest,
     epoch: u64,
@@ -156,5 +165,6 @@ pub(in crate::policy_compiler::binding_v2) fn release_verified_terminal_in_autho
     if released != expected {
         return Err(RootV8EffectAckErrorV1::Stale);
     }
-    Ok(RootV8TerminalCustodyV1::Released(released))
+    let marker = replayed_release_marker_digest(authority)?;
+    Ok(RootV8TerminalCustodyV1::Released(released, marker))
 }

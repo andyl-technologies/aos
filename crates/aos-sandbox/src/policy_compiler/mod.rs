@@ -32,6 +32,7 @@ mod protected_owner;
 mod public_create_source;
 mod resources;
 mod root_challenge_record;
+mod root_v8_released_proof;
 mod source_hold_pin;
 mod source_hold_readback;
 mod source_hold_readback_v2;
@@ -65,6 +66,7 @@ pub use binding_v2::{
     acknowledge_verify_and_release_fixed_closed_root_v8_terminal_v1,
     closed_policy_binding_digest_v2, closed_policy_effect_handoff_v2,
     compare_closed_policy_binding_hold_claims_v2,
+    compare_closed_policy_binding_released_cache_claims_v2,
     propose_closed_current_create_explicit_policy_binding_v2,
     propose_closed_current_create_policy_binding_v2,
     read_fixed_inert_closed_policy_binding_hold_v1,
@@ -184,6 +186,10 @@ pub use protected_owner::{
 #[cfg(target_os = "linux")]
 pub use public_create_source::with_current_create_cache_signer_barrier_v5;
 #[cfg(target_os = "linux")]
+pub use public_create_source::with_current_create_cache_signer_release_barrier_v7;
+#[cfg(target_os = "linux")]
+pub use public_create_source::with_current_create_cache_signer_released_barrier_v8;
+#[cfg(target_os = "linux")]
 pub use public_create_source::with_current_create_cache_signer_terminal_barrier_v6;
 pub use public_create_source::{
     CurrentCreatePolicyBarrierHeadsV2, CurrentCreatePolicySourceErrorV1,
@@ -198,6 +204,9 @@ pub use resources::{
     HardLimitValueV1, HardResourceKeyV1, HardResourceModelError, HardResourcePlanV1,
     HardResourceProfileV1, HardResourceScopeV1, PORTABLE_LIMIT_DIMENSIONS, ResolvedHardLimitV1,
     ResolvedHardLimitValueV1, UnlimitedProvenanceV1,
+};
+pub use root_v8_released_proof::{
+    POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2, RootV8ReleasedProofV1, read_root_v8_released_proof_v1,
 };
 pub use source_hold_pin::{SourceHoldPinErrorV1, admit_fixed_source_hold_pin_v1};
 pub use source_hold_readback::{

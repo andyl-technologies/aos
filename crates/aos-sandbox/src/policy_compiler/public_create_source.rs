@@ -32,7 +32,7 @@ use crate::hierarchy::protected_journal::{
     HierarchyProtectedJournalErrorV1, HierarchyProtectedJournalOwnerV1,
 };
 #[cfg(target_os = "linux")]
-use crate::journal::{ControllerPolicyHoldV1, SourceDomainPolicyHoldV1};
+use crate::journal::{CachePolicyHoldV1, ControllerPolicyHoldV1, SourceDomainPolicyHoldV1};
 #[cfg(target_os = "linux")]
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
@@ -46,8 +46,8 @@ use crate::{Journal, JournalError};
 use super::{
     AdmittedSignedProjectPolicySourceV2, CacheDomainInputV1, HardLimitValueV1,
     PolicyCompilerInputV1, PolicyDeploymentSourcesV1, PolicyPublicationPrerequisitesV1,
-    RevocationInputV1, SignedProjectPolicySourceV1, VerifiedSignedProjectPolicySourceV2,
-    normalized_policy_input_digest_v1,
+    RevocationInputV1, RootV8ReleasedProofV1, SignedProjectPolicySourceV1,
+    VerifiedSignedProjectPolicySourceV2, normalized_policy_input_digest_v1,
 };
 
 const SOURCE_DOMAIN: &[u8] = b"aos.sandbox.public-create-project-source.v2\0";
@@ -919,77 +919,253 @@ pub fn with_current_create_cache_signer_terminal_barrier_v6<Prepared, Output>(
     ) -> Prepared,
     terminal: impl FnOnce(&mut Journal, &mut ProtectedSourceDomainJournalOwnerV1, Prepared) -> Output,
 ) -> Result<Output, CurrentCreatePolicySourceErrorV1> {
-    let controller_uid = controller.protected_owner_uid()?;
-    let require_controller_name = |journal: &Journal| {
-        journal.require_protected_named_location(
-            Path::new("/var/lib/aos/sandboxd"),
-            "controller.journal",
-            controller_uid,
-            production_journal_limits(),
-        )
-    };
-    require_controller_name(controller)?;
-    source_domains.require_fixed_named_writer_v1()?;
-    let source = current_parentless_create_project_source_v1(controller, operation, sandbox)?;
-    let ancestry = current_source_domain_ancestry(source_domains, source.project())?;
-    let controller_hold = controller
-        .controller_policy_hold_v1()?
-        .filter(|hold| hold.is_held())
-        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    let source_hold = source_domains
-        .closed_policy_source_hold_v1()?
-        .filter(|hold| hold.is_held())
-        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    if !matching_held_create_sources(&source, ancestry, controller_hold, source_hold) {
-        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-    }
+    let cut = HeldCreateSourceCut::begin(controller, source_domains, operation, sandbox)?;
 
     cache
         .with_held_cache_owner_readback_after_postflight_v3(physical, |held| {
-            let selected = held.selected();
-            if selected.project() != source.project()
-                || selected.partition().disclosure() != source.cache_domain()
-                || selected.head().as_bytes() == &[0; 32]
-                || held.hold().project() != source.project()
-                || held.hold().partition() != selected.partition().digest()
-                || held.hold().cache_head() != selected.head()
-                || held.hold().binding() != controller_hold.binding()
-                || held.hold().epoch() != controller_hold.epoch()
-            {
-                return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
-            }
-            let heads = CurrentCreatePolicyBarrierHeadsV2 {
-                ancestry,
-                physical_partition: selected.partition().digest(),
-                physical_cache: selected.head(),
-            };
-            let prepared = inspect(controller, source_domains, &source, heads, held);
+            let heads = cut.cache_heads(held)?;
+            let prepared = inspect(controller, source_domains, &cut.source, heads, held);
 
             Ok((prepared, |prepared| {
                 let result = (|| -> Result<Output, CurrentCreatePolicySourceErrorV1> {
-                    require_controller_name(controller)?;
-                    source_domains.require_fixed_named_writer_v1()?;
-                    let current_source = current_parentless_create_project_source_v1(
-                        controller, operation, sandbox,
-                    )?;
-                    let current_ancestry =
-                        current_source_domain_ancestry(source_domains, source.project())?;
-                    if current_source.commitment() != source.commitment()
-                        || current_ancestry != ancestry
-                    {
-                        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-                    }
-                    if controller.controller_policy_hold_v1()? != Some(controller_hold)
-                        || source_domains.closed_policy_source_hold_v1()? != Some(source_hold)
-                    {
-                        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-                    }
+                    cut.revalidate(controller, source_domains, operation, sandbox)?;
                     Ok(terminal(controller, source_domains, prepared))
                 })();
                 Ok(result)
             }))
         })
         .map_err(CurrentCreatePolicySourceErrorV1::from)?
+}
+
+/// Runs a Root-last final continuation and retires only Cache's exact hold.
+///
+/// The `inspect` callback may open a Root socket while Controller, Source,
+/// Cache, and physical guards are held. Cache then completes its final
+/// postflight before `release` may send a signed Root release command. The
+/// callback must return only after authenticating typed Root Released custody.
+/// Cache performs another postflight and durably retires its hold before this
+/// function returns. The result preserves both the actual held row sampled
+/// under Cache's writer and the exact released row read back after commit.
+/// Source and Controller remain held; public Create and Apply remain closed.
+///
+/// # Errors
+///
+/// Rejects changed owner custody, failed callbacks, or unsuccessful Cache
+/// retirement. A failed callback leaves the Cache hold active.
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+pub fn with_current_create_cache_signer_release_barrier_v7<Prepared>(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    inspect: impl FnOnce(
+        &mut Journal,
+        &mut ProtectedSourceDomainJournalOwnerV1,
+        &CurrentCreateProjectPolicySourceV1,
+        CurrentCreatePolicyBarrierHeadsV2,
+        &CacheResidencyWriterReadbackV2,
+    ) -> Result<Prepared, CacheResidencyProtectedJournalErrorV1>,
+    release: impl FnOnce(
+        &mut Journal,
+        &mut ProtectedSourceDomainJournalOwnerV1,
+        Prepared,
+    ) -> Result<RootV8ReleasedProofV1, CacheResidencyProtectedJournalErrorV1>,
+) -> Result<
+    (RootV8ReleasedProofV1, CachePolicyHoldV1, CachePolicyHoldV1),
+    CurrentCreatePolicySourceErrorV1,
+> {
+    let cut = HeldCreateSourceCut::begin(controller, source_domains, operation, sandbox)?;
+
+    let (proof_and_held, released) = cache
+        .with_held_cache_owner_terminal_and_release_v4(physical, |held| {
+            let heads = cut.cache_heads(held)?;
+            let actual_held = held.hold();
+            let cache_readback = held.clone();
+            let prepared = inspect(controller, source_domains, &cut.source, heads, held)?;
+            Ok((prepared, Ok, move |prepared| {
+                cut.revalidate(controller, source_domains, operation, sandbox)
+                    .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+                let output = release(controller, source_domains, prepared)?;
+                cut.validate_released_root_proof(controller, &cache_readback, output)?;
+                cut.revalidate(controller, source_domains, operation, sandbox)
+                    .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+                Ok((output, actual_held))
+            }))
+        })
+        .map_err(CurrentCreatePolicySourceErrorV1::from)?;
+    Ok((proof_and_held.0, proof_and_held.1, released))
+}
+
+/// Replays an already released Cache hold under Controller and Source custody.
+///
+/// The callback must replay exact Root Released evidence after Cache's final
+/// postflight. This path commits no new release and returns the canonical
+/// Cache released row retained by its writer. Public Create remains closed.
+///
+/// # Errors
+///
+/// Rejects a held or changed Cache row, stale Controller/Source facts, or
+/// absent, mismatched, or unauthenticated Root Released evidence.
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+pub fn with_current_create_cache_signer_released_barrier_v8<Prepared>(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    inspect: impl FnOnce(
+        &mut Journal,
+        &mut ProtectedSourceDomainJournalOwnerV1,
+        &CurrentCreateProjectPolicySourceV1,
+        CurrentCreatePolicyBarrierHeadsV2,
+        &CacheResidencyWriterReadbackV2,
+    ) -> Result<Prepared, CacheResidencyProtectedJournalErrorV1>,
+    replay: impl FnOnce(
+        &mut Journal,
+        &mut ProtectedSourceDomainJournalOwnerV1,
+        Prepared,
+    ) -> Result<RootV8ReleasedProofV1, CacheResidencyProtectedJournalErrorV1>,
+) -> Result<(RootV8ReleasedProofV1, CachePolicyHoldV1), CurrentCreatePolicySourceErrorV1> {
+    let cut = HeldCreateSourceCut::begin(controller, source_domains, operation, sandbox)?;
+
+    cache
+        .with_released_cache_owner_readback_v5(physical, |held| {
+            let heads = cut.cache_heads(held)?;
+            let cache_readback = held.clone();
+            let prepared = inspect(controller, source_domains, &cut.source, heads, held)?;
+            Ok((prepared, move |prepared| {
+                cut.revalidate(controller, source_domains, operation, sandbox)
+                    .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+                let proof = replay(controller, source_domains, prepared)?;
+                cut.validate_released_root_proof(controller, &cache_readback, proof)?;
+                cut.revalidate(controller, source_domains, operation, sandbox)
+                    .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+                Ok(proof)
+            }))
+        })
+        .map_err(CurrentCreatePolicySourceErrorV1::from)
+}
+
+#[cfg(target_os = "linux")]
+struct HeldCreateSourceCut {
+    source: CurrentCreateProjectPolicySourceV1,
+    ancestry: ObjectDigest,
+    controller_hold: ControllerPolicyHoldV1,
+    source_hold: SourceDomainPolicyHoldV1,
+    controller_uid: u32,
+}
+
+#[cfg(target_os = "linux")]
+impl HeldCreateSourceCut {
+    fn begin(
+        controller: &mut Journal,
+        source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+        operation: OperationId,
+        sandbox: SandboxId,
+    ) -> Result<Self, CurrentCreatePolicySourceErrorV1> {
+        let controller_uid = controller.protected_owner_uid()?;
+        Self::require_controller_name(controller, controller_uid)?;
+        source_domains.require_fixed_named_writer_v1()?;
+        let source = current_parentless_create_project_source_v1(controller, operation, sandbox)?;
+        let ancestry = current_source_domain_ancestry(source_domains, source.project())?;
+        let controller_hold = controller
+            .controller_policy_hold_v1()?
+            .filter(|hold| hold.is_held())
+            .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+        let source_hold = source_domains
+            .closed_policy_source_hold_v1()?
+            .filter(|hold| hold.is_held())
+            .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+        if !matching_held_create_sources(&source, ancestry, controller_hold, source_hold) {
+            return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+        }
+        Ok(Self {
+            source,
+            ancestry,
+            controller_hold,
+            source_hold,
+            controller_uid,
+        })
+    }
+
+    fn require_controller_name(journal: &Journal, uid: u32) -> Result<(), JournalError> {
+        journal.require_protected_named_location(
+            Path::new("/var/lib/aos/sandboxd"),
+            "controller.journal",
+            uid,
+            production_journal_limits(),
+        )
+    }
+
+    fn cache_heads(
+        &self,
+        held: &CacheResidencyWriterReadbackV2,
+    ) -> Result<CurrentCreatePolicyBarrierHeadsV2, CacheResidencyProtectedJournalErrorV1> {
+        let selected = held.selected();
+        if selected.project() != self.source.project()
+            || selected.partition().disclosure() != self.source.cache_domain()
+            || selected.head().as_bytes() == &[0; 32]
+            || held.hold().project() != self.source.project()
+            || held.hold().partition() != selected.partition().digest()
+            || held.hold().cache_head() != selected.head()
+            || held.hold().binding() != self.controller_hold.binding()
+            || held.hold().epoch() != self.controller_hold.epoch()
+        {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        Ok(CurrentCreatePolicyBarrierHeadsV2 {
+            ancestry: self.ancestry,
+            physical_partition: selected.partition().digest(),
+            physical_cache: selected.head(),
+        })
+    }
+
+    fn revalidate(
+        &self,
+        controller: &mut Journal,
+        source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+        operation: OperationId,
+        sandbox: SandboxId,
+    ) -> Result<(), CurrentCreatePolicySourceErrorV1> {
+        Self::require_controller_name(controller, self.controller_uid)?;
+        source_domains.require_fixed_named_writer_v1()?;
+        let current_source =
+            current_parentless_create_project_source_v1(controller, operation, sandbox)?;
+        let current_ancestry =
+            current_source_domain_ancestry(source_domains, self.source.project())?;
+        if current_source.commitment() != self.source.commitment()
+            || current_ancestry != self.ancestry
+            || controller.controller_policy_hold_v1()? != Some(self.controller_hold)
+            || source_domains.closed_policy_source_hold_v1()? != Some(self.source_hold)
+        {
+            return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+        }
+        Ok(())
+    }
+
+    fn validate_released_root_proof(
+        &self,
+        controller: &mut Journal,
+        cache: &CacheResidencyWriterReadbackV2,
+        proof: RootV8ReleasedProofV1,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        let ack = controller
+            .controller_policy_v8_effect_ack_v1()?
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        if ack.attempt().hold() != self.controller_hold
+            || ack.cache_quota() != cache.quota_digest()
+            || !proof.matches_controller_ack(ack, self.controller_uid)
+            || controller.controller_policy_v8_root_receipt_v1()? != Some(proof.ack())
+        {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "linux")]

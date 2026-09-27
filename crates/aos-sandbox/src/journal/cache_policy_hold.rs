@@ -264,7 +264,9 @@ impl Journal {
             .ok_or(JournalError::ProtectedBoundary)
     }
 
-    fn cache_policy_hold_for_writer(&mut self) -> Result<Option<CachePolicyHoldV1>, JournalError> {
+    pub(crate) fn cache_policy_hold_for_writer(
+        &mut self,
+    ) -> Result<Option<CachePolicyHoldV1>, JournalError> {
         let location = self
             .protected
             .as_ref()

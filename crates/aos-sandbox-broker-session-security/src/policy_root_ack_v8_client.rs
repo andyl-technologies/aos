@@ -37,13 +37,16 @@
 //!            AOSPC88A[332] | AOSPC88T-digest[32]
 //! AOSPHC8V | client-nonce[16] | Root-nonce[16] | Root-cut[32]
 //! AOSPHS8V | client-nonce[16] | signed AOSCTF08[624] | EOF
-//! AOSPHR8V | client-nonce[16] | binding[32] | epoch:u64 |
+//! AOSPHR8X | client-nonce[16] | binding[32] | epoch:u64 |
 //!            absent=0|held=1|released=2 | AOSPC88A[332] |
-//!            AOSPC88T-digest[32] | EOF
+//!            AOSPC88T-digest[32] | AOSPC88L-digest[32] | EOF
 //! AOSPHQ8W | client-nonce[16] | reserved[8]=0 | binding[32] | epoch:u64 | EOF
 //! ```
 
 use std::io::{self, Read as _, Write as _};
+use std::marker::PhantomData;
+use std::os::unix::net::UnixStream;
+use std::rc::Rc;
 use std::time::Duration;
 
 use aos_sandbox::cache_residency::CacheResidencyWriterReadbackV2;
@@ -51,7 +54,8 @@ use aos_sandbox::journal::{ControllerPolicyV8EffectAckV1, Journal};
 use aos_sandbox::policy_compiler::{
     CONTROLLER_V8_EFFECT_ACK_READBACK_BYTES_V1, CONTROLLER_V8_FINAL_RELEASE_BYTES_V1,
     CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1, ControllerEffectAckChallengeV1,
-    ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1, RootV8EffectAckV1, RootV8TerminalCustodyV1,
+    ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1, RootV8EffectAckV1, RootV8ReleasedProofV1,
+    RootV8TerminalCustodyV1, read_root_v8_released_proof_v1,
     sign_fixed_controller_v8_effect_ack_readback_v1, sign_fixed_controller_v8_final_release_v1,
     sign_fixed_controller_v8_root_receipt_readback_v1,
 };
@@ -106,11 +110,11 @@ pub const ROOT_V8_RELEASE_CHALLENGE_MAGIC: &[u8; 8] = b"AOSPHC8V";
 /// Carries the signed Controller final release command.
 pub const ROOT_V8_RELEASE_SUBMIT_MAGIC: &[u8; 8] = b"AOSPHS8V";
 /// Reports exact Root terminal custody after the final command or cold replay.
-pub const ROOT_V8_RELEASE_REPLY_MAGIC: &[u8; 8] = b"AOSPHR8V";
+pub const ROOT_V8_RELEASE_REPLY_MAGIC: &[u8; 8] = b"AOSPHR8X";
 /// Bounds the final release submission including socket nonce and signed packet.
 pub const ROOT_V8_RELEASE_SUBMIT_FRAME_BYTES: usize = 24 + CONTROLLER_V8_FINAL_RELEASE_BYTES_V1;
 /// Bounds the typed held or released Root terminal frame.
-pub const ROOT_V8_RELEASE_FRAME_BYTES: usize = 97 + ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1;
+pub const ROOT_V8_RELEASE_FRAME_BYTES: usize = 129 + ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1;
 
 /// Reports exact Root custody without granting another owner's release.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,7 +122,7 @@ pub enum RootV8TerminalTransportV1 {
     /// Root's protected binding hold remains active.
     Held(RootV8EffectAckV1, ObjectDigest),
     /// Root durably retired its protected binding hold.
-    Released(RootV8EffectAckV1, ObjectDigest),
+    Released(RootV8EffectAckV1, ObjectDigest, ObjectDigest),
 }
 
 impl RootV8TerminalTransportV1 {
@@ -126,7 +130,7 @@ impl RootV8TerminalTransportV1 {
     #[must_use]
     pub const fn ack(self) -> RootV8EffectAckV1 {
         match self {
-            Self::Held(ack, _) | Self::Released(ack, _) => ack,
+            Self::Held(ack, _) | Self::Released(ack, _, _) => ack,
         }
     }
 
@@ -134,7 +138,16 @@ impl RootV8TerminalTransportV1 {
     #[must_use]
     pub const fn terminal_digest(self) -> ObjectDigest {
         match self {
-            Self::Held(_, digest) | Self::Released(_, digest) => digest,
+            Self::Held(_, digest) | Self::Released(_, digest, _) => digest,
+        }
+    }
+
+    /// Returns the validated durable AOSPC88L digest only after Root release.
+    #[must_use]
+    pub const fn release_marker_digest(self) -> Option<ObjectDigest> {
+        match self {
+            Self::Held(..) => None,
+            Self::Released(_, _, digest) => Some(digest),
         }
     }
 }
@@ -221,8 +234,8 @@ pub fn encode_root_v8_release_reply(
         RootV8TerminalCustodyV1::Held(terminal) => {
             RootV8TerminalTransportV1::Held(terminal.ack(), terminal.record_digest())
         }
-        RootV8TerminalCustodyV1::Released(terminal) => {
-            RootV8TerminalTransportV1::Released(terminal.ack(), terminal.record_digest())
+        RootV8TerminalCustodyV1::Released(terminal, marker) => {
+            RootV8TerminalTransportV1::Released(terminal.ack(), terminal.record_digest(), marker)
         }
     });
     encode_release_frame(
@@ -261,6 +274,12 @@ fn encode_release_frame(
         };
         frame[65..397].copy_from_slice(&ack.record_bytes().map_err(io::Error::other)?);
         frame[397..429].copy_from_slice(digest.as_bytes());
+        if let RootV8TerminalTransportV1::Released(_, _, marker) = state {
+            if marker.as_bytes() == &[0; 32] {
+                return Err(invalid_reply());
+            }
+            frame[429..461].copy_from_slice(marker.as_bytes());
+        }
     }
     Ok(frame)
 }
@@ -290,9 +309,20 @@ fn decode_release_frame(
             let digest =
                 ObjectDigest::from_bytes(frame[397..429].try_into().map_err(|_| invalid_reply())?);
             if frame[64] == 1 {
+                if frame[429..461] != [0; 32] {
+                    return Err(invalid_reply());
+                }
                 Ok(Some(RootV8TerminalTransportV1::Held(ack, digest)))
             } else {
-                Ok(Some(RootV8TerminalTransportV1::Released(ack, digest)))
+                if frame[429..461] == [0; 32] {
+                    return Err(invalid_reply());
+                }
+                let marker = ObjectDigest::from_bytes(
+                    frame[429..461].try_into().map_err(|_| invalid_reply())?,
+                );
+                Ok(Some(RootV8TerminalTransportV1::Released(
+                    ack, digest, marker,
+                )))
             }
         }
         _ => Err(invalid_reply()),
@@ -713,33 +743,42 @@ fn submit_held_terminal_receipt(
 pub fn recover_root_v8_terminal_custody(
     binding: ObjectDigest,
     epoch: u64,
-) -> io::Result<Option<RootV8TerminalTransportV1>> {
+) -> io::Result<Option<RootV8ReleasedProofV1>> {
     let (mut stream, nonce) = connect_policy_query(ROOT_V8_RELEASE_REPLAY_QUERY_MAGIC, ROOT_WAIT)?;
     stream.write_all(binding.as_bytes())?;
     stream.write_all(&epoch.to_be_bytes())?;
     stream.shutdown(std::net::Shutdown::Write)?;
-    read_release_reply(&mut stream, nonce, binding, epoch)
+    read_root_v8_released_proof_v1(&mut stream, nonce, binding, epoch)
 }
 
-/// Sends a signed final command after caller-controlled owner postflight.
+/// Retains a Root writer and socket until final owner postflight completes.
 ///
-/// The callback must complete Controller, Source, and Cache postflight with
-/// their journal writers and physical Cache lock held. Root retains its own
-/// journal writer and socket until the signed command is verified and its
-/// exact hold is durably released. This does not retire another owner's hold.
+/// Dropping this non-Send session closes the socket without submitting a
+/// release command; Root's durable hold remains active. Root waits at most
+/// 90 seconds for the final command, so a longer Cache postflight fails closed
+/// and requires an exact held/released replay before retrying.
+pub(crate) struct PendingRootV8TerminalRelease {
+    stream: UnixStream,
+    nonce: [u8; 16],
+    expected: ControllerPolicyV8EffectAckV1,
+    ack: RootV8EffectAckV1,
+    terminal_digest: ObjectDigest,
+    challenge: ControllerEffectAckChallengeV1,
+    signer_generation: u64,
+    // A live Root writer and socket must never migrate to another worker.
+    _not_send: PhantomData<Rc<()>>,
+}
+
+/// Opens the Root-last socket and retains its writer after the held terminal.
 ///
-/// # Errors
-///
-/// Rejects changed custody, failed final postflight, invalid Root framing,
-/// or ambiguous transport without exact released Root replay.
-pub(crate) fn complete_and_release_held_root_v8_terminal(
+/// Dropping the returned session closes the socket but never submits a final
+/// command. Cache's final postflight must run before calling `finish`.
+pub(crate) fn begin_held_root_v8_terminal_release(
     controller: &mut Journal,
     expected: ControllerPolicyV8EffectAckV1,
-    cache: &CacheResidencyWriterReadbackV2,
     signer_generation: u64,
     signing_key: &SigningKey,
-    final_postflight: impl FnOnce(&mut Journal, RootV8EffectAckV1) -> io::Result<()>,
-) -> io::Result<RootV8TerminalTransportV1> {
+) -> io::Result<PendingRootV8TerminalRelease> {
     require_current_controller_ack(controller, expected)?;
     let binding = expected.attempt().hold().binding();
     let epoch = expected.attempt().hold().epoch();
@@ -747,80 +786,162 @@ pub(crate) fn complete_and_release_held_root_v8_terminal(
     stream.write_all(binding.as_bytes())?;
     stream.write_all(&epoch.to_be_bytes())?;
 
-    let mut submitted = false;
-    let mut stage_digest = None;
-    let live = (|| -> io::Result<RootV8TerminalTransportV1> {
-        let (first, ack) = submit_held_terminal_receipt(
-            &mut stream,
-            nonce,
-            binding,
-            epoch,
-            controller,
-            expected,
-            signer_generation,
-            signing_key,
-            false,
-        )?;
-        let stage = read_release_stage(&mut stream, first, nonce, binding, epoch)?;
-        if stage.ack() != ack {
-            return Err(invalid_reply());
-        }
-        let digest = stage.terminal_digest();
-        stage_digest = Some(digest);
-        let mut first = [0; 8];
-        stream.read_exact(&mut first)?;
-        if &first != ROOT_V8_RELEASE_CHALLENGE_MAGIC {
-            return Err(invalid_reply());
-        }
-        let challenge = read_terminal_challenge(&mut stream, nonce)?;
-        final_postflight(controller, ack)?;
-        let packet = sign_fixed_controller_v8_final_release_v1(
-            controller,
-            challenge,
-            digest,
-            cache,
-            signer_generation,
-            signing_key,
-        )
-        .map_err(io::Error::other)?;
-        let mut submit = [0; ROOT_V8_RELEASE_SUBMIT_FRAME_BYTES];
-        submit[..8].copy_from_slice(ROOT_V8_RELEASE_SUBMIT_MAGIC);
-        submit[8..24].copy_from_slice(&nonce);
-        submit[24..].copy_from_slice(&packet);
-        submitted = true;
-        stream.write_all(&submit)?;
-        stream.shutdown(std::net::Shutdown::Write)?;
+    let (first, ack) = submit_held_terminal_receipt(
+        &mut stream,
+        nonce,
+        binding,
+        epoch,
+        controller,
+        expected,
+        signer_generation,
+        signing_key,
+        false,
+    )?;
+    let stage = read_release_stage(&mut stream, first, nonce, binding, epoch)?;
+    if stage.ack() != ack {
+        return Err(invalid_reply());
+    }
+    let terminal_digest = stage.terminal_digest();
+    let mut first = [0; 8];
+    stream.read_exact(&mut first)?;
+    if &first != ROOT_V8_RELEASE_CHALLENGE_MAGIC {
+        return Err(invalid_reply());
+    }
+    let challenge = read_terminal_challenge(&mut stream, nonce)?;
 
-        let released =
-            read_release_reply(&mut stream, nonce, binding, epoch)?.ok_or_else(invalid_reply)?;
-        if released != RootV8TerminalTransportV1::Released(ack, digest) {
+    Ok(PendingRootV8TerminalRelease {
+        stream,
+        nonce,
+        expected,
+        ack,
+        terminal_digest,
+        challenge,
+        signer_generation,
+        _not_send: PhantomData,
+    })
+}
+
+impl PendingRootV8TerminalRelease {
+    /// Submits the exact command only after the caller's held final postflight.
+    ///
+    /// # Errors
+    ///
+    /// Rejects failed postflight, changed Controller custody, malformed Root
+    /// framing, or ambiguous transport without exact released Root replay.
+    pub(crate) fn finish(
+        mut self,
+        controller: &mut Journal,
+        cache: &CacheResidencyWriterReadbackV2,
+        signer_generation: u64,
+        signing_key: &SigningKey,
+        final_postflight: impl FnOnce(&mut Journal, RootV8EffectAckV1) -> io::Result<()>,
+    ) -> io::Result<RootV8ReleasedProofV1> {
+        if signer_generation != self.signer_generation {
             return Err(invalid_reply());
         }
-        Ok(released)
-    })();
+        let binding = self.expected.attempt().hold().binding();
+        let epoch = self.expected.attempt().hold().epoch();
+        let mut submitted = false;
+        let live = (|| -> io::Result<RootV8ReleasedProofV1> {
+            final_postflight(controller, self.ack)?;
+            let packet = sign_fixed_controller_v8_final_release_v1(
+                controller,
+                self.challenge,
+                self.terminal_digest,
+                cache,
+                signer_generation,
+                signing_key,
+            )
+            .map_err(io::Error::other)?;
+            let mut submit = [0; ROOT_V8_RELEASE_SUBMIT_FRAME_BYTES];
+            submit[..8].copy_from_slice(ROOT_V8_RELEASE_SUBMIT_MAGIC);
+            submit[8..24].copy_from_slice(&self.nonce);
+            submit[24..].copy_from_slice(&packet);
+            submitted = true;
+            self.stream.write_all(&submit)?;
+            self.stream.shutdown(std::net::Shutdown::Write)?;
 
-    match live {
-        Ok(released) => Ok(released),
-        Err(original) => {
-            drop(stream);
-            if !submitted {
-                return Err(original);
-            }
-            match recover_root_v8_terminal_custody(binding, epoch)? {
-                Some(RootV8TerminalTransportV1::Released(row, digest))
-                    if verify_exact(row, expected, signer_generation).is_ok()
-                        && stage_digest == Some(digest)
-                        && controller
-                            .controller_policy_v8_root_receipt_v1()
-                            .map_err(io::Error::other)?
-                            == Some(row) =>
-                {
-                    Ok(RootV8TerminalTransportV1::Released(row, digest))
+            let released =
+                read_root_v8_released_proof_v1(&mut self.stream, self.nonce, binding, epoch)?
+                    .ok_or_else(invalid_reply)?;
+            require_exact_released_custody(released, self.ack, self.terminal_digest)?;
+            Ok(released)
+        })();
+
+        match live {
+            Ok(released) => Ok(released),
+            Err(original) => {
+                if !submitted {
+                    return Err(original);
                 }
-                Some(RootV8TerminalTransportV1::Released(..)) => Err(invalid_reply()),
-                Some(RootV8TerminalTransportV1::Held(..)) | None => Err(original),
+                // Root's socket must close before a cold replay can take its writer.
+                drop(self.stream);
+                match recover_root_v8_terminal_custody(binding, epoch)? {
+                    Some(released)
+                        if verify_exact(released.ack(), self.expected, signer_generation)
+                            .is_ok()
+                            && released.terminal_digest() == self.terminal_digest
+                            && controller
+                                .controller_policy_v8_root_receipt_v1()
+                                .map_err(io::Error::other)?
+                                == Some(released.ack()) =>
+                    {
+                        Ok(released)
+                    }
+                    Some(_) => Err(invalid_reply()),
+                    None => Err(original),
+                }
             }
         }
+    }
+}
+
+fn require_exact_released_custody(
+    custody: RootV8ReleasedProofV1,
+    ack: RootV8EffectAckV1,
+    terminal_digest: ObjectDigest,
+) -> io::Result<()> {
+    if custody.ack() == ack
+        && custody.terminal_digest() == terminal_digest
+        && custody.release_marker_digest().as_bytes() != &[0; 32]
+    {
+        Ok(())
+    } else {
+        Err(invalid_reply())
+    }
+}
+
+pub(crate) fn verify_exact_released_root_v8_custody(
+    controller: &mut Journal,
+    expected: ControllerPolicyV8EffectAckV1,
+    signer_generation: u64,
+    custody: RootV8ReleasedProofV1,
+) -> io::Result<()> {
+    if custody.terminal_digest().as_bytes() == &[0; 32]
+        || custody.release_marker_digest().as_bytes() == &[0; 32]
+    {
+        return Err(invalid_reply());
+    }
+    require_current_controller_ack(controller, expected)?;
+    verify_exact(custody.ack(), expected, signer_generation)?;
+    if controller
+        .controller_policy_v8_root_receipt_v1()
+        .map_err(io::Error::other)?
+        != Some(custody.ack())
+    {
+        return Err(invalid_reply());
+    }
+    Ok(())
+}
+
+pub(crate) fn require_exact_released_root_v8_replay(
+    prior: RootV8ReleasedProofV1,
+    current: RootV8ReleasedProofV1,
+) -> io::Result<()> {
+    if prior == current {
+        Ok(())
+    } else {
+        Err(invalid_reply())
     }
 }
 
@@ -840,6 +961,7 @@ fn read_release_stage(
     }
 }
 
+#[cfg(test)]
 fn read_release_reply(
     stream: &mut std::os::unix::net::UnixStream,
     nonce: [u8; 16],
@@ -916,6 +1038,26 @@ fn invalid_reply() -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_sandbox::journal::{ControllerPolicyHoldV1, ControllerPolicyV8AttemptV1};
+    use aos_sandbox_core::{OperationId, SandboxId};
+    use sha2::{Digest as _, Sha256};
+
+    fn sample_root_ack() -> RootV8EffectAckV1 {
+        let mut bytes = [1; ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1];
+        bytes[..8].copy_from_slice(b"AOSPC88A");
+        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        bytes[10..16].fill(0);
+        bytes[48..56].copy_from_slice(&3_u64.to_be_bytes());
+        bytes[88..96].copy_from_slice(&4_u64.to_be_bytes());
+        bytes[272..280].copy_from_slice(&5_u64.to_be_bytes());
+        bytes[280..284].copy_from_slice(&1000_u32.to_be_bytes());
+        let checksum = Sha256::new()
+            .chain_update(b"aos.sandbox.policy-compiler.root-v8-effect-ack.v1\0")
+            .chain_update(&bytes[..300])
+            .finalize();
+        bytes[300..].copy_from_slice(&checksum);
+        RootV8EffectAckV1::from_record_bytes(&bytes).unwrap()
+    }
 
     #[test]
     fn v8_reply_rejects_foreign_nonce_and_noncanonical_absence() {
@@ -991,6 +1133,116 @@ mod tests {
         root.write_all(&[1]).unwrap();
         root.shutdown(std::net::Shutdown::Write).unwrap();
         assert!(read_release_reply(&mut client, [2; 16], binding, 3).is_err());
+    }
+
+    #[test]
+    fn released_replay_requires_exact_durable_marker_digest() {
+        let ack = sample_root_ack();
+        let binding = ack.binding();
+        let released = RootV8TerminalTransportV1::Released(
+            ack,
+            ObjectDigest::from_bytes([3; 32]),
+            ObjectDigest::from_bytes([4; 32]),
+        );
+        let frame = encode_release_frame(
+            ROOT_V8_RELEASE_REPLY_MAGIC,
+            [2; 16],
+            binding,
+            ack.epoch(),
+            Some(released),
+        )
+        .unwrap();
+        assert_eq!(
+            decode_release_frame(
+                ROOT_V8_RELEASE_REPLY_MAGIC,
+                &frame,
+                [2; 16],
+                binding,
+                ack.epoch(),
+            )
+            .unwrap(),
+            Some(released),
+        );
+        assert!(decode_release_frame(b"AOSPHR8V", &frame, [2; 16], binding, ack.epoch()).is_err());
+
+        let mut missing_marker = frame;
+        missing_marker[429..461].fill(0);
+        assert!(
+            decode_release_frame(
+                ROOT_V8_RELEASE_REPLY_MAGIC,
+                &missing_marker,
+                [2; 16],
+                binding,
+                ack.epoch(),
+            )
+            .is_err()
+        );
+
+        let mut claimed_held = frame;
+        claimed_held[64] = 1;
+        assert!(
+            decode_release_frame(
+                ROOT_V8_RELEASE_REPLY_MAGIC,
+                &claimed_held,
+                [2; 16],
+                binding,
+                ack.epoch(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pending_release_drop_closes_socket_without_submission() {
+        let ack = sample_root_ack();
+        let hold = ControllerPolicyHoldV1::new(
+            OperationId::from_bytes([1; 16]),
+            SandboxId::from_bytes([1; 16]),
+            ObjectDigest::from_bytes([1; 32]),
+            ack.binding(),
+            ack.epoch(),
+        )
+        .unwrap();
+        let attempt = ControllerPolicyV8AttemptV1::new(hold, ack.terminal()).unwrap();
+        let expected = ControllerPolicyV8EffectAckV1::new(
+            attempt,
+            ack.accepted_generation(),
+            ack.effect_transaction(),
+            ack.proof(),
+            ack.quota(),
+        )
+        .unwrap();
+        let (client, mut root) = UnixStream::pair().unwrap();
+        let pending = PendingRootV8TerminalRelease {
+            stream: client,
+            nonce: [2; 16],
+            expected,
+            ack,
+            terminal_digest: ObjectDigest::from_bytes([3; 32]),
+            challenge: ControllerEffectAckChallengeV1::new(
+                [4; 16],
+                ObjectDigest::from_bytes([5; 32]),
+            )
+            .unwrap(),
+            signer_generation: 5,
+            _not_send: PhantomData,
+        };
+        drop(pending);
+
+        let mut byte = [0];
+        assert_eq!(root.read(&mut byte).unwrap(), 0);
+    }
+
+    #[test]
+    fn pending_release_reply_timeout_never_becomes_released() {
+        let (mut client, _root) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        assert!(
+            read_release_reply(&mut client, [2; 16], ObjectDigest::from_bytes([1; 32]), 3,)
+                .is_err()
+        );
     }
 
     #[test]

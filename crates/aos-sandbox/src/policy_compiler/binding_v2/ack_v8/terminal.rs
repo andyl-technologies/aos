@@ -72,7 +72,7 @@ pub enum RootV8TerminalCustodyV1 {
     /// Root retains its exact protected binding hold.
     Held(RootV8VerifiedTerminalV1),
     /// Root durably released its exact protected binding hold.
-    Released(RootV8VerifiedTerminalV1),
+    Released(RootV8VerifiedTerminalV1, ObjectDigest),
 }
 
 impl RootV8VerifiedTerminalV1 {
@@ -274,9 +274,10 @@ pub(super) fn current_terminal_custody(
     if hold.held {
         Ok(current_terminal(authority, binding, epoch)?.map(RootV8TerminalCustodyV1::Held))
     } else {
-        Ok(Some(RootV8TerminalCustodyV1::Released(
-            current_released_terminal_without_public_decision(authority, binding, epoch)?,
-        )))
+        let terminal =
+            current_released_terminal_without_public_decision(authority, binding, epoch)?;
+        let marker = release::replayed_release_marker_digest(authority)?;
+        Ok(Some(RootV8TerminalCustodyV1::Released(terminal, marker)))
     }
 }
 

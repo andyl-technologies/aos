@@ -129,8 +129,16 @@ impl CacheResidencyProtectedOwnerV1 {
     where
         Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
     {
-        self.with_held_cache_owner_terminal_cut(physical, inspect, Ok, false)
-            .map(|(value, _)| value)
+        self.with_cache_owner_terminal_cut(
+            physical,
+            |readback| {
+                let (prepared, finish) = inspect(readback)?;
+                Ok((prepared, finish, Ok))
+            },
+            true,
+            false,
+        )
+        .map(|(value, _)| value)
     }
 
     /// Runs a final continuation and retires the exact Cache hold under its writer.
@@ -147,38 +155,75 @@ impl CacheResidencyProtectedOwnerV1 {
     /// Rejects failed callbacks, stale Cache custody, changed physical state,
     /// or an unsuccessful durable release readback. A failed final callback
     /// leaves the hold active.
-    pub(crate) fn with_held_cache_owner_terminal_and_release_v4<Prepared, Output, Final, Finish>(
+    pub(crate) fn with_held_cache_owner_terminal_and_release_v4<
+        Prepared,
+        Output,
+        Final,
+        Finish,
+        Finalize,
+    >(
         &mut self,
         physical: &DormantCacheOwnerV1,
         inspect: impl FnOnce(
             &CacheResidencyWriterReadbackV2,
-        )
-            -> Result<(Prepared, Finish), CacheResidencyProtectedJournalErrorV1>,
-        finalize: impl FnOnce(Output) -> Result<Final, CacheResidencyProtectedJournalErrorV1>,
+        ) -> Result<
+            (Prepared, Finish, Finalize),
+            CacheResidencyProtectedJournalErrorV1,
+        >,
     ) -> Result<(Final, CachePolicyHoldV1), CacheResidencyProtectedJournalErrorV1>
     where
         Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
+        Finalize: FnOnce(Output) -> Result<Final, CacheResidencyProtectedJournalErrorV1>,
     {
-        let (value, released) =
-            self.with_held_cache_owner_terminal_cut(physical, inspect, finalize, true)?;
-        Ok((
-            value,
-            released.ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?,
-        ))
+        self.with_cache_owner_terminal_cut(physical, inspect, true, true)
     }
 
-    fn with_held_cache_owner_terminal_cut<Prepared, Output, Final, Finish>(
+    /// Replays an already released Cache hold under the same typed owner cut.
+    ///
+    /// This recovery path never commits a release. It verifies the released
+    /// row, complete Cache replay, physical flock, and all writer names before
+    /// and after the callback, retaining Controller and Source externally.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a held or changed hold, stale Cache evidence, or failed callback.
+    pub(crate) fn with_released_cache_owner_readback_v5<Prepared, Output, Finish>(
         &mut self,
         physical: &DormantCacheOwnerV1,
         inspect: impl FnOnce(
             &CacheResidencyWriterReadbackV2,
         )
             -> Result<(Prepared, Finish), CacheResidencyProtectedJournalErrorV1>,
-        finalize: impl FnOnce(Output) -> Result<Final, CacheResidencyProtectedJournalErrorV1>,
-        retire_hold: bool,
-    ) -> Result<(Final, Option<CachePolicyHoldV1>), CacheResidencyProtectedJournalErrorV1>
+    ) -> Result<(Output, CachePolicyHoldV1), CacheResidencyProtectedJournalErrorV1>
     where
         Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
+    {
+        self.with_cache_owner_terminal_cut(
+            physical,
+            |readback| {
+                let (prepared, finish) = inspect(readback)?;
+                Ok((prepared, finish, Ok))
+            },
+            false,
+            false,
+        )
+    }
+
+    fn with_cache_owner_terminal_cut<Prepared, Output, Final, Finish, Finalize>(
+        &mut self,
+        physical: &DormantCacheOwnerV1,
+        inspect: impl FnOnce(
+            &CacheResidencyWriterReadbackV2,
+        ) -> Result<
+            (Prepared, Finish, Finalize),
+            CacheResidencyProtectedJournalErrorV1,
+        >,
+        expected_held: bool,
+        retire_hold: bool,
+    ) -> Result<(Final, CachePolicyHoldV1), CacheResidencyProtectedJournalErrorV1>
+    where
+        Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
+        Finalize: FnOnce(Output) -> Result<Final, CacheResidencyProtectedJournalErrorV1>,
     {
         reject_legacy_cache_journals()?;
         let clock = Arc::clone(
@@ -195,7 +240,10 @@ impl CacheResidencyProtectedOwnerV1 {
             self.owner_uid,
         )?;
         let hold_witness = hold_journal.protected_writer_name_witness()?;
-        let hold = hold_journal.held_cache_policy_hold_for_writer()?;
+        let hold = hold_journal
+            .cache_policy_hold_for_writer()?
+            .filter(|hold| hold.is_held() == expected_held)
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
         let state_witness = self
             .state_journal
             .as_ref()
@@ -256,7 +304,7 @@ impl CacheResidencyProtectedOwnerV1 {
                 Journal::cache_policy_hold_limits(),
             )?;
             hold_journal.validate_protected_writer_name_witness(&hold_witness)?;
-            if hold_journal.held_cache_policy_hold_for_writer()? != hold {
+            if hold_journal.cache_policy_hold_for_writer()? != Some(hold) {
                 return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
             }
             physical_snapshot
@@ -267,7 +315,7 @@ impl CacheResidencyProtectedOwnerV1 {
         };
 
         revalidate(&mut hold_journal)?;
-        let (prepared, finish) = result?;
+        let (prepared, finish, finalize) = result?;
         let outcome = finish(prepared);
         revalidate(&mut hold_journal)?;
         let finalized = finalize(outcome?);
@@ -275,9 +323,9 @@ impl CacheResidencyProtectedOwnerV1 {
             revalidate(&mut hold_journal)?;
             let value = finalized?;
             let released = hold_journal.release_held_cache_policy_hold_for_writer(hold)?;
-            Ok((value, Some(released)))
+            Ok((value, released))
         } else {
-            finalized.map(|value| (value, None))
+            finalized.map(|value| (value, hold))
         }
     }
 
@@ -775,6 +823,31 @@ mod tests {
         assert_eq!(
             Journal::read_cache_policy_hold_at(directory.path(), uid)
                 .expect("hold replay after failed final continuation"),
+            Some(expected),
+        );
+    }
+
+    #[test]
+    fn timed_out_root_final_continuation_keeps_cache_held() {
+        let (directory, uid, expected) = super::super::tests::live_cache_hold_fixture();
+
+        let result = with_fixture_after_final(
+            directory.path(),
+            uid,
+            |_| Ok(((), |_| Ok(()))),
+            |_| -> Result<(), _> {
+                Err(JournalError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Root final command timed out",
+                ))
+                .into())
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            Journal::read_cache_policy_hold_at(directory.path(), uid)
+                .expect("hold replay after Root timeout"),
             Some(expected),
         );
     }

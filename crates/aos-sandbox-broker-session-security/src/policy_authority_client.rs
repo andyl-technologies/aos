@@ -85,7 +85,7 @@ use sha2::{Digest as _, Sha256};
 
 /// Names the fixed root-owned local policy-authority endpoint.
 pub const POLICY_AUTHORITY_SOCKET_PATH_V2: &str =
-    "/run/aos/sandbox-policy-authority/current-head.sock";
+    aos_sandbox::policy_compiler::POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2;
 /// Identifies a bounded current-head query.
 pub const POLICY_HEAD_QUERY_MAGIC_V2: &[u8; 8] = b"AOSPHQ02";
 /// Identifies the nonce-linked signed-head receipt.

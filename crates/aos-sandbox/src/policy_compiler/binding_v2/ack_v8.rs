@@ -74,7 +74,7 @@ pub(super) fn retirement_records_for_successor(
         .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
     if !matches!(
         terminal::current_terminal_custody(authority, binding, epoch),
-        Ok(Some(RootV8TerminalCustodyV1::Released(_)))
+        Ok(Some(RootV8TerminalCustodyV1::Released(..)))
     ) {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
@@ -1120,7 +1120,11 @@ mod tests {
             terminal,
         )
         .unwrap();
-        assert_eq!(released, RootV8TerminalCustodyV1::Released(terminal));
+        assert!(matches!(
+            released,
+            RootV8TerminalCustodyV1::Released(row, marker)
+                if row == terminal && marker.as_bytes() != &[0; 32]
+        ));
         assert!(matches!(
             recover_closed_binding_decision_with_proof_from_authority(
                 &authority,
@@ -1258,7 +1262,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(released, RootV8TerminalCustodyV1::Released(terminal));
+        assert!(matches!(
+            released,
+            RootV8TerminalCustodyV1::Released(row, marker)
+                if row == terminal && marker.as_bytes() != &[0; 32]
+        ));
         drop(authority);
         drop(root);
 
@@ -1294,8 +1302,8 @@ mod tests {
                 1234,
                 || Ok([43; 16]),
                 |_, _| Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "lost final command"
+                    io::ErrorKind::TimedOut,
+                    "final command timed out before submission"
                 )),
             )
             .is_err()
