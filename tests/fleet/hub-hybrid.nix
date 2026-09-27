@@ -1987,7 +1987,8 @@ in {
           f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At -F ' ' "
           "-c \"SELECT p.id, p.resource_version, b.id, b.resource_version, p.prefix "
           "FROM surface_placements p JOIN bindings b ON b.id = p.binding_id "
-          "WHERE p.name = 'primary' AND p.cache_id IS NOT NULL\""
+          "JOIN binary_caches cache ON cache.id = p.cache_id "
+          "WHERE p.name = 'primary' AND cache.slug = 'fleet/objects'\""
       ).strip().split()
       assert len(selector) == 5, selector
       now = int(time.time())
