@@ -119,6 +119,8 @@
   }: let
     systemPackages = system.config.environment.systemPackages;
     bakeVar = varProvisioning == "baked";
+    protectedVar = system.config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
+    varRootContext = system.config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
 
     # rootfsPost — shell fragment spliced into the shared rootfs
     # helper's populate phase after tree population, before mkfs.
@@ -439,7 +441,16 @@
               ${varSeed}
 
               # fakeroot so the var partition's files land as uid/gid 0.
-              fakeroot -- mkfs.ext4 -d var -L aos-var -m 0 -q var.img "''${VAR_SIZE_MIB}M"
+              fakeroot -- mkfs.ext4 -d var -L aos-var -m 0 -q \
+                ${lib.optionalString protectedVar "-E root_selinux=${varRootContext}"} \
+                var.img "''${VAR_SIZE_MIB}M"
+              ${lib.optionalString protectedVar ''
+                var_label=$(debugfs -R 'ea_get / security.selinux' var.img 2>/dev/null)
+                if [ "$var_label" != 'security.selinux (23) = "${varRootContext}"' ]; then
+                  echo "baked /var root lacks its durable exact SELinux label" >&2
+                  exit 1
+                fi
+              ''}
             ''}
             # ── Root image from the shared rootfs helper ────────────────
             cp "$ROOT_IMG" root.img

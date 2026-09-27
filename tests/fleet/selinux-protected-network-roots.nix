@@ -9,8 +9,9 @@
     inherit lib pkgs systems;
   };
   enrolledFirmwareVarsPath = "${enrolledFirmwareVars}/enroller-OVMF_VARS.fd";
-  runtimeRoots = pkgs.aos-selinux-runtime-roots;
+  runtimeRoots = pkgs.aosSelinuxRuntimeRootsForKernel protectedConfig.system.build.kernel;
   runtimeRootsBasename = builtins.baseNameOf runtimeRoots;
+  netdBasename = builtins.baseNameOf pkgs.aos-netd;
   libselinuxBasename = builtins.baseNameOf pkgs.libselinux;
   policyBasename = builtins.baseNameOf pkgs.aos-selinux-production-policy;
   inspectorLookalike = pkgs.mkDerivation {
@@ -36,6 +37,7 @@
       }
     ];
   };
+  inspectorLookalikeBasename = builtins.baseNameOf inspectorLookalike;
   inspectorSocketConnector = pkgs.mkDerivation {
     pname = "aos-inspector-socket-connect";
     version = "1";
@@ -59,7 +61,6 @@
       }
     ];
   };
-
   qualificationModule = mode: {config, ...}: {
     aos.security.selinux = {
       enable = true;
@@ -74,6 +75,7 @@
       admissionUnit = "";
       expectedPolicy = "${pkgs.aosSelinuxKernelPolicyReadbackForKernel config.system.build.kernel}/policy.33";
       expectedPolicyKernel = config.system.build.kernel;
+      aos-selinux-runtime-roots = pkgs.aosSelinuxRuntimeRootsForKernel config.system.build.kernel;
     });
     aos.image.erofsCompressionLevel = 1;
     # These secure-boot test images retain the full Network runtime and test
@@ -84,8 +86,25 @@
     aos.image.budgets.maxEspMiB = 704;
     aos.image.budgets.maxRuntimeClosureMiB = 896;
     aos.image.budgets.maxDownloadMiB = 1024;
-    aos.image.testArtifactRoots = lib.optionals (mode == "shadows") [inspectorSocketConnector];
-    environment.systemPackages = lib.optionals (mode == "shadows") [inspectorSocketConnector];
+    aos.image.testArtifactRoots =
+      [pkgs.attr]
+      ++ lib.optionals (mode == "shadows") [inspectorSocketConnector];
+    environment.systemPackages =
+      [pkgs.attr pkgs.grep pkgs.util-linux]
+      ++ lib.optionals (mode == "shadows") [inspectorLookalike inspectorSocketConnector];
+
+    # This fixture needs no configuration-generation replacement. Keep its
+    # control channel in one unit so enforcing init_t never needs the broad
+    # manager reload permission used by the generic fleet bootstrap.
+    systemd.services.aos-test-agent-bootstrap = lib.mkIf (mode == "shadows") {
+      environment.PATH = "${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.attr}/bin:${pkgs.grep}/bin:${pkgs.util-linux}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin";
+      serviceConfig.Type = lib.mkForce "simple";
+      serviceConfig.Restart = "on-failure";
+      serviceConfig.RestartSec = 1;
+      script = lib.mkForce ''
+        exec ${pkgs.aos-test-agent}/share/aos-test-agent/aos-test-agent
+      '';
+    };
 
     systemd.services.aos-inspector-lookalike = lib.mkIf (mode == "shadows") {
       description = "Adversarial same-name Network inspector executable";
@@ -124,7 +143,7 @@
         ExecStart = "${pkgs.aos-netd}/bin/aos-sandbox-network-namespace-inspector";
         StandardInput = "socket";
         StandardOutput = "socket";
-        StandardError = "journal";
+        StandardError = "journal+console";
         RuntimeMaxSec = "5s";
         User = "root";
         Group = "root";
@@ -140,7 +159,7 @@
 
     boot.initrd.systemd.services.aos-protected-root-adversary = lib.mkIf (mode == "shadows") {
       description = "Shadow logical protected-root executables before switch-root";
-      requiredBy = ["initrd-switch-root.target"];
+      wantedBy = ["initrd-fs.target"];
       requires = [
         "mount-var.service"
         "nix-overlay-setup.service"
@@ -151,7 +170,8 @@
         "nix-overlay-setup.service"
         "etc-overlay-setup.service"
       ];
-      before = ["initrd-switch-root.target"];
+      before = ["initrd-fs.target"];
+      unitConfig.DefaultDependencies = "no";
       serviceConfig = {
         Type = "oneshot";
         StandardOutput = "journal+console";
@@ -163,19 +183,26 @@
         printf 'AOS_SHADOWED_RUNTIME_ROOTS\n' > /run/shadow-runtime-roots
         printf 'AOS_SHADOWED_LIBSELINUX\n' > /run/shadow-libselinux
         printf 'AOS_SHADOWED_POLICY\n' > /run/shadow-policy
-        chmod 0555 /run/shadow-runtime-roots /run/shadow-libselinux
-        chmod 0444 /run/shadow-policy
+        ${pkgs.coreutils}/bin/chmod 0555 /run/shadow-runtime-roots /run/shadow-libselinux
+        ${pkgs.coreutils}/bin/chmod 0444 /run/shadow-policy
 
-        ${pkgs.util-linux}/bin/mount --bind \
+        if ${pkgs.util-linux}/bin/mount --bind \
           /run/shadow-runtime-roots \
-          /sysroot/nix/store/${runtimeRootsBasename}/bin/aos-selinux-runtime-roots
+          /sysroot/nix/store/${runtimeRootsBasename}/bin/aos-selinux-runtime-roots; then
+          echo "AOS protected-root adversary unexpectedly shadowed helper" >&2
+          exit 1
+        fi
         ${pkgs.util-linux}/bin/mount --bind \
           /run/shadow-libselinux \
           /sysroot/nix/store/${libselinuxBasename}/lib/libselinux.so.1
         ${pkgs.util-linux}/bin/mount --bind \
           /run/shadow-policy \
           /sysroot/nix/store/${policyBasename}/etc/selinux/aos/policy/policy.33
-        echo "AOS protected-root adversary: helper DSO and policy shadowed"
+        ${pkgs.grep}/bin/grep -q AOS_SHADOWED_LIBSELINUX \
+          /sysroot/nix/store/${libselinuxBasename}/lib/libselinux.so.1
+        ${pkgs.grep}/bin/grep -q AOS_SHADOWED_POLICY \
+          /sysroot/nix/store/${policyBasename}/etc/selinux/aos/policy/policy.33
+        echo "AOS protected-root adversary: helper bind denied; DSO and policy shadowed"
       '';
     };
 
@@ -209,6 +236,11 @@
   protectedSystem = systemFor "shadows";
   submountSystem = systemFor "submount";
   protectedConfig = protectedSystem.config;
+  protectedMeasuredConfig =
+    (systems.server-verity.extendModules {
+      modules = [(qualificationModule "shadows")];
+    }).config;
+  protectedMeasuredVarCrypt = protectedMeasuredConfig.boot.initrd.systemd.services."aos-var-crypt".script;
   brokerPackageOverride = protectedSystem.extendModules {
     modules = [{aos.sandbox.networkBroker.package = lib.mkForce inspectorLookalike;}];
   };
@@ -234,11 +266,17 @@ in
   assert packageOverrideRejected workerPackageOverride;
   assert protectedConfig.aos.boot.secureBoot.enable;
   assert protectedConfig.aos.boot.secureBoot.lockdown.enable;
+  assert protectedMeasuredConfig.aos.boot.secureBoot.measuredBoot.enable;
+  assert lib.hasInfix ''"$mkfs" -q -L var -E root_selinux=system_u:object_r:var_t "$dev"'' protectedMeasuredVarCrypt;
+  assert lib.hasInfix ''"$mkfs" -q -L var -E root_selinux=system_u:object_r:var_t /dev/mapper/var'' protectedMeasuredVarCrypt;
+  assert lib.hasInfix ''plain /var root lacks its durable exact SELinux label'' protectedMeasuredVarCrypt;
+  assert lib.hasInfix ''preserving existing plain ext4 /var'' protectedMeasuredVarCrypt;
   assert protectedConfig.aos.filesystems.rootFsType == "erofs";
   assert !protectedConfig.aos.filesystems.zfs.enable;
   assert protectedConfig.aos.boot.initrd.stage0.passthru.admissionUnit == "";
   assert protectedConfig.aos.boot.initrd.stage0.passthru.loadedPolicy == "${pkgs.aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
   assert protectedConfig.aos.boot.initrd.stage0.passthru.expectedPolicy == "${pkgs.aosSelinuxKernelPolicyReadbackForKernel protectedConfig.system.build.kernel}/policy.33";
+  assert runtimeRoots.passthru.expectedPolicyReadback == protectedConfig.aos.boot.initrd.stage0.passthru.expectedPolicy;
   assert protectedConfig.aos.boot.initrd.stage0.passthru.expectedPolicyKernel == protectedConfig.system.build.kernel;
   assert protectedConfig.aos.boot.initrd.stage0.passthru.runtimeRootsProvisioner == runtimeRoots;
   # `+` restores root credentials for this systemd-spawned preflight; the
@@ -333,69 +371,114 @@ in
 
             for path, (mode, type_name) in ROOTS.items():
                 fields = machine.succeed(
-                    f"stat -c '%u|%g|%a|%C|%d|%i' {path}"
+                    f"stat -c '%u|%g|%a|%d|%i' {path}"
                 ).strip().split("|")
                 assert fields[0:3] == ["0", "0", mode], (path, fields)
-                assert fields[3].split(":", 3)[2] == type_name, (path, fields)
-                assert fields[4] == var_device, (path, fields, var_device)
+                raw_label = machine.succeed(
+                    f"${pkgs.attr}/bin/getfattr -n security.selinux "
+                    f"--only-values {path}"
+                ).strip("\x00\n")
+                assert raw_label.split(":", 3)[2] == type_name, (path, raw_label)
+                assert fields[3] == var_device, (path, fields, var_device)
                 assert machine.succeed(
                     f"findmnt -n -o ID -T {path}"
                 ).strip() == var_mount
-                observed[path] = (fields[4], fields[5])
+                observed[path] = (fields[3], fields[4])
 
             return observed
 
-        protected.wait_for_unit("multi-user.target")
-        protected.wait_for_unit("aos-sandbox-network-roots.service")
-        protected.wait_for_unit("aos-netd.socket")
-        protected.wait_for_unit("aos-sandbox-network-namespace-inspector.socket")
+        boot_log = await_serial(
+            protected,
+            "Finished Prepare protected AOS sandbox Network roots",
+        )
+        assert "helper bind denied; DSO and policy shadowed" in boot_log
+        await_serial(protected, "Reached target Multi-User System")
+        protected.wait_until_succeeds("test -S /run/aos/sandbox-network/control.sock")
+        protected.wait_until_succeeds(
+            "test -S /run/aos/sandbox-network-namespace-inspector/control.sock"
+        )
         assert protected.succeed("cat /sys/fs/selinux/enforce").strip() == "1"
+        assert protected.succeed(
+            "${pkgs.attr}/bin/getfattr -n security.selinux --only-values /var"
+        ).strip("\x00\n") == "system_u:object_r:var_t"
         expected_label = protected.succeed(
-            "stat -c %C ${pkgs.aos-netd}/bin/aos-sandbox-network-namespace-inspector"
-        ).strip()
+            "${pkgs.attr}/bin/getfattr -n security.selinux --only-values "
+            "/nix.lower/store/${netdBasename}/bin/"
+            "aos-sandbox-network-namespace-inspector"
+        ).strip("\x00\n")
         lookalike_label = protected.succeed(
-            "stat -c %C ${inspectorLookalike}/bin/aos-sandbox-network-namespace-inspector"
-        ).strip()
+            "${pkgs.attr}/bin/getfattr -n security.selinux --only-values "
+            "/nix.lower/store/${inspectorLookalikeBasename}/bin/"
+            "aos-sandbox-network-namespace-inspector"
+        ).strip("\x00\n")
         assert expected_label.split(":", 3)[2] == "aos_sandbox_namespace_inspector_exec_t"
         assert lookalike_label.split(":", 3)[2] != "aos_sandbox_namespace_inspector_exec_t"
-        protected.succeed("systemctl start aos-inspector-lookalike.service")
-        lookalike_log = protected.succeed(
-            "journalctl -b -u aos-inspector-lookalike.service --no-pager -o cat"
+        lookalike_output = protected.succeed(
+            "${inspectorLookalike}/bin/aos-sandbox-network-namespace-inspector"
         )
-        assert "AOS_LOOKALIKE_CONTEXT=" in lookalike_log
-        assert "aos_sandbox_namespace_inspector_t" not in lookalike_log
+        assert "AOS_LOOKALIKE_CONTEXT=" in lookalike_output
+        assert "aos_sandbox_namespace_inspector_t" not in lookalike_output
 
         protected.succeed("${inspectorSocketConnector}/bin/aos-inspector-socket-connect")
-        protected.wait_until_succeeds(
-            "journalctl -b -u 'aos-sandbox-network-namespace-inspector@*.service' "
-            "--no-pager -o cat | grep -F 'CREDENTIALS_DIRECTORY is absent'",
-            timeout=30,
+        await_serial(
+            protected,
+            "CREDENTIALS_DIRECTORY is absent",
         )
         initial = identities(protected)
 
-        protected.succeed("systemctl restart aos-sandbox-network-roots.service")
-        assert identities(protected) == initial
-
-        protected.succeed("systemctl restart aos-netd.service")
-        protected.succeed("systemctl restart aos-netd.service")
-        assert identities(protected) == initial
-        evidence = protected.succeed(
-            "journalctl -b -u aos-sandbox-network-roots.service "
-            "-u aos-netd.service --no-pager"
+        # Socket activation must run the production broker's preflight, then
+        # leave its actual labeled executable serving beyond the connection.
+        broker_process = (
+            "for process in /proc/[0-9]*; do "
+            "test \"$(cat \"$process/comm\" 2>/dev/null)\" = aos-netd || continue; "
+            "grep -q aos_sandbox_network_publisher_t \"$process/attr/current\" || continue; "
+            "test \"$(readlink \"$process/exe\")\" = "
+            "${pkgs.aos-netd}/bin/aos-netd && exit 0; "
+            "done; exit 1"
         )
-        assert evidence.count("verified --prepare-sandbox-network-roots") >= 4
         protected.succeed(
-            "! grep -q AOS_SHADOWED_RUNTIME_ROOTS "
-            "/nix/store/${runtimeRootsBasename}/bin/aos-selinux-runtime-roots"
+            "${inspectorSocketConnector}/bin/aos-inspector-socket-connect --broker"
         )
+        # systemd reports Started only after the exact asserted ExecStartPre
+        # has succeeded; the live domain/exe probe also rejects 203/EXEC.
+        await_serial(
+            protected,
+            "Started AOS authenticated sandbox Network inventory broker",
+        )
+        protected.wait_until_succeeds(broker_process, timeout=30)
+        time.sleep(2)
+        protected.succeed(broker_process)
+
+        root_handoff = (
+            "/usr/lib/systemd/aos-selinux-root-handoff --launch-runtime-roots "
+            "${runtimeRoots}/bin/aos-selinux-runtime-roots --root / "
+            "--prepare-sandbox-network-roots"
+        )
+        protected.succeed(root_handoff)
+        protected.succeed(root_handoff)
+        assert identities(protected) == initial
+        protected.succeed("sync")
+        shutdown_status, _, _ = protected.agent.shutdown()
+        assert shutdown_status == 0
+        assert protected.qemu_proc.wait(timeout=120) == 0
+        protected.relaunch_with_smbios_oem_strings([])
+        assert identities(protected) == initial
+        protected.succeed(
+            "${inspectorSocketConnector}/bin/aos-inspector-socket-connect --broker"
+        )
+        protected.wait_until_succeeds(broker_process, timeout=30)
         protected.succeed(
             "! grep -q AOS_SHADOWED_POLICY "
             "/etc/selinux/aos/policy/policy.33"
         )
+        protected.succeed(
+            "cmp -s /etc/selinux/aos/policy/policy.33 "
+            "/nix.lower/store/${policyBasename}/etc/selinux/aos/policy/policy.33"
+        )
 
         failure = await_serial(
             submount,
-            "cannot open '/var/lib' without aliases or mount crossings",
+            "Failed to start Prepare protected AOS sandbox Network roots",
         )
         assert "/var/lib submount installed" in failure
         assert "aos-netd.socket" in failure

@@ -2,6 +2,7 @@
 {
   mkDerivation,
   aos-selinux-production-policy,
+  aos-selinux-kernel-policy-readback,
   buildPackages,
 }:
 mkDerivation {
@@ -22,7 +23,7 @@ mkDerivation {
         set -eu
 
         cp \
-          ${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33 \
+          ${aos-selinux-kernel-policy-readback}/policy.33 \
           expected_policy.bin
         ${buildPackages.binutils}/bin/ld \
           -r -b binary -o expected_policy.o expected_policy.bin
@@ -52,7 +53,7 @@ mkDerivation {
   ];
 
   passthru = {
-    expectedPolicy = "${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
+    expectedPolicyReadback = "${aos-selinux-kernel-policy-readback}/policy.33";
     immutablePolicy = aos-selinux-production-policy;
     evidenceSources = [
       (builtins.path {

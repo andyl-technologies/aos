@@ -77,7 +77,7 @@
     "aos-sandbox-network-observation-worker.socket"
     "aos-sandbox-network-pin-worker.socket"
   ];
-  runtimeRootsExecutable = "${pkgs.aos-selinux-runtime-roots}/bin/aos-selinux-runtime-roots";
+  runtimeRootsExecutable = "${pkgs.aosSelinuxRuntimeRootsForKernel config.system.build.kernel}/bin/aos-selinux-runtime-roots";
   runtimeRootsCommand = "/usr/lib/systemd/aos-selinux-root-handoff --launch-runtime-roots ${runtimeRootsExecutable} --root / --prepare-sandbox-network-roots";
 in {
   options.aos.sandbox.networkBroker = {

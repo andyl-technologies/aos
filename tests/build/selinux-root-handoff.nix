@@ -150,6 +150,11 @@ in
           cmp \
             extracted/usr/lib/systemd/aos-selinux-root-handoff \
             ${stage0}/bin/aos-selinux-stage0
+          cmp \
+            extracted/usr/lib/systemd/aos-selinux-runtime-roots-handoff \
+            ${stage0}/bin/aos-selinux-stage0
+          test "$(stat -c %i extracted/usr/lib/systemd/aos-selinux-root-handoff)" != \
+            "$(stat -c %i extracted/usr/lib/systemd/aos-selinux-runtime-roots-handoff)"
           test ! -s extracted/usr/lib/systemd/aos-empty-ld-so-preload
           if find extracted/usr/lib -name 'libtss2-tcti-*.so*' | grep -q .; then
             echo "constructed TCTI selector can reach an unpinned default-path DSO" >&2
@@ -167,9 +172,15 @@ in
               for entry in json.load(open(sys.argv[1], encoding="utf-8"))["entries"]
           }
           guard = entries["/usr/lib/systemd/aos-selinux-root-handoff"]
+          runtime_handoff = entries[
+              "/usr/lib/systemd/aos-selinux-runtime-roots-handoff"
+          ]
           preload = entries["/usr/lib/systemd/aos-empty-ld-so-preload"]
           assert guard["kind"] == "regular", guard
           assert guard["context"].split(":", 3)[2] == "init_exec_t", guard
+          assert runtime_handoff["kind"] == "regular", runtime_handoff
+          assert runtime_handoff["context"].split(":", 3)[2] == \
+              "aos_sandbox_runtime_roots_handoff_exec_t", runtime_handoff
           assert preload["kind"] == "regular", preload
           assert preload["context"].split(":", 3)[2] == "lib_t", preload
           runtime_roots = entries[
